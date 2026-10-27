@@ -210,7 +210,7 @@ def test_explainer_p3_through_handler_never_dispatches_remote(service, monkeypat
     monkeypatch.setattr(service.local, "observe", lambda: "local_not_admitted")
     monkeypatch.setattr(service.remote, "observe", lambda: "remote_not_admitted")
     monkeypatch.setattr(service.remote, "handle", lambda *a, **kw: pytest.fail("remote request"))
-    monkeypatch.setattr(service.local, "reference", lambda *a, **kw: None)
+    monkeypatch.setattr(service.reference, "reference", lambda *a, **kw: (None, "no_pack"))
     monkeypatch.setattr(service.local, "handle", lambda *a, **kw: {"outcome": "not_advice", "refusal": "not_advice"})
     frame = build_frame(transition(), 1)
     req = SimpleNamespace(verb=entry.ADVISE_VERB, arguments={"deadline_ms": 500},

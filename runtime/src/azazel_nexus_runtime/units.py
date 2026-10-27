@@ -72,6 +72,7 @@ class UnitKey(str, Enum):
     MIO_LOCAL = "mio-local"
     MIO_REMOTE = "mio-remote"
     MIO_ENTRY = "mio-entry"
+    MIO_REFERENCE = "mio-reference"
     KNOWLEDGE_LITE = "knowledge-lite"
     DECOY_NAMESPACE = "decoy-namespace"
     DECOY_NETWORK = "decoy-network"
@@ -95,6 +96,7 @@ UNIT_NAMES: dict[UnitKey, str] = {
     UnitKey.MIO_LOCAL: "azazel-mio-locald.service",
     UnitKey.MIO_REMOTE: "azazel-mio-remoted.service",
     UnitKey.MIO_ENTRY: "azazel-mio-entryd.service",
+    UnitKey.MIO_REFERENCE: "azazel-mio-referenced.service",
     UnitKey.KNOWLEDGE_LITE: "azazel-knowledge-lited.service",
     UnitKey.DECOY_NAMESPACE: "azazel-decoy-nsd.service",
     UnitKey.DECOY_NETWORK: "azazel-decoy-netd.service",

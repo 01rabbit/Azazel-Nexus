@@ -598,7 +598,7 @@ def test_explainer_advice_survives_a_flooding_operator(tmp_path, monkeypatch):
 
     svc, _ = compose(tmp_path, monkeypatch, rate=unlimited, **SMALL)
     svc._explainer_uid = 4242
-    svc.local.reference = lambda *a, **kw: None
+    svc.reference.reference = lambda *a, **kw: (None, "no_pack")
     for _ in range(10_000):
         try:
             svc.handle(route_request(1001))

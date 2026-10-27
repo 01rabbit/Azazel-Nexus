@@ -142,6 +142,7 @@ DAEMON_ACCOUNTS = tuple(dict.fromkeys((
     "azedge",
     "azfetch",
     "azmioentry",
+    "azmioref",
     "azremote",
 )))
 

@@ -231,7 +231,7 @@ fi
 # The unit files name these. An installer that enabled a unit whose ExecStart
 # does not exist would "succeed" into a boot failure, which is later and on
 # someone else's hardware.
-for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-intaked az-incident-explaind az-edge-probed az-model-fetchd az-mio-locald az-mio-identity az-mio-remoted az-mio-entryd az-knowledge-lited az-decoy-netd az-decoyd; do
+for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-intaked az-incident-explaind az-edge-probed az-model-fetchd az-mio-locald az-mio-identity az-mio-remoted az-mio-entryd az-mio-referenced az-knowledge-lited az-decoy-netd az-decoyd; do
     if [ ! -x "$LIBEXEC/$binary" ]; then
         echo "refusing to install: $LIBEXEC/$binary is missing." >&2
         echo "Install azazel-nexus and azazel-nexus-runtime into the stable" >&2
@@ -257,7 +257,7 @@ fi
 # Non-login accounts with no shell and no home. Each daemon gets its own, so
 # that a fault in one does not run with another's access.
 if [ "$WITH_ACCOUNTS" = yes ]; then
-    for account in azcommission azaudit azwatch azprobe azintake azexplain azedge azfetch azmio azmioentry azremote azknowledge azdecoy; do
+    for account in azcommission azaudit azwatch azprobe azintake azexplain azedge azfetch azmio azmioentry azmioref azremote azknowledge azdecoy; do
         if ! getent passwd "$account" >/dev/null 2>&1; then
             # Each account's own group is relied on (azedge for the intake
             # socket, azknowledge for lite-trust), so it is made explicitly
@@ -378,9 +378,11 @@ make_dir 0750 azremote /var/lib/azazel/remote
 make_owned_dir 2750 azcommission azknowledge /var/lib/azazel/lite-trust
 make_owned_dir 0700 azmioentry root /var/lib/azazel/state/mio
 make_owned_dir 0700 azknowledge root /var/lib/azazel/state/knowledge
+make_owned_dir 0700 azmioref root /var/lib/azazel/state/mio-reference
 make_owned_dir 2710 azmioentry azazel-operator /var/lib/azazel/run/mio-entry
 make_owned_dir 2710 azmioentry azmio-advise /var/lib/azazel/run/mio-advise
 make_owned_dir 2710 azmio azazel-operator /var/lib/azazel/run/mio
+make_owned_dir 2710 azmioref azazel-operator /var/lib/azazel/run/mio-reference
 make_owned_dir 2710 azremote azazel-operator /var/lib/azazel/run/remote
 make_owned_dir 2710 azknowledge azazel-operator /var/lib/azazel/run/knowledge
 make_owned_dir 2710 azknowledge azknowledge-read /var/lib/azazel/run/knowledge-read
@@ -412,6 +414,7 @@ install -m 0644 "$HERE"/systemd/azazel-model-fetchd.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-mio-locald.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-mio-remoted.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-mio-entryd.service "$UNIT_DIR"
+install -m 0644 "$HERE"/systemd/azazel-mio-referenced.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-knowledge-lited.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-decoy-nsd.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-decoy-netd.service "$UNIT_DIR"
@@ -470,6 +473,7 @@ systemctl mask azazel-model-fetchd.service
 systemctl mask azazel-mio-locald.service
 systemctl mask azazel-mio-remoted.service
 systemctl mask azazel-mio-entryd.service
+systemctl mask azazel-mio-referenced.service
 systemctl mask azazel-knowledge-lited.service
 # Deception Lite exposure (#196 P1, and the namespace unit of option (a)):
 # masked like every governed unit. No pass grants them in this build, so they

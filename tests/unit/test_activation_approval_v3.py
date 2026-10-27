@@ -149,7 +149,7 @@ def test_the_v3_unit_set_is_pinned_and_excludes_enforcement():
         "azazel-incident-explaind.service", "azazel-knowledge-lited.service",
         "azazel-mio-entryd.service", "azazel-mio-locald.service",
         "azazel-mio-remoted.service", "azazel-model-fetchd.service",
-        "azazel-watchdog.service",
+        "azazel-watchdog.service", "azazel-mio-referenced.service",
     }
     v2 = supporting | {"azazel-edge-core.service"}
     assert activation_approval_v2._V2_UNITS == v2
@@ -559,9 +559,12 @@ def test_no_scope_was_widened():
     from azazel_nexus_runtime.activation_pass import POLICY_UNIT_SCOPE
 
     edge = "azazel-edge-core.service"
-    assert set(ACTIVATION_UNIT_ALLOWLIST) == set(LOOP) | {edge}
-    assert POLICY_UNIT_SCOPE == frozenset(LOOP) | {edge}
+    # The one addition is the model-free reference service (§6.2, proposed
+    # 2026-10-28). No model host, enforcement or exposure unit is added.
+    reference = "azazel-mio-referenced.service"
+    assert set(ACTIVATION_UNIT_ALLOWLIST) == set(LOOP) | {edge, reference}
+    assert POLICY_UNIT_SCOPE == frozenset(LOOP) | {edge, reference}
     # The exposure units are grantable only so #253 checks their files; no
     # policy names them and the library withholds their tier (unchanged).
-    assert activation_markers.GRANTABLE_UNITS == frozenset(LOOP + EXPOSURE) | {edge}
+    assert activation_markers.GRANTABLE_UNITS == frozenset(LOOP + EXPOSURE) | {edge, reference}
     assert activation_markers.EXPOSURE_UNITS == set(EXPOSURE)

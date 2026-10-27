@@ -15,6 +15,7 @@ from azazel_nexus.capability import CapabilityState
 from azazel_nexus.local_advisory import (
     FrameRefused,
     gate_frame,
+    handoff_notice,
     read_frame,
     read_reference,
     request_event,
@@ -26,7 +27,7 @@ from azazel_nexus.sanitizer import PrivacyClass
 
 from .mio_capability import read_capability
 from .mio_commissioning import commissioned_profile
-from .mio_locald import INFER_VERB, REFERENCE_DEADLINE_MS
+from .mio_locald import INFER_VERB
 from .mio_route_ledger import (
     ARBITER,
     CONTROL,
@@ -35,7 +36,7 @@ from .mio_route_ledger import (
     RouteSegmentFull,
 )
 from .mio_router import MioRouter
-from .mio_socket_client import LocalSocketClient, RemoteSocketClient
+from .mio_socket_client import LocalSocketClient, ReferenceSocketClient, RemoteSocketClient
 from .principal import PrincipalClass, PrincipalPolicy
 from .protocol import (
     Argument,
@@ -125,7 +126,12 @@ class MioEntryService:
         self._arbiter_uid = self._account_uid("azarbiter")
         self.local = LocalSocketClient()
         self.remote = RemoteSocketClient()
-        self.router = router if router is not None else MioRouter(local=self.local, remote=self.remote)
+        self.router = router if router is not None else MioRouter(
+            local=self.local, remote=self.remote, monotonic=clock)
+        #: The model-free reference service. Separate from `local`: a node with
+        #: no admitted model still reaches it, and it can reach no model verb.
+        #: It reads the router's clock, the one the request's deadline is on.
+        self.reference = ReferenceSocketClient(clock=lambda: self.router._monotonic())
         self._profile_reader = profile_reader
         self._local_admitted = local_admitted
         self._predictions_reader = predictions_reader
@@ -420,6 +426,37 @@ class MioEntryService:
         finally:
             ledger.owner = previous
 
+    def _handoff(self, frame: dict, result, deadline_at: float) -> dict:
+        """The deterministic terminal step's reply: no AI is called here.
+
+        The reference is optional and bounded by what is left of the request's
+        deadline; it never replaces the routing reason, and its absence is
+        stated with a fixed reason next to a fixed notice. Nothing here
+        depends on Edge detection, decision or evidence, and nothing here is
+        an AI answer: the reply names its kind.
+        """
+        document, missing = self.reference.reference(frame, deadline_at=deadline_at)
+        if document is not None:
+            try:
+                document = read_reference(document)
+            except Exception:  # noqa: BLE001 - an optional reference never fails the request
+                document, missing = None, "reference_refused"
+        self.router._record({
+            "event_type": "mio.entry.handoff",
+            "reference_status": "attached" if document is not None else "unavailable",
+            "reference_reason": missing,
+        })
+        handoff = {
+            "kind": "deterministic_reference" if document is not None else "deterministic_notice",
+            "notice": handoff_notice(frame),
+            "ai_attempts": result.ai_attempts,
+            "failures": [dict(failure) for failure in result.failures],
+        }
+        if document is not None:
+            return {"reference_status": "attached", "reference": document, "handoff": handoff}
+        return {"reference_status": "unavailable", "reference_reason": missing,
+                "handoff": handoff}
+
     def _mark(self, key: str) -> None:
         if hasattr(self.router.ledger, "rebuild_usage"):
             self.router._record({"event_type": REQUEST_MARKER, "caller": key})
@@ -427,6 +464,9 @@ class MioEntryService:
     def _handle(self, request, principal, key) -> dict:
         if request.arguments["deadline_ms"] == 0:
             raise RequestRefused(Refusal.ARGUMENT_RANGE, "deadline_ms")
+        # The request's one deadline, on the router's monotonic clock. The
+        # route, any fallback and the reference all take what is left of it.
+        deadline_at = self.router._monotonic() + request.arguments["deadline_ms"] / 1000
         is_advice = getattr(getattr(request, "verb", None), "name", None) == ADVISE_VERB.name
         explainer = (principal is not None and self._explainer_uid is not None
                      and principal.uid == self._explainer_uid
@@ -479,6 +519,7 @@ class MioEntryService:
             local_admitted=is_advice and self._local_admitted(), local_refusal=LOCAL_REFUSAL,
             predictions=self._predictions_reader() if is_advice else {},
             deadline_ms=request.arguments["deadline_ms"],
+            deadline_at=deadline_at,
         )
         reply = {
             "route": result.route.value, "outcome": result.outcome.value,
@@ -493,18 +534,7 @@ class MioEntryService:
 
                 reply.update(read_delivered(result.reply))
         if is_advice and result.route is Route.DETERMINISTIC_HANDOFF:
-            # Optional and bounded by the caller's own budget; never replaces the
-            # routing reason (the ledger and the reply keep the true handoff cause).
-            budget = min(REFERENCE_DEADLINE_MS, request.arguments["deadline_ms"])
-            reference = self.local.reference(frame, deadline_ms=budget)
-            try:
-                if reference is None:
-                    raise ValueError("reference_unavailable")
-                reply["reference"] = read_reference(reference)
-                reply["reference_status"] = "attached"
-            except Exception:  # noqa: BLE001 - an optional reference never fails the request
-                reply.pop("reference", None)
-                reply["reference_status"] = "unavailable"
+            reply.update(self._handoff(frame, result, deadline_at))
         return reply
 
 

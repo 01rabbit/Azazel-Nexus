@@ -732,6 +732,7 @@ GRANT_MARKER_UNITS = (
     "azazel-knowledge-lited.service",
     "azazel-mio-entryd.service",
     "azazel-mio-locald.service",
+    "azazel-mio-referenced.service",
     "azazel-mio-remoted.service",
     "azazel-model-fetchd.service",
     "azazel-watchdog.service",
@@ -820,6 +821,7 @@ SYSTEM_ACCOUNTS = (
     "azfetch",
     "azmio",
     "azmioentry",
+    "azmioref",
     "azremote",
     "azknowledge",
     "azdecoy",
@@ -1604,6 +1606,44 @@ PROFILES: tuple[ServiceProfile, ...] = (
         rationale=(
             "Routes and records handoffs over Unix sockets only. "
             "Holds no provider, network family or capability."
+        ),
+    ),
+    ServiceProfile(
+        unit="azazel-mio-referenced.service",
+        executable="/usr/libexec/azazel/az-mio-referenced",
+        account="azmioref",
+        description="Azazel-Nexus M.I.O. playbook reference service",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/mio-runtime.md",
+        address_families=("AF_UNIX",),
+        # Its own ledger leaf and socket leaf. No model store, model
+        # admission, operator trust or Knowledge access: a reference is
+        # verified playbook prose and nothing a model needs.
+        read_write_paths=(
+            "/var/lib/azazel/state/mio-reference", "/var/lib/azazel/run/mio-reference",
+        ),
+        after=(ACTIVATION_CONTROLLER_UNIT,),
+        requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition("azazel-mio-referenced.service"),
+        supplementary_groups=("azmission-read",),
+        extra=(
+            ("ReadOnlyPaths", "-/etc/azazel/mission-pack.json"),
+            ("ReadOnlyPaths", "-/data/azazel/mission-packs"),
+            ("PrivateNetwork", "yes"),
+            ("TimeoutStartSec", "30s"),
+            ("MemoryMax", "256M"),
+            ("MemorySwapMax", "0"),
+            ("TasksMax", "16"),
+            ("LimitNOFILE", "256"),
+            ("LimitFSIZE", "16777216"),
+            ("LogRateLimitIntervalSec", "30"),
+            ("LogRateLimitBurst", "50"),
+        ),
+        rationale=(
+            "Serves verified playbook references for the deterministic handoff. "
+            "It runs no model, holds no model path, starts no process and has "
+            "no network namespace. Model execution stays with the model host "
+            "and its own wiring and admission, which this unit neither needs "
+            "nor satisfies."
         ),
     ),
     ServiceProfile(

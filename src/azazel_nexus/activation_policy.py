@@ -56,9 +56,11 @@ __all__ = [
 
 ACTIVATION_POLICY_SCHEMA = "azazel-nexus/activation-policy/v1"
 
-#: The integrated loop's units (§2). The SUPPORTING five, and edge-core for
-#: phase P5. auditd, commissiond, watchdog, fetchd, locald and remoted are
-#: excluded by the owner's decision (§6.2) and cannot be named by a policy.
+#: The integrated loop's units (§2). The SUPPORTING five, edge-core for
+#: phase P5, and the model-free reference service (proposed 2026-10-28,
+#: `docs/activation-observe-baseline.md` §6.2; it runs no model). auditd,
+#: commissiond, watchdog, fetchd, locald and remoted are excluded by the
+#: owner's decision (§6.2) and cannot be named by a policy.
 ACTIVATION_UNIT_ALLOWLIST = (
     "azazel-edge-core.service",
     "azazel-edge-intaked.service",
@@ -66,6 +68,7 @@ ACTIVATION_UNIT_ALLOWLIST = (
     "azazel-incident-explaind.service",
     "azazel-knowledge-lited.service",
     "azazel-mio-entryd.service",
+    "azazel-mio-referenced.service",
 )
 
 #: §6.1: a boot-free approval lives at most 72 hours.

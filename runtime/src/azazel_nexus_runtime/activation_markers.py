@@ -74,6 +74,7 @@ GRANTABLE_UNITS = frozenset({
     "azazel-incident-explaind.service",
     "azazel-knowledge-lited.service",
     "azazel-mio-entryd.service",
+    "azazel-mio-referenced.service",
 })
 
 #: The Deception Lite exposure units (#196 §10, review n1), marked together

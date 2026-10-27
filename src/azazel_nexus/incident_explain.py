@@ -8,8 +8,8 @@ from collections import deque
 
 from .edge_intake import ACTIONS, SEVERE_SEVERITY, _object, _shape, _text, _int, _number
 from .lite_import import TECHNIQUE_ID, read_knowledge_refs
-from .local_advisory import MACHINE_FIELDS, read_delivered, read_frame, read_reference
-from .route_selection import RequestOutcome
+from .local_advisory import HANDOFF_NOTICE, MACHINE_FIELDS, read_delivered, read_frame, read_reference
+from .route_selection import RequestOutcome, TerminalEvent
 from .sanitizer import PrivacyClass
 
 MAX_PENDING = 64
@@ -306,6 +306,8 @@ def read_mio_reply(reply):
         body = read_delivered({k: v for k, v in reply.items() if k in body_keys})
         advice = body["advice"]
     else:
+        if "handoff" in reply:
+            return _read_handoff(reply, base)
         if set(reply) not in (base | {"reference_status"}, base | {"reference_status", "reference"}):
             raise ValueError("mio_reply_refused")
         if reply["reference_status"] == "attached" and "reference" in reply:
@@ -314,6 +316,55 @@ def read_mio_reply(reply):
             raise ValueError("mio_reply_refused")
     reason = "mio_handoff" if reply["route"] == "deterministic handoff" else reply["reason"]
     return {"route": reply["route"], "outcome": reply["outcome"], "reason": reason, "text": advice}
+
+
+_REASON_WORD = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_HANDOFF_FAILURE_ROUTES = {"local", "remote"}
+
+
+def _read_handoff(reply, base):
+    """The deterministic terminal step's reply: a reference or a fixed notice.
+
+    Neither is an AI answer. A reference keeps its fixed banner as the text;
+    a notice-only handoff carries no text, and the missing reason is kept in
+    the record's reason so the operator sees why there was no reference.
+    """
+    if reply["route"] != "deterministic handoff":
+        raise ValueError("mio_reply_refused")
+    handoff = reply["handoff"]
+    _shape(handoff, ("kind", "notice", "ai_attempts", "failures"))
+    if handoff["notice"] not in HANDOFF_NOTICE.values():
+        raise ValueError("mio_reply_refused")
+    _int(handoff["ai_attempts"], 2)
+    failures = handoff["failures"]
+    if type(failures) is not list or len(failures) > handoff["ai_attempts"]:
+        raise ValueError("mio_reply_refused")
+    terminals = {event.value for event in TerminalEvent}
+    for failure in failures:
+        if (type(failure) is not dict or not {"route", "terminal_event"} <= set(failure)
+                or not set(failure) <= {"route", "terminal_event", "refusal"}
+                or failure["route"] not in _HANDOFF_FAILURE_ROUTES
+                or failure["terminal_event"] not in terminals
+                or ("refusal" in failure and (type(failure["refusal"]) is not str
+                                              or not _REASON_WORD.fullmatch(failure["refusal"])))):
+            raise ValueError("mio_reply_refused")
+    if handoff["kind"] == "deterministic_reference":
+        if (set(reply) != base | {"reference_status", "reference", "handoff"}
+                or reply["reference_status"] != "attached"):
+            raise ValueError("mio_reply_refused")
+        text = read_reference(reply["reference"])["banner"]
+        reason = "mio_handoff"
+    elif handoff["kind"] == "deterministic_notice":
+        if (set(reply) != base | {"reference_status", "reference_reason", "handoff"}
+                or reply["reference_status"] != "unavailable"
+                or type(reply["reference_reason"]) is not str
+                or not _REASON_WORD.fullmatch(reply["reference_reason"])):
+            raise ValueError("mio_reply_refused")
+        text = None
+        reason = "mio_handoff:" + reply["reference_reason"]
+    else:
+        raise ValueError("mio_reply_refused")
+    return {"route": reply["route"], "outcome": reply["outcome"], "reason": reason, "text": text}
 
 
 RECORD_FIELDS = {"incident_id", "explained_at", "transition", "edge_would", "policy_reason",

@@ -184,6 +184,7 @@ azazel-edge-intaked.service       receive-only Edge findings intake
 azazel-incident-explaind.service  local incident explanation and audit forwarding
 azazel-knowledge-lited.service    Knowledge Lite read service
 azazel-mio-entryd.service         M.I.O. routing entry
+azazel-mio-referenced.service     model-free playbook reference for the handoff
 azazel-mio-locald.service         local model runtime host
 azazel-auditd.service             audit ledger
 ```

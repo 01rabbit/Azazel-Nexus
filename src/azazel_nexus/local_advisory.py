@@ -83,6 +83,26 @@ def _has_injection(frame: Mapping) -> bool:
                 any(_INJECTION.search(item['text']) for item in frame['context']))
 
 
+#: The deterministic handoff's fixed notice (#core-offline-fallback). Shown
+#: whether or not a playbook reference is attached, and never an AI answer:
+#: it states that no AI answered and where authority stays.
+HANDOFF_NOTICE = {
+    'en': ('No AI answer is available for this request, so it was handed to the '
+           'deterministic path. This notice and any attached playbook reference are '
+           "fixed or verified material, not an AI answer. Edge's deterministic "
+           'control plane remains the decision and enforcement authority.'),
+    'ja': ('この要求には AI の回答がないため、決定論的な経路へ引き渡しました。'
+           'この通知と添付されるプレイブック参照は固定または検証済みの資料であり、'
+           'AI の回答ではありません。判断と実施の権限は Edge の決定論的な制御面にあります。'),
+}
+
+
+def handoff_notice(frame: Mapping) -> str:
+    """The fixed handoff notice in the question's language; no frame text."""
+    checked = read_frame(frame)
+    return HANDOFF_NOTICE['ja' if _JAPANESE.search(checked['question']) else 'en']
+
+
 def gate_frame(frame: Mapping, max_similarity: float = -1.0) -> dict | None:
     """Return a fixed no-model reply, or None when inference may be considered.
 

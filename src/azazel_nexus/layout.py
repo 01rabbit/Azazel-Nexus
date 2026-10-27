@@ -298,6 +298,10 @@ LAYOUT = (
         "M.I.O. entry route ledger and refusals", owner="azmioentry",
     ),
     PathSpec(
+        "/var/lib/azazel/state/mio-reference", 0o700,
+        "M.I.O. playbook reference service ledger", owner="azmioref",
+    ),
+    PathSpec(
         "/var/lib/azazel/state/knowledge", 0o700,
         "Knowledge Lite daemon refusal records", owner="azknowledge",
     ),
@@ -310,6 +314,11 @@ LAYOUT = (
         "/var/lib/azazel/run/mio-advise", 0o2710,
         "explainer's advice-only M.I.O. entry socket; no operator socket access",
         owner="azmioentry", group="azmio-advise",
+    ),
+    PathSpec(
+        "/var/lib/azazel/run/mio-reference", 0o2710,
+        "M.I.O. playbook reference socket; only the entry service is admitted",
+        owner="azmioref", group="azazel-operator",
     ),
     PathSpec(
         "/var/lib/azazel/run/knowledge", 0o2710,

@@ -66,7 +66,7 @@ scope for this plan and needs its own decision.
  az-edge-intaked  -> evidence store + audit transitions                    [I1]
         |
         v
- incident  -> situation frame -> mio.advise (entryd -> locald)             [I2]
+ incident  -> situation frame -> mio.advise (entryd -> locald | referenced) [I2]
                                     |
                                     +-> knowledge.lookup (technique ids)
         |
@@ -618,7 +618,9 @@ nothing in intake, detection or Edge's observe-only decisions.
   prohibit remote egress regardless of profile or commissioning.
 - **Clients and validation.** The sole advisory request is `mio.advise` to
   entryd's fixed explainer listener, `mio-advise`. Deadline is **500 ms**, the existing
-  `REFERENCE_DEADLINE_MS`, for both the verb and the entire client exchange.
+  `REFERENCE_DEADLINE_MS` (now `mio_referenced.REFERENCE_DEADLINE_MS`), for both
+  the verb and the entire client exchange; entryd measures it once and the
+  route, any fallback and the playbook reference all share it.
   `azexplain` is admitted as SERVICE in entryd and knowledge-lited's explicit
   service allowlists, never the shared SERVICE list. Entryd identifies its
   kernel-derived UID and permits only `mio.advise` with P3-restricted frames;

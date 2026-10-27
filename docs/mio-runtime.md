@@ -615,15 +615,42 @@ Timeout maps to `TIMED_OUT`, TLS failure to `TLS_FAILED`, envelope refusals to
 separate records. Only a `FELL_BACK` outcome records a `fallback_once` decision, once,
 before dispatching its target from the original permitted set. A sanitizer
 refusal ends the attempt without fallback, as required by `outcome_for`.
-Local replies currently report readiness only: `ready` ends with
-`local_ready_no_answer` / `REFUSED`, `fallback_available=False`, and no remote
-call. An unassessed local route also ends without fallback. Only a real local
-readiness refusal permits one fallback within the original permitted set; its
-audit reason includes the local refusal that caused it. Malformed remote payloads
-record only the fixed `malformed_payload` reason, never parser exception text.
-A second failure ends without retry. Deterministic handoff reports no advisory
-answer (`FAILED` / `REFUSED`); entry may subsequently fetch the deterministic
-playbook reference described below. Edge continues.
+A local readiness reply that is not a refusal (`ready`, unassessed) records
+`local_ready_no_answer` (or the unassessed reason) as `NO_ANSWER` / `REFUSED` with
+`fallback_available=False` and no remote call. Only a real local readiness
+refusal permits one fallback within the original permitted set; its audit reason
+includes the local refusal that caused it. Malformed remote payloads record only
+the fixed `malformed_payload` reason, never parser exception text.
+
+**One deadline per request** (implemented; software evidence only). Entry
+measures the request's deadline once, on the monotonic clock, when the request
+arrives, and passes it to the router (`deadline_at`). Selection compares
+predictions with what is left of it, not with the caller's original budget. Each
+AI attempt receives the remaining time minus `HANDOFF_RESERVE_MS` (50 ms, kept for
+the terminal step); the fallback never receives a fresh copy of the original
+`deadline_ms`. An AI attempt is not started when less than `MIN_AI_ATTEMPT_MS`
+(100 ms) would be left for it; that records `mio.route.not_started` with
+`deadline_budget_insufficient`. A reply that arrives at or after the deadline is
+discarded (`mio.route.late_reply`) and classified `TIMED_OUT`, never `ANSWERED`.
+Both constants are software budgets, not measured hardware latency. The remote
+transport keeps its own commissioned deadline; the router bounds it from outside
+(not started without room, discarded when late) because the remote verb carries
+no deadline argument.
+
+**A deterministic terminal step** (implemented). At most two AI attempts are made
+(`MAX_AI_ATTEMPTS`): the selected route and the one fallback from the original
+permitted set, never the provider that failed and never a route the selection did
+not permit. Every request that no AI answered — a second failure, a sanitiser
+refusal, a no-answer readiness, an insufficient budget, or a selection that chose
+the handoff — ends in the deterministic handoff. The router records
+`mio.route.handoff` with the cause (`selected`, `fallback`,
+`no_permitted_fallback`, `ai_attempts_ended`, `ai_attempts_exhausted`,
+`deadline_budget_insufficient`), the number of AI attempts and one bounded entry
+per failed attempt (route, terminal event, fixed refusal word), then the handoff's
+own terminal record (`FAILED` / `REFUSED`: no advisory answer). The terminal step
+calls no AI and needs nothing from Edge: Edge detection, decisions and evidence are
+not inputs of this path. Entry then fetches the playbook reference described below.
+Edge continues.
 
 This is software evidence for route audit production, not evidence of deployed
 M.I.O. inference or the whole audit list above. Per-claim response provenance,
@@ -664,24 +691,50 @@ to be measured against. It is not evidence that the control plane exists.
 While local model admission is closed (`LOCAL_MODEL_ADMISSION_ENABLED = False`,
 and no admitted evidence), entryd's routing never selects LOCAL. A `mio.advise`
 frame that passes the entry checks still returns `route: deterministic handoff`
-and `outcome: refused`. After that decision, entryd requests a deterministic
-playbook reference from locald via `mio.local.reference`. A validated result is
-attached under `reference`, with `banner`, trusted `fields` and machine metadata;
-it is never attached as `advice` or counted as an advisory answer. Keyword banners
-identify deterministic matching and contain no model wording. Unreviewed
-playbooks retain the template notice.
+and `outcome: refused`. After that decision, entryd asks the model-free reference
+service (`azazel-mio-referenced.service`, verb `mio.reference`) for a deterministic
+playbook reference. That service is separate from the model host
+`azazel-mio-locald.service`: it runs no model, holds no model path, imports no
+runtime, admission, embedding or Knowledge code, and needs no
+`local_model_provider` wiring, so a CORE node with no admitted model can still
+serve verified playbook text. The model host's wiring gate and admission are
+unchanged; the reference service neither needs nor satisfies them.
 
-The reference exchange has its own fixed 500 ms ceiling, independent of routing
-and model admission. It uses keyword matching only: no embedding, explanation,
-Knowledge lookup or model startup. Locald's SERVICE policy admits only
-`azmioentry` to this verb. Entry and its socket client independently validate the
-reference schema, keyword provenance and trusted explanation source. Absent,
-slow, refused or malformed locald replies leave the handoff intact, omit
-`reference` and set `reference_status: unavailable`; the reply's routing reason
-is kept. Route, outcome
-and route-ledger decision bytes do not depend on reference availability. The
-insufficient-information gate retains its fixed response; out-of-scope frames
-receive no reference. No reference grants Edge authority or provider admission.
+Every handoff reply to `mio.advise` carries a `handoff` object with a fixed
+`kind`, a fixed `notice` (English or Japanese, by the question's language) that
+states that no AI answered and that Edge's deterministic control plane keeps
+decision and enforcement authority, `ai_attempts` (0–2) and the bounded
+`failures` of those attempts. Then exactly one of:
+
+- `reference_status: attached` and `reference` (`kind:
+  deterministic_reference`): `banner`, trusted `fields` and machine metadata from
+  verified playbooks. It is never attached as `advice` or counted as an advisory
+  answer. Keyword banners identify deterministic matching and contain no model
+  wording; unreviewed playbooks retain the template notice.
+- `reference_status: unavailable` and `reference_reason` (`kind:
+  deterministic_notice`): a fixed word for why there is no reference — the
+  playbook selection's reason (`no_pack`, `store_unreadable`, `pack_degraded`,
+  `asset_missing`, `digest_mismatch`, `invalid_library`, `none_selected`,
+  `multiple_baselines`), the request's (`out_of_scope`, `insufficient_information`,
+  `no_matching_playbook`, `malformed_frame`, `invalid_deadline`, `deadline`), or
+  the exchange's (`reference_service_unavailable`, `reference_refused`).
+
+The reference exchange takes what is left of the request's one deadline, capped
+at 500 ms; it is not started with no time left, and a document that arrives at or
+after the deadline is discarded. It uses keyword matching only: no embedding,
+explanation, Knowledge lookup or model startup. The reference service's SERVICE
+policy admits only `azmioentry`. Entry and its socket client independently
+validate the reference schema, keyword provenance and trusted explanation source.
+Absent, slow, refused or malformed reference replies leave the handoff intact and
+name their reason; the reply's routing reason is kept. Route and outcome do not
+depend on reference availability. The insufficient-information gate retains its
+fixed response. No reference grants Edge authority or provider admission.
+
+Evidence: `tests/unit/test_mio_reference.py` (in-process, mocks),
+`tests/unit/test_mio_reference_socket.py` (real daemons over real `SO_PEERCRED`
+sockets with a test-signed, activated Mission Pack, plus the activation library's
+grant decision with nothing wired), `tests/unit/test_mio_router_deadline.py`
+(injected monotonic clock). None of it is systemd, hardware or HG-05 evidence.
 
 No operator-facing client for `mio.advise` ships yet: the verb is reachable over
 the entry socket with the runtime's length-prefixed protocol. An operator Unix

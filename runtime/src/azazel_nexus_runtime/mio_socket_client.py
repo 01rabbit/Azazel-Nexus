@@ -114,22 +114,6 @@ class LocalSocketClient:
     def observe(self) -> str:
         return _probe("mio")
 
-    def reference(self, frame: dict, *, deadline_ms: int) -> dict | None:
-        began = time.monotonic()
-        try:
-            reply = _exchange(
-                "mio", "azmio", "mio.local.reference", {"deadline_ms": deadline_ms},
-                payload=frame, deadline_s=deadline_ms / 1000,
-            )
-            if set(reply) != {"outcome", "reference"} or reply["outcome"] != "reference":
-                return None
-            document = read_reference(reply["reference"])
-            if time.monotonic() - began >= deadline_ms / 1000:
-                return None
-            return document
-        except Exception:  # noqa: BLE001 - optional reference; any reply defect means none
-            return None
-
     def handle(self, request, *, audit=None) -> dict:
         if getattr(getattr(request, "verb", None), "name", None) != "mio.local.infer":
             return {"readiness": "refused", "reason": self.observe()}
@@ -156,6 +140,46 @@ class LocalSocketClient:
             return {"outcome": "timed_out", "refusal": "deadline"}
         except (OSError, KeyError, ValueError, SocketMisconfigured):
             return {"outcome": "failed", "refusal": "local_unavailable"}
+
+
+class ReferenceSocketClient:
+    """The model-free reference service (`mio_referenced`); never a model verb.
+
+    Returns `(document, None)` or `(None, reason)`, where `reason` is a fixed
+    word. The deadline is the caller's remaining share of the request's one
+    deadline, measured on the same monotonic clock; a document that arrives
+    at or after it is discarded, never attached late.
+    """
+
+    def __init__(self, *, clock=time.monotonic) -> None:
+        self._clock = clock
+
+    def reference(self, frame: dict, *, deadline_at: float) -> tuple[dict | None, str | None]:
+        from .mio_referenced import ACCOUNT, REFERENCE_DEADLINE_MS, REFERENCE_REASONS
+
+        remaining_ms = min(REFERENCE_DEADLINE_MS, int((deadline_at - self._clock()) * 1000))
+        if remaining_ms <= 0:
+            return None, "deadline"
+        try:
+            reply = _exchange(
+                "mio-reference", ACCOUNT, "mio.reference", {"deadline_ms": remaining_ms},
+                payload=frame, deadline_s=remaining_ms / 1000,
+            )
+        except ServiceRefused:
+            return None, "reference_refused"
+        except Exception:  # noqa: BLE001 - optional reference; never the request's failure
+            return None, "reference_service_unavailable"
+        if self._clock() >= deadline_at:
+            return None, "deadline"
+        if (set(reply) == {"outcome", "reason"} and reply["outcome"] == "unavailable"
+                and reply["reason"] in REFERENCE_REASONS):
+            return None, reply["reason"]
+        if set(reply) != {"outcome", "reference"} or reply["outcome"] != "reference":
+            return None, "reference_refused"
+        try:
+            return read_reference(reply["reference"]), None
+        except Exception:  # noqa: BLE001 - a malformed reference is no reference
+            return None, "reference_refused"
 
 
 class RemoteSocketClient:

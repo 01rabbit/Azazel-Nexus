@@ -837,7 +837,7 @@ def test_raising_the_high_water_is_recorded_as_a_floor_event(world):
 def test_the_pass_scope_and_tripwire_share_one_unit_set():
     from azazel_nexus_runtime.activation_markers import GRANTABLE_UNITS
     assert activation_pass.UNIT_SCOPE is GRANTABLE_UNITS
-    assert GRANTABLE_UNITS == frozenset(EDGE_SCOPE + DECOY_UNITS)
+    assert GRANTABLE_UNITS == frozenset(EDGE_SCOPE + DECOY_UNITS) | {"azazel-mio-referenced.service"}
     assert not hasattr(activation_pass, "P4_UNIT_SCOPE")
     import ast
     source = Path(activated.__file__).read_text()

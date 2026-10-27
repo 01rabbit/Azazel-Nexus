@@ -376,6 +376,19 @@ CORE_UNITS = (
         "M.I.O. routing and handoff ledger; no provider or wiring requirement",
     ),
     UnitDefinition(
+        "azazel-mio-referenced.service",
+        # SUPPORTING with no wiring: it runs no model, so there is no model
+        # capability for it to need. It reads verified playbooks and answers
+        # the entry service's reference verb, so the deterministic handoff
+        # can show reviewed playbook text on a node with no admitted model.
+        # It is not the model host and does not stand in for one: the
+        # `local_model_provider` gate on azazel-mio-locald is unchanged.
+        UnitTier.SUPPORTING,
+        "azmioref",
+        "model-free playbook reference for the deterministic handoff; "
+        "runs no model and decides nothing",
+    ),
+    UnitDefinition(
         "azazel-knowledge-lited.service",
         UnitTier.SUPPORTING,
         "azknowledge",

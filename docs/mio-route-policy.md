@@ -235,6 +235,16 @@ remaining permitted candidate.
 | **one** fallback per request | a second failure is not a third chance; it is evidence |
 | a second failure falls to the deterministic handoff | the floor of the ladder, which is never removed |
 
+Implementation status (2026-10-28, software evidence only): the runtime router
+(`runtime/src/azazel_nexus_runtime/mio_router.py`) makes at most two AI attempts,
+measures one deadline per request on the monotonic clock, gives each attempt only
+what is left of it, starts no attempt without room for one, discards a reply that
+arrives after the deadline, and ends every unanswered request — including a
+second failure — in the deterministic handoff, which calls no AI. See
+[M.I.O. runtime](mio-runtime.md) §9 and `tests/unit/test_mio_router_deadline.py`.
+Before this, the router ended a second failure as `refused` on the failed AI
+route without reaching the handoff.
+
 The existing invariant — *a fallback never escalates* — is re-expressed as
 **a fallback never leaves the permitted set**. That is the stronger statement,
 because the permitted set is computed from policy rather than from an ordering.

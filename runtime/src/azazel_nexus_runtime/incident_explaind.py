@@ -26,7 +26,8 @@ from azazel_nexus.store_dirs import fsync_directory, store_directory
 
 from .edge_intaked import DailySegments, EvidenceStore, SegmentFull
 from .knowledge_client import lookup_context
-from .mio_locald import REFERENCE_DEADLINE_MS, KNOWLEDGE_MAX_S
+from .mio_locald import KNOWLEDGE_MAX_S
+from .mio_referenced import REFERENCE_DEADLINE_MS
 from .mio_socket_client import ServiceRefused, _exchange
 
 POLL_SECONDS = 1
@@ -481,6 +482,10 @@ class Explainer:
                 self.mio_available = True
                 if mio["reason"] in {"mio_gated", "mio_handoff", "mio_local_non_advisory"}:
                     codes.append(mio["reason"])
+                elif mio["reason"].startswith("mio_handoff:"):
+                    # A handoff whose reference is missing keeps the reason
+                    # in the record; the failure code stays the fixed word.
+                    codes.append("mio_handoff")
             except Exception:  # noqa: BLE001 - refuse entire reply
                 codes.append("mio_reply_refused")
                 mio["reason"] = "mio_reply_refused"

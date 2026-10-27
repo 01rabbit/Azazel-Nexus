@@ -59,7 +59,11 @@ def test_canonical_policy_decodes_with_digest_over_exact_bytes():
 
 
 def test_allowlist_is_code_fixed_to_the_loop_units():
-    assert ACTIVATION_UNIT_ALLOWLIST == tuple(sorted(SUPPORTING + ["azazel-edge-core.service"]))
+    # The model-free reference service (proposed 2026-10-28, §6.2) is the one
+    # addition: it runs no model, so it is none of the excluded hosts.
+    assert ACTIVATION_UNIT_ALLOWLIST == tuple(sorted(
+        SUPPORTING + ["azazel-edge-core.service", "azazel-mio-referenced.service"]))
+    assert "azazel-mio-locald.service" not in ACTIVATION_UNIT_ALLOWLIST
     # #196 P1: the Deception Lite exposure units are grantable for the #253
     # checks but no policy may name them, so no lease ever holds one.
     from azazel_nexus.activation import DECEPTION_EXPOSURE_UNITS

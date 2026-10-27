@@ -24,6 +24,21 @@ through current state, next commands and reasons. Issues #93 and #5 remain open
 for the remaining flow/lifecycle evidence; see [M.I.O. runtime](mio-runtime.md)
 and [Knowledge Lite consumer](knowledge-lite-consumer.md).
 
+## CORE offline fallback (2026-10-28)
+
+Implemented, with software evidence only (mocks, real in-process daemons over
+real sockets, and a container rehearsal; no hardware, HG-05 or service-objective
+evidence):
+
+| Item | State | Evidence |
+| --- | --- | --- |
+| Playbook reference without an admitted model | implemented: model-free `azazel-mio-referenced.service` (`mio_referenced.py`, verb `mio.reference`); locald no longer serves references and its wiring and admission are unchanged | `tests/unit/test_mio_reference.py`, `tests/unit/test_mio_reference_socket.py` |
+| Fixed notice and missing reason when no playbook is usable | implemented: `handoff.kind`, `handoff.notice`, `reference_reason` | same |
+| One deadline per request | implemented: entry measures it once; route, fallback, reply validation and reference share it | `tests/unit/test_mio_router_deadline.py` |
+| Deterministic terminal step after AI failure | implemented: at most two AI attempts, then `mio.route.handoff` with causes and failures; no AI is called after it | same |
+| Loop scope including the reference unit | proposed, pending owner ratification ([§6](activation-observe-baseline.md#6-owner-decisions)) | `tests/unit/test_activation_policy.py` |
+| Installed systemd lifecycle on target hardware | not established | — |
+
 ## Current selected-bootstrap gate snapshot (2026-10-15)
 
 The adopted two-helper implementation is not operationally complete. The actual
