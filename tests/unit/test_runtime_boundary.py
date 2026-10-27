@@ -1180,10 +1180,13 @@ EXPECTED_SCRIPTS = (
 # az-activation publishes the observe-baseline generation, prints an unsigned
 # approval request and installs a signed one (#206 P3); it grants nothing and
 # az-activated does not import it.
+# az-nexus-noc prints a read-only, passive network observation for an
+# operator (docs/noc-observation.md); it opens only an AF_NETLINK socket and
+# no node runs it by itself.
 OPERATOR_TOOLS = (
     "az-core-reserve-probe", "az-nexus-commission", "az-nexus-bootstrap",
     "az-hil-readiness", "az-hil-capture", "az-nexus-model-admission",
-    "az-activation",
+    "az-activation", "az-nexus-noc",
 )
 
 

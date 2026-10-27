@@ -136,6 +136,7 @@ This division is intentional. It keeps the authority to change the field boundar
 - [User-prepared Debian Live install notes](docs/debian-live-install.md) — current package/entrypoint prerequisites, host paths, persistence considerations, and the unverified service-composition limit.
 - [HIL preflight](docs/hil-preflight.md) — one command on the target that answers whether the 8 GiB campaign may begin, and what it refuses to print.
 - [Inventory confidentiality](docs/inventory-confidentiality.md) — what is collected, where it is kept, and what may leave.
+- [Read-only NOC observation](docs/noc-observation.md) — `az-nexus-noc`: uplink, DNS, DHCP, routes, interfaces and counters with their evidence; passive, netlink and files only.
 - [Runtime boundary](docs/runtime-boundary.md) · [Operational design](docs/operations.md) · [Recovery](docs/recovery.md).
 
 **Cognition**

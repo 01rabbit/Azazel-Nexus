@@ -53,6 +53,7 @@ az-core-reserve-probe = "azazel_nexus_runtime.core_reserve_probe:main"
 
 az-hil-readiness = "azazel_nexus_runtime.hil_readiness:main"
 az-hil-capture = "azazel_nexus_runtime.hil_capture:main"
+az-nexus-noc = "azazel_nexus_runtime.noc_observe:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
