@@ -1,0 +1,123 @@
+{
+  "schema": "azazel-nexus/prototype-offline-install-evidence/v1",
+  "date": "2026-10-28",
+  "scope": "Container rehearsal only: Debian 13 (debian:trixie) linux/amd64 containers under Rosetta emulation on an aarch64 colima VM. Not hardware, not native x86_64, not production activation or admission.",
+  "source": {
+    "commit": "1cba518d7320a28c7ebe8c913dd56bc784ed70ff",
+    "worktree": "clean",
+    "selected_inputs_sha256": "f1fe18444b50075e5cd54a220dc1fff71a9ddb0224927fa270dfbc4e13a64a92"
+  },
+  "build_container": {
+    "network": "online",
+    "image": "debian:trixie (linux/amd64, Rosetta)",
+    "python": "Debian python3 3.13.5",
+    "machine": "x86_64",
+    "backend": {
+      "setuptools": "84.0.0",
+      "pinned_by": "packaging/offline/build-backend.lock (sha256)"
+    },
+    "pip": "25.1.1 (Debian ensurepip; not pinned)",
+    "reproducibility": "not measured",
+    "wheels": {
+      "azazel_nexus-0.0.1.dev0-py3-none-any.whl": {
+        "sha256": "da7da5f2697c97554b42ce353362af86b60ef1e9df5835f189c4f718be7a95cc",
+        "source": "built:1cba518d7320a28c7ebe8c913dd56bc784ed70ff"
+      },
+      "azazel_nexus_runtime-0.0.1.dev0-cp313-cp313-linux_x86_64.whl": {
+        "sha256": "5a4de8cc29493dd227a7d3838d212c6df22a1a2537805511832b10e5da801ff9",
+        "source": "built:1cba518d7320a28c7ebe8c913dd56bc784ed70ff"
+      },
+      "dbus_next-0.2.3-py3-none-any.whl": {
+        "sha256": "58948f9aff9db08316734c0be2a120f6dc502124d9642f55e90ac82ffb16a18b",
+        "source": "pypi:dbus-next==0.2.3"
+      },
+      "pyyaml-6.0.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl": {
+        "sha256": "0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6",
+        "source": "pypi:pyyaml==6.0.3"
+      }
+    },
+    "edge_package": {
+      "producer": "Azazel-Edge ae9557d15e5e8347609e2fe2251b03c0a48a86b6 packaging/nexus-core/nexus_core_package.py, cargo build in the same container",
+      "contract_diff_against_vendored_copy": "identical (pin.json, manifest-schema.json, health-schema.json)",
+      "files": {
+        "edge/azazel-edge-core-0.1.0-x86_64.manifest.json": "d8737679bd27609d63d4ed019564fcaa6ad8606cc0fe3fc3a20d115ad632df99",
+        "edge/azazel-edge-core-0.1.0-x86_64.tar.gz": "ff4d6bb433dd3b57e933c17da13010b9d0f0728edc5bd0c6b569b82fff4e30ff"
+      }
+    },
+    "deb_parser_check_not_carried": [
+      {
+        "file": "iproute2_6.15.0-1_amd64.deb",
+        "package": "iproute2",
+        "version": "6.15.0-1",
+        "architecture": "amd64"
+      },
+      {
+        "file": "suricata_1%3a7.0.10-1+deb13u4_amd64.deb",
+        "package": "suricata",
+        "version": "1:7.0.10-1+deb13u4",
+        "architecture": "amd64"
+      }
+    ],
+    "bundle": {
+      "sha256": "65e2dbe1dd6b449c04a7c066c29339af9baf0fdbc481c917bbdf387f99ba4b18",
+      "manifest_sha256": "1b7507dcc819045d9fe68e2fc0964216712f6503289abf4c351c1d59ab480417",
+      "totals": {
+        "bytes": 6417311,
+        "count": 313
+      },
+      "slots": {
+        "deb": "empty",
+        "edge-package": "filled",
+        "knowledge": "empty",
+        "model": "empty"
+      }
+    }
+  },
+  "offline_container": {
+    "network": "--network none (only lo; outbound TCP connect failed)",
+    "image": "debian:trixie + python3 python3-venv only (built online beforehand; no compiler, no Nexus files)",
+    "verifier": "tools/offline_bundle.py from the reviewed checkout mounted read-only",
+    "tampered_copy": "refused (one byte flipped; wheel sha256 mismatch); destination not created",
+    "bundle_authenticated": false,
+    "install": {
+      "pip": "--no-index --find-links --require-hashes --only-binary=:all:",
+      "pip_check": "pass",
+      "imports": "pass (incl. native _bootstrap_deadline cpython-313-x86_64-linux-gnu.so)"
+    },
+    "edge_slot": {
+      "digest_matches": "passed",
+      "health_endpoint_healthy": "not-checked",
+      "package_present": "passed",
+      "running": "not-checked",
+      "version_matches": "passed"
+    },
+    "edge_slot_admitted": false,
+    "installer": {
+      "command": "env PYTHON=/opt/azazel-nexus/venv/bin/python sh packaging/install.sh --without-service-manager (from the extracted bundle, as root)",
+      "exit": 0,
+      "wrappers_staged": 15,
+      "accounts_created": 13,
+      "service_manager_stage": "not executed (no systemd in container)"
+    },
+    "cli_smoke": {
+      "azazel-nexus --help": "ok",
+      "azazel-nexus setup --next --json": "exit 0"
+    },
+    "e2e_harness": {
+      "command": "tools/e2e.py from the reviewed checkout, PYTHONPATH=src:runtime/src as in CI integration-as-root, interpreter = offline venv",
+      "passed": 15,
+      "not_executed": 4,
+      "failed": 3,
+      "failures": "Knowledge Lite offline import, Core reserve input path, Integration broker: ModuleNotFoundError nacl. PyNaCl is a dev extra used by the harness fixtures and is deliberately not in the runtime wheelhouse; dependent stages not executed",
+      "not_executed_other": "units masked and disabled (no systemd)"
+    }
+  },
+  "limitations": [
+    "Rosetta emulation; x86_64 hardware install not performed",
+    "Bundle unsigned and unencrypted; bundle_authenticated false; hashes are integrity, not authenticity",
+    "Target Python interpreter and python3-venv were provisioned into the offline image online beforehand",
+    "No .deb set carried; the deb parser was only exercised on two packages downloaded from the live trixie mirror (not snapshot-pinned)",
+    "Edge package built in a container from a fixed Edge commit; unsigned, health and running not checked, not admitted",
+    "systemd stage, activation and services not exercised"
+  ]
+}
