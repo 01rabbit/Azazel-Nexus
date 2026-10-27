@@ -1,0 +1,178 @@
+{
+  "schema": "azazel-nexus/prototype-offline-install-evidence/v1",
+  "date": "2026-10-28",
+  "covers_commit": "5c84a13ef02af5da760c6e9f3f9d333fdabfb78a",
+  "supersedes": "earlier records of this file for 1cba518d7320, 59458cea8b2d and a84e09cda3fe",
+  "scope": "Container rehearsal only: Debian 13 (debian:trixie) linux/amd64 containers under Rosetta emulation on an aarch64 colima VM. Not hardware, not native x86_64, not production activation or admission.",
+  "source": {
+    "commit": "5c84a13ef02af5da760c6e9f3f9d333fdabfb78a",
+    "worktree": "clean",
+    "selected_inputs_sha256": "12c93294704cf7ae0e8069d72b556ae18304106fd29b6e21ff256c89bc617403"
+  },
+  "build_container": {
+    "network": "online (per-container DNS resolver; VM configuration unchanged)",
+    "image": "debian:trixie (linux/amd64, Rosetta)",
+    "python": "Debian python3 3.13.5",
+    "machine": "x86_64",
+    "backend": {
+      "setuptools": "84.0.0",
+      "pinned_by": "packaging/offline/build-backend.lock (sha256)"
+    },
+    "pip": "25.1.1 (Debian ensurepip; not pinned)",
+    "reproducibility": "not measured",
+    "wheels": {
+      "azazel_nexus-0.0.1.dev0-py3-none-any.whl": {
+        "sha256": "da7da5f2697c97554b42ce353362af86b60ef1e9df5835f189c4f718be7a95cc",
+        "source": "built:5c84a13ef02af5da760c6e9f3f9d333fdabfb78a"
+      },
+      "azazel_nexus_runtime-0.0.1.dev0-cp313-cp313-linux_x86_64.whl": {
+        "sha256": "8251082349f8ca49d8b87352dd7f04b916247a5b5ba52590bdddb1b177af030a",
+        "source": "built:5c84a13ef02af5da760c6e9f3f9d333fdabfb78a"
+      },
+      "dbus_next-0.2.3-py3-none-any.whl": {
+        "sha256": "58948f9aff9db08316734c0be2a120f6dc502124d9642f55e90ac82ffb16a18b",
+        "source": "pypi:dbus-next==0.2.3"
+      },
+      "pyyaml-6.0.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl": {
+        "sha256": "0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6",
+        "source": "pypi:pyyaml==6.0.3"
+      }
+    },
+    "edge_package": {
+      "producer": "Azazel-Edge ae9557d15e5e8347609e2fe2251b03c0a48a86b6 packaging/nexus-core/nexus_core_package.py, cargo build in the same container",
+      "contract_diff_against_vendored_copy": "identical (pin.json, manifest-schema.json, health-schema.json)",
+      "files": {
+        "edge/azazel-edge-core-0.1.0-x86_64.manifest.json": "d8737679bd27609d63d4ed019564fcaa6ad8606cc0fe3fc3a20d115ad632df99",
+        "edge/azazel-edge-core-0.1.0-x86_64.tar.gz": "ff4d6bb433dd3b57e933c17da13010b9d0f0728edc5bd0c6b569b82fff4e30ff"
+      },
+      "rehearsal_pin": "packaging/offline/edge-artifact.sha256 written from the container-built artifact into the container's copies of the checkout only (git-excluded in the build clone, a copied checkout in the offline container). It stands in for an owner-reviewed pin, which this repository does not ship; it is not one"
+    },
+    "deb_parser_check_not_carried": [
+      {
+        "file": "iproute2_6.15.0-1_amd64.deb",
+        "package": "iproute2",
+        "version": "6.15.0-1",
+        "architecture": "amd64"
+      },
+      {
+        "file": "suricata_1%3a7.0.10-1+deb13u4_amd64.deb",
+        "package": "suricata",
+        "version": "1:7.0.10-1+deb13u4",
+        "architecture": "amd64"
+      }
+    ],
+    "bundle": {
+      "format": "POSIX ustar (first header magic 'ustar\\0' '00', typeflag '0')",
+      "sha256": "6db7b553422e643216d6eceec3cb444ccd920635e659eec82810ebed2632e927",
+      "manifest_sha256": "a705c28b4b4aa80dbcf17e2762a48fdbeea4338965a180d836e5d35d60da1bba",
+      "totals": {
+        "bytes": 6450314,
+        "count": 313
+      },
+      "slots": {
+        "deb": "empty",
+        "edge-package": "filled",
+        "knowledge": "empty",
+        "model": "empty"
+      }
+    },
+    "harness_only_wheels": {
+      "purpose": "PyNaCl for the e2e harness fixtures only. Not in the bundle, not in the production wheelhouse or lock; downloaded unpinned (pynacl==1.6.2 by version only)",
+      "files": {
+        "cffi-2.1.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl": "a931079504ecc49efed7744c476a5c343a92fabf66dec2db95edb1b2fdc770e2",
+        "pycparser-3.12-py3-none-any.whl": "a076f3f489b39b43ed13563a1dafe42447445bec2e294154ec5c57fcdda4c85e",
+        "pynacl-1.6.2-cp38-abi3-manylinux_2_34_x86_64.whl": "c8a231e36ec2cab018c4ad4358c386e36eede0319a0c41fed24f840b1dac59f6"
+      }
+    },
+    "deb_parser_note": "control archives of real Debian 13 packages walked by the new ustar/GNU-magic scanner",
+    "nested_archive_magic": {
+      "edge_artifact": "POSIX ustar (ustar\\0 00)",
+      "debian_control_archives": "GNU magic (ustar  \\0) with an empty extension area, for iproute2 and suricata from Debian 13; accepted by the nested parser only with that area empty"
+    }
+  },
+  "offline_container": {
+    "network": "--network none (only lo; outbound TCP connect failed)",
+    "image": "debian:trixie + python3 python3-venv only (prepared online beforehand, committed to a temporary image and removed afterwards; no compiler, no Nexus files)",
+    "verifier": "tools/offline_bundle.py from a copy of the reviewed checkout (mounted read-only, copied) carrying the rehearsal Edge pin",
+    "tampered_copy": "refused (one byte flipped near the end; gzip CRC check failed in the streamed reader); destination not created, no staging left",
+    "bundle_authenticated": false,
+    "wheel_lock_check": [
+      {
+        "pinned_by": "reviewed pyproject version only",
+        "requirement": "azazel-nexus==0.0.1.dev0"
+      },
+      {
+        "pinned_by": "reviewed pyproject version only",
+        "requirement": "azazel-nexus-runtime==0.0.1.dev0"
+      },
+      {
+        "pinned_by": "packaging/offline/requirements-x86_64-cp313.lock",
+        "requirement": "dbus-next==0.2.3"
+      },
+      {
+        "pinned_by": "packaging/offline/requirements-x86_64-cp313.lock",
+        "requirement": "pyyaml==6.0.3"
+      }
+    ],
+    "install": {
+      "pip": "--no-index --find-links --require-hashes --only-binary=:all:",
+      "pip_check": "pass",
+      "imports": "pass (incl. native _bootstrap_deadline cpython-313-x86_64-linux-gnu.so)"
+    },
+    "edge_slot": {
+      "digest_matches": "passed",
+      "health_endpoint_healthy": "not-checked",
+      "package_present": "passed",
+      "running": "not-checked",
+      "version_matches": "passed"
+    },
+    "edge_slot_admitted": false,
+    "installer": {
+      "command": "/bin/sh <tree>/source/packaging/install.sh --without-service-manager, run by install --run-installer as root with PYTHON=<root-owned venv>",
+      "exit": 0,
+      "wrappers_staged": 15,
+      "accounts_created": 13,
+      "service_manager_stage": "not executed (no systemd in container)"
+    },
+    "cli_smoke": {
+      "azazel-nexus --help": "ok",
+      "azazel-nexus setup --next --json": "exit 0"
+    },
+    "e2e_harness_production_venv": {
+      "command": "tools/e2e.py from the reviewed checkout, PYTHONPATH=src:runtime/src as in CI integration-as-root, interpreter = offline venv",
+      "passed": 15,
+      "not_executed": 4,
+      "failed": 3,
+      "failures": "Knowledge Lite offline import, Core reserve input path, Integration broker: ModuleNotFoundError nacl (PyNaCl is a dev extra used by the harness fixtures, deliberately not in the runtime wheelhouse); 3 dependent stages not executed; units masked and disabled not executed (no systemd)"
+    },
+    "e2e_harness_with_harness_only_pynacl": {
+      "command": "same, plus PYTHONPATH entry /opt/harness-site populated by pip install --no-index --target from the harness-only wheels; the production venv was left without PyNaCl",
+      "passed": 21,
+      "not_executed": 1,
+      "failed": 0,
+      "note": "run after the first harness run in the same container",
+      "not_executed_stage": "units masked and disabled (no systemd)"
+    },
+    "sequence": "install as root with --run-installer --installer-option=--without-service-manager: extract -> lock check -> Edge artifact hashed against the reviewed pin before any tar parsing -> slots -> venv directory created 0700 exclusively -> root-owned venv -> pip --no-index --require-hashes -> pip check/imports -> recheck against the extraction's manifest_sha256 -> venv ownership -> venv opened to 0755 -> install.sh",
+    "own_wheels": "azazel-nexus and azazel-nexus-runtime are pinned by version only (exact string match against the reviewed pyproject files); their content is built per bundle and is unauthenticated until bundle signing exists",
+    "recheck_before_install_sh": {
+      "result": "pass",
+      "files": 313,
+      "bundle_authenticated": false
+    },
+    "without_edge_pin": "the unmodified checkout refused the bundle: the Edge slot is refused before parsing when no reviewed pin exists; nothing was left behind",
+    "venv_mode_after_install": "0755 root",
+    "recheck_after_install_sh": "not re-run in this record; on a84e09c it was refused as designed because install.sh byte-compiles Python inside the tree (recheck is a pre-install gate)",
+    "what_recheck_does_not_do": "recheck is TOCTOU protection only; until bundle signing exists the root install executes bundle-supplied code (the Nexus wheels, pinned by version only, and install.sh)"
+  },
+  "limitations": [
+    "Rosetta emulation; x86_64 hardware install not performed",
+    "Bundle unsigned and unencrypted; bundle_authenticated false; hashes are integrity, not authenticity",
+    "Own Nexus wheels are checked only by version against the reviewed pyproject; their content is covered only by a future bundle signature",
+    "Target Python interpreter and python3-venv were provisioned into the offline image online beforehand",
+    "No .deb set carried; the deb parser was only exercised on two packages downloaded from the live trixie mirror (not snapshot-pinned)",
+    "Harness-only PyNaCl wheels are not hash-pinned and are not part of the product path",
+    "systemd stage, activation and services not exercised",
+    "Edge package built in a container from a fixed Edge commit and pinned by a rehearsal-only pin; unsigned, health and running not checked, not admitted"
+  ]
+}

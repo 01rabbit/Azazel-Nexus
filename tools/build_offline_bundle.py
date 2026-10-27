@@ -1,8 +1,17 @@
-"""Build a deterministic, source-only Azazel-Nexus offline bundle.
+"""Build Azazel-Nexus offline bundles.
 
-The bundle contains the library and runtime Python sources, their packaging
-metadata, and the installer/systemd packaging contract.  It is intentionally
-not a wheel builder and does not include tests or generated build output.
+Two outputs, both deterministic for the same inputs and both unsigned:
+
+* the **source bundle** (``--output`` alone): the library and runtime Python
+  sources, their packaging metadata, and the installer/systemd packaging
+  contract, with a JSON sidecar. It is not a wheel builder and does not
+  include tests or generated build output.
+* the **install bundle** (``--output --wheelhouse``): one ``.tar.gz`` whose
+  first member is ``MANIFEST.json`` (``tools/offline_bundle.py``), carrying
+  the same source files, the hash-pinned wheelhouse from
+  ``tools/build_wheelhouse.py``, and the optional Edge package, Debian
+  package, model and Knowledge slots. Every member is listed with its sha256,
+  size, kind and source; ``tools/offline_bundle.py`` refuses anything else.
 """
 
 from __future__ import annotations
@@ -18,7 +27,12 @@ import subprocess
 import tarfile
 import tempfile
 from pathlib import Path, PurePosixPath
-from typing import Iterable
+from typing import Iterable, Optional, Sequence
+
+try:  # imported as tools.build_offline_bundle by the tests, run as a script otherwise
+    from tools import offline_bundle
+except ImportError:  # pragma: no cover - script execution
+    import offline_bundle  # type: ignore[no-redef]
 
 
 SCHEMA = "azazel-nexus-offline-source-bundle@1"
@@ -104,6 +118,9 @@ def _inputs(root: Path) -> list[tuple[Path, str]]:
             root / "tools" / "record_apparmor_compiled.py",
             "tools/record_apparmor_compiled.py",
         ),
+        # The offline bundle verifier/installer, so an extracted tree can show
+        # what it was checked with. Run the reviewed checkout's copy, not this.
+        (root / "tools" / "offline_bundle.py", "tools/offline_bundle.py"),
     )
     for source, archive_name in fixed:
         _regular_file(source)
@@ -233,14 +250,203 @@ def build_bundle(root: Path, output: Path) -> dict[str, object]:
     return document
 
 
+
+def _hash_file(path: Path) -> tuple[str, int]:
+    _regular_file(path)
+    digest = hashlib.sha256()
+    size = 0
+    with open(path, "rb") as stream:
+        while chunk := stream.read(1 << 20):
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
+
+
+def _entry(source: Path, path: str, kind: str, origin: str, *, mode: str = "0644",
+           **extra: str) -> tuple[dict[str, object], Path]:
+    digest, size = _hash_file(source)
+    entry: dict[str, object] = {
+        "path": path, "kind": kind, "sha256": digest, "size": size, "mode": mode,
+        "source": origin, **extra,
+    }
+    return entry, source
+
+
+def _slot_files(directory: Path, *, suffix: Optional[str] = None) -> list[Path]:
+    if not directory.is_dir() or directory.is_symlink():
+        raise ValueError(f"{directory} is not a directory")
+    files = []
+    for path in sorted(directory.iterdir(), key=lambda p: p.name):
+        _regular_file(path)
+        if suffix is not None and not path.name.endswith(suffix):
+            raise ValueError(f"{path.name} in {directory} is not a {suffix} file")
+        files.append(path)
+    return files
+
+
+class _HashingReader(io.RawIOBase):
+    """Re-hash a file while it is archived, so a change after hashing is caught."""
+
+    def __init__(self, stream) -> None:
+        self._stream = stream
+        self.digest = hashlib.sha256()
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._stream.read(size)
+        self.digest.update(data)
+        return data
+
+
+def build_install_bundle(
+    root: Path,
+    output: Path,
+    *,
+    wheelhouse: Path,
+    edge_package: Optional[Path] = None,
+    edge_source: Optional[str] = None,
+    debs: Optional[Path] = None,
+    deb_source: Optional[str] = None,
+    models: Sequence[Path] = (),
+    knowledge: Sequence[Path] = (),
+    assets_source: Optional[str] = None,
+) -> dict[str, object]:
+    """Write the single-file offline install bundle and return its manifest."""
+
+    try:
+        from tools.build_wheelhouse import TARGET, load_wheelhouse
+    except ImportError:  # pragma: no cover - script execution
+        from build_wheelhouse import TARGET, load_wheelhouse  # type: ignore[no-redef]
+
+    root = root.resolve(strict=True)
+    output = output.absolute()
+    identity = repository_identity(root)
+    origin = f"git:{identity['commit']} worktree:{identity['worktree_state']}"
+    entries: list[tuple[dict[str, object], Path]] = []
+    for source, name in _inputs(root):
+        mode = "0755" if _regular_file(source).st_mode & 0o111 else "0644"
+        entries.append(_entry(source, "source/" + name, "source", origin, mode=mode))
+
+    record = load_wheelhouse(wheelhouse)
+    if record["repository_identity"]["commit"] != identity["commit"]:
+        raise ValueError("the wheelhouse was built from a different commit than this source")
+    for wheel in record["wheels"]:
+        entry, path = _entry(wheelhouse / wheel["file"], "wheels/" + wheel["file"], "wheel",
+                             wheel["source"], requirement=wheel["requirement"])
+        if entry["sha256"] != wheel["sha256"]:
+            raise ValueError(f"{wheel['file']} changed after wheelhouse.json was written")
+        entries.append((entry, path))
+
+    slots = {kind: "empty" for kind in offline_bundle.SLOT_KINDS}
+    if edge_package is not None:
+        if not edge_source:
+            raise ValueError("--edge-package needs --edge-source naming where it came from")
+        offline_bundle.verify_edge_slot(edge_package)
+        for path in _slot_files(edge_package):
+            entries.append(_entry(path, "edge/" + path.name, "edge-package", edge_source))
+        slots["edge-package"] = "filled"
+    if debs is not None:
+        if not deb_source:
+            raise ValueError("--deb needs --deb-source naming the pinned apt source")
+        for path in _slot_files(debs, suffix=".deb"):
+            fields = offline_bundle.deb_control_fields(path)
+            entries.append(_entry(path, "deb/" + path.name, "deb", deb_source, **fields))
+        slots["deb"] = "filled" if any(e["kind"] == "deb" for e, _ in entries) else "empty"
+    for kind, files in (("model", models), ("knowledge", knowledge)):
+        if files and not assets_source:
+            raise ValueError("model and Knowledge assets need --assets-source")
+        for path in files:
+            entries.append(_entry(path, offline_bundle.KIND_PREFIX[kind] + path.name, kind,
+                                  str(assets_source)))
+        if files:
+            slots[kind] = "filled"
+
+    entries.sort(key=lambda item: str(item[0]["path"]))
+    artifacts = [entry for entry, _ in entries]
+    document: dict[str, object] = {
+        "schema": offline_bundle.SCHEMA,
+        "target": TARGET,
+        "repository_identity": identity,
+        "slots": slots,
+        "artifacts": artifacts,
+        "totals": {"count": len(artifacts), "bytes": sum(int(e["size"]) for e in artifacts)},
+    }
+    offline_bundle.validate_manifest(document)
+    manifest = offline_bundle.manifest_bytes(document)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary_name: Optional[str] = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=output.parent, prefix=f".{output.name}.", delete=False) as raw:
+            temporary_name = raw.name
+            with gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=0, compresslevel=6) as compressed:
+                # Strict POSIX ustar: tools/offline_bundle.py refuses pax and GNU
+                # extensions, and tarfile raises ValueError for a path that does
+                # not fit the ustar name/prefix fields -- a build error.
+                with tarfile.open(fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+                    archive.addfile(_tar_info(offline_bundle.MANIFEST_NAME, len(manifest), 0o644),
+                                    io.BytesIO(manifest))
+                    for entry, path in entries:
+                        info = _tar_info(str(entry["path"]), int(entry["size"]), int(str(entry["mode"]), 8))
+                        with open(path, "rb") as stream:
+                            reader = _HashingReader(stream)
+                            archive.addfile(info, reader)
+                        if reader.digest.hexdigest() != entry["sha256"]:
+                            raise RuntimeError(f"{path} changed while the bundle was being built")
+            raw.flush()
+            os.fchmod(raw.fileno(), 0o644)
+            os.fsync(raw.fileno())
+        if repository_identity(root) != identity:
+            raise RuntimeError("source checkout changed while the bundle was being built")
+        os.replace(temporary_name, output)
+        temporary_name = None
+    finally:
+        if temporary_name is not None and os.path.exists(temporary_name):
+            os.unlink(temporary_name)
+    return document
+
+
+def _tar_info(name: str, size: int, mode: int) -> tarfile.TarInfo:
+    info = tarfile.TarInfo(PurePosixPath(name).as_posix())
+    info.size = size
+    info.mode = mode
+    info.uid = info.gid = 0
+    info.uname = info.gname = ""
+    info.mtime = 0
+    info.type = tarfile.REGTYPE
+    return info
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path, help="destination .tar.gz path")
+    parser.add_argument("--wheelhouse", type=Path,
+                        help="build the install bundle from this tools/build_wheelhouse.py output")
+    parser.add_argument("--edge-package", type=Path, help="directory holding the pinned Edge manifest and artifact")
+    parser.add_argument("--edge-source", help="where the Edge package came from")
+    parser.add_argument("--deb", type=Path, help="directory of .deb files to carry (not installed)")
+    parser.add_argument("--deb-source", help="the pinned apt source the .deb files came from")
+    parser.add_argument("--model", type=Path, action="append", default=[])
+    parser.add_argument("--knowledge", type=Path, action="append", default=[])
+    parser.add_argument("--assets-source", help="where the model/Knowledge files came from")
     args = parser.parse_args(argv)
     root = Path(__file__).resolve().parents[1]
+    slot_args = (args.edge_package, args.deb, args.model, args.knowledge)
     try:
-        document = build_bundle(root, args.output)
-    except (OSError, ValueError, tarfile.TarError) as error:
+        if args.wheelhouse is None:
+            if any(slot_args):
+                parser.error("slot options need --wheelhouse; the source bundle carries no slots")
+            document = build_bundle(root, args.output)
+        else:
+            document = build_install_bundle(
+                root, args.output, wheelhouse=args.wheelhouse,
+                edge_package=args.edge_package, edge_source=args.edge_source,
+                debs=args.deb, deb_source=args.deb_source,
+                models=args.model, knowledge=args.knowledge, assets_source=args.assets_source,
+            )
+    except (OSError, ValueError, RuntimeError, tarfile.TarError, offline_bundle.BundleRefused) as error:
         parser.error(str(error))
     print(json.dumps(document, sort_keys=True))
     return 0

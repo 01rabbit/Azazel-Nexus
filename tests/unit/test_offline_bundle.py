@@ -39,6 +39,7 @@ def _repo(root: Path) -> Path:
         "tools/install_llama_runtime.py": b"def install(): return 0\n",
         "tools/check_decoy_apparmor_wrappers.py": b"def findings(): return []\n",
         "tools/record_apparmor_compiled.py": b"def record(): return {}\n",
+        "tools/offline_bundle.py": b"def main(): return 0\n",
         "packaging/systemd/azazel-activated.service": b"[Service]\nExecStart=/bin/true\n",
         "packaging/apparmor/azazel-decoyd": b"profile azazel-decoyd {}\n",
         "src/azazel_nexus/tests/test_leak.py": b"must not ship\n",

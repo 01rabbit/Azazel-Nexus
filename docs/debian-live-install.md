@@ -424,8 +424,9 @@ The installer does **not** create the Python environment, install packages,
 download inputs, or configure Live persistence. Provision the venv separately
 with a Python 3.11+ interpreter and its venv/pip support, then install both
 verified distributions and their dependencies into it. On an offline target,
-carry the verified wheelhouse to the Live system and confirm imports before
-running the installer. For example, create the environment with
+carry the [offline install bundle](#offline-install-bundle) to the Live system;
+its installer creates the venv and confirms imports before you run this
+installer. For example, create the environment with
 `python3 -m venv /opt/azazel-nexus/venv` only if that interpreter's venv module
 is available; Debian Live images may differ in which Python support packages
 they include.
@@ -496,39 +497,198 @@ required runtime entrypoint is missing. `--without-service-manager` and
 their messages do not establish a complete installation and they are not
 substitutes for missing Debian Live prerequisites.
 
-The offline source bundle built by `tools/build_offline_bundle.py` contains
-both distributions' declared source, README/license build metadata, installer,
-and wrapper-staging tool. It is **not** a wheelhouse and does not contain built
-distributions or the setuptools build backend (`setuptools>=68`). This
-repository currently has no published, signed Nexus wheel set. To install from
-source offline, the operator must independently provide and verify a compatible
-build backend and pinned `dbus-next==0.2.3` and `PyYAML==6.0.3` wheels; the bundle itself does
-not establish authenticity or provenance for generated wheels. Do not infer a
-ready-to-install package from the source bundle.
+### Offline install bundle
 
-For a **local, unreleased prototype only**, this source bundle was successfully
-built on the preparation host with `uv build` and its isolated PEP 517 backend:
+Status: **implemented** (code and focused tests), **container-rehearsed** on
+emulated x86_64; **not verified** on x86_64 hardware and **not signed**. Two
+artifacts come out of the offline path, both unsigned:
 
-```sh
-cd /path/to/extracted/Azazel-Nexus-source
-uv build --wheel --out-dir /path/to/wheelhouse .
-uv build --wheel --out-dir /path/to/wheelhouse ./runtime
-```
+- the **source bundle** (`tools/build_offline_bundle.py --output X`): the two
+  distributions' declared source, README/license build metadata, installer,
+  wrapper-staging tool and the offline verifier. It is not a wheelhouse.
+- the **install bundle** (`tools/build_offline_bundle.py --output X
+  --wheelhouse W`): one `.tar.gz` whose first member is `MANIFEST.json`. The
+  manifest lists every other member with its sha256, size, kind and source:
+  the same source files, the hash-pinned wheelhouse, and four optional slots
+  (Edge package, Debian `.deb` set, model, Knowledge).
 
-The target's Python installer can then be pointed only at those local files:
+The build runs **online on a build host**; the install runs **offline** on the
+target:
 
 ```sh
-/opt/azazel-nexus/venv/bin/python -m pip install \
-  --no-index --find-links /path/to/wheelhouse \
-  azazel-nexus==0.0.1.dev0 azazel-nexus-runtime==0.0.1.dev0
+# Build host: Debian 13, x86_64, Debian's CPython 3.13, python3-dev and a C
+# compiler, from a clean checkout. Refuses any other architecture or Python,
+# because the runtime's native extension is compiled for the build host's ABI.
+python3 tools/build_wheelhouse.py --output /path/to/wheelhouse
+python3 tools/build_offline_bundle.py --output /path/to/azazel-nexus-offline.tar.gz \
+  --wheelhouse /path/to/wheelhouse \
+  [--edge-package DIR --edge-source TEXT] [--deb DIR --deb-source TEXT] \
+  [--model FILE] [--knowledge FILE] [--assets-source TEXT]
+
+# Target, no network, as root. Run the verifier from a reviewed checkout,
+# never from the bundle it verifies (it refuses to run from inside one).
+# The parents of --into and --venv must already exist, root-owned and not
+# group/other-writable.
+sudo install -d -m 0755 /var/lib/azazel-offline /opt/azazel-nexus
+sudo python3 -I /path/to/reviewed/Azazel-Nexus/tools/offline_bundle.py install \
+  --bundle /path/to/azazel-nexus-offline.tar.gz \
+  --into /var/lib/azazel-offline/bundle \
+  --venv /opt/azazel-nexus/venv --python /usr/bin/python3 \
+  --run-installer
 ```
 
-This demonstrates a prototype source-to-wheel route, not reproducible or
-authenticated publication: `setuptools>=68` is not pinned, the temporary
-build selected a host-resolved backend, and `uv` is not a production builder
-selection. Record and independently verify the source bundle, build backend,
-and wheel hashes for each preparation; do not treat local hashes as a
-signature or product release approval.
+`build_wheelhouse.py` installs the build backend from
+`packaging/offline/build-backend.lock` (`setuptools==84.0.0`, by file hash),
+downloads the third-party wheels named in
+`packaging/offline/requirements-x86_64-cp313.lock` with `--require-hashes
+--only-binary=:all: --no-deps`, and builds both Nexus wheels from the source
+bundle with `--no-build-isolation --no-index`. The lock's names and versions
+are tested against `runtime/pyproject.toml`; `uv.lock` is not used because it
+does not cover the runtime distribution. The two Nexus wheels are recorded by
+the hash this build produced; reproducibility across builders is not measured.
+
+The bundle is **POSIX ustar only**: the builder writes no pax records, GNU
+long names or sparse members, and a path that does not fit the ustar
+name/prefix fields is a build error. `offline_bundle.py` parses the 512-byte
+headers itself (fixed-size fields, checksum verified, typeflag `0` only) and
+never hands the bundle to Python's `tarfile`, whose pax/GNU/sparse header
+processing can allocate in proportion to attacker data before any caller check
+runs. The gzip layer is streamed with a cap on decompressed bytes.
+
+`offline_bundle.py install` must run as root, so that the extracted tree, the
+venv and everything `install.sh` later runs are root-owned and no
+unprivileged account can change them in between. Its sequence is:
+
+1. extract into a private staging directory beside `--into` and rename it into
+   place only after every check passed;
+2. check every third-party wheel against the reviewed lock, and the two Nexus
+   wheels against the reviewed `pyproject.toml` versions;
+3. run the Edge slot and `.deb` checks;
+4. create the venv directory itself with mode 0700 and exclusive creation
+   (failing if anything is there; its parent may not be sticky
+   world-writable), build a root-owned venv inside it with the given
+   interpreter, install with
+   `pip --no-index --find-links --require-hashes --only-binary=:all:`, and run
+   `pip check` and the imports;
+5. recheck the tree against the `manifest_sha256` extraction reported (not
+   against the in-tree `MANIFEST.json`), re-run the lock check, and check that
+   the venv is root-owned and not group/other-writable; only then is the venv
+   directory opened to 0755 so the service accounts can reach the interpreter;
+6. with `--run-installer` only, run `packaging/install.sh` from the tree with
+   `PYTHON` set to that venv (`--installer-option=--without-service-manager`
+   or `--installer-option=--without-accounts`, written with `=`, are the only
+   options passed through).
+
+On any refusal before step 6 the extracted tree and the venv are removed. If
+`install.sh` itself fails, both are kept for inspection and the host may be
+partly changed. Without `--run-installer` the report prints the two remaining
+commands: `sudo ... recheck --tree DIR --expect-manifest-sha256 DIGEST`, then
+`sudo env PYTHON=... sh .../install.sh`; run them back to back. `recheck` is
+a gate before `install.sh` only: `install.sh` byte-compiles Python from the
+tree, and a recheck after it is refused for the new `__pycache__` files.
+
+**What recheck does not do.** `recheck` and the root-owned sequence protect
+against the tree being changed between verification and use (TOCTOU). They do
+not make the bundle's code trustworthy. Until bundle signing exists, installing
+as root **executes bundle-supplied code**: the two Nexus wheels, pinned by
+version only, are imported, and `install.sh` and the tools it runs come from
+the bundle. Only the medium's custody stands between an attacker and that
+code.
+
+Extraction refuses:
+
+- every typeflag but a regular file: links, devices, FIFOs, directories,
+  contiguous files, pax headers (including `GNU.sparse.*`), GNU long names,
+  sparse and multi-volume members; a bad header checksum, non-ustar magic,
+  base-256 sizes, and data after the end marker or the gzip stream;
+- absolute paths, `..`, paths that differ only in case, and a path that is
+  both a file and another path's directory;
+- a manifest above 8 MiB or nested deeper than 16 levels;
+- member counts or byte totals above the caps, decompressed bytes beyond what
+  the manifest declares plus header overhead, a declared total more than 200
+  times the archive size, and a filesystem without the declared total plus a
+  64 MiB margin free;
+- a member the manifest does not declare or a declared one that is missing,
+  and any size or sha256 mismatch (writing stops at the declared size);
+- a destination whose parent directory is owned by another user (by anyone
+  but root, when run as root) or is group/other-writable; a sticky
+  world-writable parent such as `/tmp` is accepted only for an unprivileged
+  `verify`, never as root. A home directory created with umask 002 (mode
+  0775) is refused; use a 0755 directory.
+
+A staging directory is named `.<dest>.staging-<pid>-<random>`; one whose
+process no longer exists, owned by this user, is removed on the next run, and
+a concurrent run's staging is left alone. Every third-party wheel must match
+the reviewed checkout's `packaging/offline/requirements-x86_64-cp313.lock` by
+name, version and sha256; a wheel the lock does not pin, such as an extra
+`evil==1.0` with a self-consistent manifest hash, is refused. The two Nexus
+wheels are pinned **by version only** (an exact string compare with the
+reviewed `pyproject.toml`); their content is built per bundle and is
+unauthenticated until bundle signing exists, and every report says so. The
+verifier refuses to run when its own checkout is inside `--into` or inside any
+extracted bundle tree, so a bundle's copy of the verifier and lock cannot
+vouch for that bundle.
+
+Nothing from the bundle reaches Python's `tarfile` unless its bytes equal a
+digest the reviewed checkout pins. The Edge artifact is stream-hashed and
+compared with `packaging/offline/edge-artifact.sha256` (one `<sha256>
+<artifact name>` line) **before** any tar parsing; only a match is handed to
+the existing `edge_package` checks, which read it with `tarfile`. This
+repository ships no such pin: pinning a released Edge artifact is an owner
+decision, and until it is made a filled Edge slot is refused. `.deb` control
+archives have no reviewed pin and are read only by this module's own parser.
+That parser reads numeric fields exactly as `tarfile` does (cut at the first
+NUL, nothing but NUL or space after it, octal digits only) and refuses what
+the two could read differently; it allows regular files and directories, a
+GNU-magic header only with an empty extension area (Debian 13's `dpkg` writes control archives that way), and pax headers only with
+the keys `path`, `mtime`, `atime`, `ctime`, `uid`, `gid`, `uname` and `gname`.
+
+Every report carries `bundle_authenticated: false`. The integration point for
+the issuer/operator bundle signature is `verify_bundle_signature` in
+`tools/offline_bundle.py`, which receives the exact `MANIFEST.json` bytes and
+an optional `MANIFEST.sig` member; no verifier is wired in, so a present
+signature is carried and not checked. A sha256 match against an unsigned
+manifest is integrity against accidental change, not authenticity: whoever
+can rewrite the bundle can rewrite the manifest with it. Carrying an Edge
+package, a `.deb`, a model or a Knowledge bundle admits none of them; their
+own admission paths are unchanged, and `.deb` files are verified and carried
+but never installed by this tool.
+
+| Item | Status | Evidence / what is missing |
+| --- | --- | --- |
+| Hash-pinned wheelhouse build (backend, `dbus-next`, `PyYAML`, both Nexus wheels incl. native `_bootstrap_deadline`) | implemented; container-rehearsed | [container evidence](evidence/offline-install-container-2026-10-28.json); x86_64 under Rosetta emulation, not hardware |
+| Single bundle manifest (source, wheels, slots; sha256/size/kind/source) | implemented | `tests/unit/test_offline_install_bundle.py` |
+| Safe atomic extraction and refusal cases | implemented | same tests; one tampered bundle refused in the container |
+| Offline install with `--no-index --find-links --require-hashes` | implemented; container-rehearsed | `--network none` container at the commit the evidence names; lock check, `pip check`, imports, `recheck` and `install.sh --without-service-manager` passed. The e2e harness needs PyNaCl for its fixtures; with a separate harness-only PyNaCl set (not in the bundle or the lock) 21 of 22 stages passed, the systemd stage not run |
+| Edge package slot | implemented; container-rehearsed with an Edge packager build and a rehearsal-only pin | needs an owner-reviewed artifact pin in `packaging/offline/edge-artifact.sha256` (none shipped); then the `edge_package` checks; health/running stay `not-checked`; not admitted |
+| Debian `.deb` slot | implemented (slot and control-field check only) | no pinned package set or source exists; no `.deb` was carried |
+| Model / Knowledge slots | implemented (carry and hash only) | not admitted; admission paths unchanged |
+| Bundle signing | **not implemented** — hook only | needs the issuer/operator signing work and a key |
+| Bundle encryption ([update channel](update-channel.md) §2) | **not implemented** | format and key distribution open |
+| Python interpreter on the target | **not provided by the bundle** | the target must already have Debian's `python3` and `python3-venv` |
+| x86_64 hardware install | **not done** | requires an owner-run install on target hardware |
+
+Still needed from the owner or hardware:
+
+- a bundle signing key and the issuer/operator signature format (the hook is
+  `verify_bundle_signature`);
+- a reviewed digest of the released Edge artifact in
+  `packaging/offline/edge-artifact.sha256`, without which an Edge slot is
+  refused;
+- the Debian package set to carry (for example `suricata`, `iproute2`) and its
+  pinned source, such as a dated `snapshot.debian.org` archive;
+- provisioning of the Python interpreter and `python3-venv` on the target,
+  which this bundle assumes and does not carry;
+- Edge-side sensor packaging (Suricata rules/config and their owner), which
+  belongs to Azazel-Edge;
+- an install of a bundle on x86_64 hardware, which is the only confirmation
+  of the target ABI; the container rehearsal ran under Rosetta emulation.
+
+The [2026-10-13 prototype](#fresh-offline-installation-check-2026-10-13)
+predates this path: it downloaded dependency wheels online and used an
+unpinned, host-resolved build backend. It is kept as history;
+[its evidence](evidence/offline-install-2026-10-13.json) still applies only to
+what it recorded.
 
 ## Paths created or required
 

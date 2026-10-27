@@ -1,0 +1,8 @@
+# Hash-pinned PEP 517 build backend for the two Nexus distributions
+# (tools/build_wheelhouse.py). It satisfies `setuptools>=68` in both
+# pyproject.toml files; the build host installs it with --require-hashes and
+# builds with --no-build-isolation, so no other backend is resolved.
+#
+# setuptools-84.0.0-py3-none-any.whl
+setuptools==84.0.0 \
+    --hash=sha256:51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670
