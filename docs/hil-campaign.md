@@ -43,6 +43,21 @@ campaign ownership decisions; issue relationship comments are reserved for the c
 | Admission and six behaviours | Procedure below | admission and six E2E behaviour records | HIL E2E validator | #100 |
 | Degraded-mode drills | Procedure below; [recovery](recovery.md) | per-fault degradation records | HIL degradation validator | #4 |
 
+### Merged software awaiting target hardware (2026-10-28)
+
+Four changes merged on 2026-10-28 have mock, real-process and (for two of
+them) container evidence only. Each has its own target-hardware runbook. None
+is a gate, none has a record schema of its own, and none changes a gate state;
+where one is part of a gate's experiment, it says which and defers to that
+gate's record and validator.
+
+| Change | Procedure | Related gate / objective | Precondition that blocks it today |
+| --- | --- | --- | --- |
+| [#343](https://github.com/01rabbit/Azazel-Nexus/pull/343) model-free reference, single deadline, deterministic handoff | [M.I.O. reference](hil-runbooks/mio-reference.md) | none (supports the #100 network-loss and model-crash exercises) | owner ratification of the reference unit's activation scope |
+| [#344](https://github.com/01rabbit/Azazel-Nexus/pull/344) read-only NOC observation | [NOC observation](hil-runbooks/noc-observation.md) | runs inside an SO-10 / HG-03 run | independent capture on a commissioned observation role |
+| [#345](https://github.com/01rabbit/Azazel-Nexus/pull/345) Edge issuer signature, revocation, rollback floor | [Edge issuer](hil-runbooks/edge-issuer.md) | HG-07 preconditions | a real Edge package granted through the regular path |
+| [#346](https://github.com/01rabbit/Azazel-Nexus/pull/346) offline install bundle | [Offline install](hil-runbooks/offline-install.md) | HG-01 installation step | none beyond HG-01's |
+
 All HIL validators in this table use `azazel_nexus.hil_records.validate_record`
 with the corresponding schema discriminator and external attestation, as listed
 in [tools and trust](hil-evidence-records.md#tools-and-trust). Every exported run

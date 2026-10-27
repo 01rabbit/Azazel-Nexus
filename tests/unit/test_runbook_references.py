@@ -31,12 +31,16 @@ CODE_ROOTS = (REPO / "src", REPO / "runtime" / "src", REPO / "tools")
 #: Operator placeholders written in capitals; none of them names a code symbol.
 PLACEHOLDERS = {"DAEMON_ACCOUNT", "RUN_ID", "APPROVER_PUBLIC_HEX", "MODEL_ID", "DUT_ID",
                 "NODE", "LABEL", "PYTHON", "NODE_PRINTED_SHA256", "ENROLLED_PUBLIC_HEX",
-                "KEYFILE", "IMG"}
+                "KEYFILE", "IMG", "CHECKOUT"}
 #: A file of Azazel-Edge, named by hg-07.md as the producer of the Edge package.
 EXTERNAL_REPOSITORY_PATHS = {"packaging/nexus-core/nexus_core_package.py"}
 #: Host paths owned by the code; anything else (/proc, /sys, media) is external.
 HOST_PREFIXES = ("/etc/azazel", "/var/lib/azazel", "/usr/libexec/azazel",
                  "/run/azazel-mio-identity", "/usr/share/azazel")
+#: Operator-chosen directories that only share a code prefix: the offline
+#: bundle's documented `--into` parent (debian-live-install.md) is an argument,
+#: not a path the code owns.
+OPERATOR_CHOSEN_PATHS = ("/var/lib/azazel-offline/",)
 #: HMAC domains composed at runtime as "azazel-nexus/" + domain + "/v1\0".
 COMPOSED_DOMAINS = {"azazel-nexus/hil-host/v1": "hil-host", "azazel-nexus/hil-boot/v1": "hil-boot"}
 
@@ -240,7 +244,7 @@ def test_refusal_symbols_and_constants_exist_in_code():
 
 def _host_paths(text):
     for token in re.findall(r"(/(?:etc|var|usr|run)/[A-Za-z0-9_./<>*$-]+)", text):
-        if token.startswith(HOST_PREFIXES):
+        if token.startswith(HOST_PREFIXES) and not (token + "/").startswith(OPERATOR_CHOSEN_PATHS):
             yield token
 
 

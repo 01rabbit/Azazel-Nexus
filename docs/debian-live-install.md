@@ -682,7 +682,9 @@ Still needed from the owner or hardware:
 - Edge-side sensor packaging (Suricata rules/config and their owner), which
   belongs to Azazel-Edge;
 - an install of a bundle on x86_64 hardware, which is the only confirmation
-  of the target ABI; the container rehearsal ran under Rosetta emulation.
+  of the target ABI; the container rehearsal ran under Rosetta emulation. The
+  procedure, through the systemd stage, is the
+  [offline install runbook](hil-runbooks/offline-install.md) (not run).
 
 The [2026-10-13 prototype](#fresh-offline-installation-check-2026-10-13)
 predates this path: it downloaded dependency wheels online and used an
