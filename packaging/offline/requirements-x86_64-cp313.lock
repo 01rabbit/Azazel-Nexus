@@ -1,0 +1,18 @@
+# Hash-pinned third-party wheels for the Debian 13 / x86_64 / CPython 3.13
+# offline wheelhouse (tools/build_wheelhouse.py).
+#
+# The names and versions MUST equal runtime/pyproject.toml's `dependencies`
+# (azazel-nexus itself is built from source, not downloaded); the library
+# distribution declares none. tests/unit/test_offline_wheelhouse.py holds the
+# two together. uv.lock is not used here because it does not cover the runtime
+# distribution.
+#
+# Each hash is the one PyPI publishes for the single wheel file named in the
+# comment above it. pip refuses any other file under --require-hashes.
+#
+# dbus_next-0.2.3-py3-none-any.whl
+dbus-next==0.2.3 \
+    --hash=sha256:58948f9aff9db08316734c0be2a120f6dc502124d9642f55e90ac82ffb16a18b
+# pyyaml-6.0.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+PyYAML==6.0.3 \
+    --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6
