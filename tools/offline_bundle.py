@@ -172,7 +172,7 @@ PAX_MAX_BYTES = 64 << 10
 #: pax keys a nested archive may carry. Anything else -- ``size``,
 #: ``GNU.sparse.*``, ``hdrcharset`` -- is refused, so a later ``tarfile`` read
 #: of the same bytes cannot be driven into sparse-map or size processing.
-NESTED_PAX_KEYS = frozenset({"path", "linkpath", "mtime", "atime", "ctime", "uid", "gid", "uname", "gname"})
+NESTED_PAX_KEYS = frozenset({"path", "mtime", "atime", "ctime", "uid", "gid", "uname", "gname"})
 _TYPE_NAMES = {
     b"1": "a hardlink", b"2": "a symlink", b"3": "a device file", b"4": "a device file",
     b"5": "a directory entry", b"6": "a FIFO", b"7": "a contiguous file",
@@ -254,12 +254,24 @@ class TarHeader:
 
 
 def _octal(field: bytes, what: str) -> int:
-    text = field.replace(b"\0", b" ").strip(b" ")
-    if not text:
-        return 0
-    if not re.fullmatch(rb"[0-7]+", text):
+    """Read a numeric field exactly as ``tarfile`` would, or refuse.
+
+    ``tarfile`` cuts the field at its first NUL and parses what precedes it.
+    Here the same cut is made, everything after it must be NUL, and what
+    precedes it must be octal digits and spaces only (tarfile writes a
+    checksum as digits, NUL, space) -- so a field that the
+    two readers could interpret differently is refused rather than read.
+    """
+
+    head, nul, tail = field.partition(b"\0")
+    if nul and tail.strip(b"\0 "):
+        raise BundleRefused(f"tar header field {what} has data after its NUL terminator")
+    if not re.fullmatch(rb"[0-7 ]*", head):
         raise BundleRefused(f"tar header field {what} is not plain octal")
-    return int(text, 8)
+    digits = head.strip(b" ")
+    if b" " in digits:
+        raise BundleRefused(f"tar header field {what} is not plain octal")
+    return int(digits, 8) if digits else 0
 
 
 def _text(field: bytes) -> str:
@@ -287,6 +299,10 @@ def read_tar_header(stream, *, strict: bool) -> Optional[TarHeader]:
     magic = block[257:265]
     if magic != _USTAR_MAGIC and (strict or magic != _GNU_MAGIC):
         raise BundleRefused("a tar header is not POSIX ustar")
+    if magic == _GNU_MAGIC and block[345:500].strip(b"\0"):
+        # GNU keeps atime/ctime/sparse/long-name data where ustar keeps the
+        # prefix; a GNU header that uses that area is refused, not interpreted.
+        raise BundleRefused("a GNU tar header carries data in its extension area")
     name = _text(block[0:100])
     prefix = _text(block[345:500]) if magic == _USTAR_MAGIC else ""
     return TarHeader(
@@ -873,11 +889,20 @@ def _owner_ok(uid: int) -> bool:
     return uid == 0 if euid == 0 else uid in (0, euid)
 
 
-def _check_destination_parent(parent: Path) -> None:
+def _check_destination_parent(parent: Path, *, allow_sticky: Optional[bool] = None) -> None:
+    """Refuse a parent another account could use to swap what is created in it.
+
+    A sticky world-writable directory (``/tmp``) is accepted for an
+    unprivileged run only; as root, the parent must not be writable by anyone
+    but root.
+    """
+
+    if allow_sticky is None:
+        allow_sticky = os.geteuid() != 0
     info = os.stat(parent)
     shared = info.st_mode & 0o022
     sticky = info.st_mode & stat.S_ISVTX
-    if (shared and not sticky) or not _owner_ok(info.st_uid):
+    if (shared and not (sticky and allow_sticky)) or not _owner_ok(info.st_uid):
         raise BundleRefused(
             f"{parent} is writable by group/others without the sticky bit, or owned by another "
             "user; another account could replace the extracted tree"
@@ -1084,6 +1109,27 @@ def _edge_package_module():
     return edge_package
 
 
+EDGE_ARTIFACT_PIN = Path("packaging/offline/edge-artifact.sha256")
+
+
+def reviewed_edge_digest(root: Path = REVIEWED_ROOT) -> Optional[tuple[str, str]]:
+    """``(sha256, artifact name)`` from the reviewed checkout's Edge artifact pin, if any.
+
+    The file holds one ``<sha256>  <artifact name>`` line. This repository
+    ships none: pinning a released Edge artifact is an owner decision, and
+    until one is pinned an Edge slot is refused rather than parsed.
+    """
+
+    path = root / EDGE_ARTIFACT_PIN
+    if not path.is_file():
+        return None
+    lines = [line for line in path.read_text(encoding="ascii").splitlines() if line.strip()]
+    match = re.fullmatch(r"([0-9a-f]{64})  ([A-Za-z0-9._+-]+)", lines[0]) if len(lines) == 1 else None
+    if not match:
+        raise BundleRefused(f"{EDGE_ARTIFACT_PIN} is not one '<sha256>  <name>' line")
+    return match.group(1), match.group(2)
+
+
 def verify_edge_slot(directory: Path) -> dict[str, Any]:
     """Run the existing Edge package checks over a carried Edge package.
 
@@ -1098,6 +1144,23 @@ def verify_edge_slot(directory: Path) -> dict[str, Any]:
     expected = sorted((edge.PIN.manifest_name, edge.PIN.artifact_name))
     if names != expected:
         raise BundleRefused(f"the Edge slot holds {names}; it must hold exactly {expected}")
+    # Before any tar parsing: the artifact must be the one the reviewed
+    # checkout pins. Only then are its bytes reviewed rather than attacker
+    # data, and only then may edge_package read them with tarfile.
+    pinned = reviewed_edge_digest()
+    if pinned is None:
+        raise BundleRefused(
+            f"the reviewed checkout pins no Edge artifact ({EDGE_ARTIFACT_PIN}); an Edge slot is "
+            "refused before it is parsed"
+        )
+    if pinned[1] != edge.PIN.artifact_name:
+        raise BundleRefused(f"the reviewed pin names {pinned[1]}, not {edge.PIN.artifact_name}")
+    digest = hashlib.sha256()
+    with open(directory / edge.PIN.artifact_name, "rb") as stream:
+        while chunk := stream.read(1 << 20):
+            digest.update(chunk)
+    if digest.hexdigest() != pinned[0]:
+        raise BundleRefused("the Edge artifact is not the one the reviewed checkout pins; not parsed")
     inspection = edge.inspect(directory)
     findings = {f.check: f for f in inspection.findings}
     for check in ("package_present", "version_matches", "digest_matches"):
@@ -1106,8 +1169,7 @@ def verify_edge_slot(directory: Path) -> dict[str, Any]:
             raise BundleRefused(f"Edge {check} is {finding.evidence.value}: {finding.reason}")
     try:
         with open(directory / edge.PIN.artifact_name, "rb") as raw:
-            # Refuses every tar extension before edge_package reads the same
-            # bytes with tarfile, so its header processing sees plain members only.
+            # Defence in depth on bytes already matched to the reviewed pin.
             scan_nested_tar(_Gunzip(raw, EDGE_ARCHIVE_MAX_UNPACKED))
     except BundleRefused as exc:
         raise BundleRefused(f"the Edge archive is refused: {exc}") from exc
@@ -1389,6 +1451,19 @@ def pip_install_offline(python: Path, wheels: Path, requirements: Path) -> None:
     ])
 
 
+def _create_private_dir(path: Path) -> None:
+    """Create ``path`` exclusively with mode 0700; fail if anything is already there."""
+
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError as exc:
+        raise BundleRefused(f"{path} appeared before it could be created") from exc
+    info = os.lstat(path)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+        raise BundleRefused(f"{path} is not the directory this run created")
+    os.chmod(path, 0o700)
+
+
 def _require_root() -> None:
     if os.geteuid() != 0:
         raise BundleRefused(
@@ -1427,7 +1502,7 @@ def install(
     venv_parent = Path(os.path.abspath(venv)).parent
     if not venv_parent.is_dir():
         raise BundleRefused(f"{venv_parent} is not a directory")
-    _check_destination_parent(venv_parent)
+    _check_destination_parent(venv_parent, allow_sticky=False)
     extracted, report = extract_and_verify(bundle, into, limits=limits, pins=pins)
     try:
         _install_verified(extracted, report, into, venv, python)
@@ -1435,6 +1510,9 @@ def install(
             into, expected_manifest_sha256=report["manifest_sha256"], limits=limits, pins=pins
         )
         _check_owned_tree(venv, allow_links=True)
+        # Built and checked inside a 0700 directory; opened up only now so the
+        # service accounts that run the staged wrappers can reach the interpreter.
+        os.chmod(venv, 0o755)
     except BaseException:
         shutil.rmtree(venv, ignore_errors=True)
         shutil.rmtree(into, ignore_errors=True)
@@ -1479,6 +1557,7 @@ def _install_verified(extracted: Extracted, report: dict, into: Path, venv: Path
         raise BundleRefused(
             f"{python} reports {probe.stdout.strip()!r}; the bundle targets {expected!r}"
         )
+    _create_private_dir(venv)
     _run([str(python), "-I", "-m", "venv", str(venv)])
     venv_python = venv / "bin" / "python"
     with tempfile.TemporaryDirectory(prefix="azazel-offline-req-") as scratch:

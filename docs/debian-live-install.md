@@ -564,12 +564,16 @@ unprivileged account can change them in between. Its sequence is:
 2. check every third-party wheel against the reviewed lock, and the two Nexus
    wheels against the reviewed `pyproject.toml` versions;
 3. run the Edge slot and `.deb` checks;
-4. create a **fresh** root-owned venv with the given interpreter, install with
+4. create the venv directory itself with mode 0700 and exclusive creation
+   (failing if anything is there; its parent may not be sticky
+   world-writable), build a root-owned venv inside it with the given
+   interpreter, install with
    `pip --no-index --find-links --require-hashes --only-binary=:all:`, and run
    `pip check` and the imports;
 5. recheck the tree against the `manifest_sha256` extraction reported (not
    against the in-tree `MANIFEST.json`), re-run the lock check, and check that
-   the venv is root-owned and not group/other-writable;
+   the venv is root-owned and not group/other-writable; only then is the venv
+   directory opened to 0755 so the service accounts can reach the interpreter;
 6. with `--run-installer` only, run `packaging/install.sh` from the tree with
    `PYTHON` set to that venv (`--installer-option=--without-service-manager`
    or `--installer-option=--without-accounts`, written with `=`, are the only
@@ -582,6 +586,14 @@ commands: `sudo ... recheck --tree DIR --expect-manifest-sha256 DIGEST`, then
 `sudo env PYTHON=... sh .../install.sh`; run them back to back. `recheck` is
 a gate before `install.sh` only: `install.sh` byte-compiles Python from the
 tree, and a recheck after it is refused for the new `__pycache__` files.
+
+**What recheck does not do.** `recheck` and the root-owned sequence protect
+against the tree being changed between verification and use (TOCTOU). They do
+not make the bundle's code trustworthy. Until bundle signing exists, installing
+as root **executes bundle-supplied code**: the two Nexus wheels, pinned by
+version only, are imported, and `install.sh` and the tools it runs come from
+the bundle. Only the medium's custody stands between an attacker and that
+code.
 
 Extraction refuses:
 
@@ -599,9 +611,10 @@ Extraction refuses:
 - a member the manifest does not declare or a declared one that is missing,
   and any size or sha256 mismatch (writing stops at the declared size);
 - a destination whose parent directory is owned by another user (by anyone
-  but root, when run as root) or is group/other-writable without the sticky
-  bit. A home directory created with umask 002 (mode 0775) is refused; use a
-  0755 directory.
+  but root, when run as root) or is group/other-writable; a sticky
+  world-writable parent such as `/tmp` is accepted only for an unprivileged
+  `verify`, never as root. A home directory created with umask 002 (mode
+  0775) is refused; use a 0755 directory.
 
 A staging directory is named `.<dest>.staging-<pid>-<random>`; one whose
 process no longer exists, owned by this user, is removed on the next run, and
@@ -614,10 +627,21 @@ reviewed `pyproject.toml`); their content is built per bundle and is
 unauthenticated until bundle signing exists, and every report says so. The
 verifier refuses to run when its own checkout is inside `--into` or inside any
 extracted bundle tree, so a bundle's copy of the verifier and lock cannot
-vouch for that bundle. Nested archives that are inspected (the Edge package
-and `.deb` control archives) are walked with the same header parser first:
-only regular files and directories, and pax headers only with plain keys such
-as `path` and `mtime`, are allowed before anything else reads them.
+vouch for that bundle.
+
+Nothing from the bundle reaches Python's `tarfile` unless its bytes equal a
+digest the reviewed checkout pins. The Edge artifact is stream-hashed and
+compared with `packaging/offline/edge-artifact.sha256` (one `<sha256>
+<artifact name>` line) **before** any tar parsing; only a match is handed to
+the existing `edge_package` checks, which read it with `tarfile`. This
+repository ships no such pin: pinning a released Edge artifact is an owner
+decision, and until it is made a filled Edge slot is refused. `.deb` control
+archives have no reviewed pin and are read only by this module's own parser.
+That parser reads numeric fields exactly as `tarfile` does (cut at the first
+NUL, nothing but NUL or space after it, octal digits only) and refuses what
+the two could read differently; it allows regular files and directories, a
+GNU-magic header only with an empty extension area, and pax headers only with
+the keys `path`, `mtime`, `atime`, `ctime`, `uid`, `gid`, `uname` and `gname`.
 
 Every report carries `bundle_authenticated: false`. The integration point for
 the issuer/operator bundle signature is `verify_bundle_signature` in
@@ -636,7 +660,7 @@ but never installed by this tool.
 | Single bundle manifest (source, wheels, slots; sha256/size/kind/source) | implemented | `tests/unit/test_offline_install_bundle.py` |
 | Safe atomic extraction and refusal cases | implemented | same tests; one tampered bundle refused in the container |
 | Offline install with `--no-index --find-links --require-hashes` | implemented; container-rehearsed | `--network none` container at the commit the evidence names; lock check, `pip check`, imports, `recheck` and `install.sh --without-service-manager` passed. The e2e harness needs PyNaCl for its fixtures; with a separate harness-only PyNaCl set (not in the bundle or the lock) 21 of 22 stages passed, the systemd stage not run |
-| Edge package slot | implemented; container-rehearsed with an Edge packager build | `edge_package` checks only; health/running stay `not-checked`; not admitted |
+| Edge package slot | implemented; container-rehearsed with an Edge packager build and a rehearsal-only pin | needs an owner-reviewed artifact pin in `packaging/offline/edge-artifact.sha256` (none shipped); then the `edge_package` checks; health/running stay `not-checked`; not admitted |
 | Debian `.deb` slot | implemented (slot and control-field check only) | no pinned package set or source exists; no `.deb` was carried |
 | Model / Knowledge slots | implemented (carry and hash only) | not admitted; admission paths unchanged |
 | Bundle signing | **not implemented** — hook only | needs the issuer/operator signing work and a key |
@@ -648,6 +672,9 @@ Still needed from the owner or hardware:
 
 - a bundle signing key and the issuer/operator signature format (the hook is
   `verify_bundle_signature`);
+- a reviewed digest of the released Edge artifact in
+  `packaging/offline/edge-artifact.sha256`, without which an Edge slot is
+  refused;
 - the Debian package set to carry (for example `suricata`, `iproute2`) and its
   pinned source, such as a dated `snapshot.debian.org` archive;
 - provisioning of the Python interpreter and `python3-venv` on the target,

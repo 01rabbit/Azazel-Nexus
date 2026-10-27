@@ -137,6 +137,15 @@ def _edge_package(directory: Path, *, observe_only: bool = True) -> Path:
     return directory
 
 
+def _pin_edge(monkeypatch, edge: Path) -> None:
+    """Stand in for an owner-reviewed pin of whatever artifact is in ``edge`` when checked."""
+
+    from azazel_nexus.edge_package import PIN
+
+    monkeypatch.setattr(offline_bundle, "reviewed_edge_digest", lambda root=None: (
+        hashlib.sha256((edge / PIN.artifact_name).read_bytes()).hexdigest(), PIN.artifact_name))
+
+
 def _deb(path: Path, *, package: str = "iproute2", version: str = "6.15.0-1",
          architecture: str = "amd64") -> Path:
     control = (
@@ -492,10 +501,11 @@ def test_the_hook_never_authenticates_today():
 # -- slots ------------------------------------------------------------------
 
 
-def test_an_edge_package_slot_is_verified_with_the_edge_checks(tmp_path):
+def test_an_edge_package_slot_is_verified_with_the_edge_checks(tmp_path, monkeypatch):
     root = _repo(tmp_path / "repo")
     wheelhouse = _wheelhouse(tmp_path / "wheelhouse", repository_identity(root)["commit"])
     edge = _edge_package(tmp_path / "edge-in")
+    _pin_edge(monkeypatch, edge)
     document = build_install_bundle(root, tmp_path / "b.tar.gz", wheelhouse=wheelhouse,
                                     edge_package=edge, edge_source="test fixture")
     assert document["slots"]["edge-package"] == "filled"
@@ -516,17 +526,19 @@ def test_an_edge_slot_needs_a_named_source(tmp_path):
                              edge_package=_edge_package(tmp_path / "edge-in"))
 
 
-def test_an_enforcing_edge_package_is_refused(tmp_path):
+def test_an_enforcing_edge_package_is_refused(tmp_path, monkeypatch):
     edge = _edge_package(tmp_path / "edge", observe_only=False)
+    _pin_edge(monkeypatch, edge)
     with pytest.raises(BundleRefused, match="package_present"):
         offline_bundle.verify_edge_slot(edge)
 
 
-def test_an_edge_artifact_that_does_not_match_its_manifest_is_refused(tmp_path):
+def test_an_edge_artifact_that_does_not_match_its_manifest_is_refused(tmp_path, monkeypatch):
     from azazel_nexus.edge_package import PIN
 
     edge = _edge_package(tmp_path / "edge")
     (edge / PIN.artifact_name).write_bytes(b"replaced")
+    _pin_edge(monkeypatch, edge)
     with pytest.raises(BundleRefused, match="digest_matches"):
         offline_bundle.verify_edge_slot(edge)
 
@@ -832,7 +844,8 @@ def test_a_verifier_without_a_reviewed_lock_refuses(built, tmp_path, monkeypatch
 
 
 def _raw_header(name: str, size: int, typeflag: bytes = b"0", *, magic: bytes = b"ustar\x0000",
-                linkname: str = "", checksum_delta: int = 0, size_field: bytes | None = None) -> bytes:
+                linkname: str = "", checksum_delta: int = 0, size_field: bytes | None = None,
+                area: bytes = b"") -> bytes:
     block = bytearray(512)
     block[0:len(name)] = name.encode()
     block[100:108] = b"0000644\0"
@@ -843,6 +856,7 @@ def _raw_header(name: str, size: int, typeflag: bytes = b"0", *, magic: bytes = 
     block[156:157] = typeflag
     block[157:157 + len(linkname)] = linkname.encode()
     block[257:265] = magic
+    block[345:345 + len(area)] = area
     block[148:156] = b" " * 8
     block[148:156] = b"%06o\0 " % (sum(block) + checksum_delta)
     return bytes(block)
@@ -984,7 +998,7 @@ def test_each_non_regular_typeflag_is_refused_before_its_body(built, tmp_path, t
 @pytest.mark.parametrize("header, match", [
     (_raw_header("MANIFEST.json", 2, checksum_delta=1), "checksum"),
     (_raw_header("MANIFEST.json", 2, magic=b"ustar  \0"), "not POSIX ustar"),
-    (_raw_header("MANIFEST.json", 2, size_field=b"\x80" + b"\0" * 10 + b"\x02"), "not plain octal"),
+    (_raw_header("MANIFEST.json", 2, size_field=b"\x80" + b"\0" * 10 + b"\x02"), "octal|after its NUL"),
     (_raw_header("MANIFEST.json", 2, linkname="x"), "link target"),
 ])
 def test_malformed_headers_are_refused(tmp_path, header, match):
@@ -1034,7 +1048,7 @@ def test_a_path_that_does_not_fit_ustar_is_a_build_error(tmp_path):
     assert not (tmp_path / "b.tar.gz").exists()
 
 
-def test_a_nested_edge_archive_with_a_sparse_pax_key_is_refused(tmp_path):
+def test_a_nested_edge_archive_with_a_sparse_pax_key_is_refused(tmp_path, monkeypatch):
     from azazel_nexus.edge_package import PIN
 
     edge = _edge_package(tmp_path / "edge")
@@ -1045,6 +1059,7 @@ def test_a_nested_edge_archive_with_a_sparse_pax_key_is_refused(tmp_path):
     manifest = json.loads((edge / PIN.manifest_name).read_text())
     manifest["digest"] = "sha256:" + hashlib.sha256((edge / PIN.artifact_name).read_bytes()).hexdigest()
     (edge / PIN.manifest_name).write_text(json.dumps(manifest))
+    _pin_edge(monkeypatch, edge)
     with pytest.raises(BundleRefused, match="pax key"):
         offline_bundle.verify_edge_slot(edge)
 
@@ -1307,3 +1322,134 @@ def test_the_report_says_own_wheels_are_version_pinned_only(built, tmp_path):
     _, report = offline_bundle.extract_and_verify(built[2], tmp_path / "out")
     assert "pinned by version only" in report["own_wheels"]
     assert "unauthenticated" in report["own_wheels"]
+
+
+# -- third review: parser agreement with tarfile, the Edge pin, venv dir --------
+
+
+_SMUGGLE_SIZE = b"\0" + b"0000002000" + b"\0"   # tarfile reads 0, a NUL-to-space reader 1024
+
+
+def _hidden(kind: bytes) -> bytes:
+    if kind == b"L":
+        body = b"x" * 1000 + b"\0"
+        return _raw_header("././@LongLink", len(body), b"L") + _padded(body)
+    pax = _pax({"size": "999999", "GNU.sparse.major": "1", "GNU.sparse.minor": "0"})
+    return _raw_header("p", len(pax), b"x") + _padded(pax)
+
+
+@pytest.mark.parametrize("kind", [b"L", b"x"])
+def test_a_nul_leading_size_cannot_smuggle_a_hidden_header_past_the_nested_scan(kind):
+    hidden = _hidden(kind)[:1024].ljust(1024, b"\0")
+    blocks = _raw_header("bin/azazel-edge-core", 0, size_field=_SMUGGLE_SIZE) + hidden + bytes(1024)
+    with pytest.raises(BundleRefused, match="after its NUL"):
+        offline_bundle.scan_nested_tar(offline_bundle._Plain(blocks))
+
+
+@pytest.mark.parametrize("kind", [b"L", b"x"])
+def test_a_nul_leading_size_is_refused_in_the_bundle_too(tmp_path, kind):
+    hidden = _hidden(kind)[:1024].ljust(1024, b"\0")
+    bundle = _stream_bundle(tmp_path / "smuggle.tar.gz", [
+        _raw_header("MANIFEST.json", 0, size_field=_SMUGGLE_SIZE), hidden,
+    ])
+    _refused(tmp_path, bundle, "after its NUL")
+
+
+def test_octal_fields_read_as_tarfile_reads_them():
+    assert offline_bundle._octal(b"0000644\0", "mode") == 0o644
+    assert offline_bundle._octal(b"012345\0 ", "checksum") == 0o12345
+    assert offline_bundle._octal(b"\0" * 12, "size") == 0
+    for bad in (b"\x000000002000\0", b"12 34\0", b"00009\0", b"0001\0x"):
+        with pytest.raises(BundleRefused):
+            offline_bundle._octal(bad, "size")
+
+
+def test_a_gnu_header_using_its_extension_area_is_refused():
+    blocks = _raw_header("./control", 1, magic=b"ustar  \0", area=b"00000000017") + _padded(b"x") + bytes(1024)
+    with pytest.raises(BundleRefused, match="extension area"):
+        offline_bundle.scan_nested_tar(offline_bundle._Plain(blocks))
+
+
+def test_an_edge_archive_off_the_reviewed_pin_is_refused_before_any_parsing(tmp_path, monkeypatch):
+    from azazel_nexus import edge_package
+    from azazel_nexus.edge_package import PIN
+
+    edge = _edge_package(tmp_path / "edge")
+
+    def must_not_parse(*args, **kwargs):
+        raise AssertionError("the archive was parsed before its digest was checked")
+
+    monkeypatch.setattr(offline_bundle, "scan_nested_tar", must_not_parse)
+    monkeypatch.setattr(edge_package, "_archive_components", must_not_parse)
+    monkeypatch.setattr(offline_bundle, "reviewed_edge_digest", lambda root=None: ("0" * 64, PIN.artifact_name))
+    with pytest.raises(BundleRefused, match="not the one the reviewed checkout pins"):
+        offline_bundle.verify_edge_slot(edge)
+
+
+def test_an_edge_slot_without_a_reviewed_pin_is_refused(tmp_path):
+    assert offline_bundle.reviewed_edge_digest() is None, "this repository ships no Edge pin"
+    with pytest.raises(BundleRefused, match="pins no Edge artifact"):
+        offline_bundle.verify_edge_slot(_edge_package(tmp_path / "edge"))
+
+
+def test_the_reviewed_edge_pin_file_format(tmp_path):
+    pin = tmp_path / offline_bundle.EDGE_ARTIFACT_PIN
+    pin.parent.mkdir(parents=True)
+    pin.write_text("a" * 64 + "  azazel-edge-core-0.1.0-x86_64.tar.gz\n")
+    assert offline_bundle.reviewed_edge_digest(tmp_path) == ("a" * 64, "azazel-edge-core-0.1.0-x86_64.tar.gz")
+    pin.write_text("a" * 64 + "\n")
+    with pytest.raises(BundleRefused, match="one"):
+        offline_bundle.reviewed_edge_digest(tmp_path)
+
+
+def test_a_sticky_parent_is_refused_for_the_root_venv_case(tmp_path):
+    sticky = tmp_path / "sticky"
+    sticky.mkdir()
+    sticky.chmod(0o1777)
+    offline_bundle._check_destination_parent(sticky, allow_sticky=True)
+    with pytest.raises(BundleRefused, match="writable by group/others"):
+        offline_bundle._check_destination_parent(sticky, allow_sticky=False)
+
+
+def test_the_venv_directory_is_created_exclusively_and_private(tmp_path):
+    venv = tmp_path / "venv"
+    offline_bundle._create_private_dir(venv)
+    assert venv.stat().st_mode & 0o777 == 0o700
+    with pytest.raises(BundleRefused, match="appeared"):
+        offline_bundle._create_private_dir(venv)
+
+
+def test_nested_pax_keys_carry_no_link_or_size_key():
+    assert not {"linkpath", "size", "hdrcharset"} & offline_bundle.NESTED_PAX_KEYS
+    assert not any(key.startswith("GNU.") for key in offline_bundle.NESTED_PAX_KEYS)
+
+
+@pytest.mark.real_process
+def test_a_large_regular_member_streams_in_bounded_memory(tmp_path):
+    root = _repo(tmp_path / "repo")
+    wheelhouse = _wheelhouse(tmp_path / "wheelhouse", repository_identity(root)["commit"])
+    model = tmp_path / "model.gguf"
+    chunk = os.urandom(1 << 20)  # deflate's 32 KiB window cannot compress a 1 MiB repeat
+    with open(model, "wb") as stream:
+        for _ in range(96):
+            stream.write(chunk)
+    build_install_bundle(root, tmp_path / "big.tar.gz", wheelhouse=wheelhouse,
+                         models=[model], assets_source="test")
+    model.unlink()
+    report = _vmhwm_extract(tmp_path, tmp_path / "big.tar.gz")
+    assert report["outcome"] == "accepted"
+    assert report["maxrss_kib"] < 64 * 1024, report
+
+
+@pytest.mark.real_process
+def test_exceeding_the_gzip_cap_is_refused_in_bounded_memory(built, tmp_path):
+    with gzip.open(built[2], "rb") as stream:
+        data = stream.read()
+    padded = tmp_path / "zeros.tar.gz"
+    with gzip.open(padded, "wb", compresslevel=1) as out:
+        out.write(data)
+        for _ in range(96):
+            out.write(bytes(1 << 20))
+    report = _vmhwm_extract(tmp_path, padded)
+    assert "decompresses beyond" in report["outcome"]
+    assert report["maxrss_kib"] < 64 * 1024, report
