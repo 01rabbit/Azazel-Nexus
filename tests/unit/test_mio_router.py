@@ -43,6 +43,7 @@ def setup_router(tmp_path, monkeypatch):
 def invoke(
     router, *, local=False, mismatch=False,
     privacy_class=PrivacyClass.P1_SANITIZED, remote_request=None,
+    local_admitted=True, **extra,
 ):
     return router.handle(
         local_request=SimpleNamespace(arguments={'model_id': 'test-model', 'runtime_id': 'fixture'}),
@@ -56,13 +57,14 @@ def invoke(
             if privacy_class in {PrivacyClass.P2_MISSION, PrivacyClass.P3_RESTRICTED}
             else RemoteAdmission(True, None, 'fixture permitted')
         ),
-        local_admitted=True,
-        local_refusal='fixture local admitted',
+        local_admitted=local_admitted,
+        local_refusal='fixture local admitted' if local_admitted else 'fixture local not admitted',
         predictions={
             route: Prediction(route.value, True, ms, 10, 10, False, 'fixture observations')
             for route, ms in [(Route.LOCAL, 1 if local else 20), (Route.REMOTE, 10)]
         },
         deadline_ms=1000,
+        **extra,
     )
 
 
@@ -323,3 +325,201 @@ def test_no_answer_terminal_audit_failure_propagates(setup_router, monkeypatch):
         invoke(router, local=True)
     assert calls == []
     assert not any(e['event_type'] == 'mio.route.fallback' for e in events(router))
+
+
+# -- Remote permission rechecked after selection (mock providers) -------------
+
+WITHDRAWN = RemoteAdmission(False, Exclusion.CONSENT, 'fixture consent withdrawn')
+PERMITTED = RemoteAdmission(True, None, 'fixture permitted')
+
+
+class Recheck:
+    """Counts its calls; each call returns (or raises) the next scripted answer."""
+
+    def __init__(self, *answers):
+        self.answers, self.calls = list(answers), 0
+
+    def __call__(self):
+        self.calls += 1
+        answer = self.answers[min(self.calls, len(self.answers)) - 1]
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+
+def remote_terminal(recorded):
+    return next(e for e in recorded if e['event_type'] == 'mio.route.terminal'
+                and e['route'] == Route.REMOTE.value)
+
+
+def test_permitted_recheck_keeps_remote_answer(setup_router):
+    router, calls = setup_router()
+    recheck = Recheck(PERMITTED)
+    result = invoke(router, remote_recheck=recheck)
+    assert result.outcome is RequestOutcome.ANSWERED and result.route is Route.REMOTE
+    assert calls == ['remote']
+    # Asked once, just before the attempt; an answer needs no fallback.
+    assert recheck.calls == 1
+    assert not any(e.get('terminal_event') == TerminalEvent.OPT_IN_WITHDRAWN.value
+                   for e in events(router))
+
+
+def test_withdrawal_after_selection_skips_remote_and_falls_back_to_local_once(
+    setup_router, monkeypatch,
+):
+    router, calls = setup_router()
+    local_calls = []
+
+    def local(request):
+        local_calls.append(request)
+        return {'outcome': 'advisory', 'refusal': None, 'advice': 'safe', 'fields': {}}
+
+    monkeypatch.setattr(router._local, 'handle', local)
+    recheck = Recheck(WITHDRAWN)
+    result = invoke(router, remote_recheck=recheck)
+    recorded = events(router)
+    assert result.selection.route is Route.REMOTE
+    assert calls == []
+    assert len(local_calls) == 1
+    assert result.route is Route.LOCAL and result.outcome is RequestOutcome.ANSWERED
+    # The withdrawal is no attempt and no failure, and nothing else was sent.
+    assert result.ai_attempts == 1 and result.failures == ()
+    remote = remote_terminal(recorded)
+    assert remote['terminal_event'] == TerminalEvent.OPT_IN_WITHDRAWN.value
+    assert remote['outcome'] == RequestOutcome.FELL_BACK.value
+    assert remote['reason'] == mio_router.REMOTE_WITHDRAWN
+    assert not any(e['event_type'].startswith('mio.remote.') for e in recorded)
+    fallbacks = [e for e in recorded if e['event_type'] == 'mio.route.fallback']
+    assert [(f['failed_route'], f['route'], f['spent']) for f in fallbacks] == [
+        (Route.REMOTE.value, Route.LOCAL.value, True)]
+
+
+def test_withdrawal_then_local_failure_is_not_a_second_fallback(setup_router):
+    # The real local service refuses (Core reserve unmeasured). The withdrawal
+    # spent the one fallback, so the local failure ends in the handoff and
+    # the withdrawn remote is never tried in its place.
+    router, calls = setup_router()
+    recheck = Recheck(WITHDRAWN, PERMITTED)
+    result = invoke(router, remote_recheck=recheck)
+    recorded = events(router)
+    assert calls == []
+    assert result.route is Route.DETERMINISTIC_HANDOFF
+    assert result.outcome is RequestOutcome.REFUSED
+    assert result.ai_attempts == 1
+    assert [f['route'] for f in result.failures] == ['local']
+    assert local_terminal(recorded)['fallback_available'] is False
+    assert len([e for e in recorded if e['event_type'] == 'mio.route.fallback']) == 1
+    assert remote_terminal(recorded)['terminal_event'] == TerminalEvent.OPT_IN_WITHDRAWN.value
+
+
+def test_withdrawal_without_local_is_refused(setup_router, monkeypatch):
+    router, calls = setup_router()
+    monkeypatch.setattr(router._local, 'handle', lambda request: pytest.fail('local dispatched'))
+    recheck = Recheck(WITHDRAWN)
+    result = invoke(router, local_admitted=False, remote_recheck=recheck)
+    recorded = events(router)
+    assert result.selection.route is Route.REMOTE
+    assert Route.LOCAL not in result.selection.permitted
+    assert calls == []
+    assert result.route is Route.DETERMINISTIC_HANDOFF
+    assert result.outcome is RequestOutcome.REFUSED
+    assert result.ai_attempts == 0
+    remote = remote_terminal(recorded)
+    assert remote['terminal_event'] == TerminalEvent.OPT_IN_WITHDRAWN.value
+    assert remote['outcome'] == RequestOutcome.REFUSED.value
+    assert remote['fallback_available'] is False
+    assert not any(e['event_type'] == 'mio.route.fallback' for e in recorded)
+    handoff = next(e for e in recorded if e['event_type'] == 'mio.route.handoff')
+    assert handoff['cause'] == mio_router.REMOTE_WITHDRAWN
+
+
+@pytest.mark.parametrize('answer', [
+    RuntimeError('fixture recheck failure ' + SENTINEL.decode()),
+    None,
+    True,
+    SimpleNamespace(permitted=True, excluded_by=None, reason='duck-typed'),
+    RemoteAdmission(1, None, 'truthy but not True'),
+])
+def test_recheck_that_cannot_be_read_excludes_remote(setup_router, answer):
+    router, calls = setup_router()
+    result = invoke(router, local_admitted=False, remote_recheck=Recheck(answer))
+    recorded = events(router)  # also asserts the sentinel is never recorded
+    assert calls == []
+    assert result.route is Route.DETERMINISTIC_HANDOFF
+    remote = remote_terminal(recorded)
+    assert remote['terminal_event'] == TerminalEvent.OPT_IN_WITHDRAWN.value
+    assert remote['reason'] in {mio_router.REMOTE_RECHECK_FAILED, mio_router.REMOTE_WITHDRAWN}
+
+
+@pytest.mark.parametrize('privacy_class', [PrivacyClass.P2_MISSION, PrivacyClass.P3_RESTRICTED])
+def test_recheck_never_widens_the_permitted_set(setup_router, privacy_class):
+    # Remote was excluded at selection; a recheck answering "permitted" is not
+    # even asked, and the local refusal's fallback still cannot reach remote.
+    router, calls = setup_router()
+    recheck = Recheck(PERMITTED)
+    result = invoke(router, local=True, privacy_class=privacy_class, remote_recheck=recheck)
+    recorded = events(router)
+    assert Route.REMOTE not in result.selection.permitted
+    assert recheck.calls == 0
+    assert calls == []
+    assert result.route is Route.DETERMINISTIC_HANDOFF
+    fallback = next(e for e in recorded if e['event_type'] == 'mio.route.fallback')
+    assert fallback['route'] == Route.DETERMINISTIC_HANDOFF.value
+
+
+def test_narrowing_helpers_never_return_a_route_outside_the_selection(setup_router):
+    router, _ = setup_router()
+    result = invoke(router, local=True, privacy_class=PrivacyClass.P3_RESTRICTED)
+    selection = result.selection
+    assert Route.REMOTE not in selection.permitted
+    for recheck in (None, Recheck(PERMITTED), Recheck(WITHDRAWN), Recheck(RuntimeError())):
+        assert router._remote_recheck(selection, recheck) is not None
+        for failed in (Route.LOCAL, Route.REMOTE):
+            narrowed = router._still_permitted(selection, failed, recheck)
+            assert set(narrowed) <= set(selection.permitted)
+            assert Route.DETERMINISTIC_HANDOFF in narrowed
+
+
+def test_withdrawal_at_local_fallback_lands_on_handoff(setup_router):
+    # Local selected and refused; remote was permitted at selection but is
+    # withdrawn when the fallback is chosen, so the fallback does not reach it.
+    router, calls = setup_router()
+    recheck = Recheck(WITHDRAWN)
+    result = invoke(router, local=True, remote_recheck=recheck)
+    recorded = events(router)
+    assert result.selection.route is Route.LOCAL
+    assert Route.REMOTE in result.selection.permitted
+    assert calls == []
+    assert recheck.calls == 1
+    fallback = next(e for e in recorded if e['event_type'] == 'mio.route.fallback')
+    assert fallback['failed_route'] == Route.LOCAL.value
+    assert fallback['route'] == Route.DETERMINISTIC_HANDOFF.value
+    assert result.route is Route.DETERMINISTIC_HANDOFF
+    handoff = next(e for e in recorded if e['event_type'] == 'mio.route.handoff')
+    assert handoff['cause'] == 'no_permitted_fallback'
+
+
+def test_withdrawal_between_fallback_and_attempt_refuses(setup_router):
+    # Permitted when the fallback chose remote, withdrawn just before the
+    # attempt: not sent, and no further fallback (it was spent).
+    router, calls = setup_router()
+    recheck = Recheck(PERMITTED, WITHDRAWN)
+    result = invoke(router, local=True, remote_recheck=recheck)
+    recorded = events(router)
+    assert recheck.calls == 2
+    assert calls == []
+    remote = remote_terminal(recorded)
+    assert remote['terminal_event'] == TerminalEvent.OPT_IN_WITHDRAWN.value
+    assert remote['outcome'] == RequestOutcome.REFUSED.value
+    assert result.route is Route.DETERMINISTIC_HANDOFF
+    assert len([e for e in recorded if e['event_type'] == 'mio.route.fallback']) == 1
+
+
+def test_permitted_recheck_at_local_fallback_keeps_remote_fallback(setup_router):
+    router, calls = setup_router()
+    recheck = Recheck(PERMITTED)
+    result = invoke(router, local=True, remote_recheck=recheck)
+    assert calls == ['remote']
+    assert result.route is Route.REMOTE and result.outcome is RequestOutcome.ANSWERED
+    # Once at the fallback, once before the attempt.
+    assert recheck.calls == 2

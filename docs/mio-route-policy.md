@@ -137,6 +137,24 @@ The operator can withdraw the remote opt-in at any time. On withdrawal:
   is never completed by the route the operator just withdrew
 - the withdrawal is an audit event carrying who, when and why
 
+**Runtime recheck** (implemented; mock evidence only). The router
+(`runtime/src/azazel_nexus_runtime/mio_router.py`) re-reads the remote
+admission through the caller's `remote_recheck` before every remote attempt
+and at every fallback, and only for a remote route the selection already
+permitted, so a recheck can narrow the permitted set and never widen it. A
+recheck that refuses, raises or returns anything but a permitting
+`RemoteAdmission` removes remote (fail-closed): nothing is sent,
+`OPT_IN_WITHDRAWN` is recorded with a fixed reason
+(`remote_opt_in_withdrawn` / `remote_recheck_failed`), and
+`mio_profile.disposition_on_withdrawal` decides between one local fallback and
+refusal. Entry passes a recheck that re-evaluates `remote_admission` with the
+same inputs as the selection; this build has no opt-in reader (always
+`NO_OPT_IN`), so remote is never selected and production behaviour is
+unchanged. Evidence: `tests/unit/test_mio_router.py`,
+`tests/unit/test_mio_router_deadline.py` and `tests/unit/test_mio_entryd.py`,
+all with mock providers. Cancelling a remote request **already in flight** is
+not implemented: there is no remote transport in this build.
+
 ### A profile is a ceiling, not a grant
 
 Selecting `fastest-permitted` admits nothing; every admission gate still runs.
@@ -255,6 +273,11 @@ All eight existing `FallbackTrigger` values keep their meanings.
 It removes the candidate rather than failing it, so an in-flight task on that
 route falls back to local once, or is refused. A withdrawal must never be
 served by the route it withdrew.
+
+In the runtime router this holds for a withdrawal seen before the remote
+attempt starts or when a fallback is chosen: every fallback passes the
+rechecked set to `fallback_once(still_permitted=...)`, which is always a subset
+of the selection's permitted set (see "Runtime recheck" above; mock evidence).
 
 ## 7. Speculative dual-send — forbidden by default
 

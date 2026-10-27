@@ -622,6 +622,28 @@ refusal permits one fallback within the original permitted set; its audit reason
 includes the local refusal that caused it. Malformed remote payloads record only
 the fixed `malformed_payload` reason, never parser exception text.
 
+**Remote permission rechecked after selection** (implemented; mock evidence
+only). `MioRouter.handle` takes an optional `remote_recheck`, a callable that
+re-reads the remote admission. It is consulted before every remote attempt and
+whenever a fallback is chosen, and only for a remote route the selection already
+permitted: it can remove remote, never add it. A refusal, an exception or a
+result that is not a permitting `RemoteAdmission` removes remote (fail-closed).
+A remote attempt is then not made: the router records `OPT_IN_WITHDRAWN` on the
+remote route with the fixed reason `remote_opt_in_withdrawn` (or
+`remote_recheck_failed`) and follows `disposition_on_withdrawal`: one fallback
+to local when local was permitted and the fallback is unspent, otherwise
+refusal and the deterministic handoff (cause `remote_opt_in_withdrawn`). Every
+fallback passes the rechecked set to `fallback_once(still_permitted=...)`. A
+withdrawal spends the request's one fallback; it is not counted as an AI attempt.
+The recheck runs inside the request's one deadline: each attempt's budget is
+taken after it returns. `MAX_AI_ATTEMPTS`, the reserves and
+`InFlightDisposition` are unchanged. Entry passes a recheck that re-evaluates
+`remote_admission` with the same inputs as the selection (`NO_OPT_IN`,
+`unchecked_reading()`), so in this build remote is never selected and nothing
+changes in production. Cancelling a remote request already in flight is out of
+scope (no remote transport). Tests: `tests/unit/test_mio_router.py`,
+`tests/unit/test_mio_router_deadline.py`, `tests/unit/test_mio_entryd.py` (mocks).
+
 **One deadline per request** (implemented; software evidence only). Entry
 measures the request's deadline once, on the monotonic clock, when the request
 arrives, and passes it to the router (`deadline_at`). Selection compares
@@ -673,7 +695,7 @@ refusal, a no-answer readiness, an insufficient budget, or a selection that chos
 the handoff — ends in the deterministic handoff. The router records
 `mio.route.handoff` with the cause (`selected`, `fallback`,
 `no_permitted_fallback`, `ai_attempts_ended`, `ai_attempts_exhausted`,
-`deadline_budget_insufficient`), the number of AI attempts and one bounded entry
+`deadline_budget_insufficient`, `remote_opt_in_withdrawn`), the number of AI attempts and one bounded entry
 per failed attempt (route, terminal event, fixed refusal word), then the handoff's
 own terminal record (`FAILED` / `REFUSED`: no advisory answer). The terminal step
 calls no AI and needs nothing from Edge: Edge detection, decisions and evidence are

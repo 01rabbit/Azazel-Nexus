@@ -565,13 +565,20 @@ class MioEntryService:
             "local_refusal": LOCAL_REFUSAL,
             "remote_trust": "unchecked",
         })
+        def admit_remote():
+            # The same reading as the selection's: the router asks it again
+            # before any remote attempt and at any fallback, and may only
+            # narrow on it. No new input, reader or override is consulted.
+            return remote_admission(
+                profile=profile, opt_in=NO_OPT_IN,
+                trust=unchecked_reading(), privacy_class=privacy, sanitised=False,
+            )
+
         result = self.router.handle(
             local_request=local_request, remote_request=None,
             profile=profile, privacy_class=privacy,
-            remote=remote_admission(
-                profile=profile, opt_in=NO_OPT_IN,
-                trust=unchecked_reading(), privacy_class=privacy, sanitised=False,
-            ),
+            remote=admit_remote(),
+            remote_recheck=admit_remote,
             local_admitted=is_advice and self._local_admitted(), local_refusal=LOCAL_REFUSAL,
             predictions=self._predictions_reader() if is_advice else {},
             deadline_ms=request.arguments["deadline_ms"],

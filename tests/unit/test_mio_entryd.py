@@ -231,3 +231,34 @@ def test_explainer_p3_through_handler_never_dispatches_remote(service, monkeypat
     req.arguments["privacy_class"] = "P3-restricted"
     with pytest.raises(RequestRefused):
         service.handle(req)
+
+
+@pytest.mark.parametrize("profile", list(MioProfile))
+@pytest.mark.parametrize("privacy", list(PrivacyClass))
+def test_entry_rechecks_remote_with_the_same_no_opt_in_reading(service, monkeypatch,
+                                                               profile, privacy):
+    # This build has no opt-in reader: the recheck entry passes re-reads the
+    # same admission, which never permits remote, so nothing changes.
+    from azazel_nexus.remote_trust import Exclusion
+
+    service._profile_reader = lambda: profile
+    seen = {}
+    original = service.router.handle
+
+    def spy(**kwargs):
+        seen.update(kwargs)
+        return original(**kwargs)
+
+    monkeypatch.setattr(service.router, "handle", spy)
+    reply = service.handle(request(privacy=privacy))
+    assert seen["remote"].permitted is False
+    again = seen["remote_recheck"]()
+    assert again == seen["remote"]
+    assert again.permitted is False
+    if privacy in {PrivacyClass.P0_PUBLIC, PrivacyClass.P1_SANITIZED} and profile in {
+        MioProfile.FASTEST_PERMITTED,
+    }:
+        assert again.excluded_by is Exclusion.CONSENT
+    assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
+    assert not any(e.get("terminal_event") == "remote opt-in withdrawn"
+                   for e in recorded(service))
