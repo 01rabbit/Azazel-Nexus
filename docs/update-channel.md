@@ -111,8 +111,9 @@ policy: an unsigned bundle is handled exactly as before, and every report says
 | Install on x86_64 hardware | **not done** |
 
 Container evidence for the wheelhouse build and the offline install:
-[offline-install-container-2026-10-28.json](evidence/offline-install-container-2026-10-28.json).
-It is a rehearsal under emulation and is not hardware evidence.
+[offline-install-container-2026-10-28.json](evidence/offline-install-container-2026-10-28.json)
+(its `covers_commit` names the code it ran). It is a rehearsal under emulation
+and is not hardware evidence.
 
 ## 3. Release admission is product-local
 

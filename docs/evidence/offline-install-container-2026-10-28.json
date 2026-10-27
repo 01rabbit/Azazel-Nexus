@@ -1,14 +1,16 @@
 {
   "schema": "azazel-nexus/prototype-offline-install-evidence/v1",
   "date": "2026-10-28",
+  "covers_commit": "59458cea8b2d22ad419ba61cd7c29c2c76f146e5",
+  "supersedes": "the earlier record of this file for commit 1cba518d7320a28c7ebe8c913dd56bc784ed70ff (before the #346 review fixes)",
   "scope": "Container rehearsal only: Debian 13 (debian:trixie) linux/amd64 containers under Rosetta emulation on an aarch64 colima VM. Not hardware, not native x86_64, not production activation or admission.",
   "source": {
-    "commit": "1cba518d7320a28c7ebe8c913dd56bc784ed70ff",
+    "commit": "59458cea8b2d22ad419ba61cd7c29c2c76f146e5",
     "worktree": "clean",
-    "selected_inputs_sha256": "f1fe18444b50075e5cd54a220dc1fff71a9ddb0224927fa270dfbc4e13a64a92"
+    "selected_inputs_sha256": "cef6345fe8263f9e6b52a4fba0ef4d4859c7ef314c8ff721584592d0a03b49f8"
   },
   "build_container": {
-    "network": "online",
+    "network": "online (per-container DNS resolver; VM configuration unchanged)",
     "image": "debian:trixie (linux/amd64, Rosetta)",
     "python": "Debian python3 3.13.5",
     "machine": "x86_64",
@@ -21,11 +23,11 @@
     "wheels": {
       "azazel_nexus-0.0.1.dev0-py3-none-any.whl": {
         "sha256": "da7da5f2697c97554b42ce353362af86b60ef1e9df5835f189c4f718be7a95cc",
-        "source": "built:1cba518d7320a28c7ebe8c913dd56bc784ed70ff"
+        "source": "built:59458cea8b2d22ad419ba61cd7c29c2c76f146e5"
       },
       "azazel_nexus_runtime-0.0.1.dev0-cp313-cp313-linux_x86_64.whl": {
-        "sha256": "5a4de8cc29493dd227a7d3838d212c6df22a1a2537805511832b10e5da801ff9",
-        "source": "built:1cba518d7320a28c7ebe8c913dd56bc784ed70ff"
+        "sha256": "68d24e8bc6cd4b62aecdf25b9e32033f5b9b5d93c3cacaad3357066bae341a1a",
+        "source": "built:59458cea8b2d22ad419ba61cd7c29c2c76f146e5"
       },
       "dbus_next-0.2.3-py3-none-any.whl": {
         "sha256": "58948f9aff9db08316734c0be2a120f6dc502124d9642f55e90ac82ffb16a18b",
@@ -59,10 +61,10 @@
       }
     ],
     "bundle": {
-      "sha256": "65e2dbe1dd6b449c04a7c066c29339af9baf0fdbc481c917bbdf387f99ba4b18",
-      "manifest_sha256": "1b7507dcc819045d9fe68e2fc0964216712f6503289abf4c351c1d59ab480417",
+      "sha256": "17902f8e2b14e5c96fed5be4f18c8e520cb4b765326344412e8808faf788fe90",
+      "manifest_sha256": "5aa8e1a920cb1275c809a54ced0ba20ceef542eaddaf2c0a506025bfed6fff62",
       "totals": {
-        "bytes": 6417311,
+        "bytes": 6430520,
         "count": 313
       },
       "slots": {
@@ -71,14 +73,40 @@
         "knowledge": "empty",
         "model": "empty"
       }
+    },
+    "harness_only_wheels": {
+      "purpose": "PyNaCl for the e2e harness fixtures only. Not in the bundle, not in the production wheelhouse or lock; downloaded unpinned (pynacl==1.6.2 by version only)",
+      "files": {
+        "cffi-2.1.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl": "a931079504ecc49efed7744c476a5c343a92fabf66dec2db95edb1b2fdc770e2",
+        "pycparser-3.12-py3-none-any.whl": "a076f3f489b39b43ed13563a1dafe42447445bec2e294154ec5c57fcdda4c85e",
+        "pynacl-1.6.2-cp38-abi3-manylinux_2_34_x86_64.whl": "c8a231e36ec2cab018c4ad4358c386e36eede0319a0c41fed24f840b1dac59f6"
+      }
     }
   },
   "offline_container": {
     "network": "--network none (only lo; outbound TCP connect failed)",
-    "image": "debian:trixie + python3 python3-venv only (built online beforehand; no compiler, no Nexus files)",
+    "image": "debian:trixie + python3 python3-venv only (prepared online beforehand, committed to a temporary image and removed afterwards; no compiler, no Nexus files)",
     "verifier": "tools/offline_bundle.py from the reviewed checkout mounted read-only",
-    "tampered_copy": "refused (one byte flipped; wheel sha256 mismatch); destination not created",
+    "tampered_copy": "refused (one byte flipped; wheel sha256 mismatch); destination not created, no staging left",
     "bundle_authenticated": false,
+    "wheel_lock_check": [
+      {
+        "pinned_by": "reviewed pyproject version only",
+        "requirement": "azazel-nexus==0.0.1.dev0"
+      },
+      {
+        "pinned_by": "reviewed pyproject version only",
+        "requirement": "azazel-nexus-runtime==0.0.1.dev0"
+      },
+      {
+        "pinned_by": "packaging/offline/requirements-x86_64-cp313.lock",
+        "requirement": "dbus-next==0.2.3"
+      },
+      {
+        "pinned_by": "packaging/offline/requirements-x86_64-cp313.lock",
+        "requirement": "pyyaml==6.0.3"
+      }
+    ],
     "install": {
       "pip": "--no-index --find-links --require-hashes --only-binary=:all:",
       "pip_check": "pass",
@@ -92,6 +120,11 @@
       "version_matches": "passed"
     },
     "edge_slot_admitted": false,
+    "recheck_before_install_sh": {
+      "result": "pass",
+      "files": 313,
+      "bundle_authenticated": false
+    },
     "installer": {
       "command": "env PYTHON=/opt/azazel-nexus/venv/bin/python sh packaging/install.sh --without-service-manager (from the extracted bundle, as root)",
       "exit": 0,
@@ -103,21 +136,30 @@
       "azazel-nexus --help": "ok",
       "azazel-nexus setup --next --json": "exit 0"
     },
-    "e2e_harness": {
+    "e2e_harness_production_venv": {
       "command": "tools/e2e.py from the reviewed checkout, PYTHONPATH=src:runtime/src as in CI integration-as-root, interpreter = offline venv",
       "passed": 15,
       "not_executed": 4,
       "failed": 3,
-      "failures": "Knowledge Lite offline import, Core reserve input path, Integration broker: ModuleNotFoundError nacl. PyNaCl is a dev extra used by the harness fixtures and is deliberately not in the runtime wheelhouse; dependent stages not executed",
-      "not_executed_other": "units masked and disabled (no systemd)"
+      "failures": "Knowledge Lite offline import, Core reserve input path, Integration broker: ModuleNotFoundError nacl (PyNaCl is a dev extra used by the harness fixtures, deliberately not in the runtime wheelhouse); 3 dependent stages not executed; units masked and disabled not executed (no systemd)"
+    },
+    "e2e_harness_with_harness_only_pynacl": {
+      "command": "same, plus PYTHONPATH entry /opt/harness-site populated by pip install --no-index --target from the harness-only wheels; the production venv was left without PyNaCl",
+      "passed": 21,
+      "not_executed": 1,
+      "failed": 0,
+      "note": "run after the first harness run in the same container",
+      "not_executed_stage": "units masked and disabled (no systemd)"
     }
   },
   "limitations": [
     "Rosetta emulation; x86_64 hardware install not performed",
     "Bundle unsigned and unencrypted; bundle_authenticated false; hashes are integrity, not authenticity",
+    "Own Nexus wheels are checked only by version against the reviewed pyproject; their content is covered only by a future bundle signature",
     "Target Python interpreter and python3-venv were provisioned into the offline image online beforehand",
     "No .deb set carried; the deb parser was only exercised on two packages downloaded from the live trixie mirror (not snapshot-pinned)",
     "Edge package built in a container from a fixed Edge commit; unsigned, health and running not checked, not admitted",
+    "Harness-only PyNaCl wheels are not hash-pinned and are not part of the product path",
     "systemd stage, activation and services not exercised"
   ]
 }

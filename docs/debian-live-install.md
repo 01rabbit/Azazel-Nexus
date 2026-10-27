@@ -601,7 +601,7 @@ but never installed by this tool.
 | Hash-pinned wheelhouse build (backend, `dbus-next`, `PyYAML`, both Nexus wheels incl. native `_bootstrap_deadline`) | implemented; container-rehearsed | [container evidence](evidence/offline-install-container-2026-10-28.json); x86_64 under Rosetta emulation, not hardware |
 | Single bundle manifest (source, wheels, slots; sha256/size/kind/source) | implemented | `tests/unit/test_offline_install_bundle.py` |
 | Safe atomic extraction and refusal cases | implemented | same tests; one tampered bundle refused in the container |
-| Offline install with `--no-index --find-links --require-hashes` | implemented; container-rehearsed | `--network none` container; `pip check` and imports passed |
+| Offline install with `--no-index --find-links --require-hashes` | implemented; container-rehearsed | `--network none` container at the commit the evidence names; lock check, `pip check`, imports, `recheck` and `install.sh --without-service-manager` passed. The e2e harness needs PyNaCl for its fixtures; with a separate harness-only PyNaCl set (not in the bundle or the lock) 21 of 22 stages passed, the systemd stage not run |
 | Edge package slot | implemented; container-rehearsed with an Edge packager build | `edge_package` checks only; health/running stay `not-checked`; not admitted |
 | Debian `.deb` slot | implemented (slot and control-field check only) | no pinned package set or source exists; no `.deb` was carried |
 | Model / Knowledge slots | implemented (carry and hash only) | not admitted; admission paths unchanged |
