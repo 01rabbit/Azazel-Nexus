@@ -553,6 +553,13 @@ _DELIVERY_BANNERS = {
 }
 _TEMPLATE_NOTES = (' 使用した手順はテンプレート（未レビュー）',
                    ' Procedures used are templates (unreviewed).')
+#: Every banner a deterministic playbook reference can carry: the keyword
+#: banner in either language, with or without the unreviewed-template note.
+#: A reader checks a stored reference text against this closed set.
+REFERENCE_BANNERS = frozenset(
+    banner + note
+    for i, banner in enumerate(_DELIVERY_BANNERS['keyword'])
+    for note in ('', _TEMPLATE_NOTES[i]))
 
 
 def delivered_document(frame, playbooks, options, candidate, ranked, guard, model_id, explanation=None, *, similarities=(), state='none', retrieval='keyword', benign_evidence=False,

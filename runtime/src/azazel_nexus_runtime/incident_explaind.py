@@ -19,7 +19,7 @@ from azazel_nexus.edge_intake import canonical
 from azazel_nexus.incident_explain import (
     CODES, MAX_LINE, MAX_PENDING, Selection, build_frame, decode,
     build_recent_incident, build_recent_incidents, read_recent_incidents, explanation_summary,
-    closed_pairs, read_control, read_retention_boundary, read_mio_reply, read_record, read_transition, read_pending,
+    SHOWN_STATES, closed_pairs, read_control, read_retention_boundary, read_mio_reply, read_record, read_transition, read_pending,
 )
 from azazel_nexus.lite_import import read_knowledge_refs
 from azazel_nexus.store_dirs import fsync_directory, store_directory
@@ -219,7 +219,7 @@ class Explainer:
         """
         for row in self.recent:
             if row["incident_id"] == ident:
-                if displaced and row["explanation"]["state"] == "explained":
+                if displaced and row["explanation"]["state"] in SHOWN_STATES:
                     continue
                 row["explanation"] = {"state": "unavailable", "route": "unavailable",
                                       "outcome": "unavailable", "summary": "",
@@ -524,12 +524,24 @@ class Explainer:
                 except Exception:  # noqa: BLE001 - caller cannot inject partial refs
                     refs, state = [], "unavailable"
                     codes.append("knowledge_reply_refused")
-        value = read_record({"incident_id": t["incident_id"], "explained_at": self.clock(),
-                             "transition": t["event_type"].removeprefix("edge.incident."),
-                             "edge_would": t["edge_would"], "policy_reason": t["policy_reason"],
-                             "attack_type": t["attack_type"],
-                             "technique_ids": t["technique_ids"], "mio": mio,
-                             "knowledge_refs": refs, "knowledge_state": state, "failure_codes": codes})
+        record = {"incident_id": t["incident_id"], "explained_at": self.clock(),
+                  "transition": t["event_type"].removeprefix("edge.incident."),
+                  "edge_would": t["edge_would"], "policy_reason": t["policy_reason"],
+                  "attack_type": t["attack_type"],
+                  "technique_ids": t["technique_ids"], "mio": mio,
+                  "knowledge_refs": refs, "knowledge_state": state, "failure_codes": codes}
+        try:
+            value = read_record(record)
+        except ValueError:
+            # A reply that passed its own reader but does not make a valid
+            # record is still refused as a reply: the incident is recorded
+            # with no M.I.O. content rather than raising out of the loop.
+            codes = [c for c in codes if not c.startswith("mio_")] + ["mio_reply_refused"]
+            record.update(failure_codes=codes, mio={
+                "route": "unavailable", "outcome": "unavailable",
+                "reason": "mio_reply_refused", "text": None})
+            self.mio_available = False
+            value = read_record(record)
         self.store.append_record(value)
         self._future()
         for row in self.recent:

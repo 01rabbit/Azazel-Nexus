@@ -101,7 +101,7 @@ class ObservedServer:
 class NoRemote:
     """Fail loudly if a local-only scenario dispatches remote content."""
 
-    def observe(self):
+    def observe(self, **_):
         return "remote_unavailable"
 
     def handle(self, *args, **kwargs):

@@ -165,8 +165,8 @@ def test_entry_defers_lexicon_miss_to_local_similarity(frame, tmp_path, monkeypa
     entry = mio_entryd.MioEntryService(
         profile_reader=lambda: MioProfile.FASTEST_PERMITTED, local_admitted=lambda: True,
         predictions_reader=lambda: {Route.LOCAL: Prediction('local', True, 1, 1, 1, False, 'test')})
-    monkeypatch.setattr(entry.local, 'observe', lambda: 'fixture')
-    monkeypatch.setattr(entry.remote, 'observe', lambda: 'fixture')
+    monkeypatch.setattr(entry.local, 'observe', lambda **_: 'fixture')
+    monkeypatch.setattr(entry.remote, 'observe', lambda **_: 'fixture')
     def handle(**kwargs):
         assert kwargs['local_request'].payload == frame
         return SimpleNamespace(route=Route.LOCAL, outcome=SimpleNamespace(value='answered'),

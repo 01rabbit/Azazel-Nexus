@@ -101,11 +101,27 @@ ENTRY_DELIVERY_RESERVE_MS = 30
 #: A reference fetch is not started with less than this left of its share;
 #: the handoff is then delivered at once with `reference_reason: deadline`.
 MIN_REFERENCE_FETCH_MS = 50
-#: Readiness probes taken for a request come out of its one deadline: each may
-#: use at most half of what is left after the handoff reserve and one minimal
-#: AI attempt (and never more than `PROBE_MAX_S`). Below this, nothing is
-#: probed for the request and the availability record says so.
-MIN_PROBE_S = 0.01
+#: Ledger writes made before the first AI attempt (request marker, request
+#: record, capability record, availability, selection) are accounted for
+#: explicitly: this much of the request's deadline is set aside for them.
+LEDGER_ALLOWANCE_MS = 50
+#: Readiness probes taken for a request come out of its one deadline. The two
+#: probes run one after the other and together take at most a quarter of
+#: what is left after the handoff reserve, one minimal AI attempt and the
+#: ledger allowance (each gets half of that quarter, never more than
+#: `PROBE_MAX_S`). Below `MIN_PROBE_S` each, nothing is probed for the request
+#: and the availability record says so.
+#:
+#: The guarantee this gives (software, not measured): with deadline D ms,
+#: left = D - HANDOFF_RESERVE_MS - MIN_AI_ATTEMPT_MS - LEDGER_ALLOWANCE_MS, the
+#: probes take at most left/4, so the first AI attempt starts (with at least
+#: MIN_AI_ATTEMPT_MS) whenever the ledger writes before it take no more than
+#: LEDGER_ALLOWANCE_MS + 3*left/4. For the explainer's 500 ms: probes at most
+#: 37.5 ms, the first attempt starts while those writes take at most 162.5 ms,
+#: and it gets at least 212.5 ms when they take at most 50 ms. A second
+#: attempt starts only if the first returns while MIN_AI_ATTEMPT_MS plus the
+#: reserve is still left; nothing guarantees it.
+MIN_PROBE_S = 0.005
 
 
 class PrincipalRate:
@@ -372,8 +388,9 @@ class MioEntryService:
         except Exception:
             return None
 
-    def _sample(self):
-        local, remote = self._observe(self.local.observe), self._observe(self.remote.observe)
+    def _sample(self, probe_s: float = PROBE_MAX_S):
+        local = self._observe(lambda: self.local.observe(deadline_s=probe_s))
+        remote = self._observe(lambda: self.remote.observe(deadline_s=probe_s))
         reading = read_capability(self._observe(self._profile_reader), local, remote)
         return reading.as_dict(), (local, remote)
 
@@ -381,7 +398,7 @@ class MioEntryService:
         """Pure status read: no ledger writes or comparison-state mutation."""
         return self._sample()[0]
 
-    def reconcile_capability(self):
+    def reconcile_capability(self, probe_s: float = PROBE_MAX_S):
         """Sample at most every ten seconds; append before accepting a change.
 
         Returns the `(local, remote)` observations taken, or None when no
@@ -390,7 +407,7 @@ class MioEntryService:
         now = self._clock()
         if now < self._next_capability_check:
             return None
-        current, observed = self._sample()
+        current, observed = self._sample(probe_s)
         self._settle_capability()
         if current != self._last_capability:
             at = self.router._clock()
@@ -479,23 +496,22 @@ class MioEntryService:
         return {"reference_status": "unavailable", "reference_reason": missing,
                 "handoff": handoff}
 
+    def probe_share_s(self, deadline_at: float) -> float:
+        """Each probe's bound for this request (see `LEDGER_ALLOWANCE_MS`)."""
+        left_ms = ((deadline_at - self.router.monotonic()) * 1000 - HANDOFF_RESERVE_MS
+                   - MIN_AI_ATTEMPT_MS - LEDGER_ALLOWANCE_MS)
+        return min(PROBE_MAX_S, left_ms / 4 / 2 / 1000)
+
     def _observe_within(self, deadline_at: float) -> tuple[str, str]:
-        left_ms = ((deadline_at - self.router.monotonic()) * 1000
-                   - HANDOFF_RESERVE_MS - MIN_AI_ATTEMPT_MS)
-        budget = min(PROBE_MAX_S, left_ms / 2000)
-        if budget < MIN_PROBE_S:
+        each = self.probe_share_s(deadline_at)
+        if each < MIN_PROBE_S:
             # No probe fits; the periodic tick keeps the capability record.
             return "not_observed_deadline", "not_observed_deadline"
-        clients = (self.local, self.remote)
-        for client in clients:
-            client.probe_deadline_s = budget
-        try:
-            local, remote = self.reconcile_capability() or (None, None)
-            return (local if local is not None else self.local.observe(),
-                    remote if remote is not None else self.remote.observe())
-        finally:
-            for client in clients:
-                client.probe_deadline_s = PROBE_MAX_S
+        # Either the capability sample or the availability probes run, never
+        # both for one daemon, so the two probes together stay within 2*each.
+        local, remote = self.reconcile_capability(probe_s=each) or (None, None)
+        return (local if local is not None else self.local.observe(deadline_s=each),
+                remote if remote is not None else self.remote.observe(deadline_s=each))
 
     def _mark(self, key: str) -> None:
         if hasattr(self.router.ledger, "rebuild_usage"):

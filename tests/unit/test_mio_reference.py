@@ -70,8 +70,8 @@ class FakeReference:
 def entry_service(tmp_path, monkeypatch, reference=None):
     monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
     target = entry.MioEntryService()
-    monkeypatch.setattr(target.local, "observe", lambda: "fixture")
-    monkeypatch.setattr(target.remote, "observe", lambda: "fixture")
+    monkeypatch.setattr(target.local, "observe", lambda **_: "fixture")
+    monkeypatch.setattr(target.remote, "observe", lambda **_: "fixture")
     if reference is not None:
         target.reference = reference
     return target
@@ -417,9 +417,9 @@ def test_the_handoff_reaches_the_explainer_before_it_gives_up(frame, tmp_path, m
     target = entry.MioEntryService(clock=lambda: now[0])
     # Each readiness probe blocks for the whole bound it was given.
     monkeypatch.setattr(target.local, "observe",
-                        lambda: block(target.local.probe_deadline_s) or "local_unavailable")
+                        lambda deadline_s: block(deadline_s) or "local_unavailable")
     monkeypatch.setattr(target.remote, "observe",
-                        lambda: block(target.remote.probe_deadline_s) or "remote_unavailable")
+                        lambda deadline_s: block(deadline_s) or "remote_unavailable")
     monkeypatch.setattr(entry, "remote_admission",
                         lambda **kw: RemoteAdmission(True, None, "fixture permitted"))
     target._local_admitted = lambda: True
@@ -507,3 +507,66 @@ def test_the_notice_and_the_content_kind_are_kept_in_the_record(frame, tmp_path,
                                                        playbooks=LIBRARY))), frame))
     assert attached["content_kind"] == "deterministic_reference" and attached["text"]
     assert attached["notice"] == HANDOFF_NOTICE["en"]
+
+
+@pytest.mark.parametrize("write_ms", [0, 10, 25, 40, 80])
+def test_the_documented_first_attempt_guarantee_holds_with_slow_ledger_writes(
+    frame, tmp_path, monkeypatch, write_ms,
+):
+    """Worst-case probes (each blocks its whole bound) and a ledger whose
+    every write takes `write_ms`, at the explainer's 500 ms deadline."""
+    from azazel_nexus_runtime import incident_explaind as explaind
+    from azazel_nexus_runtime import mio_router
+
+    from azazel_nexus.route_evidence import Prediction
+
+    now = [100.0]
+    monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
+    target = entry.MioEntryService(clock=lambda: now[0])
+    probes = []
+
+    def probe(name):
+        def observe(deadline_s):
+            probes.append(deadline_s)
+            now[0] += deadline_s
+            return name + "_unavailable"
+        return observe
+
+    monkeypatch.setattr(target.local, "observe", probe("local"))
+    monkeypatch.setattr(target.remote, "observe", probe("remote"))
+    target._local_admitted = lambda: True
+    target._predictions_reader = lambda: {Route.LOCAL: Prediction(
+        "local", True, 20, 10, 10, False, "fixture observations")}
+    writes = {"before_attempt": 0.0, "attempted": False}
+    append = target.router.ledger.append
+
+    def slow_append(*args, **kwargs):
+        now[0] += write_ms / 1000
+        if not writes["attempted"]:
+            writes["before_attempt"] += write_ms
+        return append(*args, **kwargs)
+
+    monkeypatch.setattr(target.router.ledger, "append", slow_append)
+    budgets = []
+
+    def local(request, audit=None):
+        writes["attempted"] = True
+        budgets.append(request.arguments["deadline_ms"])
+        return {"outcome": "failed", "refusal": "local_unavailable"}
+
+    monkeypatch.setattr(target.local, "handle", local)
+    deadline = explaind.ADVISE_DEADLINE_MS
+    reply = advise(target, frame, deadline)
+    left = (deadline - mio_router.HANDOFF_RESERVE_MS - mio_router.MIN_AI_ATTEMPT_MS
+            - entry.LEDGER_ALLOWANCE_MS)
+    # Probes: both ran, and together within a quarter of `left` (37.5 ms).
+    # (None at all when slow writes already ate the room for them.)
+    assert len(probes) in (0, 2) and sum(probes) * 1000 <= left / 4 + 1e-6
+    guaranteed = writes["before_attempt"] <= entry.LEDGER_ALLOWANCE_MS + 3 * left / 4
+    if guaranteed:
+        assert budgets and budgets[0] >= mio_router.MIN_AI_ATTEMPT_MS
+        if writes["before_attempt"] <= entry.LEDGER_ALLOWANCE_MS:
+            assert budgets[0] >= 212
+    # Whatever happened, the request ended in the handoff, not an error.
+    assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
+    assert reply["handoff"]["ai_attempts"] == len(budgets)

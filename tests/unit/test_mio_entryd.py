@@ -147,8 +147,8 @@ def test_main_unwritable_ledger_does_not_bind(tmp_path, monkeypatch):
 
 
 def test_selection_audit_failure_propagates(service, monkeypatch):
-    monkeypatch.setattr(service.local, "observe", lambda: "local_unavailable")
-    monkeypatch.setattr(service.remote, "observe", lambda: "remote_unavailable")
+    monkeypatch.setattr(service.local, "observe", lambda **_: "local_unavailable")
+    monkeypatch.setattr(service.remote, "observe", lambda **_: "remote_unavailable")
     original = service.router.ledger.append
 
     def append(event, **kwargs):
@@ -208,8 +208,8 @@ def test_explainer_p3_through_handler_never_dispatches_remote(service, monkeypat
     principal = Principal(4242, 7, 1, frozenset({PrincipalClass.SERVICE}))
     service._profile_reader = lambda: profile
     service._local_admitted = lambda: local_admitted
-    monkeypatch.setattr(service.local, "observe", lambda: "local_not_admitted")
-    monkeypatch.setattr(service.remote, "observe", lambda: "remote_not_admitted")
+    monkeypatch.setattr(service.local, "observe", lambda **_: "local_not_admitted")
+    monkeypatch.setattr(service.remote, "observe", lambda **_: "remote_not_admitted")
     monkeypatch.setattr(service.remote, "handle", lambda *a, **kw: pytest.fail("remote request"))
     monkeypatch.setattr(service.reference, "reference", lambda *a, **kw: (None, "no_pack"))
     monkeypatch.setattr(service.local, "handle", lambda *a, **kw: {"outcome": "not_advice", "refusal": "not_advice"})

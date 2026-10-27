@@ -639,17 +639,31 @@ none left), and entry's remote socket client uses it as the socket timeout of th
 exchange, so a remote daemon that accepts and never answers cannot hold the
 request past it. The remote verb's arguments are unchanged.
 
-Readiness probes taken for a request come out of the same deadline: each probe
-gets at most half of what is left after `HANDOFF_RESERVE_MS` and one minimal AI
-attempt, never more than `PROBE_MAX_S` (0.5 s); with less than `MIN_PROBE_S` left
-nothing is probed and the availability record reads `not_observed_deadline` (the
-periodic tick keeps the capability record). After the routing decision, entry
+Readiness probes and ledger writes taken for a request come out of the same
+deadline. With deadline D, let left = D − `HANDOFF_RESERVE_MS` −
+`MIN_AI_ATTEMPT_MS` − `LEDGER_ALLOWANCE_MS` (50 ms, set aside for the ledger
+writes before the first attempt: request marker, request record, capability
+record, availability and selection). The two probes run one after the other and
+together take at most left/4 (each left/8, never more than `PROBE_MAX_S`); below
+`MIN_PROBE_S` each nothing is probed and the availability record reads
+`not_observed_deadline` (the periodic tick keeps the capability record). The
+guarantee: the first AI attempt starts, with at least `MIN_AI_ATTEMPT_MS`, whenever
+the ledger writes before it take no more than `LEDGER_ALLOWANCE_MS` + 3·left/4. At
+the explainer's 500 ms that is: probes at most 37.5 ms; the first attempt starts
+while those writes take at most 162.5 ms, and has at least 212.5 ms when they take
+at most 50 ms. A second attempt is not guaranteed: it starts only if the first
+returns while its minimum plus the reserve is still left
+(`tests/unit/test_mio_reference.py`, slow-ledger cases). After the routing decision, entry
 keeps `ENTRY_DELIVERY_RESERVE_MS` (30 ms) for validating, recording and delivering
 the reply: the playbook-reference fetch ends that much before the deadline, and
 is not started with less than `MIN_REFERENCE_FETCH_MS` (50 ms) for it, in which
 case the handoff is delivered at once with `reference_reason: deadline`. The
 incident explainer asks with a 500 ms deadline and waits 750 ms
-(`ADVISE_CALLER_MARGIN_MS`), so it does not give up before entry has answered.
+(`ADVISE_CALLER_MARGIN_MS`), so it does not give up before entry has answered. The
+margin covers connect, framing and delivery only: it does **not** cover time spent
+queued behind another `mio.advise` or `mio.route` that entry is still serving
+(entry serves one request at a time); such a wait can still make the explainer
+record `mio_unavailable`.
 
 **A deterministic terminal step** (implemented). At most two AI attempts are made
 (`MAX_AI_ATTEMPTS`): the selected route and the one fallback from the original
@@ -748,10 +762,20 @@ The explainer's incident record keeps what kind of content it holds:
 `mio.content_kind` is `ai_advice` (a local model's validated advice),
 `deterministic_reference` (verified playbook text), `deterministic_notice` (the
 fixed notice only) or `none`, and a handoff record keeps the fixed `notice` in
-its language. Older records without these fields still read. The recent-incident
-view and `azazel-nexus status` label each explanation by that kind ("not AI" for
-both deterministic kinds) and print the notice, so a reference or a notice is
-never shown as AI advice.
+its language. On read, one consistency rule applies to records and to the
+recent-incident snapshot alike: a notice exactly for the two deterministic kinds,
+those kinds only on the handoff route, AI advice only on the local route with a
+text, no text for a notice, and a reference text that is one of the fixed keyword
+reference banners (`local_advisory.REFERENCE_BANNERS`; the snapshot compares the
+same banners after its summary redaction). Records written before the label still
+read: an unlabeled handoff record is derived as `legacy_handoff` and shown as
+"legacy unlabeled deterministic handoff (not AI)", never as an explanation, and
+its text, if any, must also be a reference banner. The display state is
+`explained` only for AI advice; a reference is `reference_shown` and a notice
+`notice_shown`. `azazel-nexus status` prints the label and the notice. A reply in
+the pre-handoff shape that carries a reference is refused (it has no notice to
+record it with), and a reply that cannot make a valid record is recorded as
+`mio_reply_refused` instead of raising.
 
 Evidence: `tests/unit/test_mio_reference.py` (in-process, mocks),
 `tests/unit/test_mio_reference_socket.py` (real daemons over real `SO_PEERCRED`

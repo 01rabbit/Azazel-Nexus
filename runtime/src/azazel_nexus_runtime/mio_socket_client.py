@@ -116,11 +116,8 @@ def _reply_metadata(reply: dict) -> dict:
 
 
 class LocalSocketClient:
-    #: Set by the entry for the duration of one request (see `PROBE_MAX_S`).
-    probe_deadline_s = PROBE_MAX_S
-
-    def observe(self) -> str:
-        return _probe("mio", self.probe_deadline_s)
+    def observe(self, *, deadline_s: float = PROBE_MAX_S) -> str:
+        return _probe("mio", min(PROBE_MAX_S, deadline_s))
 
     def handle(self, request, *, audit=None) -> dict:
         if getattr(getattr(request, "verb", None), "name", None) != "mio.local.infer":
@@ -191,11 +188,8 @@ class ReferenceSocketClient:
 
 
 class RemoteSocketClient:
-    #: Set by the entry for the duration of one request (see `PROBE_MAX_S`).
-    probe_deadline_s = PROBE_MAX_S
-
-    def observe(self) -> str:
-        return _probe("remote", self.probe_deadline_s)
+    def observe(self, *, deadline_s: float = PROBE_MAX_S) -> str:
+        return _probe("remote", min(PROBE_MAX_S, deadline_s))
 
     def handle(self, request, *, audit=None, deadline_ms=None) -> dict:
         """No transport is reachable from here; the probe is still bounded.

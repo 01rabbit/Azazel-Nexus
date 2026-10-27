@@ -397,8 +397,8 @@ def compose(tmp_path, monkeypatch, *, rate=None, **limits):
     service = entry.MioEntryService(
         router=router, clock=clock.mono, wall_clock=clock.wall,
         rate=rate(clock) if rate else None)
-    service.local.observe = lambda: "local_unavailable"
-    service.remote.observe = lambda: "remote_unavailable"
+    service.local.observe = lambda **_: "local_unavailable"
+    service.remote.observe = lambda **_: "remote_unavailable"
     return service, clock
 
 
@@ -619,7 +619,7 @@ def flip(svc, monkeypatch):
     second = ({**first[0], "reasons": {**first[0]["reasons"], "health": {
         "local": "local_available", "remote": "remote_unavailable"}}}, first[1])
     readings = {"value": first}
-    monkeypatch.setattr(svc, "_sample", lambda: readings["value"])
+    monkeypatch.setattr(svc, "_sample", lambda *a, **kw: readings["value"])
     return first, second, readings
 
 

@@ -90,8 +90,16 @@ def test_reference_and_delivered_are_revalidated():
                               list(options), None, "deterministic")
     reference = {"banner": body["advice"], **{k: v for k, v in body.items() if k != "advice"}}
     read_reference(reference)
-    reply = {"route": "deterministic handoff", "outcome": "answered", "reason": "no model",
-             "ledger_seq": 1, "reference_status": "attached", "reference": reference}
+    legacy = {"route": "deterministic handoff", "outcome": "answered", "reason": "no model",
+              "ledger_seq": 1, "reference_status": "attached", "reference": reference}
+    # The pre-handoff shape cannot carry the fixed notice: refused, not guessed.
+    with pytest.raises(ValueError):
+        read_mio_reply(legacy)
+    from azazel_nexus.local_advisory import HANDOFF_NOTICE
+
+    reply = {**legacy, "handoff": {"kind": "deterministic_reference",
+                                   "notice": HANDOFF_NOTICE["en"],
+                                   "ai_attempts": 0, "failures": []}}
     assert read_mio_reply(reply)["text"] == reference["banner"]
     assert read_mio_reply({"route": "local", "outcome": "answered", "reason": "local",
                            "ledger_seq": 2, **body})["text"] == body["advice"]
@@ -295,3 +303,58 @@ def test_severe_escalation_of_an_unexplained_incident_is_explained():
     # Once explained, further escalation needs to beat that baseline.
     assert s.enqueue(transition(2, "updated"), 3) == "skipped"
     assert s.enqueue(transition(1, "updated"), 4) == "queued"
+
+
+def _record(mio):
+    return {"incident_id": "inc-" + "0" * 16, "explained_at": 1.0, "transition": "opened",
+            "edge_would": "observe", "policy_reason": "other", "attack_type": "other",
+            "technique_ids": [], "mio": mio, "knowledge_refs": [], "knowledge_state": "skipped",
+            "failure_codes": []}
+
+
+def test_an_unlabeled_handoff_record_reads_as_legacy_not_as_an_explanation():
+    from azazel_nexus.incident_explain import (
+        CONTENT_LABELS,
+        LEGACY_HANDOFF,
+        explanation_summary,
+        read_record,
+    )
+    from azazel_nexus.local_advisory import REFERENCE_BANNERS
+
+    banner = sorted(REFERENCE_BANNERS)[0]
+    base = {"route": "deterministic handoff", "outcome": "refused", "reason": "mio_handoff"}
+    with_text = explanation_summary(read_record(_record({**base, "text": banner})))
+    assert with_text["content_kind"] == LEGACY_HANDOFF
+    assert with_text["state"] == "reference_shown"
+    assert "not AI" in CONTENT_LABELS[LEGACY_HANDOFF]
+    without = explanation_summary(read_record(_record({**base, "text": None})))
+    assert (without["content_kind"], without["state"]) == (LEGACY_HANDOFF, "unavailable")
+    # An unlabeled handoff whose text is not a reference banner is refused.
+    with pytest.raises(ValueError):
+        read_record(_record({**base, "text": "Do this now."}))
+    # The derived kind is never written.
+    with pytest.raises(ValueError):
+        read_record(_record({**base, "text": None, "content_kind": LEGACY_HANDOFF}))
+
+
+def test_a_labelled_reference_must_be_a_reference_banner():
+    from azazel_nexus.incident_explain import explanation_summary, read_record
+    from azazel_nexus.local_advisory import HANDOFF_NOTICE, REFERENCE_BANNERS
+
+    mio = {"route": "deterministic handoff", "outcome": "refused", "reason": "mio_handoff",
+           "content_kind": "deterministic_reference", "notice": HANDOFF_NOTICE["ja"]}
+    for banner in REFERENCE_BANNERS:
+        summary = explanation_summary(read_record(_record({**mio, "text": banner})))
+        assert summary["state"] == "reference_shown"
+    for forged in ("AI says isolate host-1", sorted(REFERENCE_BANNERS)[0] + " extra"):
+        with pytest.raises(ValueError):
+            read_record(_record({**mio, "text": forged}))
+
+
+def test_local_ai_advice_is_the_only_explained_state():
+    from azazel_nexus.incident_explain import explanation_summary, read_record
+
+    local = {"route": "local", "outcome": "answered", "reason": "local", "text": "Inspect."}
+    assert explanation_summary(read_record(_record(local)))["state"] == "explained"
+    labelled = explanation_summary(read_record(_record({**local, "content_kind": "ai_advice"})))
+    assert (labelled["state"], labelled["content_kind"]) == ("explained", "ai_advice")

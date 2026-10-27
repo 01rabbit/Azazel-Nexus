@@ -21,8 +21,8 @@ def owner(tmp_path, monkeypatch):
     router = MioRouter(clock=lambda: datetime.fromtimestamp(time[0], UTC).isoformat())
     service = MioEntryService(router=router, profile_reader=lambda: MioProfile.CORE,
                               clock=lambda: time[0], wall_clock=lambda: time[0])
-    service.local.observe = lambda: "local_unavailable"
-    service.remote.observe = lambda: "remote_unavailable"
+    service.local.observe = lambda **_: "local_unavailable"
+    service.remote.observe = lambda **_: "remote_unavailable"
     return service, time
 
 
@@ -50,7 +50,7 @@ def test_each_changed_reason_records_once_even_at_same_state(owner):
     service, time = owner
     service.reconcile_capability()
     service._profile_reader = lambda: MioProfile.FASTEST_PERMITTED
-    service.local.observe = lambda: "local_not_admitted"
+    service.local.observe = lambda **_: "local_not_admitted"
     time[0] += 10
     service.reconcile_capability()
     service.reconcile_capability()
@@ -82,7 +82,7 @@ def test_flapping_is_sampled_at_most_once_per_ten_seconds(owner):
     service, time = owner
     service.reconcile_capability()
     states = iter(["local_not_admitted", "local_unavailable"] * 20)
-    service.local.observe = lambda: next(states)
+    service.local.observe = lambda **_: next(states)
     for _ in range(9):
         time[0] += 1
         service.reconcile_capability()
@@ -166,7 +166,7 @@ def test_restart_keeps_the_rate_bound_from_the_last_transition(owner):
     time[0] += 3
     restarted = MioEntryService(router=service.router, profile_reader=lambda: MioProfile.CORE,
                                 clock=lambda: time[0], wall_clock=lambda: time[0])
-    restarted.local.observe = lambda: "local_not_admitted"
+    restarted.local.observe = lambda **_: "local_not_admitted"
     restarted.remote.observe = service.remote.observe
     restarted.reconcile_capability()
     assert len(transitions(service)) == 1  # 3 s after the last transition: not due
@@ -180,8 +180,8 @@ def test_a_request_probes_each_daemon_once_and_both_records_agree(owner):
 
     service, time = owner
     calls = []
-    service.local.observe = lambda: calls.append("local") or "local_not_admitted"
-    service.remote.observe = lambda: calls.append("remote") or "remote_unavailable"
+    service.local.observe = lambda **_: calls.append("local") or "local_not_admitted"
+    service.remote.observe = lambda **_: calls.append("remote") or "remote_unavailable"
     service.handle(SimpleNamespace(arguments={
         "privacy_class": PrivacyClass.P0_PUBLIC.value, "deadline_ms": 1000}))
     assert calls == ["local", "remote"]
