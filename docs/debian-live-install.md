@@ -527,7 +527,9 @@ python3 tools/build_offline_bundle.py --output /path/to/azazel-nexus-offline.tar
 
 # Target, no network, as root. Run the verifier from a reviewed checkout,
 # never from the bundle it verifies (it refuses to run from inside one).
-# /var/lib/azazel-offline and /opt must be root-owned and not group/other-writable.
+# The parents of --into and --venv must already exist, root-owned and not
+# group/other-writable.
+sudo install -d -m 0755 /var/lib/azazel-offline /opt/azazel-nexus
 sudo python3 -I /path/to/reviewed/Azazel-Nexus/tools/offline_bundle.py install \
   --bundle /path/to/azazel-nexus-offline.tar.gz \
   --into /var/lib/azazel-offline/bundle \
@@ -569,14 +571,17 @@ unprivileged account can change them in between. Its sequence is:
    against the in-tree `MANIFEST.json`), re-run the lock check, and check that
    the venv is root-owned and not group/other-writable;
 6. with `--run-installer` only, run `packaging/install.sh` from the tree with
-   `PYTHON` set to that venv (`--installer-option` passes only
-   `--without-service-manager` or `--without-accounts`).
+   `PYTHON` set to that venv (`--installer-option=--without-service-manager`
+   or `--installer-option=--without-accounts`, written with `=`, are the only
+   options passed through).
 
 On any refusal before step 6 the extracted tree and the venv are removed. If
 `install.sh` itself fails, both are kept for inspection and the host may be
 partly changed. Without `--run-installer` the report prints the two remaining
 commands: `sudo ... recheck --tree DIR --expect-manifest-sha256 DIGEST`, then
-`sudo env PYTHON=... sh .../install.sh`; run them back to back.
+`sudo env PYTHON=... sh .../install.sh`; run them back to back. `recheck` is
+a gate before `install.sh` only: `install.sh` byte-compiles Python from the
+tree, and a recheck after it is refused for the new `__pycache__` files.
 
 Extraction refuses:
 

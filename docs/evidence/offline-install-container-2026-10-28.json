@@ -1,13 +1,13 @@
 {
   "schema": "azazel-nexus/prototype-offline-install-evidence/v1",
   "date": "2026-10-28",
-  "covers_commit": "59458cea8b2d22ad419ba61cd7c29c2c76f146e5",
-  "supersedes": "the earlier record of this file for commit 1cba518d7320a28c7ebe8c913dd56bc784ed70ff (before the #346 review fixes)",
+  "covers_commit": "a84e09cda3fe5bebf9998f2058dfb2ad473fa850",
+  "supersedes": "earlier records of this file for 1cba518d7320 and 59458cea8b2d (before the strict-ustar reader and the root-only install sequence)",
   "scope": "Container rehearsal only: Debian 13 (debian:trixie) linux/amd64 containers under Rosetta emulation on an aarch64 colima VM. Not hardware, not native x86_64, not production activation or admission.",
   "source": {
-    "commit": "59458cea8b2d22ad419ba61cd7c29c2c76f146e5",
+    "commit": "a84e09cda3fe5bebf9998f2058dfb2ad473fa850",
     "worktree": "clean",
-    "selected_inputs_sha256": "cef6345fe8263f9e6b52a4fba0ef4d4859c7ef314c8ff721584592d0a03b49f8"
+    "selected_inputs_sha256": "95a689c8bc54c23a90c49e89017f370e374b5949649269a5b55a67e7d7d99d41"
   },
   "build_container": {
     "network": "online (per-container DNS resolver; VM configuration unchanged)",
@@ -23,11 +23,11 @@
     "wheels": {
       "azazel_nexus-0.0.1.dev0-py3-none-any.whl": {
         "sha256": "da7da5f2697c97554b42ce353362af86b60ef1e9df5835f189c4f718be7a95cc",
-        "source": "built:59458cea8b2d22ad419ba61cd7c29c2c76f146e5"
+        "source": "built:a84e09cda3fe5bebf9998f2058dfb2ad473fa850"
       },
       "azazel_nexus_runtime-0.0.1.dev0-cp313-cp313-linux_x86_64.whl": {
-        "sha256": "68d24e8bc6cd4b62aecdf25b9e32033f5b9b5d93c3cacaad3357066bae341a1a",
-        "source": "built:59458cea8b2d22ad419ba61cd7c29c2c76f146e5"
+        "sha256": "936525ba210950e7b0002f81eff10f0ca31c27bc29ced79bbbc02785064fcdc0",
+        "source": "built:a84e09cda3fe5bebf9998f2058dfb2ad473fa850"
       },
       "dbus_next-0.2.3-py3-none-any.whl": {
         "sha256": "58948f9aff9db08316734c0be2a120f6dc502124d9642f55e90ac82ffb16a18b",
@@ -61,10 +61,11 @@
       }
     ],
     "bundle": {
-      "sha256": "17902f8e2b14e5c96fed5be4f18c8e520cb4b765326344412e8808faf788fe90",
-      "manifest_sha256": "5aa8e1a920cb1275c809a54ced0ba20ceef542eaddaf2c0a506025bfed6fff62",
+      "format": "POSIX ustar (first header magic 'ustar\\0' '00', typeflag '0')",
+      "sha256": "4977bcf0f57800f71816ffec4aa7c83d165d36da4b2a410d81e16e15f36d2242",
+      "manifest_sha256": "11f93114c22f05baa2704920eff80b7ef8b34bf4466887ed8394bd2457b2ef26",
       "totals": {
-        "bytes": 6430520,
+        "bytes": 6446521,
         "count": 313
       },
       "slots": {
@@ -81,13 +82,14 @@
         "pycparser-3.12-py3-none-any.whl": "a076f3f489b39b43ed13563a1dafe42447445bec2e294154ec5c57fcdda4c85e",
         "pynacl-1.6.2-cp38-abi3-manylinux_2_34_x86_64.whl": "c8a231e36ec2cab018c4ad4358c386e36eede0319a0c41fed24f840b1dac59f6"
       }
-    }
+    },
+    "deb_parser_note": "control archives of real Debian 13 packages walked by the new ustar/GNU-magic scanner"
   },
   "offline_container": {
     "network": "--network none (only lo; outbound TCP connect failed)",
     "image": "debian:trixie + python3 python3-venv only (prepared online beforehand, committed to a temporary image and removed afterwards; no compiler, no Nexus files)",
     "verifier": "tools/offline_bundle.py from the reviewed checkout mounted read-only",
-    "tampered_copy": "refused (one byte flipped; wheel sha256 mismatch); destination not created, no staging left",
+    "tampered_copy": "refused (one byte flipped near the end; gzip CRC check failed in the streamed reader); destination not created, no staging left",
     "bundle_authenticated": false,
     "wheel_lock_check": [
       {
@@ -120,13 +122,8 @@
       "version_matches": "passed"
     },
     "edge_slot_admitted": false,
-    "recheck_before_install_sh": {
-      "result": "pass",
-      "files": 313,
-      "bundle_authenticated": false
-    },
     "installer": {
-      "command": "env PYTHON=/opt/azazel-nexus/venv/bin/python sh packaging/install.sh --without-service-manager (from the extracted bundle, as root)",
+      "command": "/bin/sh <tree>/source/packaging/install.sh --without-service-manager, run by install --run-installer as root with PYTHON=<root-owned venv>",
       "exit": 0,
       "wrappers_staged": 15,
       "accounts_created": 13,
@@ -150,7 +147,15 @@
       "failed": 0,
       "note": "run after the first harness run in the same container",
       "not_executed_stage": "units masked and disabled (no systemd)"
-    }
+    },
+    "sequence": "install as root with --run-installer --installer-option=--without-service-manager: extract -> lock check -> slots -> fresh root-owned venv -> pip --no-index --require-hashes -> pip check/imports -> recheck against the extraction's manifest_sha256 (lock re-checked, root ownership, no links/hard links) -> venv ownership -> install.sh",
+    "own_wheels": "azazel-nexus and azazel-nexus-runtime are pinned by version only (exact string match against the reviewed pyproject files); their content is built per bundle and is unauthenticated until bundle signing exists",
+    "recheck_before_install_sh": {
+      "result": "pass",
+      "files": 313,
+      "bundle_authenticated": false
+    },
+    "recheck_after_install_sh": "refused, as designed: install.sh byte-compiled Python from the tree (an undeclared __pycache__/*.pyc appeared). recheck is a pre-install gate only"
   },
   "limitations": [
     "Rosetta emulation; x86_64 hardware install not performed",
