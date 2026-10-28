@@ -519,12 +519,13 @@ for _name, _fields in (
                         "record_uncertain")),
         ("services", ("units", "units[]", *(f"units[].{f}" for f in (
             "unit", "status", "load_state", "active_state", "sub_state", "reason_code"))))):
-    ALLOWED |= {f"sections.{_name}", f"sections.{_name}.status",
+    ALLOWED |= {f"sections.{_name}", f"sections.{_name}.status", f"sections.{_name}.freshness",
                 f"sections.{_name}.reason_code", f"sections.{_name}.snapshot",
                 *(f"sections.{_name}.{k}" for k in _SNAP_SOURCE),
                 f"sections.{_name}.snapshot.schema", f"sections.{_name}.snapshot.written_at",
                 *(f"sections.{_name}.snapshot.{k}" for k in _fields)}
-ALLOWED |= {"sections.knowledge_status.cryptographic_implementation",
+ALLOWED |= {"sections.knowledge_status.content_freshness_evaluated_at",
+            "sections.knowledge_status.cryptographic_implementation",
             "sections.knowledge_status.cryptographic_implementation.status",
             "sections.knowledge_status.cryptographic_implementation.reason_code",
             "sections.mio_status.notice", "sections.services.source.reader",

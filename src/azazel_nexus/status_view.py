@@ -806,7 +806,15 @@ def _snapshot_section(path, reader, limit, now, stale_after, fields, *,
     value = read_snapshot(path, reader, limit)
     section = _component(value, now, stale_after, ("schema", "written_at", *fields), extra)
     section["source"]["writer"] = writer
+    # Freshness is its own item. `status` below never says `running`: a fresh
+    # snapshot of a failed unit or of quarantined Knowledge is fresh news of
+    # a problem, and each caller turns the snapshot into its own word.
+    section["freshness"] = section["source"]["freshness"]
     return section
+
+
+def _fresh(section) -> bool:
+    return section["snapshot"] is not None and section["freshness"] == "fresh"
 
 
 def _knowledge_status(now) -> dict:
@@ -816,8 +824,18 @@ def _knowledge_status(now) -> dict:
     section = _snapshot_section(
         knowledge_status_path(), snap.read_knowledge_status, snap.KNOWLEDGE_BYTES, now,
         snap.KNOWLEDGE_STALE_S, KNOWLEDGE_SNAPSHOT_FIELDS, writer="az-knowledge-lited")
-    # The words are Knowledge Lite's; whether they describe now is the
-    # snapshot's freshness, which a reader checks before trusting them.
+    # Knowledge Lite's own word decides: only `available` is available;
+    # anything else is `degraded` with Knowledge Lite's reason code.
+    snapshot = section["snapshot"]
+    if _fresh(section):
+        if snapshot["state"] == "available":
+            section["status"], section["reason_code"] = "available", None
+        else:
+            section["status"], section["reason_code"] = "degraded", snapshot["reason_code"]
+    # `freshness` (current/static/absent) was evaluated when the snapshot was
+    # written, not now: a dated claim can expire between two writes.
+    section["content_freshness_evaluated_at"] = (
+        snapshot["written_at"] if snapshot is not None else None)
     section["cryptographic_implementation"] = {"status": "not_supported",
                                                "reason_code": "nexus_70_review_pending"}
     return section
@@ -832,10 +850,14 @@ def _mio_status(now) -> dict:
         mio_status_path(), snap.read_mio_status, snap.MIO_BYTES, now, snap.MIO_STALE_S,
         MIO_SNAPSHOT_FIELDS, writer="az-mio-entryd")
     snapshot = section["snapshot"]
-    if snapshot is not None and not snapshot["recorded"] and section["status"] == "running":
-        section["status"], section["reason_code"] = "unknown", "no_recorded_capability_transition"
-    elif snapshot is not None and snapshot["record_uncertain"] and section["status"] == "running":
-        section["status"], section["reason_code"] = "unknown", "capability_record_uncertain"
+    if _fresh(section):
+        if not snapshot["recorded"]:
+            section["status"], section["reason_code"] = "unknown", "no_recorded_capability_transition"
+        elif snapshot["record_uncertain"]:
+            section["status"], section["reason_code"] = "unknown", "capability_record_uncertain"
+        else:
+            # The mio section's own word: a recorded reading, not a grant.
+            section["status"], section["reason_code"] = "recorded", None
     section["notice"] = NOTICE
     return section
 
@@ -851,6 +873,14 @@ def _services(now) -> dict:
         units_status_path(), snap.read_units_status, snap.UNITS_BYTES, now,
         snap.UNITS_STALE_S, (), writer="az-units-observe", extra=extra)
     section["source"]["reader"] = "systemd_bus.UnitStatesReader (read-only)"
+    if _fresh(section):
+        units = section["snapshot"]["units"]
+        if any(u["active_state"] == "failed" for u in units):
+            section["status"], section["reason_code"] = "degraded", "unit_failed"
+        elif any(u["status"] != "read" for u in units):
+            section["status"], section["reason_code"] = "unknown", "unit_state_unread"
+        else:
+            section["status"], section["reason_code"] = "read", None
     return section
 
 

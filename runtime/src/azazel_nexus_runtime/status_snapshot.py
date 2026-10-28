@@ -82,7 +82,7 @@ class SnapshotWriter:
         except Exception as exc:  # noqa: BLE001 - the snapshot is optional
             if not self._failing:
                 self._failing = True
-                self.warn(
+                self._warn(
                     f"{self.name}: cannot write its status snapshot ({type(exc).__name__}); "
                     "it continues and `azazel-nexus status` shows this snapshot as "
                     "unavailable. Re-run install.sh, then systemctl daemon-reload and "
@@ -94,6 +94,14 @@ class SnapshotWriter:
                     os.unlink(name)
                 except OSError:
                     pass
+
+    def _warn(self, message: str) -> None:
+        """Log through `warn`; a logger that fails does not stop the daemon."""
+
+        try:
+            self.warn(message)
+        except Exception:  # noqa: BLE001 - the snapshot is optional, and so is its log
+            pass
 
     def _sweep(self) -> None:
         """Remove `.status-*` temp files a killed predecessor left. Never raises."""

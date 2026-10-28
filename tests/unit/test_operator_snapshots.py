@@ -230,7 +230,8 @@ def test_fresh_stale_future_and_absent(root, kind):
     assert section(NOW)["reason_code"] == "snapshot_absent_or_refused"
     _place(where(), _raw(build()))
     fresh = section(NOW + 1)
-    assert fresh["status"] in ("running", "unknown")
+    assert fresh["status"] in ("available", "recorded", "read")
+    assert fresh["status"] != "running" and fresh["freshness"] == "fresh"
     assert fresh["source"]["freshness"] == "fresh"
     assert fresh["source"]["schema"] == build()["schema"]
     old = section(NOW + stale + 1)
@@ -277,7 +278,7 @@ def test_mio_section_says_unknown_until_a_record_and_while_uncertain(root):
     assert (value["status"], value["reason_code"]) == ("unknown", "capability_record_uncertain")
     _place(paths.mio_status_path(), _raw(_mio()))
     value = status_view._mio_status(NOW)
-    assert value["status"] == "running" and value["snapshot"]["ceiling"] == "LITE"
+    assert value["status"] == "recorded" and value["snapshot"]["ceiling"] == "LITE"
     assert "not a grant" in value["notice"]
 
 
@@ -304,6 +305,140 @@ def test_the_writer_replaces_atomically_with_mode_0640_and_sweeps(tmp_path):
     clock[0] = 60.0
     writer.tick()
     assert len(writes) == 2
+
+
+def test_the_temp_file_is_created_in_the_leaf_private_then_renamed(tmp_path, monkeypatch):
+    from azazel_nexus_runtime import status_snapshot
+    from azazel_nexus_runtime.status_snapshot import SnapshotWriter
+
+    leaf = tmp_path / "leaf"
+    leaf.mkdir()
+    real = status_snapshot.tempfile.mkstemp
+    created = []
+
+    def mkstemp(*args, **kwargs):
+        fd, name = real(*args, **kwargs)
+        created.append((kwargs.get("dir"), Path(name).parent,
+                        stat.S_IMODE(os.fstat(fd).st_mode)))
+        return fd, name
+    monkeypatch.setattr(status_snapshot.tempfile, "mkstemp", mkstemp)
+    writer = SnapshotWriter(leaf / "status.json", _knowledge, limit=4096, interval_s=0,
+                            name="test")
+    assert writer.write()
+    assert created == [(leaf, leaf, 0o600)]
+    assert stat.S_IMODE((leaf / "status.json").stat().st_mode) == 0o640
+
+
+def test_a_symlinked_snapshot_is_replaced_not_followed(tmp_path):
+    from azazel_nexus_runtime.status_snapshot import SnapshotWriter
+
+    leaf = tmp_path / "leaf"
+    leaf.mkdir()
+    victim = tmp_path / "victim"
+    victim.write_text("keep")
+    (leaf / "status.json").symlink_to(victim)
+    assert SnapshotWriter(leaf / "status.json", _knowledge, limit=4096, interval_s=0,
+                          name="test").write()
+    assert victim.read_text() == "keep"
+    assert not (leaf / "status.json").is_symlink()
+    assert snap.read_knowledge_status((leaf / "status.json").read_bytes()) == _knowledge()
+
+
+def test_a_failing_logger_does_not_escape_the_writer(tmp_path):
+    from azazel_nexus_runtime.status_snapshot import SnapshotWriter
+
+    def warn(message):
+        raise BrokenPipeError("stderr is gone")
+    writer = SnapshotWriter(tmp_path / "absent" / "status.json", _knowledge, limit=4096,
+                            interval_s=0, name="test", warn=warn)
+    assert writer.write() is False
+    writer.tick()
+
+
+def test_entryd_survives_a_failing_snapshot_log(tmp_path, monkeypatch):
+    from azazel_nexus_runtime import mio_entryd as entry
+    from azazel_nexus_runtime import mio_socket_client as client
+    from azazel_nexus_runtime import runtime_paths as runtime
+    from azazel_nexus_runtime import status_snapshot
+
+    monkeypatch.setenv("AZAZEL_ROOT", str(tmp_path))
+    monkeypatch.setattr(runtime, "ROOT", tmp_path)
+    monkeypatch.setattr(client.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=os.getuid()))
+    monkeypatch.setattr(client.grp, "getgrnam", lambda _: SimpleNamespace(gr_gid=os.getgid()))
+    runtime.mio_state_dir().mkdir(parents=True)
+    runtime.socket_path("mio-advise").parent.mkdir(parents=True, exist_ok=True)
+
+    class Closed:
+        def write(self, text):
+            raise OSError("stderr closed")
+
+        def flush(self):
+            raise OSError("stderr closed")
+    monkeypatch.setattr(sys, "stderr", Closed())
+    assert status_snapshot._stderr is not None
+    captured = {}
+    monkeypatch.setattr(entry, "serve_forever", lambda **kw: captured.update(kw) or 0)
+    monkeypatch.setattr(entry.PrincipalPolicy, "resolve", lambda **kw: "policy")
+    # The leaf is missing, so every write fails and logs through a broken stderr.
+    assert entry.main([], ready=lambda: None) == 0
+    assert captured["stop"]() is False
+
+
+def test_entryd_writes_at_once_when_the_recorded_reading_changes(tmp_path, monkeypatch):
+    from azazel_nexus_runtime import mio_entryd as entry
+    from azazel_nexus_runtime import mio_socket_client as client
+    from azazel_nexus_runtime import runtime_paths as runtime
+
+    monkeypatch.setenv("AZAZEL_ROOT", str(tmp_path))
+    monkeypatch.setattr(runtime, "ROOT", tmp_path)
+    monkeypatch.setattr(client.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=os.getuid()))
+    monkeypatch.setattr(client.grp, "getgrnam", lambda _: SimpleNamespace(gr_gid=os.getgid()))
+    runtime.mio_state_dir().mkdir(parents=True)
+    runtime.socket_path("mio-advise").parent.mkdir(parents=True, exist_ok=True)
+    paths.mio_status_path().parent.mkdir(parents=True)
+    captured = {}
+    monkeypatch.setattr(entry, "serve_forever", lambda **kw: captured.update(kw) or 0)
+    monkeypatch.setattr(entry.PrincipalPolicy, "resolve", lambda **kw: "policy")
+    assert entry.main([], ready=lambda: None) == 0
+    service = captured["handler"].__self__
+    first = snap.read_mio_status(paths.mio_status_path().read_bytes())
+    assert first["recorded"] is True
+    # No change and not due: the tick writes nothing.
+    paths.mio_status_path().unlink()
+    assert captured["stop"]() is False
+    assert not paths.mio_status_path().exists()
+    # A recorded change (here, a write of unknown outcome) is written at once,
+    # long before the 60 s interval.
+    monkeypatch.setattr(service, "reconcile_capability", lambda *a, **k: None)
+    service._capability_uncertain = True
+    assert captured["stop"]() is False
+    changed = snap.read_mio_status(paths.mio_status_path().read_bytes())
+    assert changed["record_uncertain"] is True
+
+
+def test_a_fresh_snapshot_of_a_problem_is_not_running(root):
+    """A UI must not read a fresh snapshot as health."""
+    _place(paths.knowledge_status_path(), _raw(_knowledge(state="quarantined",
+                                                          reason_code="revoked")))
+    value = status_view._knowledge_status(NOW + 1)
+    assert (value["status"], value["reason_code"], value["freshness"]) == (
+        "degraded", "revoked", "fresh")
+    assert value["content_freshness_evaluated_at"] == NOW
+    _place(paths.knowledge_status_path(), _raw(_knowledge(state="unavailable",
+                                                          reason_code="no_bundle",
+                                                          generation=None, freshness="absent")))
+    assert status_view._knowledge_status(NOW + 1)["status"] == "degraded"
+    units = _units()
+    units["units"][3]["active_state"] = "failed"
+    _place(paths.units_status_path(), _raw(units))
+    value = status_view._services(NOW + 1)
+    assert (value["status"], value["reason_code"]) == ("degraded", "unit_failed")
+    _place(paths.units_status_path(), _raw(_units()))
+    assert status_view._services(NOW + 1)["status"] == "read"
+    for section in (status_view._knowledge_status, status_view._mio_status,
+                    status_view._services):
+        for now in (NOW + 1, NOW + 10_000, None):
+            assert section(now)["status"] != "running"
 
 
 def test_the_writer_never_raises_and_warns_once(tmp_path):
@@ -344,7 +479,7 @@ def test_knowledge_lited_snapshot_follows_its_status_and_goes_stale_when_it_stop
     paths.knowledge_status_path().parent.mkdir(parents=True)
     assert writer.write()
     before = status_view._knowledge_status(NOW + 1)
-    assert before["status"] == "running"
+    assert (before["status"], before["freshness"]) == ("degraded", "fresh")
     assert before["snapshot"]["state"] == service.handle(
         SimpleNamespace(verb=daemon.STATUS_VERB, arguments={}))["state"]
     admit(node)
@@ -370,7 +505,7 @@ def test_knowledge_lited_status_snapshot_never_carries_exception_text(tmp_path, 
     assert "SECRET" not in json.dumps(value)
 
 
-def test_knowledge_lited_main_writes_before_serving_and_on_its_tick(tmp_path, monkeypatch):
+def test_knowledge_lited_main_writes_after_ready_and_on_its_tick(tmp_path, monkeypatch):
     from azazel_nexus_runtime import knowledge_lited as daemon
     from azazel_nexus_runtime import runtime_paths as runtime
     from azazel_nexus_runtime import serve
@@ -383,16 +518,23 @@ def test_knowledge_lited_main_writes_before_serving_and_on_its_tick(tmp_path, mo
     leaf.mkdir(parents=True)
     seen = {}
 
+    order = []
+
     def serve_forever(**kwargs):
+        # Nothing is written before the bind; READY comes first, then the write.
         seen["before"] = (leaf / "status.json").exists()
+        kwargs["ready"]()
+        seen["after_ready"] = (leaf / "status.json").exists()
         (leaf / "status.json").unlink()
         assert kwargs["stop"]() is True
         return 0
     monkeypatch.setattr(serve, "serve_forever", serve_forever)
     # Due again at the first tick, so the stop callback is seen to write.
     monkeypatch.setattr(snap, "KNOWLEDGE_INTERVAL_S", 0)
-    assert daemon.main([], stop=lambda: True, ready=lambda: None) == 0
-    assert seen["before"] is True
+    assert daemon.main([], stop=lambda: True,
+                       ready=lambda: order.append(("ready", (leaf / "status.json").exists()))) == 0
+    assert seen["before"] is False and seen["after_ready"] is True
+    assert order == [("ready", False)]
     # The stop callback ticked the writer, which was due again.
     assert snap.read_knowledge_status((leaf / "status.json").read_bytes()) is not None
 
@@ -545,7 +687,7 @@ def test_the_observer_writes_one_snapshot_and_takes_no_argument(root, monkeypatc
     paths.units_status_path().parent.mkdir(parents=True)
     assert units_observe.main([], reader=reader, clock=lambda: NOW) == 0
     value = status_view._services(NOW + 1)
-    assert value["status"] == "running"
+    assert (value["status"], value["reason_code"]) == ("unknown", "unit_state_unread")
     assert {u["reason_code"] for u in value["snapshot"]["units"]} == {"bus_unavailable"}
     assert status_view._services(NOW + snap.UNITS_STALE_S + 1)["status"] == "stale"
     with pytest.raises(SystemExit, match="takes no arguments"):
@@ -662,6 +804,6 @@ def test_status_reads_every_new_section_through_json(root, monkeypatch, capsys):
     assert sections["mio_status"]["snapshot"]["state"] == "CORE"
     assert len(sections["services"]["snapshot"]["units"]) == len(snap.OBSERVED_UNITS)
     assert sections["storage"]["locations"][0]["label"] == "state_root"
-    assert all(s["status"] in ("running", "measured")
+    assert all(s["status"] in ("available", "recorded", "read", "measured")
                for name, s in sections.items()
                if name in ("knowledge_status", "mio_status", "services", "storage"))

@@ -178,16 +178,23 @@ def main(
     snapshot = SnapshotWriter(knowledge_status_path(), service.status_snapshot,
                               limit=KNOWLEDGE_BYTES, interval_s=KNOWLEDGE_INTERVAL_S,
                               name="az-knowledge-lited")
-    # Before serving, so status reflects this start. Never raises: a missing
-    # leaf is logged once and serving continues.
-    snapshot.write()
+    # After READY, never before the bind: the summary verifies the bundle,
+    # which must not delay serving. Never raises: a missing leaf is logged
+    # once and serving continues.
+    notify = ready if ready is not None else runtime_ready_callback()
+
+    def ready_then_write() -> None:
+        if notify is not None:
+            notify()
+        snapshot.write()
+
     return serve_forever(
         path=socket_path(SOCKET_NAME), registry=REGISTRY,
         additional_sockets=((socket_path("knowledge-read"),
                              grp.getgrnam("azknowledge-read").gr_gid, READ_REGISTRY),),
         policy=PrincipalPolicy.resolve(service_accounts=("azmioentry", "azarbiter", "azmio", "azexplain")),
         audit=audit, handler=service.handle, stop=lambda: (snapshot.tick(), stop())[1],
-        ready=ready if ready is not None else runtime_ready_callback(),
+        ready=ready_then_write,
     )
 
 

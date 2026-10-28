@@ -115,9 +115,11 @@ def freshness(written_at, now, stale_after) -> tuple[str, Optional[str], Optiona
 
 KNOWLEDGE_SCHEMA = "azazel-nexus/knowledge-status/v1"
 KNOWLEDGE_BYTES = 4096
-#: knowledge-lited rewrites the snapshot at start and then this often.
-KNOWLEDGE_INTERVAL_S = 60
-KNOWLEDGE_STALE_S = 300
+#: knowledge-lited rewrites the snapshot after READY and then this often.
+#: Short, because `freshness` is evaluated when written: a dated claim that
+#: expires between two writes reads `current` until the next one.
+KNOWLEDGE_INTERVAL_S = 30
+KNOWLEDGE_STALE_S = 150
 #: `lite_bundle.ReadingSummary.overall`, the words `knowledge.status` answers.
 KNOWLEDGE_STATES = ("available", "stale", "unavailable", "quarantined")
 #: Every `reason_code` `lite_import.status_summary` returns today, plus this
