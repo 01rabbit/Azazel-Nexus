@@ -333,7 +333,10 @@ explainer's `mio-advise` listener -- with no free-text argument:
 | `mio.remote.opt_in.withdraw` | `reason` (`operator_request`, `privacy_review`, `provider_change`, `incident_response`) | withdraws; next generation |
 
 Every change writes the next **generation**; nothing lowers it and there is no
-reset verb. After a withdrawal the four prerequisites must be set again. A
+reset verb. After a withdrawal the four prerequisites must be set again. At
+the ceiling (2^63-1) a grant is refused, and a withdrawal is still written,
+at that same generation: a withdrawn record permits nothing whatever its
+generation, so a withdrawal always takes effect. A
 grant is recorded in the route ledger (`mio.remote.opt_in.set`) before it is
 committed; a withdrawal is committed before it is recorded
 (`mio.remote.opt_in.withdrawn` with the generation), so a ledger fault never

@@ -274,6 +274,10 @@ class ConsentStore:
         self._clock = clock
         self._monotonic = monotonic
         self._drain_timeout_s = drain_timeout_s
+        #: Test seam only: called in `send_gate` right after the generation
+        #: is read, while the gate is held. Lets a test commit a withdrawal
+        #: between a sender's read and its transport, deterministically.
+        self._after_send_read: Optional[Callable[[], None]] = None
         #: The highest generation this process has read or written. A lower
         #: one (or none) afterwards is a rolled-back store.
         self._seen = 0
@@ -426,6 +430,8 @@ class ConsentStore:
                         fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
                         with self._lock:
                             record = self._checked(self._read_at(leaf))
+                        if self._after_send_read is not None:
+                            self._after_send_read()
                         reading = _ABSENT if record is None else _reading_of(record)
                     elif self._seen == 0 and self._read_at(leaf) is None:
                         reading = _ABSENT
@@ -458,8 +464,16 @@ class ConsentStore:
             else:
                 self._seen = generation
             if generation >= _MAX_GENERATION:
-                raise ConsentRefused("opt-in generation exhausted")
-            record = make(current, generation + 1)
+                # A grant can no longer move the generation, so it is refused.
+                # A withdrawal is always possible: it is written at the same
+                # (highest) generation, which is never a rollback, and a
+                # withdrawn record permits nothing whatever its generation --
+                # the send gate and the recheck both require a granted one.
+                if not over_rollback:
+                    raise ConsentRefused("opt-in generation exhausted")
+                record = make(current, _MAX_GENERATION)
+            else:
+                record = make(current, generation + 1)
             fd = self._gate_fd(leaf, create=True)
             os.close(fd)
             self._write_at(leaf, record)

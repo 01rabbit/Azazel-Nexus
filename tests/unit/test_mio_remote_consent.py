@@ -353,3 +353,27 @@ def test_the_store_does_not_reach_knowledge():
     source = inspect.getsource(mc)
     code = source.split('"""', 2)[2]
     assert "knowledge" not in code.lower()
+
+
+# -- the generation ceiling ------------------------------------------------
+
+
+def test_at_the_generation_ceiling_a_grant_is_refused_and_a_withdrawal_still_works(
+        directory, monkeypatch):
+    monkeypatch.setattr(mc, "_MAX_GENERATION", 4)
+    store = _store(directory)
+    record = _grant_all(store)
+    assert record.generation == 4 and store.reading().permits
+    with pytest.raises(ConsentRefused):
+        store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR)
+    record, drained = store.withdraw("incident_response", operator=OPERATOR)
+    assert drained is True and record.generation == 4
+    reading = store.reading()
+    assert reading.status == "withdrawn" and not reading.permits
+    # Not a rollback for this process, nor for a restarted one.
+    assert _store(directory).reading().status == "withdrawn"
+    # A second withdrawal at the ceiling also stands; a grant stays refused.
+    assert store.withdraw("operator_request", operator=OPERATOR)[0].generation == 4
+    with pytest.raises(ConsentRefused):
+        store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR)
+    assert store.reading().status == "withdrawn"

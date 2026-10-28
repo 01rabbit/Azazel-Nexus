@@ -1055,3 +1055,56 @@ def test_after_a_restart_a_withdrawal_is_still_in_force(tmp_path):
     reply = _service(transport=_spy_transport(calls), consent=restarted).handle(
         Request(frame=FRAME, envelope=_seal(nonce="r" * 48, opt_in_generation=generation)))
     assert calls == [] and reply["refusal"] == "opt_in_generation_mismatch"
+
+
+def test_a_withdrawal_committed_between_the_read_and_the_transport_waits_for_it(tmp_path):
+    """Deterministic: the sender has read the granted generation under the
+    gate; a withdrawal is committed before its transport runs. The
+    withdrawal must not be confirmed until that transport has returned --
+    which holds only because the gate is taken *before* the generation is
+    read and kept until the transport returns."""
+
+    from azazel_nexus_runtime.mio_remote_consent import ConsentStore
+
+    directory, _, generation = _real_store(tmp_path)
+    sender = ConsentStore(directory, owner=os.geteuid())
+    confirmed = threading.Event()
+    result = []
+
+    def withdraw():
+        result.append(ConsentStore(directory, owner=os.geteuid()).withdraw(
+            "operator_request", operator="uid:1002"))
+        confirmed.set()
+
+    taker = threading.Thread(target=withdraw)
+
+    def after_read():
+        taker.start()
+        fresh = ConsentStore(directory, owner=os.geteuid())
+        for _ in range(5000):
+            if fresh.reading().status == "withdrawn":
+                break
+            threading.Event().wait(0.001)
+        assert fresh.reading().status == "withdrawn"  # committed
+        # Given every chance to return early.
+        confirmed.wait(0.3)
+
+    sender._after_send_read = after_read
+    seen = []
+
+    def transport(*, record, frame, path, **kw):
+        seen.append(confirmed.is_set())
+        return EgressReport(TransportOutcome.RECEIVED, 2, 200, "ok"), b'{"advice":"ok"}'
+
+    reply = _service(transport=transport, consent=sender).handle(
+        Request(frame=FRAME, envelope=_seal(opt_in_generation=generation)))
+    taker.join(10)
+    # The send was already past its check; it is the confirmation that waits.
+    assert reply["outcome"] == "advisory"
+    assert seen == [False]
+    assert result and result[0][1] is True and confirmed.is_set()
+    # And the next send is refused.
+    sender._after_send_read = None
+    reply = _service(transport=transport, consent=sender).handle(
+        Request(frame=FRAME, envelope=_seal(nonce="z" * 48, opt_in_generation=generation)))
+    assert reply["refusal"] == "opt_in_not_granted" and seen == [False]
