@@ -444,7 +444,7 @@ install -m 0644 "$HERE"/systemd/azazel-noc-observe.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-noc-observe.timer "$UNIT_DIR"
 # The read-only operator UI (U5): its socket and service. Not governed, not
 # masked and not enabled here (the preset says disable); an operator who wants
-# it runs `systemctl enable --now azazel-ui.socket`. Nothing requires it.
+# it enables azazel-ui.socket itself (docs/operator-ui.md). Nothing requires it.
 install -m 0644 "$HERE"/systemd/azazel-ui.socket "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-ui.service "$UNIT_DIR"
 install -m 0644 "$HERE"/azazel-nexus.preset "$PRESET_DIR"/99-azazel-nexus.preset

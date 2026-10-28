@@ -60,6 +60,7 @@ The operator CLI, `azazel-nexus`, answers every subcommand with no network:
 | `model-import-fetched` | root copies a completed fetch into the #95 verifier and promotes it with `MODEL_ID [--acknowledge-license]`; no network or admission |
 | `status` | everything above, as it currently stands |
 | `health` | units and the audit chain |
+| `ui-login` | print the read-only UI's current one-use login code (operator group only) |
 | `hil-preflight` | whether the 8 GiB HG-05 campaign may start on this node. It takes **no arguments**, no sample, and reboots or activates nothing |
 
 The privileged half is a **separate distribution**, `azazel-nexus-runtime`
