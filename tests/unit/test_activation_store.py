@@ -331,3 +331,41 @@ def test_real_approval_directory_refuses_contended_nonblocking_lock(
                 pytest.fail("shared lock unexpectedly bypassed exclusive holder")
     finally:
         os.close(held_fd)
+
+
+@pytest.mark.parametrize("change", ["timestamp", "grown"])
+def test_private_descriptor_reader_refuses_file_changed_while_reading(
+    approval, monkeypatch, change, private_os,
+):
+    # The later whole-pair re-read cannot see a change that is undone before
+    # it runs; the reader itself must refuse a file that moved under it.
+    directory, *_ = approval
+    target = directory / "approval.json"
+    module_os = private_os(activation_store)
+    actual_read = os.read
+    changed = False
+
+    def change_after_first_read(descriptor, size):
+        nonlocal changed
+        part = actual_read(descriptor, size)
+        if not changed:
+            changed = True
+            if change == "timestamp":
+                # Same bytes and size: only the file's metadata records the touch.
+                info = os.stat(target)
+                os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns + 10**9))
+            else:
+                with open(target, "ab") as extra:
+                    extra.write(b" ")
+        return part
+
+    monkeypatch.setattr(module_os, "read", change_after_first_read)
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(ApprovalRefused, match="changed while reading"):
+            activation_store._read_file_at(
+                fd, "approval.json", owner=os.getuid(),
+                limit=activation_store.MAX_APPROVAL_BYTES,
+            )
+    finally:
+        os.close(fd)

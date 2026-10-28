@@ -393,3 +393,79 @@ def test_observer_has_no_caller_selected_process_or_path_and_uses_procfs(monkeyp
     assert closed == [43, 42, 41]
     # Keep references alive to make it explicit that only the call's seams were patched.
     assert real_open and real_close
+
+
+@pytest.mark.parametrize("change", ["mode", "timestamp"])
+def test_fingerprint_refuses_metadata_changed_during_read(tmp_path, monkeypatch, change, private_os):
+    # The bytes stay the same, so both content observations agree; only the
+    # file's identity says it was touched mid-measurement. That alone refuses.
+    private_os(running_python)
+    path = tmp_path / "python"
+    path.write_bytes(b"stable executable bytes")
+    path.chmod(0o755)
+    fd = _open_fd(path)
+    actual_read = os.read
+    changed = False
+
+    def touch_after_first_read(descriptor, size):
+        nonlocal changed
+        result = actual_read(descriptor, size)
+        if descriptor == fd and not changed:
+            changed = True
+            if change == "mode":
+                path.chmod(0o775)
+            else:
+                info = os.stat(path)
+                os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 10**9))
+        return result
+
+    monkeypatch.setattr(running_python.os, "read", touch_after_first_read)
+    try:
+        with pytest.raises(ApprovalRefused, match="changed during measurement"):
+            _fingerprint_fd(fd, owner=os.getuid())
+    finally:
+        os.close(fd)
+
+
+def _stat_result(identity):
+    return SimpleNamespace(
+        st_dev=identity[0], st_ino=identity[1], st_mode=identity[2],
+        st_uid=identity[3], st_gid=identity[4], st_nlink=identity[5],
+        st_size=identity[6], st_mtime_ns=identity[7], st_ctime_ns=identity[8],
+    )
+
+
+@pytest.mark.parametrize("change", ["measured-differs", "exe-rebound-after"])
+def test_observer_refuses_executable_identity_that_does_not_stay_bound(
+    monkeypatch, change, private_os,
+):
+    # Same seams as the healthy observer test above; only one identity moves.
+    private_os(running_python)
+    state = _observation().state
+    executable = _observation().executable
+    other = list(executable.identity)
+    other[1] += 1  # another inode: a different file behind the same name
+    other = tuple(other)
+    if change == "measured-differs":
+        measured, named = replace(executable, identity=other), [executable.identity] * 2
+    else:
+        measured, named = executable, [executable.identity, other]
+    stats = iter(named)
+
+    monkeypatch.setattr(running_python.sys, "platform", "linux")
+    monkeypatch.setattr(running_python.os, "getpid", lambda: 123)
+    monkeypatch.setattr(running_python, "_python_state", lambda: state)
+    monkeypatch.setattr(running_python, "_filesystem_type", lambda fd: running_python._PROC_MAGIC)
+    monkeypatch.setattr(running_python, "_fingerprint_fd", lambda fd: measured)
+    monkeypatch.setattr(
+        running_python.os, "open",
+        lambda path, flags, *, dir_fd=None: {"/proc": 41, "123": 42, "exe": 43}[path],
+    )
+    monkeypatch.setattr(
+        running_python.os, "stat",
+        lambda path, *, dir_fd=None, **kwargs: _stat_result(next(stats)),
+    )
+    monkeypatch.setattr(running_python.os, "close", lambda fd: None)
+
+    with pytest.raises(ApprovalRefused, match="^current Python observation refused$"):
+        observe_running_python()
