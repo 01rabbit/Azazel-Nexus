@@ -964,6 +964,32 @@ def test_every_word_and_code_of_the_operator_and_noc_sections_has_a_label(tmp_pa
     assert "SECRET" not in json.dumps(built)
 
 
+def test_citation_and_bundle_display_fields_are_labelled_and_never_healthy():
+    """#362's citation display (freshness, citation_state) and Knowledge Lite's
+    bundle reach the page through the label table, never as 未定義の語."""
+    from azazel_nexus.incident_explain import CITATION_STATES
+
+    labels = _labels()["words"]
+    for word in (*CITATION_STATES, "static", "current"):
+        assert word in labels, word
+    assert {w for w in CITATION_STATES if labels[w][1] == "ok"} == set()
+    assert labels["static"][1] != "ok"
+    script = _code((STATIC / "app.js").read_text(encoding="utf-8"))
+    for call in ("badge(r.citation_state)", "badge(r.freshness)", "bundleFacts(kl)",
+                 "ex.knowledge_refs_omitted"):
+        assert call in script, call
+    # The demo carries both shapes of citation and a verified bundle, so the
+    # fixture page shows them; every word in them has a label.
+    view = json.loads(DEMO.read_text(encoding="utf-8"))
+    refs = [ref for row in view["sections"]["edge_loop"]["recent"]["snapshot"]["incidents"]
+            for ref in row["explanation"]["knowledge_refs"]]
+    assert any("citation_state" not in ref for ref in refs)
+    seen = {ref[key] for ref in refs for key in ("freshness", "citation_state") if key in ref}
+    assert seen and sorted(seen - set(labels)) == []
+    assert set(view["sections"]["knowledge_lite"]["bundle"]) == {
+        "digest_short", "signer_key_ids", "static_count", "current_count", "next_expiry"}
+
+
 def test_the_document_carries_the_operator_and_noc_sections(tmp_path, monkeypatch):
     """A non-root UI reads these sections, not the root-only sources."""
     view = json.loads(DEMO.read_text(encoding="utf-8"))

@@ -262,8 +262,33 @@
                     "claim_id": "T1059",
                     "name": "Command and Scripting Interpreter",
                     "technique_id": "T1059"
+                  },
+                  {
+                    "as_of": "2026-09-21T04:00:00Z",
+                    "bundle_digest_short": "sha256:0123456789ab",
+                    "citation": "MITRE ATT&CK v14.1",
+                    "citation_state": "shown",
+                    "claim_id": "T1059",
+                    "freshness": "static",
+                    "generation": 7,
+                    "name": "Shell",
+                    "technique_id": "T1059",
+                    "withheld": []
+                  },
+                  {
+                    "as_of": "2026-09-21T04:00:00Z",
+                    "bundle_digest_short": "sha256:0123456789ab",
+                    "citation": "",
+                    "citation_state": "none",
+                    "claim_id": "T1071",
+                    "freshness": "current",
+                    "generation": 7,
+                    "name": "Application Layer Protocol",
+                    "technique_id": "T1071",
+                    "withheld": []
                   }
                 ],
+                "knowledge_refs_omitted": 1,
                 "outcome": "answered",
                 "route": "local",
                 "state": "explained",
@@ -462,6 +487,7 @@
         "transport_reason": "Fabric#25"
       },
       "continues": [
+        "Knowledge Lite advice",
         "audit",
         "deterministic explanations",
         "inventory and commissioning",
@@ -482,9 +508,9 @@
         {
           "axis": "freshness",
           "defect": false,
-          "reason": "trust_unreadable | freshness: absent",
+          "reason": "available | freshness: current",
           "subject": "knowledge_lite",
-          "value": "unavailable",
+          "value": "available",
           "withheld": []
         },
         {
@@ -508,9 +534,9 @@
         {
           "axis": "knowledge_supplier",
           "defect": false,
-          "reason": "nothing is supplying this capability; AZ-04 peer is a capability extension and its absence is unavailable, not a defect",
+          "reason": "supplied by the embedded runtime alone; AZ-04 peer is unavailable, which is the designed state for a node with no peers",
           "subject": "knowledge",
-          "value": "none",
+          "value": "Knowledge Lite",
           "withheld": []
         },
         {
@@ -567,12 +593,21 @@
       "status": "read"
     },
     "knowledge_lite": {
+      "bundle": {
+        "current_count": 1,
+        "digest_short": "sha256:0123456789ab",
+        "next_expiry": "2027-01-01T00:00:00Z",
+        "signer_key_ids": [
+          "lab-signer"
+        ],
+        "static_count": 3
+      },
       "cryptographic_implementation": {
         "reason_code": "nexus_70_review_pending",
         "status": "not_supported"
       },
-      "freshness": "absent",
-      "generation": null,
+      "freshness": "current",
+      "generation": 5,
       "readiness": {
         "does_not_mean": [
           "that this node's cryptographic implementation is supported -- the hand-written Ed25519 verifier is under review (Nexus#70)",
@@ -583,14 +618,14 @@
         "means": "a correct Knowledge Lite bundle can be imported offline by an operator and its real claims served read-only",
         "word": "functional"
       },
-      "reason_code": "trust_unreadable",
+      "reason_code": "available",
       "source": {
         "kind": "store_read",
         "reader": "lite_import.status_summary",
         "trust": "commissioned_trust_root",
         "written_at": null
       },
-      "status": "unavailable",
+      "status": "available",
       "withheld": []
     },
     "knowledge_status": {
@@ -922,7 +957,7 @@
                   "client": "systemd-networkd",
                   "expired": true,
                   "expires_never": false,
-                  "remaining_s": -6769772
+                  "remaining_s": -6768211
                 }
               },
               "ifindex": 2,

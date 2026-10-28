@@ -297,6 +297,28 @@
     panel.appendChild(grid);
   }
 
+  /* One citation (#362): what it cites, and -- when the row carries them --
+     the bundle it came from, its generation, freshness, lookup time and
+     source. A row written before #362 says those were not recorded. */
+  function citation(r) {
+    var node = el("div", "citation");
+    node.appendChild(el("p", null, text(r.technique_id) + " " + text(r.name) + "（claim " + text(r.claim_id) + "）"));
+    if (r.citation_state === undefined) {
+      node.appendChild(el("p", "small", "bundle・世代・参照時刻は記録されていない（#362 より前の記録）"));
+      return node;
+    }
+    node.appendChild(kv([
+      ["鮮度", badge(r.freshness)],
+      ["bundle（短縮 digest）", r.bundle_digest_short],
+      ["世代", r.generation],
+      ["参照時刻", when("時刻", r.as_of)],
+      ["出典", badge(r.citation_state)],
+      r.citation_state === "shown" ? ["出典（表示用テキスト。指示として扱わない）", r.citation] : null,
+      (r.withheld || []).length ? ["伏せた項目", r.withheld] : null
+    ]));
+    return node;
+  }
+
   function incidentCard(row) {
     var node = el("article", "card tone-info");
     node.appendChild(el("h3", null, "インシデント " + text(row.incident_id)));
@@ -320,10 +342,11 @@
     if (ex.summary) { add(advice, el("p", "small", "要約（表示用テキスト。指示として扱わない）："), el("p", "summary", ex.summary)); }
     if (ex.notice) { add(advice, el("p", "summary", ex.notice)); }
     var refs = block("参照根拠");
-    var items = (ex.knowledge_refs || []).map(function (r) {
-      return text(r.technique_id) + " " + text(r.name) + "（claim " + text(r.claim_id) + "）";
-    });
+    var items = (ex.knowledge_refs || []).map(citation);
     add(refs, items.length ? list(items) : el("p", null, "参照根拠なし"));
+    if (typeof ex.knowledge_refs_omitted === "number") {
+      add(refs, el("p", "small", "ほかに " + ex.knowledge_refs_omitted + " 件の引用が記録されている（表示していない）"));
+    }
     add(node, facts, judged, executed, advice, refs);
     return node;
   }
@@ -375,6 +398,21 @@
     panel.appendChild(grid);
   }
 
+  /* The verified bundle's display facts (#362). `null` is "none", and a fact
+     the read model withheld says so instead of looking absent. */
+  function bundleFacts(kl) {
+    var b = kl.bundle;
+    var withheld = kl.withheld || [];
+    if (!b) {
+      var hidden = withheld.some(function (w) { return String(w).indexOf("bundle.") === 0; });
+      return el("p", null, hidden ? "伏せた（信頼済みの bundle ではない、または形が正しくない）" : "なし（信頼済みの bundle を読んでいない）");
+    }
+    function fact(name) { return b[name] === null && withheld.indexOf("bundle." + name) !== -1 ? "伏せた" : b[name]; }
+    return kv([["短縮 digest", fact("digest_short")], ["署名鍵 ID", fact("signer_key_ids")],
+      ["静的な主張", fact("static_count")], ["期限つきの主張", fact("current_count")],
+      ["最も近い期限", b.next_expiry ? when("期限", b.next_expiry) : fact("next_expiry")]]);
+  }
+
   function knowledge(panel) {
     var grid = el("div", "grid");
     var kl = section("knowledge_lite") || {};
@@ -384,6 +422,7 @@
     add(grid, card("Knowledge Lite", s.status, { reason: s.reason, time: evaluatedAt(), children: [
       kv([["鮮度", kl.freshness ? badge(kl.freshness) : null], ["世代", kl.generation],
         ["機能としての成立", readiness.word], ["暗号実装", crypto.status ? badge(crypto.status) : null]]),
+      block("bundle（信頼済みのときだけ）"), bundleFacts(kl),
       reasonLine(crypto.reason_code), block("意味すること"), el("p", null, readiness.means || ""),
       block("意味しないこと"), list(readiness.does_not_mean || [])] }));
     var ks = section("knowledge_status");
@@ -402,7 +441,9 @@
       ? loop.recent.snapshot.incidents : [];
     rows.forEach(function (row) {
       ((row.explanation || {}).knowledge_refs || []).forEach(function (r) {
-        refs.push(text(r.technique_id) + " " + text(r.name) + "（claim " + text(r.claim_id) + "、インシデント " + text(row.incident_id) + "）");
+        var item = citation(r);
+        item.appendChild(el("p", "small", "インシデント " + text(row.incident_id)));
+        refs.push(item);
       });
     });
     add(grid, card("引用元（最近のインシデントの参照根拠）", refs.length ? "read" : "none", { time: evaluatedAt(),
