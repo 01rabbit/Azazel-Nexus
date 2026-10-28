@@ -122,13 +122,21 @@ within a campaign; key rotation changes correlation and requires a new campaign.
 `validate_acquisition(record)` checks acquisition **shape only**, returning
 `Status.SHAPE_ONLY` or `Status.REFUSED`; it never returns `attested` or a reserve.
 It accepts the HG-01/HG-04 acquisition schemas
-`azazel-nexus/hil-capture/hg-01/1` and `azazel-nexus/hil-capture/hg-04/1`,
-and probe schemas `azazel-nexus/core-reserve/2` and `azazel-nexus/core-reserve/3`. This does not satisfy
+`azazel-nexus/hil-capture/hg-01/2` and `azazel-nexus/hil-capture/hg-04/2`,
+and probe schemas `azazel-nexus/core-reserve/2`, `/3` and `/4`. This does not satisfy
 `validate_record`: qualification requires a complete gate/campaign envelope.
+A version 1 capture (`.../hg-01/1`, `.../hg-04/1`) carries no observed
+platform and is refused.
 
 Both capture outputs carry `gate_id`, `capture_method`, `dut_id`,
 `dut_fingerprint`, `boot_fingerprint`, `build_commit`, `kernel_release`,
-`virtualization_not_observed`, and `virtualization_observations`.
+`virtualization_not_observed`, `virtualization_observations`, and (version 2,
+[ADR-0003](adr/0003-arm-software-verification-profile.md) R3) the observed
+platform: `platform_profile_id`, the reviewed profile selected from the host
+observation, and `uname_machine`. A host no reviewed profile matches is
+refused before acquisition with only its reason code on stderr (for example
+`refused: UNKNOWN_ARCHITECTURE`). An arm64 lab host is recorded as
+`debian-13-arm64-cp313-lab`, and the record validator refuses that capture.
 Before acquiring either gate, `az-hil-capture` applies the negative filter;
 a failed filter emits only `refused: RESERVE_VIRTUALIZATION_OBSERVED` on stderr
 and exits 2 with no capture on stdout.
@@ -137,15 +145,26 @@ HG-04 adds `interfaces` with `nic_fingerprint`, `ifla_perm_address_present`
 (bool or null for unknown), `permanent_address_usable`, and
 `permanent_address_fingerprint` (null when unusable). Neither tool claims
 packet silence, role/account correctness, renaming continuity or qualification.
-A gate envelope can embed the automatic output as `capture`; its gate and DUT
-must match. Its `observations` must still supply all gate-specific outcomes and
-artifact references. Do not fill unobserved outcomes to make validation pass.
+A gate envelope embeds the automatic output as `acquisition` (`capture` is
+read as the same field; both at once are refused); its gate and DUT must
+match. HG-01 and HG-04 records **must** embed it, because it is the only
+observation of the platform they were taken on: the declared `platform`
+(`rugged-x86_64-linux`) must name the observed profile, that profile must be
+the deployment baseline (`debian-13-amd64-cp313`), and `uname_machine` must be
+its CPU (`x86_64`); otherwise the record is refused. Gates without a capture
+tool (HG-02, HG-06, HG-07), behaviour and drill records still carry only the
+declared string. Its `observations` must still supply all gate-specific
+outcomes and artifact references. Do not fill unobserved outcomes to make
+validation pass. The observation is what the host reported, not attestation
+(ADR-0003, "Limits of host observation").
 
 Probe v2 fields are `schema`, `provenance`, `profile`, `host_digest`,
 `harness_version`, `subsystems_active`, `samples`, `boot_fingerprint`,
 `run_sequence`, `build_commit`, and `kernel_release`. The current harness
-(`core-reserve-probe/3`) writes v3, which adds `virtualization_observations`
-and `virtualization_not_observed` (a negative filter only). `host_digest` is the
+(`core-reserve-probe/4`) writes v4: v3 added `virtualization_observations`
+and `virtualization_not_observed` (a negative filter only), and v4 adds the
+observed `architecture` (`amd64`/`arm64`) and `platform_profile_id`. The probe
+refuses to sample on a host that is not the deployment-baseline profile. `host_digest` is the
 legacy field spelling for the same protected value called `dut_fingerprint`
 in campaign/capture envelopes. A campaign run embeds the probe document
 unchanged under `measurement`, copies its boot fingerprint and harness version,
@@ -222,9 +241,11 @@ loader never reads it. Admission consumes only the attested
 `azazel-nexus/hil-mio-campaign/v1` bundle placed under
 `/etc/azazel/model-admission/evidence/`, in which the aggregate and every run
 are canonical artifacts of one manifest signed by an enrolled operator who is
-not the approver. `azazel-nexus/core-reserve-campaign/v1` runs require
-`azazel-nexus/core-reserve/2`; `azazel-nexus/hil-mio-campaign/v1` runs require
-`azazel-nexus/core-reserve/3`. Both require matching measurement/envelope
+not the approver. Runs of both `azazel-nexus/core-reserve-campaign/v1` and
+`azazel-nexus/hil-mio-campaign/v1` require `azazel-nexus/core-reserve/4`
+(previously `/2` and `/3`; those records still parse but carry no
+architecture and are refused, ADR-0003 R2), whose observed profile must be the
+deployment baseline the run's declared `platform` names. Both require matching measurement/envelope
 boot fingerprints, distinct positive run sequences, and consistent build commit,
 kernel release and harness across all runs. No environment variation is allowed
 within a campaign. Identical measurement payloads across runs are refused.

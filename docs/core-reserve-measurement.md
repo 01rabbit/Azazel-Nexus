@@ -157,7 +157,7 @@ of policy, and it changes no number this build has.
 The legacy path `/var/lib/azazel/run/core-reserve.json` is read only by
 `core_reserve.load_reserve()` for legacy diagnostics; local model admission
 never reads it, even when it declares a measurement.
-The probe (v3, harness `core-reserve-probe/3`) retains a distinct file for each run rather
+The probe (v4, harness `core-reserve-probe/4`) retains a distinct file for each run rather
 than overwriting previous observations, with boot HMAC fingerprint, sequence,
 commit and protected kernel context. See [HIL evidence records](hil-evidence-records.md)
 for archive, confidentiality, attestation and campaign validation. Do not copy
@@ -240,10 +240,16 @@ RAM selects the pilot's Core class. Missing Edge Core prerequisites are
 reported explicitly. Nexus installation alone does not supply those Edge
 Core units. Readiness does not replace the hardware/operator preflight.
 
-The probe's v3 records include a domain-separated HMAC of the boot ID, a run
-sequence, the full build commit, kernel release and the file-only
+The probe's v4 records include a domain-separated HMAC of the boot ID, a run
+sequence, the full build commit, kernel release, the file-only
 virtualization observations (a negative filter; an observed signal refuses
-the run). Provision the full source
+the run), and the observed `architecture` and `platform_profile_id`
+([ADR-0003](adr/0003-arm-software-verification-profile.md) R2). The probe
+refuses before sampling on a host whose observation is not the
+deployment-baseline profile, and the validator refuses a v1-v3 record as
+`ARCHITECTURE_UNKNOWN` and a v4 lab-profile record as
+`LAB_PROFILE_NOT_FOR_PRODUCTION`. These are host observations, not
+attestation. Provision the full source
 commit used to build the installed distributions in the root-owned file
 `/usr/share/azazel/build-commit` during installation. Missing build identity or
 commissioning key refuses the run. Raw boot ID and machine ID are never
@@ -268,7 +274,8 @@ a domain-separated HMAC of the permanent address. Neither NIC names nor raw
 addresses are printed. Both capture commands emit JSON to stdout with `dut_id`, `dut_fingerprint`
 and `boot_fingerprint` HMACs, build commit and kernel release. Redirect output only to the
 campaign directory outside version control. These are automatic acquisition
-records (`azazel-nexus/hil-capture/hg-01/1` and `hg-04/1`); they assert no
+records (`azazel-nexus/hil-capture/hg-01/2` and `hg-04/2`, which also carry the
+observed `platform_profile_id` and `uname_machine`); they assert no
 hardware qualification. `hil_records.validate_acquisition` checks their shape;
 `hil_records.validate_record` requires complete gate observations and external
 operator attestation. See the [field mapping and attestation binding](hil-evidence-records.md#acquisition-and-attestation-binding). HG-02 remains an

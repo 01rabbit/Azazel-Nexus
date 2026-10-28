@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from azazel_nexus import platform_profile
 from azazel_nexus.activation import (
     ACTIVATION_CONTROLLER_UNIT,
     CORE_UNITS,
@@ -86,6 +87,19 @@ RAW_KEYS = {
     "asset_id",
     "asset_tag",
 }
+
+
+#: The one platform a HIL record may declare, and the reviewed profile an
+#: observation must select for it (ADR-0003 R3). The declared string alone is
+#: not enough: where a record carries an observation -- the HG-01/HG-04
+#: capture, a campaign run's core-reserve/4 measurement -- the observation
+#: must be this profile, and the observed uname must be its CPU.
+DECLARED_PLATFORMS = {
+    "rugged-x86_64-linux": platform_profile.DEPLOYMENT_BASELINE.profile_id,
+}
+#: Gates whose evidence comes from `az-hil-capture`, so whose record must
+#: embed that capture (and with it the observed platform).
+CAPTURED_GATES = ("HG-01", "HG-04")
 
 
 class Status(str, Enum):
@@ -205,19 +219,69 @@ def _descriptions(
             reasons.append(f"observations.{key}: capture/reference required")
 
 
+def _observed_platform(record: dict, profile_id: object, machine: object,
+                       reasons: list[str], *, where: str, use: str) -> None:
+    """Compare the record's declared platform with what was observed.
+
+    Refused: an unknown profile, a profile that is not the one the declared
+    platform names, a profile that cannot back ``use`` (the arm64 lab profile
+    never can), and an observed uname that is not the profile's CPU.
+    """
+
+    try:
+        observed = platform_profile.profile(profile_id)
+    except platform_profile.PlatformRefused:
+        reasons.append(f"{where}: observed platform profile unknown")
+        return
+    if DECLARED_PLATFORMS.get(record.get("platform")) != observed.profile_id:
+        reasons.append(f"{where}: declared platform differs from the observed platform profile")
+    try:
+        platform_profile.require_deployment_baseline(observed, use)
+    except platform_profile.PlatformRefused:
+        reasons.append(
+            f"{where}: observed platform is not the deployment baseline; "
+            "lab/VM observations are not hardware evidence")
+    if machine is not None and machine != platform_profile.kernel_name(observed.architecture):
+        reasons.append(f"{where}: observed uname machine differs from the observed platform")
+
+
+def _embedded_capture(record: dict, reasons: list[str]) -> dict | None:
+    # Older documents named the embedded capture `capture`; the validator
+    # read only `acquisition`. Both are read now, and both at once is refused.
+    present = [key for key in ("acquisition", "capture") if key in record]
+    if len(present) > 1:
+        reasons.append("acquisition: embed the capture once, as acquisition")
+        return None
+    if not present:
+        return None
+    acquisition = record[present[0]]
+    if not isinstance(acquisition, dict):
+        reasons.append("acquisition: invalid acquisition shape")
+        return None
+    return acquisition
+
+
 def _gate(record: dict, reasons: list[str]) -> None:
     gate = record.get("gate_id")
     observations = record.get("observations")
     if gate not in GATES or not isinstance(observations, dict):
         reasons.append("known gate_id and observations object required")
         return
-    if "acquisition" in record:
-        acquisition = record["acquisition"]
+    acquisition = _embedded_capture(record, reasons)
+    if acquisition is None and gate in CAPTURED_GATES:
+        reasons.append(
+            f"acquisition: {gate} requires the az-hil-capture acquisition, which "
+            "carries the observed platform")
+    if acquisition is not None:
         if validate_acquisition(acquisition).status is Status.REFUSED:
             reasons.append("acquisition: invalid acquisition shape")
         elif any(acquisition.get(key) != record.get(key) for key in
                  ("gate_id", "dut_id", "dut_fingerprint")):
             reasons.append("acquisition: gate/DUT identity mismatch")
+        else:
+            _observed_platform(record, acquisition.get("platform_profile_id"),
+                               acquisition.get("uname_machine"), reasons,
+                               where="acquisition", use="hardware-gate-record")
     if gate == "HG-01":
         _descriptions(
             observations,
@@ -473,9 +537,12 @@ def _drill(record: dict, reasons: list[str]) -> None:
         _expected(observations, {"observe_only": True}, reasons)
 
 
+#: Version 2 adds the observed `platform_profile_id` and `uname_machine`
+#: (ADR-0003 R3). A version 1 capture has neither and is refused: there is no
+#: observation to compare the declared platform with.
 CAPTURE_SCHEMAS = {
-    "HG-01": "azazel-nexus/hil-capture/hg-01/1",
-    "HG-04": "azazel-nexus/hil-capture/hg-04/1",
+    "HG-01": "azazel-nexus/hil-capture/hg-01/2",
+    "HG-04": "azazel-nexus/hil-capture/hg-04/2",
 }
 
 
@@ -486,7 +553,11 @@ def validate_acquisition(record: object) -> Validation:
     contracts. Even a complete acquisition can return only SHAPE_ONLY.
     Probe v2 is embedded unchanged as a campaign run's ``measurement``.
     """
-    from azazel_nexus.core_reserve import RESERVE_SCHEMA_V2, RESERVE_SCHEMA_V3
+    from azazel_nexus.core_reserve import (
+        RESERVE_SCHEMA_V2,
+        RESERVE_SCHEMA_V3,
+        RESERVE_SCHEMA_V4,
+    )
 
     from .confidentiality import lint_text
     from .contracts import anonymous_dut
@@ -499,7 +570,7 @@ def validate_acquisition(record: object) -> Validation:
         if len(encoded) > 4 * 1024 * 1024:
             raise ValueError("acquisition exceeds 4 MiB")
         lint_text(encoded)
-        if record.get("schema") in (RESERVE_SCHEMA_V2, RESERVE_SCHEMA_V3):
+        if record.get("schema") in (RESERVE_SCHEMA_V2, RESERVE_SCHEMA_V3, RESERVE_SCHEMA_V4):
             # parse_record checks sample types, profile and all v2 metadata.
             # Provenance, duration, count and workload checks remain mandatory
             # in _campaign/validate_reserve, independently of this shape check.
@@ -520,6 +591,12 @@ def validate_acquisition(record: object) -> Validation:
                 raise ValueError("build_commit: full commit required")
             if not _text(record.get("kernel_release")):
                 raise ValueError("kernel_release required")
+            try:
+                observed = platform_profile.profile(record.get("platform_profile_id"))
+            except platform_profile.PlatformRefused:
+                raise ValueError("platform_profile_id: reviewed profile required") from None
+            if record.get("uname_machine") != platform_profile.kernel_name(observed.architecture):
+                raise ValueError("uname_machine: the observed profile's CPU required")
             if gate == "HG-01":
                 if record.get("capture_method") != "systemd-system-bus-read-only":
                     raise ValueError("capture_method mismatch")
@@ -591,10 +668,12 @@ def _campaign(
         else:
             boots.add(boot)
         measurement = run.get("measurement")
-        from azazel_nexus.core_reserve import RESERVE_SCHEMA_V2, RESERVE_SCHEMA_V3
+        from azazel_nexus.core_reserve import RESERVE_SCHEMA_V4
 
-        required_schema = (RESERVE_SCHEMA_V3 if record.get("schema") == MIO_CAMPAIGN_SCHEMA
-                           else RESERVE_SCHEMA_V2)
+        # Both campaigns need the CPU each run was measured on (ADR-0003 R2),
+        # which only core-reserve/4 records. v4 also carries the
+        # virtualization observations that the M.I.O. campaign required v3 for.
+        required_schema = RESERVE_SCHEMA_V4
         if not isinstance(measurement, dict) or measurement.get("schema") != required_schema:
             errors.append("measurement: " + required_schema.removeprefix("azazel-nexus/")
                           + " required for campaign runs")
@@ -617,6 +696,8 @@ def _campaign(
             environment = current
             if measurement.get("boot_fingerprint") != boot:
                 errors.append("measurement boot differs from run")
+            _observed_platform(run, measurement.get("platform_profile_id"), None, errors,
+                               where="measurement", use="core-reserve-record")
         try:
             parsed = parse_record(json.dumps(measurement, allow_nan=False))
             errors.extend(validate_reserve(parsed).refusals)

@@ -76,15 +76,28 @@ def protocol_record(tmp_path, monkeypatch, private_os):
         if schema in (CAMPAIGN_SCHEMA, MIO_CAMPAIGN_SCHEMA):
             record = json.loads(json.dumps(campaign))
             record["schema"] = schema
-            if schema == CAMPAIGN_SCHEMA:
-                for run in record["runs"]:
-                    run["measurement"]["schema"] = "azazel-nexus/core-reserve/2"
             return record
         record = fixture_record(schema)
         # In-memory protocol acceptance control, never emitted as evidence.
         record.update(provenance="measured", synthetic=False, physical_hardware=True,
                       operator_attestation_ref="hil-evidence:unit-test")
         if schema == GATE_SCHEMA:
+            from azazel_nexus.hil_records.contracts import anonymous_dut
+
+            record["dut_id"] = anonymous_dut(record["dut_fingerprint"])
+            # The az-hil-capture output an HG-01 record embeds (R3), as the
+            # deployment baseline would report it. Injected, not acquired.
+            record["acquisition"] = {
+                "schema": "azazel-nexus/hil-capture/hg-01/2", "gate_id": "HG-01",
+                "capture_method": "systemd-system-bus-read-only",
+                "systemd_version": "257 (test)", "unit_files": {"test.service": "masked"},
+                "units": {"test.service": {"active_state": "inactive", "sub_state": "dead"}},
+                "dut_id": record["dut_id"], "dut_fingerprint": record["dut_fingerprint"],
+                "boot_fingerprint": "hmac-sha256:" + "c" * 64, "build_commit": "d" * 40,
+                "kernel_release": "6.12.0-test", "platform_profile_id": "debian-13-amd64-cp313",
+                "uname_machine": "x86_64", "virtualization_not_observed": True,
+                "virtualization_observations": dict.fromkeys(SENSORS, "clear"),
+            }
             record.update(gate_id="HG-01", observations={
                 "systemd_version": "test", "unit_inventory_ref": "test",
                 "unit_states_ref": "test", "interface_counts_ref": "test",
@@ -176,7 +189,7 @@ def test_lab_hil_corpus_refused(schema, mutation, protocol_record):
     assert validate_record(record, **signed_bundle(record, **kwargs)).status is Status.REFUSED
 
 
-@pytest.mark.parametrize("version", ["1", "2", "3"])
+@pytest.mark.parametrize("version", ["1", "2", "3", "4"])
 def test_lab_core_reserve_parse_and_validate_refused(version, protocol_record):
     from dataclasses import replace
 
@@ -185,7 +198,8 @@ def test_lab_core_reserve_parse_and_validate_refused(version, protocol_record):
     measurement = protocol_record(MIO_CAMPAIGN_SCHEMA)["runs"][0]["measurement"]
     measurement["schema"] = "azazel-nexus/core-reserve/" + version
     parsed = parse_record(json.dumps(measurement))
-    assert validate(parsed).admissible
+    # Only v4 records the CPU; older versions parse and are refused for it.
+    assert validate(parsed).admissible is (version == "4")
     lab_schema = measurement["schema"].replace("azazel-nexus/", "azazel-nexus-lab/", 1)
     assert not validate(replace(parsed, schema=lab_schema)).admissible
     measurement["schema"] = lab_schema

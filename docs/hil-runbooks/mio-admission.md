@@ -161,11 +161,12 @@ workload within the campaign. Keep every failure.
 2. Apply the declared Core workload (audit writing, evidence capture, lease
    journal) and keep it applied through steps 3–4.
 3. **HG-05 reserve:** run `az-core-reserve-probe` (60 samples at 10-second
-   intervals, harness `core-reserve-probe/3`). It refuses, writing nothing, on
-   any inactive subsystem, unreadable sample, class change, identity change or
-   observed virtualization (`refused: RESERVE_VIRTUALIZATION_OBSERVED`). On
+   intervals, harness `core-reserve-probe/4`). It refuses, writing nothing, on
+   any inactive subsystem, unreadable sample, class change, identity change,
+   observed virtualization (`refused: RESERVE_VIRTUALIZATION_OBSERVED`), or a
+   host whose observed platform is not the deployment baseline. On
    success it publishes `/var/lib/azazel/run/core-reserve-run-<8-digit sequence>.json`
-   (schema `azazel-nexus/core-reserve/3`). The model must not run during the probe.
+   (schema `azazel-nexus/core-reserve/4`). The model must not run during the probe.
 4. **Embedding runtime**, immediately after the probe, still under load (§5.2).
 5. Copy the probe run file and the raw embedding tables to the protected
    campaign archive. Record ambient temperature, power state and any anomaly.
@@ -280,7 +281,7 @@ One aggregate record, schema `azazel-nexus/hil-mio-campaign/v1`, validated by
 | `dut_fingerprint` | the probe runs' `host_digest` (`hmac-sha256:` + 64 hex) |
 | `dut_id` | `dut-` + the first 32 hex digits of that HMAC |
 | `hardware_class` | `8GiB` |
-| `harness_version` | `core-reserve-probe/3` |
+| `harness_version` | `core-reserve-probe/4` |
 | `capture_method`, `workload_notes` | nonempty, sanitized descriptions |
 | `operator_attestation_ref` | `hil-evidence:<RUN_ID>` of the bundle (§7) |
 | `virtualization_not_observed` | `true` |
@@ -460,7 +461,7 @@ of the DUT**; a value displayed by the requesting node is not evidence.
      `attestation_ref` equal the manifest; `attestation_key_fingerprint` is A's
      enrolled fingerprint and differs from `approval_key.fingerprint`;
      `reserve_mib` equals the `validate_record` result; `harness_version`
-     `core-reserve-probe/3`.
+     `core-reserve-probe/4`.
    - `runtime_evidence.peak_rss_mib` equals the campaign; `resources`:
      `memory_need_mib` at least the peak, at most 3840 and equal to §6.3;
      `envelope_floor_mib` equals the catalog.

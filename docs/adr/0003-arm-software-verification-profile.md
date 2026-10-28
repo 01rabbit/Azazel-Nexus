@@ -119,10 +119,10 @@ admission refuses a non-`x86_64` host first.
 | # | Difference | Follow-up |
 | --- | --- | --- |
 | R1 | The `cpu_hypervisor` virtualization sensor relies on an x86-only cpuinfo flag; on aarch64 it always reads `clear`, so the negative virtualization finding is weaker for `core_reserve_probe` and `hil_capture`. | Treat the sensor as not-applicable on arm64 and gate both tools on a deployment-baseline profile; confirm alternative signals on a real Arm VM first. |
-| R2 | A core-reserve record carries no architecture. | Add it to the record and check it on read. |
-| R3 | A HIL record's `platform` is a declared string, not an observation. | Record the observed profile in `hil_capture` and compare. |
+| R2 | A core-reserve record carries no architecture. | **Done**: `core-reserve/4` records the observed `architecture` and `platform_profile_id`; the reader checks they agree and that the profile is the deployment baseline. v1-v3 records still parse and are refused as `ARCHITECTURE_UNKNOWN`; both HIL campaigns require v4; the probe refuses to sample on a non-baseline profile. |
+| R3 | A HIL record's `platform` is a declared string, not an observation. | **Done** for the records that carry an observation: `hil_capture` (schema `/2`) records `platform_profile_id` and `uname_machine`; HG-01/HG-04 records must embed it, and the declared platform must name the observed deployment-baseline profile. Campaign runs are compared through their v4 measurement. HG-02/06/07, behaviour and drill records have no capture tool and still carry only the declared string. |
 | R4 | The Edge package check compares the manifest with the pin, not with the host CPU. | Pin per CPU and add an architecture-mismatch finding (with Edge). |
-| R5 | `mission_pack_cli` builds `HostFacts.architecture` from configuration. | Use the observed value. |
+| R5 | `mission_pack_cli` builds `HostFacts.architecture` from configuration. | **Done**: the kernel's `uname` machine is used; a configured value that differs is refused, and a CPU outside the table is refused by name. |
 | R6 | `install.sh` does not evaluate the CPU. | **Done** (host observation): `install.sh` refuses an unreviewed CPU, an unreadable dpkg, a foreign dpkg userland, a non-LP64 libc or another byte order with a reason code, and identifies arm64 as `lab-software-verification` without refusing it. |
 | R7 | `principal._GENERIC_SOCKET_MACHINES` lists CPUs beyond the reviewed two. | None needed: an unlisted CPU loses supplementary groups, which narrows access. |
 | R8 | Embedding similarity may differ between CPUs near `SCOPE_MIN`. | Shared vectors exclude inputs within ε of the threshold; advisory only, never Edge's decision. |

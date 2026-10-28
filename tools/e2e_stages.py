@@ -1101,12 +1101,24 @@ def _core_reserve_path(harness: Harness) -> str:
     samples = tuple(
         Sample(offset_seconds=i * 10, resident_mib=2000) for i in range(MIN_SAMPLES + 1)
     )
+    from azazel_nexus.virtualization import SENSORS
+
+    # core-reserve/4 (ADR-0003 R2): only a record that names the deployment
+    # baseline's CPU and profile can yield a reserve; older versions are read
+    # and refused. These values are this stage's, not an observation.
     common = {
         "profile": ResourceProfile.LITE,
-        "host_digest": "sha256:" + "e" * 64,
+        "host_digest": "hmac-sha256:" + "e" * 64,
         "harness_version": SYNTHETIC,
         "subsystems_active": REQUIRED_SUBSYSTEMS,
         "samples": samples,
+        "boot_fingerprint": "hmac-sha256:" + "f" * 64,
+        "run_sequence": 1,
+        "build_commit": "0" * 40,
+        "kernel_release": "e2e-synthetic",
+        "virtualization_observations": dict.fromkeys(SENSORS, "clear"),
+        "architecture": "amd64",
+        "platform_profile_id": "debian-13-amd64-cp313",
     }
 
     # 2. A fixture record: refused for being one, and it reaches the disk

@@ -60,6 +60,23 @@ have fit; taking a percentile can admit one that does not.
 This is a policy, and a later measurement campaign may argue it should be a
 maximum plus a margin. It is not a measurement, and changing it changes no
 number this build has.
+
+## The CPU a record was measured on (core-reserve/4, ADR-0003 R2)
+
+A reserve measured on an Arm VM is not the reserve of the amd64 target, and a
+v1-v3 record cannot say which it is. `core-reserve/4` adds the observed
+`architecture` (canonical, `amd64`/`arm64`) and the `platform_profile_id`
+the probe selected from its host observation; the reader checks that the two
+agree and that the profile is the reviewed deployment baseline
+(`platform_profile.require_deployment_baseline(..., "core-reserve-record")`).
+
+Older records still **parse** -- the reader keeps reading what it read before
+-- but their architecture is unknown, so `validate` refuses them for
+admission (`ARCHITECTURE_UNKNOWN`). That is the safe default, and nothing is
+lost by it: no measured record exists yet (see above). A v4 record from the
+arm64 lab profile is refused as `LAB_PROFILE_NOT_FOR_PRODUCTION`. The values
+are host observations, not attestation (ADR-0003, "Limits of host
+observation").
 """
 
 from __future__ import annotations
@@ -82,6 +99,8 @@ __all__ = [
     "RESERVE_RECORD_PATH",
     "RESERVE_SCHEMA",
     "RESERVE_SCHEMA_V2",
+    "RESERVE_SCHEMA_V3",
+    "RESERVE_SCHEMA_V4",
     "ReserveRecord",
     "ReserveRefused",
     "Sample",
@@ -97,6 +116,18 @@ __all__ = [
 RESERVE_SCHEMA = "azazel-nexus/core-reserve/1"
 RESERVE_SCHEMA_V2 = "azazel-nexus/core-reserve/2"
 RESERVE_SCHEMA_V3 = "azazel-nexus/core-reserve/3"
+#: v3 plus the observed `architecture` and `platform_profile_id` (ADR-0003 R2).
+#: The only version `validate` can admit.
+RESERVE_SCHEMA_V4 = "azazel-nexus/core-reserve/4"
+RESERVE_SCHEMAS = (RESERVE_SCHEMA, RESERVE_SCHEMA_V2, RESERVE_SCHEMA_V3, RESERVE_SCHEMA_V4)
+#: Versions that carry campaign metadata (boot, sequence, build, kernel).
+_V2_OR_LATER = (RESERVE_SCHEMA_V2, RESERVE_SCHEMA_V3, RESERVE_SCHEMA_V4)
+#: Versions that carry the virtualization observations.
+_V3_OR_LATER = (RESERVE_SCHEMA_V3, RESERVE_SCHEMA_V4)
+
+#: Refusal reasons for the CPU of a record. Stable strings.
+ARCHITECTURE_UNKNOWN = "ARCHITECTURE_UNKNOWN"
+ARCHITECTURE_MISMATCH = "ARCHITECTURE_MISMATCH"
 
 #: Where a measurement would live on a node. Runtime state, never packaged.
 RESERVE_RECORD_PATH = Path("/var/lib/azazel/run/core-reserve.json")
@@ -174,6 +205,10 @@ class ReserveRecord:
     kernel_release: str | None = None
     virtualization_observations: dict | None = None
     virtualization_not_observed: bool | None = None
+    #: v4: the canonical CPU (`amd64`/`arm64`) and reviewed platform profile
+    #: the probe observed. `None` on older records: unknown, never assumed.
+    architecture: str | None = None
+    platform_profile_id: str | None = None
 
     @property
     def duration_seconds(self) -> int:
@@ -257,10 +292,10 @@ def parse_record(text: str) -> ReserveRecord:
     ]
     if missing:
         raise ReserveRefused(f"the reserve record is missing {missing}")
-    if document["schema"] not in (RESERVE_SCHEMA, RESERVE_SCHEMA_V2, RESERVE_SCHEMA_V3):
+    if document["schema"] not in RESERVE_SCHEMAS:
         raise ReserveRefused(
             f"the reserve record names schema {document['schema']!r} and this "
-            f"reader knows {RESERVE_SCHEMA!r} and {RESERVE_SCHEMA_V2!r}; a reader that guesses at an "
+            f"reader knows {list(RESERVE_SCHEMAS)!r}; a reader that guesses at an "
             "unknown version will one day interpret a field it does not have"
         )
     try:
@@ -303,15 +338,19 @@ def parse_record(text: str) -> ReserveRecord:
         if not isinstance(document[field], str) or not document[field].strip():
             raise ReserveRefused(f"{field} is not a non-empty string")
     metadata = {}
-    if document["schema"] in (RESERVE_SCHEMA_V2, RESERVE_SCHEMA_V3):
+    if document["schema"] in _V2_OR_LATER:
         metadata = {name: document.get(name) for name in (
             "boot_fingerprint", "run_sequence", "build_commit", "kernel_release"
         )}
         _validate_v2_metadata(document)
-    if document["schema"] == RESERVE_SCHEMA_V3:
+    if document["schema"] in _V3_OR_LATER:
         metadata.update({name: document.get(name) for name in (
             "virtualization_observations", "virtualization_not_observed")})
         _validate_v3_metadata(document)
+    if document["schema"] == RESERVE_SCHEMA_V4:
+        metadata.update({name: document.get(name) for name in (
+            "architecture", "platform_profile_id")})
+        _validate_v4_metadata(document)
     return ReserveRecord(
         **metadata,
         schema=document["schema"],
@@ -328,18 +367,32 @@ def validate(record: ReserveRecord) -> Validation:
     """Every reason this record may not be used as the Core reserve."""
 
     refusals: list[str] = []
-    if record.schema not in (RESERVE_SCHEMA, RESERVE_SCHEMA_V2, RESERVE_SCHEMA_V3):
+    if record.schema not in RESERVE_SCHEMAS:
         refusals.append("unknown reserve schema")
-    if record.schema in (RESERVE_SCHEMA_V2, RESERVE_SCHEMA_V3):
+    if record.schema in _V2_OR_LATER:
         try:
             _validate_v2_metadata(vars(record))
         except ReserveRefused as exc:
             refusals.append(str(exc))
-    if record.schema == RESERVE_SCHEMA_V3:
+    if record.schema in _V3_OR_LATER:
         try:
             _validate_v3_metadata(vars(record))
         except ReserveRefused as exc:
             refusals.append(str(exc))
+    if record.schema == RESERVE_SCHEMA_V4:
+        try:
+            _validate_v4_metadata(vars(record))
+            _require_baseline(record.platform_profile_id)
+        except ReserveRefused as exc:
+            refusals.append(str(exc))
+    else:
+        # Read, never admitted: a record that does not say which CPU it was
+        # measured on cannot be the reserve of the amd64 baseline.
+        refusals.append(
+            f"{ARCHITECTURE_UNKNOWN}: {record.schema!r} records carry no "
+            f"architecture; only {RESERVE_SCHEMA_V4!r} records, measured on the "
+            "deployment-baseline platform, are admissible"
+        )
     if record.provenance is not Provenance.MEASURED:
         refusals.append(
             f"the record declares itself {record.provenance.value!r}; only a "
@@ -420,13 +473,16 @@ def record_as_document(record: ReserveRecord) -> Mapping[str, object]:
     """The record as the harness writes it. The inverse of `parse_record`."""
 
     metadata = {}
-    if record.schema in (RESERVE_SCHEMA_V2, RESERVE_SCHEMA_V3):
+    if record.schema in _V2_OR_LATER:
         metadata = {name: getattr(record, name) for name in (
             "boot_fingerprint", "run_sequence", "build_commit", "kernel_release"
         )}
-    if record.schema == RESERVE_SCHEMA_V3:
+    if record.schema in _V3_OR_LATER:
         metadata.update(virtualization_observations=record.virtualization_observations,
                         virtualization_not_observed=record.virtualization_not_observed)
+    if record.schema == RESERVE_SCHEMA_V4:
+        metadata.update(architecture=record.architecture,
+                        platform_profile_id=record.platform_profile_id)
     return {
         **metadata,
         "schema": record.schema,
@@ -455,15 +511,25 @@ def build_record(
     build_commit: str | None = None,
     kernel_release: str | None = None,
     virtualization_observations: dict | None = None,
+    architecture: str | None = None,
+    platform_profile_id: str | None = None,
 ) -> ReserveRecord:
-    """Assemble v2 with campaign metadata, or v1 for legacy callers."""
+    """Assemble v4 when the platform was observed, v3 with virtualization
+    observations, v2 with campaign metadata, or v1 for legacy callers."""
 
+    platform_observed = architecture is not None or platform_profile_id is not None
+    if platform_observed and virtualization_observations is None:
+        raise ReserveRefused("a v4 record also needs the virtualization observations")
     return ReserveRecord(
         virtualization_observations=virtualization_observations,
         virtualization_not_observed=(True if virtualization_observations is not None else None),
-        schema=(RESERVE_SCHEMA_V3 if virtualization_observations is not None else RESERVE_SCHEMA_V2 if any(value is not None for value in (
-            boot_fingerprint, run_sequence, build_commit, kernel_release
-        )) else RESERVE_SCHEMA),
+        architecture=architecture,
+        platform_profile_id=platform_profile_id,
+        schema=(RESERVE_SCHEMA_V4 if platform_observed
+                else RESERVE_SCHEMA_V3 if virtualization_observations is not None
+                else RESERVE_SCHEMA_V2 if any(value is not None for value in (
+                    boot_fingerprint, run_sequence, build_commit, kernel_release
+                )) else RESERVE_SCHEMA),
         boot_fingerprint=boot_fingerprint,
         run_sequence=run_sequence,
         build_commit=build_commit,
@@ -505,3 +571,33 @@ def _validate_v3_metadata(document):
     if (document.get("virtualization_not_observed") is not True
             or not virtualization_not_observed(document.get("virtualization_observations"))):
         raise ReserveRefused("RESERVE_VIRTUALIZATION_OBSERVED")
+
+
+def _validate_v4_metadata(document):
+    """The CPU fields are present, reviewed and agree with each other."""
+
+    from . import platform_profile
+
+    architecture = document.get("architecture")
+    profile_id = document.get("platform_profile_id")
+    try:
+        platform_profile.canonical(architecture)
+        profile = platform_profile.profile(profile_id)
+    except platform_profile.PlatformRefused as exc:
+        raise ReserveRefused(f"{ARCHITECTURE_UNKNOWN}: {exc.reason}") from None
+    if profile.architecture != architecture:
+        raise ReserveRefused(
+            f"{ARCHITECTURE_MISMATCH}: architecture {architecture!r} is not the "
+            f"CPU of platform profile {profile_id!r}")
+
+
+def _require_baseline(profile_id):
+    from . import platform_profile
+
+    try:
+        platform_profile.require_deployment_baseline(
+            platform_profile.profile(profile_id), "core-reserve-record")
+    except platform_profile.PlatformRefused as exc:
+        raise ReserveRefused(
+            f"{exc.reason}: a reserve measured on {profile_id!r} is not the reserve "
+            "of the deployment baseline") from None

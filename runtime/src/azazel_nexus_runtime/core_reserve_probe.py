@@ -98,7 +98,7 @@ __all__ = [
 #: Identifies this sampler in every record it writes. A record from a harness
 #: whose sampling changed must be identifiable rather than silently comparable
 #: with one from another.
-HARNESS_VERSION = "core-reserve-probe/3"
+HARNESS_VERSION = "core-reserve-probe/4"
 
 #: The cgroup the Azazel units live in, and the kernel's own accounting. Both
 #: fixed in code; neither can be supplied.
@@ -151,6 +151,8 @@ class Readers:
     identity: Callable[[], dict] = lambda: _identity()
     run_sequence: Callable[[], int] = lambda: next_sequence()
     virtualization: Callable[[], dict] = lambda: _virtualization()
+    #: The host observation the platform profile is selected from (ADR-0003).
+    platform: Callable[[], object] = lambda: _platform()
 
 
 def _active(readers: Readers, unit: str) -> bool:
@@ -196,6 +198,10 @@ def measure(readers: Optional[Readers] = None) -> object:
 
     refuse_lab_host(MeasurementRefused)
     readers = readers or Readers()
+    # Before any sampling: a run on a host that is not the deployment
+    # baseline would produce a record its own validator refuses, ten minutes
+    # later. The observed CPU and profile go into the record (core-reserve/4).
+    platform_observed, platform = _baseline_platform(readers)
     _require_subsystems(readers, when="when the run began")
 
     try:
@@ -252,7 +258,15 @@ def measure(readers: Optional[Readers] = None) -> object:
 
     if readers.virtualization() != observations:
         raise MeasurementRefused("virtualization observations changed")
+    try:
+        platform_unchanged = readers.platform() == platform_observed
+    except Exception:  # noqa: BLE001 - any read failure is a refusal
+        platform_unchanged = False
+    if not platform_unchanged:
+        raise MeasurementRefused("platform observation changed during the run")
     record = build_record(
+        architecture=platform.architecture,
+        platform_profile_id=platform.profile_id,
         virtualization_observations=observations,
         provenance=Provenance.MEASURED,
         profile=profile,
@@ -272,6 +286,31 @@ def measure(readers: Optional[Readers] = None) -> object:
             "the completed run does not validate: " + "; ".join(result.refusals)
         )
     return record
+
+
+def _baseline_platform(readers: Readers):
+    from azazel_nexus import platform_profile
+
+    from .platform_observation import select
+
+    try:
+        observed = readers.platform()
+        selected = select(observed)
+        platform_profile.require_deployment_baseline(selected, "core-reserve-record")
+    except platform_profile.PlatformRefused as refused:
+        raise MeasurementRefused(
+            f"{refused.reason}: the Core reserve is measured only on the "
+            "deployment-baseline platform"
+        ) from None
+    except Exception as exc:  # noqa: BLE001 - any read failure is a refusal
+        raise MeasurementRefused("the host platform could not be observed") from exc
+    return observed, selected
+
+
+def _platform():
+    from .platform_observation import observe
+
+    return observe()
 
 
 def _identity() -> dict:

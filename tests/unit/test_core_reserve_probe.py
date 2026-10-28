@@ -28,6 +28,8 @@ from azazel_nexus_runtime.core_reserve_probe import (
     write_record,
 )
 
+from azazel_nexus_runtime.platform_observation import HostObservation
+
 from azazel_nexus.activation import CORE_UNITS
 from azazel_nexus.core_reserve import (
     MIN_DURATION_SECONDS,
@@ -45,6 +47,15 @@ from azazel_nexus.virtualization import SENSORS
 LITE_MIB = 16000
 
 REPOSITORY = pathlib.Path(__file__).resolve().parents[2]
+
+#: What the deployment baseline reports, and what the arm64 lab VM reports.
+#: Injected: no host was observed.
+BASELINE_HOST = HostObservation(
+    sysname="Linux", release="6.12.0-test", machine="x86_64", os_id="debian",
+    os_version_id="13", soabi="cpython-313-x86_64-linux-gnu", lp64=True,
+    byteorder="little", dpkg_architecture="amd64")
+ARM64_LAB_HOST = replace(BASELINE_HOST, machine="aarch64",
+                         soabi="cpython-313-aarch64-linux-gnu", dpkg_architecture="arm64")
 
 
 def a_caller(inactive=(), inactive_after=()):
@@ -65,7 +76,8 @@ def a_caller(inactive=(), inactive_after=()):
     return call, state
 
 
-def readers(*, inactive=(), inactive_after=(), residents=None, usable=LITE_MIB, usable_after=None):
+def readers(*, inactive=(), inactive_after=(), residents=None, usable=LITE_MIB, usable_after=None,
+            platform=lambda: BASELINE_HOST):
     call, state = a_caller(inactive=inactive, inactive_after=inactive_after)
     produced = {"n": 0}
 
@@ -102,6 +114,7 @@ def readers(*, inactive=(), inactive_after=(), residents=None, usable=LITE_MIB, 
         cgroup_current=cgroup_current,
         usable_mib=usable_mib,
         sleep=lambda _seconds: None,
+        platform=platform,
     )
 
 
@@ -161,7 +174,7 @@ def test_no_service_manager_is_a_refusal_not_an_assumption() -> None:
     """A reserve measured without knowing what was running is of an unknown node."""
 
     with pytest.raises(MeasurementRefused) as caught:
-        measure(Readers(call=None))
+        measure(Readers(call=None, platform=lambda: BASELINE_HOST))
     assert "service manager" in str(caught.value)
 
 
@@ -391,3 +404,43 @@ def test_main_reports_safe_refusal_reasons(monkeypatch, capsys, failure, expecte
     output = capsys.readouterr()
     assert expected in output.err
     assert "private" not in output.err
+
+
+# -- the CPU the run was measured on (core-reserve/4, ADR-0003 R2) ---------
+
+
+def test_a_run_records_the_observed_cpu_and_profile() -> None:
+    record = measure(readers())
+    assert record.schema == "azazel-nexus/core-reserve/4"
+    assert (record.architecture, record.platform_profile_id) == ("amd64", "debian-13-amd64-cp313")
+    assert parse_record(json.dumps(probe.record_as_document(record))) == record
+
+
+@pytest.mark.parametrize(("host", "reason"), [
+    (ARM64_LAB_HOST, "LAB_PROFILE_NOT_FOR_PRODUCTION"),
+    (replace(BASELINE_HOST, machine="riscv64"), "UNKNOWN_ARCHITECTURE"),
+    (replace(BASELINE_HOST, soabi="cpython-312-x86_64-linux-gnu"), "UNREVIEWED_PYTHON_ABI"),
+    (replace(BASELINE_HOST, dpkg_architecture="i386"), "DPKG_ARCHITECTURE_MISMATCH"),
+    (replace(BASELINE_HOST, os_version_id="12"), "UNREVIEWED_OS"),
+])
+def test_a_host_that_is_not_the_baseline_is_refused_before_sampling(host, reason) -> None:
+    sampled = []
+    run = replace(readers(platform=lambda: host),
+                  cgroup_current=lambda: sampled.append(1) or 1 << 30)
+    with pytest.raises(MeasurementRefused, match=reason):
+        measure(run)
+    assert sampled == []
+
+
+def test_an_unreadable_platform_is_refused() -> None:
+    def broken():
+        raise OSError("no uname")
+
+    with pytest.raises(MeasurementRefused, match="could not be observed"):
+        measure(readers(platform=broken))
+
+
+def test_a_platform_that_changes_during_the_run_refuses_it() -> None:
+    hosts = iter([BASELINE_HOST, replace(BASELINE_HOST, release="6.12.1-test")])
+    with pytest.raises(MeasurementRefused, match="platform observation changed"):
+        measure(readers(platform=lambda: next(hosts)))

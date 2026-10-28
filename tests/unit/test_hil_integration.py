@@ -22,6 +22,7 @@ from azazel_nexus.hil_records import (
     validate_record,
 )
 from azazel_nexus.hil_records.contracts import anonymous_dut
+from azazel_nexus_runtime.platform_observation import HostObservation
 from azazel_nexus.virtualization import SENSORS
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +38,11 @@ IDENTITY = {
     "kernel_release": "6.12.0-test",
 }
 DUT = anonymous_dut(IDENTITY["host_digest"])
+#: What the deployment baseline would report. Injected; no host was observed.
+BASELINE_HOST = HostObservation(
+    sysname="Linux", release="6.12.0-test", machine="x86_64", os_id="debian",
+    os_version_id="13", soabi="cpython-313-x86_64-linux-gnu", lp64=True,
+    byteorder="little", dpkg_architecture="amd64")
 
 
 class Manager:
@@ -73,6 +79,7 @@ def test_capture_stdout_passes_gate_acquisition_shape_and_bundle_lint(
     gate, monkeypatch, capsys, tmp_path
 ):
     monkeypatch.setattr(capture, "observe_virtualization", lambda: dict.fromkeys(SENSORS, "clear"))
+    monkeypatch.setattr(capture, "observe_platform", lambda: BASELINE_HOST)
     monkeypatch.setattr(capture, "run_identity", lambda: dict(IDENTITY))
     monkeypatch.setattr(capture, "ReadOnlySystemd", Manager)
     links = [SimpleNamespace(index=1, name="private-test-interface",
@@ -90,6 +97,9 @@ def test_capture_stdout_passes_gate_acquisition_shape_and_bundle_lint(
     assert "host_digest" not in report
     assert report["dut_id"] == DUT
     assert report["gate_id"] == gate.upper()
+    assert report["schema"].endswith("/2")
+    assert report["platform_profile_id"] == "debian-13-amd64-cp313"
+    assert report["uname_machine"] == "x86_64"
     assert validate_acquisition(report).status is Status.SHAPE_ONLY
     assert not validate_acquisition(report).admissible
     assert validate_record(report).status is Status.REFUSED
@@ -109,7 +119,7 @@ def test_capture_stdout_passes_gate_acquisition_shape_and_bundle_lint(
     assert validate_acquisition(malformed).status is Status.REFUSED
 
 
-def test_probe_v3_is_campaign_measurement_shape_but_unattested_campaign_refused(tmp_path):
+def test_probe_v4_is_campaign_measurement_shape_but_unattested_campaign_refused(tmp_path):
     from azazel_nexus.virtualization import SENSORS
 
     campaign = fixture_envelope(MIO_CAMPAIGN_SCHEMA)
@@ -122,8 +132,10 @@ def test_probe_v3_is_campaign_measurement_shape_but_unattested_campaign_refused(
             cgroup_current=lambda: 1024 * 1024 * 1000,
             usable_mib=lambda: 8000, sleep=lambda _: None,
             virtualization=lambda: dict.fromkeys(SENSORS, "clear"),
+            platform=lambda: BASELINE_HOST,
         )
         measurement = record_as_document(probe.measure(readers))
+        assert measurement["architecture"] == "amd64"
         assert validate_acquisition(measurement).status is Status.SHAPE_ONLY
         lint_text(json.dumps(measurement).encode())
         assert validate_record(measurement).status is Status.REFUSED
@@ -135,8 +147,13 @@ def test_probe_v3_is_campaign_measurement_shape_but_unattested_campaign_refused(
     assert result.status is Status.REFUSED
     assert result.reserve_mib is None
     assert sum("every campaign run must be externally attested" in r for r in result.reasons) == 3
+    # The fixture envelope declares platform "test-only", so each run's
+    # observed baseline measurement disagrees with what it declares (R3);
+    # nothing else about the measurement is refused.
+    platform = [r for r in result.reasons if "declared platform differs" in r]
+    assert len(platform) == 3
     assert not any("]: measurement" in r or "mismatch" in r or "distinct boot" in r
-                   for r in result.reasons)
+                   for r in result.reasons if r not in platform)
     # Even a signed fixture bundle must not turn these injected runs into evidence.
     paths = {}
     for name, record in [("campaign.json", campaign)] + [
@@ -168,6 +185,7 @@ def test_capture_confidentiality_guard_refuses_identity_in_platform_reply(
     gate, monkeypatch, capsys
 ):
     monkeypatch.setattr(capture, "observe_virtualization", lambda: dict.fromkeys(SENSORS, "clear"))
+    monkeypatch.setattr(capture, "observe_platform", lambda: BASELINE_HOST)
     monkeypatch.setattr(capture, "run_identity", lambda: dict(IDENTITY, kernel_release="host.private"))
     monkeypatch.setattr(capture, "ReadOnlySystemd", Manager)
     monkeypatch.setattr(capture, "capture_hg04", lambda: {"interfaces": []})
@@ -214,3 +232,47 @@ def test_validator_requires_listed_canonical_record_and_untampered_bundle(tmp_pa
     assert result.reasons == ("operator attestation verification failed",)
     assert not result.admissible
     assert result.reserve_mib is None
+
+
+@pytest.mark.parametrize("gate", ["hg-01", "hg-04"])
+def test_capture_on_the_arm64_lab_profile_records_it_and_records_refuse_it(
+    gate, monkeypatch, capsys
+):
+    """R3: a capture taken on the arm64 lab VM says so, and a gate record
+    that declares the x86_64 platform cannot embed it."""
+
+    lab = HostObservation(**dict(BASELINE_HOST.as_record(), machine="aarch64",
+                                 soabi="cpython-313-aarch64-linux-gnu",
+                                 dpkg_architecture="arm64"))
+    monkeypatch.setattr(capture, "observe_virtualization", lambda: dict.fromkeys(SENSORS, "clear"))
+    monkeypatch.setattr(capture, "observe_platform", lambda: lab)
+    monkeypatch.setattr(capture, "run_identity", lambda: dict(IDENTITY))
+    monkeypatch.setattr(capture, "ReadOnlySystemd", Manager)
+    monkeypatch.setattr(capture, "capture_hg04", lambda: {
+        "schema": "azazel-nexus/hil-capture/hg-04/2", "gate_id": "HG-04",
+        "capture_method": "RTM_GETLINK/IFLA_PERM_ADDRESS", "interfaces": []})
+    assert capture.main([gate]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["platform_profile_id"] == "debian-13-arm64-cp313-lab"
+    assert report["uname_machine"] == "aarch64"
+    # The capture is a well-formed observation of a lab host ...
+    assert validate_acquisition(report).status is Status.SHAPE_ONLY
+    # ... and a gate record declaring the x86_64 platform refuses it.
+    record = fixture_envelope(GATE_SCHEMA)
+    record.update(gate_id=gate.upper(), platform="rugged-x86_64-linux",
+                  acquisition=report, observations={})
+    reasons = validate_record(record).reasons
+    assert any("observed platform is not the deployment baseline" in r for r in reasons)
+    assert any("declared platform differs" in r for r in reasons)
+
+
+@pytest.mark.parametrize("machine", ["riscv64", "armv7l"])
+def test_capture_refuses_an_unreviewed_platform_with_a_reason(machine, monkeypatch, capsys):
+    host = HostObservation(**dict(BASELINE_HOST.as_record(), machine=machine))
+    monkeypatch.setattr(capture, "observe_virtualization", lambda: dict.fromkeys(SENSORS, "clear"))
+    monkeypatch.setattr(capture, "observe_platform", lambda: host)
+    monkeypatch.setattr(capture, "run_identity", lambda: pytest.fail("acquired on unknown CPU"))
+    assert capture.main(["hg-01"]) == 2
+    output = capsys.readouterr()
+    assert not output.out
+    assert output.err.strip() == "refused: UNKNOWN_ARCHITECTURE"
