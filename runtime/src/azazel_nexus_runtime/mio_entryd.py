@@ -435,6 +435,21 @@ class MioEntryService:
         reading = read_capability(self._observe(self._profile_reader), local, remote)
         return reading.as_dict(), (local, remote)
 
+    def status_snapshot(self) -> dict:
+        """The operator-readable capability snapshot (U2).
+
+        The last capability record the route ledger holds -- the reading
+        `azazel-nexus status` would read from the ledger, which is `0700`
+        and so unreadable to everyone but this account -- and when it was
+        observed. Not a fresh sample, not a grant and not admission. While a
+        write's outcome is unknown (#227) it says so instead of guessing.
+        """
+        from azazel_nexus.operator_snapshots import mio_snapshot
+
+        return mio_snapshot(self._last_capability, self._observed_at,
+                            uncertain=self._capability_uncertain,
+                            written_at=self._wall_clock())
+
     def capability(self) -> dict:
         """Pure status read: no ledger writes or comparison-state mutation."""
         return self._sample()[0]
@@ -752,6 +767,11 @@ def main(
     # Composition verifies the retained route segments. The ledger refuses an
     # absent/unwritable installer-owned state directory before binding and
     # never creates it; prepare() probes append access to today's segment.
+    from azazel_nexus.operator_snapshots import MIO_BYTES, MIO_INTERVAL_S
+
+    from .runtime_paths import mio_status_path
+    from .status_snapshot import SnapshotWriter
+
     # Locald's own admission result, read per advice request within its
     # deadline. Off (`LOCAL_MODEL_ADMISSION_ENABLED`), it reads False without
     # touching the socket, exactly as the constructor default did.
@@ -762,11 +782,26 @@ def main(
         service.reconcile_capability()
     except OSError as error:
         raise AuditUnavailable("M.I.O. route ledger unavailable") from error
+    snapshot = SnapshotWriter(mio_status_path(), service.status_snapshot, limit=MIO_BYTES,
+                              interval_s=MIO_INTERVAL_S, name="az-mio-entryd")
+    def recorded():
+        return (repr(service._last_capability), service._observed_at,
+                service._capability_uncertain)
+
+    # Before serving; never raises (a missing leaf is logged once).
+    snapshot.write()
+    written = [recorded()]
 
     def tick() -> bool:
         if stop():
             return True
         service.reconcile_capability()
+        # A recorded change reaches the snapshot at once, not an interval later.
+        if recorded() != written[0]:
+            written[0] = recorded()
+            snapshot.write()
+        else:
+            snapshot.tick()
         return False
 
     return serve_forever(

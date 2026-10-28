@@ -574,9 +574,12 @@ def test_bus_allowlist_admits_the_edge_state_properties(name):
 
 
 @pytest.mark.parametrize("path, body", [
-    # SubState/LoadState are admitted on the Edge object only.
-    (_unit_object_path("azazel-auditd.service"), [UNIT_INTERFACE, "SubState"]),
-    (_unit_object_path("azazel-auditd.service"), [UNIT_INTERFACE, "LoadState"]),
+    # SubState/LoadState are admitted on the Edge object and the packaged
+    # services the unit-state observer reads (U2), and nowhere else.
+    (_unit_object_path("systemd-journald.service"), [UNIT_INTERFACE, "SubState"]),
+    (_unit_object_path("systemd-journald.service"), [UNIT_INTERFACE, "LoadState"]),
+    (_unit_object_path("azazel-units-observe.timer"), [UNIT_INTERFACE, "SubState"]),
+    (_unit_object_path("azazel-auditd.service"), [UNIT_INTERFACE, "ExecStart"]),
     (_unit_object_path("sshd.service"), [UNIT_INTERFACE, "SubState"]),
     (_EDGE_PATH, [UNIT_INTERFACE, "ExecStart"]),
     (_EDGE_PATH, [UNIT_INTERFACE, "MainPID"]),

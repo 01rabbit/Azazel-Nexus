@@ -108,7 +108,19 @@ __all__ = [
     "render_trip_target",
     "render_unit",
     "render_verify_timer",
+    "OBSERVER_PROFILES",
+    "OBSERVER_SERVICE_UNITS",
+    "OBSERVER_UNIT_FILES",
+    "render_observer_timer",
 ]
+
+#: The operator observers (U2): oneshot units that only read and write one
+#: operator-readable snapshot, each started by its own timer. Not governed,
+#: never masked or enabled by the installer, required and bound to by
+#: nothing, so stopping one (or its timer) stops nothing else.
+UNITS_OBSERVE_UNIT = "azazel-units-observe.service"
+UNITS_OBSERVE_TIMER = "azazel-units-observe.timer"
+OBSERVER_SERVICE_UNITS = (UNITS_OBSERVE_UNIT,)
 
 #: Applied to every unit, with no per-daemon exceptions.
 #:
@@ -322,8 +334,11 @@ class ServiceProfile:
                 f"{self.unit}: only {DECOY_VERIFY_UNIT} runs its executable with "
                 "the word verify; no other unit but the namespace unit names an "
                 "argument")
+        # The operator observers (U2, U3) are started by their own timers
+        # and have no [Install] section either; nothing else may lack one.
+        timer_started = is_verify or self.unit in OBSERVER_SERVICE_UNITS
         if (self.on_failure != ((DECOY_TRIP_UNIT,) if is_verify else ())
-                or self.wanted_by != (() if is_verify else ("multi-user.target",))):
+                or self.wanted_by != (() if timer_started else ("multi-user.target",))):
             raise ValueError(
                 f"{self.unit}: only {DECOY_VERIFY_UNIT} has "
                 f"OnFailure={DECOY_TRIP_UNIT} and no [Install] section; every "
@@ -1600,6 +1615,9 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "/var/lib/azazel/state/mio", "/var/lib/azazel/run/mio-entry",
             "/var/lib/azazel/run/mio-advise",
         ),
+        # Its operator-readable capability snapshot (U2): the ledger stays
+        # 0700, and a missing leaf (install.sh not re-run) does not stop it.
+        optional_read_write_paths=("/var/lib/azazel/run/mio-status",),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         conditions=_grant_condition("azazel-mio-entryd.service"),
@@ -1658,6 +1676,9 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "/var/lib/azazel/run/knowledge-read",
             "/var/lib/azazel/state/knowledge",
         ),
+        # Its operator-readable status snapshot (U2), optional so that a
+        # node upgraded without re-running install.sh still starts it.
+        optional_read_write_paths=("/var/lib/azazel/run/knowledge-status",),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         conditions=_grant_condition("azazel-knowledge-lited.service"),
@@ -1956,9 +1977,73 @@ DECOY_WATCH_PROFILES: tuple[ServiceProfile, ...] = (
     ),
 )
 
+#: The operator observers (U2): each runs once per period of its timer and
+#: writes one operator-readable snapshot. Ungoverned and not enabled by the
+#: installer (an operator enables the timer), required by nothing.
+OBSERVER_PROFILES: tuple[ServiceProfile, ...] = (
+    ServiceProfile(
+        unit=UNITS_OBSERVE_UNIT,
+        executable="/usr/libexec/azazel/az-units-observe",
+        account="azprobe",
+        description="Azazel-Nexus unit state observer",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/operations.md",
+        address_families=("AF_UNIX",),
+        read_write_paths=(),
+        optional_read_write_paths=("/var/lib/azazel/run/units-status",),
+        unit_type="oneshot",
+        extra=(("TimeoutStartSec", "30s"),),
+        wanted_by=(),
+        rationale=(
+            "Runs once per period of azazel-units-observe.timer. It reads "
+            "LoadState, ActiveState and SubState of the packaged services, a "
+            "fixed list, over the system bus through a reader that passes "
+            "GetUnit and Properties.Get and refuses every other call, and "
+            "writes one snapshot into its own leaf, which the operator group "
+            "may read. It runs as azprobe, the account that already reads the "
+            "Edge unit's state for the probe, so no account gains a "
+            "permission. `AF_UNIX` is all it needs and `IPAddressDeny=any` "
+            "holds. It is not governed, has no [Install] section, and no unit "
+            "requires or binds to it"
+        ),
+    ),
+)
+
+
+def render_observer_timer(timer: str, service: str, period: str, description: str) -> str:
+    """An observer's timer, byte for byte (U2).
+
+    Runs `service` one `period` after boot and then every `period` after it
+    last started. `AccuracySec=1s` keeps the period from stretching to
+    systemd's default minute. `WantedBy=timers.target`, so an operator
+    enables the timer and never the service. No `Persistent=`, no
+    `WakeSystem=`, and nothing in it requires or binds to anything.
+    """
+
+    return "\n".join((
+        *_GENERATED_HEADER,
+        f"# Runs {service} every {period}. It reads and writes one snapshot only;",
+        "# no unit requires or binds to it, so stopping it stops nothing else.",
+        "# Not governed by the activation controller and not enabled by the installer.",
+        "",
+        "[Unit]",
+        f"Description={description}",
+        "Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/operations.md",
+        "",
+        "[Timer]",
+        f"OnBootSec={period}",
+        f"OnUnitActiveSec={period}",
+        "AccuracySec=1s",
+        f"Unit={service}",
+        "",
+        "[Install]",
+        "WantedBy=timers.target",
+        "",
+    ))
+
+
 #: Every packaged service, governed or not, for the renderer and the installer.
 ALL_PROFILES: tuple[ServiceProfile, ...] = (
-    PROFILES + UNGOVERNED_PROFILES + DECOY_WATCH_PROFILES)
+    PROFILES + UNGOVERNED_PROFILES + DECOY_WATCH_PROFILES + OBSERVER_PROFILES)
 
 _GENERATED_HEADER = (
     "# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:",
@@ -2040,11 +2125,19 @@ DECOY_WATCH_UNIT_FILES: tuple[tuple[str, str], ...] = (
 )
 
 
+#: The observers' timers (U2), with their rendering.
+OBSERVER_UNIT_FILES: tuple[tuple[str, str], ...] = (
+    (UNITS_OBSERVE_TIMER, render_observer_timer(
+        UNITS_OBSERVE_TIMER, UNITS_OBSERVE_UNIT, "30s",
+        "Azazel-Nexus unit state observer period")),
+)
+
+
 def packaged_unit_files() -> tuple[tuple[str, str], ...]:
     """`(name, text)` of every file in `packaging/systemd/`, in order."""
 
     return tuple((profile.unit, render_unit(profile)) for profile in ALL_PROFILES) + (
-        DECOY_WATCH_UNIT_FILES)
+        DECOY_WATCH_UNIT_FILES + OBSERVER_UNIT_FILES)
 
 
 def render_unit(profile: ServiceProfile) -> str:

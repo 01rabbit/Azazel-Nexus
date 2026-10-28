@@ -166,8 +166,18 @@ def _boot(monkeypatch, readable=True):
     monkeypatch.setattr(cli, "read_current_boot_id", reader)
 
 
+def _fixed_storage(monkeypatch):
+    """Free space is the host's; every scenario measures a fixed filesystem."""
+    from azazel_nexus import status_view
+
+    usage = SimpleNamespace(f_blocks=1000, f_bfree=600, f_bavail=500, f_frsize=4096, f_flag=0)
+    monkeypatch.setattr(status_view, "_storage_probes",
+                        (lambda path: usage, lambda path: SimpleNamespace(st_dev=7)))
+
+
 def _base(tmp_path, monkeypatch, *, lab=False, fabric="absent", measured=True):
     monkeypatch.setattr("azazel_nexus.edge_package._probe_owner_uid", os.geteuid)
+    _fixed_storage(monkeypatch)
     monkeypatch.setenv("AZAZEL_ROOT", str(tmp_path))
     _lab_host(tmp_path, monkeypatch, lab)
     _fabric(monkeypatch, fabric)
@@ -499,6 +509,35 @@ for _name, _fields in (
                 f"{_LOOP}.{_name}.snapshot",
                 *(f"{_LOOP}.{_name}.{k}" for k in _SOURCE),
                 *(f"{_LOOP}.{_name}.snapshot.{k}" for k in _fields)}
+
+# The operator snapshots (U2) and the storage measurement.
+_SNAP_SOURCE = (*_SOURCE, "source.writer")
+for _name, _fields in (
+        ("knowledge_status", ("state", "reason_code", "generation", "freshness")),
+        ("mio_status", ("recorded", "state", "ceiling", "reasons", "reasons.{code}",
+                        "reasons.health", "reasons.health.{code}", "observed_at",
+                        "record_uncertain")),
+        ("services", ("units", "units[]", *(f"units[].{f}" for f in (
+            "unit", "status", "load_state", "active_state", "sub_state", "reason_code"))))):
+    ALLOWED |= {f"sections.{_name}", f"sections.{_name}.status", f"sections.{_name}.freshness",
+                f"sections.{_name}.conditions", f"sections.{_name}.conditions[]",
+                f"sections.{_name}.source.age_reason",
+                f"sections.{_name}.reason_code", f"sections.{_name}.snapshot",
+                *(f"sections.{_name}.{k}" for k in _SNAP_SOURCE),
+                f"sections.{_name}.snapshot.schema", f"sections.{_name}.snapshot.written_at",
+                *(f"sections.{_name}.snapshot.{k}" for k in _fields)}
+ALLOWED |= {"sections.knowledge_status.content_freshness_evaluated_at",
+            "sections.knowledge_status.cryptographic_implementation",
+            "sections.knowledge_status.cryptographic_implementation.status",
+            "sections.knowledge_status.cryptographic_implementation.reason_code",
+            "sections.mio_status.notice", "sections.services.source.reader",
+            "sections.storage", *(f"sections.storage.{k}" for k in (
+                "status", "reason_code", "locations", "locations[]",
+                *(f"locations[].{f}" for f in (
+                    "label", "status", "total_bytes", "free_bytes", "available_bytes",
+                    "read_only", "same_filesystem_as", "reason_code")),
+                "source", "source.kind", "source.observed_at", "source.withheld",
+                "source.withheld[]"))}
 
 #: Maps keyed by fixed codes rather than by field names.
 CODE_KEYED = {"refused", "content_labels", "reasons", "health"}

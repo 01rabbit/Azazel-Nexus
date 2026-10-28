@@ -231,7 +231,7 @@ fi
 # The unit files name these. An installer that enabled a unit whose ExecStart
 # does not exist would "succeed" into a boot failure, which is later and on
 # someone else's hardware.
-for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-intaked az-incident-explaind az-edge-probed az-model-fetchd az-mio-locald az-mio-identity az-mio-remoted az-mio-entryd az-mio-referenced az-knowledge-lited az-decoy-netd az-decoyd; do
+for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-intaked az-incident-explaind az-edge-probed az-model-fetchd az-mio-locald az-mio-identity az-mio-remoted az-mio-entryd az-mio-referenced az-knowledge-lited az-decoy-netd az-decoyd az-units-observe; do
     if [ ! -x "$LIBEXEC/$binary" ]; then
         echo "refusing to install: $LIBEXEC/$binary is missing." >&2
         echo "Install azazel-nexus and azazel-nexus-runtime into the stable" >&2
@@ -338,6 +338,11 @@ make_owned_dir 2710 azaudit azazel-operator /var/lib/azazel/run/audit
 make_owned_dir 2710 azaudit azaudit-submit /var/lib/azazel/run/audit-submit
 # auditd's capacity snapshot (#211): sizes and counts only, never records.
 make_owned_dir 2750 azaudit azazel-operator /var/lib/azazel/run/audit-status
+# Operator-readable snapshots (U2): codes and counts only, each written by
+# the one daemon that owns the facts. Same pattern as audit-status.
+make_owned_dir 2750 azknowledge azazel-operator /var/lib/azazel/run/knowledge-status
+make_owned_dir 2750 azmioentry azazel-operator /var/lib/azazel/run/mio-status
+make_owned_dir 2750 azprobe azazel-operator /var/lib/azazel/run/units-status
 make_owned_dir 2710 azcommission azazel-operator /var/lib/azazel/run/commission
 make_owned_dir 2710 azwatch azazel-operator /var/lib/azazel/run/watchdog
 # Not a socket leaf: the Edge probe's result, renamed into place inside it.
@@ -426,6 +431,11 @@ install -m 0644 "$HERE"/systemd/azazel-decoyd.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-decoy-verify.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-decoy-verify.timer "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-decoy-trip.target "$UNIT_DIR"
+# The operator observers (U2): a oneshot and its timer. Not governed, never
+# masked, and not enabled here: an operator enables the timer. Nothing
+# requires or binds to them, so stopping them stops nothing else.
+install -m 0644 "$HERE"/systemd/azazel-units-observe.service "$UNIT_DIR"
+install -m 0644 "$HERE"/systemd/azazel-units-observe.timer "$UNIT_DIR"
 install -m 0644 "$HERE"/azazel-nexus.preset "$PRESET_DIR"/99-azazel-nexus.preset
 install -d -m 0755 "${DESTDIR:-}/usr/lib/tmpfiles.d"
 install -m 0644 "$HERE"/tmpfiles.d/azazel-nexus-bootstrap.conf "${DESTDIR:-}/usr/lib/tmpfiles.d/azazel-nexus-bootstrap.conf"

@@ -36,10 +36,13 @@ refuses any Edge event that is not observe-only (`edge_intake`), so no
 execution result can reach this node, and the view says so rather than
 leaving the field empty.
 
-`build` reads only what `status` has always read (the M.I.O. route ledger,
-the broker's local state, the loop snapshots), each once and through its
-existing reader. Nothing here opens a socket, starts a process or writes a
-file, and nothing here decides anything.
+`build` reads what `status` has always read (the M.I.O. route ledger, the
+broker's local state, the loop snapshots), each once and through its
+existing reader, and the operator snapshots of U2 (`operator_snapshots`:
+Knowledge Lite's and entryd's status, the packaged units' states, and the
+free space under fixed labels). Those four sections are in the read model
+only; the text screen is unchanged. Nothing here opens a socket, starts a
+process or writes a file, and nothing here decides anything.
 """
 
 from __future__ import annotations
@@ -92,6 +95,9 @@ REASON_CODES = frozenset({
     "chain_broken", "storage_failed", "service_manager_not_queried",
     "chain_not_verified_at_auditd_start", "audit_chain_failed", "audit_chain_unknown",
     "nexus_70_review_pending", "age_out_of_range", "audit_capacity_warning",
+    # The operator snapshots (U2): their own words, beside Knowledge Lite's.
+    "capability_record_uncertain", "unit_failed", "unit_state_unread",
+    "no_location_measured", "status_unrecognised",
 })
 #: Knowledge Lite's closed status shape (`lite_import.status_summary`).
 KNOWLEDGE_STATES = frozenset({"available", "stale", "unavailable", "quarantined"})
@@ -777,6 +783,133 @@ def _audit_source(audit_seen, now) -> tuple[dict, Optional[dict]]:
     return _snapshot_source(value, now, STATUS_STALE_S), capacity
 
 
+# -- operator snapshots (U2) --------------------------------------------------
+#
+# Written by the daemons that own the facts, into operator-readable leaves,
+# so that a non-root reader (this command, the UI) gets the same answer root
+# would. `operator_snapshots` holds the strict readers; this copies fields.
+
+#: Allowlists for the three snapshots, beside `schema` and `written_at`.
+KNOWLEDGE_SNAPSHOT_FIELDS = ("state", "reason_code", "generation", "freshness")
+MIO_SNAPSHOT_FIELDS = ("recorded", "state", "ceiling", "reasons", "observed_at",
+                       "record_uncertain")
+UNIT_FIELDS = ("unit", "status", "load_state", "active_state", "sub_state", "reason_code")
+STORAGE_FIELDS = ("label", "status", "total_bytes", "free_bytes", "available_bytes",
+                  "read_only", "same_filesystem_as", "reason_code")
+
+#: `(statvfs, stat)` for the storage section; `None` is the host's own. A
+#: test sets it so that every scenario measures the same filesystem.
+_storage_probes = None
+
+
+def _snapshot_section(path, reader, limit, now, stale_after, fields, *,
+                      schema: str, writer: str, extra=None) -> dict:
+    from .edge_loop_status import read_snapshot
+
+    value = read_snapshot(path, reader, limit)
+    section = _component(value, now, stale_after, ("schema", "written_at", *fields),
+                         schema=schema, extra=extra)
+    section["source"]["writer"] = writer
+    # Freshness is its own item. `status` below never says `running`: a fresh
+    # snapshot of a failed unit or of quarantined Knowledge is fresh news of
+    # a problem, and each caller turns the snapshot into its own word.
+    section["freshness"] = section["source"]["freshness"]
+    return section
+
+
+def _fresh(section) -> bool:
+    return section["snapshot"] is not None and section["freshness"] == "fresh"
+
+
+def _knowledge_status(now) -> dict:
+    from . import operator_snapshots as snap
+    from .runtime_paths import knowledge_status_path
+
+    section = _snapshot_section(
+        knowledge_status_path(), snap.read_knowledge_status, snap.KNOWLEDGE_BYTES, now,
+        snap.KNOWLEDGE_STALE_S, KNOWLEDGE_SNAPSHOT_FIELDS, schema=snap.KNOWLEDGE_SCHEMA,
+        writer="az-knowledge-lited")
+    # Knowledge Lite's own word decides: only `available` is available;
+    # anything else is `degraded` with Knowledge Lite's reason code.
+    snapshot = section["snapshot"]
+    if _fresh(section):
+        if snapshot["state"] == "available":
+            section["status"], section["reason_code"] = "available", None
+        else:
+            section["status"], section["reason_code"] = "degraded", snapshot["reason_code"]
+    # `freshness` (current/static/absent) was evaluated when the snapshot was
+    # written, not now: a dated claim can expire between two writes.
+    section["content_freshness_evaluated_at"] = (
+        snapshot["written_at"] if snapshot is not None else None)
+    section["cryptographic_implementation"] = {"status": "not_supported",
+                                               "reason_code": "nexus_70_review_pending"}
+    return section
+
+
+def _mio_status(now) -> dict:
+    from . import operator_snapshots as snap
+    from .mio_status import NOTICE
+    from .runtime_paths import mio_status_path
+
+    section = _snapshot_section(
+        mio_status_path(), snap.read_mio_status, snap.MIO_BYTES, now, snap.MIO_STALE_S,
+        MIO_SNAPSHOT_FIELDS, schema=snap.MIO_SCHEMA, writer="az-mio-entryd")
+    snapshot = section["snapshot"]
+    if _fresh(section):
+        if not snapshot["recorded"]:
+            section["status"], section["reason_code"] = "unknown", "no_recorded_capability_transition"
+        elif snapshot["record_uncertain"]:
+            section["status"], section["reason_code"] = "unknown", "capability_record_uncertain"
+        else:
+            # The mio section's own word: a recorded reading, not a grant.
+            section["status"], section["reason_code"] = "recorded", None
+    section["notice"] = NOTICE
+    return section
+
+
+def _services(now) -> dict:
+    from . import operator_snapshots as snap
+    from .runtime_paths import units_status_path
+
+    def extra(value, snapshot):
+        snapshot["units"] = [_pick(unit, UNIT_FIELDS) for unit in value["units"]]
+
+    section = _snapshot_section(
+        units_status_path(), snap.read_units_status, snap.UNITS_BYTES, now,
+        snap.UNITS_STALE_S, (), schema=snap.UNITS_SCHEMA, writer="az-units-observe",
+        extra=extra)
+    section["source"]["reader"] = "systemd_bus.UnitStatesReader (read-only)"
+    if _fresh(section):
+        units = section["snapshot"]["units"]
+        if any(u["active_state"] == "failed" for u in units):
+            section["status"], section["reason_code"] = "degraded", "unit_failed"
+        elif any(u["status"] != "read" for u in units):
+            section["status"], section["reason_code"] = "unknown", "unit_state_unread"
+        else:
+            section["status"], section["reason_code"] = "read", None
+    return section
+
+
+def _storage(now) -> dict:
+    from . import operator_snapshots as snap
+
+    kwargs = {} if _storage_probes is None else {"statvfs": _storage_probes[0], "stat": _storage_probes[1]}
+    entries = [_pick(entry, STORAGE_FIELDS) for entry in snap.read_storage(**kwargs)]
+    measured = any(entry["status"] == "measured" for entry in entries)
+    return {"status": "measured" if measured else "unknown",
+            "reason_code": None if measured else "no_location_measured",
+            "locations": entries,
+            "source": {"kind": "statvfs_at_read", "observed_at": now,
+                       "withheld": ["path"]}}
+
+
+def _guarded_section(build_section, now) -> dict:
+    try:
+        return build_section(now)
+    except Exception:  # noqa: BLE001 - presentation only; status continues
+        return {"status": "unavailable", "reason_code": "internal_error"}
+
+
 def _next_actions(report, lab_host, terminal) -> list:
     # Summaries that quote exception text or a path the view withholds.
     private = [text for text in (terminal.get("profile_reason"),
@@ -847,6 +980,10 @@ def build(
         "fabric": _fabric(report),
         "edge_loop": _edge_loop(now),
         "health": _health(report, audit_seen, now, terminal),
+        "knowledge_status": _guarded_section(_knowledge_status, now),
+        "mio_status": _guarded_section(_mio_status, now),
+        "services": _guarded_section(_services, now),
+        "storage": _guarded_section(_storage, now),
     }
     sections["next_actions"] = _next_actions(report, lab_host, terminal)
     view = {

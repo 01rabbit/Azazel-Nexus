@@ -31,6 +31,7 @@ RestrictAddressFamilies=AF_UNIX
 ReadWritePaths=/var/lib/azazel/state/mio
 ReadWritePaths=/var/lib/azazel/run/mio-entry
 ReadWritePaths=/var/lib/azazel/run/mio-advise
+ReadWritePaths=-/var/lib/azazel/run/mio-status
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

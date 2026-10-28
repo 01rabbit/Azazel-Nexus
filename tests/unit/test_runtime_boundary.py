@@ -1191,6 +1191,12 @@ OPERATOR_TOOLS = (
     "az-activation", "az-nexus-noc",
 )
 
+#: Console scripts backed by an **ungoverned observer unit** (U2): a oneshot
+#: its own timer starts, which reads and writes one operator-readable
+#: snapshot. Not governed (never in `CORE_UNITS`), so listed apart from
+#: `EXPECTED_SCRIPTS`; each still has its unit, by the one naming rule.
+OBSERVER_SCRIPTS = ("az-units-observe",)
+
 
 @pytest.mark.parametrize("option", ["--root", "--generation", "--expected-context"])
 def test_bootstrap_operator_command_rejects_target_overrides_before_input(option, monkeypatch):
@@ -1234,11 +1240,19 @@ def _script_for(unit: str) -> str:
 
 
 def test_the_runtime_declares_exactly_the_daemons_the_units_name():
-    assert sorted(_declared_scripts()) == sorted(EXPECTED_SCRIPTS + OPERATOR_TOOLS + ("az-mio-identity",))
+    from azazel_nexus_runtime.hardening import OBSERVER_PROFILES
+
+    assert sorted(_declared_scripts()) == sorted(
+        EXPECTED_SCRIPTS + OPERATOR_TOOLS + OBSERVER_SCRIPTS + ("az-mio-identity",))
     units = _governed_units()
     for script in EXPECTED_SCRIPTS:
         assert f"azazel-{script[3:]}.service" in units, (
             f"{script} corresponds to no governed unit"
+        )
+    observers = {profile.unit for profile in OBSERVER_PROFILES}
+    for script in OBSERVER_SCRIPTS:
+        assert f"azazel-{script[3:]}.service" in observers - units, (
+            f"{script} corresponds to no ungoverned observer unit"
         )
 
 
@@ -1282,7 +1296,8 @@ def test_the_installer_requires_exactly_the_unit_backed_executables():
     assert match, "the installer no longer checks that the unit executables exist"
     required = set(match.group(1).split())
     assert required == {_script_for(unit) for unit in _governed_units()
-                        if unit not in NOT_STAGED_UNITS} | {"az-mio-identity"}, (
+                        if unit not in NOT_STAGED_UNITS} | {"az-mio-identity",
+                                                            *OBSERVER_SCRIPTS}, (
         "the installer's required binaries and the governed units disagree"
     )
 

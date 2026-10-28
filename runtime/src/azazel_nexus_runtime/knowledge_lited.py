@@ -5,6 +5,7 @@ from __future__ import annotations
 import grp
 import json
 import sys
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -118,11 +119,31 @@ class KnowledgeLiteService:
             self.audit({"event_type": "knowledge.lookup", "technique_ids": list(ids),
                         "count": len(result["refs"])})
             return result
+        return self._status()
+
+    def _status(self) -> dict:
+        """`knowledge.status`: nothing is read while the clock is untrusted."""
         query_as_of = self._query_as_of()
         if query_as_of is None:
             return status_refused("unavailable", CLOCK_UNTRUSTED)
         return status_summary(root=self.root, trust_root=self.trust_root,
                               query_as_of=query_as_of)
+
+    def status_snapshot(self, wall_clock: Callable[[], float] = time.time) -> dict:
+        """The operator-readable snapshot (U2): `knowledge.status`, as codes.
+
+        The same answer `knowledge.status` gives an operator over the socket
+        (including the clock floor's `state_untrusted` refusal), copied field
+        by field by `operator_snapshots.knowledge_snapshot`; a
+        summary that raised is written as `unavailable` / `internal_error`.
+        """
+        from azazel_nexus.operator_snapshots import knowledge_snapshot
+
+        try:
+            summary = self._status()
+        except Exception:  # noqa: BLE001 - a fixed code, never the exception's text
+            return knowledge_snapshot(None, wall_clock(), reason="internal_error")
+        return knowledge_snapshot(summary, wall_clock())
 
 
 def main(
@@ -132,14 +153,18 @@ def main(
     ready: Callable[[], None] | None = None,
 ) -> int:
     """Serve diagnostics even when store or commissioned trust is unreadable."""
+    from azazel_nexus.operator_snapshots import KNOWLEDGE_BYTES, KNOWLEDGE_INTERVAL_S
+
     from .runtime_paths import (
         audit_sink,
         knowledge_state_dir,
+        knowledge_status_path,
         knowledge_store_root,
         lite_trust_root,
         socket_path,
     )
     from .serve import serve_forever
+    from .status_snapshot import SnapshotWriter
     from .systemd_notify import runtime_ready_callback
 
     if argv is None:
@@ -150,13 +175,26 @@ def main(
     service = KnowledgeLiteService(root=knowledge_store_root(),
                                    trust_root=lite_trust_root(),
                                    clock_floor=ClockFloor(knowledge_state_dir()), audit=audit)
+    snapshot = SnapshotWriter(knowledge_status_path(), service.status_snapshot,
+                              limit=KNOWLEDGE_BYTES, interval_s=KNOWLEDGE_INTERVAL_S,
+                              name="az-knowledge-lited")
+    # After READY, never before the bind: the summary verifies the bundle,
+    # which must not delay serving. Never raises: a missing leaf is logged
+    # once and serving continues.
+    notify = ready if ready is not None else runtime_ready_callback()
+
+    def ready_then_write() -> None:
+        if notify is not None:
+            notify()
+        snapshot.write()
+
     return serve_forever(
         path=socket_path(SOCKET_NAME), registry=REGISTRY,
         additional_sockets=((socket_path("knowledge-read"),
                              grp.getgrnam("azknowledge-read").gr_gid, READ_REGISTRY),),
         policy=PrincipalPolicy.resolve(service_accounts=("azmioentry", "azarbiter", "azmio", "azexplain")),
-        audit=audit, handler=service.handle, stop=stop,
-        ready=ready if ready is not None else runtime_ready_callback(),
+        audit=audit, handler=service.handle, stop=lambda: (snapshot.tick(), stop())[1],
+        ready=ready_then_write,
     )
 
 

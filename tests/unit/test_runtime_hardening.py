@@ -760,14 +760,14 @@ def test_the_units_say_they_are_generated():
         (
             "azazel-mio-entryd.service", "azmioentry",
             ["/var/lib/azazel/state/mio", "/var/lib/azazel/run/mio-entry",
-             "/var/lib/azazel/run/mio-advise"],
+             "/var/lib/azazel/run/mio-advise", "-/var/lib/azazel/run/mio-status"],
             None,
         ),
         (
             "azazel-knowledge-lited.service", "azknowledge",
             ["/var/lib/azazel/knowledge", "/var/lib/azazel/run/knowledge",
              "/var/lib/azazel/run/knowledge-read",
-             "/var/lib/azazel/state/knowledge"],
+             "/var/lib/azazel/state/knowledge", "-/var/lib/azazel/run/knowledge-status"],
             ["/var/lib/azazel/lite-trust"],
         ),
     ],
@@ -1019,7 +1019,13 @@ def test_the_only_ungoverned_unit_is_the_probe_preflight():
     # The Deception Lite verify unit (#196 G2) is not governed either, but it
     # is not enabled beside the controller: the decoy pulls it in.
     assert [p.unit for p in DECOY_WATCH_PROFILES] == ["azazel-decoy-verify.service"]
-    assert ALL_PROFILES == PROFILES + UNGOVERNED_PROFILES + DECOY_WATCH_PROFILES
+    # The operator observers (U2) are not governed and not enabled either:
+    # each is started by its own timer, which an operator enables.
+    from azazel_nexus_runtime.hardening import OBSERVER_PROFILES
+
+    assert [p.unit for p in OBSERVER_PROFILES] == ["azazel-units-observe.service"]
+    assert ALL_PROFILES == (PROFILES + UNGOVERNED_PROFILES + DECOY_WATCH_PROFILES
+                            + OBSERVER_PROFILES)
 
 
 def test_the_probe_preflight_is_not_governed_anywhere():

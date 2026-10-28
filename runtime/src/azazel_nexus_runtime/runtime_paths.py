@@ -36,18 +36,21 @@ __all__ = [
     "fetch_partial_dir",
     "fetch_ready_dir",
     "knowledge_state_dir",
+    "knowledge_status_path",
     "knowledge_store_root",
     "ledger_dir",
     "lite_trust_root",
     "mio_local_state_dir",
     "mio_reference_state_dir",
     "mio_state_dir",
+    "mio_status_path",
     "mission_pack_config",
     "mission_pack_root",
     "models_root",
     "socket_group",
     "socket_path",
     "state_dir",
+    "units_status_path",
     "watchdog_state_dir",
 ]
 
@@ -293,3 +296,18 @@ def incident_explain_status_path() -> Path:
 
 def incident_recent_path() -> Path:
     return observation_paths.incident_recent_path(ROOT)
+
+
+def knowledge_status_path() -> Path:
+    """knowledge-lited's operator-readable status snapshot (U2)."""
+    return observation_paths.knowledge_status_path(ROOT)
+
+
+def mio_status_path() -> Path:
+    """entryd's operator-readable capability snapshot (U2); never the ledger."""
+    return observation_paths.mio_status_path(ROOT)
+
+
+def units_status_path() -> Path:
+    """The read-only unit-state observer's snapshot (U2)."""
+    return observation_paths.units_status_path(ROOT)

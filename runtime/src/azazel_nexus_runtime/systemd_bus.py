@@ -18,13 +18,14 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 from azazel_nexus.edge_package import EDGE_UNIT as _EDGE_UNIT
+from azazel_nexus.operator_snapshots import OBSERVED_UNITS
 
 from .activation_markers import GRANTABLE_UNITS
 from .bootstrap_systemd_profile import observe_bootstrap_systemd_profile
 from .systemd_socket import FixedSystemBusSocket, SYSTEM_BUS_ADDRESS, require_supported_dbus_next
 from .units import UNIT_NAMES, UnitOperationFailed
 
-__all__ = ["EdgeUnitStateReader", "SystemdBusSession", "SystemdUnitCalls"]
+__all__ = ["EdgeUnitStateReader", "SystemdBusSession", "SystemdUnitCalls", "UnitStatesReader"]
 
 DESTINATION = "org.freedesktop.systemd1"
 MANAGER_PATH = "/org/freedesktop/systemd1"
@@ -73,6 +74,10 @@ _UNIT_FILE_STATES = frozenset(
 #: The only unit-object properties beyond ActiveState that may be read, and
 #: only on the Edge unit's object, for ``EdgeUnitStateReader``.
 _EDGE_UNIT_PROPERTIES = ("LoadState", "ActiveState", "SubState")
+#: The units whose three state properties may be read: the Edge unit (for
+#: ``EdgeUnitStateReader``) and the packaged services the unit-state
+#: observer reports (``UnitStatesReader``, U2). Read-only either way.
+_STATE_READ_UNITS = frozenset({_EDGE_UNIT, *OBSERVED_UNITS})
 _LOAD_STATES = frozenset(
     {"stub", "loaded", "not-found", "bad-setting", "error", "merged", "masked"}
 )
@@ -444,10 +449,11 @@ class SystemdBusSession:
                     or type(body[1]) is not str
                     or body[1] not in {"Version", "UnitPath"}):
                 raise UnitOperationFailed("the systemd client refused a manager property")
-        elif (path == _unit_object_path(_EDGE_UNIT) and len(body) == 2
+        elif (path in {_unit_object_path(unit) for unit in _STATE_READ_UNITS}
+                and len(body) == 2
                 and body[0] == UNIT_INTERFACE and type(body[1]) is str
                 and body[1] in _EDGE_UNIT_PROPERTIES):
-            pass  # The probe's three reads, on the Edge unit's object only.
+            pass  # The three state reads, on a fixed unit's object only.
         elif (path not in {_unit_object_path(unit) for unit in _UNITS}
                 or list(body) != [UNIT_INTERFACE, "ActiveState"]):
             raise UnitOperationFailed("the systemd client refused a property path")
@@ -526,12 +532,20 @@ _EDGE_NOT_LOADED = {"LoadState": "not-loaded", "ActiveState": "inactive", "SubSt
 def _read_edge_unit_state(exchange: Callable[..., _Reply]) -> dict:
     """Resolve the Edge unit object and read its three state properties."""
 
+    return _read_unit_state(exchange, _EDGE_UNIT)
+
+
+def _read_unit_state(exchange: Callable[..., _Reply], unit: str) -> dict:
+    """Resolve one fixed unit's object and read its three state properties."""
+
+    if unit not in _STATE_READ_UNITS:
+        raise UnitOperationFailed("the unit state reader refused a unit outside its list")
     unit_reply = exchange(
-        MANAGER_INTERFACE, "GetUnit", "s", [_EDGE_UNIT], allow_no_such_unit=True
+        MANAGER_INTERFACE, "GetUnit", "s", [unit], allow_no_such_unit=True
     )
     if getattr(unit_reply, "no_such_unit", False) is True:
         return dict(_EDGE_NOT_LOADED)
-    expected_path = _unit_object_path(_EDGE_UNIT)
+    expected_path = _unit_object_path(unit)
     if SystemdUnitCalls._one(unit_reply, "o", "GetUnit") != expected_path:
         raise UnitOperationFailed("systemd returned an invalid unit object")
     state: dict[str, str] = {}
@@ -612,3 +626,49 @@ class EdgeUnitStateReader:
                 close()
             except Exception:  # noqa: BLE001 - a probe never raises for the node
                 pass
+
+
+class UnitStatesReader:
+    """The read-only systemd view the unit-state observer is given (U2).
+
+    ``EdgeUnitStateReader`` generalised to a fixed list, and nothing more: it
+    reads ``LoadState``/``ActiveState``/``SubState`` of each name in
+    ``operator_snapshots.OBSERVED_UNITS`` (the packaged services), through
+    the same ``_read_only`` exchange that passes ``GetUnit`` and
+    ``Properties.Get`` and refuses every other call, over the same fixed
+    transport. It takes no unit name from anyone. Reading these properties
+    needs no privilege on the system bus; the observer runs unprivileged,
+    where systemd's polkit policy refuses mask, start and stop anyway.
+    """
+
+    __slots__ = ("_connect",)
+
+    def __init__(self, connect: Optional[Callable[[], SystemdBusSession]] = None) -> None:
+        self._connect = connect if connect is not None else SystemdBusSession.connect
+
+    def read_all(self) -> dict:
+        """`{unit: state}` for every observed unit. Never raises.
+
+        A unit whose read failed or was refused maps to ``read_refused``;
+        when the bus cannot be reached at all, every unit maps to
+        ``bus_unavailable``. No exception text leaves this method.
+        """
+
+        try:
+            session = self._connect()
+        except Exception:  # noqa: BLE001 - reported as a fixed code
+            return {unit: "bus_unavailable" for unit in OBSERVED_UNITS}
+        states: dict = {}
+        try:
+            exchange = _read_only(session._exchange)
+            for unit in OBSERVED_UNITS:
+                try:
+                    states[unit] = _read_unit_state(exchange, unit)
+                except Exception:  # noqa: BLE001 - one unit's failure is its own
+                    states[unit] = "read_refused"
+        finally:
+            try:
+                session.close()
+            except Exception:  # noqa: BLE001 - the reading is already made
+                pass
+        return states
