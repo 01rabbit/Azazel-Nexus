@@ -16,6 +16,7 @@ from azazel_nexus.lite_import import (
     status_summary,
 )
 
+from .knowledge_clock_floor import ClockFloor, FloorUnavailable
 from .principal import PrincipalClass, PrincipalPolicy
 from .protocol import (
     Argument,
@@ -53,17 +54,42 @@ LOOKUP_VERB = Verb(
 REGISTRY = VerbRegistry([STATUS_VERB, LOOKUP_VERB])
 READ_REGISTRY = VerbRegistry([LOOKUP_VERB])
 
+#: The fixed reply when the wall clock is behind the persisted floor, or the
+#: floor cannot be read or kept. Existing vocabulary: local state that guards
+#: serving cannot be trusted, so nothing (dated or static) is served.
+CLOCK_UNTRUSTED = "state_untrusted"
+
 
 class KnowledgeLiteService:
     """Only bounded status and context leave the store. Trust is rechecked."""
 
-    def __init__(self, *, root: Path, trust_root: Path,
+    def __init__(self, *, root: Path, trust_root: Path, clock_floor: ClockFloor,
                  now: Callable[[], str] | None = None,
                  audit: Callable[[dict], None] = lambda event: None) -> None:
+        if type(clock_floor) is not ClockFloor:
+            raise TypeError("a persisted clock floor is required")
         self.audit = audit
         self.root = root
         self.trust_root = trust_root
+        self.clock_floor = clock_floor
         self.now = now or (lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z"))
+        self._clock_refused: str | None = None
+
+    def _query_as_of(self) -> str | None:
+        """The wall clock, only if it is not behind the persisted floor.
+
+        None means serve nothing. The audit records the transition into a
+        refusal once, with a fixed cause and no instant or path.
+        """
+        query_as_of = self.now()
+        try:
+            cause = None if self.clock_floor.admit(query_as_of) else "regressed"
+        except FloorUnavailable:
+            cause = "floor_unavailable"
+        if cause is not None and cause != self._clock_refused:
+            self.audit({"event_type": "knowledge.clock_untrusted", "cause": cause})
+        self._clock_refused = cause
+        return None if cause is not None else query_as_of
 
     def handle(self, request) -> dict:
         if getattr(getattr(request, "verb", None), "name", None) == LOOKUP_VERB.name:
@@ -71,8 +97,13 @@ class KnowledgeLiteService:
             if getattr(request, "payload", None):
                 raise RequestRefused(Refusal.UNDECLARED_ARGUMENT, "event")
             ids = tuple(arguments["technique_ids"])
+            query_as_of = self._query_as_of()
+            if query_as_of is None:
+                self.audit({"event_type": "knowledge.lookup", "technique_ids": list(ids),
+                            "count": 0})
+                return {"refs": [], "reason_code": CLOCK_UNTRUSTED}
             reading = lookup_context_reading(root=self.root, trust_root=self.trust_root,
-                                             technique_ids=ids, query_as_of=self.now())
+                                             technique_ids=ids, query_as_of=query_as_of)
             result = {"refs": [asdict(ref) for ref in reading.refs],
                       "reason_code": reading.reason_code}
             # JSON escaping can cost twelve bytes per non-BMP character.
@@ -82,8 +113,12 @@ class KnowledgeLiteService:
             self.audit({"event_type": "knowledge.lookup", "technique_ids": list(ids),
                         "count": len(result["refs"])})
             return result
+        query_as_of = self._query_as_of()
+        if query_as_of is None:
+            return {"state": "unavailable", "reason_code": CLOCK_UNTRUSTED,
+                    "generation": None, "freshness": "absent"}
         return status_summary(root=self.root, trust_root=self.trust_root,
-                              query_as_of=self.now())
+                              query_as_of=query_as_of)
 
 
 def main(
@@ -95,6 +130,7 @@ def main(
     """Serve diagnostics even when store or commissioned trust is unreadable."""
     from .runtime_paths import (
         audit_sink,
+        knowledge_state_dir,
         knowledge_store_root,
         lite_trust_root,
         socket_path,
@@ -108,7 +144,8 @@ def main(
         raise SystemExit("az-knowledge-lited takes no arguments")
     audit = audit_sink(SOCKET_NAME)
     service = KnowledgeLiteService(root=knowledge_store_root(),
-                                   trust_root=lite_trust_root(), audit=audit)
+                                   trust_root=lite_trust_root(),
+                                   clock_floor=ClockFloor(knowledge_state_dir()), audit=audit)
     return serve_forever(
         path=socket_path(SOCKET_NAME), registry=REGISTRY,
         additional_sockets=((socket_path("knowledge-read"),
