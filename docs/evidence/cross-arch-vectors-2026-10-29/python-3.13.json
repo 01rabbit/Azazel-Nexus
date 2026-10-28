@@ -1,0 +1,185 @@
+{
+  "commit": "233043653932b10d1fb936ccc3d329a2ea6b44db",
+  "comparison": {
+    "all_equal": true,
+    "all_match_pins": true,
+    "differing": [],
+    "vectors": {
+      "audit.chain": {
+        "aarch64": "70ab58ca6ff0a7f3d4f6d337647c185ab143e07f992840d277e1c196b9f79446",
+        "amd64": "70ab58ca6ff0a7f3d4f6d337647c185ab143e07f992840d277e1c196b9f79446",
+        "equal": true,
+        "matches_pin": true,
+        "pinned": "70ab58ca6ff0a7f3d4f6d337647c185ab143e07f992840d277e1c196b9f79446"
+      },
+      "edge.explain": {
+        "aarch64": "be318c3f12aaa3dfa2825eda2279a9c46805ece06146567456a09446b47342e0",
+        "amd64": "be318c3f12aaa3dfa2825eda2279a9c46805ece06146567456a09446b47342e0",
+        "equal": true,
+        "matches_pin": true,
+        "pinned": "be318c3f12aaa3dfa2825eda2279a9c46805ece06146567456a09446b47342e0"
+      },
+      "edge.incident": {
+        "aarch64": "c703fb910f1dbeb2a372c22761b68b8127412a559e469065f26647a6febd1d4a",
+        "amd64": "c703fb910f1dbeb2a372c22761b68b8127412a559e469065f26647a6febd1d4a",
+        "equal": true,
+        "matches_pin": true,
+        "pinned": "c703fb910f1dbeb2a372c22761b68b8127412a559e469065f26647a6febd1d4a"
+      },
+      "edge.intake": {
+        "aarch64": "47289fc1840b14540007497b38317e512d463b9e0c2f240b9438985d6448ad0b",
+        "amd64": "47289fc1840b14540007497b38317e512d463b9e0c2f240b9438985d6448ad0b",
+        "equal": true,
+        "matches_pin": true,
+        "pinned": "47289fc1840b14540007497b38317e512d463b9e0c2f240b9438985d6448ad0b"
+      },
+      "knowledge_lite.lookup": {
+        "aarch64": "895374b92aa0210290b70ad5b65d189b10f9838da11354432db8e63d0eaa4b2c",
+        "amd64": "895374b92aa0210290b70ad5b65d189b10f9838da11354432db8e63d0eaa4b2c",
+        "equal": true,
+        "matches_pin": true,
+        "pinned": "895374b92aa0210290b70ad5b65d189b10f9838da11354432db8e63d0eaa4b2c"
+      },
+      "knowledge_lite.verify": {
+        "aarch64": "eec417ee1b2d363ec3de55ab712922ce58c8e6244eb162645d5604c536635d75",
+        "amd64": "eec417ee1b2d363ec3de55ab712922ce58c8e6244eb162645d5604c536635d75",
+        "equal": true,
+        "matches_pin": true,
+        "pinned": "eec417ee1b2d363ec3de55ab712922ce58c8e6244eb162645d5604c536635d75"
+      },
+      "mio.consent": {
+        "aarch64": "032be5d5e2c461b4c5e0c1769857c90ad251c36a8ac0fc11bea484902f608ed0",
+        "amd64": "032be5d5e2c461b4c5e0c1769857c90ad251c36a8ac0fc11bea484902f608ed0",
+        "equal": true,
+        "matches_pin": true,
+        "pinned": "032be5d5e2c461b4c5e0c1769857c90ad251c36a8ac0fc11bea484902f608ed0"
+      },
+      "mio.route": {
+        "aarch64": "6c92410922c351f223d39f483d388570f36f836f70827ab2305c2207734ea5fc",
+        "amd64": "6c92410922c351f223d39f483d388570f36f836f70827ab2305c2207734ea5fc",
+        "equal": true,
+        "matches_pin": true,
+        "pinned": "6c92410922c351f223d39f483d388570f36f836f70827ab2305c2207734ea5fc"
+      },
+      "platform_profile.selection": {
+        "aarch64": "047ed7bd76999b3aaa651185ee69c2a171de0028f5c3f76d71182bc25ac9527b",
+        "amd64": "047ed7bd76999b3aaa651185ee69c2a171de0028f5c3f76d71182bc25ac9527b",
+        "equal": true,
+        "matches_pin": true,
+        "pinned": "047ed7bd76999b3aaa651185ee69c2a171de0028f5c3f76d71182bc25ac9527b"
+      },
+      "revocation": {
+        "aarch64": "9cb4c4187ef6c2fb0579957f1b754be29e1186d39ff620a220d46cc14278468b",
+        "amd64": "9cb4c4187ef6c2fb0579957f1b754be29e1186d39ff620a220d46cc14278468b",
+        "equal": true,
+        "matches_pin": true,
+        "pinned": "9cb4c4187ef6c2fb0579957f1b754be29e1186d39ff620a220d46cc14278468b"
+      },
+      "signature.ed25519": {
+        "aarch64": "de6953525c1330ec87d983b37c6532ad80e3910e5a4e27296b5685c19e57e94d",
+        "amd64": "de6953525c1330ec87d983b37c6532ad80e3910e5a4e27296b5685c19e57e94d",
+        "equal": true,
+        "matches_pin": true,
+        "pinned": "de6953525c1330ec87d983b37c6532ad80e3910e5a4e27296b5685c19e57e94d"
+      },
+      "status.read_model": {
+        "aarch64": "d30924d3bb0c3c9e32f361edc5297fb594ef0084a5d2cf16db7d1a2b2ec30a5a",
+        "amd64": "d30924d3bb0c3c9e32f361edc5297fb594ef0084a5d2cf16db7d1a2b2ec30a5a",
+        "equal": true,
+        "matches_pin": true,
+        "pinned": "d30924d3bb0c3c9e32f361edc5297fb594ef0084a5d2cf16db7d1a2b2ec30a5a"
+      }
+    }
+  },
+  "evidence_kind": "container software run; aarch64 on a VM, amd64 under Rosetta emulation; not hardware evidence",
+  "generated_at": "2026-10-28T23:48:01Z",
+  "runs": {
+    "aarch64": {
+      "context": "colima",
+      "digests": {
+        "audit.chain": "70ab58ca6ff0a7f3d4f6d337647c185ab143e07f992840d277e1c196b9f79446",
+        "edge.explain": "be318c3f12aaa3dfa2825eda2279a9c46805ece06146567456a09446b47342e0",
+        "edge.incident": "c703fb910f1dbeb2a372c22761b68b8127412a559e469065f26647a6febd1d4a",
+        "edge.intake": "47289fc1840b14540007497b38317e512d463b9e0c2f240b9438985d6448ad0b",
+        "knowledge_lite.lookup": "895374b92aa0210290b70ad5b65d189b10f9838da11354432db8e63d0eaa4b2c",
+        "knowledge_lite.verify": "eec417ee1b2d363ec3de55ab712922ce58c8e6244eb162645d5604c536635d75",
+        "mio.consent": "032be5d5e2c461b4c5e0c1769857c90ad251c36a8ac0fc11bea484902f608ed0",
+        "mio.route": "6c92410922c351f223d39f483d388570f36f836f70827ab2305c2207734ea5fc",
+        "platform_profile.selection": "047ed7bd76999b3aaa651185ee69c2a171de0028f5c3f76d71182bc25ac9527b",
+        "revocation": "9cb4c4187ef6c2fb0579957f1b754be29e1186d39ff620a220d46cc14278468b",
+        "signature.ed25519": "de6953525c1330ec87d983b37c6532ad80e3910e5a4e27296b5685c19e57e94d",
+        "status.read_model": "d30924d3bb0c3c9e32f361edc5297fb594ef0084a5d2cf16db7d1a2b2ec30a5a"
+      },
+      "execution": "container on the colima VM (aarch64, Apple Silicon); not hardware",
+      "host": {
+        "byteorder": "little",
+        "machine": "aarch64",
+        "python": "3.13.17",
+        "soabi": "cpython-313-aarch64-linux-gnu",
+        "uid": 1001
+      },
+      "image": "python:3.13",
+      "machine": "aarch64",
+      "matches_pins": {
+        "audit.chain": true,
+        "edge.explain": true,
+        "edge.incident": true,
+        "edge.intake": true,
+        "knowledge_lite.lookup": true,
+        "knowledge_lite.verify": true,
+        "mio.consent": true,
+        "mio.route": true,
+        "platform_profile.selection": true,
+        "revocation": true,
+        "signature.ed25519": true,
+        "status.read_model": true
+      },
+      "platform": "linux/arm64",
+      "target": "aarch64"
+    },
+    "amd64": {
+      "context": "colima-rosetta",
+      "digests": {
+        "audit.chain": "70ab58ca6ff0a7f3d4f6d337647c185ab143e07f992840d277e1c196b9f79446",
+        "edge.explain": "be318c3f12aaa3dfa2825eda2279a9c46805ece06146567456a09446b47342e0",
+        "edge.incident": "c703fb910f1dbeb2a372c22761b68b8127412a559e469065f26647a6febd1d4a",
+        "edge.intake": "47289fc1840b14540007497b38317e512d463b9e0c2f240b9438985d6448ad0b",
+        "knowledge_lite.lookup": "895374b92aa0210290b70ad5b65d189b10f9838da11354432db8e63d0eaa4b2c",
+        "knowledge_lite.verify": "eec417ee1b2d363ec3de55ab712922ce58c8e6244eb162645d5604c536635d75",
+        "mio.consent": "032be5d5e2c461b4c5e0c1769857c90ad251c36a8ac0fc11bea484902f608ed0",
+        "mio.route": "6c92410922c351f223d39f483d388570f36f836f70827ab2305c2207734ea5fc",
+        "platform_profile.selection": "047ed7bd76999b3aaa651185ee69c2a171de0028f5c3f76d71182bc25ac9527b",
+        "revocation": "9cb4c4187ef6c2fb0579957f1b754be29e1186d39ff620a220d46cc14278468b",
+        "signature.ed25519": "de6953525c1330ec87d983b37c6532ad80e3910e5a4e27296b5685c19e57e94d",
+        "status.read_model": "d30924d3bb0c3c9e32f361edc5297fb594ef0084a5d2cf16db7d1a2b2ec30a5a"
+      },
+      "execution": "container on colima with Rosetta 2 translating x86_64; emulated, not an amd64 host",
+      "host": {
+        "byteorder": "little",
+        "machine": "x86_64",
+        "python": "3.13.18",
+        "soabi": "cpython-313-x86_64-linux-gnu",
+        "uid": 1001
+      },
+      "image": "python:3.13",
+      "machine": "x86_64",
+      "matches_pins": {
+        "audit.chain": true,
+        "edge.explain": true,
+        "edge.incident": true,
+        "edge.intake": true,
+        "knowledge_lite.lookup": true,
+        "knowledge_lite.verify": true,
+        "mio.consent": true,
+        "mio.route": true,
+        "platform_profile.selection": true,
+        "revocation": true,
+        "signature.ed25519": true,
+        "status.read_model": true
+      },
+      "platform": "linux/amd64",
+      "target": "amd64"
+    }
+  },
+  "schema": "azazel-nexus/cross-arch-vectors/v1"
+}
