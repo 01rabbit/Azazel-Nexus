@@ -15,6 +15,7 @@ import pwd
 import socket
 import time
 
+from azazel_nexus import model_admission
 from azazel_nexus.advisory_response import AdvisoryRefused
 from azazel_nexus.audit import AuditUnavailable
 from azazel_nexus.local_advisory import read_delivered, read_reference
@@ -145,6 +146,39 @@ class LocalSocketClient:
             return {"outcome": "timed_out", "refusal": "deadline"}
         except (OSError, KeyError, ValueError, SocketMisconfigured):
             return {"outcome": "failed", "refusal": "local_unavailable"}
+
+
+#: Locald's read-only admission verb (`mio_locald.ADMISSION_VERB`).
+ADMISSION_VERB_NAME = "mio.local.admission"
+
+
+class LocalAdmissionReader:
+    """Whether locald now holds an admitted local model; fail-closed.
+
+    Read-only and bounded: one exchange with locald's own socket, at most
+    `PROBE_MAX_S` and at most the share of the request's deadline it is
+    given. Anything other than exactly `{"admitted": true}` from the
+    authenticated `azmio` peer -- no socket, a refusal, a malformed or
+    oversized reply, a timeout -- reads False, and so does every call while
+    `LOCAL_MODEL_ADMISSION_ENABLED` is off, without touching the socket.
+    True permits only *selecting* LOCAL; it is not an admission of its own.
+    """
+
+    @staticmethod
+    def enabled() -> bool:
+        return model_admission.LOCAL_MODEL_ADMISSION_ENABLED is True
+
+    def __call__(self, *, deadline_s: float = PROBE_MAX_S) -> bool:
+        if not self.enabled():
+            return False
+        if type(deadline_s) not in {int, float} or not deadline_s > 0:
+            return False
+        try:
+            reply = _exchange("mio", "azmio", ADMISSION_VERB_NAME, {},
+                              deadline_s=min(PROBE_MAX_S, deadline_s))
+        except Exception:  # noqa: BLE001 - an unreadable admission is no admission
+            return False
+        return set(reply) == {"admitted"} and reply["admitted"] is True
 
 
 class ReferenceSocketClient:

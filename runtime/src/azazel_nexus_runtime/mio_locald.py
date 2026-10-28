@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from azazel_nexus import model_admission
 from azazel_nexus.advisory_response import AdvisoryRefused
 from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.lite_import import KnowledgeRef
@@ -59,6 +60,7 @@ from .systemd_notify import runtime_ready_callback
 
 __all__ = [
     "ACTIVATE_VERB",
+    "ADMISSION_VERB",
     "INFER_VERB",
     "REGISTRY",
     "SOCKET_NAME",
@@ -96,10 +98,20 @@ INFER_VERB = Verb(
     accepts_payload=True,
     payload_contract="azazel_nexus.local_advisory.read_frame",
 )
+#: Read-only: whether this service now holds an admitted local model, as the
+#: result of its own `AdmissionHolder` (refreshed before every request). No
+#: arguments, no payload, SERVICE only -- the same principal set as the
+#: inference verb, so it reaches no one `mio.local.infer` does not. It grants
+#: nothing: entry reads it to decide whether LOCAL may be *selected*, and
+#: every gate in `_infer` still runs on the request that follows.
+ADMISSION_VERB = Verb(
+    name="mio.local.admission",
+    admits=frozenset({PrincipalClass.SERVICE}),
+)
 #: No reference verb: verified playbook references are served by the
 #: model-free `azazel-mio-referenced.service` (`mio_referenced`), which runs
 #: on a node with no admitted model. This host serves only model verbs.
-REGISTRY = VerbRegistry([ACTIVATE_VERB, INFER_VERB])
+REGISTRY = VerbRegistry([ACTIVATE_VERB, ADMISSION_VERB, INFER_VERB])
 
 
 @dataclass(frozen=True)
@@ -163,9 +175,25 @@ class LocalRuntimeService:
     def set_playbooks(self, library: Library | None) -> None:
         self._playbooks = library
 
+    def admission(self) -> dict:
+        """The admission verb's reply: `{"admitted": bool}`, nothing else.
+
+        True only while the feature constant is on, the admission result this
+        service was handed still names its model, and a provider is held.
+        A withdrawal (`main`'s `withdraw`) clears the latter two first, so an
+        expired or changed approval reads False from the next request on.
+        """
+        admitted = (model_admission.LOCAL_MODEL_ADMISSION_ENABLED is True
+                    and self._admitted(self._model_id) is True
+                    and (self._retriever is not None or self._server is not None))
+        return {"admitted": admitted}
+
     def handle(self, request: Any, *, audit: Callable[[dict], None] = lambda e: None) -> dict:
-        if getattr(getattr(request, "verb", None), "name", None) == INFER_VERB.name:
+        name = getattr(getattr(request, "verb", None), "name", None)
+        if name == INFER_VERB.name:
             return self._infer(request, audit=audit)
+        if name == ADMISSION_VERB.name:
+            return self.admission()
         arguments = request.arguments
         model_id = arguments["model_id"]
         runtime_id = arguments["runtime_id"]

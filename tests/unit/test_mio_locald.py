@@ -237,7 +237,8 @@ def test_an_operator_cannot_reach_past_the_admission_decision():
 
 def test_readiness_and_advisory_verbs_exist():
     # The playbook reference moved to the model-free reference service.
-    assert mio_locald.REGISTRY.names() == ("mio.local.infer", "model.activate")
+    assert mio_locald.REGISTRY.names() == (
+        "mio.local.admission", "mio.local.infer", "model.activate")
 
 
 def test_the_staging_directory_is_fixed_in_code():
