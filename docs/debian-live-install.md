@@ -516,7 +516,7 @@ The build runs **online on a build host**; the install runs **offline** on the
 target:
 
 ```sh
-# Build host: Debian 13, x86_64, Debian's CPython 3.13, python3-dev and a C
+# Build host: Debian 13, x86_64, Debian's CPython 3.13, python3-dev, git and a C
 # compiler, from a clean checkout. Refuses any other architecture or Python,
 # because the runtime's native extension is compiled for the build host's ABI.
 python3 tools/build_wheelhouse.py --output /path/to/wheelhouse
@@ -543,8 +543,17 @@ downloads the third-party wheels named in
 `packaging/offline/requirements-x86_64-cp313.lock` with `--require-hashes
 --only-binary=:all: --no-deps`, and builds both Nexus wheels from the source
 bundle with `--no-build-isolation --no-index`. The lock's names and versions
-are tested against `runtime/pyproject.toml`; `uv.lock` is not used because it
-does not cover the runtime distribution. The two Nexus wheels are recorded by
+are tested against `runtime/pyproject.toml` plus the library's `fabric` extra
+and its closure as `uv.lock` resolves it
+([ADR-0004](adr/0004-fabric-in-offline-wheelhouse.md)): every production
+activation pass needs commissioning evidence, which needs pinned Fabric, so
+the bundle carries `azazel-fabric` and pydantic. Fabric publishes no wheel;
+the builder clones its repository (so the build host needs `git` and HTTPS to
+GitHub), refuses unless the tag resolves to the pinned commit, builds that
+commit with the same pinned backend, and refuses unless the wheel reproduces
+the sha256 the lock pins. Fabric's own release-digest signature is not
+verified: its key is not a Nexus trust anchor. `install` refuses a bundle that
+lacks any locked wheel. The two Nexus wheels are recorded by
 the hash this build produced; reproducibility across builders is not measured.
 
 The bundle is **POSIX ustar only**: the builder writes no pax records, GNU
@@ -657,6 +666,7 @@ but never installed by this tool.
 | Item | Status | Evidence / what is missing |
 | --- | --- | --- |
 | Hash-pinned wheelhouse build (backend, `dbus-next`, `PyYAML`, both Nexus wheels incl. native `_bootstrap_deadline`) | implemented; container-rehearsed | [container evidence](evidence/offline-install-container-2026-10-28.json); x86_64 under Rosetta emulation, not hardware |
+| Pinned Fabric and pydantic in the wheelhouse ([ADR-0004](adr/0004-fabric-in-offline-wheelhouse.md)) | implemented; container-rehearsed (build, `--network none` install, Fabric hardware projection) | x86_64 under Rosetta emulation; the Fabric wheel hash reproduced on x86_64 and aarch64 containers; no aarch64 lock; Fabric's release signature not verified by Nexus |
 | Single bundle manifest (source, wheels, slots; sha256/size/kind/source) | implemented | `tests/unit/test_offline_install_bundle.py` |
 | Safe atomic extraction and refusal cases | implemented | same tests; one tampered bundle refused in the container |
 | Offline install with `--no-index --find-links --require-hashes` | implemented; container-rehearsed | `--network none` container at the commit the evidence names; lock check, `pip check`, imports, `recheck` and `install.sh --without-service-manager` passed. The e2e harness needs PyNaCl for its fixtures; with a separate harness-only PyNaCl set (not in the bundle or the lock) 21 of 22 stages passed, the systemd stage not run |

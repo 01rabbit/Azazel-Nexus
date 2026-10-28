@@ -41,8 +41,10 @@ untrusted: do not install it.
 
 ## 1. Build the bundle (separate x86_64 build host, online)
 
-The build host is Debian 13, x86_64, Debian's CPython 3.13 with `python3-dev`
-and a C compiler, from a clean reviewed checkout at the commit under test.
+The build host is Debian 13, x86_64, Debian's CPython 3.13 with `python3-dev`,
+a C compiler and `git` (the pinned Fabric wheel is rebuilt from its tagged
+commit and must reproduce the locked hash; ADR-0004), from a clean reviewed
+checkout at the commit under test.
 It is not the DUT. As an ordinary user with umask 022 and a 0755 output
 directory:
 

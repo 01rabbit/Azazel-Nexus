@@ -810,6 +810,20 @@ def check_wheels_against_lock(
     return checked
 
 
+def check_lock_is_carried(checked: list[dict[str, str]], lock: dict[str, list[str]]) -> None:
+    """Refuse an install whose bundle lacks a wheel the reviewed lock pins.
+
+    ``verify`` only says what a bundle carries is pinned. An install also
+    needs everything pinned: a bundle without, say, the Fabric wheel would
+    install cleanly and then refuse every activation pass that needs
+    commissioning evidence (ADR-0004).
+    """
+
+    missing = sorted(set(lock) - {item["requirement"] for item in checked})
+    if missing:
+        raise BundleRefused(f"the bundle does not carry {missing}, which the reviewed lock pins")
+
+
 def wheel_requirements(document: dict) -> str:
     """A ``--require-hashes`` requirements file naming exactly the bundled wheels."""
 
@@ -1505,7 +1519,8 @@ def install(
     _check_destination_parent(venv_parent, allow_sticky=False)
     extracted, report = extract_and_verify(bundle, into, limits=limits, pins=pins)
     try:
-        _install_verified(extracted, report, into, venv, python)
+        _install_verified(extracted, report, into, venv, python,
+                          lock=(reviewed_pins() if pins is None else pins)[0])
         report["recheck"] = recheck_tree(
             into, expected_manifest_sha256=report["manifest_sha256"], limits=limits, pins=pins
         )
@@ -1545,7 +1560,8 @@ def install(
     return report
 
 
-def _install_verified(extracted: Extracted, report: dict, into: Path, venv: Path, python: Path) -> None:
+def _install_verified(extracted: Extracted, report: dict, into: Path, venv: Path, python: Path, *,
+                      lock: dict[str, list[str]]) -> None:
     target = TARGETS[extracted.manifest["target"]]
     probe = subprocess.run(
         [str(python), "-I", "-c",
@@ -1557,6 +1573,7 @@ def _install_verified(extracted: Extracted, report: dict, into: Path, venv: Path
         raise BundleRefused(
             f"{python} reports {probe.stdout.strip()!r}; the bundle targets {expected!r}"
         )
+    check_lock_is_carried(report["wheels"], lock)
     _create_private_dir(venv)
     _run([str(python), "-I", "-m", "venv", str(venv)])
     venv_python = venv / "bin" / "python"
@@ -1567,7 +1584,7 @@ def _install_verified(extracted: Extracted, report: dict, into: Path, venv: Path
     _run([str(venv_python), "-I", "-m", "pip", "check", "--disable-pip-version-check"])
     _run([str(venv_python), "-I", "-c",
           "import azazel_nexus, azazel_nexus_runtime, azazel_nexus_runtime._bootstrap_deadline, "
-          "yaml, dbus_next"])
+          "yaml, dbus_next, pydantic_core._pydantic_core, azazel_fabric.provisioning_contracts"])
     report["install"] = {
         "venv": str(venv),
         "distributions": sorted(

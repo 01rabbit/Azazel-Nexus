@@ -1,7 +1,10 @@
 # ADR-0001 — Azazel-Fabric is pinned to an exact tag, as an optional extra
 
 Status: **accepted** · Supersedes nothing · Revises
-[`inheritance-ledger.md`](../inheritance-ledger.md) §4.1
+[`inheritance-ledger.md`](../inheritance-ledger.md) §4.1 · Packaging
+consequences amended by [ADR-0004](0004-fabric-in-offline-wheelhouse.md)
+(Fabric stays optional for `CORE`, is required for commissioned activation,
+and is carried in the offline wheelhouse)
 
 ## Context
 
