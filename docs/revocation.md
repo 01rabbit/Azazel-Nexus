@@ -113,3 +113,41 @@ exposure; production introduction and recovery use repin exclusively. On a
 fresh node the initial `TrustStore.pin` writes no policy, so the first repin
 introduces it (keeping the pinned bundle keys is allowed). The full order is
 [Knowledge Lite consumer §11](knowledge-lite-consumer.md#11-first-enrollment-from-a-fresh-install-to-available).
+
+## Accepting a list on a node
+
+`az-commissiond` is the only writer of the Knowledge Lite trust root
+(`/var/lib/azazel/lite-trust`), so it accepts signed lists there, with a
+second ROOT-only verb beside `trust.repin.*` (assess-c P4):
+
+```sh
+sudo install -m 0640 -o root -g azcommission revocations.signed /etc/azazel/commissioning/lite-revocations.signed
+sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus_runtime.commission_cli knowledge-revocation-accept
+```
+
+`trust.revocation.accept` takes only the fixed leaf name
+`lite-revocations.signed` in the commissioning directory, read without
+following links and bounded to 256 KiB. The signed statement is the
+authority: `RevocationStore.accept` verifies it under the commissioned
+policy (threshold, payload generation, a sequence above the one in force,
+nothing re-enabled, no self-revocation, never the last revocation key). Root
+chooses when, never what is trusted. No confirmation words are asked, because
+nothing here can widen trust: a list only withdraws.
+
+`knowledge.lite.revocation_requested` is appended to `az-auditd` (through its
+append-only `audit-submit` listener, as `azcommission`) before the store is
+touched; if that fails nothing is written and the reply says
+`audit_unavailable`. Then `knowledge.lite.revocation_accepted` (sequence,
+generation and counts) or `knowledge.lite.revocation_refused` with one of
+`malformed`, `trust_unreadable`, `unverified`, `replay` or `re_enable`. An
+accepted list whose outcome record fails stays accepted (more revocation only
+closes) and the reply says `audit_complete: false`.
+
+The list and the continuity record take `trust.json`'s owner, group and mode
+(`RevocationStore._metadata`, as repin does for its own files), so
+`az-knowledge-lited` (`azknowledge`, group read) reads the list and reports
+`revoked`, not `unverified`. Before this, a list written by the commissioning
+account was its private `0600` file and the reader saw `unverified`
+(finding F3 of the [2026-10-28 container rehearsal](evidence/vm-integration-container-2026-10-28.md)).
+A `trust.json` that is not a regular file without group/other write refuses
+the acceptance.

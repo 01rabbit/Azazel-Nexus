@@ -1,9 +1,21 @@
-"""Read-only Knowledge Lite status and bounded advisory lookup."""
+"""Knowledge Lite status, bounded advisory lookup, and the ROOT-only import.
+
+Status and lookup only read. `knowledge.import` (assess-c P4) is the one verb
+that changes the store, and only on the operator socket, for ROOT only: it
+takes one inbox entry id, verifies the bundle against the commissioned trust
+root this daemon serves from (pin, anchors, cumulative revocations; never the
+store-local anchors), and appends each transition to `az-auditd` through its
+append-only listener -- the start before anything is touched, so an import
+without a record does not begin. This daemon runs as the store owner
+`azknowledge`, which the import requires. It never repins, accepts
+revocations or promotes trust: those stay with `az-commissiond`.
+"""
 
 from __future__ import annotations
 
 import grp
 import json
+import re
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -13,13 +25,18 @@ from pathlib import Path
 
 from azazel_nexus.lite_import import (
     TECHNIQUE_ID,
+    CommissionedLite,
+    CommissionedTrust,
+    ImportRefused,
+    LiteImport,
     lookup_context_reading,
     status_refused,
     status_summary,
 )
 
 from .knowledge_clock_floor import ClockFloor, FloorUnavailable
-from .principal import PrincipalClass, PrincipalPolicy
+from .lite_audit import ImportAudit
+from .principal import Principal, PrincipalClass, PrincipalPolicy
 from .protocol import (
     Argument,
     ArgumentKind,
@@ -53,7 +70,24 @@ LOOKUP_VERB = Verb(
     arguments=(TechniqueIdsArgument("technique_ids", ArgumentKind.IDENTIFIER),),
     admits=frozenset({PrincipalClass.SERVICE}),
 )
-REGISTRY = VerbRegistry([STATUS_VERB, LOOKUP_VERB])
+class EntryIdArgument(Argument):
+    """An inbox entry id: the SHA-256 hex of the artifact, never a path."""
+
+    def coerce(self, value):
+        value = super().coerce(value)
+        if not ENTRY_ID.fullmatch(value):
+            raise RequestRefused(Refusal.ARGUMENT_RANGE, self.name)
+        return value
+
+
+ENTRY_ID = re.compile(r"[0-9a-f]{64}", re.ASCII)
+#: Operator socket only, ROOT only. Never on the service read listener.
+IMPORT_VERB = Verb(
+    "knowledge.import",
+    arguments=(EntryIdArgument("entry_id", ArgumentKind.IDENTIFIER),),
+    admits=frozenset({PrincipalClass.ROOT}),
+)
+REGISTRY = VerbRegistry([STATUS_VERB, LOOKUP_VERB, IMPORT_VERB])
 READ_REGISTRY = VerbRegistry([LOOKUP_VERB])
 
 #: The fixed reply when the wall clock is behind the persisted floor, or the
@@ -67,10 +101,14 @@ class KnowledgeLiteService:
 
     def __init__(self, *, root: Path, trust_root: Path, clock_floor: ClockFloor,
                  now: Callable[[], str] | None = None,
-                 audit: Callable[[dict], None] = lambda event: None) -> None:
+                 audit: Callable[[dict], None] = lambda event: None,
+                 import_audit: Callable[[], ImportAudit] = ImportAudit) -> None:
         if type(clock_floor) is not ClockFloor:
             raise TypeError("a persisted clock floor is required")
         self.audit = audit
+        #: A fresh production-audit recorder per import (auditd, not the
+        #: bounded diagnostic `audit` above).
+        self.import_audit = import_audit
         self.root = root
         self.trust_root = trust_root
         self.clock_floor = clock_floor
@@ -98,6 +136,8 @@ class KnowledgeLiteService:
         return None if cause is not None else query_as_of
 
     def handle(self, request) -> dict:
+        if getattr(getattr(request, "verb", None), "name", None) == IMPORT_VERB.name:
+            return self._import(request)
         if getattr(getattr(request, "verb", None), "name", None) == LOOKUP_VERB.name:
             arguments = LOOKUP_VERB.bind(request.arguments)
             if getattr(request, "payload", None):
@@ -120,6 +160,46 @@ class KnowledgeLiteService:
                         "count": len(result["refs"])})
             return result
         return self._status()
+
+    def _import(self, request) -> dict:
+        """`knowledge.import`: one entry id in, fixed words and numbers out."""
+        principal = getattr(request, "principal", None)
+        # Defense in depth behind the verb's admission: None is never root.
+        if (type(principal) is not Principal or principal.uid != 0
+                or PrincipalClass.ROOT not in principal.classes):
+            raise RequestRefused(Refusal.PRINCIPAL_DENIED)
+        if getattr(request, "payload", None):
+            raise RequestRefused(Refusal.UNDECLARED_ARGUMENT, "event")
+        entry_id = IMPORT_VERB.bind(request.arguments)["entry_id"]
+        result = {"outcome": "refused", "refused": None, "state": None,
+                  "bundle_version": None, "gate": None, "code": None,
+                  "audit_complete": True}
+        now = self._query_as_of()
+        if now is None:
+            # Expiry is judged against this instant; an untrusted clock
+            # imports nothing.
+            return {**result, "refused": "clock_untrusted"}
+        recorder = self.import_audit()
+        importer = LiteImport(CommissionedLite(self.root), recorder=recorder,
+                              trust=CommissionedTrust(self.trust_root))
+        try:
+            outcome = importer.import_entry(entry_id, now=now)
+        except ImportRefused as refused:
+            return {**result, "refused": refused.code, "audit_complete": recorder.complete}
+        except Exception:  # noqa: BLE001 - fixed words, never library text
+            # Before the start record is durable this is an audit failure and
+            # nothing changed; after it, the store may have changed and the
+            # operator reads status.
+            started = recorder.started
+            return {**result, "outcome": "failed" if started else "refused",
+                    "refused": None if started else "audit_unavailable",
+                    "audit_complete": False}
+        return {**result, "outcome": "admitted" if outcome.admitted else "quarantined",
+                "state": outcome.reading.overall,
+                "bundle_version": outcome.bundle_version,
+                "gate": outcome.refusal.gate.value if outcome.refusal is not None else None,
+                "code": outcome.refusal.code if outcome.refusal is not None else None,
+                "audit_complete": recorder.complete}
 
     def _status(self) -> dict:
         """`knowledge.status`: nothing is read while the clock is untrusted."""

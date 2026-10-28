@@ -200,7 +200,7 @@ def test_commissiond_pin_is_exactly_the_shipped_group():
     """The value the VM refused in #93, stated literally."""
 
     assert bootstrap_loaded._service_expected(UnitKey.COMMISSIOND)[
-        "SupplementaryGroups"] == ("as", ["azknowledge"])
+        "SupplementaryGroups"] == ("as", ["azknowledge", "azaudit-submit"])
     assert bootstrap_loaded._service_expected(UnitKey.AUDITD)[
         "SupplementaryGroups"] == ("as", [])
 

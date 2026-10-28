@@ -300,7 +300,9 @@ if [ "$WITH_ACCOUNTS" = yes ]; then
     fi
     # The explainer's own audit and M.I.O. entry listeners. Nobody is added
     # to them: the explainer unit carries them as SupplementaryGroups, so it
-    # needs no azazel-operator membership to reach those two daemons.
+    # needs no azazel-operator membership to reach those two daemons. The
+    # Knowledge Lite and commissioning units carry azaudit-submit the same
+    # way, for their import and revocation records.
     if ! getent group azaudit-submit >/dev/null 2>&1; then
         groupadd --system azaudit-submit
     fi

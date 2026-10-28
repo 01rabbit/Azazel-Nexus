@@ -141,7 +141,7 @@ commissioned separately under `/var/lib/azazel/lite-trust`. A caller supplies ne
 | --- | --- | --- | --- |
 | `/var/lib/azazel/knowledge/inbox` | artifacts an operator placed | the operator | 32 entries considered, 256 MiB each |
 | `/var/lib/azazel/lite-trust/trust/anchors.toml` | the commissioned trust root that status, setup and `knowledge-lited` read | root, at commissioning (§11) | — |
-| `/var/lib/azazel/knowledge/trust/anchors.toml` | the anchor `import_entry` verifies against | root, at commissioning (§11) | — |
+| `/var/lib/azazel/knowledge/trust/anchors.toml` | the anchor the library `import_entry` and `azazel-nexus pack` verify against; the daemon's `knowledge.import` uses the trust root above instead | root, at commissioning (§11) | — |
 | `/var/lib/azazel/knowledge/admitted` | the one artifact in use | the import service | one file, replaced atomically |
 | `/var/lib/azazel/knowledge/quarantine` | refused artifacts, held | the import service | one file per refusal |
 | `/var/lib/azazel/knowledge/state/watermark` | the anti-rollback counter | the import service | one integer |
@@ -164,7 +164,10 @@ are `WATERMARK_MISSING`, `WATERMARK_MALFORMED`, `WATERMARK_UNREADABLE` and
 
 Imports run as the store owner (`azknowledge`, which owns
 `/var/lib/azazel/knowledge`); store files owned by anyone else are refused, not
-adopted. The bundle is renamed and its directory synced before the watermark
+adopted. The shipped route is `az-knowledge-lited`'s ROOT-only
+`knowledge.import` verb (§11 step 7), which runs as that owner, verifies
+against the commissioned trust root and records every transition in
+`az-auditd`. The bundle is renamed and its directory synced before the watermark
 is written, so a crash leaves a bundle at or above the watermark, never below.
 A crash during the very first import can leave `admitted/current.tar.gz`
 without a watermark. That state is refused like a deleted watermark. To
@@ -257,6 +260,30 @@ Six cases run in CI against those bytes — valid, corrupt-signature,
 corrupt-payload, corrupt-truncated, expired, absent — and each refusal code
 is compared against the `expected_error_code` the producer declares.
 
+**The fixture key is published, so it is never a production anchor.** Its
+seed is in Knowledge's public source; anything "signed" by it proves nothing.
+`azazel_nexus.lab_keys.PUBLIC_FIXTURE_KEYS` lists it (a test keeps the list in
+step with every vendored fixture anchor), and it is refused with
+`PUBLIC_FIXTURE_KEY` when it is pinned (`TrustStore.pin`), proposed by a repin
+(as a bundle key or a revocation key), read from a commissioned
+`anchors.toml` (`CommissionedLite.anchors`, gate `anchors`, code
+`ANCHOR_PUBLIC_FIXTURE_KEY`) or found in the pin the daemon reads (status and
+lookup report `trust_unreadable`; `knowledge.import` refuses with
+`trust_unreadable`). `verify_bundle` itself stays a pure function of the
+anchors it is given, so the conformance cases above still run against the
+producer's bytes.
+
+The only exception is a host carrying the persistent lab marker
+`/etc/azazel-lab/LAB-HOST` (`lab_host.py`). A marked host is already refused
+by every production gate (activation health, the bootstrap overlay,
+commissioning approval, model admission), so a fixture key accepted there
+never reaches a node that runs under an activation grant. The
+[VM integration rehearsal](hil-runbooks/vm-integration.md) writes the marker
+before it pins the fixture key; unit tests that drive the fixture through a
+commissioned reader declare the same marker, and the end-to-end harness
+re-signs the fixture's content under a key it makes for the run. There is no
+flag, argument or environment variable that does the same.
+
 ## 10. The interpreter floor
 
 CPython **3.11 or newer**, because `tomllib` is the canonical reader for
@@ -270,10 +297,11 @@ gate.
 ## 11. First enrollment: from a fresh install to `available`
 
 The order a fresh node takes to reach `state: available`, using only routes
-that exist in this repository (#93). Two steps have **no shipped entrypoint**:
-the initial pin and the import. For each, the exact minimal library call is
-given and it is run by hand, as root or as the store owner. No step below adds
-a command, flag, environment variable, approval or daemon operation.
+that exist in this repository (#93). One step has **no shipped entrypoint**:
+the initial pin. Its exact minimal library call is given and it is run by
+hand, as root. The import is the ROOT-only `knowledge.import` verb of
+`az-knowledge-lited` (assess-c P4). No step below adds a flag, environment
+variable or approval.
 
 | step | what | route | who |
 | --- | --- | --- | --- |
@@ -283,7 +311,7 @@ a command, flag, environment variable, approval or daemon operation.
 | 4 | `trust.json` owner and mode | `chown` / `chmod` | root |
 | 5 | revocation policy | `az-nexus-commission trust-repin` → `az-commissiond` → `TrustStore.repin` | root |
 | 6 | bundle in the inbox | file copy | root |
-| 7 | first import | `LiteImport.import_entry`, library call | `azknowledge` |
+| 7 | first import | `az-nexus-commission knowledge-import` → `az-knowledge-lited` `knowledge.import` → `LiteImport.import_entry` | root |
 | 8 | status | `azazel-nexus status`, `azazel-nexus setup` | root |
 
 Status reports reason `trust_unreadable` on a fresh install, `unverified`
@@ -351,8 +379,8 @@ TrustStore(Path("/var/lib/azazel/lite-trust")).pin(
 ' "<bundle public key hex>" "<commissioning digest>" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ```
 
-`pin` refuses if anything is already pinned, an empty key list and a malformed
-key. The commissioning digest is a binding label: status reads it back from the
+`pin` refuses if anything is already pinned, an empty key list, a malformed
+key and the published fixture key (`PUBLIC_FIXTURE_KEY`, §9). The commissioning digest is a binding label: status reads it back from the
 trust record and requires the revocation policy record to carry the same value,
 and repin copies it forward. Nothing on the Knowledge Lite path compares it
 with a commissioning record, and the code does not say which record supplies
@@ -441,29 +469,37 @@ The SHA-256 hex is the entry id (§7). The store is `2750` and the bundle
 `azazel-operator` cannot read it; the checksum runs as root like every other
 line of this procedure.
 
-### Step 7: first import (no shipped entrypoint)
+### Step 7: first import (`knowledge.import`)
 
-No shipped command calls `import_entry`. `knowledge-lited` never imports.
-`status` and `setup` only read. `azazel-nexus pack` only reads the admitted
-bundle. Run the import as the store owner, because it refuses store files
-owned by another uid:
+Root asks `az-knowledge-lited` to import the entry. The daemon runs as the
+store owner `azknowledge`, which the import requires, and is the only shipped
+importer: its `knowledge.import` verb, on the operator socket only and for
+ROOT only, takes the entry id and nothing else. It verifies the bundle against
+the commissioned trust root it serves from (the pin, the trust-root
+`anchors.toml` and the cumulative revocation list; never the store-local
+copy) and appends `knowledge.lite.import_*` records to `az-auditd` through
+auditd's append-only `audit-submit` listener. The start is recorded before
+anything is touched: if auditd cannot record it, the import is refused with
+`audit_unavailable` and nothing changes.
 
 ```sh
-sudo runuser -u azknowledge -- /opt/azazel-nexus/venv/bin/python -I -c '
-import json, sys
-from pathlib import Path
-from azazel_nexus.lite_import import CommissionedLite, LiteImport
-service = LiteImport(CommissionedLite(Path("/var/lib/azazel/knowledge")),
-                     recorder=lambda t, e: print(json.dumps({"event_type": t.value, **e}, sort_keys=True)))
-outcome = service.import_entry(sys.argv[1], now=sys.argv[2])
-print(json.dumps(outcome.as_event(), sort_keys=True))
-raise SystemExit(0 if outcome.admitted else 1)
-' "<entry id>" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus_runtime.commission_cli knowledge-import --entry "<entry id>"
 ```
 
-The recorder prints the transitions (§7) to the terminal. No import ledger is
-wired in production, so keep that output with the run record. A refused bundle
-is quarantined and the command exits 1.
+The daemon must be running (an activation grant, or on a disposable VM the
+rehearsal-only start named in step 8), and so must auditd. The command prints
+one JSON object of fixed words and numbers: `outcome` (`admitted`,
+`quarantined`, `refused` or `failed`), `refused` (`not_in_inbox`,
+`entry_changed`, `state_untrusted`, `trust_unreadable`, `unverified`,
+`trust_changed`, `clock_untrusted` or `audit_unavailable`), `state`,
+`bundle_version`, `gate`, `code` and `audit_complete`. It exits 0 only for an
+admitted bundle whose records all reached auditd. A refused bundle is
+quarantined; a bundle whose digest, generation or signing key the revocation
+list names is quarantined with `BUNDLE_REVOKED`, so a revoked bundle never
+replaces the admitted one or raises the watermark. An import holds the
+daemon's single request loop while it verifies the archive, so status and
+lookup wait for it (lookups past their deadline read as Knowledge
+unavailable, which never blocks the deterministic path).
 
 ### Step 8: status
 
@@ -474,9 +510,9 @@ sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus.cli setup
 
 Status shows `state: available` and `reason: available`. Setup shows
 `knowledge-store: done` and `knowledge-trust: done`. `knowledge.status` from
-`knowledge-lited` uses the same reader. That unit is also masked at install;
-this procedure does not start it. The regular start is an activation grant. A
-disposable VM may check it with the rehearsal-only start of the
+`knowledge-lited` uses the same reader. That unit is masked at install, and
+step 7 needs it running; this procedure does not start it. The regular start
+is an activation grant. A disposable VM may use the rehearsal-only start of the
 [integrated loop rehearsal §6](hil-runbooks/integration-loop-rehearsal.md#6-rehearsal-only-start-alternative-to-activation),
 which needs the controller `inactive`; that start is not a substitute for an
 activation grant, and the run record must say the rehearsal-only start was
@@ -561,18 +597,21 @@ logs" in [operations](operations.md)).
 The installed store root is `/var/lib/azazel/knowledge`, as listed in §7 above.
 `LiteImport` still owns
 `inbox`, `admitted/current.tar.gz`, `quarantine` and `state/watermark`. The
-daemon never imports, repins, accepts revocations, promotes or repairs files.
-A successful status request writes neither store nor trust nor a read event.
+daemon imports only through its ROOT-only `knowledge.import` (§11 step 7),
+never on its own. It never repins, accepts revocations, promotes trust or
+repairs files: signed revocation lists are accepted by `az-commissiond`
+([revocation](revocation.md#accepting-a-list-on-a-node)). A successful status
+request writes neither store nor trust nor a read event.
 
 Trust is a separate commissioner-owned root, `/var/lib/azazel/lite-trust`,
 read-only to the daemon. Its `trust/anchors.toml` supplies the bundle's key IDs,
 threshold, signer-role, security-epoch and export-policy constraints. These
 keys are intersected with the current `TrustStore` pin (`trust.json` or the
 repinned `trust-current` generation). Store-local `knowledge/trust` anchors
-are deliberately ignored by daemon status. Import admission reads only that
-store-local copy and has no shipped operator command (§11); commissioning must
-provision compatible public anchor metadata and pins at both places before
-daemon status can report availability. Missing or inconsistent metadata never
+are deliberately ignored by daemon status and by `knowledge.import`; the
+library `import_entry` without commissioned trust and `azazel-nexus pack`
+still read that store-local copy, so commissioning provisions compatible
+public anchor metadata and pins at both places. Missing or inconsistent metadata never
 causes a fallback to store-local trust.
 
 `KnowledgeLite`'s content-addressed generations (`live`, artifact/signature

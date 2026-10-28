@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from .audit import AuditChainBroken, AuditLedger, AuditUnavailable
+from .lab_keys import refuse_public_fixture_keys
 from .lite_bundle import BundleRefused, read_anchors
 from .revocation import RevocationList, RevocationRefused
 from .revocation_policy import (
@@ -205,6 +206,8 @@ class TrustStore:
             stage = "validation"
             document = json.loads(staged.read_bytes())
             proposed = _validated_keys(document)
+            # A published test key is never a production anchor (lab_keys).
+            refuse_public_fixture_keys((bytes.fromhex(key) for key in proposed), TrustRefused)
             old_policy = None
             if old.get("revocation_policy") is True or policy_path(self.root).exists():
                 old_policy = read_policy_record(self.root, old["commissioning_digest"])
@@ -218,6 +221,7 @@ class TrustStore:
                 )
             if new_policy is not None:
                 authority = RevocationPolicy.from_record(new_policy["policy"])
+                refuse_public_fixture_keys(authority.revocation_keys, TrustRefused)
                 anchors_path = self.root / "trust" / "anchors.toml"
                 if anchors_path.exists():
                     anchors = read_anchors(anchors_path)
@@ -369,6 +373,8 @@ class TrustStore:
             parsed = tuple(parse_public_key(text) for text in ordered)
         except SignatureRefused as exc:
             raise TrustRefused(f"a key in the proposed trust set is unusable: {exc}") from exc
+        # A published test key signs whatever anybody wants (lab_keys).
+        refuse_public_fixture_keys(parsed, TrustRefused)
 
         record = {
             "commissioning_digest": commissioning_digest,

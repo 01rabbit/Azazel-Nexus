@@ -2,8 +2,8 @@
 # tests/unit/test_runtime_hardening.py compares this file against what
 # the declaration renders, and a hand edit is a difference.
 #
-# Serves read-only Lite verbs with read-only public trust.
-# Imports and trust promotion remain on their existing paths.
+# Serves Lite status and lookup with read-only public trust, and the ROOT-only import of one inbox entry into the store it owns, recorded through auditd's append-only listener.
+# Trust promotion and revocations remain with commissiond.
 
 [Unit]
 Description=Azazel-Nexus Knowledge Lite read service
@@ -15,6 +15,7 @@ Requires=azazel-activated.service
 [Service]
 Type=notify
 User=azknowledge
+SupplementaryGroups=azaudit-submit
 ExecStart=/usr/libexec/azazel/az-knowledge-lited
 ReadOnlyPaths=/var/lib/azazel/lite-trust
 RestrictAddressFamilies=AF_UNIX

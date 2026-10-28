@@ -450,7 +450,9 @@ def test_every_generation_file_write_interruption_keeps_first_install_core(node,
     assert service.status()["fallback"] == "CORE (no previous provider)"
 
 
-def test_real_model_and_lite_slices_are_reused_and_not_reimported(node, tmp_path):
+def test_real_model_and_lite_slices_are_reused_and_not_reimported(node, tmp_path, lab_host):
+    # The producer's published fixture key is a commissioned anchor only on a
+    # marked lab host (lab_keys).
     from azazel_nexus.lite_import import CommissionedLite, LiteImport
     from azazel_nexus.model_catalog import (
         CATALOG_DOMAIN,

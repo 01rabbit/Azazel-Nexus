@@ -20,6 +20,10 @@ from azazel_nexus.lite_import import CommissionedLite, LiteImport, Transition
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = ROOT / "contract" / "azazel-knowledge-lite"
+
+#: The producer's published fixture key is a commissioned anchor only on a
+#: marked lab host (lab_keys); these cases declare one.
+pytestmark = pytest.mark.usefixtures("lab_host")
 AS_OF = "2026-09-21T00:00:00Z"
 
 
@@ -77,6 +81,7 @@ def test_only_the_declared_transitions_leave_an_event() -> None:
         "lite.import.admitted",
         "lite.import.quarantined",
         "lite.import.rolled_back",
+        "lite.import.refused",
         "lite.serving.stopped_by_revocation",
     }
 

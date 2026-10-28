@@ -1,7 +1,9 @@
-"""Local commissioning inventory and ROOT-only trust replacement (#38, #86).
+"""Local commissioning inventory and ROOT-only trust changes (#38, #86, P4).
 
 Inventory remains read-only. Trust replacement has its own explicit verb
-allowlist and short-lived, peer-bound interactive confirmation.
+allowlist and short-lived, peer-bound interactive confirmation. Accepting a
+signed Knowledge Lite revocation list is a third ROOT-only verb on the same
+trust root (`lite_revocation_accept`); the signed statement is its authority.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from pathlib import Path
 from azazel_nexus.commissioning import describe_for_operator
 from azazel_nexus.inventory import InterfaceReadout, read_interfaces
 
+from .lite_revocation_accept import REVOCATION_INPUT, RevocationAcceptance
 from .netlink import LinkRecord, NetlinkMalformed, NetlinkUnavailable, read_links
 from .principal import PrincipalClass, PrincipalPolicy
 from .protocol import (
@@ -179,7 +182,18 @@ REPIN_VERBS = (
     ),
 )
 
-REGISTRY = VerbRegistry(VERBS + REPIN_VERBS)
+#: Signed cumulative Knowledge Lite revocations, from one fixed leaf. ROOT only.
+REVOCATION_VERBS = (
+    Verb(
+        "trust.revocation.accept",
+        arguments=(
+            Argument("revocation_file", ArgumentKind.ENUM, choices=(REVOCATION_INPUT,)),
+        ),
+        admits=frozenset({PrincipalClass.ROOT}),
+    ),
+)
+
+REGISTRY = VerbRegistry(VERBS + REPIN_VERBS + REVOCATION_VERBS)
 
 
 class CommissionService:
@@ -199,6 +213,7 @@ class CommissionService:
         snapshot_dir: Path | None = None,
         clock: Callable[[], float] | None = None,
         now: Callable[[], str] | None = None,
+        revocation: RevocationAcceptance | None = None,
     ) -> None:
         self.sysfs = sysfs
         self.read_links_fn = read_links_fn
@@ -216,6 +231,8 @@ class CommissionService:
                           else state_dir() / "commission"),
             repin=repin, **options,
         )
+        self.revocation = revocation if revocation is not None else RevocationAcceptance(
+            commissioning_dir=self.repin_confirmation.commissioning_dir)
 
     def snapshot(self) -> Snapshot:
         try:
@@ -231,6 +248,8 @@ class CommissionService:
             return self.repin_confirmation.challenge(request.principal, **request.arguments)
         if request.verb.name == "trust.repin.confirm":
             return self.repin_confirmation.confirm(request.principal, **request.arguments)
+        if request.verb.name == "trust.revocation.accept":
+            return self.revocation.accept(request.principal, **request.arguments)
         if request.verb.name == "commission.inventory":
             snapshot = self.snapshot()
             return {"snapshot": snapshot.digest, "interfaces": snapshot.describe()}

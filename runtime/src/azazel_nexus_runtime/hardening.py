@@ -1424,7 +1424,10 @@ PROFILES: tuple[ServiceProfile, ...] = (
         description="Azazel-Nexus commissioning daemon",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/commissioning.md",
         address_families=("AF_UNIX", "AF_NETLINK"),
-        supplementary_groups=("azknowledge",),
+        # azknowledge: group read of the Lite trust root it writes (#86).
+        # azaudit-submit: auditd's append-only listener, for its accepted
+        # Lite revocations (P4); it reaches no operator socket through it.
+        supplementary_groups=("azknowledge", "azaudit-submit"),
         read_write_paths=(
             "/var/lib/azazel/run/commission",
             "/var/lib/azazel/state/commission",
@@ -1731,6 +1734,9 @@ PROFILES: tuple[ServiceProfile, ...] = (
         description="Azazel-Nexus Knowledge Lite read service",
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/knowledge-lite-consumer.md",
         address_families=("AF_UNIX",),
+        # auditd's append-only listener only, for its ROOT-requested imports
+        # (P4). Never azazel-operator: it reaches no other daemon socket.
+        supplementary_groups=("azaudit-submit",),
         read_write_paths=(
             "/var/lib/azazel/knowledge", "/var/lib/azazel/run/knowledge",
             "/var/lib/azazel/run/knowledge-read",
@@ -1744,8 +1750,10 @@ PROFILES: tuple[ServiceProfile, ...] = (
         conditions=_grant_condition("azazel-knowledge-lited.service"),
         extra=(("ReadOnlyPaths", "/var/lib/azazel/lite-trust"),),
         rationale=(
-            "Serves read-only Lite verbs with read-only public trust. "
-            "Imports and trust promotion remain on their existing paths."
+            "Serves Lite status and lookup with read-only public trust, and "
+            "the ROOT-only import of one inbox entry into the store it owns, "
+            "recorded through auditd's append-only listener. Trust promotion "
+            "and revocations remain with commissiond."
         ),
     ),
     ServiceProfile(

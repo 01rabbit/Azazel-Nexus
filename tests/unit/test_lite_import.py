@@ -35,6 +35,10 @@ MODULE = ROOT / "src" / "azazel_nexus" / "lite_import.py"
 
 FRESH = "2026-09-21T00:00:00Z"
 
+#: These cases drive the producer's published fixture key through the
+#: commissioned anchor reader, which refuses it off a lab host (lab_keys).
+pytestmark = pytest.mark.usefixtures("lab_host")
+
 
 @pytest.fixture
 def node(tmp_path):
@@ -336,6 +340,7 @@ def test_the_transitions_are_a_closed_set() -> None:
         "lite.import.admitted",
         "lite.import.quarantined",
         "lite.import.rolled_back",
+        "lite.import.refused",
         "lite.serving.stopped_by_revocation",
     }
 

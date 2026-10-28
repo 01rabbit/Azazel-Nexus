@@ -47,9 +47,22 @@ material.**
 ## The audit records transitions, not reads
 
 `import started`, `admitted`, `quarantined`, `rolled back`, `state untrusted`,
-`store tightened`, and `serving stopped by revocation`. A status read writes
-nothing: a ledger that grew every time somebody looked at a screen would be
-a ledger nobody can read, and looking is not a transition.
+`store tightened`, `refused` and `serving stopped by revocation`. A status read
+writes nothing: a ledger that grew every time somebody looked at a screen would
+be a ledger nobody can read, and looking is not a transition.
+
+## Commissioned trust, when the caller is the daemon
+
+`LiteImport(..., trust=CommissionedTrust(trust_root))` is how
+`az-knowledge-lited`'s ROOT-only `knowledge.import` verb imports. The bundle is
+then verified against the commissioner-owned trust root the daemon serves from
+(its anchors intersected with the `TrustStore` pin), never the store-local
+copy, and a bundle whose digest, generation or signing key the cumulative
+revocation list names is quarantined rather than admitted: a revoked bundle
+must not replace the admitted one or raise the anti-rollback watermark. An
+unusable trust root (unreadable, unverified revocations, a published test key)
+refuses the import with nothing changed. Without `trust`, the library keeps its
+store-local behaviour for the harnesses that drive it directly.
 """
 
 from __future__ import annotations
@@ -84,11 +97,18 @@ from .lite_bundle import (
     refused_reading,
     verify_bundle,
 )
+from .lab_keys import PUBLIC_FIXTURE_REFUSED, holds_public_fixture_key
+from .lab_host import is_lab_host
 from .store_dirs import fsync_directory, store_directory
 
 __all__ = [
     "CommissionedLite",
+    "CommissionedTrust",
     "ImportOutcome",
+    "IMPORT_REFUSAL_CODES",
+    "ImportRefused",
+    "REVOCATION_REFUSAL_CODES",
+    "TrustUnusable",
     "InboxEntry",
     "LiteImport",
     "MAX_INBOX_BYTES",
@@ -127,10 +147,33 @@ class Transition(str, Enum):
     QUARANTINED = "lite.import.quarantined"
     ROLLED_BACK = "lite.import.rolled_back"
     REVOKED = "lite.serving.stopped_by_revocation"
+    #: The commissioned trust root could not be used, or changed during the
+    #: import: nothing was verified, moved or written.
+    REFUSED = "lite.import.refused"
+
+
+#: Why an import changed nothing (`ImportRefused.code`), as a closed set the
+#: production audit schema enumerates.
+IMPORT_REFUSAL_CODES = (
+    "not_an_entry_id", "not_in_inbox", "entry_changed", "state_untrusted",
+    "trust_unreadable", "unverified", "trust_changed",
+)
+#: Why a signed revocation statement was not accepted, as a closed set.
+REVOCATION_REFUSAL_CODES = (
+    "malformed", "trust_unreadable", "unverified", "replay", "re_enable",
+)
 
 
 class ImportRefused(Exception):
-    """The import did not happen, and nothing was changed."""
+    """The import did not happen, and nothing was changed.
+
+    `code` is a fixed word a daemon may return; the message is for a human at
+    a library call and is never sent over a socket.
+    """
+
+    def __init__(self, message: str, *, code: str = "refused") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -193,7 +236,11 @@ class CommissionedLite:
         return self.root / "state" / "watermark"
 
     def anchors(self) -> TrustAnchors:
-        return read_anchors(self.anchors_path)
+        anchors = read_anchors(self.anchors_path)
+        # A published test key is never a commissioned anchor (lab_keys).
+        if holds_public_fixture_key(anchors.keys.values()) and not is_lab_host():
+            raise BundleRefused(Gate.ANCHORS, "ANCHOR_PUBLIC_FIXTURE_KEY", PUBLIC_FIXTURE_REFUSED)
+        return anchors
 
     def watermark(self) -> Optional[int]:
         return _read_watermark(self.state_path)
@@ -257,6 +304,8 @@ class ImportOutcome:
     #: The refusal, when there was one. Carries the gate and the code.
     refusal: Optional[BundleRefused] = None
     bundle_digest: str = ""
+    #: The admitted bundle's version; None when nothing was admitted.
+    bundle_version: Optional[int] = None
 
     def as_event(self) -> dict:
         """Provenance and outcome. Never content."""
@@ -281,9 +330,13 @@ class LiteImport:
         commissioned: CommissionedLite,
         *,
         recorder: Optional[Callable[[Transition, Mapping], None]] = None,
+        trust: Optional["CommissionedTrust"] = None,
     ) -> None:
         self.commissioned = commissioned
         self._record = recorder or (lambda transition, event: None)
+        if trust is not None and type(trust) is not CommissionedTrust:
+            raise TypeError("trust is the commissioned trust root, or nothing")
+        self.trust = trust
 
     # -- enumeration -------------------------------------------------------
 
@@ -326,14 +379,16 @@ class LiteImport:
         if not _ENTRY_ID.fullmatch(str(entry_id)):
             raise ImportRefused(
                 f"{entry_id!r} is not an entry id. An import selects an "
-                "enumerated entry; it does not take a path"
+                "enumerated entry; it does not take a path",
+                code="not_an_entry_id",
             )
         listing = {entry.entry_id: entry for entry in self.list_inbox()}
         entry = listing.get(entry_id)
         if entry is None:
             raise ImportRefused(
                 f"{entry_id} is not in the inbox. It is refused rather than "
-                "looked for somewhere else"
+                "looked for somewhere else",
+                code="not_in_inbox",
             )
 
         self._record(Transition.IMPORT_STARTED, {"entry_id": entry_id, "at": now})
@@ -368,19 +423,32 @@ class LiteImport:
             raise ImportRefused(
                 "The anti-rollback state cannot be trusted. An operator must restore "
                 "it (for example from backup) before importing; see "
-                "docs/knowledge-lite-consumer.md section 7. No bundle was changed."
+                "docs/knowledge-lite-consumer.md section 7. No bundle was changed.",
+                code="state_untrusted",
             ) from None
         raw = (self.commissioned.inbox / entry.display_name).read_bytes()
         digest = "sha256:" + hashlib.sha256(raw).hexdigest()
+        if hashlib.sha256(raw).hexdigest() != entry_id:
+            # Replaced between the listing and the read: not what was chosen.
+            self._refuse(entry_id, now, "entry_changed")
+
+        snapshot = None
+        if self.trust is not None:
+            try:
+                snapshot = self.trust.snapshot()
+            except TrustUnusable as unusable:
+                self._refuse(entry_id, now, unusable.code)
 
         try:
-            anchors = self.commissioned.anchors()
+            anchors = snapshot.anchors if snapshot is not None else self.commissioned.anchors()
             accepted = verify_bundle(
                 raw,
                 anchors=anchors,
                 last_imported_version=floor if floor is not None else 0,
             )
             _refuse_trust_shaped_members(accepted)
+            if snapshot is not None:
+                snapshot.refuse_revoked(accepted)
         except BundleRefused as refusal:
             self._quarantine(raw, digest, refusal, now=now, entry_id=entry_id)
             return ImportOutcome(
@@ -391,6 +459,10 @@ class LiteImport:
                 bundle_digest=digest,
             )
 
+        if snapshot is not None and not snapshot.unchanged():
+            # A repin landed while this bundle was verified against the old
+            # trust: verify again under the new one rather than admit.
+            self._refuse(entry_id, now, "trust_changed")
         self._promote(raw, accepted, now=now)
         claims = read_claims(accepted, query_as_of=now)
         reading = reading_for(claims, query_as_of=now)
@@ -412,6 +484,17 @@ class LiteImport:
             admitted=True,
             reading=reading,
             bundle_digest=digest,
+            bundle_version=accepted.bundle_version,
+        )
+
+    def _refuse(self, entry_id: str, now: str, code: str) -> None:
+        """Record why nothing changed, then say so. Never returns."""
+
+        self._record(Transition.REFUSED, {"entry_id": entry_id, "at": now, "code": code})
+        raise ImportRefused(
+            "The import was refused before anything was verified, moved or "
+            f"written ({code}).",
+            code=code,
         )
 
     # -- serving -----------------------------------------------------------
@@ -580,45 +663,147 @@ def _atomic_write(path: Path, payload: bytes) -> None:
         raise
 
 
+class TrustUnusable(Exception):
+    """The commissioned trust root cannot be used. `code` is a status reason."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class TrustSnapshot:
+    """One verified reading of the commissioned trust root."""
+
+    root: Path
+    trust_path: Path
+    trust_bytes: bytes
+    keys: tuple[bytes, ...]
+    anchors: TrustAnchors
+    revocations: object  # revocation.RevocationList; imported lazily
+
+    def unchanged(self) -> bool:
+        """Whether the trust record read here is still the one in force."""
+        from .lite_trust import TrustRefused, TrustStore
+        from .model_paths import bounded_read
+
+        try:
+            return (TrustStore(self.root).path == self.trust_path
+                    and bounded_read(self.trust_path, 65536) == self.trust_bytes)
+        except (OSError, ValueError, TrustRefused):
+            return False
+
+    def revoked(self, accepted: BundleAccepted) -> bool:
+        """The cumulative list names its digest, its generation or a signer."""
+        revocations = self.revocations
+        return bool(
+            revocations.reason_for(digest=accepted.bundle_digest,
+                                   generation=accepted.bundle_version)
+            or any(revocations.revokes_key(self.anchors.keys[name])
+                   for name in accepted.signers))
+
+    def refuse_revoked(self, accepted: BundleAccepted) -> None:
+        if self.revoked(accepted):
+            raise BundleRefused(
+                Gate.ANCHORS, "BUNDLE_REVOKED",
+                "the commissioned revocation list names this bundle's digest, "
+                "generation or signing key")
+
+
+@dataclass(frozen=True)
+class CommissionedTrust:
+    """The commissioner-owned trust root, as the daemon reads it.
+
+    Anchor metadata (key IDs, threshold, role, epoch and export policy) lives
+    under ``root/trust/anchors.toml``; its keys must also be currently pinned
+    by TrustStore. KnowledgeLite supplies the same revocation-policy reader
+    used by the content-generation cache, without treating a tar as that cache.
+    Failures carry fixed status symbols; no input or exception text leaves.
+    """
+
+    root: Path
+
+    def snapshot(self) -> TrustSnapshot:
+        from .lite_service import KnowledgeLite
+        from .lite_trust import TrustRefused, TrustStore
+        from .model_paths import bounded_read
+        from .revocation import RevocationRefused
+        from .signature import SignatureRefused
+
+        try:
+            trust = TrustStore(self.root)
+            trust_path = trust.path
+            trust_bytes = bounded_read(trust_path, 65536)
+            digest = json.loads(trust_bytes)["commissioning_digest"]
+            if not isinstance(digest, str) or not digest.strip():
+                raise ValueError("commissioning binding required")
+            keys = trust.keys(commissioning_digest=digest)
+            # A published test key pinned here makes the whole root unusable
+            # (lab_keys); the anchors below refuse one the same way.
+            if holds_public_fixture_key(keys) and not is_lab_host():
+                raise ValueError("public fixture key")
+            anchors = CommissionedLite(self.root).anchors()
+            anchors = replace(anchors, keys={name: key for name, key in anchors.keys.items()
+                                             if key in keys})
+        except (OSError, ValueError, KeyError, TypeError, TrustRefused, BundleRefused,
+                SignatureRefused):
+            raise TrustUnusable("trust_unreadable") from None
+        try:
+            revocations = KnowledgeLite(self.root, digest).revocations(bundle_keys=keys).current()
+        except RevocationRefused:
+            raise TrustUnusable("unverified") from None
+        return TrustSnapshot(self.root, trust_path, trust_bytes, keys, anchors, revocations)
+
+    def accept_revocation(self, blob: bytes):
+        """Accept one signed cumulative revocation list into this root.
+
+        The commissioning daemon's ROOT-only `trust.revocation.accept` is the
+        caller. The list is verified against the commissioned revocation
+        policy (`RevocationStore.accept`), and the files it writes take
+        `trust.json`'s owner, group and mode, so the daemon that reads this
+        root reads `revoked`, not `unverified`. Raises `TrustUnusable` with
+        `trust_unreadable` when the root itself cannot be read, and lets
+        `RevocationRefused` through for the statement's own refusals.
+        """
+        from .lite_service import KnowledgeLite
+        from .lite_trust import TrustRefused, TrustStore
+        from .model_paths import bounded_read
+        from .signature import SignatureRefused
+
+        try:
+            trust = TrustStore(self.root)
+            record = json.loads(bounded_read(trust.path, 65536))
+            digest = record["commissioning_digest"]
+            if not isinstance(digest, str) or not digest.strip():
+                raise ValueError("commissioning binding required")
+            keys = trust.keys(commissioning_digest=digest)
+            if holds_public_fixture_key(keys) and not is_lab_host():
+                raise ValueError("public fixture key")
+        except (OSError, ValueError, KeyError, TypeError, TrustRefused, SignatureRefused):
+            raise TrustUnusable("trust_unreadable") from None
+        return KnowledgeLite(self.root, digest).revocations(bundle_keys=keys).accept(blob)
+
+
 def _read_trusted(*, root: Path, trust_root: Path,
                   reader: Callable[[BundleAccepted], dict]) -> dict:
     """Read the imported tar store using separate commissioner-owned trust.
 
-    The legacy import root's anchors are deliberately not consulted. Anchor
-    metadata (key IDs, threshold, role, epoch and export policy) lives under
-    ``trust_root/trust/anchors.toml``; its keys must also be currently pinned
-    by TrustStore. KnowledgeLite supplies the same revocation-policy reader
-    used by the content-generation cache, without treating a tar as that cache.
-    The callback sees only the verified admitted bundle. Failures return fixed
-    status symbols; no input or exception text leaves this adapter.
+    The legacy import root's anchors are deliberately not consulted; the
+    trust comes from `CommissionedTrust(trust_root)`. The callback sees only
+    the verified admitted bundle. Failures return fixed status symbols; no
+    input or exception text leaves this adapter.
     """
-    from .lite_service import KnowledgeLite
-    from .lite_trust import TrustRefused, TrustStore
+    from .lite_trust import TrustRefused
     from .model_paths import bounded_read
-    from .revocation import RevocationRefused
-    from .signature import SignatureRefused
 
     def summary(state, reason, generation=None, freshness="absent"):
         return status_refused(state, reason, generation, freshness)
 
     try:
-        trust = TrustStore(trust_root)
-        trust_path = trust.path
-        trust_bytes = bounded_read(trust_path, 65536)
-        digest = json.loads(trust_bytes)["commissioning_digest"]
-        if not isinstance(digest, str) or not digest.strip():
-            raise ValueError("commissioning binding required")
-        keys = trust.keys(commissioning_digest=digest)
-        anchors = CommissionedLite(trust_root).anchors()
-        anchors = replace(anchors, keys={name: key for name, key in anchors.keys.items()
-                                         if key in keys})
-    except (OSError, ValueError, KeyError, TypeError, TrustRefused, BundleRefused, SignatureRefused):
-        return summary("unavailable", "trust_unreadable")
-
-    try:
-        revocations = KnowledgeLite(trust_root, digest).revocations(bundle_keys=keys).current()
-    except RevocationRefused:
-        return summary("unavailable", "unverified")
+        snapshot = CommissionedTrust(trust_root).snapshot()
+    except TrustUnusable as unusable:
+        return summary("unavailable", unusable.code)
+    anchors = snapshot.anchors
 
     try:
         # Enumerating distinguishes an unreadable/missing store from absence.
@@ -643,9 +828,7 @@ def _read_trusted(*, root: Path, trust_root: Path,
         generation = accepted.bundle_version
         if not 0 <= generation <= 2**63 - 1:
             return summary("quarantined", "bundle_refused")
-        if (revocations.reason_for(digest=accepted.bundle_digest, generation=generation)
-                or any(revocations.revokes_key(anchors.keys[name])
-                       for name in accepted.signers)):
+        if snapshot.revoked(accepted):
             return summary("quarantined", "revoked", generation)
         try:
             watermark = CommissionedLite(root).watermark()
@@ -655,7 +838,7 @@ def _read_trusted(*, root: Path, trust_root: Path,
             return summary("quarantined", "state_untrusted")
         result = reader(accepted)
         # A repin observed during the read cannot yield an available answer.
-        if trust.path != trust_path or bounded_read(trust_path, 65536) != trust_bytes:
+        if not snapshot.unchanged():
             return summary("unavailable", "trust_unreadable")
         return result
     except BundleRefused:

@@ -360,7 +360,10 @@ def test_every_unit_but_the_controller_has_an_empty_capability_bounding_set():
         }.get(profile.unit, [""])
         assert settings["AmbientCapabilities"] == [""]
         if profile.unit == "azazel-commissiond.service":
-            assert settings["SupplementaryGroups"] == ["azknowledge"]
+            assert settings["SupplementaryGroups"] == ["azknowledge azaudit-submit"]
+        elif profile.unit == "azazel-knowledge-lited.service":
+            # auditd's append-only listener only (P4 import records).
+            assert settings["SupplementaryGroups"] == ["azaudit-submit"]
         elif profile.unit == "azazel-mio-entryd.service":
             assert settings["SupplementaryGroups"] == ["azazel-operator"]
         elif profile.unit == "azazel-mio-locald.service":
@@ -391,7 +394,7 @@ def test_capabilities_and_supplementary_groups_have_an_exact_allowlist():
         "azazel-mio-entryd.service", "azazel-mio-locald.service",
         "azazel-mio-referenced.service",
         "azazel-incident-explaind.service", "azazel-decoy-netd.service",
-        "azazel-decoy-nsd.service",
+        "azazel-decoy-nsd.service", "azazel-knowledge-lited.service",
     }
     settings = _settings("azazel-activated.service")
     assert settings["User"] == ["root"]
