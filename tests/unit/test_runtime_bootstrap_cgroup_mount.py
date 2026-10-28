@@ -234,3 +234,29 @@ def test_namespaces_never_opens_pid1(tmp_path, monkeypatch, private_os):
     _, opened = _ns_setup(tmp_path, monkeypatch)
     cgroup_mount._namespaces()
     assert opened == ["/proc/self/ns"]
+
+
+# The LP64 gate reads its CPU list from platform_profile (ADR-0003).
+import os as _os
+import sys as _sys
+
+from azazel_nexus_runtime import bootstrap_cgroup_mount as _cgroup_mount
+
+
+@pytest.mark.parametrize("machine", ["riscv64", "armv7l", "i686", "arm64", "amd64", ""])
+def test_filesystem_type_refuses_an_unreviewed_machine(monkeypatch, machine):
+    monkeypatch.setattr(_cgroup_mount.sys, "platform", "linux")
+    monkeypatch.setattr(_cgroup_mount.platform, "machine", lambda: machine)
+    with pytest.raises(UnitOperationFailed, match="ABI not admitted"):
+        _cgroup_mount._filesystem_type(-1)
+
+
+@pytest.mark.skipif(_sys.platform != "linux", reason="fstatfs through ctypes is Linux-only")
+@pytest.mark.parametrize("machine", ["x86_64", "aarch64"])
+def test_filesystem_type_admits_both_reviewed_machines(monkeypatch, tmp_path, machine):
+    monkeypatch.setattr(_cgroup_mount.platform, "machine", lambda: machine)
+    fd = _os.open(tmp_path, _os.O_RDONLY | _os.O_DIRECTORY)
+    try:
+        assert type(_cgroup_mount._filesystem_type(fd)) is int
+    finally:
+        _os.close(fd)

@@ -62,12 +62,19 @@ field no profile has (`UNKNOWN_ARCHITECTURE`, `UNREVIEWED_OS`,
 record that carries only the identifier is still distinguishable.
 
 **D4. A lab profile cannot back a production use.** `DeploymentBaseline` — the
-value a production consumer takes — cannot be constructed from a lab profile,
-from an unreviewed look-alike, or for a use outside `PRODUCTION_USES`
-(model admission, product admission, HIL preflight, a hardware-gate record, a
-core-reserve record). Tests fix this for every listed use. This is a type
-that refuses; it is not an approval flag, and nothing in this change adds a
-switch, environment variable or setting that would accept Arm in production.
+value a production consumer takes — refuses, on its ordinary construction
+paths (the constructor, `require_deployment_baseline`, `copy` and `pickle`,
+which go back through the constructor), a lab profile, an unreviewed
+look-alike whose purpose merely claims the baseline, and a use outside
+`PRODUCTION_USES` (model admission, product admission, HIL preflight, a
+hardware-gate record, a core-reserve record); the class cannot be subclassed.
+Tests fix this for every listed use. Python cannot stop
+`object.__new__` plus `object.__setattr__`, so the type is not by itself
+proof: a consumer that acts on a value checks `type(x) is
+DeploymentBaseline` and re-runs the checks, which
+`verify_deployment_baseline` does. This is a check that refuses; it is not an
+approval flag, and nothing in this change adds a switch, environment variable
+or setting that would accept Arm in production.
 
 **D5. Arm VM results are "VM software-integration evidence", a category
 separate from the hardware gates.** A run on `debian-13-arm64-cp313-lab` can

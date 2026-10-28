@@ -227,3 +227,65 @@ def test_peergroups_table_covers_every_reviewed_cpu():
 
     principal = pytest.importorskip("azazel_nexus_runtime.principal")
     assert pp.LP64_REVIEWED_KERNEL_MACHINES <= principal._GENERIC_SOCKET_MACHINES
+
+
+def test_purpose_alone_does_not_make_a_baseline():
+    claimed = pp.PlatformProfile(
+        profile_id="debian-13-amd64-cp313", purpose=pp.PURPOSE_DEPLOYMENT_BASELINE,
+        os_id="debian", os_version_id="13", architecture="amd64", python_tag="cp313",
+        soabi="cpython-313-x86_64-linux-gnu", features=frozenset({"extra"}))
+    assert not claimed.is_deployment_baseline
+    other_id = pp.PlatformProfile(
+        profile_id="debian-13-amd64-cp313-x", purpose=pp.PURPOSE_DEPLOYMENT_BASELINE,
+        os_id="debian", os_version_id="13", architecture="amd64", python_tag="cp313",
+        soabi="cpython-313-x86_64-linux-gnu", features=pp.DEPLOYMENT_BASELINE.features)
+    assert not other_id.is_deployment_baseline
+    assert pp.DEPLOYMENT_BASELINE.is_deployment_baseline
+    assert not pp.ARM64_LAB.is_deployment_baseline
+
+
+def test_deployment_baseline_cannot_be_subclassed():
+    with pytest.raises(TypeError):
+        class Lenient(pp.DeploymentBaseline):  # noqa: F841
+            def __post_init__(self):
+                pass
+
+
+def _forged(profile, use="model-admission"):
+    value = object.__new__(pp.DeploymentBaseline)
+    object.__setattr__(value, "profile", profile)
+    object.__setattr__(value, "use", use)
+    return value
+
+
+def test_copy_and_pickle_go_back_through_the_constructor():
+    import copy
+    import pickle
+
+    good = pp.require_deployment_baseline(pp.DEPLOYMENT_BASELINE, "hil-preflight")
+    assert pickle.loads(pickle.dumps(good)) == good
+    assert copy.copy(good) == good and copy.deepcopy(good) == good
+    forged = _forged(pp.ARM64_LAB)
+    with pytest.raises(pp.PlatformRefused) as refused:
+        pickle.loads(pickle.dumps(forged))
+    assert refused.value.reason == pp.LAB_PROFILE_NOT_FOR_PRODUCTION
+    with pytest.raises(pp.PlatformRefused):
+        copy.copy(forged)
+    with pytest.raises(pp.PlatformRefused):
+        copy.deepcopy(forged)
+
+
+def test_a_consumer_rechecks_what_it_is_handed():
+    good = pp.require_deployment_baseline(pp.DEPLOYMENT_BASELINE, "model-admission")
+    assert pp.verify_deployment_baseline(good, "model-admission") is good
+    with pytest.raises(pp.PlatformRefused):
+        pp.verify_deployment_baseline(good, "hil-preflight")
+    with pytest.raises(pp.PlatformRefused) as refused:
+        pp.verify_deployment_baseline(_forged(pp.ARM64_LAB), "model-admission")
+    assert refused.value.reason == pp.LAB_PROFILE_NOT_FOR_PRODUCTION
+    with pytest.raises(pp.PlatformRefused):
+        pp.verify_deployment_baseline(_forged(pp.DEPLOYMENT_BASELINE, "lab-anything"), "lab-anything")
+    from types import SimpleNamespace
+    with pytest.raises(pp.PlatformRefused):
+        pp.verify_deployment_baseline(
+            SimpleNamespace(profile=pp.DEPLOYMENT_BASELINE, use="model-admission"), "model-admission")

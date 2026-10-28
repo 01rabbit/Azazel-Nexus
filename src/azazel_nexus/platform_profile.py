@@ -211,7 +211,11 @@ class PlatformProfile:
 
     @property
     def is_deployment_baseline(self) -> bool:
-        return self.purpose == PURPOSE_DEPLOYMENT_BASELINE
+        """The reviewed baseline itself: purpose alone is not enough, since
+        anyone can construct a profile that claims it."""
+
+        return (self.purpose == PURPOSE_DEPLOYMENT_BASELINE
+                and REVIEWED_PROFILES.get(self.profile_id) == self)
 
 
 def _profile(profile_id, purpose, architecture):
@@ -262,28 +266,57 @@ def select_profile(*, os_id: object, os_version_id: object, machine: object,
     return matches[0]
 
 
+def _check_production_use(profile: object, use: object) -> None:
+    if type(use) is not str or use not in PRODUCTION_USES:
+        raise PlatformRefused(UNKNOWN_USE, use)
+    if type(profile) is not PlatformProfile:
+        raise PlatformRefused(LAB_PROFILE_NOT_FOR_PRODUCTION, profile)
+    if profile.purpose != PURPOSE_DEPLOYMENT_BASELINE:
+        raise PlatformRefused(LAB_PROFILE_NOT_FOR_PRODUCTION, profile.profile_id)
+    if not profile.is_deployment_baseline:
+        raise PlatformRefused(UNKNOWN_PROFILE, profile.profile_id)
+
+
 @dataclass(frozen=True)
 class DeploymentBaseline:
     """Proof that a profile was checked for a production use.
 
-    Constructing one from a lab profile raises, so a function that takes a
-    `DeploymentBaseline` cannot be handed lab evidence by mistake.
+    The ordinary construction paths -- the constructor, `require_deployment_baseline`,
+    `copy` and `pickle` (which re-run the constructor) -- refuse a lab profile,
+    an unreviewed look-alike and an unknown use, and the class cannot be
+    subclassed. Python cannot stop ``object.__new__`` plus
+    ``object.__setattr__``, so a consumer that acts on one checks it again
+    with `verify_deployment_baseline` rather than trusting the type alone.
     """
 
     profile: PlatformProfile
     use: str
 
+    def __init_subclass__(cls, **kwargs):
+        raise TypeError("DeploymentBaseline cannot be subclassed")
+
     def __post_init__(self) -> None:
-        if self.use not in PRODUCTION_USES:
-            raise PlatformRefused(UNKNOWN_USE, self.use)
-        if type(self.profile) is not PlatformProfile or not self.profile.is_deployment_baseline:
-            raise PlatformRefused(LAB_PROFILE_NOT_FOR_PRODUCTION,
-                                  getattr(self.profile, "profile_id", self.profile))
-        if REVIEWED_PROFILES.get(self.profile.profile_id) != self.profile:
-            raise PlatformRefused(UNKNOWN_PROFILE, self.profile.profile_id)
+        _check_production_use(self.profile, self.use)
+
+    def __reduce__(self):
+        # Restoring goes back through the constructor, so a pickled or
+        # copied value is validated again rather than restored field by field.
+        return (DeploymentBaseline, (self.profile, self.use))
 
 
 def require_deployment_baseline(profile: PlatformProfile, use: str) -> DeploymentBaseline:
     """Refuse a lab (or unknown) profile for ``use``; never widen it."""
 
     return DeploymentBaseline(profile, use)
+
+
+def verify_deployment_baseline(value: object, use: str) -> DeploymentBaseline:
+    """What a production consumer calls on a value it was handed: the exact
+    type, the use it needs, and the same checks as construction, again."""
+
+    if type(value) is not DeploymentBaseline:
+        raise PlatformRefused(LAB_PROFILE_NOT_FOR_PRODUCTION, type(value).__name__)
+    _check_production_use(value.profile, value.use)
+    if value.use != use:
+        raise PlatformRefused(UNKNOWN_USE, value.use)
+    return value
