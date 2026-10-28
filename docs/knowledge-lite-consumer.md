@@ -684,8 +684,10 @@ or `static`), plus `source_kind: knowledge_lite`, the authenticated bundle
 `query_as_of`, RFC3339 UTC truncated to seconds with `Z`) and `citation` (the
 signed manifest's `profile.provenance.<dataset>.dataset.citation` for the
 row's `tables/<dataset>.jsonl` member, as plain text of at most 160
-characters, or empty when the bundle declares none). `read_knowledge_refs`
-requires exactly these eleven fields at every process boundary. These are
+characters, or empty when the bundle declares none or its text does not settle
+under that cleaning). `read_knowledge_refs` requires exactly these eleven
+fields at every process boundary, and a citation that is a fixed point of the
+same plain-text cleaning. These are
 read-time provenance, not approval or authority. `attack_stix.flatten` obtains technique IDs from MITRE external
 references and preserves the technique name and description; Knowledge's native
 ATT&CK table uses `technique_id` as the stable primary key. That key is both

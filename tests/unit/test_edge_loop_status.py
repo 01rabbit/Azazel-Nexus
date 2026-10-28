@@ -448,10 +448,16 @@ def test_citation_source_digest_generation_and_as_of_are_rendered(tmp_path, monk
     refs.append({"technique_id": "T1059", "name": "Shell", "claim_id": "T1059",
                  "bundle_digest_short": "sha256:0123456789ab", "generation": 7,
                  "freshness": "static", "as_of": "2026-10-18T00:00:00Z",
-                 "citation": "MITRE ATT&CK technique"})
-    refs.append({**refs[1], "name": "Unix Shell", "citation": "", "freshness": "current"})
+                 "citation": "MITRE ATT&CK technique", "citation_state": "shown"})
+    refs.append({**refs[1], "name": "Unix Shell", "citation": "", "citation_state": "none",
+                 "freshness": "current"})
+    refs.append({**refs[1], "name": "Bash", "citation": "", "citation_state": "withheld"})
+    recent["incidents"][0]["explanation"]["knowledge_refs_omitted"] = 3
     runtime_paths.incident_recent_path().write_text(json.dumps(recent))
     text = render()
+    assert "T1059 Bash [claim T1059] (static; " in text
+    assert "source: declared, withheld (address syntax))" in text
+    assert "3 more Knowledge citation(s) recorded, not shown (display bound or unsafe text)" in text
     assert ("T1059 Shell [claim T1059] (static; Knowledge Lite bundle sha256:0123456789ab "
             "generation 7; as of 2026-10-18T00:00:00Z; source: MITRE ATT&CK technique)") in text
     assert "T1059 Unix Shell [claim T1059] (current; " in text and "source: not declared" in text

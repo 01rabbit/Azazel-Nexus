@@ -294,13 +294,17 @@ def test_lookup_json_escape_bound(node):
 
     service = node[0]
     admit_rows(node, [{"technique_id": "T1110", "name": "😀" * 120,
-                       "description": "😀" * 240}] * 16)
+                       "description": "😀" * 240}] * 16,
+               profile={"provenance": {"attack_technique": {"dataset": {"citation": "😀" * 160}}}})
     events = []
     service.audit = events.append
     request = SimpleNamespace(verb=daemon.LOOKUP_VERB,
                               arguments={"technique_ids": ["T1110"]}, payload={})
     result = service.handle(request)
     assert 0 < len(result["refs"]) < 16
+    # The trim only ever removes references beyond the eight a display shows.
+    assert len(result["refs"]) >= 8
+    assert result["refs"][0]["citation"] == "😀" * 160
     assert len(json.dumps({"ok": True, "result": result}).encode()) <= 60 * 1024
     assert events[0]["count"] == len(result["refs"])
 
@@ -633,3 +637,35 @@ def test_status_display_counts_nearest_expiry_and_no_secrets(node):
     text = json.dumps(result)
     assert digest not in text and str(root) not in text and str(trust) not in text
     assert full.admitted.name not in text
+
+
+def test_signer_key_ids_are_sorted_and_capped_at_eight(node):
+    import hashlib
+
+    from signing_oracle import sign_detached
+    from test_lite_bundle import _tar
+
+    service, root, trust, _ = node
+    seeds = {f"signer-{i:02d}": bytes([i + 1]) * 32 for i in range(10)}
+    keys = {name: SigningKey(seed).verify_key.encode() for name, seed in seeds.items()}
+    anchors = "threshold = 10\n[keys]\n" + "".join(
+        f'"{name}" = "{key.hex()}"\n' for name, key in keys.items())
+    (root / "trust/anchors.toml").write_text(anchors)
+    (trust / "trust/anchors.toml").write_text(anchors)
+    TrustStore(trust).path.unlink()
+    TrustStore(trust).pin([key.hex() for key in keys.values()], commissioning_digest=DIGEST,
+                         pinned_at=NOW, actor="test")
+    table = json.dumps({"technique_id": "T1110", "name": "static"}).encode() + b"\n"
+    manifest = json.dumps({"bundle_format_version": 1, "bundle_version": 5, "kind": "full",
+                           "files": {"tables/attack_technique.jsonl": hashlib.sha256(table).hexdigest()}},
+                          indent=2, sort_keys=True).encode()
+    signatures = "".join(f"{name}:{sign_detached(seed=seed, message=manifest).hex()}\n"
+                         for name, seed in reversed(list(seeds.items())))
+    (root / "inbox/bundle.tar.gz").write_bytes(_tar({
+        "manifest.json": manifest, "manifest.sig": signatures.encode(),
+        "tables/attack_technique.jsonl": table}))
+    importer = LiteImport(CommissionedLite(root))
+    assert importer.import_entry(importer.list_inbox()[0].entry_id, now=NOW).admitted
+    result = service.handle(None)
+    assert result["state"] == "available"
+    assert result["signer_key_ids"] == [f"signer-{i:02d}" for i in range(8)]

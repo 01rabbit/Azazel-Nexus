@@ -133,13 +133,17 @@ def _render_edge_loop(out, now, snapshots=None):
         for ref in e["knowledge_refs"]:
             print(f"            {ref['technique_id']} {ref['name']} [claim {ref['claim_id']}]"
                   + _citation_suffix(ref), file=out)
+        if "knowledge_refs_omitted" in e:
+            print(f"            {e['knowledge_refs_omitted']} more Knowledge citation(s) recorded, "
+                  "not shown (display bound or unsafe text)", file=out)
 
 
 def _citation_suffix(ref):
     """Where a displayed citation came from; nothing for a legacy row."""
     if "bundle_digest_short" not in ref:
         return " (bundle, generation and lookup time not recorded)"
-    source = f"; source: {ref['citation']}" if ref["citation"] else "; source: not declared"
+    source = {"shown": f"; source: {ref['citation']}", "none": "; source: not declared",
+              "withheld": "; source: declared, withheld (address syntax)"}[ref["citation_state"]]
     return (f" ({ref['freshness']}; Knowledge Lite bundle {ref['bundle_digest_short']} "
             f"generation {ref['generation']}; as of {ref['as_of']}{source})")
 

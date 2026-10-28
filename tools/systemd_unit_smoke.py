@@ -9,6 +9,7 @@ import json
 import os
 import platform
 import pwd
+import re
 import shlex
 import shutil
 import stat
@@ -327,13 +328,36 @@ def validate_reply(name: str, reply: dict) -> None:
                 or not isinstance(reply["reason"], str) or not 0 < len(reply["reason"]) <= 4096
                 or type(reply["ledger_seq"]) is not int or reply["ledger_seq"] < 1):
             raise ValueError("unexpected route response")
-    elif (set(reply) != {"state", "reason_code", "generation", "freshness"}
+    elif (list(reply) != list(KNOWLEDGE_STATUS_KEYS)
           or reply["state"] not in {"available", "stale", "unavailable", "quarantined"}
           or not isinstance(reply["reason_code"], str) or not 0 < len(reply["reason_code"]) <= 64
           or reply["freshness"] not in {"current", "stale", "absent"}
           or (reply["generation"] is not None and (type(reply["generation"]) is not int
-                                                   or not 0 <= reply["generation"] < 2**63))):
+                                                   or not 0 <= reply["generation"] < 2**63))
+          or not _knowledge_display_ok(reply)):
         raise ValueError("unexpected Knowledge response")
+
+
+#: `knowledge.status`: four diagnostic keys, then five display facts, in order.
+#: Written out here rather than imported, so the smoke checks the daemon's
+#: reply against an independent statement of the contract.
+KNOWLEDGE_STATUS_KEYS = ("state", "reason_code", "generation", "freshness", "signer_key_ids",
+                         "bundle_digest_short", "static_count", "current_count", "next_expiry")
+
+
+def _knowledge_display_ok(reply: dict) -> bool:
+    display = [reply[key] for key in KNOWLEDGE_STATUS_KEYS[4:]]
+    if all(value is None for value in display):
+        return True
+    signers, digest, static, current, expiry = display
+    count = lambda n: type(n) is int and 0 <= n < 2**63  # noqa: E731
+    return (reply["state"] in {"available", "stale"}
+            and type(signers) is list and 0 < len(signers) <= 8
+            and all(type(k) is str and 0 < len(k) <= 128 and k.isprintable() for k in signers)
+            and type(digest) is str and re.fullmatch(r"sha256:[0-9a-f]{12}", digest) is not None
+            and count(static) and count(current)
+            and (expiry is None or (type(expiry) is str and re.fullmatch(
+                r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", expiry) is not None)))
 
 
 def main() -> int:

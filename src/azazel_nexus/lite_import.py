@@ -761,6 +761,7 @@ def read_knowledge_refs(rows: list) -> tuple[KnowledgeRef, ...]:
         except ValueError:
             raise ValueError("invalid_knowledge_refs") from None
         if (len(row["citation"]) > 160
+                or _plain_text(row["citation"], 160, markup="`*#") != row["citation"]
                 or any(not c.isprintable() for c in row["citation"])):
             raise ValueError("invalid_knowledge_refs")
         if (not TECHNIQUE_ID.fullmatch(row["technique_id"])
@@ -812,7 +813,16 @@ def _dataset_citation(manifest: Mapping, path: str) -> str:
     for key in ("provenance", match.group(1), "dataset", "citation"):
         value = value.get(key) if isinstance(value, Mapping) else None
     # Underscores are kept: dataset names such as `intel.attack_technique`.
-    return _plain_text(value, 160, markup="`*#")
+    # Readers require a fixed point of the same cleaning (double-escaped
+    # entities, a cut that ends in a space); a text that does not settle
+    # quickly is no citation.
+    text = _plain_text(value, 160, markup="`*#")
+    for _ in range(4):
+        again = _plain_text(text, 160, markup="`*#")
+        if again == text:
+            return text
+        text = again
+    return ""
 
 
 def lookup_context_reading(*, root: Path, trust_root: Path,

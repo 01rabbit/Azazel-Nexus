@@ -286,10 +286,15 @@ technique ids, a sanitized explanation summary and validated citation fields,
 for example `T1110 Brute Force [claim T1110] (static; Knowledge Lite bundle
 sha256:0123456789ab generation 7; as of 2026-10-18T00:00:00Z; source: MITRE
 ATT&CK technique)`: freshness, the shortened bundle digest, generation, the
-lookup instant and the bundle's dataset citation (`source: not declared` when
-it has none; a citation with address or number syntax is not shown). Rows
-written before these fields existed read `(bundle, generation and lookup time
-not recorded)`. Every action reads
+lookup instant and the bundle's dataset citation. Versions and numbers in a
+citation are shown; a citation with address syntax (an IPv4/IPv6 literal or a
+host:port form) is withheld and reads `source: declared, withheld (address
+syntax)`, distinct from `source: not declared`. Citations that were recorded
+but not shown (eight at most per incident, a per-row byte bound, an unsafe
+name) are counted: `N more Knowledge citation(s) recorded, not shown`. The
+Knowledge daemon's own 60 KiB reply trim only removes references beyond the
+first eight. Rows written before these fields existed read `(bundle,
+generation and lookup time not recorded)`. Every action reads
 `Edge would isolate (observe-only, not executed)`; a closed incident only means
 the observation group ended. Missing or malformed recent data is independently
 unavailable. No address or raw attacker text is rendered from loop snapshots.

@@ -369,7 +369,8 @@ LEDGER_REF = {"technique_id": "T1110", "name": "Brute Force", "summary": "", "cl
               "citation": "MITRE ATT&CK technique, as ingested into azazel-knowledge intel.attack_technique"}
 DISPLAY_REF = {"technique_id": "T1110", "name": "Brute Force", "claim_id": "T1110",
                "bundle_digest_short": DIGEST_FULL[:19], "generation": 7, "freshness": "current",
-               "as_of": "2026-10-18T00:00:00Z", "citation": LEDGER_REF["citation"]}
+               "as_of": "2026-10-18T00:00:00Z", "citation": LEDGER_REF["citation"],
+               "citation_state": "shown"}
 
 
 def _t1110():
@@ -400,13 +401,51 @@ def test_explanation_summary_carries_digest_generation_freshness_as_of_and_citat
     assert read_recent_incidents(json.dumps(value).encode()) == value
 
 
-@pytest.mark.parametrize("citation", ["Feed 4444", "ingested from 192.0.2.1", "fe80::1:2:3"])
-def test_citation_with_address_or_number_syntax_is_blanked_not_shown(citation):
+@pytest.mark.parametrize("citation", ["ingested from 192.0.2.1", "fe80::1:2:3",
+                                      "feed.example:8443 aggregate", "mirror at host:443"])
+def test_citation_with_address_syntax_is_withheld_and_says_so(citation):
     from azazel_nexus.incident_explain import explanation_summary
 
     summary = explanation_summary(_cited({**LEDGER_REF, "citation": citation}))
     ref, = summary["knowledge_refs"]
-    assert ref["citation"] == "" and ref["bundle_digest_short"] == DIGEST_FULL[:19]
+    assert (ref["citation"], ref["citation_state"]) == ("", "withheld")
+    assert ref["bundle_digest_short"] == DIGEST_FULL[:19]
+    assert "knowledge_refs_omitted" not in summary
+
+
+@pytest.mark.parametrize("citation", ["MITRE ATT&CK v14.1 Enterprise", "Feed 4444",
+                                      "CISA KEV catalogue 2024", "ATT&CK 15"])
+def test_citation_with_versions_or_numbers_is_shown(citation):
+    from azazel_nexus.incident_explain import (
+        build_recent_incident, build_recent_incidents, explanation_summary, read_recent_incidents)
+
+    summary = explanation_summary(_cited({**LEDGER_REF, "citation": citation}))
+    ref, = summary["knowledge_refs"]
+    assert (ref["citation"], ref["citation_state"]) == (citation, "shown")
+    row = build_recent_incident(_t1110(), record={
+        **_cited({**LEDGER_REF, "citation": citation}), "incident_id": transition()["incident_id"]})
+    value = build_recent_incidents([row], 1)
+    assert read_recent_incidents(json.dumps(value).encode()) == value
+
+
+def test_empty_citation_is_none_not_withheld():
+    from azazel_nexus.incident_explain import explanation_summary
+
+    ref, = explanation_summary(_cited({**LEDGER_REF, "citation": ""}))["knowledge_refs"]
+    assert (ref["citation"], ref["citation_state"]) == ("", "none")
+
+
+def test_omitted_citations_are_counted_not_silent():
+    from azazel_nexus.incident_explain import explanation_summary
+
+    record = _cited()
+    # Twelve recorded: eight are shown at most, one of those has an unsafe name.
+    record["knowledge_refs"] = [dict(LEDGER_REF) for _ in range(12)]
+    record["knowledge_refs"][2]["name"] = "Port 4444"
+    summary = explanation_summary(record)
+    assert len(summary["knowledge_refs"]) == 7
+    assert summary["knowledge_refs_omitted"] == 5
+    assert "knowledge_refs_omitted" not in explanation_summary(_cited())
 
 
 def _recent_with(ref):
@@ -436,6 +475,10 @@ def test_legacy_three_key_citation_still_reads():
     {"as_of": "yesterday"}, {"as_of": 0},
     {"citation": "c" * 161}, {"citation": "line\nbreak"}, {"citation": "via 198.51.100.7"},
     {"citation": None},
+    {"citation": "MITRE ATT&CK", "citation_state": "none"},
+    {"citation": "", "citation_state": "shown"},
+    {"citation": "", "citation_state": "hidden"},
+    {"citation_state": None},
     {"source_kind": "knowledge_lite"},               # an unknown extra field
     {"bundle_digest": DIGEST_FULL},
 ])
@@ -445,7 +488,8 @@ def test_strict_reader_refuses_bad_display_citations(change):
     assert read_recent_incidents(json.dumps(_recent_with({**DISPLAY_REF, **change})).encode()) is None
 
 
-@pytest.mark.parametrize("missing", ["bundle_digest_short", "generation", "freshness", "as_of", "citation"])
+@pytest.mark.parametrize("missing", ["bundle_digest_short", "generation", "freshness", "as_of", "citation",
+                                     "citation_state"])
 def test_strict_reader_refuses_partial_display_citations(missing):
     from azazel_nexus.incident_explain import read_recent_incidents
 
@@ -477,6 +521,7 @@ def test_displayed_citations_fit_a_per_row_budget_dropping_from_the_end():
     refs = explanation_summary(record)["knowledge_refs"]
     assert 0 < len(refs) < 8
     assert len(json.dumps(refs).encode()) <= CITATION_DISPLAY_BYTES
+    assert explanation_summary(record)["knowledge_refs_omitted"] == 8 - len(refs)
     # Twenty such rows still make one readable snapshot.
     rows = []
     for i in range(20):
@@ -485,3 +530,13 @@ def test_displayed_citations_fit_a_per_row_budget_dropping_from_the_end():
         rows.append(build_recent_incident(t, record={**record, "incident_id": t["incident_id"]}))
     value = build_recent_incidents(rows, 1)
     assert read_recent_incidents(json.dumps(value).encode()) == value
+
+
+@pytest.mark.parametrize("omitted,ok", [(1, True), (15, True), (16, False), (0, False),
+                                        (-1, False), (True, False), ("1", False)])
+def test_strict_reader_bounds_the_omitted_count(omitted, ok):
+    from azazel_nexus.incident_explain import read_recent_incidents
+
+    v = _recent_with(dict(DISPLAY_REF))
+    v["incidents"][0]["explanation"]["knowledge_refs_omitted"] = omitted
+    assert (read_recent_incidents(json.dumps(v).encode()) is not None) is ok

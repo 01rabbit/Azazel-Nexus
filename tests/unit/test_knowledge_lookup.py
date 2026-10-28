@@ -125,6 +125,15 @@ def test_missing_or_malformed_citation_is_empty_not_refused(node, profile):
     assert read_knowledge_refs([asdict(ref)]) == (ref,)
 
 
+@pytest.mark.parametrize("citation", ["&amp;amp;lt;b&amp;amp;gt;nested", "a " * 100,
+                                      "&lt;i&gt;x&lt;/i&gt; source"])
+def test_producer_citation_settles_to_a_reader_fixed_point(node, citation):
+    admit_rows(node, [{"technique_id": "T1110", "name": "Brute Force"}],
+               profile={"provenance": {"attack_technique": {"dataset": {"citation": citation}}}})
+    ref, = reading(node).refs
+    assert read_knowledge_refs([asdict(ref)]) == (ref,)
+
+
 def test_citation_is_plain_bounded_text(node):
     citation = "<b>Cited</b> [link](https://example.test/x) " + "c" * 300
     admit_rows(node, [{"technique_id": "T1110", "name": "Brute Force"}],
@@ -353,6 +362,9 @@ def test_client_deadline_with_accepting_silent_server(monkeypatch):
     ('as_of', ''), ('as_of', '2026-13-18T00:00:00Z'), ('as_of', 0),
     # The dataset citation: bounded printable text.
     ('citation', 'x' * 161), ('citation', 'line\nbreak'), ('citation', None),
+    # Not the fixed point of the producer-side cleaning.
+    ('citation', 'two  spaces'), ('citation', 'trailing '), ('citation', '<b>tag</b>'),
+    ('citation', 'AT&amp;T'), ('citation', 'see https://example.test'),
     ('as_of', _MISSING), ('citation', _MISSING), ('dataset', 'extra'),
 ])
 def test_provenance_revalidated_at_client_and_delivery(monkeypatch, field, value):
