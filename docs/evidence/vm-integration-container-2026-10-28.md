@@ -45,7 +45,7 @@ Edge Core は実バイナリ（dry run、advisory）、刺激は合成の eve �
 
 | # | 内容 | 扱い |
 | --- | --- | --- |
-| F1 | 容量が尽きて追記が途中で止まると、route ledger と監査チェーンの末尾に壊れた行が残り、以後 entryd と auditd が起動を拒み続けた（`AuditChainBroken ... is not a record`）。呼出し側には「記録されていない」と返しているのに、ディスク上は不整合だった | **修正済み**（`e2336d3`、`azazel_nexus/audit.py`）。書込みが途中で失敗したら、その追記の部分行だけを取り消す。回帰試験 2 件。修正後の実行では、空きが戻ると entryd・auditd とも再起動できた |
+| F1 | 容量が尽きて追記が途中で止まると、route ledger と監査チェーンの末尾に壊れた行が残り、以後 entryd と auditd が起動を拒み続けた（`AuditChainBroken ... is not a record`）。呼出し側には「記録されていない」と返しているのに、ディスク上は不整合だった | **修正済み**（`e2336d3`、`azazel_nexus/audit.py`。記録の後に `ff99e42` で変数名だけ変更、動作は同じ）。書込みが途中で失敗したら、その追記の部分行だけを取り消す。回帰試験 2 件。修正後の実行では、空きが戻ると entryd・auditd とも再起動できた |
 | F2 | H2 を確認：`azazel-edge-core.service` は `Restart=no`。SIGKILL 後は `failed` のままで、watchdog は構造上「広げられない」ため、次の起動まで Edge の検知が止まる。advisory 側の unit も同様に `Restart=` を持たない | 報告のみ（unit は変更しない）。Edge の再起動方針はオーナー判断 |
 | F3 | Lite の失効受理（`RevocationStore.accept`、出荷された入口なし）は、自分のファイルを呼出し元所有の 0600 で書く。読み手の azknowledge は読めず、`revoked` ではなく `unverified` と表示される（fail-closed ではあるが理由が違う） | 報告のみ。この試験では repin と同じく `trust.json` の所有者・権限に揃えて確認した。入口（assess-c の P4）を作るときに、trust root のメタデータを引き継ぐ必要がある |
 | F4 | H1 を確認：intake を止めると、Edge の判断は Edge の journal にしか残らない（`AZAZEL_FORWARD_LOG=false`、journal は `LogRateLimitBurst` の制限下） | 報告のみ。Edge 側の独立した証拠ストアはオーナー判断 |
