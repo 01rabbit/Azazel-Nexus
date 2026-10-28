@@ -598,7 +598,40 @@ The result has exactly four keys:
 | `freshness` | `current`, `stale`, `absent` (time-bound claims axis) |
 
 `state_untrusted` means the admitted bundle is below the anti-rollback watermark
-or its watermark is missing or malformed; no bundle is served.
+or its watermark is missing or malformed (state `quarantined`); no bundle is
+served. With state `unavailable` it means the wall clock is behind the
+daemon's persisted clock floor, or that floor cannot be read or kept (see
+below); nothing -- dated or static -- is served.
+
+### Wall-clock floor
+
+`query_as_of` is the wall clock, and each dated row's expiry is compared with
+it. A clock moved backwards would make expired rows current again, so
+`az-knowledge-lited` keeps a raise-only floor: the latest instant it has
+observed, in `/var/lib/azazel/state/knowledge/clock-floor.json` (its own
+private `0700 azknowledge:root` state leaf, already in the unit's
+`ReadWritePaths`; no new write permission). The in-process floor is exact;
+the file is raised at most once a minute and holds only a UTC instant
+truncated to seconds, never later than an observed one.
+
+| condition | `knowledge.status` | `knowledge.lookup` |
+| --- | --- | --- |
+| clock at or after the floor | unchanged | unchanged |
+| clock behind the floor (also after a restart) | `unavailable` / `state_untrusted` | no refs, `state_untrusted` |
+| floor file malformed, non-canonical, a link, not a regular file, group/other writable, linked twice, unreadable, or the leaf missing/unprotected; or the raise cannot be written | `unavailable` / `state_untrusted` | no refs, `state_untrusted` |
+| floor file absent (first start, or removed) | unchanged; the floor is created | unchanged |
+
+The daemon records `knowledge.clock_untrusted` with cause `regressed` or
+`floor_unavailable` in its own `events.jsonl` once per transition, with no
+instant or path. Callers see the existing `knowledge_unavailable` failure.
+The administrator-confirmed `bootstrap_clock` anchor is not used: it lives in
+root-only `/etc/azazel/bootstrap`, is bound to one boot and exists only in the
+administrator-managed time mode, and `azknowledge` must not read it.
+
+Recovery after a clock that once ran ahead: correct the clock first, then, as
+root, remove `clock-floor.json` and restart the unit. This is local trust; the
+floor protects against a clock moved backwards, not against root. None of this
+changes Edge readiness, leases, enforcement or deterministic authority.
 
 Static references can make the state `available` while freshness is `stale`
 or `absent`; the existing three-axis bundle rules still apply. No claim body,

@@ -9,7 +9,9 @@ from pathlib import Path
 
 import pytest
 from azazel_nexus import model_paths
+from azazel_nexus_runtime import knowledge_clock_floor
 from azazel_nexus_runtime import knowledge_lited as daemon
+from azazel_nexus_runtime.knowledge_clock_floor import ClockFloor
 from azazel_nexus_runtime.principal import PrincipalClass, PrincipalPolicy
 from azazel_nexus_runtime.protocol import RequestRefused
 from nacl.signing import SigningKey
@@ -48,8 +50,17 @@ def node(tmp_path, monkeypatch):
                               key_roles={"r": REVOCATION_SIGNING}, threshold=1, generation=1)
     commission_policy(trust, policy, commissioning_digest=DIGEST,
                       anchors_key_roles={}, anchors_keys={})
-    service = daemon.KnowledgeLiteService(root=root, trust_root=trust, now=lambda: NOW)
+    service = daemon.KnowledgeLiteService(root=root, trust_root=trust,
+                                          clock_floor=ClockFloor(floor_dir(tmp_path)),
+                                          now=lambda: NOW)
     return service, root, trust, revoker
+
+
+def floor_dir(tmp_path):
+    state = tmp_path / "var/lib/azazel/state/knowledge"
+    state.mkdir(parents=True, exist_ok=True)
+    state.chmod(0o700)
+    return state
 
 
 def admit(node, expiry="2027-01-01T00:00:00Z"):
@@ -165,6 +176,9 @@ def test_main_wiring_and_no_arguments(node, monkeypatch):
     assert captured["additional_sockets"] == ((root.parent / "run/knowledge-read/knowledge-read.sock", 123, daemon.READ_REGISTRY),)
     assert captured["audit"] == ("sink", "knowledge")
     assert captured["handler"].__self__.root == root
+    floor = captured["handler"].__self__.clock_floor
+    assert type(floor) is ClockFloor
+    assert floor.directory == root.parents[3] / "var/lib/azazel/state/knowledge"
     assert resolved == [{"service_accounts": ("azmioentry", "azarbiter", "azmio", "azexplain")}]
     monkeypatch.setattr(sys, "argv", ["az-knowledge-lited", "--path"])
     with pytest.raises(SystemExit, match="takes no arguments"):
@@ -327,3 +341,194 @@ def test_status_reports_unreadable_watermark_as_unreadable(node, monkeypatch):
     monkeypatch.setattr(lite_import, "_read_watermark", denied)
     assert service.handle(None) == {"state": "unavailable", "reason_code": "store_unreadable",
                                     "generation": None, "freshness": "absent"}
+
+
+# -- the persisted wall-clock floor (P3) ------------------------------------
+
+def _lookup(service):
+    from types import SimpleNamespace
+
+    return service.handle(SimpleNamespace(verb=daemon.LOOKUP_VERB,
+                                          arguments={"technique_ids": ["T1110"]}, payload={}))
+
+
+def _clocked(node, tmp_path, instants, events=None):
+    """A fresh service (a restart) on the same floor, reading `instants` in order."""
+    _, root, trust, _ = node
+    clock = iter(instants)
+    return daemon.KnowledgeLiteService(
+        root=root, trust_root=trust, clock_floor=ClockFloor(floor_dir(tmp_path)),
+        now=lambda: next(clock), audit=(events.append if events is not None else lambda e: None))
+
+
+UNTRUSTED_STATUS = {"state": "unavailable", "reason_code": "state_untrusted",
+                    "generation": None, "freshness": "absent"}
+UNTRUSTED_LOOKUP = {"refs": [], "reason_code": "state_untrusted"}
+EXPIRY = "2026-10-19T00:00:00Z"
+BEFORE_EXPIRY = "2026-10-18T12:00:00Z"
+AFTER_EXPIRY = "2026-10-20T00:00:00Z"
+
+
+def test_clock_regression_does_not_redeliver_expired_rows(node, tmp_path):
+    from test_knowledge_lookup import admit_rows
+
+    admit_rows(node, [{"technique_id": "T1110", "name": "dated", "agg_next_expiry": EXPIRY}])
+    # Control: on a clock before the expiry the dated row is served.
+    fresh = tmp_path / "control"
+    fresh.mkdir(mode=0o700)
+    control = daemon.KnowledgeLiteService(root=node[1], trust_root=node[2],
+                                          clock_floor=ClockFloor(fresh),
+                                          now=lambda: BEFORE_EXPIRY)
+    assert _lookup(control)["refs"][0]["freshness"] == "current"
+
+    events = []
+    service = _clocked(node, tmp_path, [AFTER_EXPIRY, AFTER_EXPIRY, BEFORE_EXPIRY,
+                                        BEFORE_EXPIRY, BEFORE_EXPIRY], events)
+    assert _lookup(service) == {"refs": [], "reason_code": "no_context"}
+    assert service.handle(None)["freshness"] == "stale"
+    # The wall clock is moved back before the expiry: the row stays withheld.
+    assert _lookup(service) == UNTRUSTED_LOOKUP
+    assert service.handle(None) == UNTRUSTED_STATUS
+    assert _lookup(service) == UNTRUSTED_LOOKUP
+    # One audit record for the transition, a fixed cause, no instant or path.
+    clock_events = [e for e in events if e["event_type"] == "knowledge.clock_untrusted"]
+    assert clock_events == [{"event_type": "knowledge.clock_untrusted", "cause": "regressed"}]
+    assert BEFORE_EXPIRY not in repr(events) and str(tmp_path) not in repr(events)
+
+    # A restart does not forget the floor: the persisted copy still refuses.
+    restarted = _clocked(node, tmp_path, [BEFORE_EXPIRY, BEFORE_EXPIRY])
+    assert _lookup(restarted) == UNTRUSTED_LOOKUP
+    assert restarted.handle(None) == UNTRUSTED_STATUS
+
+    # The clock catching up past the floor serves again; still no expired row.
+    caught_up = _clocked(node, tmp_path, ["2026-10-20T00:00:01Z"])
+    assert _lookup(caught_up) == {"refs": [], "reason_code": "no_context"}
+
+
+def test_clock_regression_hides_static_reference_too(node, tmp_path):
+    from test_knowledge_lookup import admit_rows
+
+    admit_rows(node, [{"technique_id": "T1110", "name": "static"}])
+    service = _clocked(node, tmp_path, [AFTER_EXPIRY, BEFORE_EXPIRY])
+    assert _lookup(service)["reason_code"] == "available"
+    assert _lookup(service) == UNTRUSTED_LOOKUP
+
+
+def test_clock_untrusted_reply_reaches_client_as_unavailable(node, tmp_path, monkeypatch):
+    from azazel_nexus_runtime import knowledge_client
+
+    monkeypatch.setattr(knowledge_client, "_exchange", lambda *a, **k: dict(UNTRUSTED_LOOKUP))
+    with pytest.raises(knowledge_client.KnowledgeUnavailable) as caught:
+        knowledge_client.lookup_context(("T1110",))
+    assert caught.value.code == "knowledge_unavailable"
+
+
+@pytest.mark.parametrize("damage", [
+    "garbage", "empty", "other_schema", "extra_key", "not_canonical", "naive_instant",
+    "oversized", "directory", "symlink", "group_writable", "hardlink", "missing_directory",
+    "directory_group_writable",
+])
+def test_unreadable_floor_fails_closed(node, tmp_path, damage):
+    from test_knowledge_lookup import admit_rows
+
+    admit_rows(node, [{"technique_id": "T1110", "name": "static"}])
+    state = floor_dir(tmp_path)
+    path = state / knowledge_clock_floor.FILENAME
+    good = knowledge_clock_floor.encode_floor(
+        knowledge_clock_floor._instant("2026-10-17T00:00:00Z"))
+    records = {
+        "garbage": b"not json",
+        "empty": b"",
+        "other_schema": good.replace(b"clock-floor/v1", b"clock-floor/v2"),
+        "extra_key": b'{"extra":1,"floor_utc":"2026-10-17T00:00:00Z","schema":"'
+                     + knowledge_clock_floor.SCHEMA.encode() + b'"}\n',
+        "not_canonical": good.rstrip(b"\n"),
+        "naive_instant": good.replace(b"00:00Z", b"00:00"),
+        "oversized": good + b" " * 300,
+    }
+    events = []
+    service = _clocked(node, tmp_path, [NOW, NOW], events)
+    if damage in records:
+        path.write_bytes(records[damage])
+        path.chmod(0o600)
+    elif damage == "directory":
+        path.mkdir()
+    elif damage == "symlink":
+        target = tmp_path / "elsewhere"
+        target.write_bytes(good)
+        path.symlink_to(target)
+    elif damage == "group_writable":
+        path.write_bytes(good)
+        path.chmod(0o620)
+    elif damage == "hardlink":
+        path.write_bytes(good)
+        os.link(path, tmp_path / "second-name")
+    elif damage == "missing_directory":
+        state.rmdir()
+    elif damage == "directory_group_writable":
+        state.chmod(0o770)
+    assert _lookup(service) == UNTRUSTED_LOOKUP
+    assert service.handle(None) == UNTRUSTED_STATUS
+    assert [e for e in events if e["event_type"] == "knowledge.clock_untrusted"] == [
+        {"event_type": "knowledge.clock_untrusted", "cause": "floor_unavailable"}]
+
+
+def test_floor_that_cannot_be_kept_fails_closed(node, tmp_path, private_os):
+    from test_knowledge_lookup import admit_rows
+
+    admit_rows(node, [{"technique_id": "T1110", "name": "static"}])
+    fake = private_os(knowledge_clock_floor)
+
+    def refused(*args, **kwargs):
+        raise OSError(28, "no space")
+
+    fake.rename = refused
+    service = _clocked(node, tmp_path, [NOW, NOW])
+    assert _lookup(service) == UNTRUSTED_LOOKUP
+    assert service.handle(None) == UNTRUSTED_STATUS
+    assert not (floor_dir(tmp_path) / knowledge_clock_floor.FILENAME).exists()
+
+
+def test_floor_unreadable_by_permission_fails_closed(node, tmp_path, private_os):
+    fake = private_os(knowledge_clock_floor)
+    original = os.open
+
+    def denied(path, *args, **kwargs):
+        if path == knowledge_clock_floor.FILENAME:
+            raise PermissionError(13, "denied")
+        return original(path, *args, **kwargs)
+
+    floor_dir(tmp_path)
+    service = _clocked(node, tmp_path, [NOW, NOW])
+    service.handle(None)  # first write succeeds and is read back
+    fake.open = denied
+    assert service.handle(None) == UNTRUSTED_STATUS
+
+
+def test_floor_is_raise_only_and_writes_are_bounded(node, tmp_path):
+    state = floor_dir(tmp_path)
+    path = state / knowledge_clock_floor.FILENAME
+    floor = ClockFloor(state)
+    assert floor.admit("2026-10-18T00:00:00.900000Z") is True
+    # Truncated to seconds: the persisted floor never exceeds an observed instant.
+    assert knowledge_clock_floor.decode_floor(path.read_bytes()) == \
+        knowledge_clock_floor._instant("2026-10-18T00:00:00Z")
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
+    first = path.read_bytes()
+    assert floor.admit("2026-10-18T00:00:30Z") is True
+    assert path.read_bytes() == first  # inside the persistence step
+    # The in-process floor is exact even when the file was not raised.
+    assert floor.admit("2026-10-18T00:00:29Z") is False
+    assert floor.admit("2026-10-18T00:01:01Z") is True
+    assert b"2026-10-18T00:01:01Z" in path.read_bytes()
+    assert ClockFloor(state).admit("2026-10-18T00:01:00Z") is False
+    assert not (state / ".clock-floor.json.partial").exists()
+
+
+def test_service_requires_a_clock_floor(node):
+    _, root, trust, _ = node
+    with pytest.raises(TypeError):
+        daemon.KnowledgeLiteService(root=root, trust_root=trust, now=lambda: NOW)
+    with pytest.raises(TypeError):
+        daemon.KnowledgeLiteService(root=root, trust_root=trust, clock_floor=None,
+                                    now=lambda: NOW)
