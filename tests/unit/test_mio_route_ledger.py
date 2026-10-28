@@ -775,6 +775,9 @@ def test_carried_reading_keeps_its_original_observation_time(service, tmp_path):
     assert carried[0]["occurred_at"] != first["occurred_at"]
     reading = status_summary(root=tmp_path)
     assert reading["observed_at"] == datetime.fromisoformat(first["occurred_at"]).isoformat()
+    # The carried record's own write is entryd's liveness evidence (#358).
+    assert reading["recorded_at"] == datetime.fromisoformat(carried[0]["occurred_at"]).isoformat()
+    assert reading["recorded_at"] > reading["observed_at"]
     assert restart(restarted, clock)._observed_at == first["occurred_at"]
 
 

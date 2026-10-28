@@ -31,6 +31,22 @@ def _observed(event):
     return event["occurred_at"]
 
 
+def _recorded(event):
+    """When entryd wrote the record: evidence that it was alive then (#358).
+
+    For a transition this is the observation time; for the carried record
+    that opens a daily segment it is the day's write, later than the
+    observation it repeats. Only a time with a zone is returned, in
+    `isoformat`'s safe form; anything else is `None` (the reader then falls
+    back to `observed_at`, never to a fresher time).
+    """
+    try:
+        when = datetime.fromisoformat(event["occurred_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return when.isoformat() if when.tzinfo is not None else None
+
+
 def _last_capability(root):
     """Verify the retained chain once, keeping only the newest capability record."""
     found = []
@@ -65,7 +81,7 @@ def _last_capability(root):
 def status_summary(*, root=None):
     root = Path(os.environ.get("AZAZEL_ROOT", "/")) if root is None else Path(root)
     result = {"ceiling": None, "state": None, "reasons": {}, "source": "route-ledger",
-              "observed_at": None, "notice": NOTICE}
+              "observed_at": None, "recorded_at": None, "notice": NOTICE}
     try:
         event = _last_capability(root)
         if event is None:
@@ -87,7 +103,8 @@ def status_summary(*, root=None):
         # separators, including control characters. isoformat emits a safe form.
         observed_at = datetime.fromisoformat(_observed(event)).isoformat()
         result.update(ceiling=reasons["profile"], state=event["to"], reasons=reasons,
-                      observed_at=observed_at, availability="last recorded observation")
+                      observed_at=observed_at, availability="last recorded observation",
+                      recorded_at=_recorded(event))
     except Exception:  # noqa: BLE001 - no paths, identities or raw exceptions in diagnostics
         result["availability"] = UNKNOWN
     return result

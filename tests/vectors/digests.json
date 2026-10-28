@@ -173,7 +173,7 @@
       ]
     },
     "status.read_model": {
-      "sha256": "d30924d3bb0c3c9e32f361edc5297fb594ef0084a5d2cf16db7d1a2b2ec30a5a",
+      "sha256": "fe7d401ecc449859474d021b886878f45a5be78c33db4f8b4de243280ae45c9a",
       "covers": "status --json の read model（test_status_view の golden 10 場面）。float の時刻は除外し、その path を記録",
       "history": [
         {
@@ -181,6 +181,12 @@
           "sha256": "d30924d3bb0c3c9e32f361edc5297fb594ef0084a5d2cf16db7d1a2b2ec30a5a",
           "commit_note": "初版（共通試験ベクトルの導入）",
           "reason": "初めて固定した。aarch64（colima）と amd64（Rosetta）、Python 3.11 と 3.12 で同じ値になることを確認してから記録した"
+        },
+        {
+          "date": "2026-10-29",
+          "sha256": "fe7d401ecc449859474d021b886878f45a5be78c33db4f8b4de243280ae45c9a",
+          "commit_note": "#370 status の M.I.O. 節に書き手の生存の証拠を加える",
+          "reason": "製品の意味を意図して変えた。#370（#358 案 1）で read model の M.I.O. 節に age_s・age_reason（変化していない期間は情報として出す）と liveness（stale を書き手 entryd の生存の証拠で判定する）を足した。ベクトルの 10 場面では route ledger を読めないため、liveness は status unknown・理由 route_ledger_unreadable_or_refused、age_s・age_reason は null になる。既存の項目（status・reason_code・reading など）の値は変わっていない（--show で変更前と比べて確認）"
         }
       ]
     }

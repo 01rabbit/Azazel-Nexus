@@ -73,9 +73,14 @@ LOOP_STALE_S = 30
 FUTURE_S = 5
 #: The M.I.O. route ledger records transitions (and carries the last one into
 #: each daily segment with its original time), so an unchanged reading ages
-#: legitimately. Older than this, the view calls it stale: the last recorded
-#: observation, not a current one (docs/operations.md says it is no freshness
-#: guarantee). Provisional; an owner decision (PR #358).
+#: legitimately: how long it has been unchanged (`age_s`) is shown and never
+#: judged. What is judged is whether entryd, the ledger's writer, is shown to
+#: be alive (`liveness`). Its operator snapshot (`mio-status/v1`, rewritten
+#: every minute from the serve loop) is the primary evidence, against its own
+#: `MIO_STALE_S`; the route ledger's newest capability record (a transition,
+#: or the carried record a day's first write opens a segment with) is the
+#: secondary evidence, against this limit. Neither within its limit: stale.
+#: Option 1 of the re-review, the default until the owner changes it (#358).
 MIO_OBSERVATION_STALE_S = 2 * 86400
 #: An age beyond this is not a clock skew but a value nobody can act on.
 MAX_AGE_S = 10 * 365 * 86400
@@ -88,7 +93,9 @@ TOO_LARGE = "too_large"
 REASON_CODES = frozenset({
     "nexus_accepts_observe_only", "profile_not_measured", "no_recorded_capability_transition",
     "route_ledger_unreadable_or_refused", "reading_refused", "observed_at_in_future",
-    "observed_at_expired", "observed_at_unreadable", "clock_unknown",
+    "liveness_evidence_expired", "liveness_evidence_in_future", "snapshot_reading_differs",
+    "route_record_expired", "route_record_in_future",
+    "observed_at_unreadable", "clock_unknown",
     "no_commissioning_record", "commissioning_incomplete", "no_interfaces_read",
     "not_collected", "not_inspected", "checks_not_all_passed", "fabric_extra_not_installed",
     "projection_refused", "internal_error", "snapshot_absent_or_refused",
@@ -317,9 +324,11 @@ def _mio_reading(summary: dict) -> dict:
             ("ceiling", "state", "reasons", "source", "observed_at", "availability", "notice")}
 
 
-def _mio(summary: dict, now, terminal) -> dict:
+def _mio(summary: dict, now, terminal, snapshot_section=None) -> dict:
     from .mio_status import NOTICE, UNKNOWN
 
+    liveness = None
+    age, age_reason = None, None
     try:
         reading = _mio_reading(summary)
     except (_Refused, KeyError, TypeError):
@@ -332,30 +341,135 @@ def _mio(summary: dict, now, terminal) -> dict:
                 "no_recorded_capability_transition"
                 if reading["availability"] != UNKNOWN else "route_ledger_unreadable_or_refused")
         else:
-            status, reason = _mio_freshness(reading["observed_at"], now)
+            status, reason, age, age_reason, liveness = _mio_freshness(
+                reading, summary.get("recorded_at"), now, snapshot_section)
     terminal["mio_reading"] = reading
     public = dict(reading)
     public["availability"] = _free(terminal, "mio.availability", reading["availability"])
     public["notice"] = _free(terminal, "mio.notice", reading["notice"])
     return {"status": status, "reason_code": reason, "reading": public,
+            # How long the reading has been unchanged: information, never a verdict.
+            "age_s": age, "age_reason": age_reason,
+            "liveness": liveness if liveness is not None else {
+                **_no_liveness(), "reason_code": reason},
             "source": {"kind": "route_ledger", "reader": "mio_status.status_summary",
                        "observed_at": reading["observed_at"]}}
 
 
-def _mio_freshness(observed_at, now) -> tuple[str, Optional[str]]:
-    if type(now) not in (int, float):
-        return "unknown", "clock_unknown"
+def _no_liveness() -> dict:
+    """Liveness when there is no recorded reading to vouch for: not judged."""
+    return {"status": "unknown", "reason_code": "no_recorded_capability_transition",
+            "evidence": None, "operator_snapshot": None, "route_ledger_record": None}
+
+
+def _when(text) -> Optional[float]:
+    """Epoch seconds of a zoned ISO time, or `None`."""
     try:
-        when = datetime.fromisoformat(observed_at)
+        when = datetime.fromisoformat(text)
         _require(when.tzinfo is not None)
-        then = when.timestamp()
-    except (ValueError, TypeError, OverflowError):
-        return "unknown", "observed_at_unreadable"
+        return when.timestamp()
+    except (_Refused, ValueError, TypeError, OverflowError):
+        return None
+
+
+def _snapshot_evidence(reading, section, now) -> dict:
+    """Whether entryd's operator snapshot vouches for *this* reading now.
+
+    Counted only when it is fresh against `MIO_STALE_S`, holds a settled
+    record, and that record is the reading the ledger gave: a snapshot of a
+    different reading says entryd is alive, not that this reading is current.
+    """
+    from .operator_snapshots import MIO_STALE_S
+
+    entry = {"status": "not_counted", "reason_code": "snapshot_absent_or_refused",
+             "written_at": None, "age_s": None, "stale_after_s": MIO_STALE_S}
+    if not isinstance(section, dict) or not isinstance(section.get("source"), dict):
+        entry["reason_code"] = "internal_error"
+        return entry
+    snapshot, source = section.get("snapshot"), section["source"]
+    if snapshot is None:
+        entry["reason_code"] = source.get("reason_code") or "snapshot_absent_or_refused"
+        return entry
+    entry.update(written_at=source.get("written_at"), age_s=source.get("age_s"))
+    if source.get("freshness") != "fresh":
+        entry["reason_code"] = source.get("reason_code") or "snapshot_expired"
+        return entry
+    if not snapshot.get("recorded"):
+        entry["reason_code"] = "no_recorded_capability_transition"
+    elif snapshot.get("record_uncertain") is not False:
+        entry["reason_code"] = "capability_record_uncertain"
+    elif (snapshot.get("state"), snapshot.get("reasons")) != (reading["state"], reading["reasons"]) \
+            or _when(snapshot.get("observed_at")) != _when(reading["observed_at"]):
+        entry["reason_code"] = "snapshot_reading_differs"
+    else:
+        entry.update(status="counted", reason_code=None)
+    return entry
+
+
+def _utc(epoch) -> Optional[str]:
+    try:
+        return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _record_evidence(observed, recorded_at, now) -> dict:
+    """Whether the route ledger's newest capability record is recent enough.
+
+    The record's own write time (`recorded_at`: a carried record's day, a
+    transition's observation) when the reader gave a zoned one no earlier
+    than the observation; otherwise the observation time, which entryd also
+    wrote. Never a time later than the ledger holds.
+    """
+    recorded = _when(recorded_at)
+    if recorded is None or recorded < observed:
+        recorded, recorded_at = observed, None
+    age, _ = _age(now, recorded)
+    entry = {"status": "counted", "reason_code": None,
+             "recorded_at": _utc(recorded),
+             "basis": "record_written" if recorded_at is not None else "observation",
+             "age_s": age, "stale_after_s": MIO_OBSERVATION_STALE_S}
+    if recorded > now + FUTURE_S:
+        entry.update(status="not_counted", reason_code="route_record_in_future")
+    elif now - recorded > MIO_OBSERVATION_STALE_S:
+        entry.update(status="not_counted", reason_code="route_record_expired")
+    return entry
+
+
+def _mio_freshness(reading, recorded_at, now, snapshot_section):
+    """`(status, reason, age_s, age_reason, liveness)` of a recorded reading.
+
+    The order is the safe side's: an unknown clock, an unreadable or future
+    observation, then any evidence dated in the future (a clock that went
+    back), then evidence that entryd is alive. Nothing here is a green word:
+    `recorded` says a reading exists and its writer is shown to be alive.
+    """
+    if type(now) not in (int, float):
+        return "unknown", "clock_unknown", None, None, {
+            **_no_liveness(), "reason_code": "clock_unknown"}
+    then = _when(reading["observed_at"])
+    if then is None:
+        return "unknown", "observed_at_unreadable", None, None, {
+            **_no_liveness(), "reason_code": "observed_at_unreadable"}
+    age, age_reason = _age(now, then)
     if then > now + FUTURE_S:
-        return "stale", "observed_at_in_future"
-    if now - then > MIO_OBSERVATION_STALE_S:
-        return "stale", "observed_at_expired"
-    return "recorded", None
+        return "stale", "observed_at_in_future", age, age_reason, {
+            **_no_liveness(), "reason_code": "observed_at_in_future"}
+    age = None if age is None else max(0, age)
+    snapshot = _snapshot_evidence(reading, snapshot_section, now)
+    record = _record_evidence(then, recorded_at, now)
+    liveness = {"status": "not_evidenced", "reason_code": None, "evidence": None,
+                "operator_snapshot": snapshot, "route_ledger_record": record}
+    if (snapshot["reason_code"] == "snapshot_dated_in_future"
+            or record["reason_code"] == "route_record_in_future"):
+        liveness["reason_code"] = "liveness_evidence_in_future"
+    elif snapshot["status"] == "counted" or record["status"] == "counted":
+        liveness.update(status="evidenced", evidence=(
+            "operator_snapshot" if snapshot["status"] == "counted" else "route_ledger_record"))
+        return "recorded", None, age, age_reason, liveness
+    else:
+        liveness["reason_code"] = "liveness_evidence_expired"
+    return "stale", liveness["reason_code"], age, age_reason, liveness
 
 
 def _capability(report) -> dict:
@@ -1011,9 +1125,11 @@ def build(
         from .broker_cli import status_summary as broker_summary
         broker = broker_summary(now=wall_now)
         terminal["broker_level"] = broker["status_level"]
+    # Read once: the M.I.O. section counts it as entryd's liveness evidence.
+    mio_status = _guarded_section(_mio_status, now)
     sections = {
         "profile": _profile(report, terminal),
-        "mio": _mio(mio_summary(), now, terminal),
+        "mio": _mio(mio_summary(), now, terminal, mio_status),
         "capability": _capability(report),
         "enforcement": _enforcement(report, edge),
         "interfaces": _interfaces(report, terminal),
@@ -1025,7 +1141,7 @@ def build(
         "edge_loop": _edge_loop(now),
         "health": _health(report, audit_seen, now, terminal),
         "knowledge_status": _guarded_section(_knowledge_status, now),
-        "mio_status": _guarded_section(_mio_status, now),
+        "mio_status": mio_status,
         "services": _guarded_section(_services, now),
         "storage": _guarded_section(_storage, now),
         "noc": _guarded_section(_noc, now),

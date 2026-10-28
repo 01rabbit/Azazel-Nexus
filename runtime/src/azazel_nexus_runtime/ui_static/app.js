@@ -93,6 +93,14 @@
     return Math.round(s / 86400) + " 日前";
   }
 
+  function duration(s) {
+    if (typeof s !== "number" || !isFinite(s)) { return "不明"; }
+    if (s < 120) { return s + " 秒"; }
+    if (s < 7200) { return Math.round(s / 60) + " 分"; }
+    if (s < 172800) { return Math.round(s / 3600) + " 時間"; }
+    return Math.round(s / 86400) + " 日";
+  }
+
   function when(label, value, missingReason) {
     var ms = toEpoch(value);
     if (ms === null) {
@@ -250,9 +258,17 @@
     var mio = section("mio") || {};
     var mioStatus = statusWithAccess(mio.status, mio.reason_code, "mio_route_ledger");
     var reading = mio.reading || {};
+    // How long the reading has been unchanged is information, not a verdict;
+    // stale comes only from the writer's liveness evidence (#358 option 1).
+    var live = mio.liveness || {};
+    var evidence = { operator_snapshot: "運用者向け snapshot", route_ledger_record: "route ledger の記録" };
     add(grid, card("AI 経路（M.I.O.）", mioStatus.status, { reason: mioStatus.reason,
       time: when("記録時刻", reading.observed_at, mio.reason_code),
-      children: [kv([["上限（記録）", reading.ceiling], ["状態", reading.state]]),
+      children: [kv([["上限（記録）", reading.ceiling], ["状態", reading.state],
+        ["変化していない期間（情報）", duration(mio.age_s)],
+        ["書き手（entryd）の生存", badge(live.status)],
+        ["生存の証拠", Object.prototype.hasOwnProperty.call(evidence, live.evidence) ? evidence[live.evidence] : "なし"],
+        live.reason_code ? ["生存の判定理由", reasonLine(live.reason_code)] : null]),
         el("p", "small", reading.notice || "")] }));
     var mioSnap = section("mio_status");
     add(grid, mioSnap ? genericCard("AI 経路（運用者向け snapshot）", mioSnap, { compact: true, access: "mio_status" })
