@@ -104,10 +104,20 @@ class Principal:
         }
 
 
-#: The service accounts `IMPLEMENTATION_SPEC.md` §3 names.
+#: The service accounts `IMPLEMENTATION_SPEC.md` §3 names, except `azui`.
 #:
 #: Listed rather than discovered so that an account created by something other
 #: than the package does not become a service principal by existing.
+#:
+#: `azui` is deliberately absent. It is the account of the operator UI, which
+#: reads snapshots and holds no service authority of its own (the
+#: specification's UI -> arbiter row is "`azui` plus operator authorization",
+#: never service authority). Listing it here made it a SERVICE principal at
+#: every daemon that uses the default `PrincipalPolicy.resolve()` -- the model
+#: fetcher (`model.fetch`, outbound acquisition) and auditd (`audit.append`,
+#: forged audit events). It stays in `DAEMON_ACCOUNTS`, so it is never an
+#: operator either: a UI process is neither a service nor an operator at any
+#: daemon unless that daemon names it explicitly.
 SERVICE_ACCOUNTS = (
     "azobs",
     "azevidence",
@@ -119,7 +129,6 @@ SERVICE_ACCOUNTS = (
     "azdecoy",
     "azmodule",
     "azvoice",
-    "azui",
     "azaudit",
     "azwatch",
     "azcommission",
@@ -136,6 +145,7 @@ SERVICE_ACCOUNTS = (
 #: because no supplementary group was ever seen.
 DAEMON_ACCOUNTS = tuple(dict.fromkeys((
     *SERVICE_ACCOUNTS,
+    "azui",
     "azprobe",
     "azintake",
     "azexplain",
