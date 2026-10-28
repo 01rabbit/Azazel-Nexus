@@ -382,11 +382,20 @@ def test_absent_state_directory_is_read_as_empty_and_not_created(tmp_path):
 
 # -- entryd ---------------------------------------------------------------
 
+#: The explainer's and the arbiter's accounts resolve to fixed uids, apart from
+#: each other and from the callers the tests name (1001, 1002, ...), whoever
+#: runs the tests. Other accounts still resolve to the running user.
+ACCOUNT_UIDS = {"azexplain": 4242, "azarbiter": 4343}
+
+
+def account(name):
+    return SimpleNamespace(pw_uid=ACCOUNT_UIDS.get(name, os.getuid()))
+
 
 def compose(tmp_path, monkeypatch, *, rate=None, **limits):
     monkeypatch.setenv("AZAZEL_ROOT", str(tmp_path))
     monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
-    monkeypatch.setattr(client.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=os.getuid()))
+    monkeypatch.setattr(client.pwd, "getpwnam", account)
     monkeypatch.setattr(client.grp, "getgrnam", lambda _: SimpleNamespace(gr_gid=os.getgid()))
     runtime_paths.mio_state_dir().mkdir(parents=True, exist_ok=True)
     clock = Clock()
