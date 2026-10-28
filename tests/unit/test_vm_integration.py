@@ -145,3 +145,24 @@ def test_every_node_phase_is_reachable_from_the_controller():
     assert set(vmit.NODE_PHASES) == {"prepare", "start", "scenarios", "after-restart", "cleanup"}
     for phase in ("prepare", "start", "scenarios", "after-restart", "cleanup"):
         assert f'"{phase}"' in SOURCE[SOURCE.index("def run(args"):SOURCE.index("def summary(")]
+
+
+def test_a_vm_restart_waits_for_a_new_boot_id_and_survives_the_hang_up(monkeypatch):
+    target = vmit.make_target("ssh:rabbit@vm.example")
+    boots = iter([b"old\n", b"old\n", b"new\n"])
+    states = iter([b"starting\n", b"running\n", b"running\n"])
+    calls = []
+
+    def run(argv, *, input=None, timeout=600):
+        calls.append(argv)
+        if argv == ["cat", "/proc/sys/kernel/random/boot_id"]:
+            return subprocess.CompletedProcess(argv, 0, next(boots), b"")
+        if argv == ["systemctl", "reboot"]:
+            raise subprocess.TimeoutExpired(argv, timeout)
+        return subprocess.CompletedProcess(argv, 0, next(states), b"")
+
+    monkeypatch.setattr(target, "run", run)
+    monkeypatch.setattr(vmit.time, "sleep", lambda seconds: None)
+    assert target.restart() == "systemctl reboot (a new kernel boot)"
+    # The same boot id after "running" is not a reboot: it waited for the new one.
+    assert calls.count(["cat", "/proc/sys/kernel/random/boot_id"]) == 3

@@ -198,18 +198,22 @@ class SshTarget(Target):
 
     def restart(self):
         before = self.run(["cat", "/proc/sys/kernel/random/boot_id"]).stdout
-        self.run(["systemctl", "reboot"], timeout=30)
+        try:
+            self.run(["systemctl", "reboot"], timeout=30)
+        except subprocess.TimeoutExpired:
+            pass  # the connection may hang up as the node goes down
         deadline = time.monotonic() + 600
         while time.monotonic() < deadline:
             time.sleep(5)
             try:
                 result = self.run(["systemctl", "is-system-running", "--wait"], timeout=300)
+                if result.stdout.strip() not in {b"running", b"degraded"}:
+                    continue
+                after = self.run(["cat", "/proc/sys/kernel/random/boot_id"]).stdout
             except subprocess.TimeoutExpired:
                 continue
-            if result.returncode in (0, 1) and result.stdout.strip() in {b"running", b"degraded"}:
-                after = self.run(["cat", "/proc/sys/kernel/random/boot_id"]).stdout
-                if after and after != before:
-                    return "systemctl reboot (a new kernel boot)"
+            if after and after != before:
+                return "systemctl reboot (a new kernel boot)"
         raise SystemExit("node did not come back from reboot")
 
     def kind(self):
