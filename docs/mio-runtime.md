@@ -948,8 +948,8 @@ delivered, though a tight budget may lose the optional model explanation.
 
 Usable references are returned separately under `knowledge`, with
 `source_kind: knowledge_lite`, verified bundle `generation`, `freshness`
-(`current` or `static`), `trust_check: verified`, and the existing citation
-fields. Both socket client and delivery reader validate this bounded schema; entryd
+(`current` or `static`), `trust_check: verified`, the lookup instant `as_of`,
+the dataset `citation`, and the existing citation fields. Both socket client and delivery reader validate this bounded schema; entryd
 relays the optional `knowledge` key, and the deterministic handoff reference
 (`read_reference`) still rejects it. References are dropped from the end
 rather than letting them push a valid advisory over the 48 KiB delivered

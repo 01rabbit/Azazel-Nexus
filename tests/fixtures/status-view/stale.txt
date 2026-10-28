@@ -88,7 +88,7 @@ edge loop:
     recent incidents: stale (snapshot expired)
         inc-00000000000000a1 open most severe 3 count=1; latest: Edge would isolate (observe-only, not executed); T1059, T1059.001
             explained [AI advice (local model)]: Inspect the interpreter launch
-            T1059 Command and Scripting Interpreter [claim T1059]
+            T1059 Command and Scripting Interpreter [claim T1059] (bundle, generation and lookup time not recorded)
         inc-00000000000000b2 closed most severe 3 count=1 (evidence not stored); latest: Edge would notify (observe-only, not executed); T1059, T1059.001
             notice_shown [deterministic handoff notice (not AI)]: no summary
             notice: No AI answer is available for this request, so it was handed to the deterministic path. This notice and any attached playbook reference are fixed or verified material, not an AI answer. Edge's deterministic control plane remains the decision and enforcement authority.

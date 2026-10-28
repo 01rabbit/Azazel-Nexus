@@ -199,11 +199,42 @@ def test_scratch_uses_installer_owners_modes_and_ancestors(tmp_path, monkeypatch
 def test_bounded_replies():
     smoke.validate_reply(NAME, {"route": "deterministic handoff", "outcome": "refused",
                                "reason": "no provider", "ledger_seq": 1})
-    smoke.validate_reply("azazel-knowledge-lited", {"state": "unavailable", "reason_code": "no_bundle",
-                                                 "generation": None, "freshness": "absent"})
+    from azazel_nexus.lite_import import STATUS_KEYS, status_refused
+
+    assert smoke.KNOWLEDGE_STATUS_KEYS == STATUS_KEYS
+    smoke.validate_reply("azazel-knowledge-lited", status_refused("unavailable", "no_bundle"))
     with pytest.raises(ValueError):
-        smoke.validate_reply("azazel-knowledge-lited", {"state": "available", "reason_code": "x" * 65,
+        smoke.validate_reply("azazel-knowledge-lited", status_refused("available", "x" * 65))
+    # The previous four-key shape is no longer the daemon's reply.
+    with pytest.raises(ValueError):
+        smoke.validate_reply("azazel-knowledge-lited", {"state": "unavailable", "reason_code": "no_bundle",
                                                      "generation": None, "freshness": "absent"})
+
+
+def test_bounded_knowledge_status_from_the_real_reader(tmp_path, monkeypatch):
+    """status_summary's own output, available and refused, passes the smoke's check."""
+    from test_knowledge_lited import node as commissioned_node
+    from test_knowledge_lookup import admit_rows
+
+    from azazel_nexus.lite_import import status_refused, status_summary
+
+    node = commissioned_node.__wrapped__(tmp_path, monkeypatch)
+    _, root, trust, _ = node
+    now = "2026-10-18T00:00:00Z"
+    absent = status_summary(root=root, trust_root=trust, query_as_of=now)
+    smoke.validate_reply("azazel-knowledge-lited", absent)
+    admit_rows(node, [{"technique_id": "T1110", "name": "static"},
+                      {"technique_id": "T1046", "name": "dated", "agg_next_expiry": "2027-01-01T00:00:00Z"}])
+    available = status_summary(root=root, trust_root=trust, query_as_of=now)
+    assert available["state"] == "available" and available["bundle_digest_short"]
+    smoke.validate_reply("azazel-knowledge-lited", available)
+    smoke.validate_reply("azazel-knowledge-lited", status_refused("unavailable", "state_untrusted"))
+    for key, value in (("bundle_digest_short", "sha256:" + "a" * 64), ("signer_key_ids", []),
+                       ("static_count", -1), ("next_expiry", "2027-01-01T00:00:00.5Z")):
+        with pytest.raises(ValueError):
+            smoke.validate_reply("azazel-knowledge-lited", {**available, key: value})
+    with pytest.raises(ValueError):
+        smoke.validate_reply("azazel-knowledge-lited", {**absent, "static_count": 1})
 
 
 @pytest.fixture

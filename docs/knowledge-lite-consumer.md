@@ -588,7 +588,8 @@ Signed revocations and their continuity record also reside at the trust root.
 The bundle version is checked against revoked generations; its archive digest
 and verified signing keys are checked against the cumulative revocation list.
 
-The result has exactly four keys:
+The result has exactly nine keys, in this order: the four diagnostic keys and
+five display facts (`lite_import.STATUS_KEYS`):
 
 | key | values |
 | --- | --- |
@@ -596,6 +597,17 @@ The result has exactly four keys:
 | `reason_code` | `available`, `stale`, `unavailable`, `no_bundle`, `quarantined`, `bundle_refused`, `state_untrusted`, `revoked`, `unverified`, `trust_unreadable`, `store_unreadable` |
 | `generation` | verified bundle version (at most signed 64-bit maximum), otherwise null |
 | `freshness` | `current`, `stale`, `absent` (time-bound claims axis) |
+| `signer_key_ids` | the commissioned anchor key ids whose signatures verified (sorted, at most eight), otherwise null |
+| `bundle_digest_short` | `sha256:` and the first twelve hex digits of the admitted archive digest, otherwise null; a display aid, never compared |
+| `static_count` | rows without an expiry (static reference), otherwise null |
+| `current_count` | dated rows not yet expired at the query instant, otherwise null |
+| `next_expiry` | the earliest expiry among current rows, RFC3339 UTC truncated to seconds, or null |
+
+The display facts are set only when a verified, trusted, unrevoked bundle was
+read (`available` or `stale`); every refusal leaves all five null. They carry
+no key material, full digest, path, address or exception text. `azazel-nexus
+status` prints them under Knowledge Lite as `bundle: … (shortened); signing
+key ids: …` and `claims: static N; current N; nearest expiry: …`.
 
 `state_untrusted` means the admitted bundle is below the anti-rollback watermark
 or its watermark is missing or malformed (state `quarantined`); no bundle is
@@ -668,8 +680,15 @@ escaping overhead, below the existing 64 KiB transport limit. Each frozen
 library `KnowledgeRef` carries `technique_id`, `name` (120 characters maximum),
 `summary` (240 maximum), `claim_id`, `bundle_digest`, and `freshness` (`current`
 or `static`), plus `source_kind: knowledge_lite`, the authenticated bundle
-`generation`, and `trust_check: verified`. These are read-time provenance,
-not approval or authority. `attack_stix.flatten` obtains technique IDs from MITRE external
+`generation`, `trust_check: verified`, `as_of` (the lookup's own
+`query_as_of`, RFC3339 UTC truncated to seconds with `Z`) and `citation` (the
+signed manifest's `profile.provenance.<dataset>.dataset.citation` for the
+row's `tables/<dataset>.jsonl` member, as plain text of at most 160
+characters, or empty when the bundle declares none or its text does not settle
+under that cleaning). `read_knowledge_refs` requires exactly these eleven
+fields at every process boundary, and a citation that is a fixed point of the
+same plain-text cleaning. These are
+read-time provenance, not approval or authority. `attack_stix.flatten` obtains technique IDs from MITRE external
 references and preserves the technique name and description; Knowledge's native
 ATT&CK table uses `technique_id` as the stable primary key. That key is both
 `technique_id` and `claim_id` here, qualified by the authenticated bundle digest.

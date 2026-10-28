@@ -269,13 +269,15 @@ def test_knowledge_refs_are_rechecked_and_bound_to_query(tmp_path):
     from azazel_nexus.lite_import import KnowledgeRef
     e = make(tmp_path)
     ref = KnowledgeRef("T1059", "Shell", "Check context", "T1059", "sha256:" + "a" * 64,
-                       "static", "knowledge_lite", 1, "verified")
+                       "static", "knowledge_lite", 1, "verified",
+                       "2026-10-18T00:00:00Z", "MITRE ATT&CK technique")
     e.knowledge = lambda _: (ref,)
     append(e)
     e.poll()
     assert records(e)[0]["knowledge_state"] == "available"
     ref = KnowledgeRef("T1110", "Force", "", "T1110", "sha256:" + "a" * 64,
-                       "static", "knowledge_lite", 1, "verified")
+                       "static", "knowledge_lite", 1, "verified",
+                       "2026-10-18T00:00:00Z", "MITRE ATT&CK technique")
     append(e, transition(incident_id="inc-2222222222222222"))
     e.poll()
     assert records(e)[-1]["knowledge_state"] == "unavailable"

@@ -7,7 +7,7 @@ import unicodedata
 from collections import deque
 
 from .edge_intake import ACTIONS, SEVERE_SEVERITY, _object, _shape, _text, _int, _number
-from .lite_import import TECHNIQUE_ID, read_knowledge_refs
+from .lite_import import AS_OF, TECHNIQUE_ID, as_of_text, read_knowledge_refs, short_digest
 from .local_advisory import (
     HANDOFF_NOTICE,
     MACHINE_FIELDS,
@@ -524,16 +524,46 @@ def build_recent_incident(transition, previous=None, record=None):
     return row
 
 
+#: A displayed citation: what was cited, and from which verified bundle,
+#: generation and freshness, as of which lookup instant, under which signed
+#: dataset citation. The digest is shortened: a display aid, not a check.
+CITATION_FIELDS = ("technique_id", "name", "claim_id")
+CITATION_DISPLAY_FIELDS = ("bundle_digest_short", "generation", "freshness", "as_of", "citation",
+                           "citation_state")
+#: `shown`: the bundle's citation is displayed; `none`: the bundle declares
+#: none; `withheld`: it declares one this display will not show (address syntax).
+CITATION_STATES = ("shown", "none", "withheld")
+#: The escaped JSON budget for one row's displayed citations.
+CITATION_DISPLAY_BYTES = 6 * 1024
+
+
 def explanation_summary(record):
     r = read_record(record)
     refs = []
     for ref in r["knowledge_refs"][:8]:
-        citation = {k: ref[k] for k in ("technique_id", "name", "claim_id")}
+        citation = {k: ref[k] for k in CITATION_FIELDS}
+        citation.update(bundle_digest_short=short_digest(ref["bundle_digest"]),
+                        generation=ref["generation"], freshness=ref["freshness"],
+                        as_of=ref["as_of"], citation=ref["citation"],
+                        citation_state="shown" if ref["citation"] else "none")
+        try:
+            _display_citation(citation["citation"])
+        except ValueError:
+            # Producer text with address syntax is not displayed; the rest of
+            # the citation still is, and says that one was withheld.
+            citation.update(citation="", citation_state="withheld")
         try:
             _citation(citation, r["technique_ids"])
         except ValueError:
             continue
         refs.append(citation)
+    # Twenty rows share one bounded snapshot; drop citations from the end
+    # rather than let escaped producer text push the snapshot over its bound.
+    while refs and len(json.dumps(refs).encode()) > CITATION_DISPLAY_BYTES:
+        refs.pop()
+    # Nothing is dropped silently: the display bound, unsafe names and the
+    # bytes bound are counted and shown as a number of omitted citations.
+    omitted = len(r["knowledge_refs"]) - len(refs)
     m = r["mio"]
     kind = content_kind(m)
     summary = {"state": content_state(kind, bool(m["text"])),
@@ -543,6 +573,8 @@ def explanation_summary(record):
                "content_kind": kind}
     if "notice" in m:
         summary["notice"] = m["notice"]
+    if omitted:
+        summary["knowledge_refs_omitted"] = omitted
     return summary
 
 
@@ -560,17 +592,60 @@ def build_recent_incidents(incidents, written_at):
     return checked
 
 
-def _citation(row, ids):
-    _shape(row, ("technique_id", "name", "claim_id"))
-    if (row["technique_id"] not in ids or row["claim_id"] != row["technique_id"]):
-        raise ValueError("recent_refused")
-    _text(row["name"], 120)
+def _display_name(text):
     # Citation names have already been validated by Knowledge. Reject address
     # syntax here as well: signed content is still untrusted display data.
     # A bare number token (a port, an integer address) is refused likewise.
-    name = unicodedata.normalize("NFKC", row["name"])
-    if not name or re.search(r"\d+(?:\.\d+){3}|(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.]*", name) or any(
+    name = unicodedata.normalize("NFKC", text)
+    if re.search(r"\d+(?:\.\d+){3}|(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.]*", name) or any(
             token.isdecimal() for token in re.split(r"[^\w]+|_", name)):
+        raise ValueError("recent_refused")
+
+
+def _display_citation(text):
+    """A citation may name versions ("v14.1", "2024"); never an address.
+
+    Narrower than `_display_name`: numbers are allowed, IPv4/IPv6 literals and
+    host:port forms are not.
+    """
+    value = unicodedata.normalize("NFKC", text)
+    if re.search(r"\d+(?:\.\d+){3}|(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.]*"
+                 r"|[\w.-]+:\d{1,5}(?!\d)", value):
+        raise ValueError("recent_refused")
+
+
+def _citation(row, ids):
+    """Exactly the full display citation, or the legacy three-key one.
+
+    Rows written before the display fields existed (a checkpoint or a
+    `recent.json` from the previous release) still read; any other subset or
+    superset is refused.
+    """
+    if type(row) is dict and set(row) == set(CITATION_FIELDS):
+        legacy = True
+    else:
+        _shape(row, CITATION_FIELDS + CITATION_DISPLAY_FIELDS)
+        legacy = False
+    if (row["technique_id"] not in ids or row["claim_id"] != row["technique_id"]):
+        raise ValueError("recent_refused")
+    _text(row["name"], 120)
+    if not row["name"]:
+        raise ValueError("recent_refused")
+    _display_name(row["name"])
+    if legacy:
+        return
+    _text(row["citation"], 160)
+    if row["citation_state"] not in CITATION_STATES or bool(row["citation"]) != (
+            row["citation_state"] == "shown"):
+        raise ValueError("recent_refused")
+    if row["citation"]:
+        _display_citation(row["citation"])
+    _int(row["generation"], 2**63 - 1)
+    if (type(row["bundle_digest_short"]) is not str
+            or not re.fullmatch(r"sha256:[0-9a-f]{12}", row["bundle_digest_short"])
+            or row["freshness"] not in {"static", "current"}
+            or type(row["as_of"]) is not str or not AS_OF.fullmatch(row["as_of"])
+            or as_of_text(row["as_of"]) != row["as_of"]):
         raise ValueError("recent_refused")
 
 
@@ -612,7 +687,7 @@ def read_recent_incidents(raw):
                 return None
             e = row["explanation"]
             _shape(e, ("state", "route", "outcome", "summary", "knowledge_refs", "failure_codes"),
-                   ("content_kind", "notice"))
+                   ("content_kind", "notice", "knowledge_refs_omitted"))
             # The same consistency rule as a record, applied to the summary.
             if "content_kind" in e:
                 try:
@@ -643,6 +718,9 @@ def read_recent_incidents(raw):
                 return None
             for ref in refs:
                 _citation(ref, ids)
+            if "knowledge_refs_omitted" in e:
+                # At most sixteen references are recorded per explanation.
+                _int(e["knowledge_refs_omitted"], 16 - len(refs), 1)
         if v["incidents"] != sorted(v["incidents"], key=lambda r: (r["last_seen"], r["first_seen"], r["incident_id"]), reverse=True):
             return None
         return v

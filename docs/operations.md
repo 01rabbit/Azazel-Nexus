@@ -59,7 +59,12 @@ judged against the status clock (`observed_at_in_future`,
 `observed_at_expired`). Interface descriptions, filesystem paths, Edge finding
 reasons, exception text and any fixed sentence that names a path are shown on
 the terminal only; the read model names each one under `withheld` and carries
-a code beside it. Values are checked against their fixed vocabularies, and an
+a code beside it. Knowledge citations in recent incidents carry the shortened
+bundle digest, generation, freshness, lookup instant and dataset citation, and
+the Knowledge Lite section carries the verified bundle's facts under `bundle`
+(shortened digest, signing key ids, claim counts, nearest expiry; `null` when
+no trusted bundle was read); each is checked again, and one outside its shape
+or naming a path is withheld. Values are checked against their fixed vocabularies, and an
 integer beyond JavaScript's exact range is reported as `too_large`. On a LAB HOST the `LAB HOST` marker goes to
 stderr so the JSON stays parseable. Like the text, it is a display: it grants,
 admits and activates nothing.

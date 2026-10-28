@@ -597,7 +597,8 @@ def test_trusted_reference_delivery_and_lookup_failures(tmp_path, monkeypatch, l
     from azazel_nexus_runtime.knowledge_client import KnowledgeUnavailable
 
     ref = KnowledgeRef('T1110.003', 'Password spraying', 'Reference only', 'T1110.003',
-                       'sha256:' + 'a' * 64, 'static', 'knowledge_lite', 5, 'verified')
+                       'sha256:' + 'a' * 64, 'static', 'knowledge_lite', 5, 'verified',
+                       '2026-10-18T00:00:00Z', 'MITRE ATT&CK technique')
     budgets = []
     clock = [100.0]
     monkeypatch.setattr(mio_locald.time, 'monotonic', lambda: clock[0])
@@ -768,7 +769,8 @@ def test_oversized_knowledge_is_trimmed_rather_than_failing_the_advisory(monkeyp
              'question': 'Password spray T1110.003',
              'context': [{'kind': 'auth_log', 'text': 'many accounts'}]}
     refs = tuple(KnowledgeRef('T1110.003', f'名{i:02d}' + '名' * 117, '要' * 240, 'T1110.003',
-                              'sha256:' + 'a' * 64, 'static', 'knowledge_lite', 5, 'verified')
+                              'sha256:' + 'a' * 64, 'static', 'knowledge_lite', 5, 'verified',
+                       '2026-10-18T00:00:00Z', 'MITRE ATT&CK technique')
                  for i in range(16))
     def run():
         reply, _ = mio_locald.retrieval_pipeline(None, frame, match(frame, library), refs,

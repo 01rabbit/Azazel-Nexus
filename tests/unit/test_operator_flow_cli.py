@@ -276,6 +276,11 @@ def test_setup_and_status_share_daemon_trust(commissioned_node, fixture_host, co
     _render_knowledge(reading, out)
     assert "state: " + reading["state"] in out.getvalue()
     assert "reason: " + reason in out.getvalue()
+    if reason == "available":
+        assert f"bundle: {reading['bundle_digest_short']} (shortened); signing key ids: " in out.getvalue()
+        assert "claims: static 0; current 1; nearest expiry: 2027-01-01T00:00:00Z" in out.getvalue()
+    else:
+        assert "signing key ids" not in out.getvalue()
     status = StringIO()
     assert main(["--sysfs", str(root / "nosysfs"), "--edge-root", str(root / "noedge"),
                  "--knowledge-lite", str(root), "--as-of", NOW, "status"], out=status) == 0

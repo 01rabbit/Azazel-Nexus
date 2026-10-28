@@ -13,6 +13,7 @@ from pathlib import Path
 from azazel_nexus.lite_import import (
     TECHNIQUE_ID,
     lookup_context_reading,
+    status_refused,
     status_summary,
 )
 
@@ -115,8 +116,7 @@ class KnowledgeLiteService:
             return result
         query_as_of = self._query_as_of()
         if query_as_of is None:
-            return {"state": "unavailable", "reason_code": CLOCK_UNTRUSTED,
-                    "generation": None, "freshness": "absent"}
+            return status_refused("unavailable", CLOCK_UNTRUSTED)
         return status_summary(root=self.root, trust_root=self.trust_root,
                               query_as_of=query_as_of)
 

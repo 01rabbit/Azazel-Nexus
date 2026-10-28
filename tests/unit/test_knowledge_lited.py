@@ -19,7 +19,7 @@ from nacl.signing import SigningKey
 from test_lite_bundle import KEY_ID, SEED, _manifest, _signed
 
 from azazel_nexus.edge_package import inspect as inspect_edge
-from azazel_nexus.lite_import import CommissionedLite, LiteImport
+from azazel_nexus.lite_import import STATUS_KEYS, CommissionedLite, LiteImport, status_refused
 from azazel_nexus.lite_trust import TrustStore
 from azazel_nexus.revocation import RevocationList
 from azazel_nexus.revocation_policy import (
@@ -93,11 +93,20 @@ def test_states_are_bounded_read_only_and_leave_edge_unchanged(node, state):
     edge = inspect_edge(root / "edge").as_event()
     for _ in range(2):
         result = service.handle(None)
-        assert set(result) == {"state", "reason_code", "generation", "freshness"}
+        assert tuple(result) == STATUS_KEYS
         assert result["state"] == ("unavailable" if state == "unverified" else state)
         assert result["reason_code"] == ("no_bundle" if state == "unavailable" else state)
         assert result["generation"] == (5 if state in {"available", "stale"} else None)
         assert result["freshness"] == ({"available": "current", "stale": "stale"}.get(state, "absent"))
+        if state in {"available", "stale"}:
+            assert result["bundle_digest_short"].startswith("sha256:")
+            assert len(result["bundle_digest_short"]) == len("sha256:") + 12
+            assert result["signer_key_ids"] == [KEY_ID]
+            assert result["static_count"] == 0
+            assert result["current_count"] == (1 if state == "available" else 0)
+            assert result["next_expiry"] == ("2027-01-01T00:00:00Z" if state == "available" else None)
+        else:
+            assert all(result[key] is None for key in STATUS_KEYS[4:])
     assert snapshot(root, trust) == before
     assert inspect_edge(root / "edge").as_event() == edge
 
@@ -108,8 +117,7 @@ def test_revoked_generation_is_quarantined(node):
     statement = RevocationList(sequence=1, issued_at=NOW, revoked_generations=frozenset({5}))
     (trust / "revocations.signed").write_bytes(
         revoker.sign(statement.signature_target()).signature + statement.as_payload())
-    assert service.handle(None) == {"state": "quarantined", "reason_code": "revoked",
-                                    "generation": 5, "freshness": "absent"}
+    assert service.handle(None) == status_refused("quarantined", "revoked", 5, "absent")
 
 
 def test_corrupt_admitted_bundle_is_quarantined(node):
@@ -133,8 +141,7 @@ def test_unreadable_storage_still_answers(node, monkeypatch, which, private_os):
         return original(path, *args, **kwargs)
 
     monkeypatch.setattr(model_paths.os, "open", denied)
-    assert service.handle(None) == {"state": "unavailable", "reason_code": f"{which}_unreadable",
-                                    "generation": None, "freshness": "absent"}
+    assert service.handle(None) == status_refused("unavailable", f"{which}_unreadable", None, "absent")
 
 
 def test_store_anchors_do_not_override_commissioned_trust(node):
@@ -287,13 +294,17 @@ def test_lookup_json_escape_bound(node):
 
     service = node[0]
     admit_rows(node, [{"technique_id": "T1110", "name": "😀" * 120,
-                       "description": "😀" * 240}] * 16)
+                       "description": "😀" * 240}] * 16,
+               profile={"provenance": {"attack_technique": {"dataset": {"citation": "😀" * 160}}}})
     events = []
     service.audit = events.append
     request = SimpleNamespace(verb=daemon.LOOKUP_VERB,
                               arguments={"technique_ids": ["T1110"]}, payload={})
     result = service.handle(request)
     assert 0 < len(result["refs"]) < 16
+    # The trim only ever removes references beyond the eight a display shows.
+    assert len(result["refs"]) >= 8
+    assert result["refs"][0]["citation"] == "😀" * 160
     assert len(json.dumps({"ok": True, "result": result}).encode()) <= 60 * 1024
     assert events[0]["count"] == len(result["refs"])
 
@@ -318,8 +329,7 @@ def test_status_refuses_untrusted_watermark(node, watermark):
         path.symlink_to(root / "inbox/bundle.tar.gz")
     elif watermark is not None:
         path.write_text(watermark)
-    assert service.handle(None) == {"state": "quarantined", "reason_code": "state_untrusted",
-                                    "generation": None, "freshness": "absent"}
+    assert service.handle(None) == status_refused("quarantined", "state_untrusted", None, "absent")
 
 
 @pytest.mark.parametrize("floor", ["4", "5"])
@@ -340,8 +350,7 @@ def test_status_reports_unreadable_watermark_as_unreadable(node, monkeypatch):
         raise PermissionError(13, "denied")
 
     monkeypatch.setattr(lite_import, "_read_watermark", denied)
-    assert service.handle(None) == {"state": "unavailable", "reason_code": "store_unreadable",
-                                    "generation": None, "freshness": "absent"}
+    assert service.handle(None) == status_refused("unavailable", "store_unreadable", None, "absent")
 
 
 # -- the persisted wall-clock floor (P3) ------------------------------------
@@ -362,8 +371,7 @@ def _clocked(node, tmp_path, instants, events=None):
         now=lambda: next(clock), audit=(events.append if events is not None else lambda e: None))
 
 
-UNTRUSTED_STATUS = {"state": "unavailable", "reason_code": "state_untrusted",
-                    "generation": None, "freshness": "absent"}
+UNTRUSTED_STATUS = status_refused("unavailable", "state_untrusted", None, "absent")
 UNTRUSTED_LOOKUP = {"refs": [], "reason_code": "state_untrusted"}
 EXPIRY = "2026-10-19T00:00:00Z"
 BEFORE_EXPIRY = "2026-10-18T12:00:00Z"
@@ -601,3 +609,63 @@ def test_service_requires_a_clock_floor(node):
     with pytest.raises(TypeError):
         daemon.KnowledgeLiteService(root=root, trust_root=trust, clock_floor=None,
                                     now=lambda: NOW)
+
+
+# -- knowledge.status display facts (P2) --------------------------------------
+
+def test_status_display_counts_nearest_expiry_and_no_secrets(node):
+    from test_knowledge_lookup import admit_rows
+
+    service, root, trust, _ = node
+    admit_rows(node, [
+        {"technique_id": "T1110", "name": "static one"},
+        {"technique_id": "T1046", "name": "static two"},
+        {"technique_id": "T1110.001", "name": "later", "agg_next_expiry": "2027-03-01T00:00:00Z"},
+        {"technique_id": "T1110.002", "name": "sooner", "agg_next_expiry": "2026-11-01T12:30:45.999Z"},
+        {"technique_id": "T1110.003", "name": "expired", "agg_next_expiry": "2020-01-01T00:00:00Z"},
+    ])
+    result = service.handle(None)
+    assert result["state"] == "available"
+    assert (result["static_count"], result["current_count"]) == (2, 2)
+    # Truncated to seconds: never later than the row's own expiry.
+    assert result["next_expiry"] == "2026-11-01T12:30:45Z"
+    assert result["signer_key_ids"] == [KEY_ID]
+    full = CommissionedLite(root)
+    digest = "sha256:" + __import__("hashlib").sha256(
+        (root / "admitted/current.tar.gz").read_bytes()).hexdigest()
+    assert result["bundle_digest_short"] == digest[:19]
+    text = json.dumps(result)
+    assert digest not in text and str(root) not in text and str(trust) not in text
+    assert full.admitted.name not in text
+
+
+def test_signer_key_ids_are_sorted_and_capped_at_eight(node):
+    import hashlib
+
+    from signing_oracle import sign_detached
+    from test_lite_bundle import _tar
+
+    service, root, trust, _ = node
+    seeds = {f"signer-{i:02d}": bytes([i + 1]) * 32 for i in range(10)}
+    keys = {name: SigningKey(seed).verify_key.encode() for name, seed in seeds.items()}
+    anchors = "threshold = 10\n[keys]\n" + "".join(
+        f'"{name}" = "{key.hex()}"\n' for name, key in keys.items())
+    (root / "trust/anchors.toml").write_text(anchors)
+    (trust / "trust/anchors.toml").write_text(anchors)
+    TrustStore(trust).path.unlink()
+    TrustStore(trust).pin([key.hex() for key in keys.values()], commissioning_digest=DIGEST,
+                         pinned_at=NOW, actor="test")
+    table = json.dumps({"technique_id": "T1110", "name": "static"}).encode() + b"\n"
+    manifest = json.dumps({"bundle_format_version": 1, "bundle_version": 5, "kind": "full",
+                           "files": {"tables/attack_technique.jsonl": hashlib.sha256(table).hexdigest()}},
+                          indent=2, sort_keys=True).encode()
+    signatures = "".join(f"{name}:{sign_detached(seed=seed, message=manifest).hex()}\n"
+                         for name, seed in reversed(list(seeds.items())))
+    (root / "inbox/bundle.tar.gz").write_bytes(_tar({
+        "manifest.json": manifest, "manifest.sig": signatures.encode(),
+        "tables/attack_technique.jsonl": table}))
+    importer = LiteImport(CommissionedLite(root))
+    assert importer.import_entry(importer.list_inbox()[0].entry_id, now=NOW).admitted
+    result = service.handle(None)
+    assert result["state"] == "available"
+    assert result["signer_key_ids"] == [f"signer-{i:02d}" for i in range(8)]

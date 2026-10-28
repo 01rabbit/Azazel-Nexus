@@ -77,6 +77,7 @@ from .lite_bundle import (
     TrustAnchors,
     absent_reading,
     iter_served,
+    iter_served_with_member,
     read_anchors,
     read_claims,
     reading_for,
@@ -598,8 +599,7 @@ def _read_trusted(*, root: Path, trust_root: Path,
     from .signature import SignatureRefused
 
     def summary(state, reason, generation=None, freshness="absent"):
-        return {"state": state, "reason_code": reason,
-                "generation": generation, "freshness": freshness}
+        return status_refused(state, reason, generation, freshness)
 
     try:
         trust = TrustStore(trust_root)
@@ -664,14 +664,40 @@ def _read_trusted(*, root: Path, trust_root: Path,
         return summary("unavailable", "store_unreadable")
 
 
+#: The display keys `knowledge.status` adds to the four diagnostic ones. Each
+#: is null unless a verified, trusted bundle was read. None of them carries a
+#: claim body, key material, a path, an address or exception text.
+STATUS_DISPLAY_KEYS = ("signer_key_ids", "bundle_digest_short", "static_count",
+                       "current_count", "next_expiry")
+STATUS_KEYS = ("state", "reason_code", "generation", "freshness", *STATUS_DISPLAY_KEYS)
+
+
+def short_digest(digest: str) -> str:
+    """`sha256:` and the first twelve hex digits: for display, never for checking."""
+    if type(digest) is not str or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise ValueError("digest refused")
+    return digest[:19]
+
+
+def status_refused(state: str, reason: str, generation=None, freshness="absent") -> dict:
+    """The status shape when no trusted bundle can be described."""
+    return {"state": state, "reason_code": reason, "generation": generation,
+            "freshness": freshness, **{key: None for key in STATUS_DISPLAY_KEYS}}
+
+
 def status_summary(*, root: Path, trust_root: Path, query_as_of: str) -> dict:
-    """Bounded diagnostics, with exactly the existing status response shape."""
+    """Bounded diagnostics: the four status keys plus fixed display facts."""
     def read(accepted):
-        reading = reading_for(read_claims(accepted, query_as_of=query_as_of),
-                              query_as_of=query_as_of)
+        claims = read_claims(accepted, query_as_of=query_as_of)
+        reading = reading_for(claims, query_as_of=query_as_of)
         return {"state": reading.overall, "reason_code": reading.overall,
                 "generation": accepted.bundle_version,
-                "freshness": reading.time_bound.value}
+                "freshness": reading.time_bound.value,
+                "signer_key_ids": sorted(accepted.signers)[:8],
+                "bundle_digest_short": short_digest(accepted.bundle_digest),
+                "static_count": claims.timeless_count,
+                "current_count": claims.served_count,
+                "next_expiry": claims.next_expiry}
 
     return _read_trusted(root=root, trust_root=trust_root, reader=read)
 
@@ -692,18 +718,51 @@ class KnowledgeRef:
     source_kind: str
     generation: int
     trust_check: str
+    #: The lookup's own `query_as_of`, RFC3339 UTC truncated to seconds: the
+    #: instant against which this row was current (or static).
+    as_of: str
+    #: The bundle's signed dataset citation (manifest
+    #: `profile.provenance.<dataset>.dataset.citation`) as plain text, or ""
+    #: when the bundle declares none. Producer text: display data only.
+    citation: str
+
+
+KNOWLEDGE_REF_FIELDS = frozenset({
+    "technique_id", "name", "summary", "claim_id", "bundle_digest", "freshness",
+    "source_kind", "generation", "trust_check", "as_of", "citation"})
+AS_OF = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", re.ASCII)
+
+
+def as_of_text(query_as_of: str) -> str:
+    """One RFC3339 instant as UTC seconds with `Z`; refuses a naive time."""
+    from datetime import datetime, timezone
+
+    raw = str(query_as_of)
+    moment = datetime.fromisoformat(raw[:-1] + "+00:00" if raw.endswith("Z") else raw)
+    if moment.tzinfo is None:
+        raise ValueError("as_of refused")
+    return moment.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
+        "+00:00", "Z")
 
 
 def read_knowledge_refs(rows: list) -> tuple[KnowledgeRef, ...]:
     """Validate cited context again at each process boundary, never as authority."""
-    fields = {"technique_id", "name", "summary", "claim_id", "bundle_digest",
-              "freshness", "source_kind", "generation", "trust_check"}
+    fields = KNOWLEDGE_REF_FIELDS
     if type(rows) is not list or len(rows) > 16:
         raise ValueError("invalid_knowledge_refs")
     refs = []
     for row in rows:
         if (type(row) is not dict or set(row) != fields
                 or any(type(row[key]) is not str for key in fields - {"generation"})):
+            raise ValueError("invalid_knowledge_refs")
+        try:
+            if not AS_OF.fullmatch(row["as_of"]) or as_of_text(row["as_of"]) != row["as_of"]:
+                raise ValueError
+        except ValueError:
+            raise ValueError("invalid_knowledge_refs") from None
+        if (len(row["citation"]) > 160
+                or _plain_text(row["citation"], 160, markup="`*#") != row["citation"]
+                or any(not c.isprintable() for c in row["citation"])):
             raise ValueError("invalid_knowledge_refs")
         if (not TECHNIQUE_ID.fullmatch(row["technique_id"])
                 or row["claim_id"] != row["technique_id"]
@@ -725,7 +784,7 @@ class LookupContext:
     reason_code: str
 
 
-def _plain_text(value, limit: int) -> str:
+def _plain_text(value, limit: int, *, markup: str = "`*_#") -> str:
     # Strip HTML and Markdown links/formatting from producer descriptions.
     # Never interpret markup, follow a URL, or execute the resulting prose.
     import html
@@ -736,8 +795,34 @@ def _plain_text(value, limit: int) -> str:
     value = re.sub(r"<[^>]*>", " ", value)
     value = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", value)
     value = re.sub(r"https?://\S+|www\.\S+", " ", value)
-    value = value.translate(str.maketrans("", "", "`*_#"))
+    value = value.translate(str.maketrans("", "", markup))
     return " ".join("".join(c if c.isprintable() else " " for c in value).split())[:limit]
+
+
+def _dataset_citation(manifest: Mapping, path: str) -> str:
+    """The signed manifest's citation for the member's dataset, as plain text.
+
+    `tables/<dataset>.jsonl` names the dataset, as Knowledge writes it. A
+    missing or malformed provenance block is no citation (""), not a refusal:
+    the bundle already passed every gate and citation is display data.
+    """
+    match = re.fullmatch(r"tables/([a-z0-9_]{1,64})\.jsonl", path, re.ASCII)
+    if match is None:
+        return ""
+    value = manifest.get("profile")
+    for key in ("provenance", match.group(1), "dataset", "citation"):
+        value = value.get(key) if isinstance(value, Mapping) else None
+    # Underscores are kept: dataset names such as `intel.attack_technique`.
+    # Readers require a fixed point of the same cleaning (double-escaped
+    # entities, a cut that ends in a space); a text that does not settle
+    # quickly is no citation.
+    text = _plain_text(value, 160, markup="`*#")
+    for _ in range(4):
+        again = _plain_text(text, 160, markup="`*#")
+        if again == text:
+            return text
+        text = again
+    return ""
 
 
 def lookup_context_reading(*, root: Path, trust_root: Path,
@@ -757,19 +842,29 @@ def lookup_context_reading(*, root: Path, trust_root: Path,
     def read(accepted):
         if not wanted:
             return {"refs": (), "reason_code": "no_context"}
+        try:
+            as_of = as_of_text(query_as_of)
+        except ValueError:
+            # The same refusal the expiry comparison gives this instant.
+            raise BundleRefused(Gate.CONTENT, "BUNDLE_EXPIRY_INVALID",
+                                "query_as_of is not RFC3339 UTC") from None
         refs = []
-        for row in iter_served(accepted, query_as_of=query_as_of):
+        citations: dict[str, str] = {}
+        for path, row in iter_served_with_member(accepted, query_as_of=query_as_of):
             technique = row.get("technique_id")
             if not isinstance(technique, str) or technique not in wanted:
                 continue
             name = _plain_text(row.get("name"), 120)
             if not name:
                 continue
+            if path not in citations:
+                citations[path] = _dataset_citation(accepted.manifest, path)
             refs.append(KnowledgeRef(
                 technique, name, _plain_text(row.get("description"), 240),
                 technique, accepted.bundle_digest,
                 "static" if row.get("agg_next_expiry") is None else "current",
                 "knowledge_lite", accepted.bundle_version, "verified",
+                as_of, citations[path],
             ))
             if len(refs) == 16:
                 break

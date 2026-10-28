@@ -99,6 +99,14 @@ KNOWLEDGE_REASONS = KNOWLEDGE_STATES | frozenset({
     "trust_unreadable", "unverified", "no_bundle", "store_unreadable", "bundle_refused",
     "revoked", "state_untrusted"})
 KNOWLEDGE_FRESHNESS = frozenset({"current", "stale", "absent"})
+#: The verified bundle's display facts `knowledge.status` adds (#362), and
+#: the names they carry in the view's `bundle`. All null unless a trusted
+#: bundle was read.
+KNOWLEDGE_BUNDLE_FIELDS = (("bundle_digest_short", "digest_short"),
+                           ("signer_key_ids", "signer_key_ids"),
+                           ("static_count", "static_count"),
+                           ("current_count", "current_count"),
+                           ("next_expiry", "next_expiry"))
 
 # -- allowlists ------------------------------------------------------------
 #
@@ -118,10 +126,14 @@ RECENT_FIELDS = ("schema", "written_at")
 INCIDENT_FIELDS = ("incident_id", "state", "first_seen", "last_seen", "count", "most_severe",
                    "edge_would", "policy_reason", "technique_ids", "evidence_stored")
 EXPLANATION_FIELDS = ("state", "route", "outcome", "summary", "failure_codes",
-                      "content_kind", "notice")
-#: A citation as `read_recent_incidents` checks it today. Copied as is; a
-#: citation field added later (provenance, time, digest) is added here too.
+                      "content_kind", "notice", "knowledge_refs_omitted")
+#: A citation as `read_recent_incidents` checks it: the three keys every row
+#: has (a row written before #362 has only these), and the display fields
+#: that say where it came from. Each is checked again here; a citation whose
+#: dataset citation names a path is withheld (`withheld: ["citation"]`).
 KNOWLEDGE_REF_FIELDS = ("technique_id", "name", "claim_id")
+KNOWLEDGE_REF_DISPLAY_FIELDS = ("bundle_digest_short", "generation", "freshness", "as_of",
+                                "citation", "citation_state")
 AUDIT_CAPACITY_FIELDS = ("chain_verified", "chain_bytes", "segments", "filesystem_free_bytes",
                          "warning", "warning_reasons", "warn_chain_bytes", "warn_free_bytes",
                          "rate_limit_summaries_dropped")
@@ -145,6 +157,8 @@ _GENERATION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}")
 #: kept for the terminal; the view carries the code beside it instead.
 _PATHISH = re.compile(r"(?:^|[\s(\[`'\"])(?:/|[\w.-]+/)[\w./-]*")
 _INCIDENT_ID = re.compile(r"inc-[0-9a-f]{16}")
+_DIGEST_SHORT = re.compile(r"sha256:[0-9a-f]{12}")
+_UTC_SECONDS = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", re.ASCII)
 
 
 @dataclass(frozen=True)
@@ -416,11 +430,13 @@ def _knowledge(reading: Optional[dict], terminal) -> dict:
         withheld.append("readiness.means")
     if None in limits:
         withheld.append("readiness.does_not_mean")
+    bundle = _knowledge_bundle(reading, words_known, withheld, terminal)
     return {
         "status": reading["state"] if words_known else "unknown",
         "reason_code": reading["reason_code"] if words_known else "reading_refused",
         "generation": None if "generation" in withheld or not words_known else generation,
         "freshness": reading["freshness"] if words_known else None,
+        "bundle": bundle,
         "readiness": {"functional": bool(readiness.functional),
                       "word": "functional" if readiness.functional else readiness.value,
                       "means": means, "does_not_mean": limits},
@@ -430,6 +446,47 @@ def _knowledge(reading: Optional[dict], terminal) -> dict:
                    "written_at": None, "trust": "commissioned_trust_root"},
         "withheld": withheld,
     }
+
+
+def _knowledge_bundle(reading: dict, words_known: bool, withheld: list, terminal) -> Optional[dict]:
+    """The verified bundle's display facts, each checked again; else `None`.
+
+    A reading in the older four-key shape, or one that describes no bundle,
+    has none. Facts beside a state that has no trusted bundle, or outside
+    their shape, are withheld rather than copied. Signing key ids are the
+    operator's own names for anchors; one that names a path is kept for the
+    terminal only, like any other path.
+    """
+    raw = {name: reading.get(key) for key, name in KNOWLEDGE_BUNDLE_FIELDS}
+    described = any(value is not None for value in raw.values())
+    terminal["knowledge_bundle"] = described
+    if not described:
+        return None
+    if not (words_known and reading["state"] in ("available", "stale")):
+        withheld.extend(f"bundle.{name}" for _, name in KNOWLEDGE_BUNDLE_FIELDS)
+        return None
+    signers = raw["signer_key_ids"]
+    checked = {
+        "digest_short": type(raw["digest_short"]) is str
+        and _DIGEST_SHORT.fullmatch(raw["digest_short"]) is not None,
+        "signer_key_ids": type(signers) is list and len(signers) <= 8 and all(
+            type(k) is str and 0 < len(k) <= 128 and k.isprintable() for k in signers),
+        "static_count": type(raw["static_count"]) is int and raw["static_count"] >= 0,
+        "current_count": type(raw["current_count"]) is int and raw["current_count"] >= 0,
+        "next_expiry": raw["next_expiry"] is None or (
+            type(raw["next_expiry"]) is str
+            and _UTC_SECONDS.fullmatch(raw["next_expiry"]) is not None),
+    }
+    if checked["signer_key_ids"]:
+        terminal["knowledge_signers"] = list(signers)
+        if any(_PATHISH.search(k) for k in signers):
+            checked["signer_key_ids"] = False
+    bundle = {}
+    for _, name in KNOWLEDGE_BUNDLE_FIELDS:
+        bundle[name] = _plain(raw[name]) if checked[name] else None
+        if not checked[name]:
+            withheld.append(f"bundle.{name}")
+    return bundle
 
 
 def _edge(edge, probe_code: str, boot_code: str, terminal) -> dict:
@@ -582,7 +639,7 @@ def _explainer_extra(value, snapshot):
 def _recent_extra(value, snapshot):
     from .edge_intake import ACTIONS
     from .incident_explain import (
-        CODES, CONTENT_KINDS, LEGACY_HANDOFF, POLICY_REASONS, SHOWN_STATES,
+        CITATION_STATES, CODES, CONTENT_KINDS, LEGACY_HANDOFF, POLICY_REASONS, SHOWN_STATES,
     )
     from .lite_import import TECHNIQUE_ID
     from .local_advisory import HANDOFF_NOTICE
@@ -602,16 +659,43 @@ def _recent_extra(value, snapshot):
         for ref in explanation["knowledge_refs"]:
             _require(TECHNIQUE_ID.fullmatch(ref["technique_id"])
                      and ref["claim_id"] == ref["technique_id"])
+            if set(ref) != set(KNOWLEDGE_REF_FIELDS):
+                _require(set(ref) == set(KNOWLEDGE_REF_FIELDS + KNOWLEDGE_REF_DISPLAY_FIELDS)
+                         and type(ref["bundle_digest_short"]) is str
+                         and _DIGEST_SHORT.fullmatch(ref["bundle_digest_short"])
+                         and type(ref["generation"]) is int and ref["generation"] >= 0
+                         and ref["freshness"] in ("static", "current")
+                         and type(ref["as_of"]) is str and _UTC_SECONDS.fullmatch(ref["as_of"])
+                         and ref["citation_state"] in CITATION_STATES
+                         and type(ref["citation"]) is str and len(ref["citation"]) <= 160
+                         and bool(ref["citation"]) == (ref["citation_state"] == "shown"))
+        omitted = explanation.get("knowledge_refs_omitted", 1)
+        _require(type(omitted) is int and 1 <= omitted <= 16)
         copy = _pick(row, INCIDENT_FIELDS)
         copy["explanation"] = _pick(explanation, EXPLANATION_FIELDS)
         copy["explanation"]["knowledge_refs"] = [
-            _pick(ref, KNOWLEDGE_REF_FIELDS) for ref in explanation["knowledge_refs"]]
+            _knowledge_ref(ref) for ref in explanation["knowledge_refs"]]
         copy["edge_decision"] = {"kind": "would", "action": row["edge_would"],
                                  "executed": False, "decided_by": "edge"}
         copy["execution_result"] = {"status": "none",
                                     "reason_code": "nexus_accepts_observe_only"}
         rows.append(copy)
     snapshot["incidents"] = rows
+
+
+def _knowledge_ref(ref: dict) -> dict:
+    """One checked citation; a dataset citation that names a path is withheld.
+
+    The text screen renders the loop from this copy, so the operator reads
+    `declared, withheld` there too: the citation is producer text, not the
+    operator's own path.
+    """
+    copy = _pick(ref, KNOWLEDGE_REF_FIELDS + KNOWLEDGE_REF_DISPLAY_FIELDS)
+    if "citation" in copy:
+        copy["withheld"] = []
+        if _PATHISH.search(copy["citation"]):
+            copy.update(citation="", citation_state="withheld", withheld=["citation"])
+    return copy
 
 
 def _edge_loop(now) -> dict:
@@ -882,6 +966,20 @@ def _text_knowledge(section, terminal, out) -> None:
     print(f"    reason: {reason}", file=out)
     print(f"    generation: {terminal['knowledge_generation']}", file=out)
     print(f"    freshness: {freshness}", file=out)
+    if terminal.get("knowledge_bundle"):
+        # Rendered from the view's checked copy; a fact it withheld says so.
+        bundle = section["bundle"] or {}
+        shown = lambda name: "withheld" if bundle.get(name) is None else bundle[name]  # noqa: E731
+        # Key ids that only name a path are the operator's own and stay here;
+        # ids outside their shape were never kept.
+        signers = terminal.get("knowledge_signers")
+        signers = "withheld" if signers is None else (", ".join(signers) or "none")
+        expiry = bundle.get("next_expiry") or (
+            "withheld" if "bundle.next_expiry" in section["withheld"] else "none")
+        print(f"    bundle: {shown('digest_short')} (shortened); signing key ids: {signers}",
+              file=out)
+        print(f"    claims: static {shown('static_count')}; current {shown('current_count')}; "
+              f"nearest expiry: {expiry}", file=out)
     print("    cryptographic implementation: not supported (Nexus#70 review pending)", file=out)
     print(f"    functional means: {_text(terminal, 'knowledge.means')}", file=out)
     for index in range(terminal["knowledge_limits"]):
