@@ -1,0 +1,39 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# Runs once per period of azazel-units-observe.timer.
+# It reads LoadState, ActiveState and SubState of the packaged services, a fixed list, over the system bus through a reader that passes GetUnit and Properties.Get and refuses every other call, and writes one snapshot into its own leaf, which the operator group may read.
+# It runs as azprobe, the account that already reads the Edge unit's state for the probe, so no account gains a permission.
+# `AF_UNIX` is all it needs and `IPAddressDeny=any` holds.
+# It is not governed, has no [Install] section, and no unit requires or binds to it.
+
+[Unit]
+Description=Azazel-Nexus unit state observer
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/operations.md
+
+[Service]
+Type=oneshot
+User=azprobe
+ExecStart=/usr/libexec/azazel/az-units-observe
+TimeoutStartSec=30s
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=-/var/lib/azazel/run/units-status
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+UMask=0027

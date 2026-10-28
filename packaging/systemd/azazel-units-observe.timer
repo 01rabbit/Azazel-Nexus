@@ -1,0 +1,20 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# Runs azazel-units-observe.service every 30s. It reads and writes one snapshot only;
+# no unit requires or binds to it, so stopping it stops nothing else.
+# Not governed by the activation controller and not enabled by the installer.
+
+[Unit]
+Description=Azazel-Nexus unit state observer period
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/operations.md
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=1s
+Unit=azazel-units-observe.service
+
+[Install]
+WantedBy=timers.target

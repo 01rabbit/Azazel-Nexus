@@ -173,6 +173,14 @@ LAYOUT = (
     PathSpec("/var/lib/azazel/run/edge-intake-status", 0o2750,
              "operator-readable intake liveness", owner="azintake", group="azazel-operator"),
     PathSpec(
+        "/var/lib/azazel/run/units-status",
+        0o2750,
+        "the unit-state observer's snapshot (U2); operator-readable unit "
+        "states of the packaged services, written by azprobe",
+        owner="azprobe",
+        group="azazel-operator",
+    ),
+    PathSpec(
         "/var/lib/azazel/run/edge-probe",
         0o2750,
         "Edge probe result leaf; the probe owns it so its temp-file rename "
@@ -311,6 +319,12 @@ LAYOUT = (
         owner="azmioentry", group="azazel-operator",
     ),
     PathSpec(
+        "/var/lib/azazel/run/mio-status", 0o2750,
+        "entryd's capability snapshot (U2); operator-readable codes, the "
+        "route ledger itself stays 0700",
+        owner="azmioentry", group="azazel-operator",
+    ),
+    PathSpec(
         "/var/lib/azazel/run/mio-advise", 0o2710,
         "explainer's advice-only M.I.O. entry socket; no operator socket access",
         owner="azmioentry", group="azmio-advise",
@@ -323,6 +337,12 @@ LAYOUT = (
     PathSpec(
         "/var/lib/azazel/run/knowledge", 0o2710,
         "Knowledge Lite socket with operator group inheritance",
+        owner="azknowledge", group="azazel-operator",
+    ),
+    PathSpec(
+        "/var/lib/azazel/run/knowledge-status", 0o2750,
+        "Knowledge Lite's status snapshot (U2); operator-readable codes, no "
+        "trust material",
         owner="azknowledge", group="azazel-operator",
     ),
     PathSpec(

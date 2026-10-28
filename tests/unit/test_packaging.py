@@ -45,6 +45,8 @@ PROBE_PREFLIGHT = "azazel-edge-probe-preflight.service"
 DECOY_VERIFY = "azazel-decoy-verify.service"
 DECOY_WATCH_FILES = (DECOY_VERIFY, "azazel-decoy-verify.timer", "azazel-decoy-trip.target")
 ALL_UNITS = GOVERNED + (ACTIVATION_CONTROLLER_UNIT, PROBE_PREFLIGHT)
+#: The operator observers (U2): not governed, never masked or enabled.
+OBSERVER_FILES = ("azazel-units-observe.service", "azazel-units-observe.timer")
 
 
 def _installer() -> str:
@@ -99,10 +101,11 @@ def test_no_unit_file_exists_for_a_component_this_slice_does_not_install():
     """
 
     present = sorted(path.name for path in UNIT_DIR.iterdir())
-    assert present == sorted(ALL_UNITS + DECOY_WATCH_FILES), (
+    assert present == sorted(ALL_UNITS + DECOY_WATCH_FILES + OBSERVER_FILES), (
         f"the packaged units are {present}; the controller governs "
         f"{sorted(GOVERNED)} plus {ACTIVATION_CONTROLLER_UNIT}, "
-        f"{PROBE_PREFLIGHT} and the Deception Lite watch {DECOY_WATCH_FILES}"
+        f"{PROBE_PREFLIGHT}, the Deception Lite watch {DECOY_WATCH_FILES} and the "
+        f"operator observers {OBSERVER_FILES}"
     )
 
 
@@ -357,6 +360,10 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
         "/var/lib/azazel/run/audit",
         "/var/lib/azazel/run/audit-submit",
         "/var/lib/azazel/run/audit-status",
+        # The operator snapshots (U2): read leaves, operator group.
+        "/var/lib/azazel/run/knowledge-status",
+        "/var/lib/azazel/run/mio-status",
+        "/var/lib/azazel/run/units-status",
         "/var/lib/azazel/run/commission",
         "/var/lib/azazel/run/watchdog",
         "/var/lib/azazel/run/edge-probe",

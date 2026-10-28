@@ -138,8 +138,14 @@ def test_no_watch_unit_has_an_install_section_or_a_condition(unit):
 
 
 def test_every_other_unit_keeps_its_install_section():
+    from azazel_nexus_runtime.hardening import OBSERVER_SERVICE_UNITS
+
     for profile in ALL_PROFILES:
         if profile.unit == DECOY_VERIFY_UNIT:
+            continue
+        if profile.unit in OBSERVER_SERVICE_UNITS:
+            # Started by its own timer (U2), which carries the [Install].
+            assert "[Install]" not in _sections(render_unit(profile)), profile.unit
             continue
         assert _sections(render_unit(profile))[-1] == "[Install]", profile.unit
         assert _settings(render_unit(profile))["WantedBy"] == ["multi-user.target"]

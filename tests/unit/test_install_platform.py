@@ -130,6 +130,10 @@ def test_install_plan_uses_absolute_destinations_and_existing_declarations():
         "packaging/systemd/azazel-decoy-verify.service",
         "packaging/systemd/azazel-decoy-verify.timer",
         "packaging/systemd/azazel-decoy-trip.target",
+    } | {
+        # The operator observers (U2): installed, never masked or enabled.
+        "packaging/systemd/azazel-units-observe.service",
+        "packaging/systemd/azazel-units-observe.timer",
     }
     assert plan.service_manager.mask_units == tuple(
         unit for action, unit in parse_preset_declarations(PRESET_TEXT) if action == "disable"

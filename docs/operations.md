@@ -69,6 +69,28 @@ integer beyond JavaScript's exact range is reported as `too_large`. On a LAB HOS
 stderr so the JSON stays parseable. Like the text, it is a display: it grants,
 admits and activates nothing.
 
+The read model also carries four sections the text screen does not show
+(U2, `src/azazel_nexus/operator_snapshots.py`), so that an account that is not
+root reads what root would:
+
+| Section | Source | Leaf (`install.sh`) | Stale after |
+| --- | --- | --- | --- |
+| `knowledge_status` | `az-knowledge-lited` writes `knowledge.status` as codes (`knowledge-status/v1`) at start and every 60 s | `run/knowledge-status`, `2750 azknowledge:azazel-operator` | 300 s |
+| `mio_status` | `az-mio-entryd` writes the last **recorded** capability reading (`mio-status/v1`) at start, on each recorded change and every 60 s; the route ledger stays `0700` | `run/mio-status`, `2750 azmioentry:azazel-operator` | 300 s |
+| `services` | `azazel-units-observe.timer` runs `az-units-observe` (as `azprobe`, `AF_UNIX` only) every 30 s; it reads `LoadState`/`ActiveState`/`SubState` of the packaged services through a read-only reader (`units-status/v1`) | `run/units-status`, `2750 azprobe:azazel-operator` | 120 s |
+| `storage` | `statvfs` at read time under fixed labels (`state_root`, `audit`, `edge_incidents`, `models`, `mission_data`); no path is reported | none | measured now |
+
+Each snapshot is written by temp file and rename (`0640`), refused by its
+reader when it is a symlink, not a regular file, oversized, malformed, outside
+its fixed vocabulary, or dated more than 5 s ahead; a refused or absent one is
+`unavailable`, an old one `stale`. A stopped daemon therefore shows as stale,
+never as its last answer. The writers' leaves are optional writable paths, so
+a node upgraded without re-running `install.sh` still starts each daemon and
+shows the section as unavailable. The observer and its timer are installed
+but neither enabled nor masked: enable the timer with `systemctl enable --now
+azazel-units-observe.timer`. No unit requires or binds to the observer, so
+stopping it (or the UI that reads these sections) stops nothing else.
+
 Select M.I.O. CORE / LITE / FULL with `az-nexus-commission proposal-export --operator LABEL`, then obtain the existing separate full-proposal signature/review; entryd uses CORE until that selection verifies.
 The whole sequence, including off-host signing with `tools/operator_sign.py`, is
 rehearsed step by step in the [commissioning VM rehearsal](hil-runbooks/commissioning-rehearsal.md).

@@ -23,3 +23,15 @@ def incident_recent_path(root=None) -> Path:
 
 def audit_status_path(root=None) -> Path:
     return _root(root) / "var/lib/azazel/run/audit-status/status.json"
+
+
+def knowledge_status_path(root=None) -> Path:
+    return _root(root) / "var/lib/azazel/run/knowledge-status/status.json"
+
+
+def mio_status_path(root=None) -> Path:
+    return _root(root) / "var/lib/azazel/run/mio-status/status.json"
+
+
+def units_status_path(root=None) -> Path:
+    return _root(root) / "var/lib/azazel/run/units-status/status.json"

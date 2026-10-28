@@ -22,6 +22,7 @@ ReadWritePaths=/var/lib/azazel/knowledge
 ReadWritePaths=/var/lib/azazel/run/knowledge
 ReadWritePaths=/var/lib/azazel/run/knowledge-read
 ReadWritePaths=/var/lib/azazel/state/knowledge
+ReadWritePaths=-/var/lib/azazel/run/knowledge-status
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
