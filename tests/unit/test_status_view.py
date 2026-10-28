@@ -520,6 +520,8 @@ for _name, _fields in (
         ("services", ("units", "units[]", *(f"units[].{f}" for f in (
             "unit", "status", "load_state", "active_state", "sub_state", "reason_code"))))):
     ALLOWED |= {f"sections.{_name}", f"sections.{_name}.status", f"sections.{_name}.freshness",
+                f"sections.{_name}.conditions", f"sections.{_name}.conditions[]",
+                f"sections.{_name}.source.age_reason",
                 f"sections.{_name}.reason_code", f"sections.{_name}.snapshot",
                 *(f"sections.{_name}.{k}" for k in _SNAP_SOURCE),
                 f"sections.{_name}.snapshot.schema", f"sections.{_name}.snapshot.written_at",

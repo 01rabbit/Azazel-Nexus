@@ -95,6 +95,9 @@ REASON_CODES = frozenset({
     "chain_broken", "storage_failed", "service_manager_not_queried",
     "chain_not_verified_at_auditd_start", "audit_chain_failed", "audit_chain_unknown",
     "nexus_70_review_pending", "age_out_of_range", "audit_capacity_warning",
+    # The operator snapshots (U2): their own words, beside Knowledge Lite's.
+    "capability_record_uncertain", "unit_failed", "unit_state_unread",
+    "no_location_measured", "status_unrecognised",
 })
 #: Knowledge Lite's closed status shape (`lite_import.status_summary`).
 KNOWLEDGE_STATES = frozenset({"available", "stale", "unavailable", "quarantined"})
@@ -800,11 +803,12 @@ _storage_probes = None
 
 
 def _snapshot_section(path, reader, limit, now, stale_after, fields, *,
-                      writer: str, extra=None) -> dict:
+                      schema: str, writer: str, extra=None) -> dict:
     from .edge_loop_status import read_snapshot
 
     value = read_snapshot(path, reader, limit)
-    section = _component(value, now, stale_after, ("schema", "written_at", *fields), extra)
+    section = _component(value, now, stale_after, ("schema", "written_at", *fields),
+                         schema=schema, extra=extra)
     section["source"]["writer"] = writer
     # Freshness is its own item. `status` below never says `running`: a fresh
     # snapshot of a failed unit or of quarantined Knowledge is fresh news of
@@ -823,7 +827,8 @@ def _knowledge_status(now) -> dict:
 
     section = _snapshot_section(
         knowledge_status_path(), snap.read_knowledge_status, snap.KNOWLEDGE_BYTES, now,
-        snap.KNOWLEDGE_STALE_S, KNOWLEDGE_SNAPSHOT_FIELDS, writer="az-knowledge-lited")
+        snap.KNOWLEDGE_STALE_S, KNOWLEDGE_SNAPSHOT_FIELDS, schema=snap.KNOWLEDGE_SCHEMA,
+        writer="az-knowledge-lited")
     # Knowledge Lite's own word decides: only `available` is available;
     # anything else is `degraded` with Knowledge Lite's reason code.
     snapshot = section["snapshot"]
@@ -848,7 +853,7 @@ def _mio_status(now) -> dict:
 
     section = _snapshot_section(
         mio_status_path(), snap.read_mio_status, snap.MIO_BYTES, now, snap.MIO_STALE_S,
-        MIO_SNAPSHOT_FIELDS, writer="az-mio-entryd")
+        MIO_SNAPSHOT_FIELDS, schema=snap.MIO_SCHEMA, writer="az-mio-entryd")
     snapshot = section["snapshot"]
     if _fresh(section):
         if not snapshot["recorded"]:
@@ -871,7 +876,8 @@ def _services(now) -> dict:
 
     section = _snapshot_section(
         units_status_path(), snap.read_units_status, snap.UNITS_BYTES, now,
-        snap.UNITS_STALE_S, (), writer="az-units-observe", extra=extra)
+        snap.UNITS_STALE_S, (), schema=snap.UNITS_SCHEMA, writer="az-units-observe",
+        extra=extra)
     section["source"]["reader"] = "systemd_bus.UnitStatesReader (read-only)"
     if _fresh(section):
         units = section["snapshot"]["units"]

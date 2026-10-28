@@ -239,7 +239,7 @@ def test_fresh_stale_future_and_absent(root, kind):
     future = section(NOW - snap.FUTURE_S - 1)
     assert (future["status"], future["reason_code"]) == ("stale", "snapshot_dated_in_future")
     unknown = section(None)
-    assert unknown["status"] == "stale" and unknown["source"]["reason_code"] == "clock_unknown"
+    assert unknown["status"] == "unknown" and unknown["source"]["reason_code"] == "clock_unknown"
 
 
 @pytest.mark.parametrize("kind", sorted(SECTIONS))
