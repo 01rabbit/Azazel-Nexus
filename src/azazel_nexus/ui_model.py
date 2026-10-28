@@ -13,10 +13,12 @@ built here from:
   (`access`), so that a section this account cannot read is shown as
   **permission denied** rather than as merely absent.
 
-Sections that later work adds to the read model (`PENDING_SECTIONS`: NOC,
-unit state and storage, U2/U3) are passed through once they exist. Until
-then each is listed under `pending` with a fixed reason code, and the page
-says "not collected" with that code -- never a healthy word.
+The operator snapshots (U2: `knowledge_status`, `mio_status`, `services`,
+`storage`) and the NOC section (U3: `noc`) are screen sections like the
+others. A section the read model does not carry (an older read model, or a
+fixture saved before it existed) is listed under `pending` with
+`section_absent_from_read_model`, and the page says "not collected" with
+that code -- never a healthy word.
 
 Nothing here decides anything: the document states that Edge decides and
 enforces and that Edge's decisions reach this node as `would`, never as
@@ -29,7 +31,7 @@ import json
 from typing import Optional
 
 __all__ = [
-    "ACCESS_WORDS", "PENDING_SECTIONS", "SCHEMA", "SETUP_FIELDS", "UI_SECTIONS",
+    "ACCESS_WORDS", "SCHEMA", "SETUP_FIELDS", "UI_SECTIONS",
     "browser_json", "project",
 ]
 
@@ -40,15 +42,10 @@ UI_SECTIONS = (
     "profile", "mio", "capability", "enforcement", "external_modules",
     "knowledge_lite", "edge_core", "integration", "fabric", "edge_loop",
     "health", "next_actions",
+    # The operator snapshots (U2) and the passive NOC observation (U3): what
+    # an account that is not root reads in place of the root-only sources.
+    "knowledge_status", "mio_status", "services", "storage", "noc",
 )
-
-#: Sections other work adds to the read model, and the fixed reason the page
-#: shows until it does. Copied through unchanged once the read model has them.
-PENDING_SECTIONS = {
-    "noc": "noc_snapshot_not_wired",
-    "services": "unit_state_snapshot_not_wired",
-    "storage": "storage_snapshot_not_wired",
-}
 
 SETUP_FIELDS = ("schema", "provider_admission", "hg05", "enforcement_readiness",
                 "notice", "read_only")
@@ -107,8 +104,7 @@ def project(view, *, origin: dict, served_at: str, setup=None,
                                "reason_code": read_reason or "read_model_refused"}
         model.update(as_of=None, clock={"status": "unknown", "reason_code": "read_model_unavailable"},
                      lab_host=None)
-        model["pending"] = {name: "read_model_unavailable"
-                            for name in (*UI_SECTIONS, *PENDING_SECTIONS)}
+        model["pending"] = {name: "read_model_unavailable" for name in UI_SECTIONS}
         return model
     model["read_model"] = {"status": "read", "reason_code": None, "schema": VIEW_SCHEMA}
     model["as_of"] = view.get("as_of") if isinstance(view.get("as_of"), str) else None
@@ -121,11 +117,6 @@ def project(view, *, origin: dict, served_at: str, setup=None,
             model["sections"][name] = _copy(sections[name])
         else:
             model["pending"][name] = "section_absent_from_read_model"
-    for name, reason in PENDING_SECTIONS.items():
-        if name in sections:
-            model["sections"][name] = _copy(sections[name])
-        else:
-            model["pending"][name] = reason
     return model
 
 

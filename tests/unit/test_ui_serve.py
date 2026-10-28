@@ -794,7 +794,7 @@ def test_every_status_word_a_read_model_scenario_produces_has_a_label(tmp_path, 
     assert sorted(unlabelled) == []
 
 
-def test_every_reason_code_in_the_demo_and_pending_list_has_a_label():
+def test_every_reason_code_in_the_demo_has_a_label():
     reasons = _labels()["reasons"]
     found = set()
 
@@ -808,13 +808,169 @@ def test_every_reason_code_in_the_demo_and_pending_list_has_a_label():
             for item in value:
                 walk(item)
     walk(json.loads(DEMO.read_text(encoding="utf-8")))
-    found |= set(ui_model.PENDING_SECTIONS.values())
     # Every code the read model can carry (status_view's closed sets, #358).
     from azazel_nexus.status_view import KNOWLEDGE_REASONS, REASON_CODES
     found |= set(REASON_CODES) | set(KNOWLEDGE_REASONS)
     found |= {"section_absent_from_read_model", "read_model_refused", "status_read_failed",
               "setup_read_failed", "not_in_fixture", "access_permission_denied"}
     assert sorted(found - set(reasons)) == []
+
+
+#: The keys whose string value the page shows through the label table, and
+#: the keys whose value it shows as a reason code (`app.js`, `WORD_KEYS` and
+#: `REASON_KEYS`); `conditions` is a list of reason codes.
+PAGE_WORD_KEYS = {"status", "state", "freshness", "collection"}
+PAGE_REASON_KEYS = {"reason_code", "reason"}
+
+
+def test_the_page_labels_exactly_the_keys_these_tests_check():
+    script = (STATIC / "app.js").read_text(encoding="utf-8")
+
+    def keys(name):
+        match = re.search(r"var " + name + r" = \{([^}]*)\};", script)
+        assert match, name
+        return set(re.findall(r"(\w+): true", match.group(1)))
+    assert keys("WORD_KEYS") == PAGE_WORD_KEYS
+    assert keys("REASON_KEYS") == PAGE_REASON_KEYS
+
+
+def _page_vocabulary(value, words, reasons):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in PAGE_WORD_KEYS and isinstance(item, str):
+                words.add(item)
+            elif key in PAGE_REASON_KEYS and isinstance(item, str):
+                reasons.add(item)
+            elif key == "conditions" and isinstance(item, list):
+                reasons.update(code for code in item if isinstance(code, str))
+            _page_vocabulary(item, words, reasons)
+    elif isinstance(value, list):
+        for item in value:
+            _page_vocabulary(item, words, reasons)
+
+
+def _operator_sections(root, monkeypatch):
+    """Every state the U2/U3 sections reach, built by `status_view` itself.
+
+    Each snapshot is written in the shape its writer writes and read back
+    through the strict readers: fresh, stale, dated in the future, under an
+    unknown clock, absent and damaged; Knowledge Lite in each of its states,
+    M.I.O. before a record and while uncertain, units read, failed and
+    unread, every storage refusal, and NOC observed and failed.
+    """
+    from types import SimpleNamespace
+
+    from azazel_nexus import noc_status, status_view
+    from azazel_nexus import operator_snapshots as snap
+    from azazel_nexus import runtime_paths as paths
+
+    now = 1_790_000_000.0
+    monkeypatch.setenv("AZAZEL_ROOT", str(root))
+
+    def place(path, value):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(value if isinstance(value, bytes) else json.dumps(value).encode())
+
+    def every_clock(build):
+        return [build(t) for t in (now + 1, now + 100_000, now - 60, None)]
+
+    built = []
+    for path, section in ((paths.knowledge_status_path(), status_view._knowledge_status),
+                          (paths.mio_status_path(), status_view._mio_status),
+                          (paths.units_status_path(), status_view._services),
+                          (paths.noc_status_path(), status_view._noc)):
+        built += every_clock(section)                       # absent
+        place(path, b'{"schema":')
+        built += every_clock(section)                       # damaged
+    for summary in ({"state": "available", "reason_code": "available", "generation": 5,
+                     "freshness": "current"},
+                    {"state": "quarantined", "reason_code": "revoked", "generation": 5,
+                     "freshness": "current"},
+                    {"state": "stale", "reason_code": "stale", "generation": 5,
+                     "freshness": "stale"},
+                    {"state": "unavailable", "reason_code": "state_untrusted",
+                     "generation": None, "freshness": "absent"},
+                    {"state": "unavailable", "reason_code": "no_bundle", "generation": None,
+                     "freshness": "absent"},
+                    {"state": "not-a-state"}):
+        place(paths.knowledge_status_path(), snap.knowledge_snapshot(summary, now))
+        built += every_clock(status_view._knowledge_status)
+    place(paths.knowledge_status_path(), snap.knowledge_snapshot(None, now, reason="internal_error"))
+    built += every_clock(status_view._knowledge_status)
+    reading = {"state": "CORE", "reasons": {
+        "profile": "LITE", "resource": "core_reserve_unmeasured", "trust": "not-checked",
+        "topology": "no_verified_egress",
+        "health": {"local": "not_admitted", "remote": "unavailable"}}}
+    for value in (snap.mio_snapshot(None, None, uncertain=False, written_at=now),
+                  snap.mio_snapshot(reading, "2026-09-21T04:00:00+00:00", uncertain=True,
+                                    written_at=now),
+                  snap.mio_snapshot(reading, "2026-09-21T04:00:00+00:00", uncertain=False,
+                                    written_at=now)):
+        place(paths.mio_status_path(), value)
+        built += every_clock(status_view._mio_status)
+    good = {"LoadState": "loaded", "ActiveState": "active", "SubState": "running"}
+    for change in ({}, {"azazel-auditd.service": {**good, "ActiveState": "failed",
+                                                   "SubState": "failed"}},
+                   {"azazel-auditd.service": "bus_unavailable"},
+                   {"azazel-ui.service": "read_refused"}):
+        states = {unit: dict(good) for unit in snap.OBSERVED_UNITS}
+        states.update(change)
+        place(paths.units_status_path(), snap.units_snapshot(states, now))
+        built += every_clock(status_view._services)
+    demo = json.loads(DEMO.read_text(encoding="utf-8"))["sections"]["noc"]["snapshot"]
+    for value in (dict(demo, written_at=now), *(noc_status.failed(now, reason)
+                                                 for reason in noc_status.COLLECTION_REASONS)):
+        place(paths.noc_status_path(), value)
+        built += every_clock(status_view._noc)
+    usage = SimpleNamespace(f_blocks=1000, f_bfree=600, f_bavail=500, f_frsize=4096, f_flag=0)
+    for error in (None, FileNotFoundError, PermissionError, OSError):
+        def statvfs(path, error=error):
+            if error is not None:
+                raise error("SECRET")
+            return usage
+        monkeypatch.setattr(status_view, "_storage_probes",
+                            (statvfs, lambda path: SimpleNamespace(st_dev=7)))
+        built.append(status_view._storage(now))
+    return built
+
+
+def test_every_word_and_code_of_the_operator_and_noc_sections_has_a_label(tmp_path, monkeypatch):
+    """#363/#364 added these sections; the page must never say 未定義の語 for
+    them, and none of their words but Knowledge Lite's `available` (and the
+    snapshot's own `fresh`/`current`) may be shown as healthy."""
+    labels = _labels()
+    words, reasons = set(), set()
+    built = _operator_sections(tmp_path, monkeypatch)
+    for section in built:
+        _page_vocabulary(section, words, reasons)
+    assert sorted(words - set(labels["words"])) == []
+    assert sorted(reasons - set(labels["reasons"])) == []
+    # What each section says it read is a fact, not health.
+    for word in ("observed", "read", "recorded", "measured"):
+        assert word in words and labels["words"][word][1] == "info", word
+    for word in ("degraded", "unknown", "unavailable", "stale", "not_measured"):
+        assert word in words and labels["words"][word][1] != "ok", word
+    assert {w for w in words if labels["words"][w][1] == "ok"} <= {"available", "current", "fresh"}
+    statuses = {section["status"] for section in built}
+    assert statuses == {"available", "degraded", "recorded", "read", "observed", "measured",
+                        "unknown", "unavailable", "stale"}
+    assert all(labels["words"][word][1] != "ok" for word in statuses - {"available"})
+    # Every code these sections can carry, not only the ones reached above.
+    from azazel_nexus import noc_status
+    from azazel_nexus import operator_snapshots as snap
+    every = (set(snap.KNOWLEDGE_REASONS) | set(snap.UNIT_REASONS) | set(snap.STORAGE_REASONS)
+             | set(noc_status.UNKNOWN_REASONS) | set(noc_status.COLLECTION_REASONS))
+    assert sorted(every - set(labels["reasons"])) == []
+    assert "SECRET" not in json.dumps(built)
+
+
+def test_the_document_carries_the_operator_and_noc_sections(tmp_path, monkeypatch):
+    """A non-root UI reads these sections, not the root-only sources."""
+    view = json.loads(DEMO.read_text(encoding="utf-8"))
+    model = ui_model.project(view, origin={"kind": "fixture"}, served_at="t")
+    for name in ("knowledge_status", "mio_status", "services", "storage", "noc"):
+        assert model["sections"][name] == view["sections"][name], name
+    assert model["pending"] == {}
 
 
 # -- the live source and the permission probe ---------------------------------------------------
@@ -868,7 +1024,8 @@ def test_the_live_source_reads_status_and_setup_as_their_commands_print_them(tmp
                               "account": "azui"}
     assert set(read["access"]) == {"edge_intake_status", "incident_explain_status",
                                    "incident_recent", "audit_status", "edge_probe",
-                                   "knowledge_lite", "mio_route_ledger"}
+                                   "knowledge_lite", "mio_route_ledger", "knowledge_status",
+                                   "mio_status", "units_status", "noc_status"}
     assert set(read["access"].values()) == {"absent"}
     model = ui_model.project(read["view"], origin=read["origin"], served_at="t",
                              setup=read["setup"], access=read["access"])
@@ -1108,7 +1265,7 @@ def test_the_real_process_serves_the_screens_on_the_socket_it_is_given(tmp_path)
         model = view.json()
         assert model["origin"]["kind"] == "fixture"
         assert model["authority"]["edge_decisions"] == "would_not_executed"
-        assert set(model["pending"]) == set(ui_model.PENDING_SECTIONS)
+        assert model["pending"] == {}
         rows = model["sections"]["edge_loop"]["recent"]["snapshot"]["incidents"]
         assert {row["edge_decision"]["executed"] for row in rows} == {False}
         replay = _request(port, "POST", "/api/login", body={"code": code}, headers=[

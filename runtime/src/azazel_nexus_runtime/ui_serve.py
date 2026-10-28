@@ -440,6 +440,13 @@ def access_paths() -> dict[str, Path]:
         "edge_probe": rooted(PROBE_STATE_PATH),
         "knowledge_lite": rooted(KNOWLEDGE_LITE_ROOT),
         "mio_route_ledger": rooted(ROUTE_SEGMENTS),
+        # The operator snapshots (U2) and the NOC snapshot (U3). Their leaves
+        # are `2750 <writer>:azazel-operator`; this account is in no group,
+        # so on a node they read as permission denied, never as absent.
+        "knowledge_status": runtime_paths.knowledge_status_path(),
+        "mio_status": runtime_paths.mio_status_path(),
+        "units_status": runtime_paths.units_status_path(),
+        "noc_status": runtime_paths.noc_status_path(),
     }
 
 

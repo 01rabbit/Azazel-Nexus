@@ -343,6 +343,10 @@
     "too_large": [
       "値が大きすぎて表示できない",
       "unknown"
+    ],
+    "observed": [
+      "観測済み（受動観測。正常の意味ではない）",
+      "info"
     ]
   },
   "reasons": {
@@ -361,7 +365,6 @@
     "nexus_accepts_observe_only": "Nexus は observe-only の判断だけを受理する構成",
     "no_commissioning_record": "このノードに commissioning の記録が無い",
     "no_recorded_capability_transition": "能力の遷移が記録されていない",
-    "noc_snapshot_not_wired": "NOC の受動観測はまだ状態表示へ配線されていない（U3）",
     "not_collected": "収集されていない",
     "not_in_fixture": "fixture には含まれない",
     "not_inspected": "検査されていない",
@@ -379,8 +382,6 @@
     "snapshot_dated_in_future": "snapshot の時刻が未来",
     "snapshot_expired": "snapshot が古い（期限切れ）",
     "status_read_failed": "status の読取に失敗",
-    "storage_snapshot_not_wired": "保存容量の snapshot はまだ無い（U2）",
-    "unit_state_snapshot_not_wired": "サービス（unit）状態の snapshot はまだ無い（U2）",
     "trust_unreadable": "信頼アンカーが読めない",
     "no_interfaces_read": "interface を読めなかった",
     "reading_refused": "読取結果が検査を通らなかった",
@@ -403,7 +404,35 @@
     "unavailable": "利用不可",
     "quarantined": "隔離されている",
     "body_unreadable": "要求の本文を読めなかった",
-    "login_throttled": "誤ったコードが続いたため一時的にログインを受け付けていない"
+    "login_throttled": "誤ったコードが続いたため一時的にログインを受け付けていない",
+    "capability_record_uncertain": "能力の記録が確定していない（記録の途中で読めなかった）",
+    "unit_failed": "失敗した unit がある",
+    "unit_state_unread": "状態を読めなかった unit がある",
+    "no_location_measured": "どの保存場所も測定できなかった",
+    "status_unrecognised": "Knowledge Lite の応答が既知の語彙に無い",
+    "bus_unavailable": "systemd のバスに接続できない",
+    "read_refused": "unit 状態の読取が拒否された",
+    "absent": "存在しない",
+    "not_permitted": "権限が無く測定できない",
+    "read_failed": "読取に失敗",
+    "collection_failed": "NOC の受動観測そのものに失敗した",
+    "active_check_not_performed": "能動確認はしていない（受動観測のみ。不通の意味ではない）",
+    "role_evidence_not_provided": "interface の役割の根拠が与えられていない",
+    "netlink_unavailable": "netlink を使えない",
+    "netlink_malformed": "netlink の応答が壊れている",
+    "socket_not_netlink": "netlink ではないソケットが渡された",
+    "not_reported": "カーネルが値を報告していない",
+    "file_absent": "ファイルが無い",
+    "file_not_regular": "通常ファイルではない",
+    "file_unparsable": "ファイルを解釈できない",
+    "interface_name_unsafe": "interface 名が安全な形ではない",
+    "speed_not_reported": "リンク速度が報告されていない",
+    "counters_unavailable": "通信量の計数を読めない",
+    "no_lease_file": "DHCP のリースファイルが無い",
+    "role_withheld": "役割は表示しない",
+    "role_not_in_resolved_set": "役割が確定した集合に無い",
+    "nexthop_object_not_resolved": "経路の nexthop を解決できない",
+    "wall_clock_implausible": "壁時計の値があり得ない"
   },
   "sections": {
     "overview": "概況",

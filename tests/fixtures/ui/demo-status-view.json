@@ -593,6 +593,35 @@
       "status": "unavailable",
       "withheld": []
     },
+    "knowledge_status": {
+      "conditions": [],
+      "content_freshness_evaluated_at": 1789963240.0,
+      "cryptographic_implementation": {
+        "reason_code": "nexus_70_review_pending",
+        "status": "not_supported"
+      },
+      "freshness": "fresh",
+      "reason_code": null,
+      "snapshot": {
+        "freshness": "current",
+        "generation": 5,
+        "reason_code": "available",
+        "schema": "azazel-nexus/knowledge-status/v1",
+        "state": "available",
+        "written_at": 1789963240.0
+      },
+      "source": {
+        "age_reason": null,
+        "age_s": 20,
+        "freshness": "fresh",
+        "kind": "snapshot",
+        "reason_code": null,
+        "schema": "azazel-nexus/knowledge-status/v1",
+        "writer": "az-knowledge-lited",
+        "written_at": 1789963240.0
+      },
+      "status": "available"
+    },
     "mio": {
       "reading": {
         "availability": "unknown (route ledger not readable by this user, missing, or verification refused; entryd credentials are not read)",
@@ -610,6 +639,42 @@
         "reader": "mio_status.status_summary"
       },
       "status": "unknown"
+    },
+    "mio_status": {
+      "conditions": [],
+      "freshness": "fresh",
+      "notice": "The recorded ceiling is not a grant or admission; provider admission remains closed.",
+      "reason_code": null,
+      "snapshot": {
+        "ceiling": "LITE",
+        "observed_at": "2026-09-21T04:00:00+00:00",
+        "reasons": {
+          "health": {
+            "local": "not_admitted",
+            "remote": "unavailable"
+          },
+          "profile": "LITE",
+          "resource": "core_reserve_unmeasured",
+          "topology": "no_verified_egress",
+          "trust": "not-checked"
+        },
+        "record_uncertain": false,
+        "recorded": true,
+        "schema": "azazel-nexus/mio-status/v1",
+        "state": "CORE",
+        "written_at": 1789963240.0
+      },
+      "source": {
+        "age_reason": null,
+        "age_s": 20,
+        "freshness": "fresh",
+        "kind": "snapshot",
+        "reason_code": null,
+        "schema": "azazel-nexus/mio-status/v1",
+        "writer": "az-mio-entryd",
+        "written_at": 1789963240.0
+      },
+      "status": "recorded"
     },
     "next_actions": [
       {
@@ -647,6 +712,460 @@
         ]
       }
     ],
+    "noc": {
+      "conditions": [],
+      "freshness": "fresh",
+      "identity": {
+        "interfaces_by": "ifindex",
+        "withheld": [
+          "interface_name",
+          "mac",
+          "address",
+          "gateway",
+          "nameserver",
+          "search_domain"
+        ]
+      },
+      "not_measured": [
+        {
+          "field": "uplink.reachability",
+          "reason_code": "active_check_not_performed",
+          "status": "not_measured"
+        },
+        {
+          "field": "dns.resolution",
+          "reason_code": "active_check_not_performed",
+          "status": "not_measured"
+        }
+      ],
+      "observation": {
+        "active_checks": "none",
+        "kind": "passive",
+        "policy_rules_evaluated": false,
+        "transmission": "none"
+      },
+      "reason_code": null,
+      "role": {
+        "reason_code": "role_evidence_not_provided",
+        "status": "unknown"
+      },
+      "snapshot": {
+        "active_checks": "none",
+        "collection": "observed",
+        "dns": {
+          "resolution": {
+            "age_s": 0.001,
+            "reason": "active_check_not_performed",
+            "state": "unknown",
+            "value": null
+          },
+          "resolv_conf": {
+            "age_s": 0.003,
+            "reason": null,
+            "state": "observed",
+            "value": {
+              "kind": "symlink_systemd_resolved_stub",
+              "loopback_nameservers": 1,
+              "nameservers": 1,
+              "search_domains": 1
+            }
+          },
+          "systemd_resolved_upstream": {
+            "age_s": 0.002,
+            "reason": null,
+            "state": "observed",
+            "value": {
+              "nameservers": 2
+            }
+          }
+        },
+        "interfaces": {
+          "age_s": 0.018,
+          "reason": null,
+          "state": "observed",
+          "value": [
+            {
+              "addresses": {
+                "age_s": 0.017,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "ipv4": 1,
+                  "ipv6": 0
+                }
+              },
+              "admin_up": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": true
+              },
+              "carrier": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": true
+              },
+              "counters": {
+                "age_s": 0.012,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "rx_bytes": 100,
+                  "rx_dropped": 0,
+                  "rx_errors": 0,
+                  "rx_packets": 0,
+                  "tx_bytes": 100,
+                  "tx_dropped": 0,
+                  "tx_errors": 0,
+                  "tx_packets": 0
+                }
+              },
+              "dhcp": {
+                "age_s": 0.01,
+                "reason": "no_lease_file",
+                "state": "unknown",
+                "value": null
+              },
+              "ifindex": 1,
+              "loopback": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": true
+              },
+              "lower_up": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": true
+              },
+              "mtu": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": 65536
+              },
+              "operstate": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": "kernel_unknown"
+              },
+              "quality": {
+                "age_s": 0.012,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "interval_s": 1.009,
+                  "reset_counters": [],
+                  "rx_bps": 0.0,
+                  "rx_dropped_delta": 0,
+                  "rx_errors_delta": 0,
+                  "rx_utilisation": null,
+                  "tx_bps": 0.0,
+                  "tx_dropped_delta": 0,
+                  "tx_errors_delta": 0,
+                  "tx_packets_delta": 0,
+                  "tx_utilisation": null
+                }
+              },
+              "speed_mbps": {
+                "age_s": 0.013,
+                "reason": "file_absent",
+                "state": "unknown",
+                "value": null
+              }
+            },
+            {
+              "addresses": {
+                "age_s": 0.017,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "ipv4": 1,
+                  "ipv6": 2
+                }
+              },
+              "admin_up": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": true
+              },
+              "carrier": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": true
+              },
+              "counters": {
+                "age_s": 0.008,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "rx_bytes": 126000,
+                  "rx_dropped": 1,
+                  "rx_errors": 2,
+                  "rx_packets": 0,
+                  "tx_bytes": 2000,
+                  "tx_dropped": 0,
+                  "tx_errors": 0,
+                  "tx_packets": 10
+                }
+              },
+              "dhcp": {
+                "age_s": 0.007,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "client": "systemd-networkd",
+                  "expired": true,
+                  "expires_never": false,
+                  "remaining_s": -6769772
+                }
+              },
+              "ifindex": 2,
+              "loopback": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": false
+              },
+              "lower_up": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": true
+              },
+              "mtu": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": 1500
+              },
+              "operstate": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": "up"
+              },
+              "quality": {
+                "age_s": 0.008,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "interval_s": 1.012,
+                  "reset_counters": [],
+                  "rx_bps": 988142.3,
+                  "rx_dropped_delta": 1,
+                  "rx_errors_delta": 2,
+                  "rx_utilisation": 0.000988,
+                  "tx_bps": 0.0,
+                  "tx_dropped_delta": 0,
+                  "tx_errors_delta": 0,
+                  "tx_packets_delta": 0,
+                  "tx_utilisation": 0.0
+                }
+              },
+              "speed_mbps": {
+                "age_s": 0.009,
+                "reason": null,
+                "state": "observed",
+                "value": 1000
+              }
+            },
+            {
+              "addresses": {
+                "age_s": 0.017,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "ipv4": 0,
+                  "ipv6": 0
+                }
+              },
+              "admin_up": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": true
+              },
+              "carrier": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": false
+              },
+              "counters": {
+                "age_s": 0.005,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "rx_bytes": 0,
+                  "rx_dropped": 0,
+                  "rx_errors": 0,
+                  "rx_packets": 0,
+                  "tx_bytes": 0,
+                  "tx_dropped": 0,
+                  "tx_errors": 0,
+                  "tx_packets": 0
+                }
+              },
+              "dhcp": {
+                "age_s": 0.014,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "client": "dhclient",
+                  "expired": false,
+                  "expires_never": false,
+                  "remaining_s": 2302444799
+                }
+              },
+              "ifindex": 3,
+              "loopback": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": false
+              },
+              "lower_up": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": false
+              },
+              "mtu": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": 1500
+              },
+              "operstate": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": "down"
+              },
+              "quality": {
+                "age_s": 0.005,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "interval_s": 1.014,
+                  "reset_counters": [],
+                  "rx_bps": 0.0,
+                  "rx_dropped_delta": 0,
+                  "rx_errors_delta": 0,
+                  "rx_utilisation": null,
+                  "tx_bps": 0.0,
+                  "tx_dropped_delta": 0,
+                  "tx_errors_delta": 0,
+                  "tx_packets_delta": 0,
+                  "tx_utilisation": null
+                }
+              },
+              "speed_mbps": {
+                "age_s": 0.006,
+                "reason": "speed_not_reported",
+                "state": "unknown",
+                "value": null
+              }
+            }
+          ]
+        },
+        "interfaces_omitted": 0,
+        "observed_at": 1789963240.0,
+        "reason_code": null,
+        "routes": {
+          "age_s": 0.016,
+          "reason": null,
+          "state": "observed",
+          "value": {
+            "other_tables": {
+              "ipv4": 2,
+              "ipv6": 0
+            },
+            "table_main": {
+              "ipv4": 2,
+              "ipv6": 1
+            }
+          }
+        },
+        "schema": "azazel-nexus/noc-status/v1",
+        "uplink": {
+          "ipv4": {
+            "age_s": 0.016,
+            "reason": null,
+            "state": "observed",
+            "value": {
+              "other_tables": {
+                "dead": false,
+                "default_routes": 1,
+                "egress_ifindex": [
+                  3
+                ],
+                "linkdown": true,
+                "tables": 1,
+                "via_gateway": true
+              },
+              "policy_rules_evaluated": false,
+              "table_main": {
+                "dead": false,
+                "default_routes": 1,
+                "egress_ifindex": [
+                  2
+                ],
+                "linkdown": false,
+                "via_gateway": true
+              }
+            }
+          },
+          "ipv6": {
+            "age_s": 0.016,
+            "reason": null,
+            "state": "observed",
+            "value": {
+              "other_tables": {
+                "dead": false,
+                "default_routes": 0,
+                "egress_ifindex": [],
+                "linkdown": false,
+                "tables": 0,
+                "via_gateway": false
+              },
+              "policy_rules_evaluated": false,
+              "table_main": {
+                "dead": false,
+                "default_routes": 0,
+                "egress_ifindex": [],
+                "linkdown": false,
+                "via_gateway": false
+              }
+            }
+          },
+          "reachability": {
+            "age_s": 0.016,
+            "reason": "active_check_not_performed",
+            "state": "unknown",
+            "value": null
+          }
+        },
+        "written_at": 1789963240.0
+      },
+      "source": {
+        "age_reason": null,
+        "age_s": 20,
+        "freshness": "fresh",
+        "kind": "snapshot",
+        "reason_code": null,
+        "schema": "azazel-nexus/noc-status/v1",
+        "writer": "az-noc-observe",
+        "written_at": 1789963240.0
+      },
+      "status": "observed"
+    },
     "profile": {
       "profile": "core",
       "reason_code": null,
@@ -657,6 +1176,268 @@
       "status": "measured",
       "usable_mib": 7800,
       "withheld": []
+    },
+    "services": {
+      "conditions": [],
+      "freshness": "fresh",
+      "reason_code": null,
+      "snapshot": {
+        "schema": "azazel-nexus/units-status/v1",
+        "units": [
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-activated.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-auditd.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-commissiond.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-decoy-netd.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-decoy-nsd.service"
+          },
+          {
+            "active_state": "inactive",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "dead",
+            "unit": "azazel-decoy-verify.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-decoyd.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-edge-core.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-edge-intaked.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-edge-probe-preflight.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-edge-probed.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-incident-explaind.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-knowledge-lited.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-mio-entryd.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-mio-locald.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-mio-referenced.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-mio-remoted.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-model-fetchd.service"
+          },
+          {
+            "active_state": "inactive",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "dead",
+            "unit": "azazel-noc-observe.service"
+          },
+          {
+            "active_state": "inactive",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "dead",
+            "unit": "azazel-ui.service"
+          },
+          {
+            "active_state": "inactive",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "dead",
+            "unit": "azazel-units-observe.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-watchdog.service"
+          }
+        ],
+        "written_at": 1789963240.0
+      },
+      "source": {
+        "age_reason": null,
+        "age_s": 20,
+        "freshness": "fresh",
+        "kind": "snapshot",
+        "reader": "systemd_bus.UnitStatesReader (read-only)",
+        "reason_code": null,
+        "schema": "azazel-nexus/units-status/v1",
+        "writer": "az-units-observe",
+        "written_at": 1789963240.0
+      },
+      "status": "read"
+    },
+    "storage": {
+      "locations": [
+        {
+          "available_bytes": 2048000,
+          "free_bytes": 2457600,
+          "label": "state_root",
+          "read_only": false,
+          "reason_code": null,
+          "same_filesystem_as": null,
+          "status": "measured",
+          "total_bytes": 4096000
+        },
+        {
+          "available_bytes": 2048000,
+          "free_bytes": 2457600,
+          "label": "audit",
+          "read_only": false,
+          "reason_code": null,
+          "same_filesystem_as": "state_root",
+          "status": "measured",
+          "total_bytes": 4096000
+        },
+        {
+          "available_bytes": 2048000,
+          "free_bytes": 2457600,
+          "label": "edge_incidents",
+          "read_only": false,
+          "reason_code": null,
+          "same_filesystem_as": "state_root",
+          "status": "measured",
+          "total_bytes": 4096000
+        },
+        {
+          "available_bytes": 2048000,
+          "free_bytes": 2457600,
+          "label": "models",
+          "read_only": false,
+          "reason_code": null,
+          "same_filesystem_as": "state_root",
+          "status": "measured",
+          "total_bytes": 4096000
+        },
+        {
+          "available_bytes": 2048000,
+          "free_bytes": 2457600,
+          "label": "mission_data",
+          "read_only": false,
+          "reason_code": null,
+          "same_filesystem_as": "state_root",
+          "status": "measured",
+          "total_bytes": 4096000
+        }
+      ],
+      "reason_code": null,
+      "source": {
+        "kind": "statvfs_at_read",
+        "observed_at": 1789963260.0,
+        "withheld": [
+          "path"
+        ]
+      },
+      "status": "measured"
     }
   }
 }

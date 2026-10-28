@@ -175,17 +175,51 @@
     return card(title, "not_collected", { reason: reason, time: evaluatedAt() });
   }
 
-  function genericCard(title, sec) {
+  /* Keys whose string value is a word of the vocabulary (labelled, never raw),
+     and keys whose value is a reason code. Everything else is shown as data. */
+  var WORD_KEYS = { status: true, state: true, freshness: true, collection: true };
+  var REASON_KEYS = { reason_code: true, reason: true };
+
+  function tree(value, depth) {
+    if (value === null || typeof value !== "object") { return document.createTextNode(text(value)); }
+    if (depth > 6) { return document.createTextNode("（省略）"); }
+    if (Array.isArray(value)) {
+      if (!value.length) { return document.createTextNode("なし"); }
+      return list(value.map(function (item) {
+        return item !== null && typeof item === "object" ? tree(item, depth + 1) : text(item);
+      }));
+    }
     var rows = [];
-    Object.keys(sec).sort().forEach(function (key) {
+    Object.keys(value).sort().forEach(function (key) {
+      var v = value[key];
+      if (WORD_KEYS[key] && typeof v === "string") { rows.push([key, badge(v)]); }
+      else if (REASON_KEYS[key] && typeof v === "string") { rows.push([key, reasonLine(v)]); }
+      else if (key === "conditions" && Array.isArray(v) && v.length) { rows.push([key, list(v.map(reasonLine))]); }
+      else if (v !== null && typeof v === "object") { rows.push([key, tree(v, depth + 1)]); }
+      else { rows.push([key, v]); }
+    });
+    return kv(rows);
+  }
+
+  /* A read-model section: its word (permission denied when this account could
+     not open its source), its reason, when it was written, and its fields --
+     the scalar ones only when `compact`, otherwise all of them, each word
+     through the label table. */
+  function genericCard(title, sec, opts) {
+    opts = opts || {};
+    var s = statusWithAccess(sec.status, sec.reason_code, opts.access || null);
+    var rows = {};
+    Object.keys(sec).forEach(function (key) {
       var v = sec[key];
       if (key === "status" || key === "reason_code" || key === "source") { return; }
-      if (v === null || typeof v !== "object" || Array.isArray(v)) { rows.push([key, v]); }
+      if (opts.compact && v !== null && typeof v === "object" &&
+          !(Array.isArray(v) && v.every(function (item) { return item === null || typeof item !== "object"; }))) { return; }
+      rows[key] = v;
     });
     var source = sec.source || {};
-    return card(title, sec.status, { reason: sec.reason_code,
+    return card(title, s.status, { reason: s.reason,
       time: when("観測時刻", source.written_at || source.observed_at, source.reason_code),
-      children: [kv(rows)] });
+      children: [tree(rows, 0)] });
   }
 
   // -- screens ---------------------------------------------------------------
@@ -211,7 +245,8 @@
       reason: state.model.authority ? state.model.authority.reason_code : null, time: evaluatedAt(),
       children: [el("p", null, "observe-only：Nexus は Edge の実行結果を受理しない構成です。「実行中」の表示枠はありません。Edge の判断は常に would（未実行）として表示します。")] }));
     var noc = section("noc");
-    add(grid, noc ? genericCard("通信（NOC）", noc) : pendingCard("通信（NOC）", "noc"));
+    add(grid, noc ? genericCard("通信（NOC）", noc, { compact: true, access: "noc_status" })
+      : pendingCard("通信（NOC）", "noc"));
     var mio = section("mio") || {};
     var mioStatus = statusWithAccess(mio.status, mio.reason_code, "mio_route_ledger");
     var reading = mio.reading || {};
@@ -219,14 +254,20 @@
       time: when("記録時刻", reading.observed_at, mio.reason_code),
       children: [kv([["上限（記録）", reading.ceiling], ["状態", reading.state]]),
         el("p", "small", reading.notice || "")] }));
+    var mioSnap = section("mio_status");
+    add(grid, mioSnap ? genericCard("AI 経路（運用者向け snapshot）", mioSnap, { compact: true, access: "mio_status" })
+      : pendingCard("AI 経路（運用者向け snapshot）", "mio_status"));
     var kl = section("knowledge_lite") || {};
     var klStatus = statusWithAccess(kl.status, kl.reason_code, "knowledge_lite");
     add(grid, card("Knowledge Lite", klStatus.status, { reason: klStatus.reason,
       time: evaluatedAt(), children: [kv([["鮮度", kl.freshness ? badge(kl.freshness) : null],
         ["世代", kl.generation]])] }));
+    var ks = section("knowledge_status");
+    add(grid, ks ? genericCard("Knowledge Lite（運用者向け snapshot）", ks, { compact: true, access: "knowledge_status" })
+      : pendingCard("Knowledge Lite（運用者向け snapshot）", "knowledge_status"));
     var services = section("services");
     var units = (section("health") || []).filter(function (h) { return h.subject === "systemd units"; })[0];
-    add(grid, services ? genericCard("サービス", services) : card("サービス", "not_collected", {
+    add(grid, services ? genericCard("サービス", services, { compact: true, access: "units_status" }) : card("サービス", "not_collected", {
       reason: state.model.pending.services, time: evaluatedAt(),
       children: units ? [reasonLine(units.reason_code)] : [] }));
     var storage = section("storage");
@@ -327,9 +368,9 @@
   function noc(panel) {
     var sec = section("noc");
     var grid = el("div", "grid");
-    if (sec) { grid.appendChild(genericCard("NOC 受動観測", sec)); } else {
+    if (sec) { grid.appendChild(genericCard("NOC 受動観測", sec, { access: "noc_status" })); } else {
       grid.appendChild(card("NOC 受動観測", "not_collected", { reason: state.model.pending.noc, time: evaluatedAt(),
-        children: [el("p", null, "interface・経路・DNS／DHCP 設定・通信量と誤りは、NOC の受動観測 snapshot が配線されると表示されます。到達性と名前解決は能動確認しません（受動観測のみ）。interface 名・アドレスはこの画面に出しません。")] }));
+        children: [el("p", null, "interface・経路・DNS／DHCP 設定・通信量と誤りは、read model に NOC 節があると表示されます。到達性と名前解決は能動確認しません（受動観測のみ）。interface 名・アドレスはこの画面に出しません。")] }));
     }
     panel.appendChild(grid);
   }
@@ -345,6 +386,9 @@
         ["機能としての成立", readiness.word], ["暗号実装", crypto.status ? badge(crypto.status) : null]]),
       reasonLine(crypto.reason_code), block("意味すること"), el("p", null, readiness.means || ""),
       block("意味しないこと"), list(readiness.does_not_mean || [])] }));
+    var ks = section("knowledge_status");
+    add(grid, ks ? genericCard("Knowledge Lite（運用者向け snapshot）", ks, { access: "knowledge_status" })
+      : pendingCard("Knowledge Lite（運用者向け snapshot）", "knowledge_status"));
     var modules = section("external_modules") || [];
     modules.forEach(function (m) {
       if (String(m.name).indexOf("Knowledge") === -1) { return; }
@@ -399,6 +443,11 @@
           ? when("観測時刻", h.source.written_at, h.source.reason_code) : evaluatedAt(),
         children: [h.detail ? el("p", "small", h.detail) : null] }));
     });
+    var services = section("services");
+    add(grid, services ? genericCard("サービス（unit ごと）", services, { access: "units_status" })
+      : pendingCard("サービス（unit ごと）", "services"));
+    var storage = section("storage");
+    add(grid, storage ? genericCard("保存容量（場所ごと）", storage) : pendingCard("保存容量（場所ごと）", "storage"));
     var actions = section("next_actions") || [];
     var acts = el("div", "card tone-info");
     acts.appendChild(el("h3", null, "次の操作（status の next）"));

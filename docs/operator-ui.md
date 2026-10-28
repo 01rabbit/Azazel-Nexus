@@ -133,27 +133,37 @@ word and mark together (● 正常, ▲ 注意, ■ 異常, ？ 不明, ◆ 情�
 colour alone. Unknown, unmeasured, stale, not collected and permission
 denied are never green and never "正常"; only `attested`, `available`,
 `current`, `done`, `fresh`, `running`, `verified-ready` and `ok` are (tested).
+What a section says it read -- `observed` (NOC), `read` (services),
+`recorded` (M.I.O.), `measured` (storage) -- is shown as information, not as
+health. Inside a section, every value under `status`, `state`, `freshness`
+or `collection` goes through the label table and every `reason_code`,
+`reason` and `conditions` entry through the reason table (`app.js`
+`WORD_KEYS`/`REASON_KEYS`, kept equal to the tests).
 Each card shows when it was observed and how long ago.
 
 | Screen | Shows | Source |
 | --- | --- | --- |
-| 概況 (overview) | Edge's state and readiness, the fixed observe-only mode (there is no "running/enforcing" box), communication (NOC), AI route (M.I.O.), Knowledge Lite, services, storage, the Edge loop and what continues regardless. | `edge_core`, `enforcement`, `mio`, `knowledge_lite`, `edge_loop`, `health`, `fabric`, `integration` |
+| 概況 (overview) | Edge's state and readiness, the fixed observe-only mode (there is no "running/enforcing" box), communication (NOC), AI route (M.I.O., and its operator snapshot), Knowledge Lite (and its operator snapshot), services, storage, the Edge loop and what continues regardless. | `edge_core`, `enforcement`, `mio`, `mio_status`, `knowledge_lite`, `knowledge_status`, `noc`, `services`, `storage`, `edge_loop`, `health`, `fabric`, `integration` |
 | インシデント (incidents) | Per incident, in separate blocks: observed facts; Edge's decision as *would, not executed*; the actual execution result, fixed as "none (Nexus accepts observe-only decisions only)"; the advice and its kind (AI, deterministic reference, deterministic notice); the citations. Edge's own forwarding counts and Nexus's own decoy observation are kept apart. | `edge_loop.intake`, `edge_loop.recent` |
-| NOC | Not collected until the NOC snapshot is wired (`noc_snapshot_not_wired`). | `noc` (later) |
-| Knowledge | Knowledge Lite state, freshness, generation, what "functional" does and does not mean, the cryptographic implementation status, the external peer (absent by design) and the citations of recent incidents. | `knowledge_lite`, `external_modules`, `edge_loop.recent` |
-| セットアップ・復旧 (setup and recovery) | The setup guide's steps and their next commands **as text** (the page runs nothing), provider admission, health, the explainer's chain recovery hint and status's next actions. | `setup --json`, `health`, `next_actions`, `enforcement` |
+| NOC | The passive observation as the read model carries it: its word (`observed`, or `unknown` with the collection's reason), freshness, each item's state and reason (an active check is `not_measured` / `active_check_not_performed`, never "down"), counts by ifindex. No interface name or address. | `noc` |
+| Knowledge | Knowledge Lite state, freshness, generation, what "functional" does and does not mean, the cryptographic implementation status, the operator snapshot of `knowledge.status`, the external peer (absent by design) and the citations of recent incidents. | `knowledge_lite`, `knowledge_status`, `external_modules`, `edge_loop.recent` |
+| セットアップ・復旧 (setup and recovery) | The setup guide's steps and their next commands **as text** (the page runs nothing), provider admission, health, each unit's state and each storage location, the explainer's chain recovery hint and status's next actions. | `setup --json`, `health`, `services`, `storage`, `next_actions`, `enforcement` |
 
-### Sections other work adds
+### The operator snapshot and NOC sections
 
-The read model does not yet carry NOC observation, unit state or storage
-capacity (U2, U3). The UI lists them under `pending` with a fixed reason
-(`noc_snapshot_not_wired`, `unit_state_snapshot_not_wired`,
-`storage_snapshot_not_wired`) and the page shows **未取得** with that code.
-When the read model gains a section named `noc`, `services` or `storage`, the
-UI passes it through (`ui_model.PENDING_SECTIONS`) and the page renders its
-`status`, `reason_code`, observation time and scalar fields generically until
-a specific renderer is added. Any other new section is not passed through
-until it is listed.
+`knowledge_status`, `mio_status`, `services` and `noc` are the snapshots the
+owning daemons and observers write into operator-readable leaves (U2, U3,
+[operations.md](operations.md)); `storage` is measured when status runs.
+The UI's account `azui` is in no group, so on a node it cannot open those
+leaves (`2750 <writer>:azazel-operator`): the access probe reports
+`permission_denied` for `knowledge_status`, `mio_status`, `units_status` and
+`noc_status`, and the page shows **権限なし** rather than "absent" or a
+healthy word. Whether `azui` should join `azazel-operator` is an owner
+decision; this UI does not widen it. A read model that lacks one of these
+sections (an older one, or a fixture saved before them) lists it under
+`pending` with `section_absent_from_read_model`, and the page says
+**未取得**. Any other new section is not passed through until it is listed
+in `ui_model.UI_SECTIONS`.
 
 ## Enabling it on a node
 

@@ -2091,6 +2091,10 @@ OBSERVER_PROFILES: tuple[ServiceProfile, ...] = (
             "address. It runs as its own unprivileged account aznoc, which is "
             "in no socket group. It is not governed, has no [Install] "
             "section, and no unit requires or binds to it"
+        ),
+    ),
+)
+
 #: The read-only operator UI (U5). Not governed: no grant marker, never masked
 #: or unmasked by a pass, in no lease, and no other unit requires it, so
 #: stopping it stops nothing else. `disable` in the preset: an operator who

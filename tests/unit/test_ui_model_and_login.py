@@ -47,18 +47,23 @@ def test_the_document_copies_only_the_screens_sections_and_fixed_authority():
         "decision_and_enforcement": "edge", "nexus": "observe_explain_advise",
         "edge_decisions": "would_not_executed", "execution_results": "not_accepted",
         "reason_code": "nexus_accepts_observe_only"}
-    assert model["pending"] == ui_model.PENDING_SECTIONS
+    # The demo carries every section the screens use, the operator
+    # snapshots and the NOC section included, so nothing is pending.
+    assert model["pending"] == {}
     assert model["read_model"] == {"status": "read", "reason_code": None,
                                    "schema": "azazel-nexus/status-view/1"}
 
 
-def test_sections_added_later_pass_through_and_leave_the_pending_list():
+def test_a_section_an_older_read_model_lacks_is_pending_not_healthy():
+    """A read model from before U2/U3 (or a fixture saved then) has no
+    snapshot or NOC sections: each is pending with a fixed code."""
     view = _demo()
-    view["sections"]["noc"] = {"status": "observed", "reason_code": None}
+    for name in ("knowledge_status", "mio_status", "services", "storage", "noc"):
+        del view["sections"][name]
     model = ui_model.project(view, origin={"kind": "fixture"}, served_at="t")
-    assert model["sections"]["noc"] == {"status": "observed", "reason_code": None}
-    assert "noc" not in model["pending"]
-    assert set(model["pending"]) == {"services", "storage"}
+    assert model["pending"] == {name: "section_absent_from_read_model" for name in (
+        "knowledge_status", "mio_status", "services", "storage", "noc")}
+    assert not set(model["pending"]) & set(model["sections"])
 
 
 def test_an_unknown_section_is_not_passed_through():
@@ -75,7 +80,7 @@ def test_a_view_that_is_not_the_read_model_is_unavailable_not_empty(view):
     model = ui_model.project(view, origin={"kind": "live"}, served_at="t")
     assert model["read_model"] == {"status": "unavailable", "reason_code": "read_model_refused"}
     assert model["sections"] == {}
-    assert set(model["pending"]) == set(ui_model.UI_SECTIONS) | set(ui_model.PENDING_SECTIONS)
+    assert set(model["pending"]) == set(ui_model.UI_SECTIONS)
     assert set(model["pending"].values()) == {"read_model_unavailable"}
     assert model["clock"]["status"] == "unknown"
 
