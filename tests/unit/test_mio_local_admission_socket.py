@@ -246,3 +246,105 @@ def test_broken_or_silent_locald_is_not_admitted_within_the_bound(root, monkeypa
     assert requests == [{"verb": client.ADMISSION_VERB_NAME, "arguments": {}}]
     # A silent peer costs at most the bound it was given (plus scheduling).
     assert elapsed < 1.0
+
+
+# -- the real locald: expiry withdraws, and the same socket then reads False --
+
+
+def test_real_locald_expiry_withdraws_and_the_next_read_is_false(root, monkeypatch):
+    """`mio_locald.main()` with its own `AdmissionHolder` (clock injected),
+    refresh and `withdraw`. Only the evidence store and the serving process
+    are replaced: the evidence by the unit tests' admitted candidate, the
+    llama server by the providers `prepare_local_models` would hand over.
+    """
+    from functools import partial
+
+    from azazel_nexus_runtime import model_admission_evidence as loader
+    from azazel_nexus_runtime import virtualization_observation
+    from test_model_admission_evidence import END, NOW, admitted_candidate
+
+    from azazel_nexus.model_runtime import LLAMA_RUNTIME_ID
+    from azazel_nexus.virtualization import SENSORS
+
+    monkeypatch.setattr(model_admission, "LOCAL_MODEL_ADMISSION_ENABLED", True)
+    now = [NOW]
+    candidate = admitted_candidate()
+    monkeypatch.setattr(loader, "read_admissions", lambda **kw: loader.AdmissionReading(candidate))
+    monkeypatch.setattr(loader, "fingerprint", lambda paths: (1,))
+    monkeypatch.setattr(virtualization_observation, "observe_virtualization",
+                        lambda: dict.fromkeys(SENSORS, "clear"))
+    monkeypatch.setattr(loader, "AdmissionHolder", partial(loader.AdmissionHolder,
+                                                           clock=lambda: now[0]))
+    prepared = []
+
+    def prepare(candidates, *, staging, audit):
+        assert [type(c) for c in candidates] == [loader.Admitted]
+        prepared.append(candidates[0].entry.model_id)
+        selected_id = candidates[0].entry.model_id
+        return {"retriever": object(), "staging": staging, "model_id": selected_id,
+                "runtime_id": LLAMA_RUNTIME_ID, "reserve": candidates[0].resources.reserve,
+                "admitted": lambda model_id: model_id == selected_id}, []
+
+    monkeypatch.setattr(locald, "prepare_local_models", prepare)
+    runtime_paths.mio_local_state_dir().mkdir(parents=True, exist_ok=True)
+    seen = spy_exchanges(monkeypatch)
+    reader = client.LocalAdmissionReader()
+    with Thread(lambda **kw: locald.main([], **kw)):
+        assert prepared == ["local-model"]
+        assert reader() is True
+        now[0] = END  # the approval's expiry, on locald's own clock
+        assert reader() is False
+        # Withdrawn stays withdrawn: a new approval needs a new start.
+        now[0] = NOW
+        assert reader() is False
+    assert [result for verb, result in seen if verb == client.ADMISSION_VERB_NAME] == [
+        {"admitted": True}, {"admitted": False}, {"admitted": False}]
+    ledger = (runtime_paths.mio_local_state_dir() / "local.jsonl").read_text()
+    assert "EXPIRED" in ledger
+
+
+# -- withdrawn after the read: model-free output is never AI advice ----------
+
+
+def test_model_free_reply_after_a_withdrawal_is_not_labelled_ai_advice(root, monkeypatch):
+    """Locald answered admitted, then withdrew before the inference: its
+    `_infer` serves the model-free keyword retrieval as `advisory`. Entry
+    ends that attempt as not advice, so the explainer records the
+    deterministic handoff, never "AI advice (local model)"."""
+    from azazel_nexus.incident_explain import CONTENT_LABELS, read_mio_reply
+    from azazel_nexus.reasoning_playbook import read_library
+
+    library = read_library((Path(__file__).parents[1] / "fixtures/reasoning-playbook.json")
+                           .read_bytes())
+    monkeypatch.setattr(model_admission, "LOCAL_MODEL_ADMISSION_ENABLED", True)
+    withdrawn = locald.LocalRuntimeService(playbooks=library)  # admitted: False
+    replies = []
+
+    def handler(request):
+        if request.verb.name == locald.ADMISSION_VERB.name:
+            return {"admitted": True}  # the read, just before the withdrawal
+        reply = withdrawn.handle(request)
+        if request.verb.name == locald.INFER_VERB.name:
+            replies.append(reply)
+        return reply
+
+    def run(*, ready, stop):
+        serve_forever(path=runtime_paths.socket_path("mio"), registry=locald.REGISTRY,
+                      policy=PrincipalPolicy.resolve(service_accounts=("azmioentry",)),
+                      audit=lambda event: None, handler=handler, stop=stop, ready=ready)
+
+    with Thread(run):
+        service = entry_service()
+        reply = advise(service)
+    # The precondition: locald really did deliver a model-free advisory.
+    assert [(r["outcome"], r["provenance"]["source"], r["provenance"]["model_id"])
+            for r in replies] == [("advisory", "keyword", "deterministic")]
+    assert selected(service)["route"] == Route.LOCAL.value
+    assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
+    assert "advice" not in reply
+    assert reply["handoff"]["failures"] == [
+        {"route": "local", "terminal_event": reply["handoff"]["failures"][0]["terminal_event"],
+         "refusal": "not_model_output"}]
+    read = read_mio_reply(reply)
+    assert read["content_kind"] == "deterministic_notice"
+    assert CONTENT_LABELS[read["content_kind"]] != CONTENT_LABELS["ai_advice"]

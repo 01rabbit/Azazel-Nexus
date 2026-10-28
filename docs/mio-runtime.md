@@ -849,7 +849,12 @@ and the request goes to the deterministic handoff. While
 `LOCAL_MODEL_ADMISSION_ENABLED` is `False` (the shipped value) entry does not
 read the socket and LOCAL is never permitted. A True reading only permits
 *selecting* LOCAL; the selection still needs a prediction, and every locald
-gate runs again on the request that follows.
+gate runs again on the request that follows. If locald withdrew in between, it
+answers with model-free keyword matching (`provenance.source: keyword`); entry
+does not deliver that as AI advice: the attempt ends as `not_advice` with
+refusal `not_model_output`, and the deterministic handoff serves the verified
+reference under its own label (`deterministic_reference` /
+`deterministic_notice`), never "AI advice (local model)".
 
 On a permitted, predicted LOCAL selection, the router sends the frame to
 `mio.local.infer`, authenticating the `azmio` socket owner and peer. Locald's

@@ -969,10 +969,14 @@ def test_cap_fragment_is_trimmed_to_whole_sentences(value, kept):
 
 
 def delivered_fixture():
+    # An admitted model's delivery (embedding matching): a keyword-only
+    # document is model-free and the socket client does not deliver it as
+    # advice (see test_mio_local_admission.py).
     options = build_options(frame())
     return delivered_document(frame(), (), options,
                               {'option_id': 'other_suspicious', 'kind': 'other_suspicious'},
-                              list(options), None, 'fixture')
+                              list(options), None, 'fixture',
+                              retrieval='embedding', provenance='embedding')
 
 
 @pytest.fixture(autouse=True)

@@ -310,3 +310,45 @@ def test_the_uncommissioned_model_is_never_reported_admitted(monkeypatch):
     enable(monkeypatch)
     service = locald.LocalRuntimeService(retriever=object())
     assert _ask(service) == {"admitted": False}
+
+
+# -- only model output is delivered as AI advice -----------------------------
+
+
+def _delivered(source):
+    from azazel_nexus.local_advisory import build_options, delivered_document
+
+    options = build_options(FRAME)
+    return delivered_document(FRAME, (), options,
+                              {"option_id": "other_suspicious", "kind": "other_suspicious"},
+                              list(options), None, "deterministic" if source == "keyword" else "m1",
+                              retrieval="keyword" if source == "keyword" else "embedding",
+                              provenance=source)
+
+
+def _infer_request():
+    return SimpleNamespace(verb=locald.INFER_VERB, arguments={"deadline_ms": 1000},
+                           payload=dict(FRAME))
+
+
+def test_a_keyword_advisory_from_locald_is_not_advice(monkeypatch):
+    monkeypatch.setattr(client, "_exchange",
+                        lambda *a, **kw: {**_delivered("keyword"), "outcome": "advisory"})
+    events = []
+    reply = client.LocalSocketClient().handle(_infer_request(), audit=events.append)
+    assert reply == {"outcome": "not_advice", "refusal": "not_model_output"}
+    assert events == []
+
+
+def test_an_embedding_advisory_is_still_delivered(monkeypatch):
+    monkeypatch.setattr(client, "_exchange",
+                        lambda *a, **kw: {**_delivered("embedding"), "outcome": "advisory"})
+    reply = client.LocalSocketClient().handle(_infer_request(), audit=lambda e: None)
+    assert reply["outcome"] == "advisory"
+    assert reply["provenance"]["source"] == "embedding"
+
+
+def test_the_model_sources_are_the_delivery_vocabulary_less_keyword():
+    from azazel_nexus.local_advisory import _DELIVERY_BANNERS
+
+    assert client.MODEL_SOURCES == set(_DELIVERY_BANNERS) - {"keyword"}

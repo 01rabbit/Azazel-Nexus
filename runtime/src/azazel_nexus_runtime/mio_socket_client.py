@@ -116,6 +116,11 @@ def _reply_metadata(reply: dict) -> dict:
     return {k: v for k, v in validated.items() if k not in {"advice", "fields"}}
 
 
+#: Delivered provenance sources that involved a local model (see
+#: `local_advisory._DELIVERY_BANNERS`). `keyword` is deterministic matching.
+MODEL_SOURCES = frozenset({"model", "embedding"})
+
+
 class LocalSocketClient:
     def observe(self, *, deadline_s: float = PROBE_MAX_S) -> str:
         return _probe("mio", min(PROBE_MAX_S, deadline_s))
@@ -130,6 +135,14 @@ class LocalSocketClient:
             )
             if reply.get("outcome") == "advisory":
                 body = read_delivered(reply)
+                if body["provenance"]["source"] not in MODEL_SOURCES:
+                    # Model-free retrieval (locald withdrew between the
+                    # admission read and this request, or its embedding
+                    # failed): not a model's output, so it is not delivered
+                    # as AI advice. The attempt ends as not advice and the
+                    # deterministic handoff serves the verified reference
+                    # under its own label.
+                    return {"outcome": "not_advice", "refusal": "not_model_output"}
                 if audit is not None:
                     audit({"event_type": "mio.local.advisory.read",
                            "digest": "sha256:" + hashlib.sha256(json.dumps(body).encode()).hexdigest(),
