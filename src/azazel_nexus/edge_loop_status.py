@@ -47,21 +47,35 @@ def _guarded(out, fallback, render):
     out.write(buffer.getvalue())
 
 
-def render_edge_loop(out, *, now):
-    """``now`` is None when the caller could not establish the time."""
-    _guarded(out, "edge loop: unavailable (internal)", lambda o: _render_edge_loop(o, now))
-
-
-def _render_edge_loop(out, now):
-    if type(now) not in (int, float):
-        raise ValueError("time")
-    print("edge loop:", file=out)
+def read_edge_loop():
+    """The three loop snapshots, each through its strict reader (or `None`)."""
     from .runtime_paths import (
         edge_intake_status_path, incident_explain_status_path, incident_recent_path,
     )
-    intake = read_snapshot(edge_intake_status_path(), read_intake_status, 8192)
-    explain = read_snapshot(incident_explain_status_path(), read_explainer_status, 8192)
-    recent = read_snapshot(incident_recent_path(), read_recent_incidents, RECENT_BYTES)
+    return {
+        "intake": read_snapshot(edge_intake_status_path(), read_intake_status, 8192),
+        "explainer": read_snapshot(incident_explain_status_path(), read_explainer_status, 8192),
+        "recent": read_snapshot(incident_recent_path(), read_recent_incidents, RECENT_BYTES),
+    }
+
+
+def render_edge_loop(out, *, now, snapshots=None):
+    """``now`` is None when the caller could not establish the time.
+
+    ``snapshots`` is what `read_edge_loop` returned (or the read model's
+    allowlisted copy of it, `status_view`); read here when it is not given.
+    """
+    _guarded(out, "edge loop: unavailable (internal)",
+             lambda o: _render_edge_loop(o, now, snapshots))
+
+
+def _render_edge_loop(out, now, snapshots=None):
+    if type(now) not in (int, float):
+        raise ValueError("time")
+    print("edge loop:", file=out)
+    if snapshots is None:
+        snapshots = read_edge_loop()
+    intake, explain, recent = snapshots["intake"], snapshots["explainer"], snapshots["recent"]
     for name, value in (("intake", intake), ("explainer", explain)):
         if value is None:
             print(f"    {name}: unavailable (snapshot absent or refused)", file=out)
@@ -166,6 +180,11 @@ def render_fabric_status(report, out):
 
 
 def _render_fabric_status(report, out):
+    print("fabric status view: " + fabric_status_result(report), file=out)
+
+
+def fabric_status_result(report):
+    """The words after ``fabric status view:``; one of three fixed forms."""
     try:
         from .fabric_boundary import project_capability
         projection = project_capability(report.capabilities.state, report.capabilities.available)
@@ -181,4 +200,4 @@ def _render_fabric_status(report, out):
             result = "refused (projection_refused)"
     except Exception:  # noqa: BLE001 - optional presentation cannot stop status
         result = "refused (projection_refused)"
-    print("fabric status view: " + result, file=out)
+    return result

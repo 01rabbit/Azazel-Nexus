@@ -179,7 +179,7 @@ def test_internal_failure_prints_fixed_lines_and_status_continues(tmp_path, monk
     def fail(*_):
         raise RuntimeError("SECRET 192.0.2.1")
     monkeypatch.setattr(edge_loop_status, "read_recent_incidents", fail)
-    monkeypatch.setattr(edge_loop_status, "_render_fabric_status", fail)
+    monkeypatch.setattr(edge_loop_status, "fabric_status_result", fail)
     assert render() == "edge loop: unavailable (internal)\n"
     text = _status(tmp_path)
     assert "edge loop: unavailable (internal)" in text
