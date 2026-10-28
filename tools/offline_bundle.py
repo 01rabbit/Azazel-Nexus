@@ -811,12 +811,13 @@ def check_wheels_against_lock(
 
 
 def check_lock_is_carried(checked: list[dict[str, str]], lock: dict[str, list[str]]) -> None:
-    """Refuse an install whose bundle lacks a wheel the reviewed lock pins.
+    """Refuse a bundle (or wheelhouse) that lacks a wheel the reviewed lock pins.
 
-    ``verify`` only says what a bundle carries is pinned. An install also
-    needs everything pinned: a bundle without, say, the Fabric wheel would
-    install cleanly and then refuse every activation pass that needs
-    commissioning evidence (ADR-0004).
+    ``check_wheels_against_lock`` says what is carried is pinned; this says
+    what is pinned is carried. Without it a bundle lacking, say, the Fabric
+    wheel would verify and install cleanly and then refuse every activation
+    pass that needs commissioning evidence (ADR-0004). ``verify``,
+    ``recheck`` (and so ``install``) and ``build_offline_bundle`` all call it.
     """
 
     missing = sorted(set(lock) - {item["requirement"] for item in checked})
@@ -1302,7 +1303,9 @@ def verify_extracted(
 
     document = extracted.manifest
     root = extracted.root
-    wheels = check_wheels_against_lock(document, reviewed_pins() if pins is None else pins)
+    pins = reviewed_pins() if pins is None else pins
+    wheels = check_wheels_against_lock(document, pins)
+    check_lock_is_carried(wheels, pins[0])
     slots: dict[str, Any] = {}
     if document["slots"]["edge-package"] == "filled":
         slots["edge-package"] = verify_edge_slot(root / "edge")
@@ -1405,7 +1408,8 @@ def recheck_tree(
     if hashlib.sha256(raw).hexdigest() != expected_manifest_sha256:
         raise BundleRefused("MANIFEST.json is not the manifest extraction verified")
     document = load_manifest(raw, limits)
-    check_wheels_against_lock(document, reviewed_pins() if pins is None else pins)
+    pins = reviewed_pins() if pins is None else pins
+    check_lock_is_carried(check_wheels_against_lock(document, pins), pins[0])
     declared = {entry["path"]: entry for entry in document["artifacts"]}
     found: set[str] = set()
     for directory, _dirnames, filenames in os.walk(root):
@@ -1519,8 +1523,7 @@ def install(
     _check_destination_parent(venv_parent, allow_sticky=False)
     extracted, report = extract_and_verify(bundle, into, limits=limits, pins=pins)
     try:
-        _install_verified(extracted, report, into, venv, python,
-                          lock=(reviewed_pins() if pins is None else pins)[0])
+        _install_verified(extracted, report, into, venv, python)
         report["recheck"] = recheck_tree(
             into, expected_manifest_sha256=report["manifest_sha256"], limits=limits, pins=pins
         )
@@ -1560,8 +1563,7 @@ def install(
     return report
 
 
-def _install_verified(extracted: Extracted, report: dict, into: Path, venv: Path, python: Path, *,
-                      lock: dict[str, list[str]]) -> None:
+def _install_verified(extracted: Extracted, report: dict, into: Path, venv: Path, python: Path) -> None:
     target = TARGETS[extracted.manifest["target"]]
     probe = subprocess.run(
         [str(python), "-I", "-c",
@@ -1573,7 +1575,6 @@ def _install_verified(extracted: Extracted, report: dict, into: Path, venv: Path
         raise BundleRefused(
             f"{python} reports {probe.stdout.strip()!r}; the bundle targets {expected!r}"
         )
-    check_lock_is_carried(report["wheels"], lock)
     _create_private_dir(venv)
     _run([str(python), "-I", "-m", "venv", str(venv)])
     venv_python = venv / "bin" / "python"

@@ -15,9 +15,10 @@
 #
 # azazel-fabric has no published wheel. Its hash is that of the wheel
 # tools/build_wheelhouse.py builds from the commit its tag names (SOURCE_BUILDS)
-# with the pinned backend; the build is refused unless it reproduces this
-# hash. Reproduced on Debian 13 CPython 3.13.5, pip 25.1.1, setuptools 84.0.0,
-# x86_64 (Rosetta) and aarch64 containers, 2026-10-28.
+# with the pinned backend, SOURCE_DATE_EPOCH and umask 022 fixed; the build is
+# refused unless it reproduces this hash (ADR-0004 lists what is fixed and
+# what is not). Observed on Debian 13 CPython 3.13.5, pip 25.1.1, setuptools
+# 84.0.0, x86_64 (Rosetta) and aarch64 containers, 2026-10-28.
 #
 # annotated_types-0.8.0-py3-none-any.whl
 annotated-types==0.8.0 \

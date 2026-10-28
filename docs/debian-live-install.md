@@ -550,11 +550,13 @@ activation pass needs commissioning evidence, which needs pinned Fabric, so
 the bundle carries `azazel-fabric` and pydantic. Fabric publishes no wheel;
 the builder clones its repository (so the build host needs `git` and HTTPS to
 GitHub), refuses unless the tag resolves to the pinned commit, builds that
-commit with the same pinned backend, and refuses unless the wheel reproduces
-the sha256 the lock pins. Fabric's own release-digest signature is not
-verified: its key is not a Nexus trust anchor. `install` refuses a bundle that
-lacks any locked wheel. The two Nexus wheels are recorded by
-the hash this build produced; reproducibility across builders is not measured.
+commit with the same pinned backend (child processes at umask 022), and
+refuses unless the wheel reproduces the sha256 the lock pins. Fabric's own
+release-digest signature is not verified: its key is not a Nexus trust anchor.
+`build_offline_bundle.py`, `verify`, `recheck` and `install` refuse a
+wheelhouse or bundle that lacks any locked wheel. The two Nexus wheels are
+recorded by the hash this build produced; their reproducibility across
+builders is not measured.
 
 The bundle is **POSIX ustar only**: the builder writes no pax records, GNU
 long names or sparse members, and a path that does not fit the ustar

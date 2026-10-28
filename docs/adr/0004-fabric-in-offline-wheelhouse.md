@@ -67,10 +67,27 @@ successor ADR. The offline bundle is that artifact.
      refused. Pinning the build output turns the commit pin into a content
      pin and makes any builder or backend drift visible at build time.
 
-   The pinned hash was reproduced bit-for-bit on Debian 13 CPython 3.13.5,
-   pip 25.1.1, setuptools 84.0.0 in an x86_64 (Rosetta-emulated) container
-   and an aarch64 container. Reproducibility on other pip versions is not
-   claimed; a mismatch is a refusal, not a silent rebuild.
+   **What the hash depends on, and what the builder fixes.** The wheel bytes
+   depend on the source tree, the backend, file modes and timestamps. The
+   builder fixes each it can: the commit (checked), the backend
+   (`setuptools==84.0.0` by hash), `SOURCE_DATE_EPOCH=315532800`, archive
+   modes (`tar.umask=0022`), and the umask of every builder child (`022`,
+   `BUILD_UMASK`; setuptools copies sources into its build tree with the
+   process umask and the wheel records those modes, so without this a
+   builder at umask 077 produced a different wheel and was refused). It does
+   not pin pip (Debian's `ensurepip` copy is used) or the interpreter beyond
+   "Debian 13 CPython 3.13".
+
+   **What was observed, and what is checked.** With those fixed, the locked
+   hash was reproduced on Debian 13 CPython 3.13.5 with pip 25.1.1 in an
+   x86_64 (Rosetta-emulated) and an aarch64 container, including by
+   `build_wheelhouse.py` itself and with the caller at umask 077 (lab
+   record, 2026-10-28; not a test). What every build *checks* is narrower:
+   the wheel either equals the locked sha256 or the build is refused, and
+   `wheelhouse.json` says so per wheel. Reproduction under another pip or
+   setuptools is not claimed; a mismatch is a refusal, never a silent
+   rebuild. The two Nexus wheels are unaffected: their reproducibility is
+   still "not measured".
 
 5. **Fabric's release signature is not verified by Nexus.** Fabric signs a
    content digest of each release (`release/v0.9.0rc5.digest.json(.sig)`,

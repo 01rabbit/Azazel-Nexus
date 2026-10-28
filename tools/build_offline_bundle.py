@@ -332,6 +332,14 @@ def build_install_bundle(
     record = load_wheelhouse(wheelhouse)
     if record["repository_identity"]["commit"] != identity["commit"]:
         raise ValueError("the wheelhouse was built from a different commit than this source")
+    # A wheelhouse built before a lock entry was added (say, before Fabric was
+    # bundled, ADR-0004) must not become a bundle the target then refuses.
+    offline_bundle.check_lock_is_carried(
+        [w for w in record["wheels"]
+         if offline_bundle.canonical_name(w["requirement"].partition("==")[0])
+         not in offline_bundle.OWN_DISTRIBUTIONS],
+        offline_bundle.parse_lock(root / offline_bundle.WHEEL_LOCK),
+    )
     for wheel in record["wheels"]:
         entry, path = _entry(wheelhouse / wheel["file"], "wheels/" + wheel["file"], "wheel",
                              wheel["source"], requirement=wheel["requirement"])

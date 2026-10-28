@@ -28,7 +28,9 @@ Steps, each with no resolver latitude:
    ``--no-build-isolation --no-index`` so only the pinned backend is used.
 4. Write ``wheelhouse.json``: each wheel's sha256, size, requirement and
    source. The two locally built wheels are recorded by the hash this build
-   produced; reproducibility across builders is **not** established.
+   produced; their reproducibility across builders is **not** established.
+   A source-built third-party wheel (step 2a) is different: it must equal
+   its locked sha256, so ``builder.reproducibility`` says both.
 
 The output is unsigned. ``tools/build_offline_bundle.py --wheelhouse`` carries
 it into a bundle; ``tools/offline_bundle.py install`` installs it offline.
@@ -61,6 +63,7 @@ TARGET = "debian-13-x86_64-cp313"
 LOCK = Path("packaging/offline/requirements-x86_64-cp313.lock")
 BACKEND_LOCK = Path("packaging/offline/build-backend.lock")
 UV_LOCK = Path("uv.lock")
+BUILD_UMASK = 0o022
 
 #: The library extras the wheelhouse carries, with their uv.lock closure
 #: (ADR-0004). ``fabric`` is optional for CORE and required by every
@@ -203,8 +206,12 @@ def _git_env() -> dict[str, str]:
 
 
 def _run(argv: list[str], *, env: dict[str, str] | None = None) -> str:
+    # A fixed umask, whatever the caller's: setuptools copies sources into its
+    # build tree with the process umask and the wheel records those modes, so
+    # a builder at umask 077 would otherwise produce a different Fabric wheel
+    # and be refused against the locked sha256.
     result = subprocess.run(argv, capture_output=True, text=True, check=False,
-                            env=_build_env() if env is None else env)
+                            env=_build_env() if env is None else env, umask=BUILD_UMASK)
     if result.returncode != 0:
         raise RuntimeError(f"{argv[:5]} exited {result.returncode}:\n{result.stderr[-4000:]}")
     return result.stdout
@@ -249,6 +256,23 @@ def fetch_source_build(name: str, scratch: Path) -> Path:
     tree.mkdir()
     _extract_regular_tar(archive, tree, directories=True)
     return tree
+
+
+def source_build_origin(filename: str, digest: str, lock: dict[str, list[str]]) -> str:
+    """The wheelhouse ``source`` of a source-built wheel, if it reproduced the locked sha256."""
+
+    parts = offline_bundle.parse_wheel_name(filename)
+    name = offline_bundle.canonical_name(parts["name"])
+    build = SOURCE_BUILDS.get(name)
+    if build is None or build["version"] != parts["version"]:
+        raise ValueError(f"{filename} is not a pinned source build")
+    if digest not in lock.get(f"{name}=={parts['version']}", []):
+        raise ValueError(
+            f"{filename} built from {build['commit']} has sha256 {digest}, which "
+            f"{LOCK.as_posix()} does not pin; the build did not reproduce the locked wheel"
+        )
+    return (f"built:{build['repository']}@{build['commit']} (tag {build['tag']}; "
+            f"hash-pinned in {LOCK.as_posix()})")
 
 
 def build_wheelhouse(root: Path, output: Path, *, python: str = sys.executable) -> dict:
@@ -318,16 +342,7 @@ def build_wheelhouse(root: Path, output: Path, *, python: str = sys.executable) 
                     raise ValueError(f"{path.name} is not a locked file")
                 origin = f"pypi:{requirement} (hash-pinned in {LOCK.as_posix()})"
             elif path.name in from_source:
-                build = SOURCE_BUILDS.get(name)
-                if build is None or build["version"] != parts["version"]:
-                    raise ValueError(f"{path.name} is not a pinned source build")
-                if digest not in lock.get(requirement, []):
-                    raise ValueError(
-                        f"{path.name} built from {build['commit']} has sha256 {digest}, which "
-                        f"{LOCK.as_posix()} does not pin; the build did not reproduce the locked wheel"
-                    )
-                origin = (f"built:{build['repository']}@{build['commit']} (tag {build['tag']}; "
-                          f"hash-pinned in {LOCK.as_posix()})")
+                origin = source_build_origin(path.name, digest, lock)
             else:
                 if versions.get(name) != parts["version"]:
                     raise ValueError(f"{path.name} is not a distribution this repository builds")
@@ -357,7 +372,10 @@ def build_wheelhouse(root: Path, output: Path, *, python: str = sys.executable) 
                 "machine": host[0],
                 "pip": backend_versions[0],
                 "setuptools": backend_versions[1],
-                "reproducibility": "not measured",
+                "reproducibility": (
+                    "not measured for the two Nexus wheels; each source-built third-party "
+                    "wheel reproduced its locked sha256 (checked)"
+                ),
                 "signed": False,
             },
             "wheels": wheels,

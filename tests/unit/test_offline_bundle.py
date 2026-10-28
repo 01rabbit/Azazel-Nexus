@@ -46,6 +46,8 @@ def _repo(root: Path) -> Path:
         "src/azazel_nexus/__pycache__/stale.py": b"must not ship\n",
         "src/azazel_nexus/azazel.egg-info/PKG-INFO": b"must not ship\n",
         "build/generated.py": b"must not ship\n",
+        # An empty third-party lock: the fixture wheelhouses carry no locked wheel.
+        "packaging/offline/requirements-x86_64-cp313.lock": b"",
     }
     for name, contents in files.items():
         path = root / name
