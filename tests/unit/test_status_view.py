@@ -1242,3 +1242,67 @@ def test_bundle_facts_beside_a_state_without_a_trusted_bundle_are_withheld(tmp_p
     assert k["bundle"] is None and "sha256:0123456789ab" not in raw
     assert k["withheld"] == [f"bundle.{name}" for name in (
         "digest_short", "signer_key_ids", "static_count", "current_count", "next_expiry")]
+# -- boundaries and precedence (mutants that survived the first review) -----
+
+
+@pytest.mark.parametrize("observed_at, expected", [
+    ("2026-09-19T04:01:00+00:00", ("recorded", None)),                  # exactly two days
+    ("2026-09-19T04:00:59+00:00", ("stale", "observed_at_expired")),    # two days and a second
+    ("2026-09-21T04:01:05+00:00", ("recorded", None)),                  # five seconds ahead
+    ("2026-09-21T04:01:06+00:00", ("stale", "observed_at_in_future")),  # six seconds ahead
+])
+def test_mio_freshness_boundaries(tmp_path, monkeypatch, observed_at, expected):
+    """Kills `>` -> `>=` on the two-day limit and a zero future allowance."""
+    from azazel_nexus import cli
+
+    _absent(tmp_path, monkeypatch)
+    _recorded_mio(monkeypatch, observed_at)
+    mio = cli._status_view(cli._report(None, None), as_of=AS_OF).view["sections"]["mio"]
+    assert (mio["status"], mio["reason_code"]) == expected
+
+
+@pytest.mark.parametrize("offset, expected", [
+    (30, ("running", None)), (31, ("stale", "snapshot_expired")),
+    (-5, ("running", None)), (-6, ("stale", "snapshot_dated_in_future")),
+])
+def test_loop_snapshot_freshness_boundaries(tmp_path, monkeypatch, offset, expected):
+    loop, _ = _patched_loop(tmp_path, monkeypatch,
+                            lambda v: v["intake"].update(written_at=NOW - offset))
+    assert (loop["intake"]["status"], loop["intake"]["reason_code"]) == expected
+
+
+def test_stale_outranks_chain_broken_and_the_condition_stays_listed(tmp_path, monkeypatch):
+    """Kills putting `degraded` ahead of `stale`: reason_code is the first
+    reason only, and `conditions` keeps what the stale word does not say."""
+    loop, _ = _patched_loop(tmp_path, monkeypatch, lambda v: v["explainer"].update(
+        written_at=NOW - 31, chain_broken=True))
+    explainer = loop["explainer"]
+    assert (explainer["status"], explainer["reason_code"]) == ("stale", "snapshot_expired")
+    assert explainer["conditions"] == ["chain_broken"]
+
+
+def test_a_refused_audit_snapshot_is_unknown_not_ok(tmp_path, monkeypatch):
+    """The view re-checks the warning codes; when it refuses them the line is
+    unknown, and none of the refused snapshot's sentences or codes remain."""
+    from azazel_nexus import audit_status
+
+    for name in ("json", "text"):
+        (tmp_path / name).mkdir()
+    _loop(tmp_path / "json", monkeypatch)
+    monkeypatch.setattr(audit_status, "WARNING_REASONS", ("chain_size",))
+    out = io.StringIO()
+    assert main(_argv(tmp_path / "json", json_flag=True), out=out) == 0
+    audit = next(h for h in json.loads(out.getvalue())["sections"]["health"]
+                 if h["subject"] == "audit")
+    assert (audit["status"], audit["reason_code"]) == ("unknown", "snapshot_refused_by_view")
+    assert audit["source"]["reason_code"] == "snapshot_refused_by_view"
+    assert audit["detail"] is None and audit["advisory"] is None
+    assert audit["advisory_code"] is None and audit["capacity"] is None
+    assert audit["withheld"] == ["detail", "advisory"]
+    # The terminal keeps the sentences, under the same word as the view.
+    monkeypatch.undo()
+    _loop(tmp_path / "text", monkeypatch)
+    monkeypatch.setattr(audit_status, "WARNING_REASONS", ("chain_size",))
+    text = io.StringIO()
+    assert main(_argv(tmp_path / "text"), out=text) == 0
+    assert "    audit: unknown -- WARNING: capacity warning" in text.getvalue()
