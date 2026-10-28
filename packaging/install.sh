@@ -231,7 +231,7 @@ fi
 # The unit files name these. An installer that enabled a unit whose ExecStart
 # does not exist would "succeed" into a boot failure, which is later and on
 # someone else's hardware.
-for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-intaked az-incident-explaind az-edge-probed az-model-fetchd az-mio-locald az-mio-identity az-mio-remoted az-mio-entryd az-mio-referenced az-knowledge-lited az-decoy-netd az-decoyd az-units-observe; do
+for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-intaked az-incident-explaind az-edge-probed az-model-fetchd az-mio-locald az-mio-identity az-mio-remoted az-mio-entryd az-mio-referenced az-knowledge-lited az-decoy-netd az-decoyd az-units-observe az-noc-observe; do
     if [ ! -x "$LIBEXEC/$binary" ]; then
         echo "refusing to install: $LIBEXEC/$binary is missing." >&2
         echo "Install azazel-nexus and azazel-nexus-runtime into the stable" >&2
@@ -257,7 +257,7 @@ fi
 # Non-login accounts with no shell and no home. Each daemon gets its own, so
 # that a fault in one does not run with another's access.
 if [ "$WITH_ACCOUNTS" = yes ]; then
-    for account in azcommission azaudit azwatch azprobe azintake azexplain azedge azfetch azmio azmioentry azmioref azremote azknowledge azdecoy; do
+    for account in azcommission azaudit azwatch azprobe azintake azexplain azedge azfetch azmio azmioentry azmioref azremote azknowledge azdecoy aznoc; do
         if ! getent passwd "$account" >/dev/null 2>&1; then
             # Each account's own group is relied on (azedge for the intake
             # socket, azknowledge for lite-trust), so it is made explicitly
@@ -343,6 +343,7 @@ make_owned_dir 2750 azaudit azazel-operator /var/lib/azazel/run/audit-status
 make_owned_dir 2750 azknowledge azazel-operator /var/lib/azazel/run/knowledge-status
 make_owned_dir 2750 azmioentry azazel-operator /var/lib/azazel/run/mio-status
 make_owned_dir 2750 azprobe azazel-operator /var/lib/azazel/run/units-status
+make_owned_dir 2750 aznoc azazel-operator /var/lib/azazel/run/noc-status
 make_owned_dir 2710 azcommission azazel-operator /var/lib/azazel/run/commission
 make_owned_dir 2710 azwatch azazel-operator /var/lib/azazel/run/watchdog
 # Not a socket leaf: the Edge probe's result, renamed into place inside it.
@@ -436,6 +437,8 @@ install -m 0644 "$HERE"/systemd/azazel-decoy-trip.target "$UNIT_DIR"
 # requires or binds to them, so stopping them stops nothing else.
 install -m 0644 "$HERE"/systemd/azazel-units-observe.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-units-observe.timer "$UNIT_DIR"
+install -m 0644 "$HERE"/systemd/azazel-noc-observe.service "$UNIT_DIR"
+install -m 0644 "$HERE"/systemd/azazel-noc-observe.timer "$UNIT_DIR"
 install -m 0644 "$HERE"/azazel-nexus.preset "$PRESET_DIR"/99-azazel-nexus.preset
 install -d -m 0755 "${DESTDIR:-}/usr/lib/tmpfiles.d"
 install -m 0644 "$HERE"/tmpfiles.d/azazel-nexus-bootstrap.conf "${DESTDIR:-}/usr/lib/tmpfiles.d/azazel-nexus-bootstrap.conf"

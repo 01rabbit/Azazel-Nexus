@@ -173,6 +173,14 @@ LAYOUT = (
     PathSpec("/var/lib/azazel/run/edge-intake-status", 0o2750,
              "operator-readable intake liveness", owner="azintake", group="azazel-operator"),
     PathSpec(
+        "/var/lib/azazel/run/noc-status",
+        0o2750,
+        "the passive NOC observer's snapshot (U3); operator-readable counts "
+        "and codes keyed by ifindex, no interface identity, written by aznoc",
+        owner="aznoc",
+        group="azazel-operator",
+    ),
+    PathSpec(
         "/var/lib/azazel/run/units-status",
         0o2750,
         "the unit-state observer's snapshot (U2); operator-readable unit "

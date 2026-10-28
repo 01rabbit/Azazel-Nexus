@@ -134,6 +134,8 @@ def test_install_plan_uses_absolute_destinations_and_existing_declarations():
         # The operator observers (U2): installed, never masked or enabled.
         "packaging/systemd/azazel-units-observe.service",
         "packaging/systemd/azazel-units-observe.timer",
+        "packaging/systemd/azazel-noc-observe.service",
+        "packaging/systemd/azazel-noc-observe.timer",
     }
     assert plan.service_manager.mask_units == tuple(
         unit for action, unit in parse_preset_declarations(PRESET_TEXT) if action == "disable"

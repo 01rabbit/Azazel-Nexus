@@ -28,7 +28,7 @@ and the code disagree, the code wins:
 | --- | --- | --- |
 | mock | `tests/unit/test_noc_observe.py`: parsers, unknown reasons, redaction against fixture values, the static socket scan | a kernel |
 | real process | the same file runs the command against a real Linux kernel's netlink in the test container | target NICs and drivers; it is container evidence, not hardware |
-| Linux service integration | none: there is no unit, nothing on a node runs it by itself | — |
+| Linux service integration | none run: `azazel-noc-observe.service` and its timer exist (U3), generated from their declaration, but have not run under systemd | — |
 | target hardware | **none** — this runbook | — |
 
 The command's own output says what it is not evidence for: its

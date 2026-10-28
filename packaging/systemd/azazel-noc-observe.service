@@ -1,0 +1,40 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# Runs once per period of azazel-noc-observe.timer.
+# It makes the passive observation az-nexus-noc prints: one NETLINK_ROUTE dump of links, addresses and routes, sysfs counters read twice, the resolver files and DHCP lease files.
+# It sends no packet, probes nothing and resolves no name, and `IPAddressDeny=any` holds.
+# It writes counts and codes keyed by ifindex into its own leaf, which the operator group may read: no interface name, MAC or address.
+# It runs as its own unprivileged account aznoc, which is in no socket group.
+# It is not governed, has no [Install] section, and no unit requires or binds to it.
+
+[Unit]
+Description=Azazel-Nexus passive NOC observer
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/noc-observation.md
+
+[Service]
+Type=oneshot
+User=aznoc
+ExecStart=/usr/libexec/azazel/az-noc-observe
+TimeoutStartSec=60s
+RestrictAddressFamilies=AF_NETLINK AF_UNIX
+ReadWritePaths=-/var/lib/azazel/run/noc-status
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+UMask=0027

@@ -539,6 +539,18 @@ ALLOWED |= {"sections.knowledge_status.content_freshness_evaluated_at",
                 "source", "source.kind", "source.observed_at", "source.withheld",
                 "source.withheld[]"))}
 
+# The NOC section (U3). Its snapshot below the top level is the closed shape
+# `noc_status.read_noc_status` checks; test_noc_status covers it.
+ALLOWED |= {"sections.noc", "sections.noc.status", "sections.noc.reason_code",
+            "sections.noc.snapshot", *(f"sections.noc.{k}" for k in _SNAP_SOURCE),
+            "sections.noc.observation", *(f"sections.noc.observation.{k}" for k in (
+                "kind", "transmission", "active_checks", "policy_rules_evaluated")),
+            "sections.noc.not_measured", "sections.noc.not_measured[]",
+            *(f"sections.noc.not_measured[].{k}" for k in ("field", "status", "reason_code")),
+            "sections.noc.role", "sections.noc.role.status", "sections.noc.role.reason_code",
+            "sections.noc.identity", "sections.noc.identity.interfaces_by",
+            "sections.noc.identity.withheld", "sections.noc.identity.withheld[]"}
+
 #: Maps keyed by fixed codes rather than by field names.
 CODE_KEYED = {"refused", "content_labels", "reasons", "health"}
 

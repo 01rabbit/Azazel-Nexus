@@ -776,7 +776,8 @@ def test_no_unit_requires_binds_to_or_is_ordered_on_an_observer():
         ALL_PROFILES, OBSERVER_SERVICE_UNITS, packaged_unit_files,
     )
 
-    observers = set(OBSERVER_SERVICE_UNITS) | {"azazel-units-observe.timer"}
+    observers = set(OBSERVER_SERVICE_UNITS) | {"azazel-units-observe.timer",
+                                               "azazel-noc-observe.timer"}
     for profile in ALL_PROFILES:
         assert not observers & set(profile.requires + profile.binds_to + profile.after
                                    + profile.before), profile.unit

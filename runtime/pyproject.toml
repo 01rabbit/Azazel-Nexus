@@ -56,6 +56,7 @@ az-hil-readiness = "azazel_nexus_runtime.hil_readiness:main"
 az-hil-capture = "azazel_nexus_runtime.hil_capture:main"
 az-nexus-noc = "azazel_nexus_runtime.noc_observe:main"
 az-units-observe = "azazel_nexus_runtime.units_observe:main"
+az-noc-observe = "azazel_nexus_runtime.noc_snapshot:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

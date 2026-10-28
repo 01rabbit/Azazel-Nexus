@@ -20,6 +20,7 @@ import ast
 import errno
 import json
 import os
+import re
 import socket
 import struct
 import subprocess
@@ -832,12 +833,19 @@ def test_the_cli_is_an_operator_tool_without_a_unit():
     manifest = (REPO / "runtime" / "pyproject.toml").read_text(encoding="utf-8")
     assert 'az-nexus-noc = "azazel_nexus_runtime.noc_observe:main"' in manifest
     units = REPO / "packaging"
-    assert not [path for path in units.rglob("*noc*") if path.is_file()]
+    # The passive observer (U3) has its own unit, timer and executable; no
+    # packaged file runs the operator command itself.
+    assert sorted(path.name for path in units.rglob("*noc*") if path.is_file()) == [
+        "azazel-noc-observe.service", "azazel-noc-observe.timer"]
+    assert not [path for path in (units / "systemd").iterdir()
+                if re.search(r"^ExecStart=.*az-nexus-noc", path.read_text(encoding="utf-8"),
+                             re.M)]
 
 
-def test_nothing_imports_the_collector():
-    """An operator command, wired into no daemon: a daemon importing it would
-    need its own review of the netlink grant (test_runtime_hardening)."""
+def test_only_the_observer_imports_the_collector():
+    """An operator command, and one reviewed observer (U3): `noc_snapshot`,
+    whose unit is the only one granted `AF_NETLINK` besides root's decoy
+    units (test_noc_status). No daemon imports it."""
 
     importers = []
     for root in (REPO / "src", REPO / "runtime" / "src"):
@@ -846,5 +854,7 @@ def test_nothing_imports_the_collector():
                 continue
             if "noc_observe" in path.read_text(encoding="utf-8"):
                 importers.append(path.name)
-    assert importers == []
+    assert sorted(importers) == ["noc_snapshot.py", "noc_status.py"]
+    text = (REPO / "src/azazel_nexus/noc_status.py").read_text(encoding="utf-8")
+    assert "import noc_observe" not in text and "from azazel_nexus_runtime" not in text
 
