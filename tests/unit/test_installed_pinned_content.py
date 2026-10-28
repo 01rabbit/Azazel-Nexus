@@ -88,7 +88,8 @@ def test_wrong_manifest_pin_refuses_before_read(pinned_tree, monkeypatch):
         )
 
 
-def test_reader_does_not_open_unrequested_or_unlisted_files(pinned_tree, monkeypatch):
+def test_reader_does_not_open_unrequested_or_unlisted_files(pinned_tree, monkeypatch, private_os):
+    private_os(installed_files)
     root, root_fd, _files, _directories, raw, pin, owner = pinned_tree
     unexpected = root / "opt/env/bin/unlisted"
     unexpected.write_bytes(b"must not be opened")
@@ -149,7 +150,8 @@ def test_pinned_file_size_limit_is_enforced(pinned_tree, monkeypatch):
         _read(pinned_tree, ("opt/env/site/large",))
 
 
-def test_public_reader_uses_only_fixed_root_descriptor(monkeypatch, tmp_path):
+def test_public_reader_uses_only_fixed_root_descriptor(monkeypatch, tmp_path, private_os):
+    private_os(installed_files)
     root = tmp_path / "root"
     root.mkdir()
     root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)

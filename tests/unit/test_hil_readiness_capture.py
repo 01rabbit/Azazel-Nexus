@@ -85,7 +85,8 @@ def test_capture_refusal_does_not_print_exception_identity(monkeypatch, capsys):
     assert "private-identifier" not in output.err
 
 
-def test_key_reader_refuses_symlinks_wrong_owner_mode_and_size(tmp_path, monkeypatch):
+def test_key_reader_refuses_symlinks_wrong_owner_mode_and_size(tmp_path, monkeypatch, private_os):
+    private_os(readiness)
     from nacl.utils import random
 
     directory = tmp_path / "secrets"
@@ -100,7 +101,7 @@ def test_key_reader_refuses_symlinks_wrong_owner_mode_and_size(tmp_path, monkeyp
         values = list(info)
         values[4] = 0
         return os.stat_result(values)
-    monkeypatch.setattr(os, "fstat", lambda fd: root_info(real_fstat(fd)))
+    monkeypatch.setattr(readiness.os, "fstat", lambda fd: root_info(real_fstat(fd)))
     monkeypatch.setattr(readiness.Path, "lstat", lambda p: root_info(real_lstat(p)))
     assert len(readiness.protection_key(path)) == 32
     path.chmod(0o644)

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from azazel_nexus import content_store
 from azazel_nexus.content_store import (
     DIGEST_HEX_LENGTH,
     ContentRefused,
@@ -184,15 +185,15 @@ def test_a_stored_blob_lives_under_the_objects_directory(store: ContentStore) ->
     assert store.path_for(digest).is_file()
 
 
-def test_a_failed_write_leaves_no_partial_blob(store: ContentStore, monkeypatch) -> None:
+def test_a_failed_write_leaves_no_partial_blob(store: ContentStore, monkeypatch, private_os) -> None:
     """The temporary file is removed; the address stays unoccupied."""
 
-    import os as os_module
+    private_os(content_store)
 
     def refuse(*args: object, **kwargs: object) -> None:
         raise OSError("disk full")
 
-    monkeypatch.setattr(os_module, "replace", refuse)
+    monkeypatch.setattr(content_store.os, "replace", refuse)
     with pytest.raises(OSError):
         store.put(b"advisory claim")
 

@@ -124,7 +124,8 @@ def test_fixed_root_opener_failure_does_not_leak_descriptor(tmp_path, monkeypatc
     os.close(fd)
 
 
-def test_kernel_source_reader_is_path_fixed_by_caller_and_bounded(tmp_path, monkeypatch):
+def test_kernel_source_reader_is_path_fixed_by_caller_and_bounded(tmp_path, monkeypatch, private_os):
+    private_os(cgroup_mount)
     source = tmp_path / "synthetic-proc-source"
     source.write_bytes(b"kernel-owned fixture\n")
     opened = []
@@ -145,7 +146,8 @@ def test_kernel_source_reader_is_path_fixed_by_caller_and_bounded(tmp_path, monk
         cgroup_mount._read_proc("synthetic-kernel-source", 64)
 
 
-def test_kernel_source_reader_rejects_wrong_filesystem_and_closes_fd(tmp_path, monkeypatch):
+def test_kernel_source_reader_rejects_wrong_filesystem_and_closes_fd(tmp_path, monkeypatch, private_os):
+    private_os(cgroup_mount)
     source = tmp_path / "synthetic-not-proc"
     source.write_bytes(b"not procfs")
     opened = []
@@ -201,7 +203,8 @@ def _redirect_namespace_opens(monkeypatch, parents):
     return opened
 
 
-def test_namespace_reader_rejects_ordinary_parent_directory(tmp_path, monkeypatch):
+def test_namespace_reader_rejects_ordinary_parent_directory(tmp_path, monkeypatch, private_os):
+    private_os(cgroup_mount)
     parents = _namespace_fixtures(tmp_path)
     opened = _redirect_namespace_opens(monkeypatch, parents)
     monkeypatch.setattr(cgroup_mount, "_filesystem_type", lambda _fd: 0x1234)
@@ -212,7 +215,8 @@ def test_namespace_reader_rejects_ordinary_parent_directory(tmp_path, monkeypatc
     assert opened == ["/proc/self/ns"]
 
 
-def test_namespace_reader_rejects_ordinary_target_file(tmp_path, monkeypatch):
+def test_namespace_reader_rejects_ordinary_target_file(tmp_path, monkeypatch, private_os):
+    private_os(cgroup_mount)
     parents = _namespace_fixtures(tmp_path)
     opened = _redirect_namespace_opens(monkeypatch, parents)
     # fd links are intentionally not consulted: distinguish the synthetic

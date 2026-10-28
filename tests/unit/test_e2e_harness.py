@@ -638,13 +638,14 @@ def test_offline_import_prepares_the_same_store_and_trust_as_setup(short_root):
 
 
 @pytest.mark.parametrize("refused", [False, True])
-def test_root_exchange_uses_operator_gid_and_restores_it(monkeypatch, refused):
+def test_root_exchange_uses_operator_gid_and_restores_it(monkeypatch, refused, private_os):
     import io
     import json
     import struct
     from types import SimpleNamespace
 
     from tools import e2e_harness as module
+    private_os(module)
 
     body = json.dumps({"ok": True, "result": {}}).encode()
     reply = io.BytesIO(struct.pack("!I", len(body)) + body)

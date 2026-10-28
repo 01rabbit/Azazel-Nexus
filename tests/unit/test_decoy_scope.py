@@ -425,7 +425,8 @@ def test_a_hard_linked_file_refuses(tmp_path, monkeypatch):
         read_scope_file()
 
 
-def test_an_unreadable_directory_status_is_a_refusal(tmp_path, monkeypatch):
+def test_an_unreadable_directory_status_is_a_refusal(tmp_path, monkeypatch, private_os):
+    private_os(decoy_scope)
     _install(tmp_path, monkeypatch)
     real = os.fstat
     calls = []

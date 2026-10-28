@@ -24,7 +24,8 @@ def no_host_bootstrap_selection(monkeypatch):
 
 
 @pytest.mark.parametrize("mode", ["selected", "invalid", "composition-fails", "emergency-unconfirmed"])
-def test_selected_bootstrap_routes_without_ordinary_fallback(monkeypatch, capsys, mode):
+def test_selected_bootstrap_routes_without_ordinary_fallback(monkeypatch, capsys, mode, private_os):
+    private_os(activated)
     from azazel_nexus import bootstrap_selection_optional as bootstrap_selection_store
     from azazel_nexus.operator_trust import ApprovalRefused
     from azazel_nexus_runtime import bootstrap_entrypoint
@@ -172,8 +173,9 @@ def test_entrypoint_rejects_arguments_before_connecting_to_systemd(
     ],
 )
 def test_entrypoint_refuses_outside_root_systemd_context_without_bus_access(
-    monkeypatch, capsys, uid, systemd_present, invocation_id, root
+    monkeypatch, capsys, uid, systemd_present, invocation_id, root, private_os
 ) -> None:
+    private_os(activated)
     monkeypatch.setattr(activated.os, "geteuid", lambda: uid)
     monkeypatch.setattr(runtime_paths, "ROOT", root)
     if invocation_id is None:
@@ -207,8 +209,9 @@ def test_entrypoint_refuses_outside_root_systemd_context_without_bus_access(
 
 
 def test_entrypoint_passes_the_system_bus_manager_to_one_fail_closed_pass(
-    monkeypatch, capsys
+    monkeypatch, capsys, private_os
 ) -> None:
+    private_os(activated)
     monkeypatch.setattr(activated.os, "geteuid", lambda: 0)
     monkeypatch.setenv("INVOCATION_ID", "a" * 32)
     monkeypatch.setattr(runtime_paths, "ROOT", Path("/"))
@@ -266,8 +269,9 @@ def test_entrypoint_passes_the_system_bus_manager_to_one_fail_closed_pass(
 
 
 def test_entrypoint_does_not_report_a_bus_failure_as_a_safe_pass(
-    monkeypatch, capsys
+    monkeypatch, capsys, private_os
 ) -> None:
+    private_os(activated)
     monkeypatch.setattr(activated.os, "geteuid", lambda: 0)
     monkeypatch.setenv("INVOCATION_ID", "b" * 32)
     monkeypatch.setattr(runtime_paths, "ROOT", Path("/"))
@@ -386,7 +390,8 @@ def test_static_message_allowlist_matches_reviewed_raise_literals() -> None:
                for m in activated._STATIC_FAILURE_MESSAGES)
 
 
-def test_entrypoint_logs_subclass_message_class_only(monkeypatch, capsys) -> None:
+def test_entrypoint_logs_subclass_message_class_only(monkeypatch, capsys, private_os) -> None:
+    private_os(activated)
     from azazel_nexus_runtime.bootstrap_overlay_files import OverlayPublicationUncertain
 
     _arrange_bus_failure(monkeypatch, OverlayPublicationUncertain("private path /x"))
@@ -411,7 +416,8 @@ def _arrange_bus_failure(monkeypatch, failure) -> None:
     )
 
 
-def test_entrypoint_logs_static_refusal_message(monkeypatch, capsys) -> None:
+def test_entrypoint_logs_static_refusal_message(monkeypatch, capsys, private_os) -> None:
+    private_os(activated)
     from azazel_nexus_runtime.units import UnitOperationFailed
 
     _arrange_bus_failure(
@@ -421,8 +427,9 @@ def test_entrypoint_logs_static_refusal_message(monkeypatch, capsys) -> None:
             "controller one-use start condition refused") in capsys.readouterr().err
 
 
-def test_entrypoint_logs_prior_boot_refusal_reason(monkeypatch, capsys) -> None:
+def test_entrypoint_logs_prior_boot_refusal_reason(monkeypatch, capsys, private_os) -> None:
     """A refused prior boot journal names why, not only the class (Nexus#324)."""
+    private_os(activated)
     from azazel_nexus.operator_trust import ApprovalRefused
 
     _arrange_bus_failure(monkeypatch, ApprovalRefused("prior boot overlay entry present"))
@@ -531,8 +538,9 @@ def _ordinary_context(monkeypatch):
 
 
 @pytest.mark.parametrize("failing", [None, "ready", "barrier", "barrier_timeout"])
-def test_ready_and_barrier_follow_a_recorded_pass(monkeypatch, capsys, failing):
+def test_ready_and_barrier_follow_a_recorded_pass(monkeypatch, capsys, failing, private_os):
     """#251 L-2: READY or its barrier failing withdraws every grant and exits 1."""
+    private_os(activated)
     from azazel_nexus_runtime import systemd_notify
     from azazel_nexus_runtime.units import UnitOperationFailed
 
@@ -587,7 +595,8 @@ def test_ready_and_barrier_follow_a_recorded_pass(monkeypatch, capsys, failing):
     assert "failed before completing a safe pass" in captured.err
 
 
-def test_completed_line_follows_ready(monkeypatch, capsys):
+def test_completed_line_follows_ready(monkeypatch, capsys, private_os):
+    private_os(activated)
     from azazel_nexus_runtime import systemd_notify
 
     _ordinary_context(monkeypatch)
@@ -603,7 +612,8 @@ def test_completed_line_follows_ready(monkeypatch, capsys):
     assert "completed safely: granted=0" in capsys.readouterr().out
 
 
-def test_no_ready_on_a_failed_pass(monkeypatch, capsys):
+def test_no_ready_on_a_failed_pass(monkeypatch, capsys, private_os):
+    private_os(activated)
     from azazel_nexus_runtime import systemd_notify
 
     _ordinary_context(monkeypatch)
@@ -618,8 +628,9 @@ def test_no_ready_on_a_failed_pass(monkeypatch, capsys):
     assert "failed before completing a safe pass" in capsys.readouterr().err
 
 
-def test_no_ready_from_the_ordinary_code_on_the_bootstrap_path(monkeypatch, capsys):
+def test_no_ready_from_the_ordinary_code_on_the_bootstrap_path(monkeypatch, capsys, private_os):
     """The selected bootstrap keeps its own READY protocol; main adds none."""
+    private_os(activated)
     from azazel_nexus import bootstrap_selection_optional
     from azazel_nexus_runtime import bootstrap_entrypoint, systemd_notify
 

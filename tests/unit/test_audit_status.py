@@ -158,7 +158,8 @@ def test_the_tick_rewrites_the_snapshot_every_interval(tmp_path, monkeypatch):
     assert value["warning_reasons"] == ["filesystem_free"]
 
 
-def test_a_missing_leaf_is_logged_once_and_auditd_keeps_working(tmp_path, monkeypatch):
+def test_a_missing_leaf_is_logged_once_and_auditd_keeps_working(tmp_path, monkeypatch, private_os):
+    private_os(auditd)
     warnings = []
     service, clocks = _service(tmp_path, monkeypatch, warnings=warnings)
     service.status_path = tmp_path / "run/audit-status/status.json"  # never created

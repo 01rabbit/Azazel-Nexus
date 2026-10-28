@@ -276,7 +276,8 @@ def test_fingerprint_refuses_empty_and_oversized_files(tmp_path, monkeypatch, co
         os.close(fd)
 
 
-def test_fingerprint_refuses_truncated_read(tmp_path, monkeypatch):
+def test_fingerprint_refuses_truncated_read(tmp_path, monkeypatch, private_os):
+    private_os(running_python)
     path = tmp_path / "python"
     path.write_bytes(b"complete")
     path.chmod(0o755)
@@ -309,7 +310,8 @@ def test_fingerprint_refuses_truncated_read(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("same_stamp", [False, True])
-def test_fingerprint_refuses_bytes_changed_during_read(tmp_path, monkeypatch, same_stamp):
+def test_fingerprint_refuses_bytes_changed_during_read(tmp_path, monkeypatch, same_stamp, private_os):
+    private_os(running_python)
     path = tmp_path / "python"
     path.write_bytes(b"stable-size-content")
     path.chmod(0o755)
@@ -345,7 +347,8 @@ def test_fingerprint_refuses_bytes_changed_during_read(tmp_path, monkeypatch, sa
         os.close(writer)
 
 
-def test_observer_has_no_caller_selected_process_or_path_and_uses_procfs(monkeypatch):
+def test_observer_has_no_caller_selected_process_or_path_and_uses_procfs(monkeypatch, private_os):
+    private_os(running_python)
     assert tuple(inspect.signature(observe_running_python).parameters) == ()
     state = _observation().state
     executable = _observation().executable

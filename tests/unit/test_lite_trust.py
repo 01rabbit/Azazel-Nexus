@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from signing_oracle import public_key_for
 
+from azazel_nexus import lite_trust
 from azazel_nexus.audit import AuditLedger
 from azazel_nexus.lite_trust import (
     RepinConfirmation,
@@ -215,15 +216,15 @@ def test_an_unreadable_trust_store_is_refused_not_treated_as_empty(
 
 
 def test_a_failed_write_leaves_the_previous_pinning_in_place(
-    trust: TrustStore, monkeypatch
+    trust: TrustStore, monkeypatch, private_os
 ) -> None:
-    import os as os_module
+    private_os(lite_trust)
 
     trust.pin(
         [KEY_A], commissioning_digest=COMMISSIONING, pinned_at="2026-09-01T00:00:00Z", actor="op"
     )
     monkeypatch.setattr(
-        os_module, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("full"))
+        lite_trust.os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("full"))
     )
     with pytest.raises(TrustRefused, match="generation refused"):
         _repin(trust,

@@ -502,10 +502,11 @@ class _GroupsConnection:
         return self._raw
 
 
-def test_peergroups_option_uses_the_linux_generic_value_cpython_does_not_export(monkeypatch):
+def test_peergroups_option_uses_the_linux_generic_value_cpython_does_not_export(monkeypatch, private_os):
     import types
 
     from azazel_nexus_runtime import principal as principal_module
+    private_os(principal_module)
 
     bare = types.SimpleNamespace()  # a socket module without SO_PEERGROUPS, like CPython's
     monkeypatch.setattr(sys, "platform", "linux")

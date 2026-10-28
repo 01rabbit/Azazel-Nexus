@@ -131,7 +131,8 @@ def test_process_lifetime_context_exit_does_not_disarm(evidence, backend):
     assert ("release",) not in backend.calls
 
 
-def test_changed_process_cannot_check_or_release(evidence, backend, monkeypatch):
+def test_changed_process_cannot_check_or_release(evidence, backend, monkeypatch, private_os):
+    private_os(module)
     deadline, _generation = evidence
     guard = module.BootstrapKernelDeadline()
     guard(deadline)

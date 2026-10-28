@@ -60,7 +60,8 @@ def test_preview_initialize_read_and_no_overwrite(local_store, monkeypatch):
     assert (local_store / "deployment.json").stat().st_ino == before
 
 
-def test_interrupted_publication_requires_explicit_recovery(local_store, monkeypatch):
+def test_interrupted_publication_requires_explicit_recovery(local_store, monkeypatch, private_os):
+    private_os(store)
     raw = encode_bootstrap_deployment(declaration())
     original = store.os.unlink
 

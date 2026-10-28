@@ -136,7 +136,8 @@ def test_unsafe_root_or_ancestor_refuses_absence(tmp_path, unsafe):
 
 
 @pytest.mark.parametrize("error_number", [errno.EACCES, errno.EIO])
-def test_permission_and_io_errors_are_not_treated_as_absence(tmp_path, monkeypatch, error_number):
+def test_permission_and_io_errors_are_not_treated_as_absence(tmp_path, monkeypatch, error_number, private_os):
+    private_os(python_startup)
     root_fd = _open_root(tmp_path)
     actual_stat = os.stat
 
@@ -154,7 +155,8 @@ def test_permission_and_io_errors_are_not_treated_as_absence(tmp_path, monkeypat
     assert raised.value.errno == error_number
 
 
-def test_enotdir_during_component_walk_is_not_treated_as_absence(tmp_path, monkeypatch):
+def test_enotdir_during_component_walk_is_not_treated_as_absence(tmp_path, monkeypatch, private_os):
+    private_os(python_startup)
     _mkdir(tmp_path / "opt", root=tmp_path)
     root_fd = _open_root(tmp_path)
     actual_stat = os.stat
@@ -220,7 +222,8 @@ def test_missing_component_appearing_between_snapshots_refuses(tmp_path, monkeyp
 
 
 @pytest.mark.parametrize("refuse", [False, True])
-def test_public_observer_uses_fixed_root_and_redacts_refusal(monkeypatch, refuse):
+def test_public_observer_uses_fixed_root_and_redacts_refusal(monkeypatch, refuse, private_os):
+    private_os(python_startup)
     opened = []
     closed = []
     real_open, real_close, real_stat, real_fstat = os.open, os.close, os.stat, os.fstat

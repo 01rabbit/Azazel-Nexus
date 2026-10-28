@@ -146,8 +146,9 @@ def test_second_validation_record_change_refuses_and_retains_pending(public_envi
 
 
 def test_final_recovery_fsync_failure_reports_uncertainty_after_marker_removal(
-    public_environment, monkeypatch,
+    public_environment, monkeypatch, private_os,
 ):
+    private_os(store)
     _context, _anchor, raw, _policy, root = public_environment
     pending, path = _stage_pending(root, raw)
     fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
@@ -177,8 +178,9 @@ def test_final_recovery_fsync_failure_reports_uncertainty_after_marker_removal(
 
 @pytest.mark.parametrize("failed_call", [1, 2])
 def test_prepublication_recovery_fsync_failure_keeps_reader_blocked(
-    public_environment, monkeypatch, failed_call,
+    public_environment, monkeypatch, failed_call, private_os,
 ):
+    private_os(store)
     context, _anchor, raw, _policy, root = public_environment
     pending, path = _stage_pending(root, raw)
     original = store.os.fsync

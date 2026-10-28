@@ -196,8 +196,9 @@ def test_lease_run_requires_edge_core():
         so06_replay.capture_replays(scenarios(), lease_netns=True)
 
 
-def test_the_lease_run_refuses_a_host_without_root(monkeypatch):
-    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+def test_the_lease_run_refuses_a_host_without_root(monkeypatch, private_os):
+    private_os(so06_lease)
+    monkeypatch.setattr(so06_lease.os, "geteuid", lambda: 1000)
     with pytest.raises(so06_edge.EdgeUnavailable, match="needs root"):
         so06_lease.run_lease(Path("/nonexistent"), [], expected=1, shim=None)
 

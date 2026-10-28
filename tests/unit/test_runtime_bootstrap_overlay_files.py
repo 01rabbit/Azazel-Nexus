@@ -247,8 +247,9 @@ def test_preexisting_conflicts_refuse_without_changing_them(tmp_path, conflict):
 
 
 def test_second_create_failure_retains_durable_partial_journal_and_first_file(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, private_os
 ):
+    private_os(writer)
     with _environment(tmp_path) as env:
         real_open = os.open
 

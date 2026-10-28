@@ -18,7 +18,8 @@ CONTROLLER_PID = 4321
 AUDIT_PID = 5555
 
 
-def test_plan_only_main_does_no_external_work(monkeypatch, capsys):
+def test_plan_only_main_does_no_external_work(monkeypatch, capsys, private_os):
+    private_os(containment)
     def forbidden(*args, **kwargs):
         pytest.fail("plan-only mode performed external work")
 
@@ -37,7 +38,8 @@ def test_plan_only_main_does_no_external_work(monkeypatch, capsys):
     ]
 
 
-def test_run_all_refuses_non_root_before_any_case(monkeypatch):
+def test_run_all_refuses_non_root_before_any_case(monkeypatch, private_os):
+    private_os(containment)
     calls = []
     monkeypatch.setattr(containment.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(containment, "CASES", (lambda: calls.append("case"),))
@@ -51,13 +53,15 @@ def _lstat(mode, uid=0):
     return lambda path: SimpleNamespace(st_mode=mode, st_uid=uid)
 
 
-def test_run_stage_accepts_root_owned_protected_tmpfs(monkeypatch):
+def test_run_stage_accepts_root_owned_protected_tmpfs(monkeypatch, private_os):
+    private_os(containment)
     monkeypatch.setattr(containment.os, "lstat", _lstat(0o40755))
     monkeypatch.setattr(containment, "_mount_fstype", lambda mountpoint: "tmpfs")
     assert containment._run_stage() == "/run"
 
 
-def test_run_stage_refuses_a_run_that_is_not_tmpfs(monkeypatch):
+def test_run_stage_refuses_a_run_that_is_not_tmpfs(monkeypatch, private_os):
+    private_os(containment)
     monkeypatch.setattr(containment.os, "lstat", _lstat(0o40755))
     monkeypatch.setattr(containment, "_mount_fstype", lambda mountpoint: "ext4")
     with pytest.raises(ValueError, match="per-boot tmpfs"):
@@ -85,7 +89,8 @@ def test_mount_fstype_reads_the_last_entry_at_the_exact_mountpoint(tmp_path):
         (0o40755, 1000),  # not root-owned
     ],
 )
-def test_run_stage_refuses_unprotected_parent(monkeypatch, mode, uid):
+def test_run_stage_refuses_unprotected_parent(monkeypatch, mode, uid, private_os):
+    private_os(containment)
     monkeypatch.setattr(containment.os, "lstat", _lstat(mode, uid))
     with pytest.raises(ValueError, match="protected /run"):
         containment._run_stage()
@@ -229,7 +234,8 @@ def _queued_setup(harness, monkeypatch, *, helper_events,
     return jobs
 
 
-def test_queued_start_containment_happy_path(tmp_path, monkeypatch):
+def test_queued_start_containment_happy_path(tmp_path, monkeypatch, private_os):
+    private_os(containment)
     harness = _Harness(tmp_path, monkeypatch)
     jobs = _queued_setup(harness, monkeypatch, helper_events=[])
 
@@ -248,7 +254,8 @@ def test_queued_start_containment_happy_path(tmp_path, monkeypatch):
     harness.assert_cleaned(report, harness.units.values())
 
 
-def test_queued_start_containment_fails_when_helper_started(tmp_path, monkeypatch):
+def test_queued_start_containment_fails_when_helper_started(tmp_path, monkeypatch, private_os):
+    private_os(containment)
     harness = _Harness(tmp_path, monkeypatch)
     _queued_setup(harness, monkeypatch, helper_events=[("audit", "start", 7)])
 
@@ -261,7 +268,8 @@ def test_queued_start_containment_fails_when_helper_started(tmp_path, monkeypatc
 
 
 def test_queued_start_containment_fails_when_kill_landed_after_ready(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, private_os):
+    private_os(containment)
     harness = _Harness(tmp_path, monkeypatch)
     _queued_setup(harness, monkeypatch, helper_events=[],
                   controller_events=(("controller", "preready", 1),
@@ -273,7 +281,8 @@ def test_queued_start_containment_fails_when_kill_landed_after_ready(
     assert report["contained"] is False
 
 
-def test_queued_start_containment_fails_when_marker_was_written(tmp_path, monkeypatch):
+def test_queued_start_containment_fails_when_marker_was_written(tmp_path, monkeypatch, private_os):
+    private_os(containment)
     harness = _Harness(tmp_path, monkeypatch)
     _queued_setup(harness, monkeypatch, helper_events=[])
     (harness.directory / "controller-used").write_text("")
@@ -287,7 +296,8 @@ def test_queued_start_containment_fails_when_marker_was_written(tmp_path, monkey
 @pytest.mark.parametrize(
     ("controller_state", "job_state"), [("active", "waiting"), ("activating", "running")])
 def test_queued_start_containment_requires_activating_controller_and_waiting_helpers(
-        tmp_path, monkeypatch, controller_state, job_state):
+        tmp_path, monkeypatch, controller_state, job_state, private_os):
+    private_os(containment)
     harness = _Harness(tmp_path, monkeypatch)
     _queued_setup(harness, monkeypatch, helper_events=[],
                   controller_state=controller_state, job_state=job_state)
@@ -321,7 +331,8 @@ def _audit_setup(harness, monkeypatch, *, controller_state="active", audit_resul
     return awaits
 
 
-def test_audit_death_follow_stop_happy_path(tmp_path, monkeypatch):
+def test_audit_death_follow_stop_happy_path(tmp_path, monkeypatch, private_os):
+    private_os(containment)
     harness = _Harness(tmp_path, monkeypatch)
     awaits = _audit_setup(harness, monkeypatch)
 
@@ -338,7 +349,8 @@ def test_audit_death_follow_stop_happy_path(tmp_path, monkeypatch):
     harness.assert_cleaned(report, harness.units.values())
 
 
-def test_audit_death_follow_stop_fails_when_controller_failed(tmp_path, monkeypatch):
+def test_audit_death_follow_stop_fails_when_controller_failed(tmp_path, monkeypatch, private_os):
+    private_os(containment)
     harness = _Harness(tmp_path, monkeypatch)
     _audit_setup(harness, monkeypatch, controller_state="failed")
 
@@ -350,7 +362,8 @@ def test_audit_death_follow_stop_fails_when_controller_failed(tmp_path, monkeypa
     harness.assert_cleaned(report, harness.units.values())
 
 
-def test_audit_death_follow_stop_requires_a_signal_exit_for_audit(tmp_path, monkeypatch):
+def test_audit_death_follow_stop_requires_a_signal_exit_for_audit(tmp_path, monkeypatch, private_os):
+    private_os(containment)
     harness = _Harness(tmp_path, monkeypatch)
     _audit_setup(harness, monkeypatch, audit_result="success")
 
@@ -392,7 +405,8 @@ def _marker_setup(harness, monkeypatch, *, write_marker, recheck=_REFUSED,
     monkeypatch.setattr(containment, "_read_events", read_events)
 
 
-def test_run_marker_mount_view_happy_path(tmp_path, monkeypatch):
+def test_run_marker_mount_view_happy_path(tmp_path, monkeypatch, private_os):
+    private_os(containment)
     harness = _Harness(tmp_path, monkeypatch)
     _marker_setup(harness, monkeypatch, write_marker=True)
 
@@ -414,7 +428,8 @@ def test_run_marker_mount_view_happy_path(tmp_path, monkeypatch):
 
 
 def test_run_marker_mount_view_accepts_a_garbage_collected_refused_recheck(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, private_os):
+    private_os(containment)
     harness = _Harness(tmp_path, monkeypatch)
     _marker_setup(harness, monkeypatch, write_marker=True,
                   recheck={"LoadState": "not-found", "ActiveState": "inactive",
@@ -426,7 +441,8 @@ def test_run_marker_mount_view_accepts_a_garbage_collected_refused_recheck(
     assert report["contained"] is True
 
 
-def test_run_marker_mount_view_fails_when_the_recheck_ran(tmp_path, monkeypatch):
+def test_run_marker_mount_view_fails_when_the_recheck_ran(tmp_path, monkeypatch, private_os):
+    private_os(containment)
     harness = _Harness(tmp_path, monkeypatch)
     _marker_setup(harness, monkeypatch, write_marker=True, recheck_ran=True)
 
@@ -437,7 +453,8 @@ def test_run_marker_mount_view_fails_when_the_recheck_ran(tmp_path, monkeypatch)
     assert report["contained"] is False
 
 
-def test_run_marker_mount_view_fails_without_marker(tmp_path, monkeypatch):
+def test_run_marker_mount_view_fails_without_marker(tmp_path, monkeypatch, private_os):
+    private_os(containment)
     harness = _Harness(tmp_path, monkeypatch)
     _marker_setup(harness, monkeypatch, write_marker=False)
 
@@ -450,7 +467,8 @@ def test_run_marker_mount_view_fails_without_marker(tmp_path, monkeypatch):
     assert not harness.directory.exists()
 
 
-def test_run_all_aggregates_cases(monkeypatch):
+def test_run_all_aggregates_cases(monkeypatch, private_os):
+    private_os(containment)
     monkeypatch.setattr(containment.os, "geteuid", lambda: 0)
 
     def run_ok():

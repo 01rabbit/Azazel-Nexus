@@ -115,7 +115,8 @@ def _assert_closed(fd):
         os.fstat(fd)
 
 
-def test_sample_reads_fstatvfs_and_closes_original_and_identity_fds(monkeypatch, sample_dirs):
+def test_sample_reads_fstatvfs_and_closes_original_and_identity_fds(monkeypatch, sample_dirs, private_os):
+    private_os(capacity)
     _, fds = sample_dirs
     opened = []
 
@@ -142,8 +143,9 @@ def test_sample_reads_fstatvfs_and_closes_original_and_identity_fds(monkeypatch,
     {"ffree": 101, "files": 100}, {"frsize": True},
 ])
 def test_sample_rejects_readonly_or_invalid_filesystem_capacity(
-    monkeypatch, sample_dirs, change,
+    monkeypatch, sample_dirs, change, private_os,
 ):
+    private_os(capacity)
     _, fds = sample_dirs
     opened = []
 
@@ -161,7 +163,8 @@ def test_sample_rejects_readonly_or_invalid_filesystem_capacity(
     _assert_closed(opened[0])
 
 
-def test_sample_rechecks_directory_identity_and_closes_both_fds(monkeypatch, sample_dirs):
+def test_sample_rechecks_directory_identity_and_closes_both_fds(monkeypatch, sample_dirs, private_os):
+    private_os(capacity)
     _, fds = sample_dirs
     opened = []
 
@@ -182,7 +185,8 @@ def test_sample_rechecks_directory_identity_and_closes_both_fds(monkeypatch, sam
 
 
 @pytest.mark.parametrize("kind, owner", [("bootstrap", 0), ("audit", OWNER)])
-def test_fixed_traversal_checks_root_parents_and_actual_leaf_owner(tmp_path, monkeypatch, kind, owner):
+def test_fixed_traversal_checks_root_parents_and_actual_leaf_owner(tmp_path, monkeypatch, kind, owner, private_os):
+    private_os(capacity)
     root = tmp_path / "root"
     leaf = root / "var/lib/azazel/state" / kind
     leaf.mkdir(parents=True)

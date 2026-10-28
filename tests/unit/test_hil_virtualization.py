@@ -4,6 +4,7 @@ import json
 
 import pytest
 from azazel_nexus_runtime import hil_capture, virtualization_observation
+from azazel_nexus_runtime import model_admission_evidence as loader
 from nacl.signing import SigningKey
 from test_hil_records import fixture_record
 from test_model_admission_evidence import collected_store
@@ -66,7 +67,8 @@ def signed_bundle(record, *, domain=None, manifest_schema=None):
 
 
 @pytest.fixture
-def protocol_record(tmp_path, monkeypatch):
+def protocol_record(tmp_path, monkeypatch, private_os):
+    private_os(loader)
     collected_store(tmp_path, monkeypatch)
     campaign = json.loads((tmp_path / "etc/azazel/model-admission/evidence/artifacts/campaign.json").read_bytes())
 

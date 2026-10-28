@@ -75,8 +75,9 @@ def test_protection_failure_creates_no_proposal(tmp_path, monkeypatch, protectio
 
 
 def test_partial_write_failure_leaves_private_file_and_retry_refuses(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, private_os
 ):
+    private_os(commissioning_draft)
     payload = b"proposal payload that requires multiple writes"
     output = tmp_path / "commissioning-proposal.json"
     original_write = os.write
@@ -89,22 +90,23 @@ def test_partial_write_failure_leaves_private_file_and_retry_refuses(
             return original_write(fd, data[:5])
         raise OSError("synthetic write failure")
 
-    monkeypatch.setattr(os, "write", partial_then_fail)
+    monkeypatch.setattr(commissioning_draft.os, "write", partial_then_fail)
     with pytest.raises(DraftRefused):
         export_proposal(payload)
 
     assert output.read_bytes() == payload[:5]
     assert output.stat().st_mode & 0o777 == 0o600
 
-    monkeypatch.setattr(os, "write", original_write)
+    monkeypatch.setattr(commissioning_draft.os, "write", original_write)
     with pytest.raises(DraftRefused):
         export_proposal(payload)
     assert output.read_bytes() == payload[:5]
 
 
-def test_no_progress_write_leaves_private_file_and_retry_refuses(tmp_path, monkeypatch):
+def test_no_progress_write_leaves_private_file_and_retry_refuses(tmp_path, monkeypatch, private_os):
+    private_os(commissioning_draft)
     output = tmp_path / "commissioning-proposal.json"
-    monkeypatch.setattr(os, "write", lambda *args: 0)
+    monkeypatch.setattr(commissioning_draft.os, "write", lambda *args: 0)
 
     with pytest.raises(DraftRefused):
         export_proposal(b"proposal")
@@ -116,7 +118,8 @@ def test_no_progress_write_leaves_private_file_and_retry_refuses(tmp_path, monke
     assert output.read_bytes() == b""
 
 
-def test_fsync_failure_leaves_private_file_and_retry_refuses(tmp_path, monkeypatch):
+def test_fsync_failure_leaves_private_file_and_retry_refuses(tmp_path, monkeypatch, private_os):
+    private_os(commissioning_draft)
     payload = b"proposal"
     output = tmp_path / "commissioning-proposal.json"
 
@@ -124,7 +127,7 @@ def test_fsync_failure_leaves_private_file_and_retry_refuses(tmp_path, monkeypat
         raise OSError("synthetic fsync failure")
 
     with monkeypatch.context() as patcher:
-        patcher.setattr(os, "fsync", failed_fsync)
+        patcher.setattr(commissioning_draft.os, "fsync", failed_fsync)
         with pytest.raises(DraftRefused):
             export_proposal(payload)
 
@@ -136,8 +139,9 @@ def test_fsync_failure_leaves_private_file_and_retry_refuses(tmp_path, monkeypat
     assert output.read_bytes() == payload
 
 
-def test_proposal_export_requires_owned_protected_directory(tmp_path, monkeypatch):
-    monkeypatch.setattr(os, "geteuid", lambda: tmp_path.stat().st_uid + 1)
+def test_proposal_export_requires_owned_protected_directory(tmp_path, monkeypatch, private_os):
+    private_os(commissioning_draft)
+    monkeypatch.setattr(commissioning_draft.os, "geteuid", lambda: tmp_path.stat().st_uid + 1)
 
     with pytest.raises(DraftRefused):
         export_proposal(b"proposal")

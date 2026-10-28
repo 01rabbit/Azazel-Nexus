@@ -71,24 +71,26 @@ def test_existing_untrusted_state_is_never_replaced(profile, tmp_path, kind):
 
 
 @pytest.mark.parametrize("failure", ["write", "publish"])
-def test_incomplete_file_is_never_visible_at_final_name(profile, monkeypatch, failure):
+def test_incomplete_file_is_never_visible_at_final_name(profile, monkeypatch, failure, private_os):
+    private_os(draft)
     if failure == "write":
         original = os.write
         def failed_write(fd, value):
             original(fd, value[:1])
             raise OSError("synthetic interrupted write")
-        monkeypatch.setattr(os, "write", failed_write)
+        monkeypatch.setattr(draft.os, "write", failed_write)
     else:
         def failed_link(*args, **kwargs):
             raise OSError("synthetic publication failure")
-        monkeypatch.setattr(os, "link", failed_link)
+        monkeypatch.setattr(draft.os, "link", failed_link)
     with pytest.raises(OSError):
         draft._publish_mio_files((b"s" * 64,))
     assert list(profile.iterdir()) == []
 
 
 @pytest.mark.parametrize("kind", ["missing", "symlink", "permissions", "owner"])
-def test_profile_directory_must_be_installed_and_private(profile, tmp_path, monkeypatch, kind):
+def test_profile_directory_must_be_installed_and_private(profile, tmp_path, monkeypatch, kind, private_os):
+    private_os(draft)
     if kind == "missing":
         profile.rmdir()
     elif kind == "symlink":
@@ -97,7 +99,7 @@ def test_profile_directory_must_be_installed_and_private(profile, tmp_path, monk
     elif kind == "permissions":
         profile.chmod(0o750)
     else:
-        monkeypatch.setattr(os, "geteuid", lambda: profile.stat().st_uid + 1)
+        monkeypatch.setattr(draft.os, "geteuid", lambda: profile.stat().st_uid + 1)
     with pytest.raises((draft.DraftRefused, OSError)):
         draft._publish_mio_files((b"s" * 64,))
 
@@ -225,12 +227,13 @@ def test_purge_never_follows_a_symlinked_temporary(profile, tmp_path):
 
 
 @pytest.mark.parametrize("kind", ["mode", "owner"])
-def test_purge_refuses_a_directory_review_would_refuse(profile, monkeypatch, kind):
+def test_purge_refuses_a_directory_review_would_refuse(profile, monkeypatch, kind, private_os):
+    private_os(purge_tool)
     _legacy(profile)
     if kind == "mode":
         profile.chmod(0o750)
     else:
-        monkeypatch.setattr(os, "geteuid", lambda: profile.stat().st_uid + 1)
+        monkeypatch.setattr(purge_tool.os, "geteuid", lambda: profile.stat().st_uid + 1)
     with pytest.raises(purge_tool.PurgeRefused):
         purge_tool.purge(profile)
     assert len(list(profile.iterdir())) == 3

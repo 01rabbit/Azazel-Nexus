@@ -87,7 +87,8 @@ def test_unsafe_declared_directory_refuses(tree, kind):
         inspect(tree)
 
 
-def test_membership_added_during_file_hashing_refuses(tree, monkeypatch):
+def test_membership_added_during_file_hashing_refuses(tree, monkeypatch, private_os):
+    private_os(measured)
     original = measured.os.read
     changed = []
 
@@ -122,7 +123,8 @@ def test_identical_directory_replacement_between_snapshots_refuses(tree, monkeyp
     assert len(calls) == 2
 
 
-def test_directory_enumeration_stops_at_first_unknown_child(tree, monkeypatch):
+def test_directory_enumeration_stops_at_first_unknown_child(tree, monkeypatch, private_os):
+    private_os(measured)
     consumed = []
 
     class Entry:
@@ -146,7 +148,8 @@ def test_directory_enumeration_stops_at_first_unknown_child(tree, monkeypatch):
     assert len(consumed) == 1
 
 
-def test_wrong_manifest_pin_refuses_before_directory_enumeration(tree, monkeypatch):
+def test_wrong_manifest_pin_refuses_before_directory_enumeration(tree, monkeypatch, private_os):
+    private_os(measured)
     monkeypatch.setattr(measured.os, "scandir", lambda _fd: pytest.fail("enumerated"))
     with pytest.raises(ApprovalRefused):
         measured._measure_at(tree[3], tree[4], expected_digest="sha256:" + "0" * 64,

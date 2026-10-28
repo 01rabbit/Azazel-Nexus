@@ -277,10 +277,11 @@ def test_a_result_that_cannot_be_removed_is_an_error(tmp_path):
         edge_probed.clear_previous_result(leaf / PROBE_STATE_PATH.name)
 
 
-def test_the_result_is_unlinked_relative_to_its_directory(tmp_path, monkeypatch):
+def test_the_result_is_unlinked_relative_to_its_directory(tmp_path, monkeypatch, private_os):
     """Every unlink goes through the directory's fd: a bare path would
     re-resolve the parent, symlinks and all."""
 
+    private_os(edge_probed)
     path = _result(tmp_path)
     (path.parent / ".edge-probe.abcd1234").write_text("partial", encoding="utf-8")
     real_unlink = edge_probed.os.unlink
@@ -300,7 +301,8 @@ def test_the_result_is_unlinked_relative_to_its_directory(tmp_path, monkeypatch)
         assert isinstance(kwargs.get("dir_fd"), int)
 
 
-def test_a_temporary_file_left_by_an_interrupted_write_is_removed(tmp_path, monkeypatch):
+def test_a_temporary_file_left_by_an_interrupted_write_is_removed(tmp_path, monkeypatch, private_os):
+    private_os(edge_probed)
     leaf = tmp_path / "edge-probe"
     path = leaf / PROBE_STATE_PATH.name
 
@@ -358,7 +360,8 @@ def test_a_temporary_name_that_is_not_a_regular_file_is_left_alone(tmp_path):
     assert (path.parent / ".edge-probe.dir00000" / "inside").exists()
 
 
-def test_a_temporary_file_that_cannot_be_removed_is_an_error(tmp_path, monkeypatch):
+def test_a_temporary_file_that_cannot_be_removed_is_an_error(tmp_path, monkeypatch, private_os):
+    private_os(edge_probed)
     path = _result(tmp_path)
     (path.parent / ".edge-probe.abcd1234").write_text("partial", encoding="utf-8")
     real_unlink = edge_probed.os.unlink
@@ -835,7 +838,8 @@ def test_the_result_is_written_atomically_and_leaves_no_debris(tmp_path):
     assert sorted(p.name for p in target.parent.iterdir()) == ["edge-probe.json"]
 
 
-def test_a_failed_write_leaves_no_partial_file(tmp_path, monkeypatch):
+def test_a_failed_write_leaves_no_partial_file(tmp_path, monkeypatch, private_os):
+    private_os(edge_probed)
     outcome = edge_probed.probe(
         _package(tmp_path), clock=_clock(), runner=_runner(), unit_reader=_units(),
         boot_id=BOOT,

@@ -146,7 +146,8 @@ def test_as_root_an_entry_in_another_group_is_unprotected(tmp_path):
     assert read_test(tmp_path, trust=kwargs["trust"]).embedding == loader.Refused("EVIDENCE_UNPROTECTED")
 
 
-def test_protected_signed_wrapper_uses_independent_context_and_ignores_env(tmp_path, monkeypatch):
+def test_protected_signed_wrapper_uses_independent_context_and_ignores_env(tmp_path, monkeypatch, private_os):
+    private_os(loader)
     kwargs, _, _ = inputs(descriptors=SimpleNamespace(close=lambda: None))
     store(tmp_path, kwargs)
     candidate = admitted_candidate()
@@ -409,7 +410,8 @@ def collected_store(tmp_path, monkeypatch):
     return trust, signer, write
 
 
-def test_full_collector_recomputes_observations_and_holds_verified_inodes(tmp_path, monkeypatch):
+def test_full_collector_recomputes_observations_and_holds_verified_inodes(tmp_path, monkeypatch, private_os):
+    private_os(loader)
     trust, _, write = collected_store(tmp_path, monkeypatch)
     # Demonstrate that even a legacy file accepted by its old reader is not an
     # admission input. This record is created in the temporary test tree only.
@@ -443,7 +445,8 @@ def test_full_collector_recomputes_observations_and_holds_verified_inodes(tmp_pa
     ("attester_revoked", "RESERVE_UNATTESTED"), ("missing_bundle", "RESERVE_UNATTESTED"),
     ("same_signer", "ATTESTER_IS_APPROVER"),
 ])
-def test_real_collector_refusals(tmp_path, monkeypatch, mutation, symbol):
+def test_real_collector_refusals(tmp_path, monkeypatch, mutation, symbol, private_os):
+    private_os(loader)
     from azazel_nexus_runtime import virtualization_observation
 
     from azazel_nexus.hil_records.evidence import attestation_bytes
@@ -484,7 +487,8 @@ def test_real_collector_refusals(tmp_path, monkeypatch, mutation, symbol):
     assert result.embedding == loader.Refused(symbol)
 
 
-def test_spawn_uses_both_held_descriptors_and_rehashes_before_popen(tmp_path, monkeypatch):
+def test_spawn_uses_both_held_descriptors_and_rehashes_before_popen(tmp_path, monkeypatch, private_os):
+    private_os(loader)
     from azazel_nexus_runtime import mio_supervisor
 
     trust, _, write = collected_store(tmp_path, monkeypatch)
@@ -600,7 +604,8 @@ def test_activation_and_locald_share_full_decision(tmp_path, monkeypatch, failur
     assert wired == bool(providers) == (failure is None)
 
 
-def test_request_recheck_never_hashes_content(tmp_path, monkeypatch):
+def test_request_recheck_never_hashes_content(tmp_path, monkeypatch, private_os):
+    private_os(loader)
     trust, _, _ = collected_store(tmp_path, monkeypatch)
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -652,7 +657,8 @@ def test_production_layers_refuse_disabled_or_missing_descriptors(tmp_path, monk
         mio_supervisor.ServingProcess(candidate.record, root=Path("/")).start()
 
 
-def test_root_and_locald_collect_same_node_binding(tmp_path, monkeypatch):
+def test_root_and_locald_collect_same_node_binding(tmp_path, monkeypatch, private_os):
+    private_os(loader)
     trust, _, _ = collected_store(tmp_path, monkeypatch)
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -689,7 +695,8 @@ def test_local_server_rechecks_kill_switch_after_construction(tmp_path, monkeypa
 
 @pytest.mark.parametrize("root", [False, True])
 @pytest.mark.parametrize("failure", [OSError, ValueError, KeyError])
-def test_identity_unavailable_agrees_for_live_and_handoff(tmp_path, monkeypatch, root, failure):
+def test_identity_unavailable_agrees_for_live_and_handoff(tmp_path, monkeypatch, root, failure, private_os):
+    private_os(loader)
     from azazel_nexus_runtime import hil_readiness, model_identity
 
     trust, _, _ = collected_store(tmp_path, monkeypatch)
@@ -812,7 +819,8 @@ def test_lab_admission_readers_refuse(tmp_path, monkeypatch, mutation):
 
 
 @pytest.mark.parametrize("mutation", ["record_schema", "manifest_schema", "domain", "lab_schema_and_domain"])
-def test_collector_refuses_lab_evidence(tmp_path, monkeypatch, mutation):
+def test_collector_refuses_lab_evidence(tmp_path, monkeypatch, mutation, private_os):
+    private_os(loader)
     from nacl.signing import SigningKey
 
     from azazel_nexus.hil_records.evidence import attestation_bytes

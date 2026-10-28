@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from signing_oracle import public_key_for, sign_detached
 
+from azazel_nexus import revocation
 from azazel_nexus.content_store import digest_bytes
 from azazel_nexus.revocation import (
     EMPTY,
@@ -211,12 +212,12 @@ def test_a_revoked_signer_cannot_issue_the_next_list(tmp_path: Path) -> None:
 
 
 def test_a_failed_write_leaves_the_previous_list_in_force(
-    store: RevocationStore, monkeypatch
+    store: RevocationStore, monkeypatch, private_os
 ) -> None:
-    import os as os_module
+    private_os(revocation)
 
     store.accept(signed(a_list(1, revoked_digests=frozenset({BAD_ARTIFACT}))))
-    monkeypatch.setattr(os_module, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("full")))
+    monkeypatch.setattr(revocation.os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("full")))
 
     with pytest.raises(OSError):
         store.accept(signed(a_list(2, revoked_digests=frozenset({BAD_ARTIFACT}))))

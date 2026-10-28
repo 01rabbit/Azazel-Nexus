@@ -145,8 +145,9 @@ def test_repin_reads_legacy_false_revocation_policy_marker(node):
 @pytest.mark.parametrize("previous_promotion", [False, True])
 @pytest.mark.parametrize("failure", ["staging", "validation", "generation", "pointer", "audit"])
 def test_each_failed_stage_retains_old_root_generation_and_bundle(
-    node, monkeypatch, failure, previous_promotion,
+    node, monkeypatch, failure, previous_promotion, private_os,
 ):
+    private_os(lite_trust)
     trust, request, ledger = node
     if previous_promotion:
         # Keep OLD admitted in generation 1, then try to remove it.
@@ -353,7 +354,8 @@ def test_omitting_confirmation_keyword_is_refused(node):
     assert list(ledger) == []
 
 
-def test_changed_source_size_cannot_bypass_read_bound(node, monkeypatch):
+def test_changed_source_size_cannot_bypass_read_bound(node, monkeypatch, private_os):
+    private_os(lite_trust)
     from types import SimpleNamespace
 
     trust, request, ledger = node
@@ -389,7 +391,8 @@ def test_duplicate_order_does_not_disguise_unchanged_root(node):
 
 
 @pytest.mark.parametrize("remove_orphan", [False, True])
-def test_failed_pointer_swap_then_retry_has_distinct_authorization(node, monkeypatch, remove_orphan):
+def test_failed_pointer_swap_then_retry_has_distinct_authorization(node, monkeypatch, remove_orphan, private_os):
+    private_os(lite_trust)
     trust, _, ledger = node
     replace = lite_trust.os.replace
 
@@ -450,7 +453,8 @@ def test_generation_files_also_determine_next_number(node):
     assert promote(node).generation == 9
 
 
-def test_replace_fsync_and_promoted_audit_order(node, monkeypatch):
+def test_replace_fsync_and_promoted_audit_order(node, monkeypatch, private_os):
+    private_os(lite_trust)
     trust, _, ledger = node
     operations = []
     replace = lite_trust.os.replace

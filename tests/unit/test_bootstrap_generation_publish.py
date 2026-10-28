@@ -193,9 +193,10 @@ def test_public_selection_revalidation_requires_callable_and_exact_none(store, m
 
 
 def test_pending_marker_and_reader_block_remain_after_injected_fsync_failure(
-    store, monkeypatch,
+    store, monkeypatch, private_os,
 ):
     import azazel_nexus.bootstrap_generation_publish as publisher
+    private_os(publisher)
 
     context, metadata, config = _inputs()
     original_fsync = publisher.os.fsync
@@ -258,8 +259,9 @@ def test_mutation_during_final_recheck_retains_marker_and_blocks_reader(store):
         _load(store, context)
 
 
-def test_final_directory_fsync_failure_is_reported_as_durability_uncertain(store, monkeypatch):
+def test_final_directory_fsync_failure_is_reported_as_durability_uncertain(store, monkeypatch, private_os):
     import azazel_nexus.bootstrap_generation_publish as publisher
+    private_os(publisher)
 
     context, metadata, config = _inputs()
     original_fsync = publisher.os.fsync

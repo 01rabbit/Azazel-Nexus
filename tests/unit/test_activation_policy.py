@@ -7,6 +7,7 @@ import os
 
 import pytest
 
+from azazel_nexus import activation_store
 from azazel_nexus import activation_policy
 from azazel_nexus.activation_policy import (
     ACTIVATION_UNIT_ALLOWLIST,
@@ -338,7 +339,8 @@ def test_missing_policy_or_directory_entry_of_wrong_type_refused(store):
         load_activation_policy()
 
 
-def test_policy_rewritten_during_a_read_refused(store, monkeypatch):
+def test_policy_rewritten_during_a_read_refused(store, monkeypatch, private_os):
+    private_os(activation_store)
     _, policy, _ = store
     original = os.read
 
@@ -349,7 +351,7 @@ def test_policy_rewritten_during_a_read_refused(store, monkeypatch):
                 stream.write(b" ")
         return data
 
-    monkeypatch.setattr(os, "read", rewriting)
+    monkeypatch.setattr(activation_store.os, "read", rewriting)
     with pytest.raises(ApprovalRefused):
         load_activation_policy()
 

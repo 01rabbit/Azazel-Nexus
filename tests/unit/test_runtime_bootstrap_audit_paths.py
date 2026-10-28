@@ -33,7 +33,8 @@ def _tree(tmp_path, monkeypatch):
     return ledger, opened, owners
 
 
-def test_fixed_path_and_expected_root_to_service_ownership(tmp_path, monkeypatch):
+def test_fixed_path_and_expected_root_to_service_ownership(tmp_path, monkeypatch, private_os):
+    private_os(bootstrap_audit)
     ledger, opened, owners = _tree(tmp_path, monkeypatch)
     fd = bootstrap_audit._open_ledger(1234)
     try:
@@ -45,7 +46,8 @@ def test_fixed_path_and_expected_root_to_service_ownership(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("relative", ["state", "state/audit"])
-def test_symlink_in_service_owned_ancestry_refuses(tmp_path, monkeypatch, relative):
+def test_symlink_in_service_owned_ancestry_refuses(tmp_path, monkeypatch, relative, private_os):
+    private_os(bootstrap_audit)
     ledger, _opened, _owners = _tree(tmp_path, monkeypatch)
     base = ledger.parent.parent
     target = base / relative
@@ -56,7 +58,8 @@ def test_symlink_in_service_owned_ancestry_refuses(tmp_path, monkeypatch, relati
         bootstrap_audit._open_ledger(1234)
 
 
-def test_missing_ledger_is_not_created(tmp_path, monkeypatch):
+def test_missing_ledger_is_not_created(tmp_path, monkeypatch, private_os):
+    private_os(bootstrap_audit)
     ledger, _opened, _owners = _tree(tmp_path, monkeypatch)
     ledger.rmdir()
     with pytest.raises(FileNotFoundError):

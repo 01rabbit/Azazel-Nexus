@@ -43,7 +43,8 @@ def test_pin_resolution_refuses_pending_unknown_absent_and_wrong(tmp_path, monke
         runtime.verify_runtime_binary(record, executable)
 
 
-def test_install_rechecks_copied_bytes_and_owns_result(tmp_path, monkeypatch):
+def test_install_rechecks_copied_bytes_and_owns_result(tmp_path, monkeypatch, private_os):
+    private_os(install_llama_runtime)
     source = tmp_path / "prebuilt"
     source.write_bytes(b"TEST ONLY")
     source.chmod(0o755)

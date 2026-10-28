@@ -161,23 +161,25 @@ def test_a_linked_floor_is_refused(state, tmp_path):
         read_edge_floor()
 
 
-def test_a_crash_before_rename_keeps_the_old_floor(state, monkeypatch):
+def test_a_crash_before_rename_keeps_the_old_floor(state, monkeypatch, private_os):
+    private_os(ef)
     raise_edge_floor(EdgeFloor("0.1.0", DIGEST_A))
     original = os.replace
 
     def crash(*args, **kwargs):
         raise OSError("power lost")
 
-    monkeypatch.setattr(os, "replace", crash)
+    monkeypatch.setattr(ef.os, "replace", crash)
     with pytest.raises(EdgeFloorRefused):
         raise_edge_floor(EdgeFloor("0.2.0", DIGEST_A))
-    monkeypatch.setattr(os, "replace", original)
+    monkeypatch.setattr(ef.os, "replace", original)
     assert read_edge_floor() == EdgeFloor("0.1.0", DIGEST_A)
     # The stale partial file is never read, and the next raise succeeds.
     assert raise_edge_floor(EdgeFloor("0.2.0", DIGEST_A)) == EdgeFloor("0.2.0", DIGEST_A)
 
 
-def test_an_unconfirmed_commit_is_uncertain_not_success(state, monkeypatch):
+def test_an_unconfirmed_commit_is_uncertain_not_success(state, monkeypatch, private_os):
+    private_os(ef)
     original = os.fsync
     calls = []
 
@@ -187,7 +189,7 @@ def test_an_unconfirmed_commit_is_uncertain_not_success(state, monkeypatch):
             raise OSError("fsync failed")
         return original(fd)
 
-    monkeypatch.setattr(os, "fsync", failing)
+    monkeypatch.setattr(ef.os, "fsync", failing)
     with pytest.raises(EdgeFloorCommitUncertain):
         raise_edge_floor(EdgeFloor("0.1.0", DIGEST_A))
     calls.clear()

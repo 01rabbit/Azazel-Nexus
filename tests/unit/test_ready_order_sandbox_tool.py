@@ -23,7 +23,8 @@ from tools import qualify_ready_order_sandbox as sandbox
 TOKEN = "0123456789abcdef0123456789abcdef"
 
 
-def test_default_plan_never_runs_subprocess_or_touches_systemd(monkeypatch, capsys):
+def test_default_plan_never_runs_subprocess_or_touches_systemd(monkeypatch, capsys, private_os):
+    private_os(sandbox)
     def forbidden(*args, **kwargs):
         pytest.fail("plan-only mode performed external work")
 
@@ -39,7 +40,8 @@ def test_default_plan_never_runs_subprocess_or_touches_systemd(monkeypatch, caps
     assert "not product READY" in plan["scope"]
 
 
-def test_nonroot_run_refuses_before_staging(monkeypatch):
+def test_nonroot_run_refuses_before_staging(monkeypatch, private_os):
+    private_os(sandbox)
     calls = []
     monkeypatch.setattr(sandbox.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(sandbox, "_stage_parent", lambda: calls.append("stage"))
@@ -395,7 +397,8 @@ def _happy_run(tmp_path, monkeypatch):
     return directory, order, fake
 
 
-def test_run_walks_order_death_and_rerun_then_cleans_up(tmp_path, monkeypatch):
+def test_run_walks_order_death_and_rerun_then_cleans_up(tmp_path, monkeypatch, private_os):
+    private_os(sandbox)
     directory, order, fake = _happy_run(tmp_path, monkeypatch)
     report = sandbox.run()
 
@@ -425,7 +428,8 @@ def test_run_walks_order_death_and_rerun_then_cleans_up(tmp_path, monkeypatch):
     assert not directory.exists()
 
 
-def test_run_fails_when_a_helper_runs_before_controller_ready(tmp_path, monkeypatch):
+def test_run_fails_when_a_helper_runs_before_controller_ready(tmp_path, monkeypatch, private_os):
+    private_os(sandbox)
     directory, order, _ = _happy_run(tmp_path, monkeypatch)
 
     class EarlyHelper(_FakeSystemd):
@@ -449,7 +453,8 @@ def test_run_fails_when_a_helper_runs_before_controller_ready(tmp_path, monkeypa
     assert report["ready_order"]["ordered"] is False
 
 
-def test_run_retains_directory_when_a_stop_is_unconfirmed(tmp_path, monkeypatch):
+def test_run_retains_directory_when_a_stop_is_unconfirmed(tmp_path, monkeypatch, private_os):
+    private_os(sandbox)
     directory, order, fake = _happy_run(tmp_path, monkeypatch)
 
     def flaky_stop(unit):

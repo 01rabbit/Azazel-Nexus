@@ -197,9 +197,10 @@ def test_actual_cli_to_public_store_and_reader_on_ordinary_files(protected, monk
 
 
 def test_fsync_failure_before_unlink_keeps_pending_marker_and_blocks_reader(
-    protected, monkeypatch,
+    protected, monkeypatch, private_os,
 ):
     import azazel_nexus.bootstrap_selection_store as selection_store
+    private_os(selection_store)
 
     root, _deployment, _selection, raw, _context, _uid = protected
     original_fsync = selection_store.os.fsync
@@ -224,9 +225,10 @@ def test_fsync_failure_before_unlink_keeps_pending_marker_and_blocks_reader(
 
 @pytest.mark.parametrize("recovery", [False, True])
 def test_final_fsync_after_unlink_reports_uncertainty_but_selection_reads(
-    protected, monkeypatch, recovery,
+    protected, monkeypatch, recovery, private_os,
 ):
     import azazel_nexus.bootstrap_selection_store as selection_store
+    private_os(selection_store)
 
     root, _deployment, selection, raw, _context, _uid = protected
     original_fsync = selection_store.os.fsync

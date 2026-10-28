@@ -9,7 +9,8 @@ from azazel_nexus_runtime import model_identity as identity
 
 
 @pytest.fixture
-def handoff(tmp_path, monkeypatch):
+def handoff(tmp_path, monkeypatch, private_os):
+    private_os(identity)
     tmp_path.chmod(0o750)
     monkeypatch.setattr(identity, "DIRECTORY", str(tmp_path))
     monkeypatch.setattr(identity.os, "geteuid", lambda: 0)

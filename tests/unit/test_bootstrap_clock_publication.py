@@ -263,7 +263,8 @@ def test_public_initializer_refuses_boottime_regression_and_retains_pending(
     assert (root / "time.json").read_bytes() == raw
 
 
-def test_final_directory_fsync_failure_reports_uncertain_durability(ordinary_store, monkeypatch):
+def test_final_directory_fsync_failure_reports_uncertain_durability(ordinary_store, monkeypatch, private_os):
+    private_os(store)
     root, fd, owner = ordinary_store
     raw = encode_administrator_anchor(make_anchor(_context()))
     original_fsync = store.os.fsync

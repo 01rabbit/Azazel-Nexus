@@ -315,8 +315,9 @@ def test_consumer_checks_anchors_conflicts_at_read_time(tmp_path):
         KnowledgeLite(tmp_path, COMMISSIONING).revocations()
 
 
-def test_failed_atomic_write_preserves_the_previous_statement(tmp_path, monkeypatch):
+def test_failed_atomic_write_preserves_the_previous_statement(tmp_path, monkeypatch, private_os):
     import azazel_nexus.revocation as module
+    private_os(module)
 
     store = commissioned(tmp_path)
     store.accept(signed(statement()))
@@ -351,8 +352,9 @@ def test_accepted_high_water_survives_disk_rollback_and_deletion(tmp_path):
     assert reopen(tmp_path).current().revoked_keys == revoked
 
 
-def test_interrupted_blob_publication_holds_closed_and_exact_retry_recovers(tmp_path, monkeypatch):
+def test_interrupted_blob_publication_holds_closed_and_exact_retry_recovers(tmp_path, monkeypatch, private_os):
     import azazel_nexus.revocation as module
+    private_os(module)
 
     store = commissioned(tmp_path)
     store.accept(signed(statement()))

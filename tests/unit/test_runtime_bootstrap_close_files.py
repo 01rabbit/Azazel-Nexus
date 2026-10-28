@@ -9,6 +9,7 @@ import pytest
 
 from azazel_nexus.bootstrap_overlay_journal import OverlayJournal, new_overlay_journal
 from azazel_nexus.operator_trust import ApprovalRefused
+from azazel_nexus_runtime import bootstrap_overlay_files
 from azazel_nexus_runtime.bootstrap_close_files import BootstrapClosedOverlayFiles
 from azazel_nexus_runtime.bootstrap_manager import BootstrapNarrowingManager
 from azazel_nexus_runtime.units import UnitKey
@@ -56,7 +57,8 @@ def test_close_published_candidates_returns_none_and_check_returns_exact_fragmen
         assert all((env["overlay_path"] / unit).read_bytes() == b"" for unit in PAIR)
 
 
-def test_partial_publication_closes_only_recorded_candidate(tmp_path, monkeypatch):
+def test_partial_publication_closes_only_recorded_candidate(tmp_path, monkeypatch, private_os):
+    private_os(bootstrap_overlay_files)
     with _environment(tmp_path) as env:
         real_open = os.open
 

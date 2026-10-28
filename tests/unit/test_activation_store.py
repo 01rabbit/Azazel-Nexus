@@ -290,8 +290,9 @@ def _synthetic_approval_root(monkeypatch, tmp_path):
 
 
 def test_real_approval_directory_uses_fixed_components_and_allows_nested_shared_lock(
-    monkeypatch, tmp_path,
+    monkeypatch, tmp_path, private_os,
 ):
+    private_os(activation_store)
     _, activation, opened = _synthetic_approval_root(monkeypatch, tmp_path)
     with activation_store._approval_directory() as first_fd:
         first = os.fstat(first_fd)
@@ -305,7 +306,8 @@ def test_real_approval_directory_uses_fixed_components_and_allows_nested_shared_
     assert activation.is_dir()
 
 
-def test_real_approval_directory_refuses_symlink_ancestor(monkeypatch, tmp_path):
+def test_real_approval_directory_refuses_symlink_ancestor(monkeypatch, tmp_path, private_os):
+    private_os(activation_store)
     root, _, _ = _synthetic_approval_root(monkeypatch, tmp_path)
     etc = root / "etc"
     moved = root / "etc-real"
@@ -317,8 +319,9 @@ def test_real_approval_directory_refuses_symlink_ancestor(monkeypatch, tmp_path)
 
 
 def test_real_approval_directory_refuses_contended_nonblocking_lock(
-    monkeypatch, tmp_path,
+    monkeypatch, tmp_path, private_os,
 ):
+    private_os(activation_store)
     _, activation, _ = _synthetic_approval_root(monkeypatch, tmp_path)
     held_fd = os.open(activation, os.O_RDONLY | os.O_DIRECTORY)
     try:

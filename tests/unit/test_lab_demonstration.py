@@ -262,8 +262,9 @@ def test_every_command_starts_with_banner_even_parser_error(capsys):
     assert capsys.readouterr().out.startswith(artifacts.BANNER)
 
 
-def test_refusal_json_has_lab_namespace_and_labels(monkeypatch, capsys):
-    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+def test_refusal_json_has_lab_namespace_and_labels(monkeypatch, capsys, private_os):
+    private_os(cli)
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
     assert cli.main(["up"]) == 2
     lines = capsys.readouterr().out.splitlines()
     assert lines[:2] == artifacts.BANNER.splitlines()
@@ -442,12 +443,13 @@ def test_lab_inprocess_real_library_rendering(scenario, kind):
         assert "テンプレート" in render(result)
 
 
-def test_ask_service_reply_is_separate_and_unchanged(tmp_path, monkeypatch, capsys):
+def test_ask_service_reply_is_separate_and_unchanged(tmp_path, monkeypatch, capsys, private_os):
+    private_os(cli)
     root = tmp_path / "demo"
     root.mkdir()
     (root / "session.json").write_text("{}")
     monkeypatch.setattr(cli, "BASE", tmp_path)
-    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
     reply = {"exit_code": 0, "stdout": json.dumps({"outcome": "handoff",
              "reason": "no_provider", "reference_status": "unavailable"}), "stderr": ""}
     monkeypatch.setattr(cli, "worker", lambda *args, **kwargs: reply)
@@ -461,10 +463,11 @@ def test_ask_service_reply_is_separate_and_unchanged(tmp_path, monkeypatch, caps
 
 
 @pytest.mark.parametrize("command", ["ask", "bench"])
-def test_embedding_refuses_before_worker_or_files(tmp_path, monkeypatch, capsys, command):
+def test_embedding_refuses_before_worker_or_files(tmp_path, monkeypatch, capsys, command, private_os):
+    private_os(cli)
     from azazel_nexus_lab.refusal import LabRefused
 
-    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
     monkeypatch.setattr(cli, "worker", lambda *a, **k: pytest.fail("worker called"))
     args = [command, "--embedding"] + ([str(tmp_path / "absent.json")] if command == "ask" else [])
     assert cli.main(args) == 2
@@ -631,7 +634,8 @@ def test_recovery_ignores_the_advancing_route_ledger_position(tmp_path, monkeypa
     assert "ledger_seq" in locald["observations"][0]["stdout"]
 
 
-def test_ask_freezes_frame_before_service_and_inprocess(tmp_path, monkeypatch, capsys):
+def test_ask_freezes_frame_before_service_and_inprocess(tmp_path, monkeypatch, capsys, private_os):
+    private_os(cli)
     root = tmp_path / "demo"
     root.mkdir()
     (root / "session.json").write_text("{}")
@@ -640,7 +644,7 @@ def test_ask_freezes_frame_before_service_and_inprocess(tmp_path, monkeypatch, c
     scenario.write_bytes(source.read_bytes())
     original = json.loads(source.read_text())["frame"]
     monkeypatch.setattr(cli, "BASE", tmp_path)
-    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
     def exchange(root, operation, *, payload):
         assert operation == "ask-frame" and payload == original
         scenario.write_text("{}")
@@ -665,10 +669,11 @@ def test_bench_roundtrips_keep_errors_as_samples(tmp_path, monkeypatch):
     assert result["samples"] == rows
 
 
-def test_bench_knowledge_probe_uses_real_status_socket_contract(tmp_path, monkeypatch, capsys):
+def test_bench_knowledge_probe_uses_real_status_socket_contract(tmp_path, monkeypatch, capsys, private_os):
     from types import SimpleNamespace
 
     from azazel_nexus_lab import worker
+    private_os(worker)
     from azazel_nexus_runtime import mio_socket_client
 
     monkeypatch.setenv("AZAZEL_ROOT", str(tmp_path))
@@ -686,10 +691,11 @@ def test_bench_knowledge_probe_uses_real_status_socket_contract(tmp_path, monkey
     assert json.loads(capsys.readouterr().out) == {"state": "unavailable"}
 
 
-def test_bench_refusal_is_still_labelled_software_performance(monkeypatch, capsys):
+def test_bench_refusal_is_still_labelled_software_performance(monkeypatch, capsys, private_os):
+    private_os(cli)
     from azazel_nexus_lab.bench import LABEL, SCHEMA
 
-    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
     assert cli.main(["bench"]) == 2
     text = capsys.readouterr().out
     assert text.startswith(artifacts.BANNER) and LABEL in text

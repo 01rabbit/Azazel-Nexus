@@ -302,7 +302,8 @@ def test_manifest_option_error_is_json():
 
 
 @pytest.mark.parametrize("denied_at", ["record", "pending"])
-def test_protected_metadata_denied_becomes_blocked_rows(tmp_path, fixture_host, monkeypatch, denied_at):
+def test_protected_metadata_denied_becomes_blocked_rows(tmp_path, fixture_host, monkeypatch, denied_at, private_os):
+    private_os(flow)
     original_file = Path.is_file
     original_exists = Path.exists
 
@@ -432,7 +433,8 @@ def test_setup_redacts_malformed_mio_ledger_in_text_and_json(tmp_path, fixture_h
             assert reading["reasons"] == {} and reading["observed_at"] is None
 
 
-def test_permission_denied_as_root_does_not_advise_running_as_root(monkeypatch):
+def test_permission_denied_as_root_does_not_advise_running_as_root(monkeypatch, private_os):
+    private_os(flow)
     monkeypatch.setattr(flow.os, "geteuid", lambda: 0)
     observation = flow._permission_denied()
     assert observation.state is State.REFUSED

@@ -153,8 +153,9 @@ def test_protected_directory_requirements_refuse_before_marker(
 
 @pytest.mark.parametrize("failure", ["file-fsync", "directory-fsync"])
 def test_creation_fsync_failure_leaves_marker_for_fail_closed_retry(
-    protected_directory, monkeypatch, failure,
+    protected_directory, monkeypatch, failure, private_os,
 ):
+    private_os(controller_once)
     directory, fd, reopen, guard = protected_directory
     original_fsync = controller_once.os.fsync
 

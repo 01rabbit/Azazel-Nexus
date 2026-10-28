@@ -31,8 +31,9 @@ def _assert_masks_preserved(fixture: overlay.MaskOverlayFixture) -> None:
 
 
 def test_recover_removes_partial_grant_after_second_create_failure(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, private_os,
 ) -> None:
+    private_os(overlay)
     with overlay.MaskOverlayFixture() as fixture:
         real_open = overlay.os.open
 
@@ -56,8 +57,9 @@ def test_recover_removes_partial_grant_after_second_create_failure(
 
 
 def test_recover_tracks_only_bytes_successfully_written_before_write_error(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, private_os,
 ) -> None:
+    private_os(overlay)
     with overlay.MaskOverlayFixture() as fixture:
         real_write = overlay.os.write
         calls = 0
@@ -83,8 +85,9 @@ def test_recover_tracks_only_bytes_successfully_written_before_write_error(
 
 
 def test_recover_after_partial_withdrawal_failure(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, private_os,
 ) -> None:
+    private_os(overlay)
     with overlay.MaskOverlayFixture() as fixture:
         fixture.grant()
         real_unlink = overlay.os.unlink
@@ -108,8 +111,9 @@ def test_recover_after_partial_withdrawal_failure(
 
 
 def test_recover_can_retry_after_directory_fsync_failure(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, private_os,
 ) -> None:
+    private_os(overlay)
     with overlay.MaskOverlayFixture() as fixture:
         fixture.grant()
         real_fsync = overlay.os.fsync
@@ -134,8 +138,9 @@ def test_recover_can_retry_after_directory_fsync_failure(
 
 
 def test_keyboard_interrupt_leaves_incomplete_phase_and_is_recoverable(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, private_os,
 ) -> None:
+    private_os(overlay)
     with overlay.MaskOverlayFixture() as fixture:
         real_fsync = overlay.os.fsync
         calls = 0
@@ -158,8 +163,9 @@ def test_keyboard_interrupt_leaves_incomplete_phase_and_is_recoverable(
 
 
 def test_recovery_keyboard_interrupt_marks_incomplete_and_can_be_retried(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, private_os,
 ) -> None:
+    private_os(overlay)
     with overlay.MaskOverlayFixture() as fixture:
         fixture.grant()
         real_unlink = overlay.os.unlink
@@ -210,8 +216,9 @@ def test_recover_refuses_replaced_inode_even_when_bytes_match() -> None:
 
 
 def test_recover_refuses_mutated_partial_bytes_before_removing_any_candidate(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, private_os,
 ) -> None:
+    private_os(overlay)
     with overlay.MaskOverlayFixture() as fixture:
         fixture.grant()
         real_unlink = overlay.os.unlink

@@ -48,7 +48,8 @@ def test_close_preserves_owned_inodes_and_persistent_masks(tmp_path):
             assert mask.is_symlink() and os.readlink(mask) == masks[unit] == "/dev/null"
 
 
-def test_closing_journal_is_durable_before_first_truncate(tmp_path, monkeypatch):
+def test_closing_journal_is_durable_before_first_truncate(tmp_path, monkeypatch, private_os):
+    private_os(writer)
     with _environment(tmp_path) as env:
         published = _publish(env)
         real_ftruncate = os.ftruncate
@@ -68,7 +69,8 @@ def test_closing_journal_is_durable_before_first_truncate(tmp_path, monkeypatch)
         assert all(length == 0 for _fd, length in observed)
 
 
-def test_second_truncate_failure_recovers_from_mixed_owned_files(tmp_path, monkeypatch):
+def test_second_truncate_failure_recovers_from_mixed_owned_files(tmp_path, monkeypatch, private_os):
+    private_os(writer)
     with _environment(tmp_path) as env:
         _publish(env)
         real_ftruncate = os.ftruncate
@@ -95,7 +97,8 @@ def test_second_truncate_failure_recovers_from_mixed_owned_files(tmp_path, monke
         assert all((env["overlay_path"] / unit).read_bytes() == b"" for unit in PAIR)
 
 
-def test_file_fsync_failure_is_recoverable_while_closing(tmp_path, monkeypatch):
+def test_file_fsync_failure_is_recoverable_while_closing(tmp_path, monkeypatch, private_os):
+    private_os(writer)
     with _environment(tmp_path) as env:
         _publish(env)
         real_fsync = os.fsync
@@ -121,7 +124,8 @@ def test_file_fsync_failure_is_recoverable_while_closing(tmp_path, monkeypatch):
         assert all((env["overlay_path"] / unit).read_bytes() == b"" for unit in PAIR)
 
 
-def test_repeat_close_is_idempotent(tmp_path, monkeypatch):
+def test_repeat_close_is_idempotent(tmp_path, monkeypatch, private_os):
+    private_os(writer)
     with _environment(tmp_path) as env:
         _publish(env)
         first = _close(env)
@@ -190,8 +194,9 @@ def _retain_partial_publication(env, monkeypatch):
 
 
 def test_partial_publication_closes_owned_file_when_unowned_path_is_absent(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, private_os
 ):
+    private_os(writer)
     with _environment(tmp_path) as env:
         _retain_partial_publication(env, monkeypatch)
 
@@ -203,7 +208,8 @@ def test_partial_publication_closes_owned_file_when_unowned_path_is_absent(
         assert not (env["overlay_path"] / PAIR[1]).exists()
 
 
-def test_partial_publication_refuses_unowned_same_byte_file(tmp_path, monkeypatch):
+def test_partial_publication_refuses_unowned_same_byte_file(tmp_path, monkeypatch, private_os):
+    private_os(writer)
     with _environment(tmp_path) as env:
         _retain_partial_publication(env, monkeypatch)
         foreign = env["overlay_path"] / PAIR[1]
@@ -263,8 +269,9 @@ def test_journal_write_failure_prevents_truncation(tmp_path, monkeypatch):
 
 
 def test_uncertain_closing_persistence_must_be_reaffirmed_before_recovery(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, private_os
 ):
+    private_os(writer)
     with _environment(tmp_path) as env:
         _publish(env)
         before = {
@@ -312,8 +319,9 @@ def test_uncertain_closing_persistence_must_be_reaffirmed_before_recovery(
 
 @pytest.mark.parametrize("conflict", ["higher", "dropin"])
 def test_conflict_appearing_after_closing_intent_prevents_truncation(
-    tmp_path, monkeypatch, conflict
+    tmp_path, monkeypatch, conflict, private_os
 ):
+    private_os(writer)
     with _environment(tmp_path) as env:
         _publish(env)
         before = {

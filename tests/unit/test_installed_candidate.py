@@ -6,6 +6,7 @@ import os
 import pytest
 
 from azazel_nexus import installed_candidate as candidate
+from azazel_nexus import installed_files
 from azazel_nexus.installed_files import _measure_at
 from azazel_nexus.installed_manifest import decode_installed_manifest
 from azazel_nexus.operator_trust import ApprovalRefused
@@ -62,7 +63,7 @@ def test_v2_candidate_measures_only_explicit_directory_membership(tree):
     assert measured.directory_count == len(directories)
 
 
-def test_v3_candidate_records_explicit_link_without_opening_it(tree, monkeypatch):
+def test_v3_candidate_records_explicit_link_without_opening_it(tree, monkeypatch, private_os):
     root, fd, paths, owner = tree
     link_path = "opt/azazel/helper-alias"
     link = root / link_path
@@ -74,7 +75,10 @@ def test_v3_candidate_records_explicit_link_without_opening_it(tree, monkeypatch
             pytest.fail("candidate opened the symlink leaf")
         return original_open(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr(candidate.os, "open", no_follow_open)
+    # The candidate and the measurement it delegates to both open entries.
+    for module in (candidate, installed_files):
+        private_os(module)
+        monkeypatch.setattr(module.os, "open", no_follow_open)
     directories = ("opt/azazel", "usr/lib", "usr/lib/azazel")
     raw = candidate._candidate_at(
         fd, paths, owner=owner, directories=directories, links=(link_path,),
@@ -145,11 +149,14 @@ def test_v2_candidate_refuses_unlisted_child_in_selected_directory(tree):
     ("usr/lib", "usr/lib"),
     ("usr/../etc",),
 ])
-def test_invalid_directory_selection_refuses_before_any_open(tree, monkeypatch, directories):
+def test_invalid_directory_selection_refuses_before_any_open(tree, monkeypatch, directories, private_os):
     def forbidden_open(*_args, **_kwargs):
         pytest.fail("invalid directory selection reached filesystem open")
 
-    monkeypatch.setattr(candidate.os, "open", forbidden_open)
+    # The guard covers the measurement helpers the candidate delegates to.
+    for module in (candidate, installed_files):
+        private_os(module)
+        monkeypatch.setattr(module.os, "open", forbidden_open)
     with pytest.raises(ApprovalRefused):
         candidate._candidate_at(tree[1], tree[2], owner=tree[3], directories=directories)
 
@@ -163,17 +170,20 @@ def test_invalid_directory_selection_refuses_before_any_open(tree, monkeypatch, 
     ("usr//a",),
     ("usr/a\\b",),
 ])
-def test_invalid_or_unsafe_selection_refuses_before_any_open(tree, monkeypatch, paths):
+def test_invalid_or_unsafe_selection_refuses_before_any_open(tree, monkeypatch, paths, private_os):
     def forbidden_open(*_args, **_kwargs):
         pytest.fail("invalid selection reached filesystem open")
 
-    monkeypatch.setattr(candidate.os, "open", forbidden_open)
+    # The guard covers the measurement helpers the candidate delegates to.
+    for module in (candidate, installed_files):
+        private_os(module)
+        monkeypatch.setattr(module.os, "open", forbidden_open)
     with pytest.raises(ApprovalRefused):
         observe(tree, paths)
 
 
 @pytest.mark.parametrize("kind", ["symlink", "directory", "hardlink", "mode"])
-def test_unsafe_candidate_entries_are_refused_before_opening_leaf(tree, monkeypatch, kind):
+def test_unsafe_candidate_entries_are_refused_before_opening_leaf(tree, monkeypatch, kind, private_os):
     root, _fd, paths, _owner = tree
     target = root / paths[0]
     if kind == "symlink":
@@ -196,7 +206,10 @@ def test_unsafe_candidate_entries_are_refused_before_opening_leaf(tree, monkeypa
             pytest.fail("unsafe leaf was opened")
         return original_open(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr(candidate.os, "open", checked_open)
+    # The guard covers the measurement helpers the candidate delegates to.
+    for module in (candidate, installed_files):
+        private_os(module)
+        monkeypatch.setattr(module.os, "open", checked_open)
     with pytest.raises(ApprovalRefused):
         observe(tree)
     assert leaf_opens == []
@@ -228,31 +241,38 @@ def test_change_between_candidate_read_and_selected_snapshot_refuses(
     assert calls == [None]
 
 
-def test_file_size_limit_rejects_before_read(tree, monkeypatch):
+def test_file_size_limit_rejects_before_read(tree, monkeypatch, private_os):
     _root, _fd, _paths, _owner = tree
     monkeypatch.setattr(candidate, "_MAX_FILE_SIZE", 4)
 
     def forbidden_read(*_args):
         pytest.fail("oversized file was read")
 
-    monkeypatch.setattr(candidate.os, "read", forbidden_read)
+    # The guard covers the measurement helpers the candidate delegates to.
+    for module in (candidate, installed_files):
+        private_os(module)
+        monkeypatch.setattr(module.os, "read", forbidden_read)
     with pytest.raises(ApprovalRefused):
         observe(tree)
 
 
-def test_file_count_limit_rejects_selection_before_tree_walk(tree, monkeypatch):
+def test_file_count_limit_rejects_selection_before_tree_walk(tree, monkeypatch, private_os):
     monkeypatch.setattr(candidate, "_MAX_FILES", 1)
 
     def forbidden_open(*_args, **_kwargs):
         pytest.fail("over-count selection reached filesystem")
 
-    monkeypatch.setattr(candidate.os, "open", forbidden_open)
+    # The guard covers the measurement helpers the candidate delegates to.
+    for module in (candidate, installed_files):
+        private_os(module)
+        monkeypatch.setattr(module.os, "open", forbidden_open)
     with pytest.raises(ApprovalRefused):
         observe(tree)
 
 
 @pytest.mark.parametrize("payload", [b"", b"grown" * 100])
-def test_growth_or_truncation_during_read_refuses(tree, monkeypatch, payload):
+def test_growth_or_truncation_during_read_refuses(tree, monkeypatch, payload, private_os):
+    private_os(candidate)
     leaf = tree[0] / tree[2][0]
     original_read = candidate.os.read
     changed = False
@@ -269,7 +289,8 @@ def test_growth_or_truncation_during_read_refuses(tree, monkeypatch, payload):
         observe(tree)
 
 
-def test_second_pass_failure_closes_owned_descriptors_but_not_caller_root(tree, monkeypatch):
+def test_second_pass_failure_closes_owned_descriptors_but_not_caller_root(tree, monkeypatch, private_os):
+    private_os(candidate)
     allocated = []
     original_open, original_dup = candidate.os.open, candidate.os.dup
 

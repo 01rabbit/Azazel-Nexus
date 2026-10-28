@@ -84,26 +84,29 @@ def test_concurrent_writer_is_refused(transaction):
         os.close(other)
 
 
-def test_write_failure_preserves_old_store_and_cleans_owned_temporary(transaction, monkeypatch):
+def test_write_failure_preserves_old_store_and_cleans_owned_temporary(transaction, monkeypatch, private_os):
+    private_os(enrollment)
     path, fd, args = transaction
     enrollment._update_at(fd, **args)
     before = (path / "operators.json").read_bytes()
-    monkeypatch.setattr(os, "write", lambda *a: 0)
+    monkeypatch.setattr(enrollment.os, "write", lambda *a: 0)
     with pytest.raises(OSError):
         enrollment._update_at(fd, **(args | {"action": "revoke"}))
     assert (path / "operators.json").read_bytes() == before
     assert len(list(path.iterdir())) == 1
 
 
-def test_rootless_public_update_does_not_open_storage(transaction, monkeypatch):
+def test_rootless_public_update_does_not_open_storage(transaction, monkeypatch, private_os):
+    private_os(enrollment)
     _, _, args = transaction
-    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(enrollment.os, "geteuid", lambda: 1000)
     with pytest.raises(ApprovalRefused, match="administrator"):
         enrollment.update_operator(**{k: v for k, v in args.items() if k != "owner"})
 
 
-def test_cli_requires_interactive_administrator(monkeypatch):
-    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+def test_cli_requires_interactive_administrator(monkeypatch, private_os):
+    private_os(enrollment)
+    monkeypatch.setattr(enrollment.os, "geteuid", lambda: 1000)
     assert enrollment.main(["enroll", "operator-a"]) == 1
 
 
@@ -117,7 +120,8 @@ def test_temporary_name_collision_does_not_remove_existing_file(transaction, mon
     assert sentinel.read_bytes() == b"owned by another operation"
 
 
-def test_postrename_failure_does_not_rollback_revocation(transaction, monkeypatch):
+def test_postrename_failure_does_not_rollback_revocation(transaction, monkeypatch, private_os):
+    private_os(enrollment)
     _, fd, args = transaction
     enrollment._update_at(fd, **args)
     original = os.fsync
@@ -127,16 +131,17 @@ def test_postrename_failure_does_not_rollback_revocation(transaction, monkeypatc
             raise OSError("simulated durability failure")
         original(target)
 
-    monkeypatch.setattr(os, "fsync", fail_directory_fsync)
+    monkeypatch.setattr(enrollment.os, "fsync", fail_directory_fsync)
     with pytest.raises(OSError):
         enrollment._update_at(fd, **(args | {"action": "revoke"}))
     assert "operator-a" in _read_at(fd, owner=os.getuid()).revoked
 
 
 @pytest.mark.parametrize("consent,expected", [("ENROLL operator-a", 0), ("yes", 1)])
-def test_cli_separates_fingerprint_and_action_confirmation(transaction, monkeypatch, consent, expected):
+def test_cli_separates_fingerprint_and_action_confirmation(transaction, monkeypatch, consent, expected, private_os):
+    private_os(enrollment)
     _, _, args = transaction
-    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(enrollment.os, "geteuid", lambda: 0)
     monkeypatch.setattr(enrollment.sys.stdin, "isatty", lambda: True)
     answers = iter((args["public_key_hex"], args["confirmation"], consent))
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
@@ -190,7 +195,8 @@ def _reader_group(monkeypatch, gid):
     monkeypatch.setattr(enrollment.grp, "getgrnam", lookup)
 
 
-def test_reader_group_present_writes_group_readable_store(transaction, monkeypatch):
+def test_reader_group_present_writes_group_readable_store(transaction, monkeypatch, private_os):
+    private_os(enrollment)
     path, fd, args = transaction
     # The caller's own primary group stands in for azmission-read; the test
     # owner seam stands in for root. Real cross-user access is covered below.
@@ -211,8 +217,8 @@ def test_reader_group_present_writes_group_readable_store(transaction, monkeypat
         if target in created:
             temporary_modes.append(mode)
         original_fchmod(target, mode)
-    monkeypatch.setattr(os, "open", observe)
-    monkeypatch.setattr(os, "fchmod", record)
+    monkeypatch.setattr(enrollment.os, "open", observe)
+    monkeypatch.setattr(enrollment.os, "fchmod", record)
     enrollment._update_at(fd, **args)
     monkeypatch.undo()
     info = (path / "operators.json").stat()
@@ -229,19 +235,21 @@ def test_reader_group_present_writes_group_readable_store(transaction, monkeypat
     assert len(list(path.iterdir())) == 1
 
 
-def test_reader_group_absent_keeps_private_modes(transaction, monkeypatch):
+def test_reader_group_absent_keeps_private_modes(transaction, monkeypatch, private_os):
+    private_os(enrollment)
     path, fd, args = transaction
     _reader_group(monkeypatch, None)
     calls = []
-    monkeypatch.setattr(os, "fchown", lambda *a: calls.append(a))
+    monkeypatch.setattr(enrollment.os, "fchown", lambda *a: calls.append(a))
     enrollment._update_at(fd, **args)
     assert calls == []
     assert stat.S_IMODE((path / "operators.json").stat().st_mode) == 0o600
     assert stat.S_IMODE(path.stat().st_mode) == 0o700
 
 
-def test_store_owned_by_another_group_is_not_handed_to_readers(transaction, monkeypatch):
+def test_store_owned_by_another_group_is_not_handed_to_readers(transaction, monkeypatch, private_os):
     """Matches provisioning: a deliberately assigned foreign group is kept private."""
+    private_os(enrollment)
     path, fd, args = transaction
     if os.getgid() == 0:
         pytest.skip("needs a non-root primary group to stand in for a foreign group")
@@ -249,7 +257,7 @@ def test_store_owned_by_another_group_is_not_handed_to_readers(transaction, monk
     current = path.stat().st_gid
     _reader_group(monkeypatch, current + 4242)
     calls = []
-    monkeypatch.setattr(os, "fchown", lambda *a: calls.append(a))
+    monkeypatch.setattr(enrollment.os, "fchown", lambda *a: calls.append(a))
     enrollment._update_at(fd, **args)
     assert calls == []
     assert stat.S_IMODE((path / "operators.json").stat().st_mode) == 0o600
@@ -317,7 +325,8 @@ def test_non_owner_group_member_can_load_store_written_as_root(monkeypatch):
         shutil.rmtree(base)
 
 
-def test_missing_trust_directory_is_named(monkeypatch):
+def test_missing_trust_directory_is_named(monkeypatch, private_os):
+    private_os(enrollment)
     monkeypatch.setattr(enrollment.os, "geteuid", lambda: 0)
     monkeypatch.setattr(enrollment, "TRUST_DIRECTORY", "/nonexistent/azazel-operator-trust")
     with pytest.raises(ApprovalRefused, match="operator trust directory .* is missing"):
@@ -325,7 +334,8 @@ def test_missing_trust_directory_is_named(monkeypatch):
                                    public_key_hex="00" * 32, confirmation="sha256:" + "0" * 64)
 
 
-def test_refusal_reason_is_printed(monkeypatch, capsys):
+def test_refusal_reason_is_printed(monkeypatch, capsys, private_os):
+    private_os(enrollment)
     monkeypatch.setattr(enrollment.os, "geteuid", lambda: 0)
     monkeypatch.setattr(enrollment.sys.stdin, "isatty", lambda: True)
     answers = iter(["00" * 32, "sha256:" + "0" * 64, "WRONG"])

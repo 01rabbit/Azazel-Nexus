@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from azazel_nexus import lite_import, store_dirs
 from azazel_nexus.lite_bundle import StaticReference, TimeBound, read_anchors
 from azazel_nexus.lite_import import (
     CommissionedLite,
@@ -531,7 +532,7 @@ def _test_key_node(tmp_path, *payloads):
     return LiteImport(CommissionedLite(root=root)), root
 
 
-def test_a_failed_promotion_leaves_the_previous_artifact_serving(tmp_path, monkeypatch) -> None:
+def test_a_failed_promotion_leaves_the_previous_artifact_serving(tmp_path, monkeypatch, private_os) -> None:
     """Atomic, made observable. Survived a mutation to a plain write.
 
     A direct write truncates the live artifact before the new bytes land, so
@@ -545,7 +546,7 @@ def test_a_failed_promotion_leaves_the_previous_artifact_serving(tmp_path, monke
     nothing. Both bundles are signed by the same key here.
     """
 
-    import os as _os
+    private_os(lite_import)
 
     service, root = _test_key_node(tmp_path, 5, 6)
     entries = service.list_inbox()
@@ -565,7 +566,7 @@ def test_a_failed_promotion_leaves_the_previous_artifact_serving(tmp_path, monke
     def explode(*args, **kwargs):
         raise OSError("disk full")
 
-    monkeypatch.setattr(_os, "replace", explode)
+    monkeypatch.setattr(lite_import.os, "replace", explode)
     with pytest.raises(OSError):
         service.import_entry(second_entry.entry_id, now=FRESH)
     monkeypatch.undo()
@@ -724,7 +725,8 @@ def test_untrusted_watermark_blocks_serving_and_import_without_quarantine(node, 
 
 @pytest.mark.parametrize("role", ["admitted/current.tar.gz", "state/watermark"])
 @pytest.mark.parametrize("damage", ["hardlink", "writable", "symlink", "owner"])
-def test_unsafe_store_files_block_import(node, monkeypatch, role, damage):
+def test_unsafe_store_files_block_import(node, monkeypatch, role, damage, private_os):
+    private_os(lite_import)
     service, log, root = node("lite.tar.gz")
     _import_only_entry(service)
     path = root / role
@@ -736,7 +738,7 @@ def test_unsafe_store_files_block_import(node, monkeypatch, role, damage):
         path.rename(root / "original")
         path.symlink_to(root / "original")
     else:
-        monkeypatch.setattr(os, "geteuid", lambda: path.stat().st_uid + 1)
+        monkeypatch.setattr(lite_import.os, "geteuid", lambda: path.stat().st_uid + 1)
     with pytest.raises(ImportRefused):
         _import_only_entry(service)
     assert log[-1][0] == Transition.STATE_UNTRUSTED.value
@@ -755,7 +757,7 @@ def test_import_audits_existing_directory_tightening(node):
     assert (root / "admitted").stat().st_mode & 0o022 == 0
 
 
-def test_unreadable_watermark_is_not_zero(node, monkeypatch):
+def test_unreadable_watermark_is_not_zero(node, monkeypatch, private_os):
     service, log, root = node("lite.tar.gz")
     _import_only_entry(service)
     original = os.open
@@ -765,7 +767,9 @@ def test_unreadable_watermark_is_not_zero(node, monkeypatch):
             denied.append(path)
             raise PermissionError("private detail")
         return original(path, *args, **kwargs)
-    monkeypatch.setattr(os, "open", deny)
+    for module in (lite_import, store_dirs):
+        private_os(module)
+        monkeypatch.setattr(module.os, "open", deny)
     assert list(service.serve(query_as_of=FRESH)) == []
     with pytest.raises(ImportRefused):
         _import_only_entry(service)

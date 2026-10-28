@@ -180,7 +180,8 @@ def _ns_setup(tmp_path, monkeypatch, *, cgroup=GOOD_CGROUP, magic=None, swap=Non
     return target, opened
 
 
-def test_namespaces_accepts_exact_controller_line_and_is_deterministic(tmp_path, monkeypatch):
+def test_namespaces_accepts_exact_controller_line_and_is_deterministic(tmp_path, monkeypatch, private_os):
+    private_os(cgroup_mount)
     target, opened = _ns_setup(tmp_path, monkeypatch)
     first = cgroup_mount._namespaces()
     info = os.stat(target)
@@ -204,28 +205,32 @@ def test_namespaces_accepts_exact_controller_line_and_is_deterministic(tmp_path,
         b"0::/../system.slice/azazel-activated.service\n",
     ],
 )
-def test_namespaces_refuses_other_cgroup_content(tmp_path, monkeypatch, content):
+def test_namespaces_refuses_other_cgroup_content(tmp_path, monkeypatch, content, private_os):
+    private_os(cgroup_mount)
     _ns_setup(tmp_path, monkeypatch, cgroup=content)
     with pytest.raises(UnitOperationFailed):
         cgroup_mount._namespaces()
 
 
-def test_namespaces_refuses_wrong_nsfs_magic(tmp_path, monkeypatch):
+def test_namespaces_refuses_wrong_nsfs_magic(tmp_path, monkeypatch, private_os):
+    private_os(cgroup_mount)
     _ns_setup(tmp_path, monkeypatch, magic=0x1234)
     with pytest.raises(UnitOperationFailed, match="kernel namespace descriptor required"):
         cgroup_mount._namespaces()
 
 
 @pytest.mark.parametrize("swap", [1, 2])
-def test_namespaces_refuses_link_changed_between_reads(tmp_path, monkeypatch, swap):
+def test_namespaces_refuses_link_changed_between_reads(tmp_path, monkeypatch, swap, private_os):
     # swap=1: link replaced right after the initial lstat; swap=2: replaced
     # around the /proc/self/cgroup read (recheck after the read must catch it).
+    private_os(cgroup_mount)
     _ns_setup(tmp_path, monkeypatch, swap=swap)
     with pytest.raises(UnitOperationFailed, match="namespace link changed"):
         cgroup_mount._namespaces()
 
 
-def test_namespaces_never_opens_pid1(tmp_path, monkeypatch):
+def test_namespaces_never_opens_pid1(tmp_path, monkeypatch, private_os):
+    private_os(cgroup_mount)
     _, opened = _ns_setup(tmp_path, monkeypatch)
     cgroup_mount._namespaces()
     assert opened == ["/proc/self/ns"]

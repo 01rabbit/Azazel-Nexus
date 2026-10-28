@@ -12,7 +12,8 @@ _INVOCATION = "a1" * 16
 
 
 @pytest.fixture
-def identity_inputs(monkeypatch):
+def identity_inputs(monkeypatch, private_os):
+    private_os(module)
     monkeypatch.setattr(module, "ROOT", Path("/"))
     monkeypatch.setattr(module.os, "getpid", lambda: 1234)
     monkeypatch.setattr(module.os, "geteuid", lambda: 0)
