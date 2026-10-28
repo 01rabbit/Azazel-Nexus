@@ -141,7 +141,10 @@ def test_every_other_unit_keeps_its_install_section():
     from azazel_nexus_runtime.hardening import OBSERVER_SERVICE_UNITS
 
     for profile in ALL_PROFILES:
-        if profile.unit == DECOY_VERIFY_UNIT:
+        # The verify unit, and the read-only UI service (U5), whose socket
+        # carries the [Install] section instead.
+        if profile.unit in (DECOY_VERIFY_UNIT, "azazel-ui.service"):
+            assert _sections(render_unit(profile))[-1] != "[Install]", profile.unit
             continue
         if profile.unit in OBSERVER_SERVICE_UNITS:
             # Started by its own timer (U2), which carries the [Install].

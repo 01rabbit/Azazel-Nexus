@@ -1,0 +1,54 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# Read-only operator UI.
+# It shows what azazel-nexus status --json and setup --json show and performs no action: no confirmation, approval, start or stop.
+# It accepts on the loopback socket azazel-ui.socket passes and never creates a socket of an internet family: AF_UNIX only and PrivateNetwork=yes.
+# It runs as azui with no supplementary group, so it reaches no daemon socket and reads only what any account may; a snapshot it cannot read is shown as permission denied.
+# It writes only the login-code leaf, which the operator group reads.
+# Not governed and required by no unit: stopping it stops nothing else.
+
+[Unit]
+Description=Azazel-Nexus read-only operator UI
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/operator-ui.md
+After=azazel-ui.socket
+Requires=azazel-ui.socket
+
+[Service]
+Type=simple
+User=azui
+ExecStart=/usr/libexec/azazel/az-ui
+PrivateNetwork=yes
+ProtectProc=invisible
+RemoveIPC=yes
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=10s
+MemoryMax=192M
+MemorySwapMax=0
+TasksMax=32
+LimitNOFILE=128
+LimitFSIZE=65536
+LogRateLimitIntervalSec=30
+LogRateLimitBurst=50
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/azazel/run/ui-login
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+UMask=0027

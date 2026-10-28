@@ -727,6 +727,10 @@ def main(
     )
     sub.add_parser("health", help="units and the audit chain")
     sub.add_parser(
+        "ui-login",
+        help="print the read-only UI's current one-use login code (operator group only)",
+    )
+    sub.add_parser(
         "bootstrap-deployment-preview",
         help="validate canonical administrator JSON from stdin; no installation or admission",
     )
@@ -819,6 +823,11 @@ def main(
         if args.command in {"hil-preflight", "commission-review", "commission", "model-import-fetched"}:
             print("refused: LAB_HOST_MARKER", file=error_stream)
             return 2
+
+    if args.command == "ui-login":
+        from datetime import datetime
+        from .ui_login import run as run_ui_login
+        return run_ui_login(stream, now=datetime.fromisoformat(_now()).timestamp())
 
     if args.command == "broker":
         from .broker_cli import run as run_broker

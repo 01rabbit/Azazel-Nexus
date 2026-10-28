@@ -197,6 +197,14 @@ LAYOUT = (
         group="azazel-operator",
     ),
     PathSpec(
+        "/var/lib/azazel/run/ui-login",
+        0o2750,
+        "read-only UI's one-use login code; the UI owns it, the operator "
+        "group reads it with `azazel-nexus ui-login` (U5)",
+        owner="azui",
+        group="azazel-operator",
+    ),
+    PathSpec(
         "/var/lib/azazel/run/watchdog",
         0o2710,
         "watchdog socket leaf; daemon-owned with operator-group socket inheritance",

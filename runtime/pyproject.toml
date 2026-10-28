@@ -57,6 +57,12 @@ az-hil-capture = "azazel_nexus_runtime.hil_capture:main"
 az-nexus-noc = "azazel_nexus_runtime.noc_observe:main"
 az-units-observe = "azazel_nexus_runtime.units_observe:main"
 az-noc-observe = "azazel_nexus_runtime.noc_snapshot:main"
+az-ui = "azazel_nexus_runtime.ui_serve:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# The read-only UI's static files (az-ui): served from memory, never by a path
+# taken from a request.
+[tool.setuptools.package-data]
+azazel_nexus_runtime = ["ui_static/*.html", "ui_static/*.css", "ui_static/*.js", "ui_static/*.json"]

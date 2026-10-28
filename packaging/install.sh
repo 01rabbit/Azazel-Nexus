@@ -231,7 +231,7 @@ fi
 # The unit files name these. An installer that enabled a unit whose ExecStart
 # does not exist would "succeed" into a boot failure, which is later and on
 # someone else's hardware.
-for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-intaked az-incident-explaind az-edge-probed az-model-fetchd az-mio-locald az-mio-identity az-mio-remoted az-mio-entryd az-mio-referenced az-knowledge-lited az-decoy-netd az-decoyd az-units-observe az-noc-observe; do
+for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-intaked az-incident-explaind az-edge-probed az-model-fetchd az-mio-locald az-mio-identity az-mio-remoted az-mio-entryd az-mio-referenced az-knowledge-lited az-decoy-netd az-decoyd az-units-observe az-noc-observe az-ui; do
     if [ ! -x "$LIBEXEC/$binary" ]; then
         echo "refusing to install: $LIBEXEC/$binary is missing." >&2
         echo "Install azazel-nexus and azazel-nexus-runtime into the stable" >&2
@@ -257,7 +257,7 @@ fi
 # Non-login accounts with no shell and no home. Each daemon gets its own, so
 # that a fault in one does not run with another's access.
 if [ "$WITH_ACCOUNTS" = yes ]; then
-    for account in azcommission azaudit azwatch azprobe azintake azexplain azedge azfetch azmio azmioentry azmioref azremote azknowledge azdecoy aznoc; do
+    for account in azcommission azaudit azwatch azprobe azintake azexplain azedge azfetch azmio azmioentry azmioref azremote azknowledge azdecoy aznoc azui; do
         if ! getent passwd "$account" >/dev/null 2>&1; then
             # Each account's own group is relied on (azedge for the intake
             # socket, azknowledge for lite-trust), so it is made explicitly
@@ -349,6 +349,9 @@ make_owned_dir 2710 azwatch azazel-operator /var/lib/azazel/run/watchdog
 # Not a socket leaf: the Edge probe's result, renamed into place inside it.
 # Group-readable (not traversal-only) so `azazel-nexus status` can read it.
 make_owned_dir 2750 azprobe azazel-operator /var/lib/azazel/run/edge-probe
+# The read-only UI's login code (U5): azui writes it, the operator group reads
+# it with `azazel-nexus ui-login`. azui itself is in no group but its own.
+make_owned_dir 2750 azui azazel-operator /var/lib/azazel/run/ui-login
 make_owned_dir 2750 azintake azincident-read /var/lib/azazel/edge-incidents
 make_owned_dir 0700 azexplain root /var/lib/azazel/incident-explain
 make_owned_dir 2750 azexplain azazel-operator /var/lib/azazel/run/incident-explain-status
@@ -439,6 +442,11 @@ install -m 0644 "$HERE"/systemd/azazel-units-observe.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-units-observe.timer "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-noc-observe.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-noc-observe.timer "$UNIT_DIR"
+# The read-only operator UI (U5): its socket and service. Not governed, not
+# masked and not enabled here (the preset says disable); an operator who wants
+# it runs `systemctl enable --now azazel-ui.socket`. Nothing requires it.
+install -m 0644 "$HERE"/systemd/azazel-ui.socket "$UNIT_DIR"
+install -m 0644 "$HERE"/systemd/azazel-ui.service "$UNIT_DIR"
 install -m 0644 "$HERE"/azazel-nexus.preset "$PRESET_DIR"/99-azazel-nexus.preset
 install -d -m 0755 "${DESTDIR:-}/usr/lib/tmpfiles.d"
 install -m 0644 "$HERE"/tmpfiles.d/azazel-nexus-bootstrap.conf "${DESTDIR:-}/usr/lib/tmpfiles.d/azazel-nexus-bootstrap.conf"

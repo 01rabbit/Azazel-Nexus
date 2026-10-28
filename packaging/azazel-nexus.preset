@@ -15,6 +15,9 @@
 # governed unit, opens no network socket (AF_UNIX only, IPAddressDeny=any),
 # runs the fixed read-only probe as azprobe before the controller, and can
 # only narrow what the controller grants (#206 P5).
+#
+# The read-only operator UI (U5) is not governed and is disabled: an operator
+# enables azazel-ui.socket explicitly. Listed so preset-all never enables it.
 disable azazel-commissiond.service
 disable azazel-auditd.service
 disable azazel-watchdog.service
@@ -31,5 +34,7 @@ disable azazel-knowledge-lited.service
 disable azazel-decoy-nsd.service
 disable azazel-decoy-netd.service
 disable azazel-decoyd.service
+disable azazel-ui.socket
+disable azazel-ui.service
 enable azazel-activated.service
 enable azazel-edge-probe-preflight.service

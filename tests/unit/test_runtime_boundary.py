@@ -126,6 +126,26 @@ LISTENER_FORBIDDEN = {
     "create_datagram_endpoint", "socketpair", "fromfd",
 }
 
+#: The one runtime module that **adopts** a listening socket the service
+#: manager already bound (U5, `docs/operator-ui.md`): the read-only UI. It is
+#: not a listener exemption and gets no internet family name: systemd's
+#: `azazel-ui.socket` binds and listens on IPv4 loopback, and this module
+#: only accepts on the descriptor it inherits. The single thing it may do
+#: that the default scan refuses is construct that socket object from its
+#: descriptor, `socket.socket(fileno=...)` with no family (the family comes
+#: from the descriptor, not from the call). Everything else stays refused,
+#: and more: `ADOPTED_FORBIDDEN` below. Matched by full path.
+ADOPTED_LISTENER = "ui_serve.py"
+
+#: What the adopting module may not name: every way to initiate traffic
+#: (`LISTENER_FORBIDDEN`), and every way to make or bind a listener of its
+#: own, so that the inherited loopback socket is the only one it has.
+ADOPTED_FORBIDDEN = LISTENER_FORBIDDEN | {
+    "AF_INET", "AF_INET6", "bind", "listen", "create_server", "getaddrinfo",
+    "TCPServer", "ThreadingTCPServer", "HTTPServer", "ThreadingHTTPServer",
+    "UDPServer", "ThreadingUDPServer", "socket_type", "address_family",
+}
+
 #: Modules whose star import would bring a forbidden name in unseen.
 _SOCKET_MODULES = {"socket", "_socket", "asyncio", "ssl"}
 
@@ -163,7 +183,9 @@ def _internet_offenders(root: Path) -> dict[str, list[str]]:
     for path in sorted(root.rglob("*.py")):
         if _exempt(path, EGRESS_EXEMPT, root) or _exempt(path, LISTENER_EXEMPT, root):
             continue
-        found = _attributes(path, INTERNET_FORBIDDEN) + _family_violations(path)
+        adopted = _exempt(path, {ADOPTED_LISTENER}, root)
+        found = _attributes(path, INTERNET_FORBIDDEN) + _family_violations(
+            path, allow_adoption=adopted)
         if found:
             offenders[path.relative_to(root).as_posix()] = found
     return offenders
@@ -218,6 +240,51 @@ def test_a_listener_module_binds_and_listens_and_never_initiates():
         assert _attributes(path, {"listen"}) == ["listen"]
         assert _attributes(path, {"AF_INET", "AF_INET6"}) == ["AF_INET", "AF_INET6"]
         assert "import ssl" not in source and "subprocess" not in source
+
+
+def test_the_ui_only_adopts_its_inherited_loopback_socket():
+    """The UI makes no socket of its own (U5): it adopts systemd's, once.
+
+    Exactly one constructor, `socket.socket(fileno=LISTEN_FD)`, with the
+    descriptor named by a constant equal to systemd's first passed fd (3);
+    no family, bind, listen, connect or server class that would build a
+    socket; not a listener exemption.
+    """
+
+    path = RUNTIME / ADOPTED_LISTENER
+    assert path.is_file()
+    assert ADOPTED_LISTENER not in LISTENER_EXEMPT | EGRESS_EXEMPT
+    assert _attributes(path, ADOPTED_FORBIDDEN) == []
+    assert _names(path, {"TCPServer", "HTTPServer", "ThreadingHTTPServer",
+                         "create_server", "getaddrinfo"}) == []
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    constructors = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute) and node.func.attr in _CONSTRUCTORS]
+    assert len(constructors) == 1 and _is_adoption(constructors[0])
+    assert constructors[0].keywords[0].value.id == "LISTEN_FD"
+    assert _bound_once_at_module_level(tree, "LISTEN_FD", lambda node: _integer(node) == 3)
+    assert _family_violations(path) == ["socket family defaulted (AF_INET)"]
+    assert _family_violations(path, allow_adoption=True) == []
+
+
+def test_the_adoption_allowance_is_the_ui_module_alone(tmp_path):
+    """`socket.socket(fileno=...)` anywhere else is still a defaulted family."""
+
+    root = _fake_runtime(tmp_path)
+    source = "import socket\nFD = 3\ns = socket.socket(fileno=FD)\n"
+    (root / "other.py").write_text(source, encoding="utf-8")
+    (root / "sub").mkdir(exist_ok=True)
+    (root / "sub" / ADOPTED_LISTENER).write_text(source, encoding="utf-8")
+    (root / ADOPTED_LISTENER).write_text(source, encoding="utf-8")
+    assert _internet_offenders(root) == {
+        "other.py": ["socket family defaulted (AF_INET)"],
+        f"sub/{ADOPTED_LISTENER}": ["socket family defaulted (AF_INET)"]}
+    # And in the UI module itself, a family or another argument is not an adoption.
+    for call in ("socket.socket(fileno=FD, family=2)", "socket.socket(2, fileno=FD)",
+                 "socket.socket(fileno=3)"):
+        (root / ADOPTED_LISTENER).write_text(f"import socket\nFD = 3\n{call}\n",
+                                             encoding="utf-8")
+        assert ADOPTED_LISTENER in _internet_offenders(root), call
 
 
 def test_the_listener_scan_catches_what_it_forbids(tmp_path):
@@ -464,7 +531,14 @@ def _integer(node: ast.AST):
     return value if type(value) is int else None
 
 
-def _family_violations(path: Path) -> list[str]:
+def _is_adoption(call: ast.Call) -> bool:
+    """`<x>.socket(fileno=<name>)`: no positional argument, exactly `fileno=`."""
+
+    return (not call.args and [keyword.arg for keyword in call.keywords] == ["fileno"]
+            and isinstance(call.keywords[0].value, ast.Name))
+
+
+def _family_violations(path: Path, *, allow_adoption: bool = False) -> list[str]:
     """Socket constructors whose family is not a named constant or `AF_UNIX` (#276 F4).
 
     The name scans see `AF_INET`, not `socket.socket(2, 1)`. A constructor is
@@ -502,6 +576,8 @@ def _family_violations(path: Path) -> list[str]:
             continue
         family = call.args[0] if call.args else next(
             (keyword.value for keyword in call.keywords if keyword.arg == "family"), None)
+        if family is None and allow_adoption and _is_adoption(call):
+            continue
         if family is None:
             problems.append("socket family defaulted (AF_INET)")
         elif _integer(family) is not None:
@@ -1224,6 +1300,10 @@ def _declared_scripts() -> dict[str, str]:
 #: Governed units whose executable Nexus does not stage: Edge Core's own
 #: package binary, and the system's iproute2 `ip`, which the decoy namespace
 #: unit runs from its unit file with no Python body (#196 G4 follow-up).
+#: Daemons with a unit that the activation controller does not govern (U5):
+#: the read-only UI. Neither an operator tool nor a governed daemon.
+UNGOVERNED_DAEMONS = ("az-ui",)
+
 NOT_STAGED_UNITS = frozenset({"azazel-edge-core.service", "azazel-decoy-nsd.service"})
 
 
@@ -1243,7 +1323,8 @@ def test_the_runtime_declares_exactly_the_daemons_the_units_name():
     from azazel_nexus_runtime.hardening import OBSERVER_PROFILES
 
     assert sorted(_declared_scripts()) == sorted(
-        EXPECTED_SCRIPTS + OPERATOR_TOOLS + OBSERVER_SCRIPTS + ("az-mio-identity",))
+        EXPECTED_SCRIPTS + OPERATOR_TOOLS + OBSERVER_SCRIPTS + UNGOVERNED_DAEMONS
+        + ("az-mio-identity",))
     units = _governed_units()
     for script in EXPECTED_SCRIPTS:
         assert f"azazel-{script[3:]}.service" in units, (
@@ -1297,7 +1378,7 @@ def test_the_installer_requires_exactly_the_unit_backed_executables():
     required = set(match.group(1).split())
     assert required == {_script_for(unit) for unit in _governed_units()
                         if unit not in NOT_STAGED_UNITS} | {"az-mio-identity",
-                                                            *OBSERVER_SCRIPTS}, (
+                                                            *OBSERVER_SCRIPTS, *UNGOVERNED_DAEMONS}, (
         "the installer's required binaries and the governed units disagree"
     )
 
@@ -1314,8 +1395,12 @@ def test_the_preset_names_every_governed_unit():
         for line in preset.splitlines()
         if line.startswith(("enable ", "disable "))
     }
-    # Plus the ungoverned Edge probe preflight, which the preset enables.
-    assert stated == _governed_units() | {"azazel-edge-probe-preflight.service"}
+    # Plus the ungoverned Edge probe preflight, which the preset enables, and
+    # the read-only UI's socket and service (U5), which it disables.
+    assert stated == _governed_units() | {"azazel-edge-probe-preflight.service",
+                                          "azazel-ui.socket", "azazel-ui.service"}
+    assert "disable azazel-ui.socket" in preset.splitlines()
+    assert "disable azazel-ui.service" in preset.splitlines()
 
 
 def test_the_operator_tools_really_have_no_unit():
