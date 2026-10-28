@@ -6,6 +6,8 @@ import shlex
 import subprocess
 from pathlib import Path
 
+from azazel_nexus import platform_profile
+
 SHOW = (
     "ActiveState", "SubState", "MainPID", "User", "Group", "SupplementaryGroups",
     "RestrictAddressFamilies", "ReadWritePaths", "ReadOnlyPaths", "CapabilityBoundingSet",
@@ -87,8 +89,13 @@ def normalise(key: str, value: str):
         inverted = value.startswith("~")
         words = shlex.split(value[1:] if inverted else value)
         if key == "SystemCallArchitectures":
-            native = {"x86_64": "x86-64", "aarch64": "arm64", "arm64": "arm64"}.get(
-                platform.machine(), platform.machine())
+            machine = platform.machine()
+            try:
+                native = platform_profile.systemd_name(platform_profile.from_machine(machine))
+            except platform_profile.PlatformRefused:
+                # Unreviewed CPU: compare the raw name, which matches nothing
+                # systemd prints, so the property is reported as different.
+                native = machine
             words = [native if word == "native" else word for word in words]
         if key in PATH_KEYS:
             paths = []

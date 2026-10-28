@@ -104,3 +104,20 @@ def test_cli_resources_uses_real_assessor_without_inventory_or_activation(monkey
     monkeypatch.setattr(commission_cli, "library_main", lambda *a, **k: pytest.fail("library invoked"))
     assert commission_cli.main(["resources"]) == expected
     assert json.loads(capsys.readouterr().out) == {"unavailable": missing}
+
+
+@pytest.mark.parametrize("machine,expected", [
+    ("x86_64", "amd64"), ("aarch64", "arm64"), ("arm64", "arm64"),
+    ("amd64", None), ("armv8l", None), ("x86-64", None),
+])
+def test_architecture_is_reported_in_fabrics_spelling(monkeypatch, machine, expected):
+    """ResourceProfile.cpu_architecture is Fabric's ``amd64``/``arm64``, not the
+    kernel's name (ADR-0003); an unreviewed name is unavailable, not guessed."""
+
+    monkeypatch.setattr(resources.platform, "machine", lambda: machine)
+    monkeypatch.setattr(resources, "read_usable_mib", lambda: 7500)
+    monkeypatch.setattr(resources, "_online_cores", lambda: 4)
+    monkeypatch.setattr(resources, "_mission_space", lambda: 10)
+    result = resources.assess_resources()
+    assert result["architecture"] == expected
+    assert result["unavailable"] == ([] if expected else ["architecture"])

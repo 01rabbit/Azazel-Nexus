@@ -518,3 +518,13 @@ def test_snapshot_diff_reports_added_removed_created_and_metadata(tmp_path):
     assert smoke.snapshot_diff(created, changed)[str(file)] == ["mode"]
     file.unlink()
     assert smoke.snapshot_diff(changed, smoke.snapshot_directories((root,)))[str(file)] == ["removed"]
+
+
+@pytest.mark.parametrize("machine,native", [
+    ("x86_64", "x86-64"), ("aarch64", "arm64"), ("arm64", "arm64"),
+    # Unreviewed: the raw name is kept, so it matches nothing systemd prints.
+    ("riscv64", "riscv64"),
+])
+def test_native_is_rewritten_to_systemds_architecture_name(monkeypatch, machine, native):
+    monkeypatch.setattr(smoke.sandbox.platform, "machine", lambda: machine)
+    assert smoke.sandbox.normalise("SystemCallArchitectures", "native") == (False, frozenset({native}))

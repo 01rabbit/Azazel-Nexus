@@ -18,6 +18,8 @@ import re
 import stat
 import sys
 
+from azazel_nexus import platform_profile
+
 from .bootstrap_cgroup import validate_cgroup_root
 from .units import UnitOperationFailed
 
@@ -39,7 +41,7 @@ _CONTROLLER_CGROUP = f"0::{CONTROLLER_GROUP}\n".encode("ascii")
 
 def _filesystem_type(fd):
     if (sys.platform != "linux" or ctypes.sizeof(ctypes.c_long) != 8
-            or platform.machine() not in {"x86_64", "aarch64"}):
+            or platform.machine() not in platform_profile.LP64_REVIEWED_KERNEL_MACHINES):
         raise UnitOperationFailed("cgroup mount ABI not admitted")
     # Linux LP64 statfs begins with a native long f_type. An aligned oversized
     # buffer avoids relying on the layout of fields we do not inspect.
