@@ -1277,7 +1277,13 @@ def _knowledge_status(harness: Harness) -> str:
                               query_as_of=now)
     assert expected["state"] == "available"
     assert expected["generation"] is not None
-    with Daemon(harness, "knowledge_lited", "knowledge") as daemon:
+    # The daemon keeps a wall-clock floor in its own state leaf, which the
+    # installer gives to azknowledge (0700); it refuses a leaf another uid
+    # owns. Run it as that service account, as the loop stage does.
+    from tools.e2e_loop import prepare_accounts
+
+    prepare_accounts(harness)
+    with Daemon(harness, "knowledge_lited", "knowledge", account="azknowledge") as daemon:
         reply = request(daemon.path, {"verb": "knowledge.status", "arguments": {}})
     assert reply == {"ok": True, "result": expected}
     status = _cli(harness, ["--knowledge-lite", str(root), "--as-of", now, "status"])
@@ -1288,7 +1294,8 @@ def _knowledge_status(harness: Harness) -> str:
     assert setup["knowledge-store"]["status"] == "done"
     assert f"reason: {expected['reason_code']}" in setup["knowledge-store"]["reason"]
     assert f"freshness: {expected['freshness']}" in setup["knowledge-store"]["reason"]
-    return "real Knowledge daemon matches reconciled setup/status view with the offline import store and separate trust pin"
+    return ("real Knowledge daemon (as azknowledge, with its clock floor) matches reconciled "
+            "setup/status view with the offline import store and separate trust pin")
 
 
 def _integration_broker(harness: Harness) -> str:
