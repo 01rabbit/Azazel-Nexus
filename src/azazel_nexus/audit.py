@@ -322,13 +322,13 @@ class AuditLedger:
             data = (line + "\n").encode("utf-8")
             with (open(self.path, "ab", buffering=0, opener=opener)
                   if self.private else self.path.open("ab", buffering=0)) as handle:
-                start = os.fstat(handle.fileno()).st_size
+                offset = os.fstat(handle.fileno()).st_size
                 written = 0
                 try:
                     while written < len(data):
                         written += handle.write(data[written:])
                 except OSError:
-                    _withdraw(handle.fileno(), start, written)
+                    _withdraw(handle.fileno(), offset, written)
                     raise
                 # A complete line whose sync failed is left as it is: its
                 # outcome is unknown, and callers settle it from the ledger.
@@ -343,7 +343,7 @@ class AuditLedger:
         return entry
 
 
-def _withdraw(fd: int, start: int, written: int) -> None:
+def _withdraw(fd: int, offset: int, written: int) -> None:
     """Take back the partial line of a write that failed (for example, a full disk).
 
     A write that stops part-way (no space left, an I/O error) leaves a torn
@@ -359,8 +359,8 @@ def _withdraw(fd: int, start: int, written: int) -> None:
     if not written:
         return
     try:
-        if os.fstat(fd).st_size == start + written:
-            os.ftruncate(fd, start)
+        if os.fstat(fd).st_size == offset + written:
+            os.ftruncate(fd, offset)
             os.fsync(fd)
     except OSError:
         pass
