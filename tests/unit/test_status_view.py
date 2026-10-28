@@ -407,6 +407,8 @@ ALLOWED = {
         "status", "reason_code", "generation", "freshness", "readiness",
         "readiness.functional", "readiness.word", "readiness.means",
         "readiness.does_not_mean", "readiness.does_not_mean[]",
+        "bundle", "bundle.digest_short", "bundle.signer_key_ids", "bundle.signer_key_ids[]",
+        "bundle.static_count", "bundle.current_count", "bundle.next_expiry",
         "cryptographic_implementation", "cryptographic_implementation.status",
         "cryptographic_implementation.reason_code", "source", "source.kind", "source.reader",
         "source.written_at", "source.trust", "withheld", "withheld[]")),
@@ -485,6 +487,10 @@ for _name, _fields in (
                         "explanation.knowledge_refs[].technique_id",
                         "explanation.knowledge_refs[].name",
                         "explanation.knowledge_refs[].claim_id",
+                        *(f"explanation.knowledge_refs[].{f}" for f in (
+                            "bundle_digest_short", "generation", "freshness", "as_of",
+                            "citation", "citation_state", "withheld", "withheld[]")),
+                        "explanation.knowledge_refs_omitted",
                         "edge_decision", "edge_decision.kind", "edge_decision.action",
                         "edge_decision.executed", "edge_decision.decided_by",
                         "execution_result", "execution_result.status",
@@ -684,10 +690,13 @@ def test_edge_decisions_are_would_and_nothing_was_executed(tmp_path, monkeypatch
 
 def test_knowledge_refs_are_copied_with_every_field_the_reader_checks(tmp_path, monkeypatch):
     """The citation allowlist follows the reader. If the recent-incident row
-    grows a citation field (provenance, time, digest), this fails until the
-    field is added to `KNOWLEDGE_REF_FIELDS` -- deliberately, not silently."""
-    from azazel_nexus import edge_loop_status, status_view
+    grows a citation field, this fails until the field is added to
+    `KNOWLEDGE_REF_FIELDS` or `KNOWLEDGE_REF_DISPLAY_FIELDS` -- deliberately,
+    not silently. Both shapes the reader accepts are listed (#362)."""
+    from azazel_nexus import edge_loop_status, incident_explain, status_view
 
+    assert status_view.KNOWLEDGE_REF_FIELDS == incident_explain.CITATION_FIELDS
+    assert status_view.KNOWLEDGE_REF_DISPLAY_FIELDS == incident_explain.CITATION_DISPLAY_FIELDS
     _loop(tmp_path, monkeypatch)
     raw = edge_loop_status.read_edge_loop()["recent"]
     for row in raw["incidents"]:
@@ -903,7 +912,7 @@ def test_mio_values_outside_the_vocabulary_refuse_the_reading(tmp_path, monkeypa
     assert "SECRET" not in out.getvalue() and "anything at all" not in out.getvalue()
 
 
-def _patched_loop(tmp_path, monkeypatch, change):
+def _patched_loop(tmp_path, monkeypatch, change, *, json_flag=True):
     from azazel_nexus import edge_loop_status
 
     _loop(tmp_path, monkeypatch)
@@ -915,7 +924,9 @@ def _patched_loop(tmp_path, monkeypatch, change):
         return value
     monkeypatch.setattr(edge_loop_status, "read_edge_loop", changed)
     out = io.StringIO()
-    assert main(_argv(tmp_path, json_flag=True), out=out) == 0
+    assert main(_argv(tmp_path, json_flag=json_flag), out=out) == 0
+    if not json_flag:
+        return None, out.getvalue()
     return json.loads(out.getvalue())["sections"]["edge_loop"], out.getvalue()
 
 
@@ -1017,3 +1028,165 @@ def test_knowledge_available_is_copied_and_unknown_words_are_refused(tmp_path, m
     k = json.loads(out.getvalue())["sections"]["knowledge_lite"]
     assert (k["status"], k["reason_code"], k["freshness"]) == ("unknown", "reading_refused", None)
     assert "SECRET" not in out.getvalue()
+
+
+# -- Knowledge citation display (#362) through the read model ---------------
+
+DISPLAY_REF = {"technique_id": "T1059", "name": "Shell", "claim_id": "T1059",
+               "bundle_digest_short": "sha256:0123456789ab", "generation": 7,
+               "freshness": "static", "as_of": "2026-09-21T04:00:00Z",
+               "citation": "MITRE ATT&CK v14.1", "citation_state": "shown"}
+
+
+def _with_display_refs(*refs, omitted=None):
+    def change(value):
+        explanation = value["recent"]["incidents"][0]["explanation"]
+        explanation["knowledge_refs"].extend(dict(r) for r in refs)
+        if omitted is not None:
+            explanation["knowledge_refs_omitted"] = omitted
+    return change
+
+
+def test_citation_display_fields_are_checked_and_copied(tmp_path, monkeypatch):
+    loop, _ = _patched_loop(tmp_path, monkeypatch, _with_display_refs(DISPLAY_REF, omitted=2))
+    explanation = loop["recent"]["snapshot"]["incidents"][0]["explanation"]
+    legacy, shown = explanation["knowledge_refs"]
+    assert set(legacy) == {"technique_id", "name", "claim_id"}
+    assert shown == {**DISPLAY_REF, "withheld": []}
+    assert explanation["knowledge_refs_omitted"] == 2
+
+
+def test_a_citation_naming_a_path_is_withheld_in_view_and_text(tmp_path, monkeypatch):
+    ref = {**DISPLAY_REF, "citation": "see /etc/azazel/knowledge/SECRET.txt"}
+    loop, raw = _patched_loop(tmp_path, monkeypatch, _with_display_refs(ref))
+    shown = loop["recent"]["snapshot"]["incidents"][0]["explanation"]["knowledge_refs"][1]
+    assert (shown["citation"], shown["citation_state"], shown["withheld"]) == (
+        "", "withheld", ["citation"])
+    assert "SECRET" not in raw
+    (tmp_path / "t").mkdir()
+    _, text = _patched_loop(tmp_path / "t", monkeypatch, _with_display_refs(ref), json_flag=False)
+    assert "SECRET" not in text
+    assert ("T1059 Shell [claim T1059] (static; Knowledge Lite bundle sha256:0123456789ab "
+            "generation 7; as of 2026-09-21T04:00:00Z; source: declared, withheld (address or "
+            "path syntax))") in text
+
+
+def test_the_text_renders_citations_from_the_view(tmp_path, monkeypatch):
+    _, text = _patched_loop(tmp_path, monkeypatch, _with_display_refs(DISPLAY_REF, omitted=1),
+                            json_flag=False)
+    assert ("T1059 Shell [claim T1059] (static; Knowledge Lite bundle sha256:0123456789ab "
+            "generation 7; as of 2026-09-21T04:00:00Z; source: MITRE ATT&CK v14.1)") in text
+    assert "1 more Knowledge citation(s) recorded, not shown" in text
+    assert ("T1059 Command and Scripting Interpreter [claim T1059] "
+            "(bundle, generation and lookup time not recorded)") in text
+
+
+@pytest.mark.parametrize("change", [
+    {"bundle_digest_short": "sha256:" + "a" * 64},
+    {"generation": -1},
+    {"generation": "7"},
+    {"freshness": "SECRET"},
+    {"as_of": "SECRET"},
+    {"citation_state": "SECRET"},
+    {"citation_state": "none"},
+    {"citation": "x" * 161},
+    {"raw": "SECRET"},
+])
+def test_citation_display_values_outside_their_shape_refuse_the_snapshot(
+        tmp_path, monkeypatch, change):
+    loop, raw = _patched_loop(tmp_path, monkeypatch,
+                              _with_display_refs({**DISPLAY_REF, **change}))
+    assert (loop["recent"]["status"], loop["recent"]["reason_code"]) == (
+        "unavailable", "snapshot_refused_by_view")
+    assert "SECRET" not in raw
+
+
+@pytest.mark.parametrize("omitted", [0, 17, "2", True])
+def test_an_omitted_count_outside_its_bound_refuses_the_snapshot(tmp_path, monkeypatch, omitted):
+    loop, _ = _patched_loop(tmp_path, monkeypatch, _with_display_refs(omitted=omitted))
+    assert loop["recent"]["reason_code"] == "snapshot_refused_by_view"
+
+
+KNOWLEDGE_BUNDLE = {**KNOWLEDGE_AVAILABLE, "signer_key_ids": ["lab-signer"],
+                    "bundle_digest_short": "sha256:0123456789ab", "static_count": 3,
+                    "current_count": 1, "next_expiry": "2027-01-01T00:00:00Z"}
+
+
+def _knowledge_status(tmp_path, monkeypatch, reading, *, json_flag):
+    from azazel_nexus import cli
+
+    _base(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "_knowledge_reading", lambda root, *, as_of: dict(reading))
+    out = io.StringIO()
+    assert main(_argv(tmp_path, json_flag=json_flag), out=out) == 0
+    if json_flag:
+        return json.loads(out.getvalue())["sections"]["knowledge_lite"], out.getvalue()
+    return None, out.getvalue()
+
+
+def test_knowledge_bundle_facts_are_copied_and_shown(tmp_path, monkeypatch):
+    k, raw = _knowledge_status(tmp_path, monkeypatch, KNOWLEDGE_BUNDLE, json_flag=True)
+    assert k["bundle"] == {"digest_short": "sha256:0123456789ab", "signer_key_ids": ["lab-signer"],
+                           "static_count": 3, "current_count": 1,
+                           "next_expiry": "2027-01-01T00:00:00Z"}
+    assert k["withheld"] == []
+    assert set(_paths(json.loads(raw))) <= ALLOWED
+    (tmp_path / "t").mkdir()
+    _, text = _knowledge_status(tmp_path / "t", monkeypatch, KNOWLEDGE_BUNDLE, json_flag=False)
+    assert ("    freshness: current\n"
+            "    bundle: sha256:0123456789ab (shortened); signing key ids: lab-signer\n"
+            "    claims: static 3; current 1; nearest expiry: 2027-01-01T00:00:00Z\n"
+            "    cryptographic implementation") in text
+
+
+def test_a_four_key_or_refused_reading_has_no_bundle(tmp_path, monkeypatch):
+    k, _ = _knowledge_status(tmp_path, monkeypatch, KNOWLEDGE_AVAILABLE, json_flag=True)
+    assert k["bundle"] is None and k["withheld"] == []
+    (tmp_path / "r").mkdir()
+    refused = {"state": "unavailable", "reason_code": "no_bundle", "generation": None,
+               "freshness": "absent", **{key: None for key in (
+                   "signer_key_ids", "bundle_digest_short", "static_count", "current_count",
+                   "next_expiry")}}
+    k, _ = _knowledge_status(tmp_path / "r", monkeypatch, refused, json_flag=True)
+    assert k["bundle"] is None and k["withheld"] == []
+
+
+@pytest.mark.parametrize("change, field", [
+    ({"bundle_digest_short": "sha256:" + "a" * 64}, "digest_short"),
+    ({"bundle_digest_short": None}, "digest_short"),
+    ({"signer_key_ids": "SECRET"}, "signer_key_ids"),
+    ({"signer_key_ids": ["SECRET\n"]}, "signer_key_ids"),
+    ({"static_count": -1}, "static_count"),
+    ({"current_count": "1"}, "current_count"),
+    ({"next_expiry": "SECRET"}, "next_expiry"),
+])
+def test_knowledge_bundle_facts_outside_their_shape_are_withheld(
+        tmp_path, monkeypatch, change, field):
+    k, raw = _knowledge_status(tmp_path, monkeypatch, {**KNOWLEDGE_BUNDLE, **change},
+                               json_flag=True)
+    assert k["status"] == "available"
+    assert k["bundle"][field] is None and k["withheld"] == [f"bundle.{field}"]
+    assert "SECRET" not in raw
+    (tmp_path / "t").mkdir()
+    _, text = _knowledge_status(tmp_path / "t", monkeypatch, {**KNOWLEDGE_BUNDLE, **change},
+                                json_flag=False)
+    assert "SECRET" not in text and "withheld" in text
+
+
+def test_a_signing_key_id_naming_a_path_is_terminal_only(tmp_path, monkeypatch):
+    reading = {**KNOWLEDGE_BUNDLE, "signer_key_ids": ["keys/SECRET-signer"]}
+    k, raw = _knowledge_status(tmp_path, monkeypatch, reading, json_flag=True)
+    assert k["bundle"]["signer_key_ids"] is None
+    assert k["withheld"] == ["bundle.signer_key_ids"] and "SECRET" not in raw
+    (tmp_path / "t").mkdir()
+    _, text = _knowledge_status(tmp_path / "t", monkeypatch, reading, json_flag=False)
+    assert "signing key ids: keys/SECRET-signer" in text
+
+
+def test_bundle_facts_beside_a_state_without_a_trusted_bundle_are_withheld(tmp_path, monkeypatch):
+    reading = {**KNOWLEDGE_BUNDLE, "state": "quarantined", "reason_code": "revoked",
+               "freshness": "absent"}
+    k, raw = _knowledge_status(tmp_path, monkeypatch, reading, json_flag=True)
+    assert k["bundle"] is None and "sha256:0123456789ab" not in raw
+    assert k["withheld"] == [f"bundle.{name}" for name in (
+        "digest_short", "signer_key_ids", "static_count", "current_count", "next_expiry")]

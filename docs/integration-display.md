@@ -288,8 +288,10 @@ sha256:0123456789ab generation 7; as of 2026-10-18T00:00:00Z; source: MITRE
 ATT&CK technique)`: freshness, the shortened bundle digest, generation, the
 lookup instant and the bundle's dataset citation. Versions and numbers in a
 citation are shown; a citation with address syntax (an IPv4/IPv6 literal or a
-host:port form) is withheld and reads `source: declared, withheld (address
-syntax)`, distinct from `source: not declared`. Citations that were recorded
+host:port form) is withheld and reads `source: declared, withheld (address or
+path syntax)`, distinct from `source: not declared`; the status read model
+withholds a citation that names a path the same way (`withheld: ["citation"]`
+on that reference), and the text screen is rendered from that checked copy. Citations that were recorded
 but not shown (eight at most per incident, a per-row byte bound, an unsafe
 name) are counted: `N more Knowledge citation(s) recorded, not shown`. The
 Knowledge daemon's own 60 KiB reply trim only removes references beyond the

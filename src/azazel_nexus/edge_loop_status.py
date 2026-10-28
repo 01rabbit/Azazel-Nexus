@@ -143,7 +143,7 @@ def _citation_suffix(ref):
     if "bundle_digest_short" not in ref:
         return " (bundle, generation and lookup time not recorded)"
     source = {"shown": f"; source: {ref['citation']}", "none": "; source: not declared",
-              "withheld": "; source: declared, withheld (address syntax)"}[ref["citation_state"]]
+              "withheld": "; source: declared, withheld (address or path syntax)"}[ref["citation_state"]]
     return (f" ({ref['freshness']}; Knowledge Lite bundle {ref['bundle_digest_short']} "
             f"generation {ref['generation']}; as of {ref['as_of']}{source})")
 
