@@ -55,6 +55,29 @@ re-fetched for this update. The older snapshot above remains historical.
 | [#4](https://github.com/01rabbit/Azazel-Nexus/issues/4) | blocked by external hardware | Campaign parent for rugged x86_64 HIL and degraded-mode drills; [gate-to-issue map](hil-campaign.md#ownership-and-scope). Children #115 (8 GiB pilot), #100 (post-reserve admission/E2E); HG-06 and HG-07 need explicit child issues (numbers unassigned). HG-03 shares SO-10/#17. Later 16/32 GiB campaigns need class children. Eligible hardware and operator authorization remain outstanding. |
 | [#3](https://github.com/01rabbit/Azazel-Nexus/issues/3) | active implementation | Other artifact slices are not Mission Pack evidence; signed offline Mission Pack lifecycle and atomic stage/activate/rollback remain unimplemented. |
 
+## Remote inference: what it waits on (not Fabric#25)
+
+The online-AI entry path (remote inference, #98 / #100) does **not** depend on
+[Fabric#25](https://github.com/01rabbit/Azazel-Fabric/issues/25). Fabric#25 is
+what the integration broker's transport waits on (#16):
+`integration_broker/routing.py` `deliver()` returns
+`transport unavailable: Fabric#25` for every intent, and the status and CLI
+lines repeat that reason. Nothing on the remote inference path names it.
+
+Remote inference waits on three separate things, none of which this
+repository can settle by code alone:
+
+| Waits on | Owner / when | Where it is recorded |
+| --- | --- | --- |
+| Adopting Fabric `mio_contracts` (published in the pinned Fabric, not adopted here) | undecided: adoption needs a conformance attestation and none has been made; no document names who decides to adopt | [IMPLEMENTATION_SPEC](IMPLEMENTATION_SPEC.md) §6.3, [contract ownership](contract-ownership.md) §2, §3.3, §6, [support matrix](support-matrix.md) §4 |
+| Commissioning the sanitizer signer and the Provider Registry | after the target hardware; #115 lists both as not to be created or installed until then | [remote commissioning](remote-commissioning.md) §3 (decisions 1–9, sanitizer key = decision 7) |
+| The form in which the runtime reads the operator's remote consent | undecided: no document defines a persisted opt-in or names who decides its form ([route policy](mio-route-policy.md) fixes withdrawal semantics only); today `az-mio-entryd` always passes `NO_OPT_IN`, so even a FULL ceiling (`mio_profile: FULL` in the commissioning proposal, i.e. `MioProfile.FASTEST_PERMITTED`) yields no remote route | `mio_profile.py`, `mio_entryd.py`, `remote_trust.remote_admission` |
+
+Until all three exist, the shipped `mio_remoted.TRANSPORT` stays `None` and
+nothing can be sent (see [the sanitizer](mio-sanitizer.md) §5 and
+[remote inference](remote-inference.md) §12). Fabric#25 closing would not
+change any of this.
+
 ## Evidence boundary
 
 The software-only product state is stronger than a documentation scaffold:

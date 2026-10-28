@@ -256,4 +256,7 @@ The M.I.O. status expression is unchanged:
   regenerated without its pin fails rather than silently pinning to whatever
   was produced.
 - The Provider Registry ships absent and no key holds the sanitizer role.
+- This path does not wait on Fabric#25 (that is the integration broker's
+  transport, #16). What it does wait on is listed in
+  [the issue map](issue-map.md#remote-inference-what-it-waits-on-not-fabric25).
 - What systemd actually enforces is `HG-01`/`HG-02`, which no test here runs.

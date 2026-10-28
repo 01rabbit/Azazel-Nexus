@@ -329,23 +329,28 @@ RETIRED_RANKING_PHRASES = (
 )
 
 #: Where a reader would act on such a claim.
+#:
+#: The whole `docs/` tree, not a list of documents. A list covered exactly the
+#: documents that were wrong the day it was written: after six were corrected,
+#: three M.I.O. documents, `CONTRIBUTING.md` and `docs/capability-model.md`
+#: still called a pinned Fabric module unreleased, because none was listed.
 SCANNED_PATHS = (
     "src/azazel_nexus",
     "README.md",
-    "docs/IMPLEMENTATION_SPEC.md",
-    "docs/architecture.md",
-    "docs/contract-ownership.md",
-    "docs/inheritance-ledger.md",
-    "docs/support-matrix.md",
-    "docs/roadmap.md",
+    "CONTRIBUTING.md",
+    "docs",
 )
+
+#: What a directory contributes: code under `src/`, Markdown under `docs/`.
+_SCANNED_SUFFIXES = ("*.py", "*.md")
 
 
 def _scanned_files():
     for relative in SCANNED_PATHS:
         target = ROOT / relative
         if target.is_dir():
-            yield from sorted(target.rglob("*.py"))
+            for pattern in _SCANNED_SUFFIXES:
+                yield from sorted(target.rglob(pattern))
         elif target.is_file():
             yield target
 
@@ -379,6 +384,10 @@ def test_the_scan_covers_the_file_the_defect_was_actually_in():
     scanned = {str(path.relative_to(ROOT)) for path in _scanned_files()}
     assert "src/azazel_nexus/fabric_boundary.py" in scanned
     assert "src/azazel_nexus/status.py" in scanned
+    # The documents the narrower list missed.
+    assert "CONTRIBUTING.md" in scanned
+    assert "docs/capability-model.md" in scanned
+    assert "docs/mio-runtime.md" in scanned
 
 
 def test_the_banned_phrases_are_ones_that_would_have_fired():
@@ -441,7 +450,12 @@ def _denial_sentences(text: str, module: str):
 
     import re
 
-    for sentence in re.split(r"(?<=[.!?|])\s+|\n", text):
+    # A Markdown paragraph wraps mid-sentence, and a scan that split on every
+    # newline missed "`provisioning_contracts`,\nwhich is **not released yet**"
+    # in `docs/capability-model.md`. A single newline inside a paragraph is a
+    # space; a blank line, a table row and a list item still end a sentence.
+    unwrapped = re.sub(r"(?<=[^\n|])\n(?![\n|\-*#>]|\s*\d+\.\s)", " ", text)
+    for sentence in re.split(r"(?<=[.!?|])\s+|\n", unwrapped):
         lowered = sentence.lower()
         if module in lowered and any(denial in lowered for denial in _DENIALS):
             yield sentence.strip()

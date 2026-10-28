@@ -12,7 +12,15 @@ fixed socket/state leaves, installer accounts and hardened SUPPORTING units.
 `az-mio-entryd` composes MioRouter with locald (`mio`) and remoted (`remote`)
 socket clients and records deterministic handoff when providers are unavailable
 or unadmitted. Its route ledger is daily segments in `/var/lib/azazel/state/mio/route/`.
-No persisted M.I.O. profile reader exists yet, so production selects CORE.
+Production reads the M.I.O. profile ceiling through
+`mio_commissioning.commissioned_profile`: the signed commissioning proposal
+(schema v2 or v3), its signature, operator trust and `node.yaml`, delivered
+as `LoadCredential=` inputs of `azazel-mio-entryd.service`. A missing
+credential, a failed verification, an unknown schema, inputs that change
+during verification, or a lab host select CORE. The profile is a ceiling,
+not admission: remote opt-in has no persisted reader (`az-mio-entryd` always
+passes `NO_OPT_IN`), so a FULL ceiling (`mio_profile: FULL`, which maps to
+`MioProfile.FASTEST_PERMITTED`) still yields no remote route.
 HG-05 remains unmeasured and provider admission remains fail-closed.
 
 `az-knowledge-lited` serves only `knowledge.status` from

@@ -185,11 +185,11 @@ Both layers share acknowledgement, suppression, severity, and visual-fallback ru
 
 ## Data contracts
 
-**Owner: Azazel-Fabric `mio_contracts` — target contract, not released.** The
+**Owner: Azazel-Fabric `mio_contracts` — published in the pinned Fabric, not adopted here.** The
 shapes below state what Nexus needs from that module. They are illustrative,
 not canonical: Nexus MUST NOT publish a local canonical form for a frame that
-crosses a product boundary, and MUST NOT adopt an M.I.O. contract pin before
-Fabric publishes one. The sanitizer policy, alias key material, and redaction
+crosses a product boundary, and MUST NOT adopt an M.I.O. contract pin without a
+conformance attestation ([contract ownership](contract-ownership.md) §2). The sanitizer policy, alias key material, and redaction
 records themselves are Nexus-local; only the redaction record *reference* is
 carried in the frame. See [contract ownership](contract-ownership.md) §3.3.
 

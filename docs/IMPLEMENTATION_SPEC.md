@@ -1005,7 +1005,8 @@ Implement in dependency order:
 9. **Lite services and their continuous isolation attestation.**
 10. **Module manager** for optional AZ-04/AZ-06 peers.
 11. **Local M.I.O.**, then sanitizer, remote adapter, and merger — the last two
-    blocked on the Fabric `mio_contracts` release.
+    blocked on adopting Fabric `mio_contracts` (published in the pinned
+    Fabric, not adopted here).
 12. **Update and recovery automation.**
 
 No later capability may bypass or revise the authority, commissioning, or audit

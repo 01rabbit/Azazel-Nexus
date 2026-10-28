@@ -8,7 +8,7 @@ the Nexus-owned runtime control plane for M.I.O.
 | §2 capacity envelopes | implemented (`resource_profile.py`, since #26) |
 | §3 provider admission | implemented for local model providers (`cognition.py`, `compatibility.py`). What may be *offered* as a model, and what offering one does not mean, is fixed by [the model catalog contract](model-catalog.md) (Nexus#94) — it reaches `present` and stops there. The resource gate **refuses for lack of a measured Core reserve** — [`HG-05`](hardware-gates.md) — and since Nexus#68 the path a measurement would travel is built and driven: [the measurement procedure](core-reserve-measurement.md). Approval and staged activation are reached only with a reserve, where they refuse for having no implementation |
 | §4 confinement | not implemented; needs a running provider, which §3 does not yet admit — and will not until approval and staged activation are implemented, one gate past the reserve |
-| §5 route selection | implemented (`routing.py`) as the local-first ladder, with the envelope and budgets declared rather than discovered. Remote is `disabled` with no egress path. **Being replaced by policy-first / fastest-permitted** — [the route policy](mio-route-policy.md), Nexus#81 |
+| §5 route selection | implemented (`routing.py`) as the local-first ladder, with the envelope and budgets declared rather than discovered. Remote is `disabled`: send-path code exists since #98 (`mio_remoted.py`, `inference_egress.py`), but the shipped `TRANSPORT` is `None` and no Provider Registry or sanitizer signer is commissioned, so nothing can be sent ([the sanitizer](mio-sanitizer.md) §5). **Being replaced by policy-first / fastest-permitted** — [the route policy](mio-route-policy.md), Nexus#81 |
 | §6 deterministic sanitizer | implemented (`sanitizer.py`) — see [the sanitizer](mio-sanitizer.md), which records three points the contract leaves open |
 | §7 fallback | implemented (`routing.py`): all eight triggers, each with what it must never do. The invariant that a fallback never widens is checked over all 8 × 3 pairings |
 | §8 publishing state and reasons | implemented (`CognitionReading`, four independent reasons) |
@@ -39,7 +39,7 @@ restate or modify Edge-owned cognitive semantics.
 | Concern | Owner |
 | --- | --- |
 | `MioSituationFrame`, hypothesis and grounding semantics, typed read-only evidence access, recommendation semantics, deterministic arbitration, canonical audit meaning | **Azazel-Edge** |
-| Canonical wire shape of the frames and advisory results (`mio_contracts`) | **Azazel-Fabric** — *target, not released* |
+| Canonical wire shape of the frames and advisory results (`mio_contracts`) | **Azazel-Fabric** — *published in the pinned Fabric, not adopted here* |
 | Provider admission, launch, confinement, resource measurement, route selection, sanitizer execution, merge presentation, capability-state publication | **Azazel-Nexus** (this document) |
 
 M.I.O., local models, remote assistance, Knowledge, and Deception are
@@ -705,9 +705,12 @@ until the following exist:**
    ([contract ownership](contract-ownership.md) §6, [roadmap](roadmap.md)
    Phase 0);
 2. an exact Azazel-Fabric pin;
-3. Fabric `mio_contracts`, which is **not released** — the remote frame and
-   advisory result have no canonical shape yet, so the remote path cannot be
-   implemented against a contract;
+3. adoption of Fabric `mio_contracts`, which is **published in the pinned
+   Fabric and not adopted here** — nothing in Nexus imports it and no Nexus
+   frame or advisory result has been reconciled against its records, so the
+   remote path is not implemented against that contract (adoption needs a
+   conformance attestation and none has been made, and no document names who
+   decides; see [contract ownership](contract-ownership.md) §2, §3.3);
 4. a test harness capable of resource, timeout, restart, and failure injection.
 
 This document specifies the control plane so that implementation has something
