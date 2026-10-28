@@ -148,6 +148,7 @@ This division is intentional. It keeps the authority to change the field boundar
 - [Hardware gates](docs/hardware-gates.md) — the claims that need a real host, and which of them are open.
 - [Deployment candidates](docs/deployment-candidates.md) — what a target machine has to be, and why no machine is named.
 - [Core reserve measurement](docs/core-reserve-measurement.md) — the procedure that would close `HG-05`, and the shape the result has to take.
+- [ADR-0003: the Arm software-verification profile](docs/adr/0003-arm-software-verification-profile.md) — amd64 stays the deployment baseline; what an Arm VM run is evidence of, and what it is not.
 - [Integration evidence](docs/integration-evidence.md) · [Edge package verification](docs/edge-package-verification.md) · [degradation matrix](docs/degradation-matrix.md).
 
 **Contracts and release**

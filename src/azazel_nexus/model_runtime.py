@@ -73,6 +73,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Mapping, Optional
 
+from . import platform_profile
 from .core_reserve import CoreReserve
 
 __all__ = [
@@ -195,7 +196,10 @@ RUNTIMES: Mapping[str, RuntimeBinary] = {
 def pinned_runtime_digest(machine: str | None = None) -> str:
     """Architecture pin, shared by runtime resolution and offline installation."""
     architecture = machine if machine is not None else platform.machine()
-    architecture = {"arm64": "aarch64", "amd64": "x86_64"}.get(architecture, architecture)
+    try:
+        architecture = platform_profile.kernel_name(platform_profile.normalize_machine(architecture))
+    except platform_profile.PlatformRefused:
+        raise RuntimeRefused("runtime digest pending or architecture unsupported") from None
     digest = LLAMA_RUNTIME_DIGESTS.get(architecture, "")
     if re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
         raise RuntimeRefused("runtime digest pending or architecture unsupported")

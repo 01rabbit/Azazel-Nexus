@@ -23,6 +23,7 @@ from pathlib import Path
 import platform
 import re
 
+from azazel_nexus import platform_profile
 from azazel_nexus.resource_profile import UsableMemoryUnavailable, read_usable_mib
 
 
@@ -135,8 +136,11 @@ def assess_resources() -> dict:
         except (OSError, ValueError, UsableMemoryUnavailable):
             readings[field] = None
             unavailable.append(field)
-    architecture = {"aarch64": "arm64", "arm64": "arm64", "x86_64": "amd64"}.get(platform.machine())
-    if architecture is None:
+    # Fabric's ResourceProfile.cpu_architecture spelling (ADR-0003).
+    try:
+        architecture = platform_profile.fabric_name(platform_profile.from_machine(platform.machine()))
+    except platform_profile.PlatformRefused:
+        architecture = None
         unavailable.append("architecture")
     return {
         "schema": "azazel-nexus/resource-observation/v1",
