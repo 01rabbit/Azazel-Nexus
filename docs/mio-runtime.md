@@ -316,6 +316,57 @@ The router’s direct service defaults remain available to existing in-process
 callers; the entry always supplies socket clients. Remoted retains its startup
 refusal. Locald serves bounded refusals with production admission closed.
 
+### Remote opt-in store
+
+Implemented; mock and temporary-directory evidence only, no systemd run.
+`azazel_nexus_runtime.mio_remote_consent` keeps the operator's remote opt-in
+in `/var/lib/azazel/state/mio/remote-consent/opt-in.json` (entryd's own state
+leaf; leaf `0700`, file `0600`, owner `azmioentry`). It is written only by
+three verbs on entryd's operator socket (`mio-entry`), each admitted to the
+`OPERATOR` class alone -- not `SERVICE`, not ROOT, and absent from the
+explainer's `mio-advise` listener -- with no free-text argument:
+
+| verb | argument | effect |
+| --- | --- | --- |
+| `mio.remote.opt_in.status` | none | reads status, generation, granted and missing |
+| `mio.remote.opt_in.set` | `prerequisite` (one of the four `mio_profile.PREREQUISITES`) | records it; next generation |
+| `mio.remote.opt_in.withdraw` | `reason` (`operator_request`, `privacy_review`, `provider_change`, `incident_response`) | withdraws; next generation |
+
+Every change writes the next **generation**; nothing lowers it and there is no
+reset verb. After a withdrawal the four prerequisites must be set again. At
+the ceiling (2^63-1) a grant is refused, and a withdrawal is still written,
+at that same generation: a withdrawn record permits nothing whatever its
+generation, so a withdrawal always takes effect. A
+grant is recorded in the route ledger (`mio.remote.opt_in.set`) before it is
+committed; a withdrawal is committed before it is recorded
+(`mio.remote.opt_in.withdrawn` with the generation), so a ledger fault never
+leaves an opt-in in force. Writes are a private temporary file, fsync, rename,
+directory fsync and read back.
+
+Reads are fail-closed and never raise: absent is `NO_OPT_IN` (generation 0);
+malformed, non-canonical, oversized, linked, mis-owned, group/other
+accessible, changing while read, or lower than a generation this process has
+already seen (a rolled-back or deleted record) is `unavailable`, which is also
+`NO_OPT_IN`. A grant is refused over such a store; a withdrawal is refused
+over an unreadable one (remote is already refused) and written above the
+generation seen over a rolled-back one. A restart re-reads the record, so a
+withdrawal stays in force. Across a restart the record itself is the floor:
+root replacing the file is out of reach, as for `activation_high_water`.
+
+The send side is `mio_remoted` (*Remote opt-in at the send gate* in
+[remote inference](remote-inference.md)). A withdrawal returns only after the
+send gate has drained senders that read the previous generation (bounded at
+65 s, above the longest request deadline; `drained: false` in the reply and
+the record if that bound expires, and the withdrawal stands). Entry's accept
+loop is single-threaded, so a draining withdrawal holds it; with no transport
+in this build nothing holds the gate. This store is consent to route a
+sanitised question to an online AI provider only; it is not, and does not
+read, Knowledge peer authorisation.
+
+Tests: `tests/unit/test_mio_remote_consent.py`,
+`tests/unit/test_mio_entryd_opt_in.py`, `tests/unit/test_mio_remoted.py`
+(threads and real `flock` in temporary directories).
+
 ### Metadata-only entry daemon
 
 `az-mio-entryd` takes no command-line arguments. Its `mio.route` verb accepts
@@ -644,13 +695,16 @@ request's one fallback; it is not counted as an AI attempt.
 The recheck runs inside the request's one deadline: each attempt's budget is
 taken after it returns. `MAX_AI_ATTEMPTS`, the reserves and
 `InFlightDisposition` are unchanged. Entry passes a recheck that re-evaluates
-`remote_admission` with the same inputs as the selection (`NO_OPT_IN`,
-`unchecked_reading()`), so in this build remote is never selected and nothing
-changes in production. Remaining: cancelling a remote request already in flight
-is out of scope (no remote transport); and `remote_recheck` is a synchronous call
-with no timeout of its own -- the current closure is a pure function and cannot
-block, but a real opt-in reader connected later must be bounded by the request's
-deadline before it is wired in. Tests: `tests/unit/test_mio_router.py`,
+`remote_admission` with the opt-in read **again** from the remote opt-in store
+(see *Remote opt-in store* below) and `unchecked_reading()`. A generation that
+moved since the selection, a withdrawn or incomplete opt-in, and a store that
+cannot be believed all read as `NO_OPT_IN`, so the recheck only narrows. Trust
+stays `unchecked` and the allowlist empty, so in this build remote is still
+never selected and nothing changes in production. Remaining: cancelling a
+remote request already in flight is out of scope (no remote transport). The
+recheck's store read is a local file read of at most 4 KiB that never waits on
+a lock; it takes no share of the request's deadline and its duration is not
+measured. Tests: `tests/unit/test_mio_router.py`,
 `tests/unit/test_mio_router_deadline.py`, `tests/unit/test_mio_entryd.py` (mocks).
 
 **One deadline per request** (implemented; software evidence only). Entry

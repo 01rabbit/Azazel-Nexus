@@ -8,7 +8,7 @@ process boundary: whatever the sender *is* on the other side, what the daemon
 receives is bytes.
 
 So the daemon accepts **one shape only**: a detached Ed25519 signature over a
-canonical payload, produced by the sanitizer boundary, binding five things
+canonical payload, produced by the sanitizer boundary, binding six things
 that a forged or replayed request would have to get right together.
 
 | bound | what a mismatch would otherwise allow |
@@ -18,9 +18,12 @@ that a forged or replayed request would have to get right together.
 | `policy_revision` | a frame sanitised under a policy since withdrawn |
 | `expires_at` | an envelope kept and used later, under conditions nobody re-checked |
 | `nonce` + `provider_id` | the same authorised request replayed, or sent to a provider it was never authorised for |
+| `opt_in_generation` | a frame authorised under a remote opt-in the operator has since withdrawn |
 
-Each is checked here. None is inferable from another, which is why they are
-five fields rather than one token.
+Each is checked here except the last, which only `mio_remoted` can check: it
+compares it with the generation in force (`mio_remote_consent`) immediately
+before the transport, under the send gate. None is inferable from another,
+which is why they are six fields rather than one token.
 
 ## What this module is not
 
@@ -58,6 +61,7 @@ __all__ = [
     "EnvelopeRefused",
     "MAX_ENVELOPE_BYTES",
     "MAX_FRAME_BYTES",
+    "MAX_OPT_IN_GENERATION",
     "NonceLedger",
     "OpenedEnvelope",
     "REMOTE_ELIGIBLE",
@@ -77,7 +81,10 @@ ENVELOPE_DOMAIN = b"azazel-nexus/sanitized-envelope/v1\x00"
 
 #: The payload shape. Moves when a field is added or changes meaning, which
 #: is the thing the domain deliberately does not do.
-ENVELOPE_SCHEMA = "azazel-nexus/sanitized-envelope/1"
+ENVELOPE_SCHEMA = "azazel-nexus/sanitized-envelope/2"
+
+#: The largest opt-in generation an envelope may name (`mio_remote_consent`).
+MAX_OPT_IN_GENERATION = 2**63 - 1
 
 #: An envelope larger than this is refused before it is parsed. It carries
 #: digests and symbols, never content, so it is small by construction; a
@@ -145,6 +152,10 @@ class OpenedEnvelope:
     nonce: str
     expires_at: str
     frame_bytes: int
+    #: The remote opt-in generation the sanitizer boundary read. Believed as
+    #: signed; whether it is still the generation in force is the sender's
+    #: check, made under the send gate.
+    opt_in_generation: int
 
     def as_event(self) -> dict:
         """Audit metadata: digests, symbols and counts. Never the frame."""
@@ -159,6 +170,7 @@ class OpenedEnvelope:
             "nonce": self.nonce,
             "expires_at": self.expires_at,
             "frame_bytes": self.frame_bytes,
+            "opt_in_generation": self.opt_in_generation,
         }
 
 
@@ -215,6 +227,7 @@ def envelope_payload(
     nonce: str,
     expires_at: str,
     frame_bytes: int,
+    opt_in_generation: int,
 ) -> bytes:
     """The exact bytes a sanitizer boundary signs.
 
@@ -233,6 +246,7 @@ def envelope_payload(
             "nonce": nonce,
             "expires_at": expires_at,
             "frame_bytes": frame_bytes,
+            "opt_in_generation": opt_in_generation,
         }
     )
 
@@ -332,6 +346,7 @@ def open_envelope(
         "nonce",
         "expires_at",
         "frame_bytes",
+        "opt_in_generation",
     )
     missing = sorted(set(required) - set(document))
     if missing:
@@ -429,6 +444,15 @@ def open_envelope(
             f"the envelope expired at {expires_at} and it is now {now}",
         )
 
+    generation = document["opt_in_generation"]
+    if (type(generation) is not int
+            or not 1 <= generation <= MAX_OPT_IN_GENERATION):
+        _refuse(
+            EnvelopeRefusal.MALFORMED,
+            "opt_in_generation is a positive integer; an envelope minted with "
+            "no remote opt-in in force authorises nothing",
+        )
+
     nonce = document["nonce"]
     if not isinstance(nonce, str) or len(nonce) < 32:
         _refuse(
@@ -447,4 +471,5 @@ def open_envelope(
         nonce=nonce,
         expires_at=expires_at,
         frame_bytes=frame_bytes,
+        opt_in_generation=generation,
     )

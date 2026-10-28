@@ -46,6 +46,17 @@ the content, the policy revision, an expiry, a nonce and a provider. A
 caller that could assert a class would be a caller that could assert
 `P0-public` over anything it liked.
 
+## The opt-in in force, immediately before the transport
+
+The envelope names the remote opt-in generation the sanitizer boundary read.
+Before the transport is called -- and before the "no transport" refusal,
+so the check is exercised in this build too -- this service takes the send
+gate of the opt-in store (`mio_remote_consent`), reads the generation in
+force, and refuses unless the opt-in is granted and the generation is the
+envelope's. The gate is held until the transport returns, so a withdrawal
+that has been confirmed is never followed by a send of an envelope minted
+before it. An unreadable, rolled-back or busy store is a refusal.
+
 ## No retry, one attempt
 
 `route_selection` decides whether a failure falls back, and it decides once.
@@ -76,6 +87,7 @@ from azazel_nexus.remote_envelope import (
 )
 from azazel_nexus.sanitizer import NEVER_REMOTE
 
+from .mio_remote_consent import ConsentReading, ConsentStore
 from .principal import PrincipalClass
 from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
 
@@ -233,6 +245,7 @@ class RemoteInferenceService:
         nonces: Optional[NonceLedger] = None,
         transport: Optional[Callable[..., tuple]] = None,
         clock: Callable[[], str] = lambda: "",
+        consent: Optional[ConsentStore] = None,
     ) -> None:
         self._registry = registry
         # Empty by default and empty as shipped. No key holds the sanitizer
@@ -245,6 +258,23 @@ class RemoteInferenceService:
         # transport -- the path is absent rather than disabled.
         self._transport = transport
         self._clock = clock
+        # The opt-in store's reader. Without one, entryd's store read as
+        # `azmioentry`; on a node where this account cannot read it (every
+        # node as shipped) that is "unavailable", which is a refusal.
+        self._consent = consent
+
+    def _consent_store(self) -> Optional[ConsentStore]:
+        if self._consent is None:
+            try:
+                import pwd
+
+                from .runtime_paths import mio_state_dir
+
+                self._consent = ConsentStore(
+                    mio_state_dir(), owner=pwd.getpwnam("azmioentry").pw_uid)
+            except Exception:  # noqa: BLE001 - no reader is no opt-in
+                return None
+        return self._consent
 
     def handle(
         self, request: Any, *, audit: Callable[[dict], None] | None = None,
@@ -322,24 +352,40 @@ class RemoteInferenceService:
                 f"is {record.max_request_bytes}; nothing is sent",
             )
 
-        if self._transport is None:
-            return refuse(
-                "no_transport",
-                "this distribution contains no inference transport. The path "
-                "is absent rather than disabled, so there is no setting that "
-                "turns it on",
+        # 4. The remote opt-in in force, under the send gate, which is held
+        #    until the transport returns. Before the transport's absence is
+        #    reported, so this check runs in this build too.
+        store = self._consent_store()
+        if store is None:
+            return refuse("opt_in_unavailable", "the remote opt-in store cannot be read; nothing is sent")
+        with store.send_gate() as consent:
+            refused = self._consent_refusal(consent, opened.opt_in_generation)
+            if refused is not None:
+                if audit is not None:
+                    audit({"event_type": "mio.remote.opt_in.checked",
+                           "status": consent.status,
+                           "generation": consent.generation,
+                           "envelope_generation": opened.opt_in_generation})
+                return refuse(*refused)
+
+            if self._transport is None:
+                return refuse(
+                    "no_transport",
+                    "this distribution contains no inference transport. The path "
+                    "is absent rather than disabled, so there is no setting that "
+                    "turns it on",
+                )
+
+            bounded = {}
+            if deadline_ms is not None:
+                if type(deadline_ms) is not int or deadline_ms <= 0:
+                    return refuse("deadline", "no time is left of the request's deadline; nothing is sent")
+                bounded["deadline_s"] = deadline_ms / 1000
+
+            # 5. One attempt. No loop, no retry: the router decides fallback once.
+            report, body = self._transport(
+                record=record, frame=frame, path=record.path_for(), **bounded
             )
-
-        bounded = {}
-        if deadline_ms is not None:
-            if type(deadline_ms) is not int or deadline_ms <= 0:
-                return refuse("deadline", "no time is left of the request's deadline; nothing is sent")
-            bounded["deadline_s"] = deadline_ms / 1000
-
-        # 4. One attempt. No loop, no retry: the router decides fallback once.
-        report, body = self._transport(
-            record=record, frame=frame, path=record.path_for(), **bounded
-        )
         if audit is not None:
             audit(report.as_event())
         if report.outcome.value != "received":
@@ -351,7 +397,7 @@ class RemoteInferenceService:
                 reason=report.reason,
             ).as_document()
 
-        # 5. The untrusted content boundary.
+        # 6. The untrusted content boundary.
         try:
             advisory = read_advisory(body, max_bytes=record.max_response_bytes)
         except AdvisoryRefused as exc:
@@ -379,6 +425,24 @@ class RemoteInferenceService:
             response_digest=advisory.digest,
             advisory_fields=len(advisory.data.fields) if advisory.data else 0,
         ).as_document()
+
+
+    @staticmethod
+    def _consent_refusal(consent: ConsentReading, generation: int):
+        """None when the envelope's generation is the opt-in in force."""
+        if consent.generation is None:
+            return ("opt_in_unavailable",
+                    "the remote opt-in store could not be believed (unreadable, "
+                    "malformed, rolled back or busy); nothing is sent")
+        if not consent.permits:
+            return ("opt_in_not_granted",
+                    f"the remote opt-in is {consent.status}; nothing is sent")
+        if consent.generation != generation:
+            return ("opt_in_generation_mismatch",
+                    f"the envelope was minted under opt-in generation {generation} "
+                    f"and generation {consent.generation} is in force; an opt-in "
+                    "changed since then does not authorise this frame")
+        return None
 
 
 def main(

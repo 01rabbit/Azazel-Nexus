@@ -20,7 +20,12 @@ from azazel_nexus.local_advisory import (
     read_reference,
     request_event,
 )
-from azazel_nexus.mio_profile import NO_OPT_IN, MioProfile
+from azazel_nexus.mio_profile import (
+    NO_OPT_IN,
+    PREREQUISITES,
+    MioProfile,
+    RemotePrerequisite,
+)
 from azazel_nexus.remote_trust import remote_admission, unchecked_reading
 from azazel_nexus.routing import Route
 from azazel_nexus.sanitizer import PrivacyClass
@@ -28,6 +33,12 @@ from azazel_nexus.sanitizer import PrivacyClass
 from .mio_capability import read_capability
 from .mio_commissioning import commissioned_profile
 from .mio_locald import INFER_VERB
+from .mio_remote_consent import (
+    WITHDRAWAL_REASONS,
+    ConsentReading,
+    ConsentRefused,
+    ConsentStore,
+)
 from .mio_route_ledger import (
     ARBITER,
     CONTROL,
@@ -52,7 +63,7 @@ from .protocol import (
     Verb,
     VerbRegistry,
 )
-from .runtime_paths import dedicated_listener, socket_path
+from .runtime_paths import dedicated_listener, mio_state_dir, socket_path
 from .serve import serve_forever
 from .systemd_notify import runtime_ready_callback
 
@@ -73,7 +84,28 @@ ADVISE_VERB = Verb(
     accepts_payload=True,
     payload_contract="azazel_nexus.local_advisory.read_frame",
 )
-REGISTRY = VerbRegistry([ROUTE_VERB, ADVISE_VERB])
+#: The remote opt-in (`mio_remote_consent`): the only writers of the store,
+#: and its read. `OPERATOR` alone -- not `SERVICE` (the arbiter, the
+#: explainer), not the advice listener -- and no argument is free text.
+OPT_IN_STATUS_VERB = Verb(
+    "mio.remote.opt_in.status",
+    admits=frozenset({PrincipalClass.OPERATOR}),
+)
+OPT_IN_SET_VERB = Verb(
+    "mio.remote.opt_in.set",
+    arguments=(Argument("prerequisite", ArgumentKind.ENUM,
+                        choices=tuple(p.value for p in PREREQUISITES)),),
+    admits=frozenset({PrincipalClass.OPERATOR}),
+)
+OPT_IN_WITHDRAW_VERB = Verb(
+    "mio.remote.opt_in.withdraw",
+    arguments=(Argument("reason", ArgumentKind.ENUM, choices=WITHDRAWAL_REASONS),),
+    admits=frozenset({PrincipalClass.OPERATOR}),
+)
+OPT_IN_VERBS = frozenset({OPT_IN_STATUS_VERB.name, OPT_IN_SET_VERB.name,
+                          OPT_IN_WITHDRAW_VERB.name})
+REGISTRY = VerbRegistry([ROUTE_VERB, ADVISE_VERB, OPT_IN_STATUS_VERB,
+                         OPT_IN_SET_VERB, OPT_IN_WITHDRAW_VERB])
 #: The explainer's own listener (`mio-advise`, group azmio-advise): advice
 #: only. Its client holds that group and not the operator group (#213 O1).
 ADVISE_REGISTRY = VerbRegistry([ADVISE_VERB])
@@ -158,6 +190,7 @@ class MioEntryService:
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
         rate: PrincipalRate | None = None,
+        consent: ConsentStore | None = None,
     ):
         self._explainer_uid = self._account_uid("azexplain")
         self._arbiter_uid = self._account_uid("azarbiter")
@@ -172,6 +205,9 @@ class MioEntryService:
         self._profile_reader = profile_reader
         self._local_admitted = local_admitted
         self._predictions_reader = predictions_reader
+        #: The remote opt-in store. Composition does no I/O; an absent store
+        #: reads `NO_OPT_IN`.
+        self.consent = consent if consent is not None else ConsentStore(mio_state_dir())
         self._clock = clock
         self._last_capability = None
         self._next_capability_check = 0.0
@@ -460,9 +496,73 @@ class MioEntryService:
         previous = getattr(ledger, "owner", None)
         ledger.owner = key
         try:
+            if getattr(getattr(request, "verb", None), "name", None) in OPT_IN_VERBS:
+                return self._opt_in(request, principal, key)
             return self._handle(request, principal, key)
         finally:
             ledger.owner = previous
+
+    @staticmethod
+    def _reading_reply(reading: ConsentReading) -> dict:
+        return {"status": reading.status, "generation": reading.generation,
+                "granted": sorted(p.value for p in reading.opt_in.granted),
+                "missing": [p.value for p in reading.opt_in.missing]}
+
+    def _opt_in(self, request, principal, key) -> dict:
+        """The operator's remote opt-in verbs. The only writes to the store.
+
+        Setting a prerequisite widens what may be considered, so it is
+        recorded before it is committed: no grant is in force without a
+        ledger line. A withdrawal narrows, so it is committed first and
+        recorded after: a ledger fault never keeps an opt-in in force.
+        """
+        # The transport admitted only the OPERATOR class; checked again here
+        # so a registry edit cannot hand these verbs to a service account.
+        if principal is None or PrincipalClass.OPERATOR not in principal.classes:
+            raise RequestRefused(Refusal.PRINCIPAL_DENIED, "opt_in_operator")
+        name = request.verb.name
+        if name == OPT_IN_STATUS_VERB.name:
+            return self._reading_reply(self.consent.reading())
+        operator = f"uid:{principal.uid}"
+        if name == OPT_IN_SET_VERB.name:
+            prerequisite = RemotePrerequisite(request.arguments["prerequisite"])
+            before = self.consent.reading()
+            if before.generation is None:
+                raise RequestRefused(Refusal.VERB_UNAVAILABLE, "opt_in_store")
+            # Its records are charged to this caller's share, like a request's.
+            self._mark(key)
+            self.router._record({"event_type": "mio.remote.opt_in.set",
+                                 "operator": operator,
+                                 "prerequisite": prerequisite.value,
+                                 "generation": before.generation + 1})
+            try:
+                record = self.consent.set_prerequisite(prerequisite, operator=operator)
+            except (ConsentRefused, OSError):
+                self.router._record({"event_type": "mio.remote.opt_in.not_committed",
+                                     "operator": operator,
+                                     "prerequisite": prerequisite.value})
+                raise RequestRefused(Refusal.VERB_UNAVAILABLE, "opt_in_store") from None
+            reading = self.consent.reading()
+            if reading.permits and reading.generation == record.generation:
+                self.router._record({**reading.opt_in.as_event(),
+                                     "generation": record.generation})
+            return self._reading_reply(reading)
+        reason = request.arguments["reason"]
+        try:
+            record, drained = self.consent.withdraw(reason, operator=operator)
+        except (ConsentRefused, OSError):
+            # Remote is already refused: every reading of a store that cannot
+            # be believed is `NO_OPT_IN`. Nothing was written.
+            self._mark(key)
+            self.router._record({"event_type": "mio.remote.opt_in.withdraw_refused",
+                                 "operator": operator, "reason": reason})
+            raise RequestRefused(Refusal.VERB_UNAVAILABLE, "opt_in_store") from None
+        # Committed before any ledger write: a ledger fault from here on
+        # never leaves the opt-in in force.
+        self._mark(key)
+        self.router._record({**record.opt_in().withdrawn.as_event(),
+                             "generation": record.generation, "drained": drained})
+        return {**self._reading_reply(self.consent.reading()), "drained": drained}
 
     def _handoff(self, frame: dict, result, deadline_at: float) -> dict:
         """The deterministic terminal step's reply: no AI is called here.
@@ -596,12 +696,19 @@ class MioEntryService:
             "local_refusal": LOCAL_REFUSAL,
             "remote_trust": "unchecked",
         })
+        # The opt-in in force at selection, and its generation. The router
+        # asks again before any remote attempt and at any fallback, and may
+        # only narrow on it: a generation that moved since the selection (a
+        # withdrawal, or any change) reads as no opt-in, as does a store
+        # that cannot be believed.
+        selected = self.consent.reading()
+
         def admit_remote():
-            # The same reading as the selection's: the router asks it again
-            # before any remote attempt and at any fallback, and may only
-            # narrow on it. No new input, reader or override is consulted.
+            now = self.consent.reading()
+            opt_in = (now.opt_in if now.permits and selected.permits
+                      and now.generation == selected.generation else NO_OPT_IN)
             return remote_admission(
-                profile=profile, opt_in=NO_OPT_IN,
+                profile=profile, opt_in=opt_in,
                 trust=unchecked_reading(), privacy_class=privacy, sanitised=False,
             )
 
