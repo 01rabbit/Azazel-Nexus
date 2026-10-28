@@ -1,0 +1,1478 @@
+{
+  "as_of": "2026-09-21T04:01:00Z",
+  "authority": {
+    "decision_and_enforcement": "edge",
+    "edge_decisions": "would_not_executed",
+    "execution_results": "not_accepted",
+    "nexus": "observe_explain_advise",
+    "reason_code": "nexus_accepts_observe_only"
+  },
+  "clock": {
+    "reason_code": null,
+    "status": "known"
+  },
+  "lab_host": false,
+  "schema": "azazel-nexus/status-view/1",
+  "sections": {
+    "capability": {
+      "lost": [
+        "extended_knowledge",
+        "knowledge_lite",
+        "full_host_redirect",
+        "deception_lite",
+        "local_cognition",
+        "remote_cognition"
+      ],
+      "reason_code": null,
+      "retained": [
+        "arbiter_interface",
+        "audit",
+        "deterministic_explanations",
+        "evaluators",
+        "evidence",
+        "operator_plane"
+      ],
+      "source": {
+        "kind": "fixed_component_set",
+        "live_provider_assessment": false
+      },
+      "state": "CORE",
+      "status": "reported"
+    },
+    "edge_core": {
+      "caveats": [
+        {
+          "text": "the Edge manifest is not signed, so a matching digest establishes integrity against accidental change and not authenticity; an adversary who can rewrite the package can rewrite the manifest with it",
+          "withheld": []
+        }
+      ],
+      "findings": [
+        {
+          "check": "package_present",
+          "evidence": "failed",
+          "security": false,
+          "withheld": [
+            "reason"
+          ]
+        },
+        {
+          "check": "version_matches",
+          "evidence": "not-checked",
+          "security": false,
+          "withheld": [
+            "reason"
+          ]
+        },
+        {
+          "check": "digest_matches",
+          "evidence": "not-checked",
+          "security": false,
+          "withheld": [
+            "reason"
+          ]
+        },
+        {
+          "check": "health_endpoint_healthy",
+          "evidence": "not-checked",
+          "security": false,
+          "withheld": [
+            "reason"
+          ]
+        },
+        {
+          "check": "running",
+          "evidence": "not-checked",
+          "security": false,
+          "withheld": [
+            "reason"
+          ]
+        }
+      ],
+      "issuer": {
+        "digest_verified": false,
+        "floor_status": "absent",
+        "issuer_authenticated": false,
+        "issuer_reason": null,
+        "issuer_status": "not_configured",
+        "notes": [],
+        "revocation_status": "not_configured",
+        "revoked": "not_evaluated",
+        "withheld": [
+          "issuer",
+          "revocation_sequence",
+          "floor_version",
+          "issuer_reason"
+        ]
+      },
+      "probe": {
+        "boot_id": "not_needed",
+        "observed_at": null,
+        "result": "absent"
+      },
+      "ready": false,
+      "reason_code": "checks_not_all_passed",
+      "root_configured": true,
+      "source": {
+        "kind": "package_files_and_probe_result",
+        "probe_reader": "edge_package.load_probe_result",
+        "reader": "edge_package.inspect"
+      },
+      "status": "absent",
+      "withheld": [
+        "root"
+      ]
+    },
+    "edge_loop": {
+      "authority": {
+        "decision_and_enforcement": "edge",
+        "edge_decisions": "would_not_executed",
+        "execution_results": "not_accepted",
+        "nexus": "observe_explain_advise",
+        "reason_code": "nexus_accepts_observe_only"
+      },
+      "content_labels": {
+        "ai_advice": "AI advice (local model)",
+        "deterministic_notice": "deterministic handoff notice (not AI)",
+        "deterministic_reference": "deterministic playbook reference (not AI)",
+        "legacy_handoff": "legacy unlabeled deterministic handoff (not AI)",
+        "none": "no content"
+      },
+      "evaluated_at": 1789963260.0,
+      "explainer": {
+        "conditions": [
+          "chain_broken"
+        ],
+        "reason_code": "chain_broken",
+        "snapshot": {
+          "audit_forward_dropped": 0,
+          "audit_forward_refused": 0,
+          "chain_broken": true,
+          "cursor_lag": 0,
+          "explained": 0,
+          "knowledge_available": true,
+          "last_explained_at": null,
+          "mio_available": false,
+          "pending": 0,
+          "recovery_hint": "inspect_incident_chain_then_remove_cursor_and_restart",
+          "refused": {
+            "mio_reply_refused": 2
+          },
+          "schema": "azazel-nexus/incident-explain-status/v1",
+          "storage_failed": false,
+          "written_at": 1789963257.0
+        },
+        "source": {
+          "age_reason": null,
+          "age_s": 3,
+          "freshness": "fresh",
+          "kind": "snapshot",
+          "reason_code": null,
+          "schema": "azazel-nexus/incident-explain-status/v1",
+          "written_at": 1789963257.0
+        },
+        "status": "degraded"
+      },
+      "intake": {
+        "conditions": [],
+        "reason_code": null,
+        "snapshot": {
+          "accepted": 12,
+          "decoy": {
+            "accepted": 3,
+            "last_accepted_at": 1789963253.0
+          },
+          "decoy_status": {
+            "hardware_evidence": false,
+            "listening": true,
+            "observer": "nexus",
+            "refused": {
+              "DECOY_JSON": 2,
+              "decoy_rate_limited": 1
+            }
+          },
+          "edge_forward": {
+            "dropped": 1,
+            "failed": 2,
+            "reported_at": 1789962260.0,
+            "restarts": 1,
+            "sent": 40,
+            "since": 1789900000
+          },
+          "edge_forward_freshness": {
+            "age_reason": null,
+            "age_s": 1000,
+            "reported_by": "edge",
+            "status": "stale"
+          },
+          "last_accepted_at": 1789963220.0,
+          "last_processed_at": 1789963225.0,
+          "ledger_recovered": 1,
+          "open_incidents": 1,
+          "processed": 15,
+          "queue_drops": 2,
+          "refused": {
+            "DECOY_JSON": 2,
+            "EDGE_JSON": 5,
+            "EDGE_SHAPE": 4,
+            "decoy_rate_limited": 1,
+            "evidence_segment_full": 1,
+            "overloaded": 3,
+            "queue_full": 2,
+            "read_error": 3
+          },
+          "schema": "azazel-nexus/edge-intake-status/v1",
+          "storage_failed": false,
+          "written_at": 1789963255.0
+        },
+        "source": {
+          "age_reason": null,
+          "age_s": 5,
+          "freshness": "fresh",
+          "kind": "snapshot",
+          "reason_code": null,
+          "schema": "azazel-nexus/edge-intake-status/v1",
+          "written_at": 1789963255.0
+        },
+        "status": "running"
+      },
+      "reason_code": null,
+      "recent": {
+        "conditions": [],
+        "reason_code": null,
+        "snapshot": {
+          "incidents": [
+            {
+              "count": 1,
+              "edge_decision": {
+                "action": "isolate",
+                "decided_by": "edge",
+                "executed": false,
+                "kind": "would"
+              },
+              "edge_would": "isolate",
+              "execution_result": {
+                "reason_code": "nexus_accepts_observe_only",
+                "status": "none"
+              },
+              "explanation": {
+                "content_kind": "ai_advice",
+                "failure_codes": [],
+                "knowledge_refs": [
+                  {
+                    "claim_id": "T1059",
+                    "name": "Command and Scripting Interpreter",
+                    "technique_id": "T1059"
+                  },
+                  {
+                    "as_of": "2026-09-21T04:00:00Z",
+                    "bundle_digest_short": "sha256:0123456789ab",
+                    "citation": "MITRE ATT&CK v14.1",
+                    "citation_state": "shown",
+                    "claim_id": "T1059",
+                    "freshness": "static",
+                    "generation": 7,
+                    "name": "Shell",
+                    "technique_id": "T1059",
+                    "withheld": []
+                  },
+                  {
+                    "as_of": "2026-09-21T04:00:00Z",
+                    "bundle_digest_short": "sha256:0123456789ab",
+                    "citation": "",
+                    "citation_state": "none",
+                    "claim_id": "T1071",
+                    "freshness": "current",
+                    "generation": 7,
+                    "name": "Application Layer Protocol",
+                    "technique_id": "T1071",
+                    "withheld": []
+                  }
+                ],
+                "knowledge_refs_omitted": 1,
+                "outcome": "answered",
+                "route": "local",
+                "state": "explained",
+                "summary": "Inspect the interpreter launch"
+              },
+              "first_seen": 1789962960.0,
+              "incident_id": "inc-00000000000000a1",
+              "last_seen": 1789963240.0,
+              "most_severe": 3,
+              "policy_reason": "severity_critical_contains_immediately",
+              "state": "open",
+              "technique_ids": [
+                "T1059",
+                "T1059.001"
+              ]
+            },
+            {
+              "count": 1,
+              "edge_decision": {
+                "action": "notify",
+                "decided_by": "edge",
+                "executed": false,
+                "kind": "would"
+              },
+              "edge_would": "notify",
+              "evidence_stored": false,
+              "execution_result": {
+                "reason_code": "nexus_accepts_observe_only",
+                "status": "none"
+              },
+              "explanation": {
+                "content_kind": "deterministic_notice",
+                "failure_codes": [],
+                "knowledge_refs": [],
+                "notice": "No AI answer is available for this request, so it was handed to the deterministic path. This notice and any attached playbook reference are fixed or verified material, not an AI answer. Edge's deterministic control plane remains the decision and enforcement authority.",
+                "outcome": "unavailable",
+                "route": "deterministic handoff",
+                "state": "notice_shown",
+                "summary": ""
+              },
+              "first_seen": 1789962660.0,
+              "incident_id": "inc-00000000000000b2",
+              "last_seen": 1789963140.0,
+              "most_severe": 3,
+              "policy_reason": "severity_critical_contains_immediately",
+              "state": "closed",
+              "technique_ids": [
+                "T1059",
+                "T1059.001"
+              ]
+            },
+            {
+              "count": 1,
+              "edge_decision": {
+                "action": "observe",
+                "decided_by": "edge",
+                "executed": false,
+                "kind": "would"
+              },
+              "edge_would": "observe",
+              "execution_result": {
+                "reason_code": "nexus_accepts_observe_only",
+                "status": "none"
+              },
+              "explanation": {
+                "failure_codes": [],
+                "knowledge_refs": [],
+                "outcome": "unavailable",
+                "route": "unavailable",
+                "state": "pending",
+                "summary": ""
+              },
+              "first_seen": 1789962360.0,
+              "incident_id": "inc-00000000000000c3",
+              "last_seen": 1789962460.0,
+              "most_severe": 3,
+              "policy_reason": "severity_critical_contains_immediately",
+              "state": "open",
+              "technique_ids": [
+                "T1059",
+                "T1059.001"
+              ]
+            }
+          ],
+          "schema": "azazel-nexus/recent-incidents/v1",
+          "written_at": 1789963258.0
+        },
+        "source": {
+          "age_reason": null,
+          "age_s": 2,
+          "freshness": "fresh",
+          "kind": "snapshot",
+          "reason_code": null,
+          "schema": "azazel-nexus/recent-incidents/v1",
+          "written_at": 1789963258.0
+        },
+        "status": "running"
+      },
+      "status": "read"
+    },
+    "enforcement": {
+      "commissioning_record": "absent",
+      "edge_baseline_ready": false,
+      "enforcement_ready": false,
+      "missing_profiles": [],
+      "observe_only": null,
+      "reason_code": "no_commissioning_record"
+    },
+    "external_modules": [
+      {
+        "name": "AZ-04 Knowledge",
+        "reason": "no module endpoint is configured on this node",
+        "state": "absent",
+        "withheld": [],
+        "working": false
+      },
+      {
+        "name": "AZ-06 Deception",
+        "reason": "no module endpoint is configured on this node",
+        "state": "absent",
+        "withheld": [],
+        "working": false
+      },
+      {
+        "name": "Remote M.I.O.",
+        "reason": "no remote cognition route is configured on this node",
+        "state": "absent",
+        "withheld": [],
+        "working": false
+      }
+    ],
+    "fabric": {
+      "reason_code": null,
+      "status": "projected",
+      "version": "0.9.0rc5"
+    },
+    "health": [
+      {
+        "advisory": null,
+        "advisory_code": null,
+        "detail": null,
+        "reason_code": "service_manager_not_queried",
+        "source": {
+          "kind": "not_queried"
+        },
+        "status": "unknown",
+        "subject": "systemd units",
+        "withheld": [
+          "detail"
+        ]
+      },
+      {
+        "advisory": null,
+        "advisory_code": "audit_capacity_warning",
+        "capacity": {
+          "chain_bytes": 3221225472,
+          "chain_verified": true,
+          "filesystem_free_bytes": 1073741824,
+          "rate_limit_summaries_dropped": 1,
+          "rate_limited_total": 6,
+          "segments": 3,
+          "warn_chain_bytes": 2147483648,
+          "warn_free_bytes": 2147483648,
+          "warning": true,
+          "warning_reasons": [
+            "chain_size",
+            "filesystem_free"
+          ]
+        },
+        "detail": null,
+        "reason_code": null,
+        "source": {
+          "age_reason": null,
+          "age_s": 20,
+          "freshness": "fresh",
+          "kind": "snapshot",
+          "reason_code": null,
+          "schema": "azazel-nexus/audit-status/v1",
+          "written_at": 1789963240.0
+        },
+        "status": "ok",
+        "subject": "audit",
+        "withheld": [
+          "detail",
+          "advisory"
+        ]
+      }
+    ],
+    "integration": {
+      "baseline_ready": false,
+      "broker": {
+        "core": "deterministic",
+        "informational": true,
+        "status_level": "CORE",
+        "transport": "unavailable",
+        "transport_reason": "Fabric#25"
+      },
+      "continues": [
+        "Knowledge Lite advice",
+        "audit",
+        "deterministic explanations",
+        "inventory and commissioning",
+        "local-only decoy observation",
+        "operator plane"
+      ],
+      "enforcement_capable": false,
+      "reason_code": null,
+      "rows": [
+        {
+          "axis": "capability",
+          "defect": false,
+          "reason": "the node is CORE; a capability state is what the node can do and never what it is permitted to decide",
+          "subject": "",
+          "value": "CORE",
+          "withheld": []
+        },
+        {
+          "axis": "freshness",
+          "defect": false,
+          "reason": "available | freshness: current",
+          "subject": "knowledge_lite",
+          "value": "available",
+          "withheld": []
+        },
+        {
+          "axis": "freshness",
+          "defect": false,
+          "reason": "the functional layer exists and reaches only this host: decoys start and listen, and only on private Unix sockets in the runtime's own directory. Nothing outside this host can reach one: the one module that can bind an address (decoy_listener, #196 P1) is called only by the decoy daemon az-decoyd, whose unit is never granted in this build, so no hostile party can be observed by it yet (Nexus#69). This is an embedded feature that really runs and that nothing outside this host can be affected by, which is not the capability being supplied, and is not the same fact as an external peer being absent. The runtime itself reports: no decoy catalogue is present; nothing is approved",
+          "subject": "deception_lite",
+          "value": "loopback-only",
+          "withheld": []
+        },
+        {
+          "axis": "cognition_route",
+          "defect": false,
+          "reason": null,
+          "subject": "mio",
+          "value": "CORE ONLY; remote M.I.O. disabled; local M.I.O. control-plane-only",
+          "withheld": [
+            "reason"
+          ]
+        },
+        {
+          "axis": "knowledge_supplier",
+          "defect": false,
+          "reason": "supplied by the embedded runtime alone; AZ-04 peer is unavailable, which is the designed state for a node with no peers",
+          "subject": "knowledge",
+          "value": "Knowledge Lite",
+          "withheld": []
+        },
+        {
+          "axis": "deception_supplier",
+          "defect": false,
+          "reason": "nothing is supplying this capability; AZ-06 peer is a capability extension and its absence is unavailable, not a defect",
+          "subject": "deception",
+          "value": "none",
+          "withheld": []
+        },
+        {
+          "axis": "edge",
+          "defect": false,
+          "reason": "no Edge package is installed on this node. This is a deployment step, not a security finding; enforcement-capable and baseline-ready are not claimed",
+          "subject": "edge_core",
+          "value": "absent",
+          "withheld": []
+        }
+      ],
+      "status": "reported"
+    },
+    "interfaces": {
+      "items": [
+        {
+          "blocked_by": [
+            "permanent_mac could not be read"
+          ],
+          "commissionable": false,
+          "handle": "if-1",
+          "role": null,
+          "state": "not commissionable",
+          "withheld": [
+            "description"
+          ]
+        },
+        {
+          "blocked_by": [
+            "permanent_mac could not be read"
+          ],
+          "commissionable": false,
+          "handle": "if-2",
+          "role": null,
+          "state": "not commissionable",
+          "withheld": [
+            "description"
+          ]
+        }
+      ],
+      "reason_code": null,
+      "source": {
+        "kind": "sysfs_read",
+        "reader": "inventory.read_interfaces"
+      },
+      "status": "read"
+    },
+    "knowledge_lite": {
+      "bundle": {
+        "current_count": 1,
+        "digest_short": "sha256:0123456789ab",
+        "next_expiry": "2027-01-01T00:00:00Z",
+        "signer_key_ids": [
+          "lab-signer"
+        ],
+        "static_count": 3
+      },
+      "cryptographic_implementation": {
+        "reason_code": "nexus_70_review_pending",
+        "status": "not_supported"
+      },
+      "freshness": "current",
+      "generation": 5,
+      "readiness": {
+        "does_not_mean": [
+          "that this node's cryptographic implementation is supported -- the hand-written Ed25519 verifier is under review (Nexus#70)",
+          "that this node has an AZ-04 Knowledge peer at all; there is no peer route and no download",
+          "any share of Edge authority; Knowledge is advice, and the deterministic arbiter in Azazel-Edge decides"
+        ],
+        "functional": true,
+        "means": "a correct Knowledge Lite bundle can be imported offline by an operator and its real claims served read-only",
+        "word": "functional"
+      },
+      "reason_code": "available",
+      "source": {
+        "kind": "store_read",
+        "reader": "lite_import.status_summary",
+        "trust": "commissioned_trust_root",
+        "written_at": null
+      },
+      "status": "available",
+      "withheld": []
+    },
+    "knowledge_status": {
+      "conditions": [],
+      "content_freshness_evaluated_at": 1789963240.0,
+      "cryptographic_implementation": {
+        "reason_code": "nexus_70_review_pending",
+        "status": "not_supported"
+      },
+      "freshness": "fresh",
+      "reason_code": null,
+      "snapshot": {
+        "freshness": "current",
+        "generation": 5,
+        "reason_code": "available",
+        "schema": "azazel-nexus/knowledge-status/v1",
+        "state": "available",
+        "written_at": 1789963240.0
+      },
+      "source": {
+        "age_reason": null,
+        "age_s": 20,
+        "freshness": "fresh",
+        "kind": "snapshot",
+        "reason_code": null,
+        "schema": "azazel-nexus/knowledge-status/v1",
+        "writer": "az-knowledge-lited",
+        "written_at": 1789963240.0
+      },
+      "status": "available"
+    },
+    "mio": {
+      "reading": {
+        "availability": "unknown (route ledger not readable by this user, missing, or verification refused; entryd credentials are not read)",
+        "ceiling": null,
+        "notice": "The recorded ceiling is not a grant or admission; provider admission remains closed.",
+        "observed_at": null,
+        "reasons": {},
+        "source": "route-ledger",
+        "state": null
+      },
+      "reason_code": "route_ledger_unreadable_or_refused",
+      "source": {
+        "kind": "route_ledger",
+        "observed_at": null,
+        "reader": "mio_status.status_summary"
+      },
+      "status": "unknown"
+    },
+    "mio_status": {
+      "conditions": [],
+      "freshness": "fresh",
+      "notice": "The recorded ceiling is not a grant or admission; provider admission remains closed.",
+      "reason_code": null,
+      "snapshot": {
+        "ceiling": "LITE",
+        "observed_at": "2026-09-21T04:00:00+00:00",
+        "reasons": {
+          "health": {
+            "local": "not_admitted",
+            "remote": "unavailable"
+          },
+          "profile": "LITE",
+          "resource": "core_reserve_unmeasured",
+          "topology": "no_verified_egress",
+          "trust": "not-checked"
+        },
+        "record_uncertain": false,
+        "recorded": true,
+        "schema": "azazel-nexus/mio-status/v1",
+        "state": "CORE",
+        "written_at": 1789963240.0
+      },
+      "source": {
+        "age_reason": null,
+        "age_s": 20,
+        "freshness": "fresh",
+        "kind": "snapshot",
+        "reason_code": null,
+        "schema": "azazel-nexus/mio-status/v1",
+        "writer": "az-mio-entryd",
+        "written_at": 1789963240.0
+      },
+      "status": "recorded"
+    },
+    "next_actions": [
+      {
+        "command": "azazel-nexus commission",
+        "lab_host_unavailable_step": null,
+        "summary": "No operator has confirmed what this node is attached to. Commission it before anything is activated.",
+        "withheld": []
+      },
+      {
+        "command": null,
+        "lab_host_unavailable_step": null,
+        "summary": "if-1 cannot be commissioned as read: permanent_mac could not be read",
+        "withheld": []
+      },
+      {
+        "command": null,
+        "lab_host_unavailable_step": null,
+        "summary": "if-2 cannot be commissioned as read: permanent_mac could not be read",
+        "withheld": []
+      },
+      {
+        "command": null,
+        "lab_host_unavailable_step": null,
+        "summary": null,
+        "withheld": [
+          "summary"
+        ]
+      },
+      {
+        "command": null,
+        "lab_host_unavailable_step": null,
+        "summary": null,
+        "withheld": [
+          "summary"
+        ]
+      }
+    ],
+    "noc": {
+      "conditions": [],
+      "freshness": "fresh",
+      "identity": {
+        "interfaces_by": "ifindex",
+        "withheld": [
+          "interface_name",
+          "mac",
+          "address",
+          "gateway",
+          "nameserver",
+          "search_domain"
+        ]
+      },
+      "not_measured": [
+        {
+          "field": "uplink.reachability",
+          "reason_code": "active_check_not_performed",
+          "status": "not_measured"
+        },
+        {
+          "field": "dns.resolution",
+          "reason_code": "active_check_not_performed",
+          "status": "not_measured"
+        }
+      ],
+      "observation": {
+        "active_checks": "none",
+        "kind": "passive",
+        "policy_rules_evaluated": false,
+        "transmission": "none"
+      },
+      "reason_code": null,
+      "role": {
+        "reason_code": "role_evidence_not_provided",
+        "status": "unknown"
+      },
+      "snapshot": {
+        "active_checks": "none",
+        "collection": "observed",
+        "dns": {
+          "resolution": {
+            "age_s": 0.001,
+            "reason": "active_check_not_performed",
+            "state": "unknown",
+            "value": null
+          },
+          "resolv_conf": {
+            "age_s": 0.003,
+            "reason": null,
+            "state": "observed",
+            "value": {
+              "kind": "symlink_systemd_resolved_stub",
+              "loopback_nameservers": 1,
+              "nameservers": 1,
+              "search_domains": 1
+            }
+          },
+          "systemd_resolved_upstream": {
+            "age_s": 0.002,
+            "reason": null,
+            "state": "observed",
+            "value": {
+              "nameservers": 2
+            }
+          }
+        },
+        "interfaces": {
+          "age_s": 0.018,
+          "reason": null,
+          "state": "observed",
+          "value": [
+            {
+              "addresses": {
+                "age_s": 0.017,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "ipv4": 1,
+                  "ipv6": 0
+                }
+              },
+              "admin_up": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": true
+              },
+              "carrier": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": true
+              },
+              "counters": {
+                "age_s": 0.012,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "rx_bytes": 100,
+                  "rx_dropped": 0,
+                  "rx_errors": 0,
+                  "rx_packets": 0,
+                  "tx_bytes": 100,
+                  "tx_dropped": 0,
+                  "tx_errors": 0,
+                  "tx_packets": 0
+                }
+              },
+              "dhcp": {
+                "age_s": 0.01,
+                "reason": "no_lease_file",
+                "state": "unknown",
+                "value": null
+              },
+              "ifindex": 1,
+              "loopback": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": true
+              },
+              "lower_up": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": true
+              },
+              "mtu": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": 65536
+              },
+              "operstate": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": "kernel_unknown"
+              },
+              "quality": {
+                "age_s": 0.012,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "interval_s": 1.009,
+                  "reset_counters": [],
+                  "rx_bps": 0.0,
+                  "rx_dropped_delta": 0,
+                  "rx_errors_delta": 0,
+                  "rx_utilisation": null,
+                  "tx_bps": 0.0,
+                  "tx_dropped_delta": 0,
+                  "tx_errors_delta": 0,
+                  "tx_packets_delta": 0,
+                  "tx_utilisation": null
+                }
+              },
+              "speed_mbps": {
+                "age_s": 0.013,
+                "reason": "file_absent",
+                "state": "unknown",
+                "value": null
+              }
+            },
+            {
+              "addresses": {
+                "age_s": 0.017,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "ipv4": 1,
+                  "ipv6": 2
+                }
+              },
+              "admin_up": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": true
+              },
+              "carrier": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": true
+              },
+              "counters": {
+                "age_s": 0.008,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "rx_bytes": 126000,
+                  "rx_dropped": 1,
+                  "rx_errors": 2,
+                  "rx_packets": 0,
+                  "tx_bytes": 2000,
+                  "tx_dropped": 0,
+                  "tx_errors": 0,
+                  "tx_packets": 10
+                }
+              },
+              "dhcp": {
+                "age_s": 0.007,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "client": "systemd-networkd",
+                  "expired": true,
+                  "expires_never": false,
+                  "remaining_s": -6768211
+                }
+              },
+              "ifindex": 2,
+              "loopback": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": false
+              },
+              "lower_up": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": true
+              },
+              "mtu": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": 1500
+              },
+              "operstate": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": "up"
+              },
+              "quality": {
+                "age_s": 0.008,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "interval_s": 1.012,
+                  "reset_counters": [],
+                  "rx_bps": 988142.3,
+                  "rx_dropped_delta": 1,
+                  "rx_errors_delta": 2,
+                  "rx_utilisation": 0.000988,
+                  "tx_bps": 0.0,
+                  "tx_dropped_delta": 0,
+                  "tx_errors_delta": 0,
+                  "tx_packets_delta": 0,
+                  "tx_utilisation": 0.0
+                }
+              },
+              "speed_mbps": {
+                "age_s": 0.009,
+                "reason": null,
+                "state": "observed",
+                "value": 1000
+              }
+            },
+            {
+              "addresses": {
+                "age_s": 0.017,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "ipv4": 0,
+                  "ipv6": 0
+                }
+              },
+              "admin_up": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": true
+              },
+              "carrier": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": false
+              },
+              "counters": {
+                "age_s": 0.005,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "rx_bytes": 0,
+                  "rx_dropped": 0,
+                  "rx_errors": 0,
+                  "rx_packets": 0,
+                  "tx_bytes": 0,
+                  "tx_dropped": 0,
+                  "tx_errors": 0,
+                  "tx_packets": 0
+                }
+              },
+              "dhcp": {
+                "age_s": 0.014,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "client": "dhclient",
+                  "expired": false,
+                  "expires_never": false,
+                  "remaining_s": 2302444799
+                }
+              },
+              "ifindex": 3,
+              "loopback": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": false
+              },
+              "lower_up": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": false
+              },
+              "mtu": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": 1500
+              },
+              "operstate": {
+                "age_s": 0.018,
+                "reason": null,
+                "state": "observed",
+                "value": "down"
+              },
+              "quality": {
+                "age_s": 0.005,
+                "reason": null,
+                "state": "observed",
+                "value": {
+                  "interval_s": 1.014,
+                  "reset_counters": [],
+                  "rx_bps": 0.0,
+                  "rx_dropped_delta": 0,
+                  "rx_errors_delta": 0,
+                  "rx_utilisation": null,
+                  "tx_bps": 0.0,
+                  "tx_dropped_delta": 0,
+                  "tx_errors_delta": 0,
+                  "tx_packets_delta": 0,
+                  "tx_utilisation": null
+                }
+              },
+              "speed_mbps": {
+                "age_s": 0.006,
+                "reason": "speed_not_reported",
+                "state": "unknown",
+                "value": null
+              }
+            }
+          ]
+        },
+        "interfaces_omitted": 0,
+        "observed_at": 1789963240.0,
+        "reason_code": null,
+        "routes": {
+          "age_s": 0.016,
+          "reason": null,
+          "state": "observed",
+          "value": {
+            "other_tables": {
+              "ipv4": 2,
+              "ipv6": 0
+            },
+            "table_main": {
+              "ipv4": 2,
+              "ipv6": 1
+            }
+          }
+        },
+        "schema": "azazel-nexus/noc-status/v1",
+        "uplink": {
+          "ipv4": {
+            "age_s": 0.016,
+            "reason": null,
+            "state": "observed",
+            "value": {
+              "other_tables": {
+                "dead": false,
+                "default_routes": 1,
+                "egress_ifindex": [
+                  3
+                ],
+                "linkdown": true,
+                "tables": 1,
+                "via_gateway": true
+              },
+              "policy_rules_evaluated": false,
+              "table_main": {
+                "dead": false,
+                "default_routes": 1,
+                "egress_ifindex": [
+                  2
+                ],
+                "linkdown": false,
+                "via_gateway": true
+              }
+            }
+          },
+          "ipv6": {
+            "age_s": 0.016,
+            "reason": null,
+            "state": "observed",
+            "value": {
+              "other_tables": {
+                "dead": false,
+                "default_routes": 0,
+                "egress_ifindex": [],
+                "linkdown": false,
+                "tables": 0,
+                "via_gateway": false
+              },
+              "policy_rules_evaluated": false,
+              "table_main": {
+                "dead": false,
+                "default_routes": 0,
+                "egress_ifindex": [],
+                "linkdown": false,
+                "via_gateway": false
+              }
+            }
+          },
+          "reachability": {
+            "age_s": 0.016,
+            "reason": "active_check_not_performed",
+            "state": "unknown",
+            "value": null
+          }
+        },
+        "written_at": 1789963240.0
+      },
+      "source": {
+        "age_reason": null,
+        "age_s": 20,
+        "freshness": "fresh",
+        "kind": "snapshot",
+        "reason_code": null,
+        "schema": "azazel-nexus/noc-status/v1",
+        "writer": "az-noc-observe",
+        "written_at": 1789963240.0
+      },
+      "status": "observed"
+    },
+    "profile": {
+      "profile": "core",
+      "reason_code": null,
+      "source": {
+        "kind": "os_reading",
+        "reader": "resource_profile.take_reading"
+      },
+      "status": "measured",
+      "usable_mib": 7800,
+      "withheld": []
+    },
+    "services": {
+      "conditions": [],
+      "freshness": "fresh",
+      "reason_code": null,
+      "snapshot": {
+        "schema": "azazel-nexus/units-status/v1",
+        "units": [
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-activated.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-auditd.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-commissiond.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-decoy-netd.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-decoy-nsd.service"
+          },
+          {
+            "active_state": "inactive",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "dead",
+            "unit": "azazel-decoy-verify.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-decoyd.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-edge-core.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-edge-intaked.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-edge-probe-preflight.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-edge-probed.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-incident-explaind.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-knowledge-lited.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-mio-entryd.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-mio-locald.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-mio-referenced.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-mio-remoted.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-model-fetchd.service"
+          },
+          {
+            "active_state": "inactive",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "dead",
+            "unit": "azazel-noc-observe.service"
+          },
+          {
+            "active_state": "inactive",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "dead",
+            "unit": "azazel-ui.service"
+          },
+          {
+            "active_state": "inactive",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "dead",
+            "unit": "azazel-units-observe.service"
+          },
+          {
+            "active_state": "active",
+            "load_state": "loaded",
+            "reason_code": null,
+            "status": "read",
+            "sub_state": "running",
+            "unit": "azazel-watchdog.service"
+          }
+        ],
+        "written_at": 1789963240.0
+      },
+      "source": {
+        "age_reason": null,
+        "age_s": 20,
+        "freshness": "fresh",
+        "kind": "snapshot",
+        "reader": "systemd_bus.UnitStatesReader (read-only)",
+        "reason_code": null,
+        "schema": "azazel-nexus/units-status/v1",
+        "writer": "az-units-observe",
+        "written_at": 1789963240.0
+      },
+      "status": "read"
+    },
+    "storage": {
+      "locations": [
+        {
+          "available_bytes": 2048000,
+          "free_bytes": 2457600,
+          "label": "state_root",
+          "read_only": false,
+          "reason_code": null,
+          "same_filesystem_as": null,
+          "status": "measured",
+          "total_bytes": 4096000
+        },
+        {
+          "available_bytes": 2048000,
+          "free_bytes": 2457600,
+          "label": "audit",
+          "read_only": false,
+          "reason_code": null,
+          "same_filesystem_as": "state_root",
+          "status": "measured",
+          "total_bytes": 4096000
+        },
+        {
+          "available_bytes": 2048000,
+          "free_bytes": 2457600,
+          "label": "edge_incidents",
+          "read_only": false,
+          "reason_code": null,
+          "same_filesystem_as": "state_root",
+          "status": "measured",
+          "total_bytes": 4096000
+        },
+        {
+          "available_bytes": 2048000,
+          "free_bytes": 2457600,
+          "label": "models",
+          "read_only": false,
+          "reason_code": null,
+          "same_filesystem_as": "state_root",
+          "status": "measured",
+          "total_bytes": 4096000
+        },
+        {
+          "available_bytes": 2048000,
+          "free_bytes": 2457600,
+          "label": "mission_data",
+          "read_only": false,
+          "reason_code": null,
+          "same_filesystem_as": "state_root",
+          "status": "measured",
+          "total_bytes": 4096000
+        }
+      ],
+      "reason_code": null,
+      "source": {
+        "kind": "statvfs_at_read",
+        "observed_at": 1789963260.0,
+        "withheld": [
+          "path"
+        ]
+      },
+      "status": "measured"
+    }
+  }
+}

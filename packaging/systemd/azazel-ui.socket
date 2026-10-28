@@ -1,0 +1,24 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# The read-only operator UI's listener (docs/operator-ui.md). systemd listens on
+# IPv4 loopback only and passes the socket to azazel-ui.service, which accepts
+# on it and never creates a network socket. Not enabled by the installer.
+
+[Unit]
+Description=Azazel-Nexus read-only operator UI (loopback listener)
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/operator-ui.md
+
+[Socket]
+ListenStream=127.0.0.1:8443
+Accept=no
+FreeBind=no
+Backlog=16
+MaxConnections=16
+IPAddressDeny=any
+IPAddressAllow=localhost
+Service=azazel-ui.service
+
+[Install]
+WantedBy=sockets.target

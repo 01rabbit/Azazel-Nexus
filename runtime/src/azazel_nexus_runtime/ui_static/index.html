@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Azazel-Nexus 状態（読取専用）</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <h1>Azazel-Nexus 状態 <span class="ro">読取専用</span></h1>
+  <p class="authority">判断と執行は Edge が行います。Nexus は観測・説明・助言だけを行い、この画面は何も実行しません。</p>
+  <div id="origin" class="origin"></div>
+  <div id="conn" class="conn" role="status"></div>
+</header>
+
+<section id="login" class="login" hidden aria-labelledby="login-title">
+  <h2 id="login-title">ログイン</h2>
+  <p>このホストの端末で <code>azazel-nexus ui-login</code> を実行し（azazel-operator グループが必要）、表示されたコードを入力してください。コードは 1 回限り・60 秒で失効します。</p>
+  <form id="login-form" method="post" action="/api/login" autocomplete="off">
+    <label for="login-code">ログインコード</label>
+    <input id="login-code" name="code" type="text" inputmode="text" autocapitalize="characters" spellcheck="false" maxlength="32" required aria-describedby="login-msg">
+    <button type="submit" class="primary">ログイン</button>
+  </form>
+  <p id="login-msg" class="msg" role="alert"></p>
+</section>
+
+<nav id="tabs" class="tabs" role="tablist" aria-label="画面" hidden>
+  <button type="button" role="tab" id="tab-overview" aria-controls="panel-overview" aria-selected="true">概況</button>
+  <button type="button" role="tab" id="tab-incidents" aria-controls="panel-incidents" aria-selected="false" tabindex="-1">インシデント</button>
+  <button type="button" role="tab" id="tab-noc" aria-controls="panel-noc" aria-selected="false" tabindex="-1">NOC</button>
+  <button type="button" role="tab" id="tab-knowledge" aria-controls="panel-knowledge" aria-selected="false" tabindex="-1">Knowledge</button>
+  <button type="button" role="tab" id="tab-setup" aria-controls="panel-setup" aria-selected="false" tabindex="-1">セットアップ・復旧</button>
+</nav>
+
+<main id="panels" hidden>
+  <section role="tabpanel" id="panel-overview" aria-labelledby="tab-overview" tabindex="0"></section>
+  <section role="tabpanel" id="panel-incidents" aria-labelledby="tab-incidents" tabindex="0" hidden></section>
+  <section role="tabpanel" id="panel-noc" aria-labelledby="tab-noc" tabindex="0" hidden></section>
+  <section role="tabpanel" id="panel-knowledge" aria-labelledby="tab-knowledge" tabindex="0" hidden></section>
+  <section role="tabpanel" id="panel-setup" aria-labelledby="tab-setup" tabindex="0" hidden></section>
+</main>
+
+<footer class="foot">
+  <button type="button" id="logout" hidden>ログアウト</button>
+  <p class="small">表示は 5 秒ごとに更新します。未知・未測定・古い情報は「正常」として表示しません。色に加えて語と記号（● 正常 ▲ 注意 ■ 異常 ？ 不明 ◆ 情報）で示します。</p>
+</footer>
+<div id="live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>

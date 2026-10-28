@@ -24,6 +24,8 @@ from .hardening import (
     EDGE_PROBE_PREFLIGHT_UNIT,
     PROFILES,
     SYSTEM_ACCOUNTS,
+    UI_SOCKET,
+    UI_UNIT,
     packaged_unit_files,
 )
 
@@ -49,6 +51,12 @@ APPARMOR_DIRECTORY = "/etc/apparmor.d"
 _KEY = re.compile(r"[A-Z_][A-Z0-9_]*\Z")
 _UNQUOTED = re.compile(r"[A-Za-z0-9._+:/-]+\Z")
 _UNIT = re.compile(r"[A-Za-z0-9_.@-]+\.service\Z")
+#: A preset line may also name the read-only UI's socket unit (U5).
+_PRESET_UNIT = re.compile(r"[A-Za-z0-9_.@-]+\.(?:service|socket)\Z")
+#: Disabled in the preset and **not masked** by the installer: the read-only
+#: UI (U5) is not governed, so no pass would ever unmask it, and an operator
+#: enables its socket explicitly. Every other `disable` is a mask.
+DISABLED_NOT_MASKED = (UI_SOCKET, UI_UNIT)
 _PROFILE_ID = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
 _TOOL = re.compile(r"(?:/(?:[A-Za-z0-9._+-]+/)*[A-Za-z0-9._+-]+|[A-Za-z0-9_+-]+)\Z")
 
@@ -330,7 +338,7 @@ def parse_preset_declarations(text: str) -> tuple[tuple[str, str], ...]:
         if (
             len(parts) != 2
             or parts[0] not in {"enable", "disable"}
-            or not _UNIT.fullmatch(parts[1])
+            or not _PRESET_UNIT.fullmatch(parts[1])
         ):
             raise ValueError(f"unsupported preset declaration on line {line_number}")
         if any(unit == parts[1] for _, unit in declarations):
@@ -353,7 +361,7 @@ def build_install_plan(
     if type(with_accounts) is not bool or type(with_service_manager) is not bool:
         raise ValueError("install modes must be explicit booleans")
 
-    declared_units = {service.unit for service in ALL_PROFILES}
+    declared_units = {service.unit for service in ALL_PROFILES} | {UI_SOCKET}
     declarations = tuple(preset_declarations)
     if not declarations or any(
         action not in {"enable", "disable"} or unit not in declared_units
@@ -364,7 +372,10 @@ def build_install_plan(
         raise ValueError("preset intent contains duplicate units")
 
     enabled = tuple(unit for action, unit in declarations if action == "enable")
-    disabled = tuple(unit for action, unit in declarations if action == "disable")
+    disabled = tuple(unit for action, unit in declarations
+                     if action == "disable" and unit not in DISABLED_NOT_MASKED)
+    if any(action != "disable" for action, unit in declarations if unit in DISABLED_NOT_MASKED):
+        raise ValueError("the read-only UI's units are disabled in the preset, never enabled")
     # The controller, and the ungoverned read-only Edge probe preflight that
     # runs before it (#206 P5). Nothing governed is ever enabled here.
     if enabled != ("azazel-activated.service", EDGE_PROBE_PREFLIGHT_UNIT):

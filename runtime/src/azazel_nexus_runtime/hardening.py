@@ -104,8 +104,14 @@ __all__ = [
     "SHARED_HARDENING",
     "ServiceProfile",
     "SYSTEM_ACCOUNTS",
+    "UI_LISTEN_STREAM",
+    "UI_LOGIN_DIRECTORY",
+    "UI_PROFILES",
+    "UI_SOCKET",
+    "UI_UNIT",
     "packaged_unit_files",
     "render_trip_target",
+    "render_ui_socket",
     "render_unit",
     "render_verify_timer",
     "OBSERVER_PROFILES",
@@ -154,6 +160,15 @@ SHARED_HARDENING: tuple[tuple[str, str], ...] = (
     ("IPAddressDeny", "any"),
     ("UMask", "0027"),
 )
+
+#: The read-only operator UI (U5, docs/operator-ui.md): its service, the
+#: socket systemd listens on for it, and the one leaf it writes (the
+#: operator-readable login code). Not governed by the activation controller,
+#: never masked, never enabled by the installer (`disable` in the preset).
+UI_UNIT = "azazel-ui.service"
+UI_SOCKET = "azazel-ui.socket"
+UI_LISTEN_STREAM = "127.0.0.1:8443"
+UI_LOGIN_DIRECTORY = "/var/lib/azazel/run/ui-login"
 
 #: Keys no profile but the decoy namespace unit's (whose `extra` is pinned
 #: whole) may put in `ServiceProfile.extra`: every shared key, and the
@@ -336,15 +351,18 @@ class ServiceProfile:
                 f"{self.unit}: only {DECOY_VERIFY_UNIT} runs its executable with "
                 "the word verify; no other unit but the namespace unit names an "
                 "argument")
-        # The operator observers (U2, U3) are started by their own timers
-        # and have no [Install] section either; nothing else may lack one.
-        timer_started = is_verify or self.unit in OBSERVER_SERVICE_UNITS
+        # The operator observers (U2, U3) are started by their own timers,
+        # and the read-only UI service (U5) only when its socket is connected
+        # to (an operator enables the socket, never the service): none of
+        # them has an [Install] section; nothing else may lack one.
+        no_install = (is_verify or self.unit in OBSERVER_SERVICE_UNITS
+                      or self.unit == UI_UNIT)
         if (self.on_failure != ((DECOY_TRIP_UNIT,) if is_verify else ())
-                or self.wanted_by != (() if timer_started else ("multi-user.target",))):
+                or self.wanted_by != (() if no_install else ("multi-user.target",))):
             raise ValueError(
                 f"{self.unit}: only {DECOY_VERIFY_UNIT} has "
-                f"OnFailure={DECOY_TRIP_UNIT} and no [Install] section; every "
-                "other unit has neither")
+                f"OnFailure={DECOY_TRIP_UNIT}, and only it, the operator observers "
+                f"and {UI_UNIT} have no [Install] section")
         if not self.address_families:
             raise ValueError(
                 f"{self.unit} declares no address family. `AF_UNIX` at least "
@@ -435,6 +453,8 @@ class ServiceProfile:
             raise ValueError(
                 f"{self.unit}: the decoy scope is {DECOY_NETWORK_HELPER_UNIT}'s "
                 f"and {DECOY_VERIFY_UNIT}'s credential alone")
+        if self.unit == UI_UNIT:
+            self._check_ui_unit()
         if self.unit == DECOY_NAMESPACE_UNIT:
             self._check_namespace_unit()
         elif self.shared_overrides or self.shared_omissions:
@@ -638,6 +658,39 @@ class ServiceProfile:
         if self.is_decoy_listener and (self.read_write_paths
                                        or self.optional_read_write_paths):
             raise ValueError(f"{self.unit} writes no file and declares no writable path")
+
+    def _check_ui_unit(self) -> None:
+        """The read-only operator UI (U5), pinned whole.
+
+        Its own account (`azui`) with no supplementary group at all -- not
+        `azazel-operator`, not a daemon's socket group -- so it can reach no
+        daemon socket and read only what any account may. `AF_UNIX` only and
+        `PrivateNetwork=yes`: it accepts on the loopback socket systemd
+        passes (`UI_SOCKET`) and can open no internet socket and has no
+        network of its own. It writes only the login-code leaf. It requires
+        only its own socket, is not governed (no grant marker), and has no
+        `[Install]` section.
+        """
+
+        settings = dict(self.extra)
+        if (self.account != "azui" or self.supplementary_groups
+                or self.capability_bounding_set or self.address_families != ("AF_UNIX",)
+                or settings.get("PrivateNetwork") != "yes"):
+            raise ValueError(
+                f"{self.unit} runs as azui with no supplementary group, no "
+                "capability, AF_UNIX only and PrivateNetwork=yes")
+        if (self.read_write_paths != (UI_LOGIN_DIRECTORY,)
+                or self.optional_read_write_paths or self.runtime_directory):
+            raise ValueError(f"{self.unit} writes only {UI_LOGIN_DIRECTORY}")
+        if (self.after != (UI_SOCKET,) or self.requires != (UI_SOCKET,)
+                or self.binds_to or self.before or self.conflicts or self.conditions
+                or self.wanted_by or not self.default_dependencies):
+            raise ValueError(
+                f"{self.unit} is after and requires {UI_SOCKET} only, has no "
+                "grant marker and no [Install] section")
+        if (self.is_artifact_fetcher or self.is_model_host
+                or self.is_inference_transport or self.is_decoy_listener):
+            raise ValueError(f"{self.unit} holds no network role")
 
     def _check_verify_unit(self) -> None:
         """The Deception Lite verify unit, pinned whole (#196 G2, grant §6.1).
@@ -846,6 +899,7 @@ SYSTEM_ACCOUNTS = (
     # no daemon classifies it as a service principal, and it is in no
     # socket group.
     "aznoc",
+    "azui",
 )
 
 
@@ -2041,6 +2095,53 @@ OBSERVER_PROFILES: tuple[ServiceProfile, ...] = (
     ),
 )
 
+#: The read-only operator UI (U5). Not governed: no grant marker, never masked
+#: or unmasked by a pass, in no lease, and no other unit requires it, so
+#: stopping it stops nothing else. `disable` in the preset: an operator who
+#: wants it enables `azazel-ui.socket`.
+UI_PROFILES: tuple[ServiceProfile, ...] = (
+    ServiceProfile(
+        unit=UI_UNIT,
+        executable="/usr/libexec/azazel/az-ui",
+        account="azui",
+        description="Azazel-Nexus read-only operator UI",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/operator-ui.md",
+        address_families=("AF_UNIX",),
+        read_write_paths=(UI_LOGIN_DIRECTORY,),
+        after=(UI_SOCKET,),
+        requires=(UI_SOCKET,),
+        unit_type="simple",
+        extra=(
+            ("PrivateNetwork", "yes"),
+            ("ProtectProc", "invisible"),
+            ("RemoveIPC", "yes"),
+            ("Restart", "on-failure"),
+            ("RestartSec", "5s"),
+            ("TimeoutStopSec", "10s"),
+            ("MemoryMax", "192M"),
+            ("MemorySwapMax", "0"),
+            ("TasksMax", "32"),
+            ("LimitNOFILE", "128"),
+            ("LimitFSIZE", "65536"),
+            ("LogRateLimitIntervalSec", "30"),
+            ("LogRateLimitBurst", "50"),
+        ),
+        wanted_by=(),
+        rationale=(
+            "Read-only operator UI. It shows what azazel-nexus status --json "
+            "and setup --json show and performs no action: no confirmation, "
+            "approval, start or stop. It accepts on the loopback socket "
+            "azazel-ui.socket passes and never creates a socket of an internet "
+            "family: AF_UNIX only and PrivateNetwork=yes. It runs as azui with "
+            "no supplementary group, so it reaches no daemon socket and reads "
+            "only what any account may; a snapshot it cannot read is shown as "
+            "permission denied. It writes only the login-code leaf, which the "
+            "operator group reads. Not governed and required by no unit: "
+            "stopping it stops nothing else"
+        ),
+    ),
+)
+
 
 def render_observer_timer(timer: str, service: str, period: str, description: str) -> str:
     """An observer's timer, byte for byte (U2).
@@ -2076,7 +2177,8 @@ def render_observer_timer(timer: str, service: str, period: str, description: st
 
 #: Every packaged service, governed or not, for the renderer and the installer.
 ALL_PROFILES: tuple[ServiceProfile, ...] = (
-    PROFILES + UNGOVERNED_PROFILES + DECOY_WATCH_PROFILES + OBSERVER_PROFILES)
+    PROFILES + UNGOVERNED_PROFILES + DECOY_WATCH_PROFILES + OBSERVER_PROFILES
+    + UI_PROFILES)
 
 _GENERATED_HEADER = (
     "# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:",
@@ -2167,13 +2269,53 @@ OBSERVER_UNIT_FILES: tuple[tuple[str, str], ...] = (
         NOC_OBSERVE_TIMER, NOC_OBSERVE_UNIT, "60s",
         "Azazel-Nexus passive NOC observer period")),
 )
+def render_ui_socket() -> str:
+    """`azazel-ui.socket`, byte for byte (U5).
+
+    systemd, not the UI, listens: on `UI_LISTEN_STREAM` (IPv4 loopback) and
+    nothing else, and hands the listening socket to `UI_UNIT` (fd 3), which
+    only accepts on it. `IPAddressDeny=any` with `IPAddressAllow=localhost`
+    applies to the listening socket and the connections it accepts (a
+    socket-activated service's own lists cover only sockets it creates).
+    `WantedBy=sockets.target`; the preset says `disable`, so only an
+    operator's `systemctl enable` makes it listen at boot.
+    """
+
+    return "\n".join((
+        *_GENERATED_HEADER,
+        "# The read-only operator UI's listener (docs/operator-ui.md). systemd listens on",
+        "# IPv4 loopback only and passes the socket to azazel-ui.service, which accepts",
+        "# on it and never creates a network socket. Not enabled by the installer.",
+        "",
+        "[Unit]",
+        "Description=Azazel-Nexus read-only operator UI (loopback listener)",
+        "Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/operator-ui.md",
+        "",
+        "[Socket]",
+        f"ListenStream={UI_LISTEN_STREAM}",
+        "Accept=no",
+        "FreeBind=no",
+        "Backlog=16",
+        "MaxConnections=16",
+        "IPAddressDeny=any",
+        "IPAddressAllow=localhost",
+        f"Service={UI_UNIT}",
+        "",
+        "[Install]",
+        "WantedBy=sockets.target",
+        "",
+    ))
+
+
+#: The UI's socket unit, with its rendering.
+UI_UNIT_FILES: tuple[tuple[str, str], ...] = ((UI_SOCKET, render_ui_socket()),)
 
 
 def packaged_unit_files() -> tuple[tuple[str, str], ...]:
     """`(name, text)` of every file in `packaging/systemd/`, in order."""
 
     return tuple((profile.unit, render_unit(profile)) for profile in ALL_PROFILES) + (
-        DECOY_WATCH_UNIT_FILES + OBSERVER_UNIT_FILES)
+        DECOY_WATCH_UNIT_FILES + OBSERVER_UNIT_FILES + UI_UNIT_FILES)
 
 
 def render_unit(profile: ServiceProfile) -> str:

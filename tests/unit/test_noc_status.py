@@ -358,7 +358,7 @@ def test_the_noc_unit_is_passive_unprivileged_and_required_by_nothing():
 
 def test_the_installer_creates_the_account_and_leaf_and_enables_nothing():
     installer = (REPO / "packaging/install.sh").read_text(encoding="utf-8")
-    assert re.search(r"for account in [^;]* aznoc; do", installer)
+    assert re.search(r"for account in [^;]* aznoc( [a-z]+)*; do", installer)
     assert "make_owned_dir 2750 aznoc azazel-operator /var/lib/azazel/run/noc-status" in installer
     assert not re.search(r"systemctl (enable|mask|start).*noc", installer)
     assert "noc" not in (REPO / "packaging/azazel-nexus.preset").read_text(encoding="utf-8")

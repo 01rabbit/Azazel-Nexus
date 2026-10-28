@@ -136,10 +136,16 @@ def test_install_plan_uses_absolute_destinations_and_existing_declarations():
         "packaging/systemd/azazel-units-observe.timer",
         "packaging/systemd/azazel-noc-observe.service",
         "packaging/systemd/azazel-noc-observe.timer",
+        # The read-only UI (U5): installed, disabled, never masked or enabled.
+        "packaging/systemd/azazel-ui.service",
+        "packaging/systemd/azazel-ui.socket",
     }
     assert plan.service_manager.mask_units == tuple(
-        unit for action, unit in parse_preset_declarations(PRESET_TEXT) if action == "disable"
+        unit for action, unit in parse_preset_declarations(PRESET_TEXT)
+        if action == "disable" and unit not in ("azazel-ui.socket", "azazel-ui.service")
     )
+    assert "azazel-ui.socket" not in plan.service_manager.mask_units
+    assert "azazel-ui.service" not in plan.service_manager.mask_units
     assert plan.service_manager.enable_units == (
         "azazel-activated.service", "azazel-edge-probe-preflight.service",
     )

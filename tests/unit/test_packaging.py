@@ -48,6 +48,9 @@ ALL_UNITS = GOVERNED + (ACTIVATION_CONTROLLER_UNIT, PROBE_PREFLIGHT)
 #: The operator observers (U2): not governed, never masked or enabled.
 OBSERVER_FILES = ("azazel-units-observe.service", "azazel-units-observe.timer",
                   "azazel-noc-observe.service", "azazel-noc-observe.timer")
+#: The read-only operator UI (U5): not governed, disabled in the preset and
+#: never masked or enabled by the installer.
+UI_FILES = ("azazel-ui.service", "azazel-ui.socket")
 
 
 def _installer() -> str:
@@ -102,11 +105,11 @@ def test_no_unit_file_exists_for_a_component_this_slice_does_not_install():
     """
 
     present = sorted(path.name for path in UNIT_DIR.iterdir())
-    assert present == sorted(ALL_UNITS + DECOY_WATCH_FILES + OBSERVER_FILES), (
+    assert present == sorted(ALL_UNITS + DECOY_WATCH_FILES + OBSERVER_FILES + UI_FILES), (
         f"the packaged units are {present}; the controller governs "
         f"{sorted(GOVERNED)} plus {ACTIVATION_CONTROLLER_UNIT}, "
         f"{PROBE_PREFLIGHT}, the Deception Lite watch {DECOY_WATCH_FILES} and the "
-        f"operator observers {OBSERVER_FILES}"
+        f"operator observers {OBSERVER_FILES} and the read-only UI {UI_FILES}"
     )
 
 
@@ -225,8 +228,13 @@ def test_the_installer_masks_every_governed_unit():
     """
 
     installer_masks = _systemctl_calls("mask")
-    preset_masks = [unit for verb, unit in _preset_directives() if verb == "disable"]
+    preset_masks = [unit for verb, unit in _preset_directives()
+                    if verb == "disable" and unit not in UI_FILES]
     assert sorted(installer_masks) == sorted(GOVERNED)
+    # The UI is disabled in the preset and never masked: no pass would unmask it.
+    assert sorted(unit for verb, unit in _preset_directives() if unit in UI_FILES) == sorted(UI_FILES)
+    assert all(verb == "disable" for verb, unit in _preset_directives() if unit in UI_FILES)
+    assert not set(UI_FILES) & set(installer_masks)
     assert sorted(installer_masks) == sorted(preset_masks), (
         "installer mask actions and declarative preset intent must stay aligned"
     )
@@ -381,6 +389,9 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
         "/var/lib/azazel/run/remote",
         "/var/lib/azazel/run/knowledge",
         "/var/lib/azazel/run/knowledge-read",
+        # The read-only UI's login code (U5): a file, not a socket, that the
+        # operator group reads.
+        "/var/lib/azazel/run/ui-login",
     }
     dedicated = {"knowledge-read": "azknowledge-read", "edge-intake": "azedge", "decoy-intake": "azdecoy",
                  "audit-submit": "azaudit-submit", "mio-advise": "azmio-advise"}

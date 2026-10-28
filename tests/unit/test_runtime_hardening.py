@@ -1025,8 +1025,13 @@ def test_the_only_ungoverned_unit_is_the_probe_preflight():
 
     assert [p.unit for p in OBSERVER_PROFILES] == ["azazel-units-observe.service",
                                                    "azazel-noc-observe.service"]
+    # The read-only UI (U5) is not governed either and is not enabled: an
+    # operator enables its socket.
+    from azazel_nexus_runtime.hardening import UI_PROFILES
+
+    assert [p.unit for p in UI_PROFILES] == ["azazel-ui.service"]
     assert ALL_PROFILES == (PROFILES + UNGOVERNED_PROFILES + DECOY_WATCH_PROFILES
-                            + OBSERVER_PROFILES)
+                            + OBSERVER_PROFILES + UI_PROFILES)
 
 
 def test_the_probe_preflight_is_not_governed_anywhere():

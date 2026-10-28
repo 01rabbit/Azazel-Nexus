@@ -97,6 +97,10 @@ shows the section as unavailable. The observer and its timer are installed
 but neither enabled nor masked: enable the timers with `systemctl enable --now
 azazel-units-observe.timer azazel-noc-observe.timer`. No unit requires or binds to the observer, so
 stopping it (or the UI that reads these sections) stops nothing else.
+The same read model is what the read-only operator UI shows
+([operator-ui.md](operator-ui.md)): `azazel-ui.socket` listens on
+`127.0.0.1:8443` once an operator enables it, and `azazel-nexus ui-login`
+(operator group) prints its one-use login code. The UI performs no action.
 
 Select M.I.O. CORE / LITE / FULL with `az-nexus-commission proposal-export --operator LABEL`, then obtain the existing separate full-proposal signature/review; entryd uses CORE until that selection verifies.
 The whole sequence, including off-host signing with `tools/operator_sign.py`, is
