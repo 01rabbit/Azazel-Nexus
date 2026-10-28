@@ -53,9 +53,14 @@ stale, and its `source` (snapshot schema, `written_at` and freshness where a
 snapshot is the source). Edge decisions appear only as `would` with
 `executed: false`; the execution result is fixed to `none` with reason
 `nexus_accepts_observe_only`, because the intake refuses any Edge event that is
-not observe-only. Interface descriptions, filesystem paths, Edge finding
-reasons and exception text are shown on the terminal only; the read model
-names each one under `withheld`. On a LAB HOST the `LAB HOST` marker goes to
+not observe-only. A loop component whose snapshot reports `chain_broken` or
+`storage_failed` is `degraded`, not `running`, and the M.I.O. reading is
+judged against the status clock (`observed_at_in_future`,
+`observed_at_expired`). Interface descriptions, filesystem paths, Edge finding
+reasons, exception text and any fixed sentence that names a path are shown on
+the terminal only; the read model names each one under `withheld` and carries
+a code beside it. Values are checked against their fixed vocabularies, and an
+integer beyond JavaScript's exact range is reported as `too_large`. On a LAB HOST the `LAB HOST` marker goes to
 stderr so the JSON stays parseable. Like the text, it is a display: it grants,
 admits and activates nothing.
 

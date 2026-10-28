@@ -11,9 +11,17 @@
   field added upstream does not reach the view until it is listed here.
 * `terminal` -- free text that only the operator's own terminal may show:
   exception text, filesystem paths, interface descriptions (bus path and port
-  label) and finding reasons that can carry either. The text rendering has
+  label) and finding reasons that can carry either, and every fixed sentence
+  that names a path (an install path, a document). The text rendering has
   always shown them and still does; the read model marks each one it leaves
-  out under `withheld` instead of copying it.
+  out under `withheld` and carries a code beside it.
+
+Values are checked against their vocabulary again here, not only by the
+readers: a code-keyed map (`refused`), a code list (`failure_codes`), the
+M.I.O. reasons, Knowledge Lite's words. Anything outside refuses that part of
+the view (`snapshot_refused_by_view`, `reading_refused`). An integer beyond
+JavaScript's exact range is `too_large`, and an age beyond ten years is
+`null` with `age_out_of_range`.
 
 `render_text` prints the existing `status` screen from the two, byte for byte
 (the golden files in `tests/fixtures/status-view/` were written before this
@@ -59,6 +67,38 @@ AUTHORITY = {
 #: Snapshot freshness thresholds, the same as the text renderer's.
 LOOP_STALE_S = 30
 FUTURE_S = 5
+#: The M.I.O. route ledger records transitions (and carries the last one into
+#: each daily segment with its original time), so an unchanged reading ages
+#: legitimately. Older than this, the view calls it stale: the last recorded
+#: observation, not a current one (docs/operations.md says it is no freshness
+#: guarantee). Provisional; an owner decision (PR #358).
+MIO_OBSERVATION_STALE_S = 2 * 86400
+#: An age beyond this is not a clock skew but a value nobody can act on.
+MAX_AGE_S = 10 * 365 * 86400
+#: The largest integer a JavaScript reader holds exactly.
+MAX_SAFE_INTEGER = 2**53 - 1
+#: What a counter beyond `MAX_SAFE_INTEGER` is replaced with in the view.
+TOO_LARGE = "too_large"
+
+#: Every `reason_code` the view can carry. A code outside it is a defect.
+REASON_CODES = frozenset({
+    "nexus_accepts_observe_only", "profile_not_measured", "no_recorded_capability_transition",
+    "route_ledger_unreadable_or_refused", "reading_refused", "observed_at_in_future",
+    "observed_at_expired", "observed_at_unreadable", "clock_unknown",
+    "no_commissioning_record", "commissioning_incomplete", "no_interfaces_read",
+    "not_collected", "not_inspected", "checks_not_all_passed", "fabric_extra_not_installed",
+    "projection_refused", "internal_error", "snapshot_absent_or_refused",
+    "snapshot_dated_in_future", "snapshot_expired", "snapshot_refused_by_view",
+    "chain_broken", "storage_failed", "service_manager_not_queried",
+    "chain_not_verified_at_auditd_start", "audit_chain_failed", "audit_chain_unknown",
+    "nexus_70_review_pending", "age_out_of_range", "audit_capacity_warning",
+})
+#: Knowledge Lite's closed status shape (`lite_import.status_summary`).
+KNOWLEDGE_STATES = frozenset({"available", "stale", "unavailable", "quarantined"})
+KNOWLEDGE_REASONS = KNOWLEDGE_STATES | frozenset({
+    "trust_unreadable", "unverified", "no_bundle", "store_unreadable", "bundle_refused",
+    "revoked", "state_untrusted"})
+KNOWLEDGE_FRESHNESS = frozenset({"current", "stale", "absent"})
 
 # -- allowlists ------------------------------------------------------------
 #
@@ -82,13 +122,12 @@ EXPLANATION_FIELDS = ("state", "route", "outcome", "summary", "failure_codes",
 #: A citation as `read_recent_incidents` checks it today. Copied as is; a
 #: citation field added later (provenance, time, digest) is added here too.
 KNOWLEDGE_REF_FIELDS = ("technique_id", "name", "claim_id")
-AUDIT_SOURCE_FIELDS = ("schema", "written_at")
-MIO_FIELDS = ("ceiling", "state", "reasons", "source", "observed_at", "availability", "notice")
+AUDIT_CAPACITY_FIELDS = ("chain_verified", "chain_bytes", "segments", "filesystem_free_bytes",
+                         "warning", "warning_reasons", "warn_chain_bytes", "warn_free_bytes",
+                         "rate_limit_summaries_dropped")
 ISSUER_LABEL_FIELDS = ("digest_verified", "issuer_authenticated", "issuer_status",
                        "revocation_status", "revoked", "floor_status", "notes")
-#: Health subjects whose detail is fixed text over checked values. Others
-#: (`audit chain`, from the hidden `--ledger`) carry a path or exception text.
-PUBLIC_HEALTH_SUBJECTS = frozenset({"systemd units", "audit"})
+MIO_REASON_KEYS = frozenset({"profile", "resource", "trust", "health", "topology"})
 
 LAB_HOST_STEPS = (
     ("azazel-nexus commission", "commissioning"),
@@ -102,6 +141,10 @@ _FABRIC_FIXED = {
     "refused (projection_refused)": "refused",
 }
 _GENERATION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}")
+#: Fixed text that names a file or a path (an install path, a document) is
+#: kept for the terminal; the view carries the code beside it instead.
+_PATHISH = re.compile(r"(?:^|[\s(\[`'\"])(?:/|[\w.-]+/)[\w./-]*")
+_INCIDENT_ID = re.compile(r"inc-[0-9a-f]{16}")
 
 
 @dataclass(frozen=True)
@@ -122,19 +165,54 @@ def dumps(status: StatusView) -> str:
 # -- building --------------------------------------------------------------
 
 
+class _Refused(ValueError):
+    """A value outside the vocabulary the view copies."""
+
+
+def _require(condition) -> None:
+    if not condition:
+        raise _Refused("refused")
+
+
 def _pick(value: dict, fields) -> dict:
     return {key: _plain(value[key]) for key in fields if key in value}
 
 
 def _plain(value):
-    """A detached copy of a checked JSON value (dicts, lists, scalars)."""
+    """A detached copy of a checked JSON value (dicts, lists, scalars).
+
+    An integer a JavaScript reader cannot hold exactly becomes `too_large`
+    rather than a different number.
+    """
     if isinstance(value, dict):
         return {str(k): _plain(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_plain(v) for v in value]
+    if type(value) is int and abs(value) > MAX_SAFE_INTEGER:
+        return TOO_LARGE
     if isinstance(value, float) and not math.isfinite(value):
-        raise ValueError("non-finite")
+        raise _Refused("non-finite")
     return value
+
+
+def _free(terminal, key, text):
+    """Fixed text for the view, unless it names a path; the terminal keeps it all."""
+    terminal.setdefault("text", {})[key] = text
+    if text is None or _PATHISH.search(str(text)):
+        return None
+    return text
+
+
+def _text(terminal, key):
+    return terminal["text"][key]
+
+
+def _codes(mapping, allowed) -> dict:
+    """A count per fixed code; any other key or value refuses the copy."""
+    _require(type(mapping) is dict)
+    for code, count in mapping.items():
+        _require(code in allowed and type(count) is int and count >= 0)
+    return _plain(mapping)
 
 
 def _epoch(as_of: Optional[str]) -> Optional[float]:
@@ -144,27 +222,34 @@ def _epoch(as_of: Optional[str]) -> Optional[float]:
         return None
 
 
-def _freshness(written_at, now, stale_after) -> tuple[str, Optional[str], Optional[int]]:
-    """`(status, reason_code, age_s)` of one snapshot against the status clock."""
+def _age(now, then) -> tuple[Optional[int], Optional[str]]:
+    age = now - then
+    if not math.isfinite(age) or abs(age) > MAX_AGE_S:
+        return None, "age_out_of_range"
+    return int(age), None
+
+
+def _freshness(written_at, now, stale_after) -> tuple[str, Optional[str], Optional[int], Optional[str]]:
+    """`(status, reason_code, age_s, age_reason)` of a snapshot against the status clock."""
     if type(now) not in (int, float):
-        return "unknown", "clock_unknown", None
-    age = now - written_at
+        return "unknown", "clock_unknown", None, None
+    age, age_reason = _age(now, written_at)
     if written_at > now + FUTURE_S:
-        return "stale", "snapshot_dated_in_future", int(age)
-    if age > stale_after:
-        return "stale", "snapshot_expired", int(age)
-    return "fresh", None, max(0, int(age))
+        return "stale", "snapshot_dated_in_future", age, age_reason
+    if now - written_at > stale_after:
+        return "stale", "snapshot_expired", age, age_reason
+    return "fresh", None, max(0, age), None
 
 
 def _snapshot_source(value, now, stale_after) -> dict:
-    status, reason, age = _freshness(value["written_at"], now, stale_after)
+    status, reason, age, age_reason = _freshness(value["written_at"], now, stale_after)
     return {"kind": "snapshot", "schema": value["schema"], "written_at": value["written_at"],
-            "freshness": status, "reason_code": reason, "age_s": age}
+            "freshness": status, "reason_code": reason, "age_s": age, "age_reason": age_reason}
 
 
 def _absent_source() -> dict:
     return {"kind": "snapshot", "schema": None, "written_at": None, "freshness": "unavailable",
-            "reason_code": "snapshot_absent_or_refused", "age_s": None}
+            "reason_code": "snapshot_absent_or_refused", "age_s": None, "age_reason": None}
 
 
 def _profile(report, terminal) -> dict:
@@ -175,20 +260,79 @@ def _profile(report, terminal) -> dict:
         return {"status": "not_measured", "reason_code": "profile_not_measured",
                 "profile": None, "usable_mib": None, "source": source, "withheld": ["reason"]}
     return {"status": "measured", "reason_code": None, "profile": reading.profile.value,
-            "usable_mib": reading.usable_mib, "source": source, "withheld": []}
+            "usable_mib": _plain(reading.usable_mib), "source": source, "withheld": []}
 
 
-def _mio(summary: dict) -> dict:
-    reading = _pick(summary, MIO_FIELDS)
-    if reading.get("state"):
-        status, reason = "recorded", None
-    elif summary.get("availability") == "unknown (no recorded capability transition)":
-        status, reason = "unknown", "no_recorded_capability_transition"
+def _mio_reading(summary: dict) -> dict:
+    """The route-ledger reading, checked against its own vocabulary, or refused."""
+    from .capability import CapabilityState
+    from .edge_package import Evidence
+    from .mio_status import HEALTH_REASONS, NOTICE, RESOURCE_REASONS, TOPOLOGY_REASONS, UNKNOWN
+
+    levels = {state.value for state in CapabilityState}
+    _require(type(summary) is dict and summary.get("source") == "route-ledger"
+             and summary.get("notice") == NOTICE)
+    availability = summary.get("availability")
+    if summary.get("state") is None:
+        _require(summary.get("ceiling") is None and summary.get("observed_at") is None
+                 and summary.get("reasons") == {}
+                 and availability in (UNKNOWN, "unknown (no recorded capability transition)"))
     else:
-        status, reason = "unknown", "route_ledger_unreadable_or_refused"
-    return {"status": status, "reason_code": reason, "reading": reading,
+        reasons = summary.get("reasons")
+        _require(availability == "last recorded observation"
+                 and summary["state"] in levels and summary.get("ceiling") in levels
+                 and type(reasons) is dict and set(reasons) == MIO_REASON_KEYS
+                 and reasons["profile"] in levels
+                 and reasons["resource"] in RESOURCE_REASONS
+                 and reasons["trust"] in {value.value for value in Evidence}
+                 and reasons["topology"] in TOPOLOGY_REASONS
+                 and type(reasons["health"]) is dict
+                 and set(reasons["health"]) == {"local", "remote"}
+                 and all(v in HEALTH_REASONS for v in reasons["health"].values())
+                 and type(summary.get("observed_at")) is str)
+    return {key: _plain(summary[key]) for key in
+            ("ceiling", "state", "reasons", "source", "observed_at", "availability", "notice")}
+
+
+def _mio(summary: dict, now, terminal) -> dict:
+    from .mio_status import NOTICE, UNKNOWN
+
+    try:
+        reading = _mio_reading(summary)
+    except (_Refused, KeyError, TypeError):
+        reading = {"ceiling": None, "state": None, "reasons": {}, "source": "route-ledger",
+                   "observed_at": None, "availability": UNKNOWN, "notice": NOTICE}
+        status, reason = "unknown", "reading_refused"
+    else:
+        if reading["state"] is None:
+            status, reason = "unknown", (
+                "no_recorded_capability_transition"
+                if reading["availability"] != UNKNOWN else "route_ledger_unreadable_or_refused")
+        else:
+            status, reason = _mio_freshness(reading["observed_at"], now)
+    terminal["mio_reading"] = reading
+    public = dict(reading)
+    public["availability"] = _free(terminal, "mio.availability", reading["availability"])
+    public["notice"] = _free(terminal, "mio.notice", reading["notice"])
+    return {"status": status, "reason_code": reason, "reading": public,
             "source": {"kind": "route_ledger", "reader": "mio_status.status_summary",
-                       "observed_at": reading.get("observed_at")}}
+                       "observed_at": reading["observed_at"]}}
+
+
+def _mio_freshness(observed_at, now) -> tuple[str, Optional[str]]:
+    if type(now) not in (int, float):
+        return "unknown", "clock_unknown"
+    try:
+        when = datetime.fromisoformat(observed_at)
+        _require(when.tzinfo is not None)
+        then = when.timestamp()
+    except (ValueError, TypeError, OverflowError):
+        return "unknown", "observed_at_unreadable"
+    if then > now + FUTURE_S:
+        return "stale", "observed_at_in_future"
+    if now - then > MIO_OBSERVATION_STALE_S:
+        return "stale", "observed_at_expired"
+    return "recorded", None
 
 
 def _capability(report) -> dict:
@@ -234,12 +378,17 @@ def _interfaces(report, terminal) -> dict:
             "items": items, "source": {"kind": "sysfs_read", "reader": "inventory.read_interfaces"}}
 
 
-def _modules(report) -> list:
-    return [{"name": m.name, "state": m.state.value, "reason": m.reason,
-             "working": bool(m.working)} for m in report.modules]
+def _modules(report, terminal) -> list:
+    entries = []
+    for index, m in enumerate(report.modules):
+        reason = _free(terminal, f"module.{index}", m.reason)
+        entries.append({"name": m.name, "state": m.state.value, "reason": reason,
+                        "working": bool(m.working),
+                        "withheld": [] if reason is not None or m.reason is None else ["reason"]})
+    return entries
 
 
-def _knowledge(reading: Optional[dict]) -> dict:
+def _knowledge(reading: Optional[dict], terminal) -> dict:
     from .functional_readiness import readiness_for
 
     if reading is None:
@@ -247,15 +396,34 @@ def _knowledge(reading: Optional[dict]) -> dict:
     readiness = readiness_for("knowledge_lite")
     generation = reading["generation"]
     withheld = []
-    if not (generation is None or type(generation) is int
+    terminal["knowledge_words"] = (reading["state"], reading["reason_code"], reading["freshness"])
+    words_known = (reading["state"] in KNOWLEDGE_STATES
+                   and reading["reason_code"] in KNOWLEDGE_REASONS
+                   and reading["freshness"] in KNOWLEDGE_FRESHNESS)
+    if not words_known:
+        # The integration view quotes these words in its knowledge rows.
+        terminal.setdefault("untrusted", []).extend(
+            str(word) for word in terminal["knowledge_words"])
+    if not (generation is None or (type(generation) is int and 0 <= generation <= MAX_SAFE_INTEGER)
             or (type(generation) is str and _GENERATION.fullmatch(generation))):
-        generation, withheld = None, ["generation"]
+        withheld.append("generation")
+    terminal["knowledge_generation"] = generation
+    means = _free(terminal, "knowledge.means", readiness.means)
+    limits = [_free(terminal, f"knowledge.does_not_mean.{i}", text)
+              for i, text in enumerate(readiness.does_not_mean)]
+    terminal["knowledge_limits"] = len(limits)
+    if means is None:
+        withheld.append("readiness.means")
+    if None in limits:
+        withheld.append("readiness.does_not_mean")
     return {
-        "status": str(reading["state"]), "reason_code": str(reading["reason_code"]),
-        "generation": generation, "freshness": str(reading["freshness"]),
+        "status": reading["state"] if words_known else "unknown",
+        "reason_code": reading["reason_code"] if words_known else "reading_refused",
+        "generation": None if "generation" in withheld or not words_known else generation,
+        "freshness": reading["freshness"] if words_known else None,
         "readiness": {"functional": bool(readiness.functional),
                       "word": "functional" if readiness.functional else readiness.value,
-                      "means": readiness.means, "does_not_mean": list(readiness.does_not_mean)},
+                      "means": means, "does_not_mean": limits},
         "cryptographic_implementation": {"status": "not_supported",
                                          "reason_code": "nexus_70_review_pending"},
         "source": {"kind": "store_read", "reader": "lite_import.status_summary",
@@ -278,12 +446,18 @@ def _edge(edge, probe_code: str, boot_code: str, terminal) -> dict:
     issuer = None
     if edge.issuer is not None:
         labels = edge.issuer.labels()
+        reason = _free(terminal, "edge.issuer_reason", edge.issuer.issuer_reason)
         issuer = {**{key: _plain(labels[key]) for key in ISSUER_LABEL_FIELDS},
-                  "issuer_reason": edge.issuer.issuer_reason,
-                  "withheld": ["issuer", "revocation_sequence", "floor_version"]}
+                  "issuer_reason": reason,
+                  "withheld": ["issuer", "revocation_sequence", "floor_version"]
+                  + ([] if reason is not None else ["issuer_reason"])}
         terminal["edge_issuer"] = {"issuer": edge.issuer.issuer,
                                    "revocation_sequence": edge.issuer.revocation_sequence,
                                    "floor_version": edge.issuer.floor_version}
+    caveats = []
+    for c in edge.caveats:
+        shown = c if c in known_caveats and not _PATHISH.search(c) else None
+        caveats.append({"text": shown, "withheld": [] if shown is not None else ["text"]})
     return {
         "status": edge.presence.value,
         "reason_code": None if edge.ready else "checks_not_all_passed",
@@ -293,8 +467,7 @@ def _edge(edge, probe_code: str, boot_code: str, terminal) -> dict:
                       "security": bool(f.security), "withheld": ["reason"]}
                      for f in edge.findings],
         "issuer": issuer,
-        "caveats": [{"text": c if c in known_caveats else None,
-                     "withheld": [] if c in known_caveats else ["text"]} for c in edge.caveats],
+        "caveats": caveats,
         "probe": {"result": probe_code, "boot_id": boot_code,
                   "observed_at": edge.probe.observed_at if edge.probe else None},
         "source": {"kind": "package_files_and_probe_result",
@@ -303,17 +476,25 @@ def _edge(edge, probe_code: str, boot_code: str, terminal) -> dict:
     }
 
 
-def _integration(view, broker: Optional[dict]) -> dict:
+def _integration(view, broker: Optional[dict], terminal) -> dict:
     if view is None:
         return {"status": "not_collected", "reason_code": "not_collected"}
+    rows = []
+    for index, row in enumerate(view.rows):
+        reason = _free(terminal, f"integration.{index}", row.reason)
+        if reason is not None and any(word in reason for word in terminal.get("untrusted", ())):
+            reason = None
+        rows.append({"axis": row.axis, "subject": row.subject, "value": row.value,
+                     "defect": bool(row.defect), "reason": reason,
+                     "withheld": [] if reason is not None else ["reason"]})
+    level = str(broker["status_level"]) if broker else None
     return {
         "status": "reported", "reason_code": None,
-        "rows": [{"axis": row.axis, "subject": row.subject, "value": row.value,
-                  "defect": bool(row.defect), "reason": row.reason} for row in view.rows],
+        "rows": rows,
         "enforcement_capable": bool(view.enforcement_capable),
         "baseline_ready": bool(view.baseline_ready),
         "continues": list(view.continues),
-        "broker": {"status_level": str(broker["status_level"]) if broker else None,
+        "broker": {"status_level": level if level in ("CORE", "LITE") else None,
                    "informational": True, "core": "deterministic",
                    "transport": "unavailable", "transport_reason": "Fabric#25"},
     }
@@ -336,32 +517,53 @@ def _fabric(report) -> dict:
     return {"status": "internal_error", "reason_code": "internal_error", "version": None}
 
 
-def _component(value, now, stale_after, fields, extra=None) -> dict:
+def _component(value, now, stale_after, fields, *, schema, extra=None, flags=()) -> dict:
+    """One loop snapshot: its source, its words, and its allowlisted copy.
+
+    `flags` are the reader-checked booleans that make a running component
+    `degraded`: listed in `conditions`, and the first is the reason code.
+    """
     if value is None:
         return {"status": "unavailable", "reason_code": "snapshot_absent_or_refused",
-                "source": _absent_source(), "snapshot": None}
-    source = _snapshot_source(value, now, stale_after)
-    snapshot = _pick(value, fields)
-    if extra:
-        extra(value, snapshot)
-    return {"status": "running" if source["freshness"] == "fresh" else "stale",
-            "reason_code": source["reason_code"], "source": source, "snapshot": snapshot}
+                "conditions": [], "source": _absent_source(), "snapshot": None}
+    try:
+        _require(value["schema"] == schema)
+        source = _snapshot_source(value, now, stale_after)
+        snapshot = _pick(value, fields)
+        if extra:
+            extra(value, snapshot)
+    except (_Refused, KeyError, TypeError, ValueError):
+        return {"status": "unavailable", "reason_code": "snapshot_refused_by_view",
+                "conditions": [], "source": {**_absent_source(),
+                                             "reason_code": "snapshot_refused_by_view"},
+                "snapshot": None}
+    conditions = [flag for flag in flags if value.get(flag) is True]
+    if source["freshness"] != "fresh":
+        status, reason = ("unknown" if source["freshness"] == "unknown" else "stale",
+                          source["reason_code"])
+    elif conditions:
+        status, reason = "degraded", conditions[0]
+    else:
+        status, reason = "running", None
+    return {"status": status, "reason_code": reason, "conditions": conditions,
+            "source": source, "snapshot": snapshot}
 
 
 def _intake_extra(now):
-    from .edge_intake import DECOY_REFUSAL_CODES
+    from .edge_intake import DECOY_REFUSAL_CODES, REFUSAL_CODES
     from .edge_loop_status import FORWARD_STALE_S
 
     def extra(value, snapshot):
-        refused = value["refused"]
-        snapshot["refused"] = dict(refused)
+        refused = _codes(value["refused"], REFUSAL_CODES)
+        snapshot["refused"] = refused
         if "edge_forward" in value:
             forward = _pick(value["edge_forward"], EDGE_FORWARD_FIELDS)
-            age = now - forward["reported_at"]
+            age, age_reason = _age(now, value["edge_forward"]["reported_at"])
+            stale = age is None or age > FORWARD_STALE_S or age < -FUTURE_S
             snapshot["edge_forward"] = forward
             snapshot["edge_forward_freshness"] = {
-                "status": "stale" if age > FORWARD_STALE_S or age < -FUTURE_S else "fresh",
-                "reported_by": "edge", "age_s": int(age)}
+                "status": "stale" if stale else "fresh", "reported_by": "edge",
+                "age_s": age, "age_reason": age_reason}
         if "decoy" in value:
             snapshot["decoy"] = _pick(value["decoy"], DECOY_FIELDS)
         snapshot["decoy_status"] = {
@@ -370,11 +572,37 @@ def _intake_extra(now):
     return extra
 
 
+def _explainer_extra(value, snapshot):
+    from .incident_explain import CODES, RECOVERY_HINT
+
+    snapshot["refused"] = _codes(value["refused"], CODES)
+    _require(value["recovery_hint"] in (None, RECOVERY_HINT))
+
+
 def _recent_extra(value, snapshot):
+    from .edge_intake import ACTIONS
+    from .incident_explain import (
+        CODES, CONTENT_KINDS, LEGACY_HANDOFF, POLICY_REASONS, SHOWN_STATES,
+    )
+    from .lite_import import TECHNIQUE_ID
+    from .local_advisory import HANDOFF_NOTICE
+
     rows = []
     for row in value["incidents"]:
-        copy = _pick(row, INCIDENT_FIELDS)
+        _require(_INCIDENT_ID.fullmatch(row["incident_id"]) and row["state"] in ("open", "closed")
+                 and row["edge_would"] in ACTIONS
+                 and row["policy_reason"] in POLICY_REASONS | {"other"}
+                 and all(TECHNIQUE_ID.fullmatch(t) for t in row["technique_ids"]))
         explanation = row["explanation"]
+        _require(explanation["state"] in {"pending", "unavailable"} | SHOWN_STATES
+                 and explanation["route"] in ("local", "deterministic handoff", "unavailable")
+                 and explanation.get("content_kind", "none") in (*CONTENT_KINDS, LEGACY_HANDOFF)
+                 and explanation.get("notice", HANDOFF_NOTICE["en"]) in HANDOFF_NOTICE.values()
+                 and all(code in CODES for code in explanation["failure_codes"]))
+        for ref in explanation["knowledge_refs"]:
+            _require(TECHNIQUE_ID.fullmatch(ref["technique_id"])
+                     and ref["claim_id"] == ref["technique_id"])
+        copy = _pick(row, INCIDENT_FIELDS)
         copy["explanation"] = _pick(explanation, EXPLANATION_FIELDS)
         copy["explanation"]["knowledge_refs"] = [
             _pick(ref, KNOWLEDGE_REF_FIELDS) for ref in explanation["knowledge_refs"]]
@@ -388,7 +616,8 @@ def _recent_extra(value, snapshot):
 
 def _edge_loop(now) -> dict:
     from . import edge_loop_status
-    from .incident_explain import CONTENT_LABELS
+    from .edge_intake import STATUS_SCHEMA as INTAKE_SCHEMA
+    from .incident_explain import CONTENT_LABELS, RECENT_SCHEMA
 
     base = {"authority": dict(AUTHORITY), "evaluated_at": now}
     try:
@@ -398,9 +627,14 @@ def _edge_loop(now) -> dict:
         return {
             **base, "status": "read", "reason_code": None,
             "intake": _component(raw["intake"], now, LOOP_STALE_S, INTAKE_FIELDS,
-                                 _intake_extra(now)),
-            "explainer": _component(raw["explainer"], now, LOOP_STALE_S, EXPLAINER_FIELDS),
-            "recent": _component(raw["recent"], now, LOOP_STALE_S, RECENT_FIELDS, _recent_extra),
+                                 schema=INTAKE_SCHEMA, extra=_intake_extra(now),
+                                 flags=("storage_failed",)),
+            "explainer": _component(raw["explainer"], now, LOOP_STALE_S, EXPLAINER_FIELDS,
+                                    schema="azazel-nexus/incident-explain-status/v1",
+                                    extra=_explainer_extra,
+                                    flags=("chain_broken", "storage_failed")),
+            "recent": _component(raw["recent"], now, LOOP_STALE_S, RECENT_FIELDS,
+                                 schema=RECENT_SCHEMA, extra=_recent_extra),
             "content_labels": dict(CONTENT_LABELS),
         }
     except Exception:  # noqa: BLE001 - presentation only; status continues
@@ -408,24 +642,35 @@ def _edge_loop(now) -> dict:
 
 
 def _health(report, audit_seen, now, terminal) -> list:
-    details = terminal.setdefault("health_details", {})
     entries = []
     for index, check in enumerate(report.health):
-        public = check.subject in PUBLIC_HEALTH_SUBJECTS
         status = "unknown" if check.unknown else ("ok" if check.healthy else "failed")
-        entry = {"subject": check.subject, "status": status,
-                 "detail": check.detail if public else None,
-                 "advisory": check.advisory if public else None,
-                 "withheld": [] if public else ["detail", "advisory"]}
+        # `audit chain` comes from the hidden `--ledger`: a path, or exception text.
+        public = check.subject in ("systemd units", "audit")
         if not public:
-            details[index] = check.detail
+            terminal.setdefault("private_texts", []).append(check.detail)
+        detail = _free(terminal, f"health.{index}.detail", check.detail) if public else None
+        advisory = _free(terminal, f"health.{index}.advisory", check.advisory) if public else None
+        terminal["text"][f"health.{index}.detail"] = check.detail
+        withheld = [name for name, shown, original in (
+            ("detail", detail, check.detail), ("advisory", advisory, check.advisory))
+            if shown is None and original is not None]
+        entry = {"subject": check.subject, "status": status, "detail": detail,
+                 "advisory": advisory, "advisory_code": None, "withheld": withheld}
         if check.subject == "systemd units":
             entry["reason_code"] = "service_manager_not_queried"
             entry["source"] = {"kind": "not_queried"}
         elif check.subject == "audit":
-            entry["source"] = _audit_source(audit_seen, now)
+            try:
+                entry["source"], capacity = _audit_source(audit_seen, now)
+            except (_Refused, KeyError, TypeError, ValueError):
+                entry["source"], capacity = ({**_absent_source(),
+                                              "reason_code": "snapshot_refused_by_view"}, None)
+            entry["capacity"] = capacity
             entry["reason_code"] = entry["source"]["reason_code"] or (
                 "chain_not_verified_at_auditd_start" if status == "failed" else None)
+            if check.advisory:
+                entry["advisory_code"] = "audit_capacity_warning"
         else:
             entry["reason_code"] = None if status == "ok" else "audit_chain_" + status
             entry["source"] = {"kind": "ledger_verify", "withheld": ["path"]}
@@ -433,36 +678,40 @@ def _health(report, audit_seen, now, terminal) -> list:
     return entries
 
 
-def _audit_source(audit_seen, now) -> dict:
-    """Where the `audit` line came from: auditd's capacity snapshot (#211)."""
-    from .audit_status import STATUS_STALE_S
+def _audit_source(audit_seen, now) -> tuple[dict, Optional[dict]]:
+    """Where the `audit` line came from (auditd's snapshot, #211), and its sizes."""
+    from .audit_status import STATUS_STALE_S, WARNING_REASONS
 
     if not audit_seen:
-        return {"kind": "snapshot", "schema": None, "written_at": None,
-                "freshness": "unavailable", "reason_code": "internal_error", "age_s": None}
+        return ({**_absent_source(), "reason_code": "internal_error"}, None)
     value = audit_seen[-1]
     if value is None:
-        return _absent_source()
-    return _snapshot_source(_pick(value, AUDIT_SOURCE_FIELDS), now, STATUS_STALE_S)
+        return _absent_source(), None
+    capacity = _pick(value, AUDIT_CAPACITY_FIELDS)
+    _require(all(code in WARNING_REASONS for code in value["warning_reasons"]))
+    capacity["rate_limited_total"] = _plain(sum(value["rate_limited"].values()))
+    return _snapshot_source(value, now, STATUS_STALE_S), capacity
 
 
 def _next_actions(report, lab_host, terminal) -> list:
-    summaries = terminal.setdefault("next_action_summaries", {})
-    secrets = [text for text in (terminal.get("profile_reason"),
-                                 *terminal.get("health_details", {}).values()) if text]
+    # Summaries that quote exception text or a path the view withholds.
+    private = [text for text in (terminal.get("profile_reason"),
+                                 *terminal.get("private_texts", ())) if text]
     actions = []
     for index, action in enumerate(report.next_actions):
         step = None
         if lab_host and action.command:
             step = next((name for command, name in LAB_HOST_STEPS
                          if command in action.command), None)
-        withheld = any(text in action.summary for text in secrets)
-        if withheld:
-            summaries[index] = action.summary
-        actions.append({"summary": None if withheld else action.summary,
-                        "command": action.command,
+        summary = _free(terminal, f"next.{index}", action.summary)
+        if summary is not None and any(text in action.summary for text in private):
+            summary = None
+        actions.append({"summary": summary,
+                        # A step refused on a lab host carries no command to run.
+                        "command": None if step else action.command,
                         "lab_host_unavailable_step": step,
-                        "withheld": ["summary"] if withheld else []})
+                        "withheld": ["summary"] if summary is None else []})
+        terminal.setdefault("next_commands", {})[index] = action.command
     return actions
 
 
@@ -493,23 +742,24 @@ def build(
     from .lab_host import is_lab_host
     from .mio_status import status_summary as mio_summary
 
-    terminal: dict = {"preamble": preamble}
+    terminal: dict = {"preamble": preamble, "text": {}}
     now = _epoch(as_of)
     lab_host = is_lab_host()
     broker = None
     if integration is not None:
         from .broker_cli import status_summary as broker_summary
         broker = broker_summary(now=wall_now)
+        terminal["broker_level"] = broker["status_level"]
     sections = {
         "profile": _profile(report, terminal),
-        "mio": _mio(mio_summary()),
+        "mio": _mio(mio_summary(), now, terminal),
         "capability": _capability(report),
         "enforcement": _enforcement(report, edge),
         "interfaces": _interfaces(report, terminal),
-        "external_modules": _modules(report),
-        "knowledge_lite": _knowledge(knowledge),
+        "external_modules": _modules(report, terminal),
+        "knowledge_lite": _knowledge(knowledge, terminal),
         "edge_core": _edge(edge, probe, boot_id, terminal),
-        "integration": _integration(integration, broker),
+        "integration": _integration(integration, broker, terminal),
         "fabric": _fabric(report),
         "edge_loop": _edge_loop(now),
         "health": _health(report, audit_seen, now, terminal),
@@ -530,6 +780,9 @@ def build(
 
 
 # -- the text an operator reads ----------------------------------------------
+#
+# Words, flags and counts come from the view; fixed and free sentences come
+# from the terminal half, which holds them whole (the view may withhold one).
 
 
 def render_text(status: StatusView, out: TextIO) -> None:
@@ -540,7 +793,7 @@ def render_text(status: StatusView, out: TextIO) -> None:
     _text_profile(s["profile"], terminal, out)
     print(file=out)
     from .mio_status import describe
-    print(describe(s["mio"]["reading"]), file=out)
+    print(describe(terminal["mio_reading"]), file=out)
     print(file=out)
     capability = s["capability"]
     print(f"CLI baseline capability state: {capability['state']} "
@@ -567,17 +820,18 @@ def render_text(status: StatusView, out: TextIO) -> None:
     _text_interfaces(s["interfaces"], terminal, out)
     print(file=out)
     print("external modules:", file=out)
-    for module in s["external_modules"]:
-        print(f"    {module['name']}: {module['state']} -- {module['reason']}", file=out)
+    for index, module in enumerate(s["external_modules"]):
+        print(f"    {module['name']}: {module['state']} -- {_text(terminal, f'module.{index}')}",
+              file=out)
     print(file=out)
     if s["knowledge_lite"]["status"] != "not_collected":
-        _text_knowledge(s["knowledge_lite"], out)
+        _text_knowledge(s["knowledge_lite"], terminal, out)
         print(file=out)
     if s["edge_core"]["status"] != "not_inspected":
         _text_edge(s["edge_core"], terminal, out)
         print(file=out)
     if s["integration"]["status"] != "not_collected":
-        _text_integration(s["integration"], out)
+        _text_integration(s["integration"], terminal, out)
         print(file=out)
     _text_fabric(s["fabric"], out)
     _text_edge_loop(s["edge_loop"], out)
@@ -587,16 +841,15 @@ def render_text(status: StatusView, out: TextIO) -> None:
     print("next:", file=out)
     if not s["next_actions"]:
         print("    nothing is outstanding.", file=out)
-    summaries = terminal.get("next_action_summaries", {})
     for index, action in enumerate(s["next_actions"]):
         if action["lab_host_unavailable_step"]:
             print(f"    {action['lab_host_unavailable_step']} step unavailable on a lab host "
                   "(LAB_HOST_MARKER); requires a non-lab deployment", file=out)
             continue
-        summary = action["summary"] if action["summary"] is not None else summaries[index]
-        print(f"    {summary}", file=out)
-        if action["command"]:
-            print(f"        {action['command']}", file=out)
+        print(f"    {_text(terminal, f'next.{index}')}", file=out)
+        command = terminal["next_commands"][index]
+        if command:
+            print(f"        {command}", file=out)
 
 
 def _text_profile(profile, terminal, out) -> None:
@@ -621,17 +874,19 @@ def _text_interfaces(section, terminal, out) -> None:
             print(f"    blocked: {reason}", file=out)
 
 
-def _text_knowledge(section, out) -> None:
+def _text_knowledge(section, terminal, out) -> None:
     readiness = section["readiness"]
     print("Knowledge Lite: " + readiness["word"], file=out)
-    print(f"    state: {section['status']}", file=out)
-    print(f"    reason: {section['reason_code']}", file=out)
-    print(f"    generation: {section['generation']}", file=out)
-    print(f"    freshness: {section['freshness']}", file=out)
+    state, reason, freshness = terminal["knowledge_words"]
+    print(f"    state: {state}", file=out)
+    print(f"    reason: {reason}", file=out)
+    print(f"    generation: {terminal['knowledge_generation']}", file=out)
+    print(f"    freshness: {freshness}", file=out)
     print("    cryptographic implementation: not supported (Nexus#70 review pending)", file=out)
-    print(f"    functional means: {readiness['means']}", file=out)
-    for limit in readiness["does_not_mean"]:
-        print(f"    it does not mean: {limit}", file=out)
+    print(f"    functional means: {_text(terminal, 'knowledge.means')}", file=out)
+    for index in range(terminal["knowledge_limits"]):
+        print(f"    it does not mean: {_text(terminal, f'knowledge.does_not_mean.{index}')}",
+              file=out)
 
 
 def _text_edge(section, terminal, out) -> None:
@@ -650,7 +905,7 @@ def _text_edge(section, terminal, out) -> None:
         print("    issuer_authenticated: "
               + ("yes" if issuer["issuer_authenticated"] else "no")
               + f" ({issuer['issuer_status']}{named})", file=out)
-        print(f"        {issuer['issuer_reason']}", file=out)
+        print(f"        {_text(terminal, 'edge.issuer_reason')}", file=out)
         sequence = private.get("revocation_sequence")
         sequence = f", sequence {sequence}" if sequence is not None else ""
         print(f"    revocation: {issuer['revocation_status']}{sequence}"
@@ -665,18 +920,18 @@ def _text_edge(section, terminal, out) -> None:
         print(f"    caveat: {caveat}", file=out)
 
 
-def _text_integration(section, out) -> None:
+def _text_integration(section, terminal, out) -> None:
     print("integration:", file=out)
-    for row in section["rows"]:
+    for index, row in enumerate(section["rows"]):
         subject = f" [{row['subject']}]" if row["subject"] else ""
         marker = "  DEFECT" if row["defect"] else ""
         print(f"    {row['axis']}{subject}: {row['value']}{marker}", file=out)
-        print(f"        {row['reason']}", file=out)
+        print(f"        {_text(terminal, f'integration.{index}')}", file=out)
     print(file=out)
     print(f"enforcement capable: {'yes' if section['enforcement_capable'] else 'no'}", file=out)
     print(f"baseline ready: {'yes' if section['baseline_ready'] else 'no'}", file=out)
     print("continuing regardless: " + ", ".join(section["continues"]), file=out)
-    print("Integration broker (informational): " + section["broker"]["status_level"]
+    print("Integration broker (informational): " + str(terminal["broker_level"])
           + "; Core deterministic; transport unavailable: Fabric#25", file=out)
 
 
@@ -703,9 +958,8 @@ def _text_edge_loop(section, out) -> None:
 
 
 def _text_health(entries, terminal, out) -> None:
-    details = terminal.get("health_details", {})
     print("health:", file=out)
     for index, entry in enumerate(entries):
         mark = {"ok": "ok", "failed": "FAILED"}.get(entry["status"], "unknown")
-        detail = entry["detail"] if entry["detail"] is not None else details[index]
-        print(f"    {entry['subject']}: {mark} -- {detail}", file=out)
+        print(f"    {entry['subject']}: {mark} -- {_text(terminal, f'health.{index}.detail')}",
+              file=out)

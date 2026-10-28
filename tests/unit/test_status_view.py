@@ -258,6 +258,57 @@ def _edge_tampered_no_boot(tmp_path, monkeypatch):
     return {"edge_root": root, "probe": probe}
 
 
+def _issuer_authenticated(tmp_path, monkeypatch):
+    """A verified package whose issuer is authenticated, with revocations in force.
+
+    The inspection is the real one, with an authenticated issuer result put in
+    its place at the `cli.inspect_edge` seam: the renderer is what is under
+    test, and the issuer chain has its own tests (`test_edge_issuer.py`).
+    """
+    from dataclasses import replace
+
+    from azazel_nexus import cli
+    from azazel_nexus.edge_issuer import NOTE_STATE_UNPROTECTED, IssuerVerification
+    from azazel_nexus.edge_package import AUTHENTICATED_CAVEAT, PIN
+    from test_wizard_and_cli import _probe_state, _verified_package
+
+    _base(tmp_path, monkeypatch)
+    root, digest = _verified_package(tmp_path)
+    real = cli.inspect_edge
+
+    def inspect(*args, **kwargs):
+        return replace(real(*args, **kwargs), caveats=(AUTHENTICATED_CAVEAT,),
+                       issuer=IssuerVerification(
+                           digest_verified=True, issuer_authenticated=True,
+                           issuer_status="authenticated", issuer="lab-issuer-test",
+                           revocation_status="in_force", revocation_sequence=3, revoked="none",
+                           floor_status="held", floor_version=PIN.version, version=PIN.version,
+                           package_digest=digest, notes=(NOTE_STATE_UNPROTECTED,)))
+    monkeypatch.setattr(cli, "inspect_edge", inspect)
+    probe = _probe_state(tmp_path, digest)
+    probe.chmod(0o644)
+    return {"edge_root": root, "probe": probe}
+
+
+#: What `lite_import.status_summary` returns for an admitted, current bundle.
+KNOWLEDGE_AVAILABLE = {"state": "available", "reason_code": "available", "generation": 5,
+                       "freshness": "current"}
+
+
+def _knowledge_available(tmp_path, monkeypatch):
+    """Knowledge Lite admitted and current, at the `cli._knowledge_reading` seam.
+
+    The reading is the closed shape the daemon's status verb also returns;
+    reading a real bundle is `test_operator_flow_cli.py`'s.
+    """
+    from azazel_nexus import cli
+
+    _base(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli, "_knowledge_reading",
+                        lambda root, *, as_of: dict(KNOWLEDGE_AVAILABLE))
+    return {}
+
+
 def _ledger_missing(tmp_path, monkeypatch):
     _base(tmp_path, monkeypatch)
     return {"extra": ("--ledger", str(tmp_path / "no-ledger.jsonl"))}
@@ -276,6 +327,8 @@ SCENARIOS = {
     "refused": _refused,
     "edge-ready-lab-host": _edge_ready,
     "edge-tampered-no-boot": _edge_tampered_no_boot,
+    "edge-issuer-authenticated": _issuer_authenticated,
+    "knowledge-available": _knowledge_available,
     "ledger-missing": _ledger_missing,
     "ledger-broken": _ledger_broken,
 }
@@ -347,7 +400,8 @@ ALLOWED = {
         "items[].withheld", "items[].withheld[]", "source", "source.kind", "source.reader")),
     # external modules
     "sections.external_modules", "sections.external_modules[]",
-    *(f"sections.external_modules[].{k}" for k in ("name", "state", "reason", "working")),
+    *(f"sections.external_modules[].{k}" for k in ("name", "state", "reason", "working",
+                                                    "withheld", "withheld[]")),
     # knowledge lite
     "sections.knowledge_lite", *(f"sections.knowledge_lite.{k}" for k in (
         "status", "reason_code", "generation", "freshness", "readiness",
@@ -371,7 +425,8 @@ ALLOWED = {
     # integration
     "sections.integration", *(f"sections.integration.{k}" for k in (
         "status", "reason_code", "rows", "rows[]", "rows[].axis", "rows[].subject",
-        "rows[].value", "rows[].defect", "rows[].reason", "enforcement_capable",
+        "rows[].value", "rows[].defect", "rows[].reason", "rows[].withheld",
+        "rows[].withheld[]", "enforcement_capable",
         "baseline_ready", "continues", "continues[]", "broker", "broker.status_level",
         "broker.informational", "broker.core", "broker.transport", "broker.transport_reason")),
     # fabric
@@ -379,15 +434,22 @@ ALLOWED = {
     "sections.fabric.version",
     # health and next actions
     "sections.health", "sections.health[]", *(f"sections.health[].{k}" for k in (
-        "subject", "status", "detail", "advisory", "withheld", "withheld[]", "reason_code",
-        "source", "source.kind", "source.schema", "source.written_at", "source.freshness",
-        "source.reason_code", "source.age_s", "source.withheld", "source.withheld[]")),
+        "subject", "status", "detail", "advisory", "advisory_code", "withheld", "withheld[]",
+        "reason_code", "source", "source.kind", "source.schema", "source.written_at",
+        "source.freshness", "source.reason_code", "source.age_s", "source.age_reason",
+        "source.withheld", "source.withheld[]", "capacity", "capacity.warning_reasons[]",
+        "capacity.rate_limited_total",
+        *(f"capacity.{f}" for f in ("chain_verified", "chain_bytes", "segments",
+                                    "filesystem_free_bytes", "warning", "warning_reasons",
+                                    "warn_chain_bytes", "warn_free_bytes",
+                                    "rate_limit_summaries_dropped")))),
     "sections.next_actions", "sections.next_actions[]", *(f"sections.next_actions[].{k}" for k in (
         "summary", "command", "lab_host_unavailable_step", "withheld", "withheld[]")),
 }
 _LOOP = "sections.edge_loop"
 _SOURCE = ("source", "source.kind", "source.schema", "source.written_at", "source.freshness",
-           "source.reason_code", "source.age_s")
+           "source.reason_code", "source.age_s", "source.age_reason", "conditions",
+           "conditions[]")
 ALLOWED |= {_LOOP, *(f"{_LOOP}.{k}" for k in (
     "authority", "authority.decision_and_enforcement", "authority.nexus",
     "authority.edge_decisions", "authority.execution_results", "authority.reason_code",
@@ -400,6 +462,7 @@ for _name, _fields in (
                                                     "reported_at", "restarts")),
                     "edge_forward_freshness", "edge_forward_freshness.status",
                     "edge_forward_freshness.reported_by", "edge_forward_freshness.age_s",
+                    "edge_forward_freshness.age_reason",
                     "decoy", "decoy.accepted", "decoy.last_accepted_at", "decoy_status",
                     "decoy_status.listening", "decoy_status.observer",
                     "decoy_status.hardware_evidence", "decoy_status.refused",
@@ -488,7 +551,8 @@ SECRETS_IN_SCENARIOS = (
     "aa:bb:cc",                                                           # MAC
     "/proc/meminfo", "Expecting value", "broken-ledger", "no-ledger",      # exception text, paths
     "edge-probe-garbage", "the boot id could not be read",
-    "192.0.2.1", "SECRET",
+    "192.0.2.1", "SECRET", "lab-issuer-test",                               # issuer identity
+    "/etc/azazel", "docs/", ".md",                                          # install and doc paths
 )
 
 
@@ -506,7 +570,7 @@ def test_the_terminal_keeps_what_the_view_withholds(tmp_path, monkeypatch):
     sections = view["sections"]
     chain = next(h for h in sections["health"] if h["subject"] == "audit chain")
     assert chain["status"] == "failed" and chain["detail"] is None
-    assert chain["withheld"] == ["detail", "advisory"]
+    assert chain["withheld"] == ["detail"]
     assert chain["reason_code"] == "audit_chain_failed"
     withheld = [a for a in sections["next_actions"] if a["withheld"]]
     assert withheld and all(a["summary"] is None for a in withheld)
@@ -575,16 +639,25 @@ def test_sources_name_schema_written_at_and_freshness(tmp_path, monkeypatch):
     loop = view["sections"]["edge_loop"]
     assert loop["intake"]["source"] == {"kind": "snapshot", "schema": STATUS_SCHEMA,
                                         "written_at": NOW - 5, "freshness": "fresh",
-                                        "reason_code": None, "age_s": 5}
+                                        "reason_code": None, "age_s": 5, "age_reason": None}
     assert loop["explainer"]["source"]["schema"] == "azazel-nexus/incident-explain-status/v1"
     assert loop["recent"]["source"]["schema"] == RECENT_SCHEMA
-    assert loop["intake"]["status"] == loop["explainer"]["status"] == "running"
+    assert loop["intake"]["status"] == "running"
+    # chain_broken is reader-checked and true in this scenario: not "running".
+    assert (loop["explainer"]["status"], loop["explainer"]["reason_code"]) == (
+        "degraded", "chain_broken")
+    assert loop["explainer"]["conditions"] == ["chain_broken"]
     forward = loop["intake"]["snapshot"]["edge_forward_freshness"]
-    assert forward == {"status": "stale", "reported_by": "edge", "age_s": 1000}
+    assert forward == {"status": "stale", "reported_by": "edge", "age_s": 1000,
+                       "age_reason": None}
     assert loop["intake"]["snapshot"]["decoy_status"]["observer"] == "nexus"
     audit = next(h for h in view["sections"]["health"] if h["subject"] == "audit")
     assert audit["status"] == "ok" and audit["source"]["freshness"] == "fresh"
-    assert audit["advisory"].startswith("capacity warning")
+    # The advisory names a document: a code in the view, the sentence on the terminal.
+    assert audit["advisory"] is None and audit["withheld"] == ["detail", "advisory"]
+    assert audit["advisory_code"] == "audit_capacity_warning"
+    assert audit["capacity"]["warning_reasons"] == ["chain_size", "filesystem_free"]
+    assert audit["capacity"]["rate_limited_total"] == 6
     assert view["sections"]["fabric"] == {"status": "projected", "reason_code": None,
                                           "version": "0.9.0rc5"}
     assert view["as_of"] == AS_OF and view["clock"]["status"] == "known"
@@ -642,9 +715,9 @@ def _changed(a, b):
     (lambda root, mp: _snapshots(root, recent=_recent(NOW - 1)), {"edge_loop"}),
     (lambda root, mp: _snapshots(root, audit=_audit(NOW - 1)), {"health", "next_actions"}),
     (lambda root, mp: _fabric(mp, "0.9.0rc5"), {"fabric"}),
-    # The measured envelope is an input of the cognition axis (its resource
-    # gate), so the integration view moves with it -- by design, not leakage.
-    (lambda root, mp: _measured(mp), {"profile", "next_actions", "integration"}),
+    # The measured envelope also enters the cognition axis's sentence (its
+    # resource gate); that sentence names a document, so only the terminal has it.
+    (lambda root, mp: _measured(mp), {"profile", "next_actions"}),
 ])
 def test_each_input_moves_only_its_own_section(tmp_path, monkeypatch, tweak, expected):
     """Changed inputs move their own axis; nothing is derived across sections."""
@@ -751,3 +824,196 @@ def test_a_recorded_mio_reading_is_copied_field_by_field(tmp_path, monkeypatch):
     text = io.StringIO()
     assert main(_argv(tmp_path / "t"), out=text) == 0
     assert mio_status.describe(reading) in text.getvalue()
+
+
+
+def _walk(value, key=None):
+    if isinstance(value, dict):
+        for k, v in value.items():
+            yield from _walk(v, k)
+            if k == "reason_code":
+                yield v
+    elif isinstance(value, list):
+        for item in value:
+            yield from _walk(item, key)
+
+
+@pytest.mark.parametrize("name", sorted(SCENARIOS))
+def test_every_reason_code_is_from_the_fixed_vocabulary(name, tmp_path, monkeypatch):
+    from azazel_nexus import status_view
+
+    view, _, _ = _view(name, tmp_path, monkeypatch)
+    allowed = status_view.REASON_CODES | status_view.KNOWLEDGE_REASONS
+    codes = {code for code in _walk(view) if code is not None}
+    assert codes <= allowed, codes - allowed
+
+
+def _recorded_mio(monkeypatch, observed_at):
+    from azazel_nexus import mio_status
+
+    reading = {"ceiling": "LITE", "state": "CORE", "source": "route-ledger",
+               "observed_at": observed_at, "notice": mio_status.NOTICE,
+               "availability": "last recorded observation",
+               "reasons": {"profile": "LITE", "resource": "core_reserve_unmeasured",
+                           "trust": "not-checked", "topology": "no_verified_egress",
+                           "health": {"local": "not_admitted", "remote": "unavailable"}}}
+    monkeypatch.setattr(mio_status, "status_summary", lambda: json.loads(json.dumps(reading)))
+    return reading
+
+
+@pytest.mark.parametrize("observed_at, as_of, expected", [
+    ("2026-09-21T04:00:00+00:00", AS_OF, ("recorded", None)),
+    ("2026-09-21T04:05:00+00:00", AS_OF, ("stale", "observed_at_in_future")),
+    ("2026-09-18T04:00:00+00:00", AS_OF, ("stale", "observed_at_expired")),
+    ("2026-09-21T04:00:00+00:00", "not a time", ("unknown", "clock_unknown")),
+    ("2026-09-21T04:00:00", AS_OF, ("unknown", "observed_at_unreadable")),
+])
+def test_mio_reading_freshness_is_judged_against_the_status_clock(
+        tmp_path, monkeypatch, observed_at, as_of, expected):
+    from azazel_nexus import cli
+
+    _absent(tmp_path, monkeypatch)
+    reading = _recorded_mio(monkeypatch, observed_at)
+    status = cli._status_view(cli._report(None, None), as_of=as_of)
+    mio = status.view["sections"]["mio"]
+    assert (mio["status"], mio["reason_code"]) == expected
+    assert mio["reading"]["reasons"] == reading["reasons"]
+
+
+@pytest.mark.parametrize("mutation", [
+    {"reasons": {"profile": "LITE", "resource": "anything at all", "trust": "not-checked",
+                 "topology": "no_verified_egress",
+                 "health": {"local": "not_admitted", "remote": "unavailable"}}},
+    {"reasons": {"profile": "LITE", "extra": "SECRET"}},
+    {"state": "SECRET"},
+    {"availability": "SECRET /etc/azazel"},
+    {"source": "SECRET"},
+])
+def test_mio_values_outside_the_vocabulary_refuse_the_reading(tmp_path, monkeypatch, mutation):
+    from azazel_nexus import mio_status
+
+    _absent(tmp_path, monkeypatch)
+    reading = {**_recorded_mio(monkeypatch, "2026-09-21T04:00:00+00:00"), **mutation}
+    monkeypatch.setattr(mio_status, "status_summary", lambda: dict(reading))
+    out = io.StringIO()
+    assert main(_argv(tmp_path, json_flag=True), out=out) == 0
+    mio = json.loads(out.getvalue())["sections"]["mio"]
+    assert (mio["status"], mio["reason_code"]) == ("unknown", "reading_refused")
+    assert mio["reading"]["reasons"] == {} and mio["reading"]["state"] is None
+    assert "SECRET" not in out.getvalue() and "anything at all" not in out.getvalue()
+
+
+def _patched_loop(tmp_path, monkeypatch, change):
+    from azazel_nexus import edge_loop_status
+
+    _loop(tmp_path, monkeypatch)
+    real = edge_loop_status.read_edge_loop
+
+    def changed():
+        value = real()
+        change(value)
+        return value
+    monkeypatch.setattr(edge_loop_status, "read_edge_loop", changed)
+    out = io.StringIO()
+    assert main(_argv(tmp_path, json_flag=True), out=out) == 0
+    return json.loads(out.getvalue())["sections"]["edge_loop"], out.getvalue()
+
+
+@pytest.mark.parametrize("part, change", [
+    ("intake", lambda v: v["intake"]["refused"].update({"SECRET 192.0.2.1": 1})),
+    ("intake", lambda v: v["intake"]["refused"].update({"queue_full": -1})),
+    ("explainer", lambda v: v["explainer"]["refused"].update({"not_a_code": 1})),
+    ("explainer", lambda v: v["explainer"].update(recovery_hint="SECRET")),
+    ("recent", lambda v: v["recent"]["incidents"][0]["explanation"]["failure_codes"].append(
+        "SECRET")),
+    ("recent", lambda v: v["recent"]["incidents"][0].update(edge_would="SECRET")),
+    ("recent", lambda v: v["recent"]["incidents"][0]["explanation"]["knowledge_refs"][0].update(
+        claim_id="SECRET")),
+    ("intake", lambda v: v["intake"].update(schema="SECRET")),
+])
+def test_codes_outside_their_sets_refuse_that_snapshot(tmp_path, monkeypatch, part, change):
+    loop, raw = _patched_loop(tmp_path, monkeypatch, change)
+    assert (loop[part]["status"], loop[part]["reason_code"]) == (
+        "unavailable", "snapshot_refused_by_view")
+    assert loop[part]["snapshot"] is None
+    assert "SECRET" not in raw
+    others = {"intake", "explainer", "recent"} - {part}
+    assert all(loop[name]["snapshot"] is not None for name in others)
+
+
+@pytest.mark.parametrize("flags, expected", [
+    ({"storage_failed": True}, ("degraded", "storage_failed", ["storage_failed"])),
+    ({"storage_failed": False}, ("running", None, [])),
+])
+def test_intake_storage_failure_is_degraded_not_running(tmp_path, monkeypatch, flags, expected):
+    loop, _ = _patched_loop(tmp_path, monkeypatch, lambda v: v["intake"].update(flags))
+    intake = loop["intake"]
+    assert (intake["status"], intake["reason_code"], intake["conditions"]) == expected
+
+
+def test_explainer_with_both_flags_lists_both(tmp_path, monkeypatch):
+    loop, _ = _patched_loop(tmp_path, monkeypatch,
+                            lambda v: v["explainer"].update(storage_failed=True))
+    explainer = loop["explainer"]
+    assert explainer["status"] == "degraded"
+    assert explainer["conditions"] == ["chain_broken", "storage_failed"]
+
+
+def test_huge_counters_and_ages_stay_exact_or_say_so(tmp_path, monkeypatch):
+    def change(v):
+        v["intake"].update(written_at=1e300, processed=2**64 - 1, accepted=2**53)
+        v["explainer"].update(explained=2**53 - 1)
+    loop, raw = _patched_loop(tmp_path, monkeypatch, change)
+    intake = loop["intake"]
+    assert intake["source"]["age_s"] is None
+    assert intake["source"]["age_reason"] == "age_out_of_range"
+    assert intake["status"] == "stale" and intake["reason_code"] == "snapshot_dated_in_future"
+    assert intake["snapshot"]["processed"] == intake["snapshot"]["accepted"] == "too_large"
+    assert loop["explainer"]["snapshot"]["explained"] == 2**53 - 1
+    for match in __import__("re").finditer(r"-?\d{16,}", raw):
+        assert abs(int(match.group())) <= 2**53 - 1
+
+
+def test_a_lab_host_refused_step_carries_no_command(tmp_path, monkeypatch):
+    view, _, _ = _view("edge-ready-lab-host", tmp_path, monkeypatch)
+    actions = view["sections"]["next_actions"]
+    refused = [a for a in actions if a["lab_host_unavailable_step"]]
+    assert refused and all(a["command"] is None for a in refused)
+
+
+def test_fixed_text_naming_a_path_is_a_code_in_the_view(tmp_path, monkeypatch):
+    view, raw, _ = _view("edge-issuer-authenticated", tmp_path, monkeypatch)
+    s = view["sections"]
+    systemd = next(h for h in s["health"] if h["subject"] == "systemd units")
+    assert systemd["detail"] is None and systemd["withheld"] == ["detail"]
+    assert systemd["reason_code"] == "service_manager_not_queried"
+    issuer = s["edge_core"]["issuer"]
+    assert issuer["issuer_authenticated"] is True and issuer["issuer_status"] == "authenticated"
+    assert issuer["withheld"] == ["issuer", "revocation_sequence", "floor_version"]
+    assert issuer["notes"] == ["state_directory_unprotected"]
+    assert s["edge_core"]["caveats"][0]["text"].startswith("the Edge manifest carries a valid")
+    cognition = next(r for r in s["integration"]["rows"] if r["axis"] == "cognition_route")
+    assert cognition["reason"] is None and cognition["withheld"] == ["reason"]
+    monkeypatch.undo()
+    (tmp_path / "absent").mkdir()
+    absent, _, _ = _view("absent", tmp_path / "absent", monkeypatch)
+    issuer = absent["sections"]["edge_core"]["issuer"]
+    assert issuer["issuer_status"] == "not_configured"
+    assert issuer["issuer_reason"] is None and "issuer_reason" in issuer["withheld"]
+
+
+def test_knowledge_available_is_copied_and_unknown_words_are_refused(tmp_path, monkeypatch):
+    from azazel_nexus import cli
+
+    view, _, _ = _view("knowledge-available", tmp_path, monkeypatch)
+    k = view["sections"]["knowledge_lite"]
+    assert (k["status"], k["reason_code"], k["generation"], k["freshness"]) == (
+        "available", "available", 5, "current")
+    monkeypatch.setattr(cli, "_knowledge_reading", lambda root, *, as_of: {
+        "state": "available", "reason_code": "SECRET", "generation": 5, "freshness": "current"})
+    (tmp_path / "x").mkdir()
+    out = io.StringIO()
+    assert main(_argv(tmp_path / "x", json_flag=True), out=out) == 0
+    k = json.loads(out.getvalue())["sections"]["knowledge_lite"]
+    assert (k["status"], k["reason_code"], k["freshness"]) == ("unknown", "reading_refused", None)
+    assert "SECRET" not in out.getvalue()

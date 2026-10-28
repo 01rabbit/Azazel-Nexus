@@ -282,8 +282,9 @@ def _render_integration(view: IntegrationView, out: TextIO) -> None:
 
     from . import status_view
     from .broker_cli import status_summary as broker_status
-    status_view._text_integration(
-        status_view._integration(view, broker_status(now=_now())), out)
+    broker = broker_status(now=_now())
+    terminal: dict = {"text": {}, "broker_level": broker["status_level"]}
+    status_view._text_integration(status_view._integration(view, broker, terminal), terminal, out)
 
 
 def _report(
@@ -410,7 +411,8 @@ def _render_knowledge(reading: dict, out: TextIO) -> None:
     """Render only facts returned by the commissioned trust status reader."""
 
     from . import status_view
-    status_view._text_knowledge(status_view._knowledge(reading), out)
+    terminal: dict = {"text": {}}
+    status_view._text_knowledge(status_view._knowledge(reading, terminal), terminal, out)
 
 
 def _render_edge(inspection: EdgeInspection, out: TextIO) -> None:
@@ -424,7 +426,7 @@ def _render_edge(inspection: EdgeInspection, out: TextIO) -> None:
     """
 
     from . import status_view
-    terminal: dict = {}
+    terminal: dict = {"text": {}}
     section = status_view._edge(inspection, "not_read", "not_read", terminal)
     status_view._text_edge(section, terminal, out)
 
