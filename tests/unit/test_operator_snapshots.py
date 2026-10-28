@@ -499,10 +499,50 @@ def test_knowledge_lited_status_snapshot_never_carries_exception_text(tmp_path, 
     def boom(**kwargs):
         raise RuntimeError("SECRET /var/lib/azazel/lite-trust")
     monkeypatch.setattr(daemon, "status_summary", boom)
-    service = daemon.KnowledgeLiteService(root=tmp_path, trust_root=tmp_path)
+    service = daemon.KnowledgeLiteService(root=tmp_path, trust_root=tmp_path,
+                                          clock_floor=_clock_floor(tmp_path))
     value = service.status_snapshot(wall_clock=lambda: NOW)
     assert (value["state"], value["reason_code"]) == ("unavailable", "internal_error")
     assert "SECRET" not in json.dumps(value)
+
+
+def _clock_floor(tmp_path):
+    from azazel_nexus_runtime.knowledge_clock_floor import ClockFloor
+
+    state = tmp_path / "floor"
+    state.mkdir(mode=0o700, exist_ok=True)
+    state.chmod(0o700)
+    return ClockFloor(state)
+
+
+def test_knowledge_lited_status_snapshot_follows_the_clock_floor(tmp_path, monkeypatch):
+    # The snapshot is the same answer `knowledge.status` gives (#359): with
+    # the wall clock behind the persisted floor nothing is read, and the
+    # snapshot says `unavailable` / `state_untrusted`, never the store's state.
+    from azazel_nexus_runtime import knowledge_lited as daemon
+
+    read = []
+    monkeypatch.setattr(daemon, "status_summary", lambda **kw: read.append(kw) or {
+        "state": "available", "reason_code": "available", "generation": 3,
+        "freshness": "current"})
+    floor = _clock_floor(tmp_path)
+    assert floor.admit("2026-10-18T00:00:00Z") is True
+    clock = {"now": "2026-10-17T00:00:00Z"}
+    events = []
+    service = daemon.KnowledgeLiteService(root=tmp_path, trust_root=tmp_path,
+                                          clock_floor=floor, now=lambda: clock["now"],
+                                          audit=events.append)
+    value = service.status_snapshot(wall_clock=lambda: NOW)
+    assert snap.read_knowledge_status(json.dumps(value).encode()) == value
+    assert (value["state"], value["reason_code"], value["generation"],
+            value["freshness"]) == ("unavailable", "state_untrusted", None, "absent")
+    assert read == []
+    assert [e["event_type"] for e in events] == ["knowledge.clock_untrusted"]
+    clock["now"] = "2026-10-19T00:00:00Z"
+    value = service.status_snapshot(wall_clock=lambda: NOW)
+    assert (value["state"], value["generation"]) == ("available", 3)
+    assert read == [{"root": tmp_path, "trust_root": tmp_path,
+                     "query_as_of": "2026-10-19T00:00:00Z"}]
 
 
 def test_knowledge_lited_main_writes_after_ready_and_on_its_tick(tmp_path, monkeypatch):
