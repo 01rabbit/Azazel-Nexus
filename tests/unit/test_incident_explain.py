@@ -464,3 +464,24 @@ def test_ledger_record_refuses_bad_ref_fields(change):
     legacy = {k: v for k, v in LEDGER_REF.items() if k not in {"as_of", "citation"}}
     with pytest.raises(ValueError):
         read_record(_cited(legacy))
+
+
+def test_displayed_citations_fit_a_per_row_budget_dropping_from_the_end():
+    from azazel_nexus.incident_explain import (
+        CITATION_DISPLAY_BYTES, build_recent_incident, build_recent_incidents, explanation_summary,
+        read_recent_incidents)
+
+    wide = {**LEDGER_REF, "name": "😀" * 120, "citation": "😀" * 160}
+    record = _cited()
+    record["knowledge_refs"] = [dict(wide) for _ in range(8)]
+    refs = explanation_summary(record)["knowledge_refs"]
+    assert 0 < len(refs) < 8
+    assert len(json.dumps(refs).encode()) <= CITATION_DISPLAY_BYTES
+    # Twenty such rows still make one readable snapshot.
+    rows = []
+    for i in range(20):
+        t = _t1110()
+        t["incident_id"] = f"inc-{i:016x}"
+        rows.append(build_recent_incident(t, record={**record, "incident_id": t["incident_id"]}))
+    value = build_recent_incidents(rows, 1)
+    assert read_recent_incidents(json.dumps(value).encode()) == value

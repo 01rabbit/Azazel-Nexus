@@ -529,6 +529,8 @@ def build_recent_incident(transition, previous=None, record=None):
 #: dataset citation. The digest is shortened: a display aid, not a check.
 CITATION_FIELDS = ("technique_id", "name", "claim_id")
 CITATION_DISPLAY_FIELDS = ("bundle_digest_short", "generation", "freshness", "as_of", "citation")
+#: The escaped JSON budget for one row's displayed citations.
+CITATION_DISPLAY_BYTES = 6 * 1024
 
 
 def explanation_summary(record):
@@ -550,6 +552,10 @@ def explanation_summary(record):
         except ValueError:
             continue
         refs.append(citation)
+    # Twenty rows share one bounded snapshot; drop citations from the end
+    # rather than let escaped producer text push the snapshot over its bound.
+    while refs and len(json.dumps(refs).encode()) > CITATION_DISPLAY_BYTES:
+        refs.pop()
     m = r["mio"]
     kind = content_kind(m)
     summary = {"state": content_state(kind, bool(m["text"])),
