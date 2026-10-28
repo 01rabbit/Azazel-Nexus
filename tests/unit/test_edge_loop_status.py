@@ -456,7 +456,7 @@ def test_citation_source_digest_generation_and_as_of_are_rendered(tmp_path, monk
     runtime_paths.incident_recent_path().write_text(json.dumps(recent))
     text = render()
     assert "T1059 Bash [claim T1059] (static; " in text
-    assert "source: declared, withheld (address or path syntax))" in text
+    assert "source: declared, withheld (possible address or path form))" in text
     assert "3 more Knowledge citation(s) recorded, not shown (display bound or unsafe text)" in text
     assert ("T1059 Shell [claim T1059] (static; Knowledge Lite bundle sha256:0123456789ab "
             "generation 7; as of 2026-10-18T00:00:00Z; source: MITRE ATT&CK technique)") in text

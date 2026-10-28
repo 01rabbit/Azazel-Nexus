@@ -1067,8 +1067,8 @@ def test_a_citation_naming_a_path_is_withheld_in_view_and_text(tmp_path, monkeyp
     _, text = _patched_loop(tmp_path / "t", monkeypatch, _with_display_refs(ref), json_flag=False)
     assert "SECRET" not in text
     assert ("T1059 Shell [claim T1059] (static; Knowledge Lite bundle sha256:0123456789ab "
-            "generation 7; as of 2026-09-21T04:00:00Z; source: declared, withheld (address or "
-            "path syntax))") in text
+            "generation 7; as of 2026-09-21T04:00:00Z; source: declared, withheld (possible "
+            "address or path form))") in text
 
 
 def test_the_text_renders_citations_from_the_view(tmp_path, monkeypatch):

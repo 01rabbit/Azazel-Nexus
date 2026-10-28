@@ -602,15 +602,26 @@ def _display_name(text):
         raise ValueError("recent_refused")
 
 
-def _display_citation(text):
-    """A citation may name versions ("v14.1", "2024"); never an address.
+_OCTET = r"(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
+#: An IPv4 literal: four octets 0-255, not part of a longer alphanumeric token.
+_CITATION_IPV4 = re.compile(rf"(?<![0-9A-Za-z]){_OCTET}(?:\.{_OCTET}){{3}}(?![0-9A-Za-z])")
+#: A URL scheme separator, or a network path that starts with `//`.
+_CITATION_URL = re.compile(r"://|(?:^|\s)//\S")
+#: IPv6-like colon groups and host:port forms. These can also match harmless
+#: text (`12:30:45`, `Revision:2024`); such a citation is withheld as a
+#: *possible* address form, and the display says so.
+_CITATION_POSSIBLE = re.compile(r"(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.]*|[\w.-]+:\d{1,5}(?!\d)")
 
-    Narrower than `_display_name`: numbers are allowed, IPv4/IPv6 literals and
-    host:port forms are not.
+
+def _display_citation(text):
+    """A citation may name versions ("v14.1", "2024"); never an address or URL.
+
+    Narrower than `_display_name`: numbers are allowed; IPv4 literals, URL
+    forms (`scheme://`, `//host`), IPv6-like groups and host:port forms are not.
     """
     value = unicodedata.normalize("NFKC", text)
-    if re.search(r"\d+(?:\.\d+){3}|(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.]*"
-                 r"|[\w.-]+:\d{1,5}(?!\d)", value):
+    if (_CITATION_IPV4.search(value) or _CITATION_URL.search(value)
+            or _CITATION_POSSIBLE.search(value)):
         raise ValueError("recent_refused")
 
 

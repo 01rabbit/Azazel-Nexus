@@ -308,6 +308,10 @@ The journal carries the same reading once a day while it lasts:
 filesystem_free_bytes=...; nothing is deleted`. If the filesystem does fill,
 appends fail closed: auditd refuses writers rather than claim a record it
 did not write, and the intake and explainer latch `storage_failed`.
+Knowledge Lite also stops: when its clock floor cannot be written,
+`knowledge.status` reads `unavailable` / `state_untrusted` and no reference is
+served, static reference included, until space returns
+([Knowledge Lite consumer](knowledge-lite-consumer.md#wall-clock-floor)).
 
 **`/var/lib` capacity estimate** (details in
 [Audit chain limits](integration-loop.md#audit-chain-limits-211-s3)). The

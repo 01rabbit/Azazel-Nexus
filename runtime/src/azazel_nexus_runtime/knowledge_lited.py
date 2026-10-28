@@ -87,6 +87,10 @@ class KnowledgeLiteService:
             cause = None if self.clock_floor.admit(query_as_of) else "regressed"
         except FloorUnavailable:
             cause = "floor_unavailable"
+        if cause is None and self.clock_floor.created is not None:
+            # A floor that disappears is reported, never recreated silently.
+            self.audit({"event_type": "knowledge.clock_floor_created",
+                        "cause": self.clock_floor.created})
         if cause is not None and cause != self._clock_refused:
             self.audit({"event_type": "knowledge.clock_untrusted", "cause": cause})
         self._clock_refused = cause

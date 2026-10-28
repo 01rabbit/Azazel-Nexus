@@ -784,6 +784,10 @@ class LookupContext:
     reason_code: str
 
 
+#: Producer text is cut to this many characters before it is cleaned.
+PLAIN_TEXT_INPUT_LIMIT = 1024
+
+
 def _plain_text(value, limit: int, *, markup: str = "`*_#") -> str:
     # Strip HTML and Markdown links/formatting from producer descriptions.
     # Never interpret markup, follow a URL, or execute the resulting prose.
@@ -791,7 +795,9 @@ def _plain_text(value, limit: int, *, markup: str = "`*_#") -> str:
 
     if not isinstance(value, str):
         return ""
-    value = html.unescape(value)
+    # Bound the work before any pattern runs: the link and tag patterns are
+    # quadratic on unclosed brackets, and no output keeps more than 240.
+    value = html.unescape(value[:PLAIN_TEXT_INPUT_LIMIT])
     value = re.sub(r"<[^>]*>", " ", value)
     value = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", value)
     value = re.sub(r"https?://\S+|www\.\S+", " ", value)
@@ -812,6 +818,8 @@ def _dataset_citation(manifest: Mapping, path: str) -> str:
     value = manifest.get("profile")
     for key in ("provenance", match.group(1), "dataset", "citation"):
         value = value.get(key) if isinstance(value, Mapping) else None
+    if not isinstance(value, str):
+        return ""
     # Underscores are kept: dataset names such as `intel.attack_technique`.
     # Readers require a fixed point of the same cleaning (double-escaped
     # entities, a cut that ends in a space); a text that does not settle

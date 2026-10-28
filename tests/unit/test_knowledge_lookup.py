@@ -442,3 +442,25 @@ def test_lookup_serves_equal_or_newer_than_watermark(node, floor):
     admit_rows(node, [{"technique_id": "T1110", "name": "Brute Force"}])
     (node[1] / "state/watermark").write_text(floor)
     assert reading(node).reason_code == "available"
+
+
+@pytest.mark.parametrize("text", ["[" * 200000, "<" * 200000, "[a](" * 50000, "&amp;" * 40000])
+def test_cleaning_hostile_producer_text_is_bounded(text):
+    import time
+
+    from azazel_nexus import lite_import
+
+    manifest = {"profile": {"provenance": {"attack_technique": {"dataset": {"citation": text}}}}}
+    began = time.monotonic()
+    lite_import._plain_text(text, 240)
+    citation = lite_import._dataset_citation(manifest, "tables/attack_technique.jsonl")
+    assert time.monotonic() - began < 1.0
+    assert len(citation) <= 160
+
+
+@pytest.mark.parametrize("value", [None, 7, ["x"], {"a": 1}, b"bytes"])
+def test_non_text_citation_is_empty(value):
+    from azazel_nexus import lite_import
+
+    manifest = {"profile": {"provenance": {"attack_technique": {"dataset": {"citation": value}}}}}
+    assert lite_import._dataset_citation(manifest, "tables/attack_technique.jsonl") == ""
