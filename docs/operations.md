@@ -56,7 +56,9 @@ snapshot is the source). Edge decisions appear only as `would` with
 not observe-only. A loop component whose snapshot reports `chain_broken` or
 `storage_failed` is `degraded`, not `running`, and the M.I.O. reading is
 judged against the status clock (`observed_at_in_future`,
-`observed_at_expired`). Interface descriptions, filesystem paths, Edge finding
+`observed_at_expired`). `reason_code` names only the reason that ranks first
+(a stale snapshot stays `stale` even when it also reports `chain_broken`), so
+always read it together with `conditions`. Interface descriptions, filesystem paths, Edge finding
 reasons, exception text and any fixed sentence that names a path are shown on
 the terminal only; the read model names each one under `withheld` and carries
 a code beside it. Knowledge citations in recent incidents carry the shortened

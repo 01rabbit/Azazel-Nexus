@@ -757,12 +757,19 @@ def _health(report, audit_seen, now, terminal) -> list:
             try:
                 entry["source"], capacity = _audit_source(audit_seen, now)
             except (_Refused, KeyError, TypeError, ValueError):
+                # The view refused the snapshot this line was judged from, so
+                # nothing it said is carried: not its word, not its sentences.
                 entry["source"], capacity = ({**_absent_source(),
                                               "reason_code": "snapshot_refused_by_view"}, None)
+                entry.update(status="unknown", detail=None, advisory=None,
+                             withheld=[name for name, original in (
+                                 ("detail", check.detail), ("advisory", check.advisory))
+                                 if original is not None])
+                check = None
             entry["capacity"] = capacity
             entry["reason_code"] = entry["source"]["reason_code"] or (
                 "chain_not_verified_at_auditd_start" if status == "failed" else None)
-            if check.advisory:
+            if check is not None and check.advisory:
                 entry["advisory_code"] = "audit_capacity_warning"
         else:
             entry["reason_code"] = None if status == "ok" else "audit_chain_" + status
