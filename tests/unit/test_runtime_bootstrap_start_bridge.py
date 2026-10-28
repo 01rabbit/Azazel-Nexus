@@ -353,10 +353,16 @@ def test_owned_loop_refuses_success_when_cleanup_task_cannot_quiesce():
             # Exceed the owned teardown deadline after being cancelled.
             await asyncio.sleep(0.1)
 
+    spawned = []
+
     def leave_stubborn_cleanup_task():
         checks.append(None)
         if len(checks) == 3:
-            session._loop.create_task(stubborn_cleanup())
+            # Referenced: the loop holds tasks weakly, so an unreferenced task
+            # waiting on a future is a cycle a garbage collection can destroy,
+            # and the teardown then has nothing to drain (DID NOT RAISE under
+            # the full suite). See the test below.
+            spawned.append(session._loop.create_task(stubborn_cleanup()))
 
     with pytest.raises(UnitOperationFailed, match="(quiesce|cleanup)"):
         manager._run_owned_start(
@@ -371,3 +377,25 @@ def test_owned_loop_refuses_success_when_cleanup_task_cannot_quiesce():
     # This records the still-pending task at close before fixture-only draining.
     assert pending_at_close[0]
     _assert_session_closed(bus, session)
+
+
+def test_the_stubborn_cleanup_task_survives_a_collection_during_teardown(monkeypatch):
+    """The previous test, with a full collection at the start of the drain.
+
+    It once failed with DID NOT RAISE under the full suite and passed alone.
+    The cause was not timing: the stubborn task was referenced by nothing
+    but its own future, the loop's task set is weak, and a collection at the
+    wrong moment destroyed it ("Task was destroyed but it is pending!"). The
+    drain then found no task and teardown succeeded. Forcing the collection
+    here makes that ordering certain instead of rare.
+    """
+    import gc
+
+    drain = BootstrapNarrowingManager._drain_owned_tasks
+
+    async def collect_then_drain(self):
+        gc.collect()
+        return await drain(self)
+
+    monkeypatch.setattr(BootstrapNarrowingManager, "_drain_owned_tasks", collect_then_drain)
+    test_owned_loop_refuses_success_when_cleanup_task_cannot_quiesce()

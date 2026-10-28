@@ -1,0 +1,170 @@
+{
+  "canonical_form": {
+    "json": {
+      "sort_keys": true,
+      "separators": [
+        ",",
+        ":"
+      ],
+      "ensure_ascii": false,
+      "allow_nan": false
+    },
+    "encoding": "utf-8",
+    "hash": "sha256",
+    "types": [
+      "object",
+      "array",
+      "string",
+      "integer",
+      "true",
+      "false",
+      "null"
+    ]
+  },
+  "vectors": {
+    "audit.chain": {
+      "sha256": "70ab58ca6ff0a7f3d4f6d337647c185ab143e07f992840d277e1c196b9f79446",
+      "covers": "同じ 4 イベントから同じ監査チェーン（各 link と head、ファイルの sha256）になること、改変 3 種の検出",
+      "history": [
+        {
+          "date": "2026-10-29",
+          "sha256": "70ab58ca6ff0a7f3d4f6d337647c185ab143e07f992840d277e1c196b9f79446",
+          "commit_note": "初版（共通試験ベクトルの導入）",
+          "reason": "初めて固定した。aarch64（colima）と amd64（Rosetta）、Python 3.11 と 3.12 で同じ値になることを確認してから記録した"
+        }
+      ]
+    },
+    "edge.explain": {
+      "sha256": "be318c3f12aaa3dfa2825eda2279a9c46805ece06146567456a09446b47342e0",
+      "covers": "上の遷移から作る説明要求 frame（explanation_input・build_frame）と recent incident の行（build_recent_incident・build_recent_incidents）",
+      "history": [
+        {
+          "date": "2026-10-29",
+          "sha256": "be318c3f12aaa3dfa2825eda2279a9c46805ece06146567456a09446b47342e0",
+          "commit_note": "初版（共通試験ベクトルの導入）",
+          "reason": "初めて固定した。aarch64（colima）と amd64（Rosetta）、Python 3.11 と 3.12 で同じ値になることを確認してから記録した"
+        }
+      ]
+    },
+    "edge.incident": {
+      "sha256": "c703fb910f1dbeb2a372c22761b68b8127412a559e469065f26647a6febd1d4a",
+      "covers": "golden 観測 2 巡を IncidentTracker に通した incident の遷移（opened・updated・idle による closed）、incident_id、件数、most_severe",
+      "history": [
+        {
+          "date": "2026-10-29",
+          "sha256": "c703fb910f1dbeb2a372c22761b68b8127412a559e469065f26647a6febd1d4a",
+          "commit_note": "初版（共通試験ベクトルの導入）",
+          "reason": "初めて固定した。aarch64（colima）と amd64（Rosetta）、Python 3.11 と 3.12 で同じ値になることを確認してから記録した"
+        }
+      ]
+    },
+    "edge.intake": {
+      "sha256": "47289fc1840b14540007497b38317e512d463b9e0c2f240b9438985d6448ad0b",
+      "covers": "Edge golden 観測 6 件（rust_event_engine_v1.jsonl）の parse_edge_event による正準化と EvidenceRecord の digest、壊れた入力 6 種の拒否コード",
+      "history": [
+        {
+          "date": "2026-10-29",
+          "sha256": "47289fc1840b14540007497b38317e512d463b9e0c2f240b9438985d6448ad0b",
+          "commit_note": "初版（共通試験ベクトルの導入）",
+          "reason": "初めて固定した。aarch64（colima）と amd64（Rosetta）、Python 3.11 と 3.12 で同じ値になることを確認してから記録した"
+        }
+      ]
+    },
+    "knowledge_lite.lookup": {
+      "sha256": "895374b92aa0210290b70ad5b65d189b10f9838da11354432db8e63d0eaa4b2c",
+      "covers": "producer の anchor を pin した node での import 結果と lookup_context_reading の結果（valid・expired・corrupt-signature × 技術 ID 5 通り × 2 時点）",
+      "history": [
+        {
+          "date": "2026-10-29",
+          "sha256": "895374b92aa0210290b70ad5b65d189b10f9838da11354432db8e63d0eaa4b2c",
+          "commit_note": "初版（共通試験ベクトルの導入）",
+          "reason": "初めて固定した。aarch64（colima）と amd64（Rosetta）、Python 3.11 と 3.12 で同じ値になることを確認してから記録した"
+        }
+      ]
+    },
+    "knowledge_lite.verify": {
+      "sha256": "eec417ee1b2d363ec3de55ab712922ce58c8e6244eb162645d5604c536635d75",
+      "covers": "Knowledge 側の公開 fixture（valid と negative 5 件）に対する verify_bundle の受理・拒否（gate と code）、member digest、2 時点での read_claims と reading",
+      "history": [
+        {
+          "date": "2026-10-29",
+          "sha256": "eec417ee1b2d363ec3de55ab712922ce58c8e6244eb162645d5604c536635d75",
+          "commit_note": "初版（共通試験ベクトルの導入）",
+          "reason": "初めて固定した。aarch64（colima）と amd64（Rosetta）、Python 3.11 と 3.12 で同じ値になることを確認してから記録した"
+        }
+      ]
+    },
+    "mio.consent": {
+      "sha256": "032be5d5e2c461b4c5e0c1769857c90ad251c36a8ac0fc11bea484902f608ed0",
+      "covers": "ConsentStore の世代と send gate（未設定→4 前提→撤回→再設定、時刻注入）と、非正準・重複・過大な記録の拒否",
+      "history": [
+        {
+          "date": "2026-10-29",
+          "sha256": "032be5d5e2c461b4c5e0c1769857c90ad251c36a8ac0fc11bea484902f608ed0",
+          "commit_note": "初版（共通試験ベクトルの導入）",
+          "reason": "初めて固定した。aarch64（colima）と amd64（Rosetta）、Python 3.11 と 3.12 で同じ値になることを確認してから記録した"
+        }
+      ]
+    },
+    "mio.route": {
+      "sha256": "6c92410922c351f223d39f483d388570f36f836f70827ab2305c2207734ea5fc",
+      "covers": "remote_admission の全組合せ（profile×privacy×opt-in×trust×sanitised）、route select 7 場面と fallback_once、outcome_for、terminal_for",
+      "history": [
+        {
+          "date": "2026-10-29",
+          "sha256": "6c92410922c351f223d39f483d388570f36f836f70827ab2305c2207734ea5fc",
+          "commit_note": "初版（共通試験ベクトルの導入）",
+          "reason": "初めて固定した。aarch64（colima）と amd64（Rosetta）、Python 3.11 と 3.12 で同じ値になることを確認してから記録した"
+        }
+      ]
+    },
+    "platform_profile.selection": {
+      "sha256": "047ed7bd76999b3aaa651185ee69c2a171de0028f5c3f76d71182bc25ac9527b",
+      "covers": "select_profile の入力 12 通りに対する profile と拒否理由、production use ごとの可否、境界名の対応と読取りの拒否",
+      "history": [
+        {
+          "date": "2026-10-29",
+          "sha256": "047ed7bd76999b3aaa651185ee69c2a171de0028f5c3f76d71182bc25ac9527b",
+          "commit_note": "初版（共通試験ベクトルの導入）",
+          "reason": "初めて固定した。aarch64（colima）と amd64（Rosetta）、Python 3.11 と 3.12 で同じ値になることを確認してから記録した"
+        }
+      ]
+    },
+    "revocation": {
+      "sha256": "9cb4c4187ef6c2fb0579957f1b754be29e1186d39ff620a220d46cc14278468b",
+      "covers": "tests/fixtures/revocation の 3 件（ドメイン分離・RevocationStore.accept・verify_bundle）と、署名済み失効リストの受理・再送拒否・再有効化拒否・reason_for",
+      "history": [
+        {
+          "date": "2026-10-29",
+          "sha256": "9cb4c4187ef6c2fb0579957f1b754be29e1186d39ff620a220d46cc14278468b",
+          "commit_note": "初版（共通試験ベクトルの導入）",
+          "reason": "初めて固定した。aarch64（colima）と amd64（Rosetta）、Python 3.11 と 3.12 で同じ値になることを確認してから記録した"
+        }
+      ]
+    },
+    "signature.ed25519": {
+      "sha256": "de6953525c1330ec87d983b37c6532ad80e3910e5a4e27296b5685c19e57e94d",
+      "covers": "RFC 8032 §7.1 の 4 ベクトル（検証、試験用 signer が RFC と同じ署名を作ること、改変 4 種の不受理）と、不正な公開鍵の拒否",
+      "history": [
+        {
+          "date": "2026-10-29",
+          "sha256": "de6953525c1330ec87d983b37c6532ad80e3910e5a4e27296b5685c19e57e94d",
+          "commit_note": "初版（共通試験ベクトルの導入）",
+          "reason": "初めて固定した。aarch64（colima）と amd64（Rosetta）、Python 3.11 と 3.12 で同じ値になることを確認してから記録した"
+        }
+      ]
+    },
+    "status.read_model": {
+      "sha256": "d30924d3bb0c3c9e32f361edc5297fb594ef0084a5d2cf16db7d1a2b2ec30a5a",
+      "covers": "status --json の read model（test_status_view の golden 10 場面）。float の時刻は除外し、その path を記録",
+      "history": [
+        {
+          "date": "2026-10-29",
+          "sha256": "d30924d3bb0c3c9e32f361edc5297fb594ef0084a5d2cf16db7d1a2b2ec30a5a",
+          "commit_note": "初版（共通試験ベクトルの導入）",
+          "reason": "初めて固定した。aarch64（colima）と amd64（Rosetta）、Python 3.11 と 3.12 で同じ値になることを確認してから記録した"
+        }
+      ]
+    }
+  }
+}
