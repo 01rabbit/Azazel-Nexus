@@ -542,6 +542,7 @@ ALLOWED |= {"sections.knowledge_status.content_freshness_evaluated_at",
 # The NOC section (U3). Its snapshot below the top level is the closed shape
 # `noc_status.read_noc_status` checks; test_noc_status covers it.
 ALLOWED |= {"sections.noc", "sections.noc.status", "sections.noc.reason_code", "sections.noc.freshness",
+            "sections.noc.conditions", "sections.noc.conditions[]", "sections.noc.source.age_reason",
             "sections.noc.snapshot", *(f"sections.noc.{k}" for k in _SNAP_SOURCE),
             "sections.noc.observation", *(f"sections.noc.observation.{k}" for k in (
                 "kind", "transmission", "active_checks", "policy_rules_evaluated")),

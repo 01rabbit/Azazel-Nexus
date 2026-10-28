@@ -99,6 +99,8 @@ REASON_CODES = frozenset({
     # The operator snapshots (U2): their own words, beside Knowledge Lite's.
     "capability_record_uncertain", "unit_failed", "unit_state_unread",
     "no_location_measured", "status_unrecognised",
+    # The NOC section (U3).
+    "collection_failed", "active_check_not_performed", "role_evidence_not_provided",
 })
 #: Knowledge Lite's closed status shape (`lite_import.status_summary`).
 KNOWLEDGE_STATES = frozenset({"available", "stale", "unavailable", "quarantined"})
@@ -916,7 +918,7 @@ def _noc(now) -> dict:
 
     section = _snapshot_section(noc_status_path(), noc_status.read_noc_status,
                                 noc_status.NOC_BYTES, now, noc_status.NOC_STALE_S, NOC_FIELDS,
-                                writer="az-noc-observe")
+                                schema=noc_status.NOC_SCHEMA, writer="az-noc-observe")
     snapshot = section["snapshot"]
     if _fresh(section):
         if snapshot["collection"] == "failed":

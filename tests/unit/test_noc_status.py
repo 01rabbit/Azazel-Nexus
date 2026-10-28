@@ -381,7 +381,7 @@ def test_status_json_carries_the_noc_section(root, host, monkeypatch):
     view = json.loads(out.getvalue())
     noc = view["sections"]["noc"]
     assert noc["status"] == "observed" and noc["freshness"] == "fresh"
-    allowed_top = {"status", "reason_code", "freshness", "source", "snapshot", "observation",
+    allowed_top = {"status", "reason_code", "freshness", "conditions", "source", "snapshot", "observation",
                    "not_measured", "role", "identity"}
     assert set(noc) == allowed_top
     assert set(noc["snapshot"]) == {"schema", "written_at", *status_view.NOC_FIELDS}
