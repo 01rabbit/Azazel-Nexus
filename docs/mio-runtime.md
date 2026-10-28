@@ -836,6 +836,26 @@ UTF-8 JSON, with at most 16 context items and 4 KiB per text value. Request
 IDs use the existing identifier grammar; context kinds use bounded lower-case
 identifiers. Unknown keys and malformed values are refused.
 
+Whether LOCAL is permitted at all is read from locald, not assumed. For each
+`mio.advise` request, `az-mio-entryd` asks locald's read-only
+`mio.local.admission` verb (no arguments, no payload, SERVICE only — the same
+`azmioentry` principal as the inference verb) whether its own
+`AdmissionHolder` result still names an admitted model with a provider held.
+The read is bounded by a third of the request's probe quarter (see
+`LEDGER_ALLOWANCE_MS` in `mio_entryd.py`) and never more than `PROBE_MAX_S`.
+Anything but exactly `{"admitted": true}` from the authenticated `azmio` peer —
+no socket, a refusal, a malformed reply, a timeout — reads as not admitted,
+and the request goes to the deterministic handoff. While
+`LOCAL_MODEL_ADMISSION_ENABLED` is `False` (the shipped value) entry does not
+read the socket and LOCAL is never permitted. A True reading only permits
+*selecting* LOCAL; the selection still needs a prediction, and every locald
+gate runs again on the request that follows. If locald withdrew in between, it
+answers with model-free keyword matching (`provenance.source: keyword`); entry
+does not deliver that as AI advice: the attempt ends as `not_advice` with
+refusal `not_model_output`, and the deterministic handoff serves the verified
+reference under its own label (`deterministic_reference` /
+`deterministic_notice`), never "AI advice (local model)".
+
 On a permitted, predicted LOCAL selection, the router sends the frame to
 `mio.local.infer`, authenticating the `azmio` socket owner and peer. Locald's
 service policy resolves only `azmioentry`; its inference verb admits SERVICE

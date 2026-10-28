@@ -283,8 +283,9 @@ the model-free reference service `azazel-mio-referenced.service`
 (`runtime/src/azazel_nexus_runtime/mio_referenced.py`, verb `mio.reference`), so
 that a node whose `local_model_provider` wiring is absent — every node while
 model admission is closed — can still show verified playbook text on a
-deterministic handoff. Locald's registry is `mio.local.infer` and
-`model.activate` only; its wiring gate, admission and kill switch are unchanged.
+deterministic handoff. Locald's registry is `mio.local.infer`,
+`model.activate` and the argument-less, read-only `mio.local.admission` only;
+its wiring gate, admission and kill switch are unchanged.
 
 The reference service runs as its own account `azmioref`, with
 `SupplementaryGroups=azmission-read` only (no Knowledge, model or operator

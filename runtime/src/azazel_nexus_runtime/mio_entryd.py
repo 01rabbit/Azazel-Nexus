@@ -38,6 +38,7 @@ from .mio_route_ledger import (
 from .mio_router import HANDOFF_RESERVE_MS, MIN_AI_ATTEMPT_MS, MioRouter
 from .mio_socket_client import (
     PROBE_MAX_S,
+    LocalAdmissionReader,
     LocalSocketClient,
     ReferenceSocketClient,
     RemoteSocketClient,
@@ -110,7 +111,11 @@ LEDGER_ALLOWANCE_MS = 50
 #: what is left after the handoff reserve, one minimal AI attempt and the
 #: ledger allowance (each gets half of that quarter, never more than
 #: `PROBE_MAX_S`). Below `MIN_PROBE_S` each, nothing is probed for the request
-#: and the availability record says so.
+#: and the availability record says so. When an advice request also reads
+#: locald's admission (`LocalAdmissionReader`, only while
+#: `LOCAL_MODEL_ADMISSION_ENABLED` is on), the quarter is shared by three
+#: reads, a third each, so the bound below holds unchanged; below
+#: `MIN_PROBE_S` the admission is not read and LOCAL is not permitted.
 #:
 #: The guarantee this gives (software, not measured): with deadline D ms,
 #: left = D - HANDOFF_RESERVE_MS - MIN_AI_ATTEMPT_MS - LEDGER_ALLOWANCE_MS, the
@@ -496,14 +501,39 @@ class MioEntryService:
         return {"reference_status": "unavailable", "reference_reason": missing,
                 "handoff": handoff}
 
-    def probe_share_s(self, deadline_at: float) -> float:
+    def probe_share_s(self, deadline_at: float, reads: int = 2) -> float:
         """Each probe's bound for this request (see `LEDGER_ALLOWANCE_MS`)."""
         left_ms = ((deadline_at - self.router.monotonic()) * 1000 - HANDOFF_RESERVE_MS
                    - MIN_AI_ATTEMPT_MS - LEDGER_ALLOWANCE_MS)
-        return min(PROBE_MAX_S, left_ms / 4 / 2 / 1000)
+        return min(PROBE_MAX_S, left_ms / 4 / reads / 1000)
 
-    def _observe_within(self, deadline_at: float) -> tuple[str, str]:
-        each = self.probe_share_s(deadline_at)
+    def _reads_admission(self, is_advice: bool) -> bool:
+        """Whether this request reads locald's admission over its socket."""
+        reader = self._local_admitted
+        return is_advice and isinstance(reader, LocalAdmissionReader) and reader.enabled()
+
+    def _local_admission(self, deadline_at: float, budgeted: bool) -> bool:
+        """`local_admitted` for this request; anything but True is False.
+
+        A socket reader gets a third of the probe quarter, measured again
+        now, so the probes before it and this read together stay within
+        that quarter. An injected reader is called as it always was.
+        """
+        reader = self._local_admitted
+        try:
+            if budgeted:
+                each = self.probe_share_s(deadline_at, reads=3)
+                if each < MIN_PROBE_S:
+                    return False
+                return reader(deadline_s=each) is True
+            return reader() is True
+        except (AuditUnavailable, AuditChainBroken):
+            raise
+        except Exception:  # noqa: BLE001 - an unreadable admission is no admission
+            return False
+
+    def _observe_within(self, deadline_at: float, reads: int = 2) -> tuple[str, str]:
+        each = self.probe_share_s(deadline_at, reads)
         if each < MIN_PROBE_S:
             # No probe fits; the periodic tick keeps the capability record.
             return "not_observed_deadline", "not_observed_deadline"
@@ -556,7 +586,8 @@ class MioEntryService:
         # capability sample taken for this request is reused, so both records
         # describe the same observation and the request probes each daemon once.
         # Probe time comes out of this request's deadline (`MIN_PROBE_S`).
-        local, remote = self._observe_within(deadline_at)
+        budgeted = self._reads_admission(is_advice)
+        local, remote = self._observe_within(deadline_at, 3 if budgeted else 2)
         profile = self._profile_reader()
         self.router._record({
             "event_type": "mio.entry.availability",
@@ -574,12 +605,14 @@ class MioEntryService:
                 trust=unchecked_reading(), privacy_class=privacy, sanitised=False,
             )
 
+        # Read last, nearest the selection it informs; only advice may go LOCAL.
+        local_admitted = is_advice and self._local_admission(deadline_at, budgeted)
         result = self.router.handle(
             local_request=local_request, remote_request=None,
             profile=profile, privacy_class=privacy,
             remote=admit_remote(),
             remote_recheck=admit_remote,
-            local_admitted=is_advice and self._local_admitted(), local_refusal=LOCAL_REFUSAL,
+            local_admitted=local_admitted, local_refusal=LOCAL_REFUSAL,
             predictions=self._predictions_reader() if is_advice else {},
             deadline_ms=request.arguments["deadline_ms"],
             deadline_at=deadline_at,
@@ -612,7 +645,10 @@ def main(
     # Composition verifies the retained route segments. The ledger refuses an
     # absent/unwritable installer-owned state directory before binding and
     # never creates it; prepare() probes append access to today's segment.
-    service = MioEntryService()
+    # Locald's own admission result, read per advice request within its
+    # deadline. Off (`LOCAL_MODEL_ADMISSION_ENABLED`), it reads False without
+    # touching the socket, exactly as the constructor default did.
+    service = MioEntryService(local_admitted=LocalAdmissionReader())
     try:
         service.router.ledger.prepare()
         service.router._record({"event_type": "mio.entry.started"}, reserved=True)
