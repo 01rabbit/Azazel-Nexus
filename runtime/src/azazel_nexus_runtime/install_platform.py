@@ -2,10 +2,16 @@
 
 This module identifies the current Debian installer *shape* and projects the
 repository's existing layout, account, unit, and preset declarations into
-immutable data. It does not install files, inspect the running host, select a
-CPU architecture, or establish HIL compatibility. Adding another platform
-requires an explicit reviewed profile; an OS match is not an architecture or
-hardware-support claim.
+immutable data. It does not install files, inspect the running host, or
+establish HIL compatibility. Adding another platform requires an explicit
+reviewed profile; an OS match is not an architecture or hardware-support claim.
+
+The CPU is evaluated separately, by `evaluate_install_architecture`, from a
+`platform_observation.HostObservation` the caller supplies (ADR-0003 R6): an
+unreviewed CPU, a foreign dpkg userland, a non-LP64 libc or another byte
+order is refused with its reason code, and a reviewed CPU is identified by
+the `platform_profile` purpose it has. arm64 is identified as
+``lab-software-verification``; identifying it admits nothing.
 """
 
 from __future__ import annotations
@@ -15,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Mapping, Sequence
 
+from azazel_nexus import platform_profile
 from azazel_nexus.layout import LAYOUT
 from .decoy_apparmor import DECOY_APPARMOR_PROFILES
 from azazel_nexus.activation import DECOY_NAMESPACE_UNIT
@@ -38,6 +45,7 @@ __all__ = [
     "InstallPlatformProfile",
     "ServiceManagerIntent",
     "build_install_plan",
+    "evaluate_install_architecture",
     "parse_os_release",
     "parse_preset_declarations",
     "select_install_profile",
@@ -323,6 +331,46 @@ def select_install_profile(
     ]
     if len(matches) != 1:
         raise ValueError("unknown or ambiguous installation platform profile")
+    return matches[0]
+
+
+def evaluate_install_architecture(
+    profile: InstallPlatformProfile, observed: object,
+) -> platform_profile.PlatformProfile:
+    """The reviewed platform profile for the selected OS and the observed CPU.
+
+    Refuses (`platform_profile.PlatformRefused`, with its reason code) an
+    unknown CPU name, a non-Linux kernel, a non-LP64 libc, another byte
+    order, a dpkg native architecture that is not the kernel's, and an
+    OS x CPU pair no reviewed profile has. The Python ABI is deliberately
+    not part of this decision: the installer accepts any interpreter from
+    3.11 for a staging run, and the AppArmor wrapper check pins the
+    interpreter of a real install separately.
+
+    The result only *identifies* the platform. A ``lab-software-verification``
+    profile installs exactly as it did before this check existed; it never
+    becomes a deployment baseline, an admission input or hardware evidence,
+    which `platform_profile.require_deployment_baseline` refuses at each
+    production consumer.
+    """
+
+    from .platform_observation import check_host_abi
+
+    if type(profile) is not InstallPlatformProfile:
+        raise ValueError("a reviewed install profile is required")
+    architecture = check_host_abi(observed)  # type: ignore[arg-type]
+    matches = [
+        reviewed for reviewed in platform_profile.REVIEWED_PROFILES.values()
+        if reviewed.architecture == architecture
+        and reviewed.os_id == profile.os_id
+        and reviewed.os_version_id == profile.version_id
+    ]
+    if not matches:
+        raise platform_profile.PlatformRefused(
+            platform_profile.UNREVIEWED_COMBINATION, (profile.profile_id, architecture))
+    if len(matches) != 1:
+        raise platform_profile.PlatformRefused(
+            platform_profile.UNREVIEWED_COMBINATION, tuple(p.profile_id for p in matches))
     return matches[0]
 
 

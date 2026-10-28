@@ -123,13 +123,41 @@ admission refuses a non-`x86_64` host first.
 | R3 | A HIL record's `platform` is a declared string, not an observation. | Record the observed profile in `hil_capture` and compare. |
 | R4 | The Edge package check compares the manifest with the pin, not with the host CPU. | Pin per CPU and add an architecture-mismatch finding (with Edge). |
 | R5 | `mission_pack_cli` builds `HostFacts.architecture` from configuration. | Use the observed value. |
-| R6 | `install.sh` does not evaluate the CPU. | Extend the install profile to refuse an unreviewed CPU with a reason. |
+| R6 | `install.sh` does not evaluate the CPU. | **Done** (host observation): `install.sh` refuses an unreviewed CPU, a foreign dpkg userland, a non-LP64 libc or another byte order with a reason code, and identifies arm64 as `lab-software-verification` without refusing it. |
 | R7 | `principal._GENERIC_SOCKET_MACHINES` lists CPUs beyond the reviewed two. | None needed: an unlisted CPU loses supplementary groups, which narrows access. |
 | R8 | Embedding similarity may differ between CPUs near `SCOPE_MIN`. | Shared vectors exclude inputs within ε of the threshold; advisory only, never Edge's decision. |
 
-Host observation (uname, `os-release`, SOABI, LP64, byte order) feeding
-`select_profile`, the arm64 offline-bundle target and lock, and the cross-CPU
-vector runner are further follow-ups.
+Host observation is implemented in
+[`platform_observation.py`](../../runtime/src/azazel_nexus_runtime/platform_observation.py):
+`observe()` reads `uname`, `os-release` (`ID`, `VERSION_ID`), the interpreter
+SOABI, LP64, the byte order and dpkg's native architecture (`unavailable`
+when dpkg cannot be read), and `select(observed)` returns the reviewed profile
+or refuses with the first failing check (`UNREVIEWED_KERNEL`,
+`UNKNOWN_ARCHITECTURE`, `LP64_NOT_OBSERVED`, `UNREVIEWED_BYTE_ORDER`,
+`DPKG_ARCHITECTURE_MISMATCH`, `UNREVIEWED_OS`, `UNREVIEWED_PYTHON_ABI`).
+Selecting the lab profile identifies the host; it is not an admission. The
+arm64 offline-bundle target and lock, and the cross-CPU vector runner, are
+further follow-ups.
+
+## Limits of host observation
+
+An observed value is what the running kernel, libc, interpreter and package
+database **report**. It is not attestation and it cannot be made unforgeable
+by this code:
+
+- root on the host can change `/etc/os-release`, the dpkg database, or the
+  interpreter, and a modified kernel can report any `uname`;
+- an emulator reports the emulated CPU: an x86_64 process under Rosetta or
+  qemu-user observes `x86_64` on Arm hardware (D6 already records such a run
+  as emulated, not as an amd64 host);
+- a container observes its image's `os-release` and the host's kernel.
+
+What observation does buy is narrower and still worth having: an honest tool
+on an Arm VM can no longer write a record that *says* amd64, so a lab run is
+not turned into deployment evidence by a declared string or a copied
+configuration. Proof that a record came from the target hardware remains the
+operator attestation and the hardware gates, which observation does not
+replace, partially satisfy or weaken.
 
 ## Alternatives considered
 
