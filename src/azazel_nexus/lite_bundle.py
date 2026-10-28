@@ -83,6 +83,7 @@ __all__ = [
     "Claims",
     "MAX_LINE_BYTES",
     "iter_served",
+    "iter_served_with_member",
     "Integrity",
     "KnowledgeReading",
     "StaticReference",
@@ -790,6 +791,10 @@ class Claims:
     #: A bounded sample, for evidence rather than for serving. Serving goes
     #: through `iter_served`, which reads one row at a time.
     sample_served: tuple[Mapping, ...] = ()
+    #: The earliest expiry among the served dated claims, as an RFC3339 UTC
+    #: instant truncated to seconds (never later than the row's own), or
+    #: None when nothing dated is served. A display fact, not a gate.
+    next_expiry: Optional[str] = None
 
     @property
     def time_bound(self) -> TimeBound:
@@ -844,13 +849,16 @@ def read_claims(accepted: "BundleAccepted", *, query_as_of: str) -> Claims:
 
     served = withheld = timeless = 0
     sample: list[Mapping] = []
-    for row, verdict in _classify(accepted, query_as_of):
+    nearest = None
+    for _, row, verdict in _classify(accepted, query_as_of):
         if verdict == "timeless":
             timeless += 1
         elif verdict == "served":
             served += 1
             if len(sample) < SAMPLE_LIMIT:
                 sample.append(row)
+            moment = _instant(row[EXPIRY_FIELD], EXPIRY_FIELD)
+            nearest = moment if nearest is None else min(nearest, moment)
         else:
             withheld += 1
     return Claims(
@@ -858,6 +866,7 @@ def read_claims(accepted: "BundleAccepted", *, query_as_of: str) -> Claims:
         withheld_count=withheld,
         timeless_count=timeless,
         sample_served=tuple(sample),
+        next_expiry=None if nearest is None else nearest.strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
 
 
@@ -870,9 +879,16 @@ def iter_served(accepted: "BundleAccepted", *, query_as_of: str):
     do not expire.
     """
 
-    for row, verdict in _classify(accepted, query_as_of):
+    for _, row in iter_served_with_member(accepted, query_as_of=query_as_of):
+        yield row
+
+
+def iter_served_with_member(accepted: "BundleAccepted", *, query_as_of: str):
+    """`iter_served`, with each row's verified member path (for its dataset)."""
+
+    for path, row, verdict in _classify(accepted, query_as_of):
         if verdict in ("served", "timeless"):
-            yield row
+            yield path, row
 
 
 def _classify(accepted: "BundleAccepted", query_as_of: str):
@@ -881,14 +897,14 @@ def _classify(accepted: "BundleAccepted", query_as_of: str):
         for row in _rows(accepted.members[path], path):
             expiry = row.get(EXPIRY_FIELD)
             if expiry is None:
-                yield row, "timeless"
+                yield path, row, "timeless"
                 continue
             try:
                 moment = _instant(expiry, f"{path} {EXPIRY_FIELD}")
             except BundleRefused:
-                yield row, "withheld"
+                yield path, row, "withheld"
                 continue
-            yield row, ("served" if now < moment else "withheld")
+            yield path, row, ("served" if now < moment else "withheld")
 
 
 def _rows(raw: bytes, path: str):

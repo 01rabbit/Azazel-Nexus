@@ -14,6 +14,7 @@ from azazel_nexus.lite_import import (
     LiteImport,
     lookup_context,
     lookup_context_reading,
+    read_knowledge_refs,
 )
 from azazel_nexus.revocation import RevocationList
 
@@ -23,12 +24,15 @@ def node(tmp_path, monkeypatch):
     return commissioned_node.__wrapped__(tmp_path, monkeypatch)
 
 
-def admit_rows(node, rows):
+_MISSING = object()
+
+
+def admit_rows(node, rows, **manifest):
     import json
 
     _, root, _, _ = node
     (root / "inbox/bundle.tar.gz").write_bytes(_signed(
-        _manifest(bundle_version=5),
+        _manifest(bundle_version=5, **manifest),
         {"tables/attack_technique.jsonl": b"".join(json.dumps(row).encode() + b"\n" for row in rows)},
     ))
     importer = LiteImport(CommissionedLite(root))
@@ -82,6 +86,54 @@ def test_producer_fixture_technique_primary_key(node):
         "T1110", "Brute Force", "", "T1110", "static")
 
 
+def _producer_manifest():
+    import json
+    import tarfile
+    from pathlib import Path
+
+    fixture = Path(__file__).parents[1] / "fixtures/knowledge-lite/lite.tar.gz"
+    with tarfile.open(fixture) as archive:
+        manifest = json.loads(archive.extractfile("manifest.json").read())
+        rows = archive.extractfile("tables/attack_technique.jsonl").read().splitlines()
+    return manifest, [json.loads(row) for row in rows]
+
+
+def test_citation_and_as_of_come_from_the_signed_manifest_and_the_lookup(node):
+    manifest, rows = _producer_manifest()
+    # The producer's own signed provenance block, re-signed with the test key.
+    admit_rows(node, rows, profile=manifest["profile"])
+    ref, = reading(node).refs
+    assert ref.citation == manifest["profile"]["provenance"]["attack_technique"]["dataset"]["citation"]
+    assert ref.citation.startswith("MITRE ATT&CK technique")
+    assert ref.as_of == NOW
+    as_of = lookup_context_reading(root=node[1], trust_root=node[2], technique_ids=("T1110",),
+                                   query_as_of="2026-10-18T09:00:00.987654+09:00").refs[0].as_of
+    assert as_of == "2026-10-18T00:00:00Z"
+
+
+@pytest.mark.parametrize("profile", [
+    None, {}, {"provenance": []}, {"provenance": {"attack_technique": {"dataset": {}}}},
+    {"provenance": {"attack_technique": {"dataset": {"citation": 7}}}},
+    {"provenance": {"other": {"dataset": {"citation": "not this dataset"}}}},
+])
+def test_missing_or_malformed_citation_is_empty_not_refused(node, profile):
+    admit_rows(node, [{"technique_id": "T1110", "name": "Brute Force"}],
+               **({} if profile is None else {"profile": profile}))
+    # admit_rows writes tables/attack_technique.jsonl.
+    ref, = reading(node).refs
+    assert ref.citation == ""
+    assert read_knowledge_refs([asdict(ref)]) == (ref,)
+
+
+def test_citation_is_plain_bounded_text(node):
+    citation = "<b>Cited</b> [link](https://example.test/x) " + "c" * 300
+    admit_rows(node, [{"technique_id": "T1110", "name": "Brute Force"}],
+               profile={"provenance": {"attack_technique": {"dataset": {"citation": citation}}}})
+    ref, = reading(node).refs
+    assert ref.citation.startswith("Cited link c") and len(ref.citation) == 160
+    assert "https" not in ref.citation and "<" not in ref.citation
+
+
 def test_stream_output_bound_and_names(node):
     admit_rows(node, [{"technique_id": "T1110", "name": "n" * 200}] * 30)
     result = reading(node)
@@ -129,13 +181,13 @@ def test_repin_during_iteration_withholds_context(node, monkeypatch):
     import azazel_nexus.lite_import as library
 
     admit_rows(node, [{"technique_id": "T1110", "name": "Brute Force"}])
-    original = library.iter_served
+    original = library.iter_served_with_member
 
     def changed(*args, **kwargs):
         yield from original(*args, **kwargs)
         (node[2] / "trust.json").write_text("{}")
 
-    monkeypatch.setattr(library, "iter_served", changed)
+    monkeypatch.setattr(library, "iter_served_with_member", changed)
     assert reading(node).reason_code == "trust_unreadable"
     assert reading(node).refs == ()
 
@@ -144,7 +196,7 @@ def test_client_exchange_and_empty_result(monkeypatch):
     from azazel_nexus_runtime import knowledge_client as client
 
     ref = KnowledgeRef("T1110", "Brute Force", "", "T1110", "sha256:" + "a" * 64, "static",
-                       "knowledge_lite", 5, "verified")
+                       "knowledge_lite", 5, "verified", NOW, "")
     calls = []
 
     def exchange(*args, **kwargs):
@@ -199,9 +251,9 @@ def test_stream_stops_at_sixteen_and_empty_query_still_checks_trust(node, monkey
     def rows(*args, **kwargs):
         for index in range(100):
             seen.append(index)
-            yield {"technique_id": "T1110", "name": "Brute Force"}
+            yield "tables/attack_technique.jsonl", {"technique_id": "T1110", "name": "Brute Force"}
 
-    monkeypatch.setattr(library, "iter_served", rows)
+    monkeypatch.setattr(library, "iter_served_with_member", rows)
     assert len(reading(node).refs) == 16
     assert seen == list(range(16))
     assert reading(node, ()).reason_code == "no_context"
@@ -295,14 +347,23 @@ def test_client_deadline_with_accepting_silent_server(monkeypatch):
     ('freshness', 'expired'), ('trust_check', 'unverified'),
     ('source_kind', 'model'), ('generation', True), ('generation', -1),
     ('generation', 2**63),
+    # The lookup instant: canonical UTC seconds with Z only.
+    ('as_of', '2026-10-18T00:00:00.5Z'), ('as_of', '2026-10-18T00:00:00+00:00'),
+    ('as_of', '2026-10-18T09:00:00+09:00'), ('as_of', '2026-10-18T00:00:00'),
+    ('as_of', ''), ('as_of', '2026-13-18T00:00:00Z'), ('as_of', 0),
+    # The dataset citation: bounded printable text.
+    ('citation', 'x' * 161), ('citation', 'line\nbreak'), ('citation', None),
+    ('as_of', _MISSING), ('citation', _MISSING), ('dataset', 'extra'),
 ])
 def test_provenance_revalidated_at_client_and_delivery(monkeypatch, field, value):
     from azazel_nexus.local_advisory import read_knowledge_refs
     from azazel_nexus_runtime import knowledge_client
 
     ref = KnowledgeRef('T1110', 'Brute Force', '', 'T1110', 'sha256:' + 'a' * 64,
-                       'static', 'knowledge_lite', 5, 'verified')
+                       'static', 'knowledge_lite', 5, 'verified', NOW, 'MITRE ATT&CK technique')
     row = {**asdict(ref), field: value}
+    if value is _MISSING:
+        del row[field]
     monkeypatch.setattr(knowledge_client, '_exchange',
                         lambda *a, **k: {'refs': [row], 'reason_code': 'available'})
     with pytest.raises(knowledge_client.KnowledgeUnavailable):

@@ -60,6 +60,7 @@ KNOWLEDGE_REF = {
     "summary": "Repeated authentication attempts.", "claim_id": "T1110",
     "bundle_digest": "sha256:" + "1" * 64, "freshness": "static",
     "source_kind": "knowledge_lite", "generation": 1, "trust_check": "verified",
+    "as_of": "2026-10-18T00:00:00Z", "citation": "MITRE ATT&CK technique",
 }
 
 # Independent oracle of what each fault must look like where it is consumed.

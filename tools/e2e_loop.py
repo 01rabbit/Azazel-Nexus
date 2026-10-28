@@ -229,6 +229,9 @@ def assert_observations(harness: Harness, observations: list[bytes], events: lis
     assert f"Edge would {transitions[-1]['edge_would']} (observe-only, not executed)" in status
     for ref in rows[0]["explanation"]["knowledge_refs"]:
         assert f"{ref['technique_id']} {ref['name']} [claim {ref['claim_id']}]" in status
+        # The citation's bundle, generation, freshness and lookup instant reach status.
+        assert (f"({ref['freshness']}; Knowledge Lite bundle {ref['bundle_digest_short']} "
+                f"generation {ref['generation']}; as of {ref['as_of']}") in status
     assert_private(harness, events, status)
     assert sockets(harness.root) == expected_sockets, "unexpected socket created"
     return ident

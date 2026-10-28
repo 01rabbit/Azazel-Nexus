@@ -7,7 +7,7 @@ import unicodedata
 from collections import deque
 
 from .edge_intake import ACTIONS, SEVERE_SEVERITY, _object, _shape, _text, _int, _number
-from .lite_import import TECHNIQUE_ID, read_knowledge_refs
+from .lite_import import AS_OF, TECHNIQUE_ID, as_of_text, read_knowledge_refs, short_digest
 from .local_advisory import (
     HANDOFF_NOTICE,
     MACHINE_FIELDS,
@@ -524,11 +524,27 @@ def build_recent_incident(transition, previous=None, record=None):
     return row
 
 
+#: A displayed citation: what was cited, and from which verified bundle,
+#: generation and freshness, as of which lookup instant, under which signed
+#: dataset citation. The digest is shortened: a display aid, not a check.
+CITATION_FIELDS = ("technique_id", "name", "claim_id")
+CITATION_DISPLAY_FIELDS = ("bundle_digest_short", "generation", "freshness", "as_of", "citation")
+
+
 def explanation_summary(record):
     r = read_record(record)
     refs = []
     for ref in r["knowledge_refs"][:8]:
-        citation = {k: ref[k] for k in ("technique_id", "name", "claim_id")}
+        citation = {k: ref[k] for k in CITATION_FIELDS}
+        citation.update(bundle_digest_short=short_digest(ref["bundle_digest"]),
+                        generation=ref["generation"], freshness=ref["freshness"],
+                        as_of=ref["as_of"], citation=ref["citation"])
+        try:
+            _display_name(citation["citation"])
+        except ValueError:
+            # Producer text with address or number syntax is not displayed;
+            # the rest of the citation still is.
+            citation["citation"] = ""
         try:
             _citation(citation, r["technique_ids"])
         except ValueError:
@@ -560,17 +576,45 @@ def build_recent_incidents(incidents, written_at):
     return checked
 
 
-def _citation(row, ids):
-    _shape(row, ("technique_id", "name", "claim_id"))
-    if (row["technique_id"] not in ids or row["claim_id"] != row["technique_id"]):
-        raise ValueError("recent_refused")
-    _text(row["name"], 120)
+def _display_name(text):
     # Citation names have already been validated by Knowledge. Reject address
     # syntax here as well: signed content is still untrusted display data.
     # A bare number token (a port, an integer address) is refused likewise.
-    name = unicodedata.normalize("NFKC", row["name"])
-    if not name or re.search(r"\d+(?:\.\d+){3}|(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.]*", name) or any(
+    name = unicodedata.normalize("NFKC", text)
+    if re.search(r"\d+(?:\.\d+){3}|(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.]*", name) or any(
             token.isdecimal() for token in re.split(r"[^\w]+|_", name)):
+        raise ValueError("recent_refused")
+
+
+def _citation(row, ids):
+    """Exactly the full display citation, or the legacy three-key one.
+
+    Rows written before the display fields existed (a checkpoint or a
+    `recent.json` from the previous release) still read; any other subset or
+    superset is refused.
+    """
+    if type(row) is dict and set(row) == set(CITATION_FIELDS):
+        legacy = True
+    else:
+        _shape(row, CITATION_FIELDS + CITATION_DISPLAY_FIELDS)
+        legacy = False
+    if (row["technique_id"] not in ids or row["claim_id"] != row["technique_id"]):
+        raise ValueError("recent_refused")
+    _text(row["name"], 120)
+    if not row["name"]:
+        raise ValueError("recent_refused")
+    _display_name(row["name"])
+    if legacy:
+        return
+    _text(row["citation"], 160)
+    if row["citation"]:
+        _display_name(row["citation"])
+    _int(row["generation"], 2**63 - 1)
+    if (type(row["bundle_digest_short"]) is not str
+            or not re.fullmatch(r"sha256:[0-9a-f]{12}", row["bundle_digest_short"])
+            or row["freshness"] not in {"static", "current"}
+            or type(row["as_of"]) is not str or not AS_OF.fullmatch(row["as_of"])
+            or as_of_text(row["as_of"]) != row["as_of"]):
         raise ValueError("recent_refused")
 
 

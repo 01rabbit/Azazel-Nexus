@@ -283,7 +283,13 @@ An incident whose evidence was not all stored is marked
 fixed recovery hint, last-attempt M.I.O./Knowledge availability and audit drops.
 The operator sees up to five recent pseudonymous incidents, severity/count,
 technique ids, a sanitized explanation summary and validated citation fields,
-for example `T1110 Brute Force [claim T1110]`. Every action reads
+for example `T1110 Brute Force [claim T1110] (static; Knowledge Lite bundle
+sha256:0123456789ab generation 7; as of 2026-10-18T00:00:00Z; source: MITRE
+ATT&CK technique)`: freshness, the shortened bundle digest, generation, the
+lookup instant and the bundle's dataset citation (`source: not declared` when
+it has none; a citation with address or number syntax is not shown). Rows
+written before these fields existed read `(bundle, generation and lookup time
+not recorded)`. Every action reads
 `Edge would isolate (observe-only, not executed)`; a closed incident only means
 the observation group ended. Missing or malformed recent data is independently
 unavailable. No address or raw attacker text is rendered from loop snapshots.

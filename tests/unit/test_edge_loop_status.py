@@ -440,3 +440,21 @@ def test_inconsistent_snapshot_rows_are_refused(tmp_path, monkeypatch, change):
                         for k, v in change.items()})
     raw = json.dumps(recent).encode()
     assert read_recent_incidents(raw) is None
+
+
+def test_citation_source_digest_generation_and_as_of_are_rendered(tmp_path, monkeypatch):
+    _, _, recent = fixtures(tmp_path, monkeypatch)
+    refs = recent["incidents"][0]["explanation"]["knowledge_refs"]
+    refs.append({"technique_id": "T1059", "name": "Shell", "claim_id": "T1059",
+                 "bundle_digest_short": "sha256:0123456789ab", "generation": 7,
+                 "freshness": "static", "as_of": "2026-10-18T00:00:00Z",
+                 "citation": "MITRE ATT&CK technique"})
+    refs.append({**refs[1], "name": "Unix Shell", "citation": "", "freshness": "current"})
+    runtime_paths.incident_recent_path().write_text(json.dumps(recent))
+    text = render()
+    assert ("T1059 Shell [claim T1059] (static; Knowledge Lite bundle sha256:0123456789ab "
+            "generation 7; as of 2026-10-18T00:00:00Z; source: MITRE ATT&CK technique)") in text
+    assert "T1059 Unix Shell [claim T1059] (current; " in text and "source: not declared" in text
+    # A row written before these fields existed says so instead of inventing them.
+    assert ("T1059 Command and Scripting Interpreter [claim T1059] "
+            "(bundle, generation and lookup time not recorded)") in text

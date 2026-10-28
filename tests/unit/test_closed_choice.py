@@ -218,7 +218,8 @@ def test_knowledge_stays_separate_from_model_and_situation_facts(frame):
     from azazel_nexus.lite_import import KnowledgeRef
 
     ref = KnowledgeRef('T1110.003', 'Reference name', 'Reference-only marker',
-                       'T1110.003', 'sha256:' + 'a' * 64, 'static', 'knowledge_lite', 5, 'verified')
+                       'T1110.003', 'sha256:' + 'a' * 64, 'static', 'knowledge_lite', 5, 'verified',
+                       '2026-10-18T00:00:00Z', 'MITRE ATT&CK technique')
     prompts = []
     def infer(request, **kwargs):
         prompts.append(request.prompt_messages)
