@@ -287,11 +287,14 @@ for example `T1110 Brute Force [claim T1110] (static; Knowledge Lite bundle
 sha256:0123456789ab generation 7; as of 2026-10-18T00:00:00Z; source: MITRE
 ATT&CK technique)`: freshness, the shortened bundle digest, generation, the
 lookup instant and the bundle's dataset citation. Versions and numbers in a
-citation are shown; a citation with address syntax (an IPv4/IPv6 literal or a
-host:port form) is withheld and reads `source: declared, withheld (address or
-path syntax)`, distinct from `source: not declared`; the status read model
-withholds a citation that names a path the same way (`withheld: ["citation"]`
-on that reference), and the text screen is rendered from that checked copy. Citations that were recorded
+citation are shown; a citation with an IPv4 literal (four octets 0-255 not
+inside a longer token), a URL form (`scheme://`, a leading `//`), an
+IPv6-like colon group or a host:port form is withheld and reads `source:
+declared, withheld (possible address or path form)`, distinct from `source:
+not declared`. The colon rules also withhold some harmless text (`12:30:45`,
+`Revision:2024`), hence "possible". The status read model withholds a
+citation that names a path the same way (`withheld: ["citation"]` on that
+reference), and the text screen is rendered from that checked copy. Citations that were recorded
 but not shown (eight at most per incident, a per-row byte bound, an unsafe
 name) are counted: `N more Knowledge citation(s) recorded, not shown`. The
 Knowledge daemon's own 60 KiB reply trim only removes references beyond the

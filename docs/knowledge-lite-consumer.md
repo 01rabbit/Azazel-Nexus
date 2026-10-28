@@ -650,9 +650,31 @@ root-only `/etc/azazel/bootstrap`, is bound to one boot and exists only in the
 administrator-managed time mode, and `azknowledge` must not read it.
 
 Recovery after a clock that once ran ahead: correct the clock first, then, as
-root, remove `clock-floor.json` and restart the unit. This is local trust; the
-floor protects against a clock moved backwards, not against root. None of this
-changes Edge readiness, leases, enforcement or deterministic authority.
+root, remove `clock-floor.json` and restart the unit. The daemon then records
+`knowledge.clock_floor_created` in its `events.jsonl` -- with cause
+`absent_after_use`, because the leaf already holds its other state -- so a
+removal is visible afterwards; cause `initial` appears only for a first start
+on an empty leaf. Any recreation with `absent_after_use` that no administrator
+performed is worth investigating. This is local trust; the floor protects
+against a clock moved backwards, not against root. None of this changes Edge
+readiness, leases, enforcement or deterministic authority.
+
+**Limit: snapshot restore.** A VM or disk snapshot restored to an earlier
+point rolls `clock-floor.json` back with the rest of the state tree, so the
+floor agrees with the restored clock and rows that expired after the snapshot
+can be served again. The floor does not defend against that; only an anchor
+outside the restored storage could.
+
+**Storage.** The floor is written with fsync (file, then directory) at most
+once per second while requests arrive. If it cannot be written -- for example
+the filesystem is full -- Knowledge Lite is `unavailable` / `state_untrusted`,
+static reference included, until it can be written again.
+
+**Acceptance on target hardware (not yet measured).** On the deployment's
+storage (for example an SD card or eMMC), measure the floor's fsync latency
+and the bytes written per day under a realistic request rate, and record both
+with the device model. CI and VM runs do not measure wear or latency of the
+real medium.
 
 Static references can make the state `available` while freshness is `stale`
 or `absent`; the existing three-axis bundle rules still apply. No claim body,

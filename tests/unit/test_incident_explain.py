@@ -540,3 +540,38 @@ def test_strict_reader_bounds_the_omitted_count(omitted, ok):
     v = _recent_with(dict(DISPLAY_REF))
     v["incidents"][0]["explanation"]["knowledge_refs_omitted"] = omitted
     assert (read_recent_incidents(json.dumps(v).encode()) is not None) is ok
+
+
+@pytest.mark.parametrize("citation,shown", [
+    # Shown: versions, years, numbers, and dotted numbers that are not IPv4.
+    ("MITRE ATT&CK v14.1 Enterprise", True),
+    ("CISA KEV catalogue 2024", True),
+    ("Feed 4444", True),
+    ("Version 1.2.3", True),
+    ("999.1.1.1 is not an address", True),
+    ("build a1.2.3.4", True),
+    ("1.2.3.4b release", True),
+    ("azazel-knowledge intel.attack_technique", True),
+    # Withheld: IPv4, URL forms, network paths, IPv6, host:port.
+    ("from 192.0.2.1", False),
+    ("0.0.0.0 bind", False),
+    ("255.255.255.255", False),
+    ("1.2.3.4.5 dotted", False),
+    ("fetched over sftp://feed.example", False),
+    ("ftp://mirror.example/pub", False),
+    ("file:///var/lib/x", False),
+    ("//fileserver/share", False),
+    ("see //host", False),
+    ("fe80::1", False),
+    ("2001:db8::7", False),
+    ("feed.example:8443", False),
+    # Known false positives, withheld as a possible address form.
+    ("Revision:2024", False),
+    ("built 12:30:45", False),
+])
+def test_citation_display_table(citation, shown):
+    from azazel_nexus.incident_explain import explanation_summary
+
+    ref, = explanation_summary(_cited({**LEDGER_REF, "citation": citation}))["knowledge_refs"]
+    assert ref["citation_state"] == ("shown" if shown else "withheld")
+    assert ref["citation"] == (citation if shown else "")

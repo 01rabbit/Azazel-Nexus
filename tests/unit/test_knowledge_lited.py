@@ -280,7 +280,8 @@ def test_lookup_response_and_audit(node):
     result = service.handle(request)
     assert result["refs"][0]["claim_id"] == "T1110"
     assert result["reason_code"] == "available"
-    assert events == [{"event_type": "knowledge.lookup", "technique_ids": ["T1110"], "count": 1}]
+    assert events == [{"event_type": "knowledge.clock_floor_created", "cause": "initial"},
+                      {"event_type": "knowledge.lookup", "technique_ids": ["T1110"], "count": 1}]
     assert "Private context" not in repr(events)
     assert snapshot(root, trust) == before
     (trust / "trust.json").unlink()
@@ -306,7 +307,8 @@ def test_lookup_json_escape_bound(node):
     assert len(result["refs"]) >= 8
     assert result["refs"][0]["citation"] == "😀" * 160
     assert len(json.dumps({"ok": True, "result": result}).encode()) <= 60 * 1024
-    assert events[0]["count"] == len(result["refs"])
+    lookups = [e for e in events if e["event_type"] == "knowledge.lookup"]
+    assert lookups[0]["count"] == len(result["refs"])
 
 
 def test_read_listener_only_registers_lookup():

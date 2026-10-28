@@ -2,8 +2,8 @@
 
 `knowledge-lited` evaluates each dated row's `agg_next_expiry` against its own
 `query_as_of`, which is the wall clock. A wall clock that moves backwards --
-an RTC reset, a hostile or mistaken time step, a VM restored from a snapshot --
-would make rows that had already expired look current again. This floor is
+an RTC reset, a hostile or mistaken time step -- would make rows that had
+already expired look current again. This floor is
 the latest wall-clock instant the daemon has already observed; an observation
 earlier than it is a regression, and the daemon then serves nothing dated or
 static, with the existing fixed reason `state_untrusted`.
@@ -43,7 +43,16 @@ clock moved back while nobody asked is detected only against the last
 answered instant.
 
 This is local trust: `azknowledge` or root can delete the file. It protects
-against a clock moved backwards, not against the node's administrator.
+against a clock moved backwards, not against the node's administrator. A
+removed floor is not silent: the next creation is reported (`created`), with
+cause `absent_after_use` when this process had already kept a floor or the
+leaf already holds other state.
+
+*Not a defence against snapshot restore.* A VM or disk snapshot restored to an
+earlier point rolls this file back with everything else in the same state
+tree; the floor then agrees with the restored clock. Rows that expired after
+the snapshot was taken can be served again. Only an anchor outside the
+restored storage (for example signed material's own time) could detect that.
 """
 
 from __future__ import annotations
@@ -110,6 +119,9 @@ class ClockFloor:
         self.directory = Path(directory)
         self.owner = os.geteuid() if owner is None else owner
         self._seen: datetime | None = None
+        #: Set by `admit` when it created the file: `initial` or
+        #: `absent_after_use`; otherwise None. Read by the caller for audit.
+        self.created: str | None = None
 
     def admit(self, query_as_of: str) -> bool:
         """True if `query_as_of` is not behind the floor (and the floor is raised).
@@ -117,6 +129,7 @@ class ClockFloor:
         False is a regression. `FloorUnavailable` means the floor could not be
         read or kept; the caller treats both as "serve nothing".
         """
+        self.created = None
         now = _instant(query_as_of)
         stored = self._read()
         floor = max((m for m in (stored, self._seen) if m is not None), default=None)
@@ -125,8 +138,25 @@ class ClockFloor:
         self._seen = now
         # Persist before answering whenever this reaches a later whole second.
         if stored is None or now.replace(microsecond=0) - stored >= timedelta(seconds=PERSIST_STEP_S):
+            cause = None
+            if stored is None:
+                cause = "absent_after_use" if (self._seen_before or self._other_state()) else "initial"
             self._write(now)
+            self.created = cause
+        self._seen_before = True
         return True
+
+    _seen_before = False
+
+    def _other_state(self) -> bool:
+        """Whether the leaf already holds anything besides a stale partial."""
+        directory = self._open_directory()
+        try:
+            return any(name != _PARTIAL for name in os.listdir(directory))
+        except OSError:
+            raise FloorUnavailable("floor directory unreadable") from None
+        finally:
+            os.close(directory)
 
     # -- storage -----------------------------------------------------------
 
