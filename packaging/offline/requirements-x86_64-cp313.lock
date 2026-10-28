@@ -2,18 +2,46 @@
 # offline wheelhouse (tools/build_wheelhouse.py).
 #
 # The names and versions MUST equal runtime/pyproject.toml's `dependencies`
-# (azazel-nexus itself is built from source, not downloaded); the library
-# distribution declares none. tests/unit/test_offline_install_bundle.py holds
-# the two together, and tools/offline_bundle.py refuses at install any
-# third-party wheel whose name, version and sha256 are not listed here.
-# uv.lock is not used because it does not cover the runtime distribution.
+# plus the library's bundled `fabric` extra and its closure as uv.lock
+# resolves it (ADR-0004; azazel-nexus itself is built from source, not
+# downloaded). tests/unit/test_offline_install_bundle.py holds them together,
+# and tools/offline_bundle.py refuses at install any third-party wheel whose
+# name, version and sha256 are not listed here, and any bundle that lacks one
+# that is.
 #
-# Each hash is the one PyPI publishes for the single wheel file named in the
-# comment above it. pip refuses any other file under --require-hashes.
+# Each PyPI hash is the one PyPI publishes (and uv.lock records) for the
+# single wheel file named in the comment above it. pip refuses any other file
+# under --require-hashes.
 #
+# azazel-fabric has no published wheel. Its hash is that of the wheel
+# tools/build_wheelhouse.py builds from the commit its tag names (SOURCE_BUILDS)
+# with the pinned backend, SOURCE_DATE_EPOCH and umask 022 fixed; the build is
+# refused unless it reproduces this hash (ADR-0004 lists what is fixed and
+# what is not). Observed on Debian 13 CPython 3.13.5, pip 25.1.1, setuptools
+# 84.0.0, x86_64 (Rosetta) and aarch64 containers, 2026-10-28.
+#
+# annotated_types-0.8.0-py3-none-any.whl
+annotated-types==0.8.0 \
+    --hash=sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0
+# azazel_fabric-0.9.0rc5-py3-none-any.whl
+# built from https://github.com/01rabbit/Azazel-Fabric.git v0.9.0rc5 = 450d9502884ba533653210056a6fb85012b96b84
+azazel-fabric==0.9.0rc5 \
+    --hash=sha256:5eb6593ee6824400bc5a00c3e5c799abb2f88def6273a2486c8b88959c908eda
 # dbus_next-0.2.3-py3-none-any.whl
 dbus-next==0.2.3 \
     --hash=sha256:58948f9aff9db08316734c0be2a120f6dc502124d9642f55e90ac82ffb16a18b
+# pydantic-2.13.5-py3-none-any.whl
+pydantic==2.13.5 \
+    --hash=sha256:346a034f080da3755d8e9cb5e00e8b07de1d39e4f6e2c87d8ab7cafa0b269a73
+# pydantic_core-2.46.5-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+pydantic-core==2.46.5 \
+    --hash=sha256:6f7b393a8b3da82f5c1fc0751e6d01ac6c55b93c18226a60bdfba4a724efafd1
 # pyyaml-6.0.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
 PyYAML==6.0.3 \
     --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6
+# typing_extensions-4.16.0-py3-none-any.whl
+typing-extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+# typing_inspection-0.4.4-py3-none-any.whl
+typing-inspection==0.4.4 \
+    --hash=sha256:65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147

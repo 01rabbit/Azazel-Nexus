@@ -810,6 +810,21 @@ def check_wheels_against_lock(
     return checked
 
 
+def check_lock_is_carried(checked: list[dict[str, str]], lock: dict[str, list[str]]) -> None:
+    """Refuse a bundle (or wheelhouse) that lacks a wheel the reviewed lock pins.
+
+    ``check_wheels_against_lock`` says what is carried is pinned; this says
+    what is pinned is carried. Without it a bundle lacking, say, the Fabric
+    wheel would verify and install cleanly and then refuse every activation
+    pass that needs commissioning evidence (ADR-0004). ``verify``,
+    ``recheck`` (and so ``install``) and ``build_offline_bundle`` all call it.
+    """
+
+    missing = sorted(set(lock) - {item["requirement"] for item in checked})
+    if missing:
+        raise BundleRefused(f"the bundle does not carry {missing}, which the reviewed lock pins")
+
+
 def wheel_requirements(document: dict) -> str:
     """A ``--require-hashes`` requirements file naming exactly the bundled wheels."""
 
@@ -1288,7 +1303,9 @@ def verify_extracted(
 
     document = extracted.manifest
     root = extracted.root
-    wheels = check_wheels_against_lock(document, reviewed_pins() if pins is None else pins)
+    pins = reviewed_pins() if pins is None else pins
+    wheels = check_wheels_against_lock(document, pins)
+    check_lock_is_carried(wheels, pins[0])
     slots: dict[str, Any] = {}
     if document["slots"]["edge-package"] == "filled":
         slots["edge-package"] = verify_edge_slot(root / "edge")
@@ -1391,7 +1408,8 @@ def recheck_tree(
     if hashlib.sha256(raw).hexdigest() != expected_manifest_sha256:
         raise BundleRefused("MANIFEST.json is not the manifest extraction verified")
     document = load_manifest(raw, limits)
-    check_wheels_against_lock(document, reviewed_pins() if pins is None else pins)
+    pins = reviewed_pins() if pins is None else pins
+    check_lock_is_carried(check_wheels_against_lock(document, pins), pins[0])
     declared = {entry["path"]: entry for entry in document["artifacts"]}
     found: set[str] = set()
     for directory, _dirnames, filenames in os.walk(root):
@@ -1567,7 +1585,7 @@ def _install_verified(extracted: Extracted, report: dict, into: Path, venv: Path
     _run([str(venv_python), "-I", "-m", "pip", "check", "--disable-pip-version-check"])
     _run([str(venv_python), "-I", "-c",
           "import azazel_nexus, azazel_nexus_runtime, azazel_nexus_runtime._bootstrap_deadline, "
-          "yaml, dbus_next"])
+          "yaml, dbus_next, pydantic_core._pydantic_core, azazel_fabric.provisioning_contracts"])
     report["install"] = {
         "venv": str(venv),
         "distributions": sorted(

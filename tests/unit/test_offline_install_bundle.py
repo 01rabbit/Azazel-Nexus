@@ -171,7 +171,28 @@ def _deb(path: Path, *, package: str = "iproute2", version: str = "6.15.0-1",
 
 
 @pytest.fixture
-def built(tmp_path: Path):
+def empty_third_party_lock(monkeypatch):
+    """Default reviewed pins: the real Nexus versions and no third-party entry.
+
+    The real lock pins wheels the fake bundles cannot reproduce, and
+    ``verify`` refuses a bundle that lacks a locked wheel (ADR-0004). An
+    explicit root still reads that root, as before.
+    """
+
+    real = offline_bundle.reviewed_pins
+
+    def pins(root: Path | None = None):
+        if root is not None:
+            return real(root)
+        return {}, real()[1]
+
+    monkeypatch.setattr(offline_bundle, "reviewed_pins", pins)
+
+
+@pytest.fixture
+def built(tmp_path: Path, empty_third_party_lock):
+    """A bundle of the two fake Nexus wheels."""
+
     root = _repo(tmp_path / "repo")
     commit = repository_identity(root)["commit"]
     wheelhouse = _wheelhouse(tmp_path / "wheelhouse", commit)
@@ -501,7 +522,7 @@ def test_the_hook_never_authenticates_today():
 # -- slots ------------------------------------------------------------------
 
 
-def test_an_edge_package_slot_is_verified_with_the_edge_checks(tmp_path, monkeypatch):
+def test_an_edge_package_slot_is_verified_with_the_edge_checks(tmp_path, monkeypatch, empty_third_party_lock):
     root = _repo(tmp_path / "repo")
     wheelhouse = _wheelhouse(tmp_path / "wheelhouse", repository_identity(root)["commit"])
     edge = _edge_package(tmp_path / "edge-in")
@@ -550,7 +571,7 @@ def test_an_edge_slot_with_an_extra_file_is_refused(tmp_path):
         offline_bundle.verify_edge_slot(edge)
 
 
-def test_deb_slot_records_and_rechecks_control_fields(tmp_path):
+def test_deb_slot_records_and_rechecks_control_fields(tmp_path, empty_third_party_lock):
     root = _repo(tmp_path / "repo")
     wheelhouse = _wheelhouse(tmp_path / "wheelhouse", repository_identity(root)["commit"])
     debs = tmp_path / "debs"
@@ -598,7 +619,7 @@ def test_a_foreign_architecture_deb_is_refused(tmp_path):
                              debs=debs, deb_source="test snapshot")
 
 
-def test_model_and_knowledge_slots_are_carried_not_admitted(tmp_path):
+def test_model_and_knowledge_slots_are_carried_not_admitted(tmp_path, empty_third_party_lock):
     root = _repo(tmp_path / "repo")
     wheelhouse = _wheelhouse(tmp_path / "wheelhouse", repository_identity(root)["commit"])
     model = tmp_path / "model.gguf"
@@ -618,14 +639,15 @@ def test_model_and_knowledge_slots_are_carried_not_admitted(tmp_path):
 
 def test_the_wheel_lock_pins_exactly_what_the_pyproject_files_declare():
     lock = build_wheelhouse.parse_lock(ROOT / build_wheelhouse.LOCK)
-    assert set(lock) == build_wheelhouse.declared_runtime_dependencies(ROOT)
+    assert set(lock) == build_wheelhouse.bundled_requirements(ROOT)
+    assert build_wheelhouse.declared_runtime_dependencies(ROOT) < set(lock)
     assert all(len(hashes) == 1 for hashes in lock.values())
 
 
 def test_each_locked_wheel_named_in_the_lock_fits_the_target():
     text = (ROOT / build_wheelhouse.LOCK).read_text(encoding="utf-8")
     named = [line.strip("# \n") for line in text.splitlines() if line.strip().endswith(".whl")]
-    assert len(named) == 2
+    assert len(named) == 8
     for filename in named:
         assert offline_bundle.wheel_fits_target(filename, TARGET), filename
 
@@ -772,13 +794,22 @@ def test_the_cli_reports_unauthenticated_on_success_and_refusal(built, tmp_path,
 
 
 def test_the_cli_runs_as_an_isolated_script_against_a_bundle(built, tmp_path):
+    """The isolated script reads the real reviewed lock, which no fake bundle satisfies.
+
+    So it gets as far as the completeness check (ADR-0004) and refuses there,
+    in its structured form; acceptance is covered in-process above.
+    """
+
     result = subprocess.run(
         [sys.executable, "-I", str(ROOT / "tools" / "offline_bundle.py"), "verify",
          "--bundle", str(built[2]), "--into", str(tmp_path / "out")],
         capture_output=True, text=True, check=False, timeout=60,
     )
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout)["bundle_authenticated"] is False
+    assert result.returncode == 2, result.stdout
+    refusal = json.loads(result.stderr)
+    assert refusal["bundle_authenticated"] is False
+    assert "does not carry" in refusal["refused"] and "azazel-fabric==0.9.0rc5" in refusal["refused"]
+    assert not (tmp_path / "out").exists()
 
 
 def test_gzip_and_tar_noise_is_not_read_as_a_manifest(tmp_path):
@@ -829,7 +860,11 @@ def test_an_own_wheel_at_another_version_is_refused(built, tmp_path):
 
 def test_the_reviewed_lock_is_the_real_one():
     lock, versions = offline_bundle.reviewed_pins()
-    assert set(lock) == {"dbus-next==0.2.3", "pyyaml==6.0.3"}
+    assert set(lock) == {
+        "dbus-next==0.2.3", "pyyaml==6.0.3", "azazel-fabric==0.9.0rc5", "pydantic==2.13.5",
+        "pydantic-core==2.46.5", "annotated-types==0.8.0", "typing-extensions==4.16.0",
+        "typing-inspection==0.4.4",
+    }
     assert versions == {"azazel-nexus": "0.0.1.dev0", "azazel-nexus-runtime": "0.0.1.dev0"}
 
 
@@ -1454,3 +1489,228 @@ def test_exceeding_the_gzip_cap_is_refused_in_bounded_memory(built, tmp_path):
     report = _vmhwm_extract(tmp_path, padded)
     assert "decompresses beyond" in report["outcome"]
     assert report["maxrss_kib"] < 64 * 1024, report
+
+
+# -- Fabric in the offline wheelhouse (ADR-0004) -------------------------------
+
+
+def _uv_lock_packages() -> dict[str, dict]:
+    import tomllib
+
+    lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    return {offline_bundle.canonical_name(p["name"]): p for p in lock["package"]}
+
+
+def test_commissioned_activation_needs_a_fabric_the_offline_lock_carries(monkeypatch):
+    """The defect ADR-0004 closes, as a regression test.
+
+    Every production activation pass requires commissioning evidence, and the
+    evidence loader projects the current hardware through pinned Fabric, which
+    refuses without it. Before ADR-0004 the offline lock carried neither Fabric
+    nor pydantic, so a node installed from the bundle could never pass.
+    """
+
+    from azazel_nexus import fabric_boundary
+
+    activated = (ROOT / "runtime/src/azazel_nexus_runtime/activated.py").read_text(encoding="utf-8")
+    loader = (ROOT / "runtime/src/azazel_nexus_runtime/commissioning_input.py").read_text(encoding="utf-8")
+    assert "require_commissioning_evidence=True" in activated
+    assert "commissioning_evidence=load_commissioning_evidence" in activated
+    assert "current = project_hardware_inventory(" in loader
+
+    monkeypatch.setattr(fabric_boundary, "_import_fabric", lambda: (None, "absent"))
+    with pytest.raises(fabric_boundary.CommissioningRecordUnavailable, match="pinned Fabric is required"):
+        fabric_boundary.project_hardware_inventory(
+            readouts=(), platform={}, storage_devices=(), limitations=(), node_id="n",
+            inventory_id="i", collected_at="2026-10-13T00:00:00Z")
+
+    lock = build_wheelhouse.parse_lock(ROOT / build_wheelhouse.LOCK)
+    assert f"azazel-fabric=={fabric_boundary.FABRIC_PIN.lstrip('v')}" in lock
+    for name in ("pydantic", "pydantic-core"):
+        assert any(key.partition("==")[0] == name for key in lock), name
+
+
+def test_the_fabric_source_build_is_the_pin_pyproject_uv_lock_and_the_boundary_name():
+    from azazel_nexus.fabric_boundary import FABRIC_PIN
+
+    import tomllib
+
+    build = build_wheelhouse.SOURCE_BUILDS["azazel-fabric"]
+    assert build["tag"] == FABRIC_PIN and build["version"] == FABRIC_PIN.lstrip("v")
+    assert len(build["commit"]) == 40
+    extras = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["optional-dependencies"]
+    assert extras["fabric"] == [f"azazel-fabric @ git+{build['repository']}@{build['tag']}"]
+    package = _uv_lock_packages()["azazel-fabric"]
+    assert package["source"] == {"git": f"{build['repository']}?rev={build['tag']}#{build['commit']}"}
+    assert build_wheelhouse.BUNDLED_EXTRAS == ("fabric",)
+
+
+def test_each_pypi_wheel_hash_in_the_lock_is_one_uv_lock_records():
+    packages = _uv_lock_packages()
+    lock = build_wheelhouse.parse_lock(ROOT / build_wheelhouse.LOCK)
+    closure = build_wheelhouse.bundled_extra_closure(ROOT)
+    assert closure == {
+        "azazel-fabric==0.9.0rc5", "pydantic==2.13.5", "pydantic-core==2.46.5",
+        "annotated-types==0.8.0", "typing-extensions==4.16.0", "typing-inspection==0.4.4",
+    }
+    for requirement in closure - {"azazel-fabric==0.9.0rc5"}:
+        name, _, version = requirement.partition("==")
+        assert packages[name]["version"] == version
+        recorded = {w["hash"].removeprefix("sha256:") for w in packages[name]["wheels"]}
+        (digest,) = lock[requirement]
+        assert digest in recorded, requirement
+
+
+def _closure_root(tmp_path: Path) -> Path:
+    (tmp_path / "runtime").mkdir()
+    for name in ("pyproject.toml", "uv.lock", "runtime/pyproject.toml"):
+        (tmp_path / name).write_text((ROOT / name).read_text(encoding="utf-8"), encoding="utf-8")
+    return tmp_path
+
+
+@pytest.mark.parametrize("path, old, new, match", [
+    ("pyproject.toml", "Azazel-Fabric.git@v0.9.0rc5", "Azazel-Fabric.git@main", "not a pinned source build"),
+    ("uv.lock", "#450d9502884ba533653210056a6fb85012b96b84", "#" + "0" * 40, "does not resolve azazel-fabric"),
+    ("uv.lock", '    { name = "pydantic-core" },\n', '    { name = "pydantic-core", marker = "x" },\n', "markers"),
+    ("uv.lock", 'name = "pydantic"\nversion = "2.13.5"\nsource = { registry = "https://pypi.org/simple" }',
+     'name = "pydantic"\nversion = "2.13.5"\nsource = { git = "https://example.invalid/pydantic.git" }',
+     "not PyPI"),
+    ("uv.lock", 'name = "typing-extensions"\nversion = "4.16.0"\nsource = { registry = "https://pypi.org/simple" }',
+     'name = "typing-extensions"\nversion = "4.16.0"\nsource = { url = "https://example.invalid/te.whl" }',
+     "not PyPI"),
+])
+def test_the_extra_closure_refuses_a_drifted_pin(tmp_path, path, old, new, match):
+    root = _closure_root(tmp_path)
+    text = (root / path).read_text(encoding="utf-8")
+    assert old in text
+    (root / path).write_text(text.replace(old, new, 1), encoding="utf-8")
+    with pytest.raises(ValueError, match=match):
+        build_wheelhouse.bundled_extra_closure(root)
+
+
+def test_a_wheelhouse_without_a_locked_wheel_cannot_become_a_bundle(tmp_path):
+    root = _repo(tmp_path / "repo")
+    wheelhouse = _wheelhouse(tmp_path / "wheelhouse", repository_identity(root)["commit"])
+    (root / "packaging/offline/requirements-x86_64-cp313.lock").write_text(
+        "azazel-fabric==0.9.0rc5 --hash=sha256:" + "1" * 64 + "\n", encoding="utf-8")
+    with pytest.raises(BundleRefused, match="does not carry"):
+        build_install_bundle(root, tmp_path / "b.tar.gz", wheelhouse=wheelhouse)
+    assert not (tmp_path / "b.tar.gz").exists()
+
+
+def test_a_recheck_refuses_a_tree_whose_bundle_lacks_a_locked_wheel(built, tmp_path):
+    extracted, report = offline_bundle.extract_and_verify(built[2], tmp_path / "out")
+    _lock, versions = offline_bundle.reviewed_pins()
+    with pytest.raises(BundleRefused, match="does not carry"):
+        offline_bundle.recheck_tree(tmp_path / "out", expected_manifest_sha256=report["manifest_sha256"],
+                                    pins=({"azazel-fabric==0.9.0rc5": ["0" * 64]}, versions))
+
+
+def test_the_builder_children_run_at_umask_022_whatever_the_caller_has(tmp_path):
+    """The Fabric wheel hash depends on the modes setuptools copies with (review M1)."""
+
+    probe = ("import os, sys; path = sys.argv[1]; open(path, 'w').close(); "
+             "print(oct(os.umask(0)), oct(os.stat(path).st_mode & 0o777))")
+    previous = os.umask(0o077)
+    try:
+        out = build_wheelhouse._run([sys.executable, "-I", "-c", probe, str(tmp_path / "f")])
+        git_out = build_wheelhouse._run([sys.executable, "-I", "-c", probe, str(tmp_path / "g")],
+                                        env=build_wheelhouse._git_env())
+    finally:
+        os.umask(previous)
+    assert out.split() == ["0o22", "0o644"]
+    assert git_out.split() == ["0o22", "0o644"]
+
+
+def test_a_source_built_wheel_that_did_not_reproduce_the_lock_is_refused():
+    build = build_wheelhouse.SOURCE_BUILDS["azazel-fabric"]
+    lock = build_wheelhouse.parse_lock(ROOT / build_wheelhouse.LOCK)
+    filename = "azazel_fabric-0.9.0rc5-py3-none-any.whl"
+    (locked,) = lock["azazel-fabric==0.9.0rc5"]
+    assert build["commit"] in build_wheelhouse.source_build_origin(filename, locked, lock)
+    with pytest.raises(ValueError, match="did not reproduce"):
+        build_wheelhouse.source_build_origin(filename, "a" * 64, lock)
+    with pytest.raises(ValueError, match="not a pinned source build"):
+        build_wheelhouse.source_build_origin("azazel_fabric-0.9.0rc6-py3-none-any.whl", locked, lock)
+
+
+def test_the_fabric_tree_is_archived_by_commit_with_normalised_modes(tmp_path, monkeypatch):
+    build = build_wheelhouse.SOURCE_BUILDS["azazel-fabric"]
+    calls = []
+
+    def fake_run(argv, *, env=None):
+        calls.append(argv)
+        if "rev-parse" in argv:
+            return build["commit"] + "\n"
+        if "archive" in argv:
+            output = next(a for a in argv if a.startswith("--output="))[len("--output="):]
+            with tarfile.open(output, "w") as archive:
+                data = b"[project]\n"
+                info = tarfile.TarInfo("pyproject.toml")
+                info.size, info.mode = len(data), 0o644
+                archive.addfile(info, io.BytesIO(data))
+        return ""
+
+    monkeypatch.setattr(build_wheelhouse, "_run", fake_run)
+    tree = build_wheelhouse.fetch_source_build("azazel-fabric", tmp_path)
+    assert (tree / "pyproject.toml").read_bytes() == b"[project]\n"
+    (archive,) = [argv for argv in calls if "archive" in argv]
+    assert archive[-1] == build["commit"] and build["tag"] not in archive
+    assert all("tar.umask=0022" in argv for argv in calls)
+    assert "tar.umask=0022" in archive and archive[archive.index("tar.umask=0022") - 1] == "-c"
+
+
+def test_the_lock_comment_names_the_source_build_pin():
+    text = (ROOT / build_wheelhouse.LOCK).read_text(encoding="utf-8")
+    for name, build in build_wheelhouse.SOURCE_BUILDS.items():
+        assert f"# built from {build['repository']} {build['tag']} = {build['commit']}\n" in text, name
+        assert f"\n{name}=={build['version']} \\\n" in text
+
+
+def test_a_fabric_tag_that_moved_off_the_pinned_commit_is_refused(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(argv, *, env=None):
+        calls.append(argv)
+        return "1" * 40 + "\n" if "rev-parse" in argv else ""
+
+    monkeypatch.setattr(build_wheelhouse, "_run", fake_run)
+    with pytest.raises(ValueError, match="not the pinned"):
+        build_wheelhouse.fetch_source_build("azazel-fabric", tmp_path)
+    assert not any("archive" in argv for argv in calls), "a moved tag was archived"
+    clone = calls[0]
+    assert "--bare" in clone and clone[-2] == build_wheelhouse.SOURCE_BUILDS["azazel-fabric"]["repository"]
+
+
+def test_the_git_steps_read_no_user_or_system_configuration():
+    env = build_wheelhouse._git_env()
+    assert env["GIT_CONFIG_NOSYSTEM"] == "1" and env["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_a_lock_entry_the_bundle_does_not_carry_is_refused():
+    checked = [{"requirement": "dbus-next==0.2.3", "pinned_by": "x"}]
+    offline_bundle.check_lock_is_carried(checked, {"dbus-next==0.2.3": ["0" * 64]})
+    with pytest.raises(BundleRefused, match="azazel-fabric==0.9.0rc5"):
+        offline_bundle.check_lock_is_carried(
+            checked, {"dbus-next==0.2.3": ["0" * 64], "azazel-fabric==0.9.0rc5": ["1" * 64]})
+
+
+def test_install_refuses_a_bundle_without_the_locked_fabric_before_any_venv(built, tmp_path, monkeypatch):
+    import platform
+
+    monkeypatch.setattr(offline_bundle, "_require_root", lambda: None)
+    target = offline_bundle.TARGETS[build_wheelhouse.TARGET]
+    monkeypatch.setitem(target, "architecture", platform.machine())
+    monkeypatch.setitem(target, "python_version", tuple(sys.version_info[:2]))
+    if sys.implementation.name != "cpython":
+        pytest.skip("the interpreter probe expects CPython")
+    _lock, versions = offline_bundle.reviewed_pins()
+    pins = ({"azazel-fabric==0.9.0rc5": ["0" * 64]}, versions)
+    with pytest.raises(BundleRefused, match="does not carry"):
+        offline_bundle.install(built[2], tmp_path / "out", tmp_path / "venv", Path(sys.executable), pins=pins)
+    with pytest.raises(BundleRefused, match="does not carry"):
+        offline_bundle.extract_and_verify(built[2], tmp_path / "v", pins=pins)
+    assert not (tmp_path / "v").exists()
+    assert not (tmp_path / "venv").exists()
+    assert not (tmp_path / "out").exists(), "a refused install left its extracted tree"
