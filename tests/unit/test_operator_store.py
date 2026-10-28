@@ -112,15 +112,17 @@ def test_public_loader_has_no_path_or_owner_override():
         load_operator_trust(path="/tmp/untrusted", owner=os.getuid())
 
 
-def test_public_loader_sanitizes_open_failures(monkeypatch):
+def test_public_loader_sanitizes_open_failures(monkeypatch, private_os):
+    private_os(operator_store)
     def denied(*args, **kwargs):
         raise OSError("sensitive path")
-    monkeypatch.setattr(os, "open", denied)
+    monkeypatch.setattr(operator_store.os, "open", denied)
     with pytest.raises(ApprovalRefused, match="store unavailable"):
         load_operator_trust()
 
 
-def test_file_changed_during_read_is_refused(store, monkeypatch):
+def test_file_changed_during_read_is_refused(store, monkeypatch, private_os):
+    private_os(operator_store)
     path, _ = store
     original = os.read
     changed = False
@@ -133,13 +135,14 @@ def test_file_changed_during_read_is_refused(store, monkeypatch):
             path.write_text("{}")
         return result
 
-    monkeypatch.setattr(os, "read", changing_read)
+    monkeypatch.setattr(operator_store.os, "read", changing_read)
     with pytest.raises(ApprovalRefused, match="changed while reading"):
         _read(path.parent)
 
 
 @pytest.mark.parametrize("fault", ["none", "symlink", "writable"])
-def test_public_directory_traversal_on_synthetic_root(store, monkeypatch, fault):
+def test_public_directory_traversal_on_synthetic_root(store, monkeypatch, fault, private_os):
+    private_os(operator_store)
     path, _ = store
     root = path.parent
     etc = root / "etc"
@@ -165,7 +168,7 @@ def test_public_directory_traversal_on_synthetic_root(store, monkeypatch, fault)
         assert owner == 0
         return original_protected(fd, owner=os.getuid(), directory=directory)
 
-    monkeypatch.setattr(os, "open", rooted_open)
+    monkeypatch.setattr(operator_store.os, "open", rooted_open)
     monkeypatch.setattr(operator_store, "_protected", user_owned)
     if fault == "none":
         assert "operator-a" in load_operator_trust().public_keys

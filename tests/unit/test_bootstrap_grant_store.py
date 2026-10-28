@@ -129,7 +129,8 @@ def test_noncanonical_boot_id_cannot_become_a_filename(tmp_path):
         store.close()
 
 
-def test_directory_fsync_failure_leaves_refusing_pending_marker(tmp_path, monkeypatch):
+def test_directory_fsync_failure_leaves_refusing_pending_marker(tmp_path, monkeypatch, private_os):
+    private_os(grant_store)
     directory = tmp_path / "state"
     store = _store(directory)
     original_fsync = grant_store.os.fsync
@@ -151,8 +152,9 @@ def test_directory_fsync_failure_leaves_refusing_pending_marker(tmp_path, monkey
 
 
 def test_transaction_name_is_synced_before_pending_marker_is_removed(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, private_os
 ):
+    private_os(grant_store)
     directory = tmp_path / "state"
     store = _store(directory)
     original_fsync = grant_store.os.fsync
@@ -182,8 +184,9 @@ def test_transaction_name_is_synced_before_pending_marker_is_removed(
 
 @pytest.mark.parametrize("failed_sync", [1, 2, 3])
 def test_advance_directory_sync_boundaries_fail_closed_or_reopen_durable_state(
-    tmp_path, monkeypatch, failed_sync
+    tmp_path, monkeypatch, failed_sync, private_os
 ):
+    private_os(grant_store)
     directory = tmp_path / "state"
     store = _store(directory)
     prepared = _journal()

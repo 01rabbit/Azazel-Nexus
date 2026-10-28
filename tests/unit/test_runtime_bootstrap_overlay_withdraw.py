@@ -7,6 +7,7 @@ import pytest
 
 from azazel_nexus.bootstrap_overlay_journal import OverlayJournalDurabilityUncertain
 from azazel_nexus.operator_trust import ApprovalRefused
+from azazel_nexus_runtime import bootstrap_overlay_files
 from azazel_nexus_runtime import bootstrap_withdraw_files as withdraw
 from azazel_nexus_runtime.bootstrap_overlay_files import _close_candidates_at
 from test_runtime_bootstrap_overlay_files import PAIR, _environment, _publish
@@ -74,7 +75,8 @@ def test_withdraw_removes_owned_masks_and_retains_withdrawing_journal(tmp_path):
         assert len(checks) > 1
 
 
-def test_durable_withdrawing_intent_precedes_first_unlink(tmp_path, monkeypatch):
+def test_durable_withdrawing_intent_precedes_first_unlink(tmp_path, monkeypatch, private_os):
+    private_os(withdraw)
     with _withdraw_environment(tmp_path) as env:
         _close(env)
         events = []
@@ -101,7 +103,8 @@ def test_durable_withdrawing_intent_precedes_first_unlink(tmp_path, monkeypatch)
         assert all(event[2] == "withdrawing" for event in events if event[0] == "unlink")
 
 
-def test_partial_unlink_failure_recovers_with_intent_reaffirmed(tmp_path, monkeypatch):
+def test_partial_unlink_failure_recovers_with_intent_reaffirmed(tmp_path, monkeypatch, private_os):
+    private_os(withdraw)
     with _withdraw_environment(tmp_path) as env:
         _close(env)
         real_unlink = os.unlink
@@ -141,8 +144,9 @@ def test_partial_unlink_failure_recovers_with_intent_reaffirmed(tmp_path, monkey
 
 
 def test_visible_intent_replace_uncertainty_reaffirmation_failure_does_not_unlink(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, private_os
 ):
+    private_os(withdraw)
     with _withdraw_environment(tmp_path) as env:
         _close(env)
         real_replace = env["store"].replace
@@ -183,7 +187,8 @@ def test_visible_intent_replace_uncertainty_reaffirmation_failure_does_not_unlin
         assert all(not (env["overlay_path"] / unit).exists() for unit in PAIR)
 
 
-def test_directory_fsync_failure_recovers_after_visible_unlink(tmp_path, monkeypatch):
+def test_directory_fsync_failure_recovers_after_visible_unlink(tmp_path, monkeypatch, private_os):
+    private_os(withdraw)
     with _withdraw_environment(tmp_path) as env:
         _close(env)
         real_fsync = os.fsync
@@ -236,7 +241,8 @@ def test_withdraw_refuses_nonempty_owned_mask(tmp_path):
         assert env["store"].load().phase == "closing"
 
 
-def test_withdraw_refuses_unowned_candidate_and_preserves_it(tmp_path, monkeypatch):
+def test_withdraw_refuses_unowned_candidate_and_preserves_it(tmp_path, monkeypatch, private_os):
+    private_os(bootstrap_overlay_files)
     with _withdraw_environment(tmp_path) as env:
         real_open = os.open
 

@@ -1121,7 +1121,8 @@ def test_a_high_compression_ratio_is_refused(tmp_path):
     _refused(tmp_path, tmp_path / "b.tar.gz", "ratio cap")
 
 
-def test_insufficient_free_space_is_refused_before_writing(built, tmp_path, monkeypatch):
+def test_insufficient_free_space_is_refused_before_writing(built, tmp_path, monkeypatch, private_os):
+    private_os(offline_bundle)
     real = os.statvfs
 
     class Tiny:

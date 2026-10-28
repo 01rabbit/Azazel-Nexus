@@ -278,7 +278,8 @@ def test_collector_consults_no_service_self_report_and_never_writes():
 
 
 @pytest.fixture
-def fences(tmp_path, monkeypatch):
+def fences(tmp_path, monkeypatch, private_os):
+    private_os(activation_health)
     root = tmp_path / "root"
     directory = root / "var/lib/azazel/state/watchdog"
     directory.mkdir(parents=True)
@@ -293,7 +294,7 @@ def fences(tmp_path, monkeypatch):
             path = root
         return original(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr(os, "open", map_root)
+    monkeypatch.setattr(activation_health.os, "open", map_root)
     monkeypatch.setattr(activation_health, "_OWNER", os.getuid())
     monkeypatch.setattr(activation_health.pwd, "getpwnam",
                         lambda name: SimpleNamespace(pw_uid=os.getuid()) if name == "azwatch"

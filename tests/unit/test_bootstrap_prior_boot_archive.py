@@ -185,7 +185,8 @@ def test_unconfirmed_ledger_record_changes_nothing(deadline_dir, result):
     assert not (deadline_dir / "transaction.pending").exists()
 
 
-def test_archive_mkdir_failure_leaves_no_marker_and_no_record(deadline_dir, monkeypatch):
+def test_archive_mkdir_failure_leaves_no_marker_and_no_record(deadline_dir, monkeypatch, private_os):
+    private_os(store)
     _place(deadline_dir, store._encode(_state(PRIOR)))
     before = _snapshot(deadline_dir)
     real_mkdir = os.mkdir
@@ -334,7 +335,8 @@ def test_unusable_archive_refuses_before_any_record(deadline_dir, tmp_path, arra
     assert record.calls == [] and _snapshot(deadline_dir) == before
 
 
-def test_interrupted_archive_leaves_the_unfinished_marker(deadline_dir, monkeypatch):
+def test_interrupted_archive_leaves_the_unfinished_marker(deadline_dir, monkeypatch, private_os):
+    private_os(store)
     prior_raw = store._encode(_state(PRIOR))
     _place(deadline_dir, prior_raw)
     calls = []
@@ -734,8 +736,9 @@ def test_grant_archive_failure_never_leaves_confirm_controller_ready(monkeypatch
 
 
 def test_real_grant_and_journal_stores_move_only_unreferenced_prior_grants(
-        tmp_path, seams, monkeypatch):
+        tmp_path, seams, monkeypatch, private_os):
     """The production store composition, over private tmp directories."""
+    private_os(grant_store)
     from azazel_nexus import bootstrap_lock
     from azazel_nexus import bootstrap_overlay_journal as overlay_journal
     from azazel_nexus.bootstrap_overlay_journal import OverlayIntent, new_overlay_journal

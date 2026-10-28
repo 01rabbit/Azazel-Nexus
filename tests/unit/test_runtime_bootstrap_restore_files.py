@@ -136,8 +136,9 @@ def test_finalize_refuses_invalid_evidence(tmp_path):
 
 
 def test_visible_closed_directory_fsync_failure_reaffirms_on_recovery(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, private_os
 ):
+    private_os(overlay_journal)
     with _withdraw_environment(tmp_path) as env:
         withdrawing = _withdrawn(env)
         files = _restored(env)

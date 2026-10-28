@@ -285,7 +285,8 @@ def test_read_key_at_refuses_unprotected_or_unbounded_key_files(tmp_path, case):
         _read_key(directory, owner=owner)
 
 
-def test_read_key_at_refuses_a_file_changed_during_read(tmp_path, monkeypatch):
+def test_read_key_at_refuses_a_file_changed_during_read(tmp_path, monkeypatch, private_os):
+    private_os(commissioning_evidence)
     directory = tmp_path / "private"
     directory.mkdir(mode=0o700)
     directory.chmod(0o700)

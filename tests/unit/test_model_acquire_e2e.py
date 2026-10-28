@@ -374,7 +374,8 @@ def test_digest_mismatch_is_quarantined_by_importer(setup, servers, real_tls):
 
 
 @pytest.mark.parametrize("real_tls", [True, pytest.param(False, marks=pytest.mark.injected)])
-def test_sink_disk_full(setup, servers, monkeypatch, real_tls):
+def test_sink_disk_full(setup, servers, monkeypatch, real_tls, private_os):
+    private_os(model_fetch)
     case = body_case(setup, servers, real_tls, WEIGHTS)
     real_fdopen = model_fetch.os.fdopen
 
@@ -400,7 +401,8 @@ def test_sink_disk_full(setup, servers, monkeypatch, real_tls):
 
 
 @pytest.mark.parametrize("real_tls", [True, pytest.param(False, marks=pytest.mark.injected)])
-def test_promotion_failure(setup, servers, monkeypatch, real_tls):
+def test_promotion_failure(setup, servers, monkeypatch, real_tls, private_os):
+    private_os(model_import)
     case = body_case(setup, servers, real_tls, WEIGHTS)
     real_replace = model_import.os.replace
 
@@ -561,7 +563,8 @@ def test_acquire_source_refusal(setup, boundaries, source, reason):
 
 
 @pytest.mark.injected
-def test_fsync_failure_is_a_write_failure(setup, monkeypatch):
+def test_fsync_failure_is_a_write_failure(setup, monkeypatch, private_os):
+    private_os(model_fetch)
     case = body_case(setup, None, False, WEIGHTS)
 
     def failed(descriptor):
@@ -598,7 +601,8 @@ def test_resume_bounds_before_plan(setup, boundaries, offset):
 
 
 @pytest.mark.injected
-def test_handoff_failure_retains_partial(setup, monkeypatch):
+def test_handoff_failure_retains_partial(setup, monkeypatch, private_os):
+    private_os(model_fetch)
     case = body_case(setup, None, False, WEIGHTS)
     real_replace = model_fetch.os.replace
 

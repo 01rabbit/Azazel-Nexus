@@ -176,7 +176,8 @@ def test_noncanonical_and_duplicate_record_json_refuse(state_store):
 
 
 @pytest.mark.parametrize("failure", ["initial-write", "initial-file-fsync", "initial-dir-fsync"])
-def test_interrupted_initial_transaction_stays_pending(state_store, monkeypatch, failure):
+def test_interrupted_initial_transaction_stays_pending(state_store, monkeypatch, failure, private_os):
+    private_os(store)
     directory, _, initial, owner = state_store
     if failure == "initial-write":
         original = store.os.write
@@ -225,7 +226,8 @@ def test_interrupted_initial_transaction_stays_pending(state_store, monkeypatch,
 
 
 @pytest.mark.parametrize("failure", ["next-file-fsync", "checkpoint-replace", "prepublish-read", "published-read"])
-def test_interrupted_checkpoint_transaction_stays_pending(state_store, monkeypatch, failure):
+def test_interrupted_checkpoint_transaction_stays_pending(state_store, monkeypatch, failure, private_os):
+    private_os(store)
     directory, approval, initial, owner = state_store
     _retain(directory, initial, owner)
     if failure == "next-file-fsync":
@@ -264,7 +266,8 @@ def test_interrupted_checkpoint_transaction_stays_pending(state_store, monkeypat
         _advance(directory, approval, owner, now="2026-10-13T00:00:11Z", boottime_ns=111 * NS)
 
 
-def test_final_directory_fsync_failure_may_leave_published_checkpoint(state_store, monkeypatch):
+def test_final_directory_fsync_failure_may_leave_published_checkpoint(state_store, monkeypatch, private_os):
+    private_os(store)
     directory, approval, initial, owner = state_store
     _retain(directory, initial, owner)
     original = store.os.fsync

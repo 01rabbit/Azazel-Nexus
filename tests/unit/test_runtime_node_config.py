@@ -65,7 +65,8 @@ def test_unsafe_storage_refused(directory, change):
         config._read_at(fd, owner=owner)
 
 
-def test_public_reader_redacts_filesystem_failure(monkeypatch):
+def test_public_reader_redacts_filesystem_failure(monkeypatch, private_os):
+    private_os(config)
     def fail(*a, **k):
         raise OSError("private-path")
     monkeypatch.setattr(config.os, "open", fail)

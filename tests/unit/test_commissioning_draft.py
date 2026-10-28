@@ -90,8 +90,9 @@ def test_installer_directory_mode_preserves_private_payload(record, tmp_path):
     assert read_signature == b"s" * 64
 
 
-def test_foreign_owner_is_refused(record, tmp_path, monkeypatch):
-    monkeypatch.setattr(os, "geteuid", lambda: tmp_path.stat().st_uid + 1)
+def test_foreign_owner_is_refused(record, tmp_path, monkeypatch, private_os):
+    private_os(commissioning_draft)
+    monkeypatch.setattr(commissioning_draft.os, "geteuid", lambda: tmp_path.stat().st_uid + 1)
     with pytest.raises(DraftRefused):
         export_draft(record, tmp_path / "commissioning-draft.json")
 
@@ -103,8 +104,9 @@ def test_bounded_payload_is_checked_before_creating_file(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_failed_write_reports_failure_and_leaves_only_private_incomplete_file(record, tmp_path, monkeypatch):
-    monkeypatch.setattr(os, "write", lambda *args: 0)
+def test_failed_write_reports_failure_and_leaves_only_private_incomplete_file(record, tmp_path, monkeypatch, private_os):
+    private_os(commissioning_draft)
+    monkeypatch.setattr(commissioning_draft.os, "write", lambda *args: 0)
     output = tmp_path / "commissioning-draft.json"
     with pytest.raises(DraftRefused, match="inspect destination"):
         export_draft(record, output)
@@ -183,7 +185,8 @@ def test_review_reader_checks_key_before_reading_any_payload(record, tmp_path, m
         read_draft_review_inputs()
 
 
-def test_changed_draft_is_refused_during_read(record, tmp_path, monkeypatch):
+def test_changed_draft_is_refused_during_read(record, tmp_path, monkeypatch, private_os):
+    private_os(commissioning_draft)
     path = tmp_path / "commissioning-draft.json"
     export_draft(record, path)
     original = os.read
@@ -195,13 +198,14 @@ def test_changed_draft_is_refused_during_read(record, tmp_path, monkeypatch):
             changed = True
             path.write_bytes(b"changed")
         return result
-    monkeypatch.setattr(os, "read", changed_read)
+    monkeypatch.setattr(commissioning_draft.os, "read", changed_read)
     with pytest.raises(DraftRefused, match="changed while reading"):
         read_draft_review_inputs()
 
 
-def test_nonregular_input_metadata_is_refused_without_reading(record, tmp_path, monkeypatch):
+def test_nonregular_input_metadata_is_refused_without_reading(record, tmp_path, monkeypatch, private_os):
     # Ordinary file only: simulate FIFO metadata, never create/open a real FIFO.
+    private_os(commissioning_draft)
     export_draft(record, tmp_path / "commissioning-draft.json")
     original = os.fstat
     def fifo_metadata(fd):
@@ -213,7 +217,7 @@ def test_nonregular_input_metadata_is_refused_without_reading(record, tmp_path, 
         return info
     def forbidden(*args):
         raise AssertionError("nonregular input was read")
-    monkeypatch.setattr(os, "fstat", fifo_metadata)
-    monkeypatch.setattr(os, "read", forbidden)
+    monkeypatch.setattr(commissioning_draft.os, "fstat", fifo_metadata)
+    monkeypatch.setattr(commissioning_draft.os, "read", forbidden)
     with pytest.raises(DraftRefused, match="private draft input refused"):
         read_draft_review_inputs()

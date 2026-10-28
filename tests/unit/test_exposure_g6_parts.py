@@ -727,7 +727,8 @@ def test_a_malformed_or_oversized_target_hash_withholds(tmp_path, monkeypatch, c
 
 
 @pytest.mark.parametrize("code", [errno.EACCES, errno.EPERM, errno.EIO, errno.ELOOP])
-def test_a_readlink_error_other_than_einval_withholds(tmp_path, monkeypatch, code):
+def test_a_readlink_error_other_than_einval_withholds(tmp_path, monkeypatch, code, private_os):
+    private_os(decoy_apparmor)
     _linked_policy(tmp_path, monkeypatch)
 
     def refuse(*args, **kwargs):

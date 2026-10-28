@@ -150,8 +150,9 @@ def test_untrusted_events_file_is_refused(cgroup_root, kind):
 
 
 def test_observation_closes_internal_descriptors_and_preserves_root_fd(
-    cgroup_root, monkeypatch
+    cgroup_root, monkeypatch, private_os
 ):
+    private_os(bootstrap_cgroup)
     root, root_fd = cgroup_root
     _events(_leaf(root))
     opened = []

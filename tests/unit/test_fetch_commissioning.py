@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from azazel_nexus import model_fetched_cli
 from azazel_nexus_runtime import activated, model_fetch, model_fetchd, runtime_paths
 from azazel_nexus_runtime.artifact_egress import EgressResult, Outcome
 from test_model_acquire_e2e import boundaries, response, servers, setup  # noqa: F401
@@ -166,12 +167,13 @@ def test_failed_fetch_never_ready(setup, tmp_path, outcome):  # noqa: F811
 
 
 @pytest.fixture
-def cli_ready(tmp_path, monkeypatch, setup):  # noqa: F811
+def cli_ready(tmp_path, monkeypatch, setup, private_os):  # noqa: F811
+    private_os(model_fetched_cli)
     import os
 
     from azazel_nexus.model_paths import fetch_ready_dir, models_root
     monkeypatch.setenv("AZAZEL_ROOT", str(tmp_path))
-    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(model_fetched_cli.os, "geteuid", lambda: 0)
     scenario = setup()
     root = models_root()
     root.mkdir(parents=True)
@@ -215,7 +217,7 @@ def test_cli_tampered_quarantined(cli_ready):
 def test_cli_requires_root(cli_ready, monkeypatch):
     import os
     from io import StringIO
-    monkeypatch.setattr(os, "geteuid", lambda: 123)
+    monkeypatch.setattr(model_fetched_cli.os, "geteuid", lambda: 123)
     output = StringIO()
     assert cli(["model-import-fetched", cli_ready.entry.model_id], out=output) == 1
     assert "root_required" in output.getvalue()

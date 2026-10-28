@@ -461,8 +461,9 @@ def _is_directory(fd, *_):
 
 @pytest.mark.parametrize("step", ["write", "fchmod", "fsync", "rename"])
 def test_a_failure_before_the_rename_keeps_the_earlier_record_and_no_temporary(
-        tmp_path, monkeypatch, step):
+        tmp_path, monkeypatch, step, private_os):
     tool = _tool()
+    private_os(tool)
     directory = tmp_path / "activation"
     directory.mkdir(mode=0o700)
     output = directory / "apparmor-compiled.json"
@@ -477,8 +478,9 @@ def test_a_failure_before_the_rename_keeps_the_earlier_record_and_no_temporary(
 
 
 def test_a_failed_directory_sync_after_the_rename_warns_and_keeps_the_record(
-        tmp_path, monkeypatch, capsys):
+        tmp_path, monkeypatch, capsys, private_os):
     tool = _tool()
+    private_os(tool)
     directory = tmp_path / "activation"
     directory.mkdir(mode=0o700)
     output = directory / "apparmor-compiled.json"
@@ -492,9 +494,10 @@ def test_a_failed_directory_sync_after_the_rename_warns_and_keeps_the_record(
     assert "WARNING:" in capsys.readouterr().err
 
 
-def test_the_tool_succeeds_when_only_the_directory_sync_fails(fake, monkeypatch, capsys):
+def test_the_tool_succeeds_when_only_the_directory_sync_fails(fake, monkeypatch, capsys, private_os):
     profiles, output = fake
     tool = _tool()
+    private_os(tool)
     monkeypatch.setattr(tool.os, "fsync", _failing(os.fsync, when=_is_directory))
     assert tool.main(["--apparmor-dir", str(profiles), "--output", str(output)]) == 0
     monkeypatch.undo()

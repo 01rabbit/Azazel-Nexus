@@ -866,11 +866,12 @@ def test_a_netns_path_that_is_a_link_is_not_followed(netns_dir):
 @pytest.mark.parametrize("where", ["directory", "entry"])
 @pytest.mark.parametrize("code", [errno.EACCES, errno.EPERM, errno.EIO])
 def test_a_netns_read_that_fails_otherwise_is_unreadable(netns_dir, monkeypatch,
-                                                         where, code):
+                                                         where, code, private_os):
     """What `ip netns list` printed nothing for and exited 0 (#196 L2): the
     error is carried, not taken as "no namespace". Raised by a stand-in, so
     that the test does not depend on running as root or not."""
 
+    private_os(decoy_residue)
     netns_dir.mkdir()
     (netns_dir / "azazel-decoy").touch()
     real_open, real_stat = os.open, os.stat

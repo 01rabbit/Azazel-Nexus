@@ -172,7 +172,7 @@ def test_a_file_swapped_after_the_listing_no_longer_answers_to_its_id(node) -> N
     assert outcome.refused_by is ImportRefusal.NOT_IN_INBOX
 
 
-def test_enumeration_reads_no_artifact(node, monkeypatch) -> None:
+def test_enumeration_reads_no_artifact(node, monkeypatch, private_os) -> None:
     """Listing must not cost what importing costs.
 
     Every way the module could open the file is watched, not just the one it
@@ -180,6 +180,7 @@ def test_enumeration_reads_no_artifact(node, monkeypatch) -> None:
     day somebody reached for `builtins.open` instead.
     """
 
+    private_os(model_import)
     place(node, body=WEIGHTS)
     opened = []
     real_path_open, real_open, real_os_open = pathlib.Path.open, open, os.open
@@ -275,10 +276,11 @@ def test_free_space_is_checked_before_a_byte_is_staged(node, monkeypatch) -> Non
     assert staged == [], "staging began although the precheck had refused"
 
 
-def test_the_precheck_reserves_headroom_for_the_node_itself(node, monkeypatch) -> None:
+def test_the_precheck_reserves_headroom_for_the_node_itself(node, monkeypatch, private_os) -> None:
     """Importing a model and losing the ability to write the audit chain is
     not a gain."""
 
+    private_os(model_import)
     class Statvfs:
         f_frsize = 1
         f_bavail = MIN_FREE_HEADROOM_BYTES + len(WEIGHTS) - 1

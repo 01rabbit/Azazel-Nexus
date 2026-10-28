@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from azazel_nexus_lab import unit_relocation
 from tools import systemd_unit_smoke as smoke
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -158,11 +159,13 @@ def test_empty_reset_comparison_and_mixed_inverse_refusal():
 
 
 @pytest.mark.parametrize("name", smoke.UNITS)
-def test_scratch_uses_installer_owners_modes_and_ancestors(tmp_path, monkeypatch, name):
+def test_scratch_uses_installer_owners_modes_and_ancestors(tmp_path, monkeypatch, name, private_os):
+    # The scratch tree's owners are set by the shared lab helper, not by smoke.
+    private_os(unit_relocation)
     changes = []
     monkeypatch.setattr(smoke.pwd, "getpwnam", lambda name: SimpleNamespace(pw_uid={"root": 0, "azmioentry": 77, "azknowledge": 78, "azcommission": 79}[name]))
     monkeypatch.setattr(smoke.grp, "getgrnam", lambda name: SimpleNamespace(gr_gid={"root": 0, "azazel-operator": 88, "azknowledge": 89, "azknowledge-read": 90, "azmio-advise": 91}[name]))
-    monkeypatch.setattr(smoke.os, "chown", lambda path, uid, gid: changes.append((path.relative_to(tmp_path), uid, gid)))
+    monkeypatch.setattr(unit_relocation.os, "chown", lambda path, uid, gid: changes.append((path.relative_to(tmp_path), uid, gid)))
     modes = []
     original_chmod = Path.chmod
 
@@ -211,7 +214,8 @@ def short_scratch():
 
 
 @pytest.mark.parametrize("real_changed", [False, True])
-def test_cleanup_preserves_primary_failure_and_reports_leftovers(tmp_path, short_scratch, monkeypatch, real_changed):
+def test_cleanup_preserves_primary_failure_and_reports_leftovers(tmp_path, short_scratch, monkeypatch, real_changed, private_os):
+    private_os(smoke)
     import platform
 
     from azazel_nexus_runtime import startup_wrapper

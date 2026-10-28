@@ -458,7 +458,8 @@ def test_create_write_failure_reports_uncertain_and_does_not_adopt_partial_file(
         store.load()
 
 
-def test_create_file_fsync_failure_reports_uncertain(journal_store, monkeypatch):
+def test_create_file_fsync_failure_reports_uncertain(journal_store, monkeypatch, private_os):
+    private_os(overlay_journal)
     store, _directory, _directory_fd = journal_store
 
     def fail_fsync(_fd):
@@ -682,7 +683,8 @@ def test_expired_guard_at_store_exit_preserves_inflight_exception(tmp_path):
         os.close(lock_fd)
 
 
-def test_replace_write_failure_keeps_old_record(journal_store, monkeypatch):
+def test_replace_write_failure_keeps_old_record(journal_store, monkeypatch, private_os):
+    private_os(overlay_journal)
     store, _directory, _directory_fd = journal_store
     initial = new_overlay_journal(intent())
     next_journal = created(initial, AUDITD)
@@ -700,8 +702,9 @@ def test_replace_write_failure_keeps_old_record(journal_store, monkeypatch):
 
 
 def test_replace_directory_fsync_uncertainty_reports_new_visible_state(
-    journal_store, monkeypatch
+    journal_store, monkeypatch, private_os
 ):
+    private_os(overlay_journal)
     store, _directory, _directory_fd = journal_store
     initial = new_overlay_journal(intent())
     next_journal = created(initial, AUDITD)
@@ -748,8 +751,9 @@ def test_replace_post_rename_read_failure_reports_uncertain(journal_store, monke
 
 
 def test_replace_temp_close_failure_is_uncertain_without_double_close(
-    journal_store, monkeypatch
+    journal_store, monkeypatch, private_os
 ):
+    private_os(overlay_journal)
     store, _directory, _directory_fd = journal_store
     initial = new_overlay_journal(intent())
     next_journal = created(initial, AUDITD)
@@ -784,7 +788,8 @@ def test_replace_temp_close_failure_is_uncertain_without_double_close(
     assert store.load() == next_journal
 
 
-def test_remove_directory_fsync_uncertainty_reports_absent_state(journal_store, monkeypatch):
+def test_remove_directory_fsync_uncertainty_reports_absent_state(journal_store, monkeypatch, private_os):
+    private_os(overlay_journal)
     store, _directory, _directory_fd = journal_store
     current = new_overlay_journal(intent())
     store.create(current)
@@ -882,8 +887,9 @@ def test_load_optional_refuses_closed_store(journal_store):
 
 
 def test_load_optional_does_not_treat_lstat_permission_error_as_absence(
-    journal_store, monkeypatch
+    journal_store, monkeypatch, private_os
 ):
+    private_os(overlay_journal)
     store, _directory, _directory_fd = journal_store
     real_stat = overlay_journal.os.stat
 
@@ -898,8 +904,9 @@ def test_load_optional_does_not_treat_lstat_permission_error_as_absence(
 
 
 def test_load_optional_refuses_journal_appearing_between_absence_checks(
-    journal_store, monkeypatch
+    journal_store, monkeypatch, private_os
 ):
+    private_os(overlay_journal)
     store, directory, _directory_fd = journal_store
     real_stat = overlay_journal.os.stat
     first_absence = True

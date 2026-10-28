@@ -41,7 +41,8 @@ def test_default_plan_never_reads_native_or_runs_subprocess(monkeypatch, capsys)
     assert "not READY" in plan["scope"]
 
 
-def test_nonroot_run_refuses_before_read_or_create(monkeypatch):
+def test_nonroot_run_refuses_before_read_or_create(monkeypatch, private_os):
+    private_os(sandbox)
     calls = []
     monkeypatch.setattr(sandbox.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(sandbox, "checked_native", lambda path: calls.append("read"))
@@ -154,7 +155,8 @@ def test_sandbox_fixed_hardening_subset_matches_controller_declaration():
     assert set(unset_names) == set(BOOTSTRAP_UNSET_ENVIRONMENT)
 
 
-def test_run_retains_fixture_and_results_when_stop_is_unconfirmed(tmp_path, monkeypatch):
+def test_run_retains_fixture_and_results_when_stop_is_unconfirmed(tmp_path, monkeypatch, private_os):
+    private_os(sandbox)
     directory = tmp_path / "qualification-fixture"
     directory.mkdir()
     monkeypatch.setattr(sandbox.os, "geteuid", lambda: 0)
@@ -204,7 +206,8 @@ def test_run_retains_fixture_and_results_when_stop_is_unconfirmed(tmp_path, monk
     assert removals == []
 
 
-def test_run_reports_removal_failure_after_both_trials_pass(tmp_path, monkeypatch):
+def test_run_reports_removal_failure_after_both_trials_pass(tmp_path, monkeypatch, private_os):
+    private_os(sandbox)
     directory = tmp_path / "qualification-fixture"
     directory.mkdir()
     monkeypatch.setattr(sandbox.os, "geteuid", lambda: 0)
@@ -277,7 +280,8 @@ def test_run_reports_removal_failure_after_both_trials_pass(tmp_path, monkeypatc
                for order in cleanup_order.values())
 
 
-def test_stage_parent_accepts_only_mocked_root_owned_exec_parent(monkeypatch):
+def test_stage_parent_accepts_only_mocked_root_owned_exec_parent(monkeypatch, private_os):
+    private_os(sandbox)
     seen = []
 
     def fake_lstat(path):
@@ -294,7 +298,8 @@ def test_stage_parent_accepts_only_mocked_root_owned_exec_parent(monkeypatch):
 
 
 @pytest.mark.parametrize("unsafe", ["symlink", "writable", "noexec"])
-def test_stage_parent_refuses_unsafe_parent_or_noexec_filesystem(monkeypatch, unsafe):
+def test_stage_parent_refuses_unsafe_parent_or_noexec_filesystem(monkeypatch, unsafe, private_os):
+    private_os(sandbox)
     def fake_lstat(path):
         mode = stat.S_IFDIR | 0o755
         if path == "/var/lib" and unsafe == "symlink":

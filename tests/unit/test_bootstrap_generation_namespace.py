@@ -20,7 +20,7 @@ COMM_DIGEST = "sha256:" + "a" * 64
 
 
 def test_fixed_bootstrap_namespace_is_separate_and_publisher_preserves_normal_store(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, private_os,
 ):
     import azazel_nexus.activation_store as activation_store
     import azazel_nexus.bootstrap_generation_publish as publisher
@@ -58,7 +58,10 @@ def test_fixed_bootstrap_namespace_is_separate_and_publisher_preserves_normal_st
             path = root
         return open_original(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr(os, "open", map_root_open)
+    # Every module that opens "/" during publication sees the mapped root.
+    for module in (reader, publisher, activation_store):
+        private_os(module)
+        monkeypatch.setattr(module.os, "open", map_root_open)
 
     protected_original = operator_store._protected
 

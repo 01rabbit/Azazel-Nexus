@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from azazel_nexus import lite_generation
 from azazel_nexus.content_store import ContentStore, ContentTampered, digest_bytes
 from azazel_nexus.lite_generation import (
     LiteGeneration,
@@ -323,13 +324,13 @@ def test_a_live_pointer_that_is_not_a_number_is_refused(store: LiteGenerationSto
     assert "not a generation number" in str(caught.value)
 
 
-def test_a_failed_pointer_write_leaves_no_debris(store: LiteGenerationStore, monkeypatch) -> None:
-    import os as os_module
+def test_a_failed_pointer_write_leaves_no_debris(store: LiteGenerationStore, monkeypatch, private_os) -> None:
+    private_os(lite_generation)
 
     admit(store, b"one", at="2026-09-01T00:00:00Z")
     store.content.put(b"two")
     store.content.put(b"signature-over-two")
-    monkeypatch.setattr(os_module, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("full")))
+    monkeypatch.setattr(lite_generation.os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("full")))
     with pytest.raises(OSError):
         store.promote(
             artifact_digest=digest_bytes(b"two"),

@@ -88,7 +88,8 @@ def test_pending_publication_refuses(local):
     assert store.decode_bootstrap_deployment(path.read_bytes()) == declaration()
 
 
-def test_interrupted_raise_blocks_readers_until_explicit_recovery(local, monkeypatch):
+def test_interrupted_raise_blocks_readers_until_explicit_recovery(local, monkeypatch, private_os):
+    private_os(store)
     root, _ = local
     raised = dataclasses.replace(declaration(), security_epoch=4)
 
@@ -106,7 +107,8 @@ def test_interrupted_raise_blocks_readers_until_explicit_recovery(local, monkeyp
     assert (root / ".deployment.json.next").exists()
 
 
-def test_recovery_after_interruption_then_raise_again(local, monkeypatch):
+def test_recovery_after_interruption_then_raise_again(local, monkeypatch, private_os):
+    private_os(store)
     root, _ = local
     original = store.os.replace
 

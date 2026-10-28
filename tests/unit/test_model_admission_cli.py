@@ -8,7 +8,8 @@ from azazel_nexus_runtime import model_admission_cli as cli
 from azazel_nexus import model_admission as admission
 
 
-def test_verify_reports_disabled_without_io(monkeypatch, capsys):
+def test_verify_reports_disabled_without_io(monkeypatch, capsys, private_os):
+    private_os(cli)
     monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
     assert cli.main(["verify", "--role", "embedding"]) == 0
     assert "embedding -> refused:ADMISSION_DISABLED" in capsys.readouterr().out

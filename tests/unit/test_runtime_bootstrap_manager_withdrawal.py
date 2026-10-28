@@ -151,7 +151,8 @@ def test_wrong_grant_refuses_before_withdrawal_session_or_unlink(tmp_path):
         assert all((env["overlay_path"] / name).exists() for name in PAIR)
 
 
-def test_owner_drift_after_first_unlink_retains_withdrawing_journal(tmp_path, monkeypatch):
+def test_owner_drift_after_first_unlink_retains_withdrawing_journal(tmp_path, monkeypatch, private_os):
+    private_os(bootstrap_withdraw_files)
     with _withdraw_environment(tmp_path) as env:
         _close(env)
         buses = []
@@ -182,7 +183,8 @@ def test_owner_drift_after_first_unlink_retains_withdrawing_journal(tmp_path, mo
         assert all(bus.disconnected for bus in buses)
 
 
-def test_postwithdraw_reload_failure_retains_withdrawing_journal(tmp_path, monkeypatch):
+def test_postwithdraw_reload_failure_retains_withdrawing_journal(tmp_path, monkeypatch, private_os):
+    private_os(bootstrap_withdraw_files)
     with _withdraw_environment(tmp_path) as env:
         _close(env)
         buses = []
@@ -212,8 +214,9 @@ def test_postwithdraw_reload_failure_retains_withdrawing_journal(tmp_path, monke
 
 
 def test_fresh_manager_resumes_partial_withdrawal_and_completes_containment(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, private_os,
 ):
+    private_os(bootstrap_withdraw_files)
     with _withdraw_environment(tmp_path) as env:
         _close(env)
         buses = []

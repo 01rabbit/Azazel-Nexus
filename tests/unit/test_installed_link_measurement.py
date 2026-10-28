@@ -82,7 +82,8 @@ def inspect(tree):
     return measured._measure_at(tree[1], tree[3], expected_digest=tree[4], owner=os.getuid())
 
 
-def test_exact_pinned_chain_and_directory_membership_match_without_following(linked_tree, monkeypatch):
+def test_exact_pinned_chain_and_directory_membership_match_without_following(linked_tree, monkeypatch, private_os):
+    private_os(measured)
     real_open = measured.os.open
     opened = []
 
@@ -137,7 +138,8 @@ def test_link_replacement_with_same_text_between_snapshots_refuses(linked_tree, 
     assert len(calls) == 2
 
 
-def test_link_text_changed_during_regular_file_hashing_refuses(linked_tree, monkeypatch):
+def test_link_text_changed_during_regular_file_hashing_refuses(linked_tree, monkeypatch, private_os):
+    private_os(measured)
     original = measured.os.read
     calls = []
     leaf = linked_tree[0] / "opt/env/bin/python"

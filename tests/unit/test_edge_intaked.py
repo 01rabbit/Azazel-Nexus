@@ -828,7 +828,8 @@ def crash(monkeypatch, name, when=lambda *args: True):
 
 @pytest.mark.parametrize("step", ["quarantine_write", "before_truncate", "before_record",
                                   "before_done"])
-def test_power_cut_during_recovery_is_redone_once(tmp_path, monkeypatch, step):
+def test_power_cut_during_recovery_is_redone_once(tmp_path, monkeypatch, step, private_os):
+    private_os(daemon)
     ledger = torn_ledger(tmp_path)
     segment = ledger.current
     original = segment.read_bytes()
@@ -943,7 +944,8 @@ def test_stale_quarantine_temporary_is_removed(tmp_path):
     assert list(directory.iterdir()) == [] and ledger.recovered == 0
 
 
-def test_shutdown_closes_1024_incidents_with_one_fsync(tmp_path, monkeypatch):
+def test_shutdown_closes_1024_incidents_with_one_fsync(tmp_path, monkeypatch, private_os):
+    private_os(daemon)
     server = daemon.IntakeServer(path=tmp_path / "unused.sock", state=tmp_path,
                                  status_path=tmp_path / "status.json", edge_uid=123,
                                  clock=lambda: 0)

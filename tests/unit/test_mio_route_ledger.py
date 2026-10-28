@@ -630,9 +630,10 @@ def last_capability(svc):
 
 @pytest.mark.parametrize("step", ["retain", "fsync", "fsync-unreadable", "not-written"])
 def test_a_failure_after_a_capability_record_cannot_refuse_the_next_start(
-        service, tmp_path, monkeypatch, step):
+        service, tmp_path, monkeypatch, step, private_os):
     """#227: whatever the failure, memory follows the ledger's last capability record."""
     from azazel_nexus import audit
+    private_os(audit)
 
     svc, clock = service
     first, second, readings = flip(svc, monkeypatch)

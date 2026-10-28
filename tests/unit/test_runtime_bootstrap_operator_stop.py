@@ -361,11 +361,12 @@ def test_sigterm_clean_path_unchanged(evidence):
      "stopped by manager after helpers; stopping record unavailable"),
     ("recorded", "stopped after confirmed containment"),
 ])
-def test_activated_prints_distinct_message_for_manager_stop(monkeypatch, capsys, stopping, text):
+def test_activated_prints_distinct_message_for_manager_stop(monkeypatch, capsys, stopping, text, private_os):
     from pathlib import Path
 
     from azazel_nexus import bootstrap_selection_optional as selection_store
     from azazel_nexus_runtime import activated, bootstrap_entrypoint, runtime_paths
+    private_os(activated)
     from azazel_nexus_runtime.bootstrap import BootstrapResult
 
     monkeypatch.setattr(activated.os, "geteuid", lambda: 0)

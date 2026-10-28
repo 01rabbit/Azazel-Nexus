@@ -1180,9 +1180,10 @@ def test_the_reader_tells_an_absent_file_from_an_unreadable_one(tmp_path, monkey
 
 
 @pytest.mark.parametrize("errno_value", [13, 5, 40])
-def test_a_read_error_is_unreadable_not_absent(tmp_path, monkeypatch, errno_value):
+def test_a_read_error_is_unreadable_not_absent(tmp_path, monkeypatch, errno_value, private_os):
     """EACCES, EIO and ELOOP give UNREADABLE; only ENOENT/ENOTDIR give None."""
 
+    private_os(decoy_apparmor)
     def failing_open(*_args, **_kwargs):
         raise OSError(errno_value, "refused")
 
@@ -1191,7 +1192,8 @@ def test_a_read_error_is_unreadable_not_absent(tmp_path, monkeypatch, errno_valu
     assert exposure_lsm_refusal(*read_exposure_lsm()).startswith(LSM_PROFILES_UNREADABLE)
 
 
-def test_a_failing_read_after_open_is_unreadable(tmp_path, monkeypatch):
+def test_a_failing_read_after_open_is_unreadable(tmp_path, monkeypatch, private_os):
+    private_os(decoy_apparmor)
     path = tmp_path / "profiles"
     path.write_bytes(ENFORCED)
     monkeypatch.setattr(decoy_apparmor, "_PROFILES", str(path))

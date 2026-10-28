@@ -174,9 +174,10 @@ def _fail(argv, code=1):
 
 
 @pytest.fixture(autouse=True)
-def _never_spawn(monkeypatch):
+def _never_spawn(monkeypatch, private_os):
     """No test here may start a real process."""
 
+    private_os(decoy_network)
     def refuse(*args, **kwargs):
         raise AssertionError("a test reached posix_spawn")
 
@@ -529,7 +530,8 @@ def test_a_namespace_command_line_takes_only_plain_words(word):
     assert _command_line((IP, "-n", "azazel-decoy", "link")) == "/usr/bin/ip -n azazel-decoy link"
 
 
-def test_the_runner_starts_only_the_modules_commands_with_an_empty_environment(monkeypatch):
+def test_the_runner_starts_only_the_modules_commands_with_an_empty_environment(monkeypatch, private_os):
+    private_os(decoy_network)
     seen = {}
 
     def spawn(path, argv, env, **kwargs):
@@ -616,7 +618,8 @@ class FakeChild:
             monkeypatch.setattr(decoy_network.time, "monotonic", lambda: next(clock))
 
 
-def test_the_read_back_spawns_with_one_pipe_onto_standard_output(monkeypatch):
+def test_the_read_back_spawns_with_one_pipe_onto_standard_output(monkeypatch, private_os):
+    private_os(decoy_network)
     child = FakeChild(monkeypatch, output=b"table inet azazel_decoy {\n}\n")
     assert REAL_CAPTURE(tuple(NETD_VERIFY[0]), plan=HELPER_PLAN) == (
         0, b"table inet azazel_decoy {\n}\n")
@@ -628,18 +631,21 @@ def test_the_read_back_spawns_with_one_pipe_onto_standard_output(monkeypatch):
     assert child.closed == [71, 70]
 
 
-def test_a_failed_read_back_returns_no_output(monkeypatch):
+def test_a_failed_read_back_returns_no_output(monkeypatch, private_os):
+    private_os(decoy_network)
     FakeChild(monkeypatch, output=b"partial", status=1)
     assert REAL_CAPTURE(tuple(NETD_VERIFY[1]), plan=HELPER_PLAN) == (1, b"")
 
 
-def test_a_read_back_past_the_limit_is_killed_and_returns_no_output(monkeypatch):
+def test_a_read_back_past_the_limit_is_killed_and_returns_no_output(monkeypatch, private_os):
+    private_os(decoy_network)
     child = FakeChild(monkeypatch, output=b"x" * (CAPTURE_LIMIT + 1), exits_after=10 ** 6)
     assert REAL_CAPTURE(tuple(NETD_VERIFY[1]), plan=HELPER_PLAN) == (decoy_network.OVERFLOW, b"")
     assert child.killed == [(4242, decoy_network.signal.SIGKILL)]
 
 
-def test_a_read_back_past_its_deadline_is_killed(monkeypatch):
+def test_a_read_back_past_its_deadline_is_killed(monkeypatch, private_os):
+    private_os(decoy_network)
     clock = iter([0.0, 0.0, STEP_SECONDS + 1])
     child = FakeChild(monkeypatch, exits_after=10 ** 6, clock=clock)
     assert REAL_CAPTURE(tuple(NETD_VERIFY[0]), plan=HELPER_PLAN) == (TIMED_OUT, b"")
@@ -647,9 +653,10 @@ def test_a_read_back_past_its_deadline_is_killed(monkeypatch):
 
 
 @pytest.mark.parametrize("error", [OSError(5, "EIO"), KeyboardInterrupt()])
-def test_an_error_while_reading_back_kills_and_reaps_the_child(monkeypatch, error):
+def test_an_error_while_reading_back_kills_and_reaps_the_child(monkeypatch, error, private_os):
     """Review of #274: an error inside the read loop left the child behind."""
 
+    private_os(decoy_network)
     child = FakeChild(monkeypatch, exits_after=10 ** 6)
     reaped = []
 
@@ -666,7 +673,8 @@ def test_an_error_while_reading_back_kills_and_reaps_the_child(monkeypatch, erro
     assert child.closed == [71, 70]
 
 
-def test_a_read_back_that_cannot_start_closes_both_ends(monkeypatch):
+def test_a_read_back_that_cannot_start_closes_both_ends(monkeypatch, private_os):
+    private_os(decoy_network)
     child = FakeChild(monkeypatch)
 
     def missing(*args, **kwargs):
@@ -677,7 +685,8 @@ def test_a_read_back_that_cannot_start_closes_both_ends(monkeypatch):
     assert child.closed == [71, 70]
 
 
-def test_the_runner_kills_a_command_past_its_deadline(monkeypatch):
+def test_the_runner_kills_a_command_past_its_deadline(monkeypatch, private_os):
+    private_os(decoy_network)
     killed = []
     clock = iter([0.0, 0.0, STEP_SECONDS + 1])
     monkeypatch.setattr(decoy_network.os, "posix_spawn", lambda *a, **k: 4242)
@@ -689,7 +698,8 @@ def test_the_runner_kills_a_command_past_its_deadline(monkeypatch):
     assert killed == [(4242, decoy_network.signal.SIGKILL)]
 
 
-def test_a_program_that_cannot_be_started_is_a_failure(monkeypatch):
+def test_a_program_that_cannot_be_started_is_a_failure(monkeypatch, private_os):
+    private_os(decoy_network)
     def missing(*args, **kwargs):
         raise FileNotFoundError
 

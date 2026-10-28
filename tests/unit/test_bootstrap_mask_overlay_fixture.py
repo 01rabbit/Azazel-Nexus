@@ -166,8 +166,9 @@ def test_mutated_candidate_refuses_withdrawal_without_changing_candidate() -> No
 
 
 def test_second_candidate_open_failure_exposes_incomplete_partial_and_keeps_masks(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, private_os,
 ) -> None:
+    private_os(overlay)
     with overlay.MaskOverlayFixture() as fixture:
         real_open = overlay.os.open
 
@@ -193,8 +194,9 @@ def test_second_candidate_open_failure_exposes_incomplete_partial_and_keeps_mask
 
 
 def test_second_unlink_failure_exposes_incomplete_state_and_keeps_masks(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, private_os,
 ) -> None:
+    private_os(overlay)
     with overlay.MaskOverlayFixture() as fixture:
         fixture.grant()
         original_second = (fixture.root / OVERLAY / PAIR[1]).read_bytes()
@@ -239,7 +241,8 @@ def test_group_or_world_accessible_fixture_root_is_refused() -> None:
             fixture.snapshot()
 
 
-def test_root_open_failure_removes_only_the_new_empty_scratch(monkeypatch):
+def test_root_open_failure_removes_only_the_new_empty_scratch(monkeypatch, private_os):
+    private_os(overlay)
     created = []
     original_mkdtemp = overlay.tempfile.mkdtemp
     original_open = overlay.os.open

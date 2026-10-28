@@ -63,7 +63,8 @@ def test_unrecognized_state_is_not_repaired(retained, case):
 
 
 @pytest.mark.parametrize("position", [1, 2, 3])
-def test_recovery_fsync_failure_is_not_success(retained, monkeypatch, position):
+def test_recovery_fsync_failure_is_not_success(retained, monkeypatch, position, private_os):
+    private_os(store)
     root, fd, raw = retained
     original = store.os.fsync
     calls = 0

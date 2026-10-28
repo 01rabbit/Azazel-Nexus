@@ -63,6 +63,9 @@ def private_os(monkeypatch):
     (linecache) while a test runs; a fake on the shared module breaks it.
     """
     def isolate(module):
-        monkeypatch.setattr(module, "os", _ModuleOs())
+        # A second call in the same test (a fixture and the test, say) keeps
+        # the overrides already placed instead of dropping them.
+        if not isinstance(module.os, _ModuleOs):
+            monkeypatch.setattr(module, "os", _ModuleOs())
         return module.os
     return isolate

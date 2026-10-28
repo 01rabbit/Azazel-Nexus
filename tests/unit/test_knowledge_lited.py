@@ -8,6 +8,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from azazel_nexus import model_paths
 from azazel_nexus_runtime import knowledge_lited as daemon
 from azazel_nexus_runtime.principal import PrincipalClass, PrincipalPolicy
 from azazel_nexus_runtime.protocol import RequestRefused
@@ -107,7 +108,8 @@ def test_corrupt_admitted_bundle_is_quarantined(node):
 
 
 @pytest.mark.parametrize("which", ["trust", "store"])
-def test_unreadable_storage_still_answers(node, monkeypatch, which):
+def test_unreadable_storage_still_answers(node, monkeypatch, which, private_os):
+    private_os(model_paths)
     service, root, trust, _ = node
     admit(node)
     original = os.open
@@ -118,7 +120,7 @@ def test_unreadable_storage_still_answers(node, monkeypatch, which):
             raise PermissionError("must not leak this path")
         return original(path, *args, **kwargs)
 
-    monkeypatch.setattr(os, "open", denied)
+    monkeypatch.setattr(model_paths.os, "open", denied)
     assert service.handle(None) == {"state": "unavailable", "reason_code": f"{which}_unreadable",
                                     "generation": None, "freshness": "absent"}
 

@@ -76,11 +76,12 @@ def test_unverified_storage_is_not_created_and_rerun_after_mount_succeeds(tmp_pa
     assert (tmp_path / 'data/azazel/mission-packs/generations').is_dir()
 
 
-def test_live_projection_keeps_owner_and_assigns_dedicated_reader_gid(tmp_path, monkeypatch):
+def test_live_projection_keeps_owner_and_assigns_dedicated_reader_gid(tmp_path, monkeypatch, private_os):
     import os
     from types import SimpleNamespace
 
     from tools import provision_mission_read as installer
+    private_os(installer)
 
     original = Path.lstat
     def root_owned(path):
@@ -114,11 +115,12 @@ def test_destdir_root_does_not_bypass_encryption(destination, staging, monkeypat
     assert calls == [(Path(destination).resolve(), {'accounts': False, 'staging': staging})]
 
 
-def test_private_ancestor_group_is_preserved(tmp_path, monkeypatch):
+def test_private_ancestor_group_is_preserved(tmp_path, monkeypatch, private_os):
     import os
     from types import SimpleNamespace
 
     from tools import provision_mission_read as installer
+    private_os(installer)
 
     private = tmp_path / 'var/lib/azazel'
     private.mkdir(parents=True)
@@ -211,10 +213,11 @@ def test_staging_provision_migrates_operator_trust_without_accounts(tmp_path):
 @pytest.mark.parametrize('unsafe', ['symlink-dir', 'symlink-file', 'hardlink', 'group-writable-file',
                                     'other-writable-dir', 'non-root-file', 'non-root-dir',
                                     'fifo', 'file-as-dir', 'foreign-group'])
-def test_unsafe_operator_trust_refuses_and_changes_nothing(tmp_path, monkeypatch, unsafe):
+def test_unsafe_operator_trust_refuses_and_changes_nothing(tmp_path, monkeypatch, unsafe, private_os):
     import os
 
     from tools import provision_mission_read as installer
+    private_os(installer)
     trust, store = _trust_store(tmp_path)
     if unsafe == 'symlink-dir':
         real = tmp_path / 'elsewhere'

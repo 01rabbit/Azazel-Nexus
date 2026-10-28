@@ -133,8 +133,9 @@ def test_write_failure_after_pending_retains_marker_blocks_read_and_retry(
 
 @pytest.mark.parametrize("fail_at", [1, 2, 3, 4, 5])
 def test_each_fsync_failure_reports_failure_without_automatic_cleanup(
-    publication_dir, record, monkeypatch, fail_at,
+    publication_dir, record, monkeypatch, fail_at, private_os,
 ):
+    private_os(store)
     root, fd, owner = publication_dir
     original = store.os.fsync
     calls = 0

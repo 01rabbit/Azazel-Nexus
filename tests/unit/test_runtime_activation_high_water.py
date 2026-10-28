@@ -246,7 +246,8 @@ def test_directory_in_place_of_file_refused(state):
         read_high_water()
 
 
-def test_file_replaced_between_stat_and_read_refused(state, monkeypatch):
+def test_file_replaced_between_stat_and_read_refused(state, monkeypatch, private_os):
+    private_os(hw)
     _init(FLOOR)
     replacement = state / "activation" / "replacement"
     original = os.read
@@ -259,12 +260,13 @@ def test_file_replaced_between_stat_and_read_refused(state, monkeypatch):
             os.replace(replacement, _file(state))
         return data
 
-    monkeypatch.setattr(os, "read", replacing)
+    monkeypatch.setattr(hw.os, "read", replacing)
     with pytest.raises(HighWaterRefused):
         read_high_water()
 
 
-def test_file_rewritten_in_place_while_reading_refused(state, monkeypatch):
+def test_file_rewritten_in_place_while_reading_refused(state, monkeypatch, private_os):
+    private_os(hw)
     _init(FLOOR)
     original = os.read
     done = False
@@ -278,7 +280,7 @@ def test_file_rewritten_in_place_while_reading_refused(state, monkeypatch):
                 stream.write(b" ")
         return data
 
-    monkeypatch.setattr(os, "read", rewriting)
+    monkeypatch.setattr(hw.os, "read", rewriting)
     with pytest.raises(HighWaterRefused):
         read_high_water()
 
@@ -300,24 +302,26 @@ def test_concurrent_writer_is_refused_as_busy(state):
 # -- crash safety --------------------------------------------------------------
 
 
-def test_crash_before_rename_keeps_the_old_floor(state, monkeypatch):
+def test_crash_before_rename_keeps_the_old_floor(state, monkeypatch, private_os):
+    private_os(hw)
     _init(FLOOR)
     original = os.replace
 
     def crash(*args, **kwargs):
         raise OSError("power lost")
 
-    monkeypatch.setattr(os, "replace", crash)
+    monkeypatch.setattr(hw.os, "replace", crash)
     with pytest.raises(HighWaterRefused):
         _raise(replace(FLOOR, security_epoch=4))
-    monkeypatch.setattr(os, "replace", original)
+    monkeypatch.setattr(hw.os, "replace", original)
     assert (state / "activation" / ".high-water.json.partial").exists()
     assert read_high_water() == FLOOR
     assert _raise(replace(FLOOR, security_epoch=4)).security_epoch == 4
     assert not (state / "activation" / ".high-water.json.partial").exists()
 
 
-def test_crash_during_write_keeps_the_old_floor(state, monkeypatch):
+def test_crash_during_write_keeps_the_old_floor(state, monkeypatch, private_os):
+    private_os(hw)
     _init(FLOOR)
     original = os.write
 
@@ -325,15 +329,16 @@ def test_crash_during_write_keeps_the_old_floor(state, monkeypatch):
         original(fd, bytes(data[:5]))
         raise OSError("disk full")
 
-    monkeypatch.setattr(os, "write", partial)
+    monkeypatch.setattr(hw.os, "write", partial)
     with pytest.raises(HighWaterRefused):
         _raise(replace(FLOOR, approval_seq=11))
     assert _file(state).read_bytes() == encode_high_water(FLOOR)
-    monkeypatch.setattr(os, "write", original)
+    monkeypatch.setattr(hw.os, "write", original)
     assert read_high_water() == FLOOR
 
 
-def test_crash_before_file_fsync_keeps_the_old_floor(state, monkeypatch):
+def test_crash_before_file_fsync_keeps_the_old_floor(state, monkeypatch, private_os):
+    private_os(hw)
     _init(FLOOR)
     original = os.fsync
     calls = []
@@ -344,14 +349,15 @@ def test_crash_before_file_fsync_keeps_the_old_floor(state, monkeypatch):
             raise OSError("io error")
         return original(fd)
 
-    monkeypatch.setattr(os, "fsync", failing)
+    monkeypatch.setattr(hw.os, "fsync", failing)
     with pytest.raises(HighWaterRefused):
         _raise(replace(FLOOR, generation=3))
-    monkeypatch.setattr(os, "fsync", original)
+    monkeypatch.setattr(hw.os, "fsync", original)
     assert read_high_water() == FLOOR
 
 
-def test_directory_fsync_failure_after_rename_is_uncertain_not_success(state, monkeypatch):
+def test_directory_fsync_failure_after_rename_is_uncertain_not_success(state, monkeypatch, private_os):
+    private_os(hw)
     _init(FLOOR)
     original = os.fsync
 
@@ -360,14 +366,15 @@ def test_directory_fsync_failure_after_rename_is_uncertain_not_success(state, mo
             raise OSError("io error")
         return original(fd)
 
-    monkeypatch.setattr(os, "fsync", failing)
+    monkeypatch.setattr(hw.os, "fsync", failing)
     with pytest.raises(HighWaterCommitUncertain):
         _raise(replace(FLOOR, generation=3))
-    monkeypatch.setattr(os, "fsync", original)
+    monkeypatch.setattr(hw.os, "fsync", original)
     assert read_high_water() == replace(FLOOR, generation=3)
 
 
-def test_write_syncs_file_then_directory_in_order(state, monkeypatch):
+def test_write_syncs_file_then_directory_in_order(state, monkeypatch, private_os):
+    private_os(hw)
     _init(FLOOR)
     original = os.fsync
     kinds = []
@@ -376,7 +383,7 @@ def test_write_syncs_file_then_directory_in_order(state, monkeypatch):
         kinds.append("dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file")
         return original(fd)
 
-    monkeypatch.setattr(os, "fsync", recording)
+    monkeypatch.setattr(hw.os, "fsync", recording)
     _raise(replace(FLOOR, generation=5))
     assert kinds == ["file", "dir"]
 
@@ -393,7 +400,8 @@ def test_partial_entry_of_wrong_type_refused(state):
 
 
 @pytest.fixture
-def rooted(tmp_path, monkeypatch):
+def rooted(tmp_path, monkeypatch, private_os):
+    private_os(hw)
     root = tmp_path / "root"
     state = root / "var/lib/azazel/state"
     state.mkdir(parents=True)
@@ -406,7 +414,7 @@ def rooted(tmp_path, monkeypatch):
             path = root
         return original(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr(os, "open", map_root)
+    monkeypatch.setattr(hw.os, "open", map_root)
     monkeypatch.setattr(hw, "_OWNER", os.getuid())
     return root
 

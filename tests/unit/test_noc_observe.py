@@ -755,6 +755,8 @@ def test_a_real_collection_creates_only_netlink_sockets(monkeypatch):
     for name in ("create_connection", "getaddrinfo", "gethostbyname", "socketpair"):
         monkeypatch.setattr(socket, name, refuse)
     monkeypatch.setattr(subprocess, "Popen", refuse)
+    # Process-wide on purpose, not private_os(...): no module may spawn. pytest
+    # and linecache do not call these.
     monkeypatch.setattr(os, "system", refuse)
     monkeypatch.setattr(os, "posix_spawn", refuse)
 

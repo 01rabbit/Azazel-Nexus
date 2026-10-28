@@ -354,7 +354,8 @@ def test_the_plan_is_the_constants_plus_exactly_one_ruleset():
     assert [s.undo for s in plan.steps] == [s.undo for s in HELPER_PLAN.steps]
 
 
-def test_run_fixed_refuses_every_ruleset_but_the_runs_own(monkeypatch):
+def test_run_fixed_refuses_every_ruleset_but_the_runs_own(monkeypatch, private_os):
+    private_os(decoy_network)
     monkeypatch.setattr(decoy_network.os, "posix_spawn", lambda *a, **k: 4242)
     monkeypatch.setattr(decoy_network.os, "waitpid", lambda pid, flags: (pid, 0))
     plan = helper_plan(SCOPE)

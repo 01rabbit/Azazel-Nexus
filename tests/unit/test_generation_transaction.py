@@ -119,7 +119,8 @@ def test_promotion_rename_failure_keeps_completed_generation_hidden(store, monke
     _assert_failed_generation_not_visible(store, old_tree)
 
 
-def test_root_fsync_failure_reports_published_generation_as_uncertain(store, monkeypatch):
+def test_root_fsync_failure_reports_published_generation_as_uncertain(store, monkeypatch, private_os):
+    private_os(generation_module)
     old_tree = _seed(store)
     real_fsync = os.fsync
     root_info = store.root.stat()
