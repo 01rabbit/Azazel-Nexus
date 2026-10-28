@@ -28,11 +28,19 @@ protected regular file -- or a store that cannot be opened or written -- is
 `FloorUnavailable`. The caller then serves nothing. Only a file that does not
 exist (`ENOENT`) is absent: first start, or after an administrator's removal.
 
-*Bounded writes.* The in-process floor is exact. The persisted copy is raised
-at most once per `PERSIST_STEP_S` of wall time, so a status poll does not cost
-an fsync each time; the persisted value is never later than an instant
-actually observed, so the check stays sound across a restart (a regression
-smaller than the step across a restart is not detected).
+*Bounded writes.* The in-process floor is exact. The persisted copy holds
+whole seconds and is raised whenever an observation reaches a later second
+than it holds -- so at most one write per second, and before the reply that
+observed that second is returned. It is never later than an instant actually
+observed. After a crash and restart the only regression not detected is one
+back into the same wall-clock second as the latest observation (under one
+second); expiries Knowledge writes carry whole seconds.
+
+*No ceiling.* A clock that jumps forward raises the floor with it; nothing
+here bounds a jump (for example by signed material's own time). That is an
+owner decision. The floor also only moves when a request is answered: a
+clock moved back while nobody asked is detected only against the last
+answered instant.
 
 This is local trust: `azknowledge` or root can delete the file. It protects
 against a clock moved backwards, not against the node's administrator.
@@ -50,7 +58,7 @@ __all__ = ["FILENAME", "PERSIST_STEP_S", "SCHEMA", "ClockFloor", "FloorUnavailab
 
 SCHEMA = "azazel-nexus/knowledge-clock-floor/v1"
 FILENAME = "clock-floor.json"
-PERSIST_STEP_S = 60
+PERSIST_STEP_S = 1
 _PARTIAL = ".clock-floor.json.partial"
 _LIMIT = 256
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -115,7 +123,8 @@ class ClockFloor:
         if floor is not None and now < floor:
             return False
         self._seen = now
-        if stored is None or now - stored >= timedelta(seconds=PERSIST_STEP_S):
+        # Persist before answering whenever this reaches a later whole second.
+        if stored is None or now.replace(microsecond=0) - stored >= timedelta(seconds=PERSIST_STEP_S):
             self._write(now)
         return True
 

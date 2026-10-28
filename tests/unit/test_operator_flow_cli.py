@@ -262,7 +262,7 @@ def test_setup_and_status_share_daemon_trust(commissioned_node, fixture_host, co
         (trust / "revocations.signed").write_bytes(
             revoker.sign(statement.signature_target()).signature + statement.as_payload())
     # The daemon keeps its own clock floor (its state, raised at most once a
-    # minute); establish it first so the snapshot covers only status reads.
+    # second); establish it first so the snapshot covers only status reads.
     service.handle(None)
     before = snapshot(root.parent.parent.parent.parent)
     # collect also exercises its AZAZEL_ROOT default; no runtime import in library.

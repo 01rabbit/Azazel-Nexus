@@ -610,9 +610,18 @@ it. A clock moved backwards would make expired rows current again, so
 `az-knowledge-lited` keeps a raise-only floor: the latest instant it has
 observed, in `/var/lib/azazel/state/knowledge/clock-floor.json` (its own
 private `0700 azknowledge:root` state leaf, already in the unit's
-`ReadWritePaths`; no new write permission). The in-process floor is exact;
-the file is raised at most once a minute and holds only a UTC instant
-truncated to seconds, never later than an observed one.
+`ReadWritePaths`; no new write permission). The in-process floor is exact.
+The file holds a UTC instant truncated to whole seconds, never later than an
+observed one, and is raised -- before the reply is returned -- whenever an
+observation reaches a later second: at most one write per second. After a
+crash and restart, only a regression back into the same second as the last
+answered instant goes undetected.
+
+Two limits are deliberate. The floor moves only when a request is answered,
+so a clock moved back while nobody asked is compared only with the last
+answered instant. Nothing bounds a forward jump (for example by the time of
+signed material): a clock that runs ahead raises the floor with it, and
+whether to add such a ceiling is an owner decision.
 
 | condition | `knowledge.status` | `knowledge.lookup` |
 | --- | --- | --- |

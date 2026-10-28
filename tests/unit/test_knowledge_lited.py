@@ -3,6 +3,7 @@
 import json
 import os
 import socket
+import stat
 import sys
 import threading
 from pathlib import Path
@@ -515,14 +516,82 @@ def test_floor_is_raise_only_and_writes_are_bounded(node, tmp_path):
         knowledge_clock_floor._instant("2026-10-18T00:00:00Z")
     assert oct(path.stat().st_mode & 0o777) == "0o600"
     first = path.read_bytes()
-    assert floor.admit("2026-10-18T00:00:30Z") is True
-    assert path.read_bytes() == first  # inside the persistence step
-    # The in-process floor is exact even when the file was not raised.
-    assert floor.admit("2026-10-18T00:00:29Z") is False
-    assert floor.admit("2026-10-18T00:01:01Z") is True
-    assert b"2026-10-18T00:01:01Z" in path.read_bytes()
-    assert ClockFloor(state).admit("2026-10-18T00:01:00Z") is False
+    before = path.stat().st_mtime_ns
+    assert floor.admit("2026-10-18T00:00:00.950000Z") is True
+    # Within the same whole second: no write.
+    assert path.read_bytes() == first and path.stat().st_mtime_ns == before
+    # The in-process floor is exact even within that second.
+    assert floor.admit("2026-10-18T00:00:00.920000Z") is False
+    # A later whole second is persisted before the answer.
+    assert floor.admit("2026-10-18T00:00:01.100000Z") is True
+    assert b"2026-10-18T00:00:01Z" in path.read_bytes()
+    assert ClockFloor(state).admit("2026-10-18T00:00:00.999999Z") is False
     assert not (state / ".clock-floor.json.partial").exists()
+
+
+def test_restart_between_observations_still_detects_regression(node, tmp_path):
+    """T0 and T0+59s answered, then a crash: T0+1s must not revive a T0+30s row."""
+    from test_knowledge_lookup import admit_rows
+
+    t0, t30, t59, t1 = ("2026-10-18T00:00:00Z", "2026-10-18T00:00:30Z",
+                        "2026-10-18T00:00:59Z", "2026-10-18T00:00:01Z")
+    admit_rows(node, [{"technique_id": "T1110", "name": "dated", "agg_next_expiry": t30}])
+    first = _clocked(node, tmp_path, [t0, t59])
+    assert _lookup(first)["refs"]
+    assert _lookup(first) == {"refs": [], "reason_code": "no_context"}
+    # No orderly shutdown: a new process on the same floor.
+    restarted = _clocked(node, tmp_path, [t1, t1])
+    assert _lookup(restarted) == UNTRUSTED_LOOKUP
+    assert restarted.handle(None) == UNTRUSTED_STATUS
+    floor = ClockFloor(floor_dir(tmp_path))
+    assert floor.admit(t30) is False and floor.admit(t59) is True
+
+
+def test_floor_owned_by_another_uid_is_refused(node, tmp_path):
+    state = floor_dir(tmp_path)
+    ClockFloor(state).admit(NOW)
+    other = os.geteuid() + 1
+    with pytest.raises(knowledge_clock_floor.FloorUnavailable):
+        ClockFloor(state, owner=other).admit(NOW)
+    service = daemon.KnowledgeLiteService(root=node[1], trust_root=node[2],
+                                          clock_floor=ClockFloor(state, owner=other),
+                                          now=lambda: NOW)
+    assert service.handle(None) == UNTRUSTED_STATUS
+
+
+def test_file_owned_by_another_uid_is_refused(node, tmp_path, private_os):
+    """The leaf is ours, the record is not: the file check alone refuses."""
+    state = floor_dir(tmp_path)
+    ClockFloor(state).admit(NOW)
+    fake = private_os(knowledge_clock_floor)
+    real = os.fstat
+
+    def fstat(fd):
+        info = real(fd)
+        if not stat.S_ISREG(info.st_mode):
+            return info
+        values = list(info)
+        values[stat.ST_UID] = os.geteuid() + 1
+        return os.stat_result(values)
+
+    fake.fstat = fstat
+    with pytest.raises(knowledge_clock_floor.FloorUnavailable):
+        ClockFloor(state).admit(NOW)
+
+
+def test_recovery_after_a_forward_jump_by_removing_the_floor(node, tmp_path):
+    from test_knowledge_lookup import admit_rows
+
+    admit_rows(node, [{"technique_id": "T1110", "name": "static"}])
+    ahead = _clocked(node, tmp_path, ["2031-01-01T00:00:00Z"])
+    assert _lookup(ahead)["reason_code"] == "available"
+    corrected = _clocked(node, tmp_path, [NOW, NOW])
+    assert _lookup(corrected) == UNTRUSTED_LOOKUP
+    # The documented recovery: correct the clock, remove the file, restart.
+    (floor_dir(tmp_path) / knowledge_clock_floor.FILENAME).unlink()
+    recovered = _clocked(node, tmp_path, [NOW, NOW])
+    assert _lookup(recovered)["reason_code"] == "available"
+    assert recovered.handle(None)["state"] == "available"
 
 
 def test_service_requires_a_clock_floor(node):
