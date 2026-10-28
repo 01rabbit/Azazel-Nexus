@@ -231,7 +231,7 @@ def test_the_observer_writes_the_snapshot_and_status_reads_it(root, host):
     paths.noc_status_path().parent.mkdir(parents=True)
     assert noc_snapshot.main([], collect=collect, clock=lambda: NOW) == 0
     section = status_view._noc(NOW + 5)
-    assert section["status"] == "running" and section["source"]["writer"] == "az-noc-observe"
+    assert (section["status"], section["freshness"]) == ("observed", "fresh") and section["source"]["writer"] == "az-noc-observe"
     assert section["snapshot"]["collection"] == "observed"
     assert section["observation"] == {"kind": "passive", "transmission": "none",
                                       "active_checks": "none",
@@ -243,6 +243,7 @@ def test_the_observer_writes_the_snapshot_and_status_reads_it(root, host):
     text = json.dumps(section)
     for word in ("unreachable", "offline", "通信不能", "disconnected"):
         assert word not in text
+    assert all(status_view._noc(t)["status"] != "running" for t in (NOW, NOW + 10_000, None))
     # The observer stops (its timer is disabled): the snapshot goes stale.
     stale = status_view._noc(NOW + noc_status.NOC_STALE_S + 1)
     assert (stale["status"], stale["reason_code"]) == ("stale", "snapshot_expired")
@@ -379,8 +380,8 @@ def test_status_json_carries_the_noc_section(root, host, monkeypatch):
     assert main(["--as-of", as_of, "status", "--json"], out=out) == 0
     view = json.loads(out.getvalue())
     noc = view["sections"]["noc"]
-    assert noc["status"] == "running"
-    allowed_top = {"status", "reason_code", "source", "snapshot", "observation",
+    assert noc["status"] == "observed" and noc["freshness"] == "fresh"
+    allowed_top = {"status", "reason_code", "freshness", "source", "snapshot", "observation",
                    "not_measured", "role", "identity"}
     assert set(noc) == allowed_top
     assert set(noc["snapshot"]) == {"schema", "written_at", *status_view.NOC_FIELDS}

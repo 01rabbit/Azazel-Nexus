@@ -5,7 +5,7 @@
 routes, sysfs counters, the resolver files and DHCP lease files, every field
 with its evidence and a fixed `unknown` reason. `az-noc-observe` runs it once
 per `azazel-noc-observe.timer` period and writes this projection into
-`/var/lib/azazel/run/noc-status/status.json` (`2750 azobs:azazel-operator`),
+`/var/lib/azazel/run/noc-status/status.json` (`2750 aznoc:azazel-operator`),
 the same way the other operator snapshots are written (`operator_snapshots`).
 
 The projection keeps what an operator screen needs and nothing that

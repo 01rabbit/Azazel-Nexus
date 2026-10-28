@@ -188,7 +188,9 @@ listed; more are counted in `interfaces_omitted`. A collection that fails is
 written as `failed` / `collection_failed`, a projection the reader would
 refuse as `failed` / `projection_refused`.
 
-`status --json` shows it as the `noc` section (stale after 300 s). Reachability
+`status --json` shows it as the `noc` section (stale after 300 s, its own
+`freshness` item). A fresh snapshot makes the section `observed`, never
+`running` or healthy; a failed collection makes it `unknown` with the fixed code. Reachability
 and name resolution are always `not_measured` with `active_check_not_performed`:
 this build sends no probe, so "not measured" is never shown as "down". No unit
 requires or binds to the observer; it is installed but neither enabled nor

@@ -918,9 +918,12 @@ def _noc(now) -> dict:
                                 noc_status.NOC_BYTES, now, noc_status.NOC_STALE_S, NOC_FIELDS,
                                 writer="az-noc-observe")
     snapshot = section["snapshot"]
-    if snapshot is not None and snapshot["collection"] == "failed" \
-            and section["status"] == "running":
-        section["status"], section["reason_code"] = "unknown", snapshot["reason_code"]
+    if _fresh(section):
+        if snapshot["collection"] == "failed":
+            section["status"], section["reason_code"] = "unknown", snapshot["reason_code"]
+        else:
+            # Observed, which is not "healthy": the fields say what was seen.
+            section["status"], section["reason_code"] = "observed", None
     # Fixed statements, not observations: what this observer never does, so
     # a reader cannot take "not measured" for "down".
     section["observation"] = {"kind": "passive", "transmission": "none",
