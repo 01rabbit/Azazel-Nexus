@@ -220,8 +220,9 @@ def test_issuer_runbook_states_the_status_lines_and_the_floor_writer():
     from azazel_nexus_runtime import activated, edge_issuer_floor
 
     text = _flat(_text("edge-issuer.md"))
-    cli = _literals(REPO / "src" / "azazel_nexus" / "cli.py")
-    cli_source = (REPO / "src" / "azazel_nexus" / "cli.py").read_text(encoding="utf-8")
+    # The status screen is rendered by status_view from its read model (U1).
+    cli = _literals(REPO / "src" / "azazel_nexus" / "status_view.py")
+    cli_source = (REPO / "src" / "azazel_nexus" / "status_view.py").read_text(encoding="utf-8")
     for prefix in ("issuer_authenticated: ", "rollback floor: ", "revocation: ", "digest_verified: "):
         assert prefix.strip() in cli_source and prefix.strip() in text
     assert "  SECURITY FINDING" in cli and "`SECURITY FINDING`" in text

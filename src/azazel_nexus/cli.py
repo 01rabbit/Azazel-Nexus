@@ -64,7 +64,6 @@ from .hil_preflight import (
 )
 from .integration import IntegrationView, build_view
 from .inventory import DEFAULT_SYSFS_NET, no_permanent_mac, read_interfaces
-from .functional_readiness import readiness_for
 from .lite_import import status_summary
 from .lite_service import LiteReading, LiteState
 from .operator import (
@@ -150,24 +149,29 @@ def _module_reports() -> tuple[ModuleReport, ...]:
     )
 
 
-def _audit_snapshot_report(now: Optional[float]) -> HealthReport:
+def _audit_snapshot_report(now: Optional[float], seen: Optional[list] = None) -> HealthReport:
     """auditd's capacity snapshot (#211), when no ledger path was supplied.
 
     Read from its operator-readable leaf; never from the `0700` ledger and
     never over auditd's socket. Absent, refused or stale is said as such.
+    What was read is appended to `seen`, so the read model can name the
+    snapshot this line came from without reading it a second time.
     """
 
     from .audit_status import STATUS_BYTES, audit_health, read_audit_status
     from .edge_loop_status import read_snapshot
     from .runtime_paths import audit_status_path
 
-    healthy, detail, advisory = audit_health(
-        read_snapshot(audit_status_path(), read_audit_status, STATUS_BYTES), now)
+    value = read_snapshot(audit_status_path(), read_audit_status, STATUS_BYTES)
+    if seen is not None:
+        seen.append(value)
+    healthy, detail, advisory = audit_health(value, now)
     return HealthReport("audit", healthy, detail, advisory)
 
 
 def _health_reports(ledger_path: Optional[Path],
-                    now: Optional[float] = None) -> tuple[HealthReport, ...]:
+                    now: Optional[float] = None,
+                    audit_seen: Optional[list] = None) -> tuple[HealthReport, ...]:
     from .audit import AuditChainBroken, AuditLedger, AuditUnavailable
 
     checks = [
@@ -182,7 +186,7 @@ def _health_reports(ledger_path: Optional[Path],
     ]
     if ledger_path is None:
         try:
-            checks.append(_audit_snapshot_report(now))
+            checks.append(_audit_snapshot_report(now, audit_seen))
         except Exception:  # noqa: BLE001 - presentation only; status continues
             checks.append(HealthReport("audit", None, "auditd status snapshot unavailable (internal)"))
         return tuple(checks)
@@ -272,23 +276,15 @@ def _render_integration(view: IntegrationView, out: TextIO) -> None:
     """Print the six axes, and then what continues.
 
     What continues is printed **last and always**, not as a footnote that a
-    long list of red pushes off the screen.
+    long list of red pushes off the screen. Rendered by `status_view`, from
+    the same read model `status --json` prints.
     """
 
-    print("integration:", file=out)
-    for row in view.rows:
-        subject = f" [{row.subject}]" if row.subject else ""
-        marker = "  DEFECT" if row.defect else ""
-        print(f"    {row.axis}{subject}: {row.value}{marker}", file=out)
-        print(f"        {row.reason}", file=out)
-    print(file=out)
-    print(f"enforcement capable: {'yes' if view.enforcement_capable else 'no'}", file=out)
-    print(f"baseline ready: {'yes' if view.baseline_ready else 'no'}", file=out)
-    print("continuing regardless: " + ", ".join(view.continues), file=out)
+    from . import status_view
     from .broker_cli import status_summary as broker_status
     broker = broker_status(now=_now())
-    print("Integration broker (informational): " + broker["status_level"]
-          + "; Core deterministic; transport unavailable: Fabric#25", file=out)
+    terminal: dict = {"text": {}, "broker_level": broker["status_level"]}
+    status_view._text_integration(status_view._integration(view, broker, terminal), terminal, out)
 
 
 def _report(
@@ -296,13 +292,14 @@ def _report(
     ledger: Optional[Path],
     permanent_mac_reader=no_permanent_mac,
     now: Optional[float] = None,
+    audit_seen: Optional[list] = None,
 ) -> OperatorReport:
     return build_report(
         readouts=read_interfaces(sysfs, permanent_mac_reader=permanent_mac_reader),
         profile=_profile_report(),
         capabilities=_capability_report(),
         modules=_module_reports(),
-        health=_health_reports(ledger, now),
+        health=_health_reports(ledger, now, audit_seen),
     )
 
 
@@ -340,6 +337,22 @@ def _render_profile(report: OperatorReport, out: TextIO) -> None:
     )
 
 
+def _status_view(
+    report: OperatorReport,
+    view: Optional[IntegrationView] = None,
+    edge: Optional[EdgeInspection] = None,
+    knowledge: Optional[dict] = None,
+    as_of: Optional[str] = None,
+    **sources,
+):
+    """The read model `status` renders and `status --json` prints (U1)."""
+
+    from . import status_view
+    return status_view.build(
+        report, edge=edge, knowledge=knowledge, integration=view,
+        as_of=as_of or _now(), wall_now=_now(), **sources)
+
+
 def _render_status(
     report: OperatorReport,
     out: TextIO,
@@ -347,87 +360,12 @@ def _render_status(
     edge: Optional[EdgeInspection] = None,
     knowledge: Optional[dict] = None,
     as_of: Optional[str] = None,
+    **sources,
 ) -> None:
-    from .lab_host import is_lab_host
-    from .mio_status import describe, status_summary
-    _render_profile(report, out)
-    print(file=out)
-    print(describe(status_summary()), file=out)
-    print(file=out)
-    print(f"CLI baseline capability state: {report.capabilities.state.value} "
-          "(fixed CORE component set; no live provider assessment)", file=out)
-    print("    continuing: " + ", ".join(report.capabilities.retained), file=out)
-    if report.capabilities.lost:
-        print("    not available: " + ", ".join(report.capabilities.lost), file=out)
-    print(file=out)
-    print(
-        "enforcement ready: "
-        + ("yes" if report.enforcement_ready else "no"),
-        file=out,
-    )
-    # Printed as its own line rather than folded into a module list, because
-    # it is a claim about this node and not about a peer. "No" here means this
-    # node is not asserting a deterministic baseline; it does not mean an Edge
-    # Core is broken, and the edge section below says which of the five checks
-    # did not hold.
-    ready = edge is not None and edge.ready
-    print("edge-baseline-ready: " + ("yes" if ready else "no"), file=out)
-    if not report.enforcement_ready:
-        if report.record is None:
-            print("    no commissioning record exists on this node", file=out)
-        else:
-            missing = report.record.missing_profiles
-            if missing:
-                print("    missing profiles: " + ", ".join(missing), file=out)
-            if report.record.observe_only:
-                print("    no interface carries a confirmed role", file=out)
-    print(file=out)
-    print("interfaces:", file=out)
-    _render_interfaces(report, out)
-    print(file=out)
-    print("external modules:", file=out)
-    for module in report.modules:
-        print(f"    {module.name}: {module.state.value} -- {module.reason}", file=out)
-    print(file=out)
-    if knowledge is not None:
-        _render_knowledge(knowledge, out)
-        print(file=out)
-    if edge is not None:
-        _render_edge(edge, out)
-        print(file=out)
-    if view is not None:
-        _render_integration(view, out)
-        print(file=out)
-    from datetime import datetime
-    from .edge_loop_status import render_edge_loop, render_fabric_status
-    render_fabric_status(report, out)
-    try:
-        now = datetime.fromisoformat(as_of or _now()).timestamp()
-    except (TypeError, ValueError, OverflowError):
-        now = None
-    render_edge_loop(out, now=now)
-    print(file=out)
-    _render_health(report, out)
-    print(file=out)
-    print("next:", file=out)
-    if not report.next_actions:
-        print("    nothing is outstanding.", file=out)
-    lab_host = is_lab_host()
-    for action in report.next_actions:
-        if lab_host and action.command and any(
-                command in action.command for command in (
-                    "azazel-nexus commission", "azazel-nexus hil-preflight",
-                    "azazel-nexus model-import-fetched")):
-            step = next(name for command, name in (
-                ("azazel-nexus commission", "commissioning"),
-                ("azazel-nexus hil-preflight", "host-preflight"),
-                ("azazel-nexus model-import-fetched", "model-import-fetched"),
-            ) if command in action.command)
-            print(f"    {step} step unavailable on a lab host (LAB_HOST_MARKER); requires a non-lab deployment", file=out)
-            continue
-        print(f"    {action.summary}", file=out)
-        if action.command:
-            print(f"        {action.command}", file=out)
+    """Print `status` from its read model; see `status_view` for both."""
+
+    from . import status_view
+    status_view.render_text(_status_view(report, view, edge, knowledge, as_of, **sources), out)
 
 
 def _probe_result(path: Path, out: TextIO):
@@ -472,23 +410,9 @@ def _current_boot(out: TextIO):
 def _render_knowledge(reading: dict, out: TextIO) -> None:
     """Render only facts returned by the commissioned trust status reader."""
 
-    readiness = readiness_for("knowledge_lite")
-    print(
-        "Knowledge Lite: "
-        + ("functional" if readiness.functional else readiness.value),
-        file=out,
-    )
-    print(f"    state: {reading['state']}", file=out)
-    print(f"    reason: {reading['reason_code']}", file=out)
-    print(f"    generation: {reading['generation']}", file=out)
-    print(f"    freshness: {reading['freshness']}", file=out)
-    print(
-        "    cryptographic implementation: not supported (Nexus#70 review pending)",
-        file=out,
-    )
-    print(f"    functional means: {readiness.means}", file=out)
-    for limit in readiness.does_not_mean:
-        print(f"    it does not mean: {limit}", file=out)
+    from . import status_view
+    terminal: dict = {"text": {}}
+    status_view._text_knowledge(status_view._knowledge(reading, terminal), terminal, out)
 
 
 def _render_edge(inspection: EdgeInspection, out: TextIO) -> None:
@@ -497,41 +421,14 @@ def _render_edge(inspection: EdgeInspection, out: TextIO) -> None:
     All five are printed whatever the leading word says. A screen that stopped
     at the first failure would leave an operator who fixed it guessing at what
     comes next, and -- worse -- would hide a digest mismatch behind a version
-    mismatch found first.
+    mismatch found first. The two issuer facts are printed on separate lines
+    so that neither can be read as the other (`edge_issuer`).
     """
 
-    where = inspection.root or "no package root configured"
-    print(f"edge core (local): {inspection.presence.value}  [{where}]", file=out)
-    for finding in inspection.findings:
-        mark = "  SECURITY FINDING" if finding.security else ""
-        print(f"    {finding.check}: {finding.evidence.value}{mark}", file=out)
-        print(f"        {finding.reason}", file=out)
-    # Two separate facts, printed on two lines so that neither can be read as
-    # the other (`edge_issuer`): an intact artifact says nothing about who
-    # issued it, and a valid signature says nothing about the bytes on disk.
-    issuer = inspection.issuer
-    if issuer is not None:
-        print("    digest_verified: " + ("yes" if issuer.digest_verified else "no"), file=out)
-        named = f", issuer {issuer.issuer}" if issuer.issuer else ""
-        print(
-            "    issuer_authenticated: "
-            + ("yes" if issuer.issuer_authenticated else "no")
-            + f" ({issuer.issuer_status}{named})",
-            file=out,
-        )
-        print(f"        {issuer.issuer_reason}", file=out)
-        sequence = (f", sequence {issuer.revocation_sequence}"
-                    if issuer.revocation_sequence is not None else "")
-        print(f"    revocation: {issuer.revocation_status}{sequence}"
-              f" (revoked: {issuer.revoked})", file=out)
-        floor = f", floor {issuer.floor_version}" if issuer.floor_version else ""
-        print(f"    rollback floor: {issuer.floor_status}{floor}", file=out)
-        if issuer.notes:
-            # Reported, and by design without effect on any check.
-            print("    issuer notes (no effect on acceptance): "
-                  + ", ".join(issuer.notes), file=out)
-    for caveat in inspection.caveats:
-        print(f"    caveat: {caveat}", file=out)
+    from . import status_view
+    terminal: dict = {"text": {}}
+    section = status_view._edge(inspection, "not_read", "not_read", terminal)
+    status_view._text_edge(section, terminal, out)
 
 
 def _render_health(report: OperatorReport, out: TextIO) -> None:
@@ -823,7 +720,11 @@ def main(
 
     sub.add_parser("inventory", help="read-only hardware and interface list")
     sub.add_parser("profile", help="measured RAM and the profile it selects")
-    sub.add_parser("status", help="everything above, as it currently stands")
+    status_parser = sub.add_parser("status", help="everything above, as it currently stands")
+    status_parser.add_argument(
+        "--json", action="store_true",
+        help="print the read model (schema azazel-nexus/status-view/1) instead of the text",
+    )
     sub.add_parser("health", help="units and the audit chain")
     sub.add_parser(
         "bootstrap-deployment-preview",
@@ -1138,7 +1039,9 @@ def main(
             args, stream, ask, confirm, text, permanent_mac_reader
         )
 
-    report = _report(args.sysfs, args.ledger, permanent_mac_reader, _instant(args.as_of))
+    audit_seen: list = []
+    report = _report(args.sysfs, args.ledger, permanent_mac_reader, _instant(args.as_of),
+                     audit_seen)
     if args.command == "inventory":
         _render_interfaces(report, stream)
     elif args.command == "profile":
@@ -1156,15 +1059,27 @@ def main(
         # `status` never probes. It reads what `az-edge-probed` last
         # wrote (Nexus#72) and passes it in; package, version and digest
         # are still derived here, from the files, every time.
-        probe = _probe_result(args.edge_probe, stream)
+        #
+        # What reading the probe result and the boot id printed goes to a
+        # buffer: the text screen prints it first, as it always has, and
+        # `--json` carries a fixed code instead of the text (which can quote
+        # an exception or a path).
+        import io
+
+        preamble = io.StringIO()
+        probe = _probe_result(args.edge_probe, preamble)
+        probe_code = "loaded" if probe is not None else (
+            "refused" if preamble.getvalue() else "absent")
+        boot_id, boot_code = None, "not_needed"
+        if probe:
+            boot_id = _current_boot(preamble)
+            boot_code = "read" if boot_id is not None else "unreadable"
         edge = inspect_edge(
-            args.edge_root, probe=probe, now=as_of,
-            boot_id=_current_boot(stream) if probe else None,
+            args.edge_root, probe=probe, now=as_of, boot_id=boot_id,
         )
         knowledge = _knowledge_reading(args.knowledge_lite, as_of=as_of)
-        _render_status(
+        status = _status_view(
             report,
-            stream,
             _integration_view(
                 report,
                 as_of=as_of,
@@ -1175,7 +1090,16 @@ def main(
             edge,
             knowledge,
             as_of,
+            audit_seen=audit_seen,
+            probe=probe_code,
+            boot_id=boot_code,
+            preamble=preamble.getvalue(),
         )
+        from . import status_view
+        if getattr(args, "json", False):
+            print(status_view.dumps(status), file=stream)
+        else:
+            status_view.render_text(status, stream)
     return 0
 
 

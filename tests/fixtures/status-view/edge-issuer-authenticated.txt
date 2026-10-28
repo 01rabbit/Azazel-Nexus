@@ -1,0 +1,93 @@
+resource profile: core (usable RAM 7800 MiB, as the OS reports it)
+    a profile is an upper bound. It grants no NIC role, no capture, no enforcement and no external connection.
+
+M.I.O.: recorded ceiling: unknown; capability state: unknown; source: entryd route ledger; unknown (route ledger not readable by this user, missing, or verification refused; entryd credentials are not read). The recorded ceiling is not a grant or admission; provider admission remains closed.
+
+CLI baseline capability state: CORE (fixed CORE component set; no live provider assessment)
+    continuing: arbiter_interface, audit, deterministic_explanations, evaluators, evidence, operator_plane
+    not available: extended_knowledge, knowledge_lite, full_host_redirect, deception_lite, local_cognition, remote_cognition
+
+enforcement ready: no
+edge-baseline-ready: yes
+    no commissioning record exists on this node
+
+interfaces:
+if-1  not commissionable
+    bus_path=devices/pci0000:00/0000:04:00.0, physical_label=LAN1
+    blocked: permanent_mac could not be read
+if-2  not commissionable
+    bus_path=devices/pci0000:00/0000:05:00.0, physical_label=LAN2
+    blocked: permanent_mac could not be read
+
+external modules:
+    AZ-04 Knowledge: absent -- no module endpoint is configured on this node
+    AZ-06 Deception: absent -- no module endpoint is configured on this node
+    Remote M.I.O.: absent -- no remote cognition route is configured on this node
+
+Knowledge Lite: functional
+    state: unavailable
+    reason: trust_unreadable
+    generation: None
+    freshness: absent
+    cryptographic implementation: not supported (Nexus#70 review pending)
+    functional means: a correct Knowledge Lite bundle can be imported offline by an operator and its real claims served read-only
+    it does not mean: that this node's cryptographic implementation is supported -- the hand-written Ed25519 verifier is under review (Nexus#70)
+    it does not mean: that this node has an AZ-04 Knowledge peer at all; there is no peer route and no download
+    it does not mean: any share of Edge authority; Knowledge is advice, and the deterministic arbiter in Azazel-Edge decides
+
+edge core (local): verified-ready  [<TMP>/edge-verified]
+    package_present: passed
+        azazel-edge-core-0.1.0-x86_64.manifest.json and azazel-edge-core-0.1.0-x86_64.tar.gz are both at <TMP>/edge-verified, the manifest declares azazel-edge-core/package-manifest/v1, and its posture is observe-only
+    version_matches: passed
+        the manifest declares 0.1.0, which is the pinned version
+    digest_matches: passed
+        re-derived sha256:95e639c496e6e356b0365871cf517df2727283439d6c62c3d49298e9d7877629 from azazel-edge-core-0.1.0-x86_64.tar.gz and it matches the manifest. Integrity against accidental change, which is not authenticity; whether the manifest's issuer is authenticated is a separate fact, reported separately
+    health_endpoint_healthy: passed
+        az-edge-probed at 2026-09-21T04:00:00Z: all four conditions held
+    running: passed
+        az-edge-probed at 2026-09-21T04:00:00Z: azazel-edge-core.service is active/running
+    digest_verified: yes
+    issuer_authenticated: yes (authenticated, issuer lab-issuer-test)
+        the manifest carries a valid detached signature under the configured issuer key
+    revocation: in_force, sequence 3 (revoked: none)
+    rollback floor: held, floor 0.1.0
+    issuer notes (no effect on acceptance): state_directory_unprotected
+    caveat: the Edge manifest carries a valid signature under the configured issuer key. That authenticates the issuer's statement about the package, and only that: it is a separate fact from the digest, it says nothing about the package's behaviour, and it establishes no check on its own
+
+integration:
+    capability: CORE
+        the node is CORE; a capability state is what the node can do and never what it is permitted to decide
+    freshness [knowledge_lite]: unavailable
+        trust_unreadable | freshness: absent
+    freshness [deception_lite]: loopback-only
+        the functional layer exists and reaches only this host: decoys start and listen, and only on private Unix sockets in the runtime's own directory. Nothing outside this host can reach one: the one module that can bind an address (decoy_listener, #196 P1) is called only by the decoy daemon az-decoyd, whose unit is never granted in this build, so no hostile party can be observed by it yet (Nexus#69). This is an embedded feature that really runs and that nothing outside this host can be affected by, which is not the capability being supplied, and is not the same fact as an external peer being absent. The runtime itself reports: no decoy catalogue is present; nothing is approved
+    cognition_route [mio]: CORE ONLY; remote M.I.O. disabled; local M.I.O. control-plane-only
+        the control plane is implemented and the functional layer is not: the Core reserve is unmeasured (HG-05), so the resource gate refuses every local model provider and none is ever admitted (Nexus#68). This is an embedded feature that cannot supply its capability, which is not the same fact as an external peer being absent | no local model provider is declared; deterministic explanations continue unchanged | resource: envelope 'core'; headroom undecidable because the Core reserve is unmeasured for Nexus (docs/hardware-gates.md HG-05). The envelope is a hardware class and never evidence that a capability fits | topology: no commissioned egress path is required, because no remote provider is enabled; topology neither permits nor blocks anything here | trust: no provider is running, so there is no health window to report; an absent provider is not an unhealthy one
+    knowledge_supplier [knowledge]: none
+        nothing is supplying this capability; AZ-04 peer is a capability extension and its absence is unavailable, not a defect
+    deception_supplier [deception]: none
+        nothing is supplying this capability; AZ-06 peer is a capability extension and its absence is unavailable, not a defect
+    edge [edge_core]: verified-ready
+        the Edge package is present, version- and digest-matched, healthy and running
+
+enforcement capable: yes
+baseline ready: yes
+continuing regardless: Edge deterministic decisions, audit, deterministic explanations, inventory and commissioning, local-only decoy observation, operator plane
+Integration broker (informational): CORE; Core deterministic; transport unavailable: Fabric#25
+
+fabric status view: not available (extra not installed)
+edge loop:
+    intake: unavailable (snapshot absent or refused)
+    explainer: unavailable (snapshot absent or refused)
+    recent incidents: unavailable (snapshot absent or refused)
+
+health:
+    systemd units: unknown -- not established: runtime service units ship with this build; this read-only command does not query the service manager (docs/hardware-gates.md HG-01)
+    audit: unknown -- no readable auditd status snapshot (auditd not running, install.sh not re-run since the upgrade, or this user cannot read run/audit-status: that needs the azazel-operator group); audit capacity unknown; audit ledger not inspected
+
+next:
+    No operator has confirmed what this node is attached to. Commission it before anything is activated.
+        azazel-nexus commission
+    if-1 cannot be commissioned as read: permanent_mac could not be read
+    if-2 cannot be commissioned as read: permanent_mac could not be read
+    No interface on this host has a readable permanent MAC, so none can be commissioned. Reading it requires a privileged driver query that this build does not perform: see docs/hardware-gates.md HG-04.

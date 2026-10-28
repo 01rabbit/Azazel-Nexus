@@ -44,6 +44,26 @@ LITE/FULL from RAM. The recorded ceiling is not a grant or admission; entryd rec
 profile is selected or its reader fails. Status does not
 query systemd, and audit-chain health is unknown without an explicit `--ledger`.
 
+`azazel-nexus status --json` prints the read model the text screen is rendered
+from, schema `azazel-nexus/status-view/1` (`src/azazel_nexus/status_view.py`),
+instead of the text. It reads exactly what `status` reads, through the same
+strict snapshot readers, and is built by allowlist: each section carries a
+`status` word, a `reason_code` for anything unknown, unmeasured, refused or
+stale, and its `source` (snapshot schema, `written_at` and freshness where a
+snapshot is the source). Edge decisions appear only as `would` with
+`executed: false`; the execution result is fixed to `none` with reason
+`nexus_accepts_observe_only`, because the intake refuses any Edge event that is
+not observe-only. A loop component whose snapshot reports `chain_broken` or
+`storage_failed` is `degraded`, not `running`, and the M.I.O. reading is
+judged against the status clock (`observed_at_in_future`,
+`observed_at_expired`). Interface descriptions, filesystem paths, Edge finding
+reasons, exception text and any fixed sentence that names a path are shown on
+the terminal only; the read model names each one under `withheld` and carries
+a code beside it. Values are checked against their fixed vocabularies, and an
+integer beyond JavaScript's exact range is reported as `too_large`. On a LAB HOST the `LAB HOST` marker goes to
+stderr so the JSON stays parseable. Like the text, it is a display: it grants,
+admits and activates nothing.
+
 Select M.I.O. CORE / LITE / FULL with `az-nexus-commission proposal-export --operator LABEL`, then obtain the existing separate full-proposal signature/review; entryd uses CORE until that selection verifies.
 The whole sequence, including off-host signing with `tools/operator_sign.py`, is
 rehearsed step by step in the [commissioning VM rehearsal](hil-runbooks/commissioning-rehearsal.md).
