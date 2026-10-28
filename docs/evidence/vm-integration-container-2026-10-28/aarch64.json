@@ -3,8 +3,9 @@
   "azazel-edge-core-0.1.0-x86_64.manifest.json": "<sha256>",
   "azazel-edge-core-0.1.0-x86_64.tar.gz": "<sha256>"
  },
- "finished_at": "2026-10-28T14:18:01Z",
+ "finished_at": "2026-10-28T16:04:06Z",
  "options": {
+  "disposable_node": true,
   "edge": true,
   "kind": "container",
   "rosetta": false,
@@ -13,6 +14,12 @@
  "phases": [
   {
    "checks": [
+    {
+     "detail": "the operator passed --disposable-node; no venv, /etc/azazel, /var/lib/azazel or kept capacity data",
+     "id": "prepare.fresh-node",
+     "status": "pass",
+     "title": "the node is a fresh, disposable lab node"
+    },
     {
      "detail": "apparmor_parser, ip, setpriv, runuser, systemd-run, openssl, gcc",
      "id": "prepare.tools",
@@ -667,7 +674,7 @@
      "title": "Mission Pack expiry"
     },
     {
-     "detail": "{\"free_bytes\": 0, \"precondition_repaired\": [], \"drives\": 1, \"writers_started\": {\"azazel-mio-entryd.service\": \"active\"}, \"writers_after\": {\"azazel-mio-entryd.service\": \"failed\"}, \"effects\": [\"azazel-mio-entryd.service failed\", \"explanation failure codes mio_unavailable\"], \"edge_decisions\": 2, \"recovered\": {\"azazel-mio-entryd.service\": \"active\"}, \"explanations\": 2, \"status_audit_line\": \"audit: ok -- chain verified at auditd start; chain 5.9 KiB in 1 segment(s); 69.9 GiB free on its filesystem; warns at >= 1.0 GiB chain or < 1.0 GiB free; rate_limited: none (snapshot 54s old)\"}",
+     "detail": "{\"free_bytes\": 0, \"precondition_repaired\": [], \"drives\": 1, \"restore\": \"ok\", \"writers_started\": {\"azazel-mio-entryd.service\": \"active\"}, \"writers_after\": {\"azazel-mio-entryd.service\": \"failed\"}, \"effects\": [\"azazel-mio-entryd.service failed\", \"explanation failure codes mio_unavailable\"], \"edge_decisions\": 2, \"recovered\": {\"azazel-mio-entryd.service\": \"active\"}, \"explanations\": 2, \"status_audit_line\": \"audit: ok -- chain verified at auditd start; chain 6.2 KiB in 1 segment(s); 70.7 GiB free on its filesystem; warns at >= 1.0 GiB chain or < 1.0 GiB free; rate_limited: none (snapshot 54s old)\"}",
      "evidence": {
       "observation": {
        "drives": 1,
@@ -715,7 +722,7 @@
      "title": "storage pressure on route-ledger: the writer's failure is visible and contained, other units and Edge Core keep running, and it recovers when space returns"
     },
     {
-     "detail": "{\"free_bytes\": 0, \"precondition_repaired\": [], \"drives\": 1, \"writers_started\": {\"azazel-edge-intaked.service\": \"active\"}, \"writers_after\": {\"azazel-edge-intaked.service\": \"active\"}, \"effects\": [\"intake storage_failed\", \"intake refused {\\\"storage_failed\\\": 2}\"], \"edge_decisions\": 2, \"recovered\": {\"azazel-edge-intaked.service\": \"active\"}, \"explanations\": 0, \"status_audit_line\": \"audit: ok -- chain verified at auditd start; chain 9.3 KiB in 1 segment(s); 70.5 GiB free on its filesystem; warns at >= 1.0 GiB chain or < 1.0 GiB free; rate_limited: none (snapshot 9s old)\"}",
+     "detail": "{\"free_bytes\": 0, \"precondition_repaired\": [], \"drives\": 1, \"restore\": \"ok\", \"writers_started\": {\"azazel-edge-intaked.service\": \"active\"}, \"writers_after\": {\"azazel-edge-intaked.service\": \"active\"}, \"effects\": [\"intake storage_failed\", \"intake refused {\\\"storage_failed\\\": 2}\"], \"edge_decisions\": 2, \"recovered\": {\"azazel-edge-intaked.service\": \"active\"}, \"explanations\": 0, \"status_audit_line\": \"audit: ok -- chain verified at auditd start; chain 9.6 KiB in 1 segment(s); 70.7 GiB free on its filesystem; warns at >= 1.0 GiB chain or < 1.0 GiB free; rate_limited: none (snapshot 10s old)\"}",
      "evidence": {
       "observation": {
        "drives": 1,
@@ -732,7 +739,7 @@
      "title": "storage pressure on intake-segment: the writer's failure is visible and contained, other units and Edge Core keep running, and it recovers when space returns"
     },
     {
-     "detail": "{\"free_bytes\": 0, \"precondition_repaired\": [], \"drives\": 2, \"writers_started\": {\"azazel-edge-intaked.service\": \"active\"}, \"writers_after\": {\"azazel-edge-intaked.service\": \"active\"}, \"effects\": [\"intake storage_failed\", \"intake refused {\\\"storage_failed\\\": 2}\"], \"edge_decisions\": 2, \"recovered\": {\"azazel-edge-intaked.service\": \"active\"}, \"explanations\": 0, \"status_audit_line\": \"audit: ok -- chain verified at auditd start; chain 9.3 KiB in 1 segment(s); 70.5 GiB free on its filesystem; warns at >= 1.0 GiB chain or < 1.0 GiB free; rate_limited: none (snapshot 45s old)\"}",
+     "detail": "{\"free_bytes\": 0, \"precondition_repaired\": [], \"drives\": 2, \"restore\": \"ok\", \"writers_started\": {\"azazel-edge-intaked.service\": \"active\"}, \"writers_after\": {\"azazel-edge-intaked.service\": \"active\"}, \"effects\": [\"intake storage_failed\", \"intake refused {\\\"storage_failed\\\": 2}\"], \"edge_decisions\": 2, \"recovered\": {\"azazel-edge-intaked.service\": \"active\"}, \"explanations\": 0, \"status_audit_line\": \"audit: ok -- chain verified at auditd start; chain 9.6 KiB in 1 segment(s); 70.7 GiB free on its filesystem; warns at >= 1.0 GiB chain or < 1.0 GiB free; rate_limited: none (snapshot 46s old)\"}",
      "evidence": {
       "observation": {
        "drives": 2,
@@ -749,7 +756,7 @@
      "title": "storage pressure on incident-ledger: the writer's failure is visible and contained, other units and Edge Core keep running, and it recovers when space returns"
     },
     {
-     "detail": "{\"free_bytes\": 0, \"precondition_repaired\": [], \"drives\": 3, \"writers_started\": {\"azn-rehearsal-auditd.service\": \"active\"}, \"writers_after\": {\"azn-rehearsal-auditd.service\": \"failed\"}, \"effects\": [\"azn-rehearsal-auditd.service failed\", \"explainer audit_forward_dropped +1\"], \"edge_decisions\": 2, \"recovered\": {\"azn-rehearsal-auditd.service\": \"active\"}, \"explanations\": 6, \"status_audit_line\": \"audit: ok -- WARNING: capacity warning (filesystem_free): nothing is deleted (retention policy: never delete, warn only); see docs/operations.md (Audit chain retention); chain verified at auditd start; chain 9.3 KiB in 1 segment(s); 0 B free on its filesystem; warns at >= 1.0 GiB chain or < 1.0 GiB free; capacity warning (filesystem_free); rate_limited: none (snapshot 70s old)\"}",
+     "detail": "{\"free_bytes\": 0, \"precondition_repaired\": [], \"drives\": 3, \"restore\": \"ok\", \"writers_started\": {\"azn-rehearsal-auditd.service\": \"active\"}, \"writers_after\": {\"azn-rehearsal-auditd.service\": \"failed\"}, \"effects\": [\"azn-rehearsal-auditd.service failed\", \"explainer audit_forward_dropped +2\"], \"edge_decisions\": 2, \"recovered\": {\"azn-rehearsal-auditd.service\": \"active\"}, \"explanations\": 6, \"status_audit_line\": \"audit: ok -- WARNING: capacity warning (filesystem_free): nothing is deleted (retention policy: never delete, warn only); see docs/operations.md (Audit chain retention); chain verified at auditd start; chain 9.6 KiB in 1 segment(s); 0 B free on its filesystem; warns at >= 1.0 GiB chain or < 1.0 GiB free; capacity warning (filesystem_free); rate_limited: none (snapshot 70s old)\"}",
      "evidence": {
       "observation": {
        "drives": 3,
@@ -882,7 +889,7 @@
      "title": "H2 observed: Edge Core after SIGKILL"
     },
     {
-     "detail": "{\"Requires\": \"sysinit.target system.slice azazel-activated.service\", \"BindsTo\": \"\", \"PartOf\": \"\", \"Wants\": \"tmp.mount\"}",
+     "detail": "{\"Requires\": \"system.slice sysinit.target azazel-activated.service\", \"BindsTo\": \"\", \"PartOf\": \"\", \"Wants\": \"tmp.mount\"}",
      "id": "scenarios.h-deps",
      "status": "pass",
      "title": "Edge Core's unit names no advisory, Knowledge, explainer, intake or audit unit as Requires/BindsTo/PartOf/Wants"
@@ -934,7 +941,7 @@
      "detail": "az-activated completed safely: granted=0, withheld=16, reasons=no_generation",
      "id": "after-restart.pass",
      "status": "pass",
-     "title": "the boot's activation pass ran and granted nothing"
+     "title": "the activation pass ran and granted nothing"
     },
     {
      "detail": "0 marker(s)",
@@ -997,9 +1004,9 @@
  "schema": "azazel-nexus/vm-integration-run/v1",
  "scope": "Container rehearsal inside a privileged container whose PID 1 is systemd: not a VM and not hardware",
  "source": {
-  "commit": "341002d48cfe8c3e59ae70f6b70dfc181bea9ba0",
+  "commit": "9cd7e9c5d2f183a0f3e6875ab2d5cdb3f5e9192c",
   "worktree": "clean"
  },
- "started_at": "2026-10-28T14:10:42Z",
+ "started_at": "2026-10-28T15:56:49Z",
  "transport": "docker exec into a privileged container with systemd as PID 1"
 }
