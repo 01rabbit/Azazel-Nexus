@@ -92,7 +92,7 @@
         "digest_verified": false,
         "floor_status": "absent",
         "issuer_authenticated": false,
-        "issuer_reason": "no Edge issuer trust anchor is configured on this node (/etc/azazel/edge-issuer/issuer.json), so the issuer is not authenticated. Package acceptance is unchanged by this",
+        "issuer_reason": null,
         "issuer_status": "not_configured",
         "notes": [],
         "revocation_status": "not_configured",
@@ -100,7 +100,8 @@
         "withheld": [
           "issuer",
           "revocation_sequence",
-          "floor_version"
+          "floor_version",
+          "issuer_reason"
         ]
       },
       "probe": {
@@ -138,7 +139,10 @@
       },
       "evaluated_at": 1789963260.0,
       "explainer": {
-        "reason_code": null,
+        "conditions": [
+          "chain_broken"
+        ],
+        "reason_code": "chain_broken",
         "snapshot": {
           "audit_forward_dropped": 0,
           "audit_forward_refused": 0,
@@ -158,6 +162,7 @@
           "written_at": 1789963257.0
         },
         "source": {
+          "age_reason": null,
           "age_s": 3,
           "freshness": "fresh",
           "kind": "snapshot",
@@ -165,9 +170,10 @@
           "schema": "azazel-nexus/incident-explain-status/v1",
           "written_at": 1789963257.0
         },
-        "status": "running"
+        "status": "degraded"
       },
       "intake": {
+        "conditions": [],
         "reason_code": null,
         "snapshot": {
           "accepted": 12,
@@ -193,6 +199,7 @@
             "since": 1789900000
           },
           "edge_forward_freshness": {
+            "age_reason": null,
             "age_s": 1000,
             "reported_by": "edge",
             "status": "stale"
@@ -218,6 +225,7 @@
           "written_at": 1789963255.0
         },
         "source": {
+          "age_reason": null,
           "age_s": 5,
           "freshness": "fresh",
           "kind": "snapshot",
@@ -229,6 +237,7 @@
       },
       "reason_code": null,
       "recent": {
+        "conditions": [],
         "reason_code": null,
         "snapshot": {
           "incidents": [
@@ -343,6 +352,7 @@
           "written_at": 1789963258.0
         },
         "source": {
+          "age_reason": null,
           "age_s": 2,
           "freshness": "fresh",
           "kind": "snapshot",
@@ -367,18 +377,21 @@
         "name": "AZ-04 Knowledge",
         "reason": "no module endpoint is configured on this node",
         "state": "absent",
+        "withheld": [],
         "working": false
       },
       {
         "name": "AZ-06 Deception",
         "reason": "no module endpoint is configured on this node",
         "state": "absent",
+        "withheld": [],
         "working": false
       },
       {
         "name": "Remote M.I.O.",
         "reason": "no remote cognition route is configured on this node",
         "state": "absent",
+        "withheld": [],
         "working": false
       }
     ],
@@ -390,20 +403,40 @@
     "health": [
       {
         "advisory": null,
-        "detail": "not established: runtime service units ship with this build; this read-only command does not query the service manager (docs/hardware-gates.md HG-01)",
+        "advisory_code": null,
+        "detail": null,
         "reason_code": "service_manager_not_queried",
         "source": {
           "kind": "not_queried"
         },
         "status": "unknown",
         "subject": "systemd units",
-        "withheld": []
+        "withheld": [
+          "detail"
+        ]
       },
       {
-        "advisory": "capacity warning (chain_size, filesystem_free): nothing is deleted (retention policy: never delete, warn only); see docs/operations.md (Audit chain retention)",
-        "detail": "WARNING: capacity warning (chain_size, filesystem_free): nothing is deleted (retention policy: never delete, warn only); see docs/operations.md (Audit chain retention); chain verified at auditd start; chain 3.0 GiB in 3 segment(s); 1.0 GiB free on its filesystem; warns at >= 2.0 GiB chain or < 2.0 GiB free; capacity warning (chain_size, filesystem_free); rate_limited: 6 (daily:edge.alert:ordinary=4, rate:mio.request:service=2); summaries dropped: 1 (snapshot 20s old)",
+        "advisory": null,
+        "advisory_code": "audit_capacity_warning",
+        "capacity": {
+          "chain_bytes": 3221225472,
+          "chain_verified": true,
+          "filesystem_free_bytes": 1073741824,
+          "rate_limit_summaries_dropped": 1,
+          "rate_limited_total": 6,
+          "segments": 3,
+          "warn_chain_bytes": 2147483648,
+          "warn_free_bytes": 2147483648,
+          "warning": true,
+          "warning_reasons": [
+            "chain_size",
+            "filesystem_free"
+          ]
+        },
+        "detail": null,
         "reason_code": null,
         "source": {
+          "age_reason": null,
           "age_s": 20,
           "freshness": "fresh",
           "kind": "snapshot",
@@ -413,7 +446,10 @@
         },
         "status": "ok",
         "subject": "audit",
-        "withheld": []
+        "withheld": [
+          "detail",
+          "advisory"
+        ]
       }
     ],
     "integration": {
@@ -440,49 +476,58 @@
           "defect": false,
           "reason": "the node is CORE; a capability state is what the node can do and never what it is permitted to decide",
           "subject": "",
-          "value": "CORE"
+          "value": "CORE",
+          "withheld": []
         },
         {
           "axis": "freshness",
           "defect": false,
           "reason": "trust_unreadable | freshness: absent",
           "subject": "knowledge_lite",
-          "value": "unavailable"
+          "value": "unavailable",
+          "withheld": []
         },
         {
           "axis": "freshness",
           "defect": false,
           "reason": "the functional layer exists and reaches only this host: decoys start and listen, and only on private Unix sockets in the runtime's own directory. Nothing outside this host can reach one: the one module that can bind an address (decoy_listener, #196 P1) is called only by the decoy daemon az-decoyd, whose unit is never granted in this build, so no hostile party can be observed by it yet (Nexus#69). This is an embedded feature that really runs and that nothing outside this host can be affected by, which is not the capability being supplied, and is not the same fact as an external peer being absent. The runtime itself reports: no decoy catalogue is present; nothing is approved",
           "subject": "deception_lite",
-          "value": "loopback-only"
+          "value": "loopback-only",
+          "withheld": []
         },
         {
           "axis": "cognition_route",
           "defect": false,
-          "reason": "the control plane is implemented and the functional layer is not: the Core reserve is unmeasured (HG-05), so the resource gate refuses every local model provider and none is ever admitted (Nexus#68). This is an embedded feature that cannot supply its capability, which is not the same fact as an external peer being absent | no local model provider is declared; deterministic explanations continue unchanged | resource: envelope 'core'; headroom undecidable because the Core reserve is unmeasured for Nexus (docs/hardware-gates.md HG-05). The envelope is a hardware class and never evidence that a capability fits | topology: no commissioned egress path is required, because no remote provider is enabled; topology neither permits nor blocks anything here | trust: no provider is running, so there is no health window to report; an absent provider is not an unhealthy one",
+          "reason": null,
           "subject": "mio",
-          "value": "CORE ONLY; remote M.I.O. disabled; local M.I.O. control-plane-only"
+          "value": "CORE ONLY; remote M.I.O. disabled; local M.I.O. control-plane-only",
+          "withheld": [
+            "reason"
+          ]
         },
         {
           "axis": "knowledge_supplier",
           "defect": false,
           "reason": "nothing is supplying this capability; AZ-04 peer is a capability extension and its absence is unavailable, not a defect",
           "subject": "knowledge",
-          "value": "none"
+          "value": "none",
+          "withheld": []
         },
         {
           "axis": "deception_supplier",
           "defect": false,
           "reason": "nothing is supplying this capability; AZ-06 peer is a capability extension and its absence is unavailable, not a defect",
           "subject": "deception",
-          "value": "none"
+          "value": "none",
+          "withheld": []
         },
         {
           "axis": "edge",
           "defect": false,
           "reason": "no Edge package is installed on this node. This is a deployment step, not a security finding; enforcement-capable and baseline-ready are not claimed",
           "subject": "edge_core",
-          "value": "absent"
+          "value": "absent",
+          "withheld": []
         }
       ],
       "status": "reported"
@@ -588,14 +633,18 @@
       {
         "command": null,
         "lab_host_unavailable_step": null,
-        "summary": "No interface on this host has a readable permanent MAC, so none can be commissioned. Reading it requires a privileged driver query that this build does not perform: see docs/hardware-gates.md HG-04.",
-        "withheld": []
+        "summary": null,
+        "withheld": [
+          "summary"
+        ]
       },
       {
         "command": null,
         "lab_host_unavailable_step": null,
-        "summary": "audit: capacity warning (chain_size, filesystem_free): nothing is deleted (retention policy: never delete, warn only); see docs/operations.md (Audit chain retention)",
-        "withheld": []
+        "summary": null,
+        "withheld": [
+          "summary"
+        ]
       }
     ],
     "profile": {

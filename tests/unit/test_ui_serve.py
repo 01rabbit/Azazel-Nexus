@@ -720,7 +720,7 @@ def _labels():
     return json.loads((STATIC / "labels.json").read_text(encoding="utf-8"))
 
 
-UNKNOWNISH = ("unknown", "stale", "unavailable", "not_measured", "not_collected",
+UNKNOWNISH = ("unknown", "stale", "degraded", "too_large", "unavailable", "not_measured", "not_collected",
               "permission_denied", "pending", "absent", "unattempted/skipped", "none_read",
               "not_inspected", "not_installed", "unreadable", "not_probed", "unmeasured",
               "not-established", "refused", "expired", "missing", "corrupt", "failed")
@@ -809,6 +809,9 @@ def test_every_reason_code_in_the_demo_and_pending_list_has_a_label():
                 walk(item)
     walk(json.loads(DEMO.read_text(encoding="utf-8")))
     found |= set(ui_model.PENDING_SECTIONS.values())
+    # Every code the read model can carry (status_view's closed sets, #358).
+    from azazel_nexus.status_view import KNOWLEDGE_REASONS, REASON_CODES
+    found |= set(REASON_CODES) | set(KNOWLEDGE_REASONS)
     found |= {"section_absent_from_read_model", "read_model_refused", "status_read_failed",
               "setup_read_failed", "not_in_fixture", "access_permission_denied"}
     assert sorted(found - set(reasons)) == []

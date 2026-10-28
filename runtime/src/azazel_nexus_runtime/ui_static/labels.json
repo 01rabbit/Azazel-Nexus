@@ -2,91 +2,348 @@
   "schema": "azazel-nexus/ui-labels/1",
   "note": "The one table of Japanese labels. Every enum word keeps its English value beside the label. tone: ok (verified good), warn, bad, unknown (unknown, unmeasured, stale, not collected), info (a fact, neither good nor bad). An unknown word is shown as 未定義の語 with tone unknown.",
   "tones": {
-    "ok": {"ja": "正常", "mark": "●"},
-    "warn": {"ja": "注意", "mark": "▲"},
-    "bad": {"ja": "異常", "mark": "■"},
-    "unknown": {"ja": "不明", "mark": "？"},
-    "info": {"ja": "情報", "mark": "◆"}
+    "ok": {
+      "ja": "正常",
+      "mark": "●"
+    },
+    "warn": {
+      "ja": "注意",
+      "mark": "▲"
+    },
+    "bad": {
+      "ja": "異常",
+      "mark": "■"
+    },
+    "unknown": {
+      "ja": "不明",
+      "mark": "？"
+    },
+    "info": {
+      "ja": "情報",
+      "mark": "◆"
+    }
   },
   "words": {
-    "absent": ["なし（未構成）", "unknown"],
-    "attested": ["検証済み", "ok"],
-    "available": ["利用可能", "ok"],
-    "blocked": ["阻止中", "bad"],
-    "checks_not_all_passed": ["検査が揃っていない", "warn"],
-    "closed": ["観測グループ終了", "info"],
-    "control-plane-only": ["制御面のみ", "warn"],
-    "CORE": ["CORE（基本機能のみ）", "info"],
-    "corrupt": ["破損", "bad"],
-    "current": ["有効期間内", "ok"],
-    "digest-mismatch": ["digest 不一致（セキュリティ上の問題）", "bad"],
-    "disabled": ["無効", "info"],
-    "done": ["完了", "ok"],
-    "expired": ["期限切れ", "bad"],
-    "explained": ["AI 助言を表示", "info"],
-    "failed": ["失敗", "bad"],
-    "fresh": ["新しい", "ok"],
-    "FULL": ["FULL", "info"],
-    "functional": ["機能として成立", "info"],
-    "internal_error": ["内部エラー", "bad"],
-    "known": ["既知", "info"],
-    "LITE": ["LITE", "info"],
-    "live": ["実データ（このノード）", "info"],
-    "fixture": ["fixture（保存済みの read model・このノードの状態ではない）", "warn"],
-    "loopback-only": ["loopback のみ", "warn"],
-    "measured": ["測定済み", "info"],
-    "missing": ["欠落（欠陥）", "bad"],
-    "needed": ["要対応", "warn"],
-    "none": ["なし", "info"],
-    "none_read": ["読めたものなし", "unknown"],
-    "not-applicable": ["対象外", "info"],
-    "not-running": ["動作していない", "bad"],
-    "not_clock_bound": ["期限なし（静的参照）", "info"],
-    "not_collected": ["未取得", "unknown"],
-    "not_inspected": ["未検査", "unknown"],
-    "not_installed": ["未導入", "unknown"],
-    "not_measured": ["未測定", "unknown"],
-    "notice_shown": ["決定論的通知を表示（AI ではない）", "info"],
-    "open": ["観測中", "info"],
-    "pending": ["待機中", "unknown"],
-    "permission_denied": ["権限なし", "unknown"],
-    "projected": ["投影済み", "info"],
-    "quarantined": ["隔離", "bad"],
-    "read": ["読取済み", "info"],
-    "readable": ["読める", "info"],
-    "recorded": ["記録あり", "info"],
-    "reference_shown": ["決定論的参照を表示（AI ではない）", "info"],
-    "refused": ["拒否", "bad"],
-    "reported": ["報告あり", "info"],
-    "running": ["稼働（snapshot が新しい）", "ok"],
-    "stale": ["古い（stale）", "unknown"],
-    "static": ["静的参照", "info"],
-    "unattempted/skipped": ["未試行", "unknown"],
-    "unavailable": ["利用不可", "unknown"],
-    "unhealthy": ["不健全", "bad"],
-    "unknown": ["不明", "unknown"],
-    "unreachable": ["到達不能", "bad"],
-    "unreadable": ["読めない", "unknown"],
-    "not_regular": ["通常ファイルではない", "bad"],
-    "not_probed": ["未確認", "unknown"],
-    "unverified": ["未検証", "warn"],
-    "verified-ready": ["検証済み・準備完了", "ok"],
-    "version-mismatch": ["版の不一致", "bad"],
-    "ok": ["正常", "ok"],
-    "observe": ["観測", "info"],
-    "notify": ["通知", "info"],
-    "throttle": ["帯域制限", "info"],
-    "redirect": ["転送", "info"],
-    "isolate": ["隔離", "info"],
-    "ai_advice": ["AI 助言（ローカルモデル）", "info"],
-    "deterministic_reference": ["決定論的プレイブック参照（AI ではない）", "info"],
-    "deterministic_notice": ["決定論的引継ぎ通知（AI ではない）", "info"],
-    "legacy_handoff": ["ラベルなし旧形式の引継ぎ（AI ではない）", "info"],
-    "unmeasured": ["未測定", "unknown"],
-    "not-established": ["未成立", "unknown"],
-    "not_supported": ["未対応（レビュー待ち）", "warn"],
-    "observe-only-fixed": ["observe-only（実行結果を受理しない構成）", "info"],
-    "continuing": ["継続", "info"]
+    "absent": [
+      "なし（未構成）",
+      "unknown"
+    ],
+    "attested": [
+      "検証済み",
+      "ok"
+    ],
+    "available": [
+      "利用可能",
+      "ok"
+    ],
+    "blocked": [
+      "阻止中",
+      "bad"
+    ],
+    "checks_not_all_passed": [
+      "検査が揃っていない",
+      "warn"
+    ],
+    "closed": [
+      "観測グループ終了",
+      "info"
+    ],
+    "control-plane-only": [
+      "制御面のみ",
+      "warn"
+    ],
+    "CORE": [
+      "CORE（基本機能のみ）",
+      "info"
+    ],
+    "corrupt": [
+      "破損",
+      "bad"
+    ],
+    "current": [
+      "有効期間内",
+      "ok"
+    ],
+    "digest-mismatch": [
+      "digest 不一致（セキュリティ上の問題）",
+      "bad"
+    ],
+    "disabled": [
+      "無効",
+      "info"
+    ],
+    "done": [
+      "完了",
+      "ok"
+    ],
+    "expired": [
+      "期限切れ",
+      "bad"
+    ],
+    "explained": [
+      "AI 助言を表示",
+      "info"
+    ],
+    "failed": [
+      "失敗",
+      "bad"
+    ],
+    "fresh": [
+      "新しい",
+      "ok"
+    ],
+    "FULL": [
+      "FULL",
+      "info"
+    ],
+    "functional": [
+      "機能として成立",
+      "info"
+    ],
+    "internal_error": [
+      "内部エラー",
+      "bad"
+    ],
+    "known": [
+      "既知",
+      "info"
+    ],
+    "LITE": [
+      "LITE",
+      "info"
+    ],
+    "live": [
+      "実データ（このノード）",
+      "info"
+    ],
+    "fixture": [
+      "fixture（保存済みの read model・このノードの状態ではない）",
+      "warn"
+    ],
+    "loopback-only": [
+      "loopback のみ",
+      "warn"
+    ],
+    "measured": [
+      "測定済み",
+      "info"
+    ],
+    "missing": [
+      "欠落（欠陥）",
+      "bad"
+    ],
+    "needed": [
+      "要対応",
+      "warn"
+    ],
+    "none": [
+      "なし",
+      "info"
+    ],
+    "none_read": [
+      "読めたものなし",
+      "unknown"
+    ],
+    "not-applicable": [
+      "対象外",
+      "info"
+    ],
+    "not-running": [
+      "動作していない",
+      "bad"
+    ],
+    "not_clock_bound": [
+      "期限なし（静的参照）",
+      "info"
+    ],
+    "not_collected": [
+      "未取得",
+      "unknown"
+    ],
+    "not_inspected": [
+      "未検査",
+      "unknown"
+    ],
+    "not_installed": [
+      "未導入",
+      "unknown"
+    ],
+    "not_measured": [
+      "未測定",
+      "unknown"
+    ],
+    "notice_shown": [
+      "決定論的通知を表示（AI ではない）",
+      "info"
+    ],
+    "open": [
+      "観測中",
+      "info"
+    ],
+    "pending": [
+      "待機中",
+      "unknown"
+    ],
+    "permission_denied": [
+      "権限なし",
+      "unknown"
+    ],
+    "projected": [
+      "投影済み",
+      "info"
+    ],
+    "quarantined": [
+      "隔離",
+      "bad"
+    ],
+    "read": [
+      "読取済み",
+      "info"
+    ],
+    "readable": [
+      "読める",
+      "info"
+    ],
+    "recorded": [
+      "記録あり",
+      "info"
+    ],
+    "reference_shown": [
+      "決定論的参照を表示（AI ではない）",
+      "info"
+    ],
+    "refused": [
+      "拒否",
+      "bad"
+    ],
+    "reported": [
+      "報告あり",
+      "info"
+    ],
+    "running": [
+      "稼働（snapshot が新しい）",
+      "ok"
+    ],
+    "stale": [
+      "古い（stale）",
+      "unknown"
+    ],
+    "static": [
+      "静的参照",
+      "info"
+    ],
+    "unattempted/skipped": [
+      "未試行",
+      "unknown"
+    ],
+    "unavailable": [
+      "利用不可",
+      "unknown"
+    ],
+    "unhealthy": [
+      "不健全",
+      "bad"
+    ],
+    "unknown": [
+      "不明",
+      "unknown"
+    ],
+    "unreachable": [
+      "到達不能",
+      "bad"
+    ],
+    "unreadable": [
+      "読めない",
+      "unknown"
+    ],
+    "not_regular": [
+      "通常ファイルではない",
+      "bad"
+    ],
+    "not_probed": [
+      "未確認",
+      "unknown"
+    ],
+    "unverified": [
+      "未検証",
+      "warn"
+    ],
+    "verified-ready": [
+      "検証済み・準備完了",
+      "ok"
+    ],
+    "version-mismatch": [
+      "版の不一致",
+      "bad"
+    ],
+    "ok": [
+      "正常",
+      "ok"
+    ],
+    "observe": [
+      "観測",
+      "info"
+    ],
+    "notify": [
+      "通知",
+      "info"
+    ],
+    "throttle": [
+      "帯域制限",
+      "info"
+    ],
+    "redirect": [
+      "転送",
+      "info"
+    ],
+    "isolate": [
+      "隔離",
+      "info"
+    ],
+    "ai_advice": [
+      "AI 助言（ローカルモデル）",
+      "info"
+    ],
+    "deterministic_reference": [
+      "決定論的プレイブック参照（AI ではない）",
+      "info"
+    ],
+    "deterministic_notice": [
+      "決定論的引継ぎ通知（AI ではない）",
+      "info"
+    ],
+    "legacy_handoff": [
+      "ラベルなし旧形式の引継ぎ（AI ではない）",
+      "info"
+    ],
+    "unmeasured": [
+      "未測定",
+      "unknown"
+    ],
+    "not-established": [
+      "未成立",
+      "unknown"
+    ],
+    "not_supported": [
+      "未対応（レビュー待ち）",
+      "warn"
+    ],
+    "observe-only-fixed": [
+      "observe-only（実行結果を受理しない構成）",
+      "info"
+    ],
+    "continuing": [
+      "継続",
+      "info"
+    ],
+    "degraded": [
+      "劣化（条件付き）",
+      "warn"
+    ],
+    "too_large": [
+      "値が大きすぎて表示できない",
+      "unknown"
+    ]
   },
   "reasons": {
     "access_permission_denied": "UI のアカウント（azui）にはこの snapshot を読む権限がない",
@@ -125,7 +382,28 @@
     "storage_snapshot_not_wired": "保存容量の snapshot はまだ無い（U2）",
     "unit_state_snapshot_not_wired": "サービス（unit）状態の snapshot はまだ無い（U2）",
     "trust_unreadable": "信頼アンカーが読めない",
-    "no_interfaces_read": "interface を読めなかった"
+    "no_interfaces_read": "interface を読めなかった",
+    "reading_refused": "読取結果が検査を通らなかった",
+    "observed_at_in_future": "観測時刻が未来",
+    "observed_at_expired": "観測が古い（最後の記録であり現在値ではない）",
+    "observed_at_unreadable": "観測時刻が読めない",
+    "snapshot_refused_by_view": "snapshot の値を read model が拒否した",
+    "chain_broken": "インシデントチェーンが壊れている",
+    "storage_failed": "保存に失敗した",
+    "age_out_of_range": "経過時間が範囲外",
+    "audit_capacity_warning": "監査の容量が警告水準",
+    "unverified": "未検証",
+    "no_bundle": "Knowledge バンドルが無い",
+    "store_unreadable": "Knowledge ストアが読めない",
+    "bundle_refused": "バンドルが拒否された",
+    "revoked": "失効している",
+    "state_untrusted": "状態を信頼できない",
+    "available": "利用可能",
+    "stale": "古い",
+    "unavailable": "利用不可",
+    "quarantined": "隔離されている",
+    "body_unreadable": "要求の本文を読めなかった",
+    "login_throttled": "誤ったコードが続いたため一時的にログインを受け付けていない"
   },
   "sections": {
     "overview": "概況",
