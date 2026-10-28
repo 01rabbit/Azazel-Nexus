@@ -1,10 +1,12 @@
 # Read-only NOC observation
 
-Status: **implemented, not verified, not wired.** `az-nexus-noc`
-(`runtime/src/azazel_nexus_runtime/noc_observe.py`) and its focused tests
-exist. Nothing on a node runs it by itself, no daemon imports it, and no
-target-hardware evidence exists for it. The Edge NOC Evaluator stays in Edge
-(below), so this page describes an observation tool, not an evaluator.
+Status: **implemented, not verified; wired to an operator snapshot (U3).**
+`az-nexus-noc` (`runtime/src/azazel_nexus_runtime/noc_observe.py`) and its
+focused tests exist. The same collection now also runs as the passive
+observer `az-noc-observe` (§7a), whose snapshot `azazel-nexus status --json`
+reads; no daemon imports it, and no target-hardware evidence exists for it.
+The Edge NOC Evaluator stays in Edge (below), so this page describes an
+observation tool, not an evaluator.
 
 Related: [Architecture](architecture.md) §3.2 ·
 [Commissioning](commissioning.md) §4, §5 ·
@@ -157,10 +159,42 @@ needs owner agreement and a Fabric-owned record first
 | SO-10 zero-transmit on the observation interface | **not verified** | needs an independent capture on the target device ([SO-10](service-objectives.md#so-10-field-exercise--hardware-only)); nothing in this repository's CI can satisfy it |
 | Edge NOC result ingestion | not started | needs owner agreement (§6) |
 | active checks (DNS query, ICMP, TCP, HTTP) | not implemented | owner decision (§8) |
+| operator snapshot `noc-status/v1` and the `noc` section of `status --json` | implemented | mock: projection and strict reader against the fixture trees; **container evidence, not hardware**: `az-noc-observe` in a real process in the Linux test container |
+| `azazel-noc-observe.service` / `.timer` under systemd | **not run** | unit generated and compared with its declaration; no systemd or VM run yet |
 
 The target-hardware procedure, including the independent capture inside an
 SO-10 run, is the [NOC observation runbook](hil-runbooks/noc-observation.md)
 (not run).
+
+## 7a. The operator snapshot (U3)
+
+`azazel-noc-observe.timer` runs `azazel-noc-observe.service` every 60 s: a
+oneshot of `az-noc-observe` (`noc_snapshot.py`) as its own unprivileged
+account `aznoc` (in no socket group, not a service principal of any daemon),
+with `RestrictAddressFamilies=AF_NETLINK AF_UNIX`, `IPAddressDeny=any` and
+no `PrivateNetwork=` (the host's links are what it reads). It calls the same
+`collect` as `az-nexus-noc` and writes `noc_status.project` of it
+(`azazel-nexus/noc-status/v1`) into `/var/lib/azazel/run/noc-status`
+(`2750 aznoc:azazel-operator`) by temp file and rename.
+
+The snapshot is a closed projection: interfaces by ifindex only (link flags,
+operstate, carrier, MTU, speed, address **counts** per family, counters and
+their deltas -- traffic, errors, drops -- and the DHCP lease client and
+remaining time), the default routes per family and table (count, egress
+ifindexes, gateway, linkdown/dead), route counts, resolver **counts**, and
+each field's age at observation with its fixed `unknown` reason. No name, MAC,
+address, gateway, nameserver or search domain. At most 32 interfaces are
+listed; more are counted in `interfaces_omitted`. A collection that fails is
+written as `failed` / `collection_failed`, a projection the reader would
+refuse as `failed` / `projection_refused`.
+
+`status --json` shows it as the `noc` section (stale after 300 s, its own
+`freshness` item). A fresh snapshot makes the section `observed`, never
+`running` or healthy; a failed collection makes it `unknown` with the fixed code. Reachability
+and name resolution are always `not_measured` with `active_check_not_performed`:
+this build sends no probe, so "not measured" is never shown as "down". No unit
+requires or binds to the observer; it is installed but neither enabled nor
+masked (`systemctl enable --now azazel-noc-observe.timer`).
 
 ## 8. Owner decisions
 

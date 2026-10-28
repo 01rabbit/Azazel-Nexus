@@ -1195,7 +1195,7 @@ OPERATOR_TOOLS = (
 #: its own timer starts, which reads and writes one operator-readable
 #: snapshot. Not governed (never in `CORE_UNITS`), so listed apart from
 #: `EXPECTED_SCRIPTS`; each still has its unit, by the one naming rule.
-OBSERVER_SCRIPTS = ("az-units-observe",)
+OBSERVER_SCRIPTS = ("az-units-observe", "az-noc-observe")
 
 
 @pytest.mark.parametrize("option", ["--root", "--generation", "--expected-context"])

@@ -46,6 +46,7 @@ __all__ = [
     "mio_status_path",
     "mission_pack_config",
     "mission_pack_root",
+    "noc_status_path",
     "models_root",
     "socket_group",
     "socket_path",
@@ -311,3 +312,8 @@ def mio_status_path() -> Path:
 def units_status_path() -> Path:
     """The read-only unit-state observer's snapshot (U2)."""
     return observation_paths.units_status_path(ROOT)
+
+
+def noc_status_path() -> Path:
+    """The passive NOC observer's snapshot (U3)."""
+    return observation_paths.noc_status_path(ROOT)

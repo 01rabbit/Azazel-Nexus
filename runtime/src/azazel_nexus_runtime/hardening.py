@@ -120,7 +120,9 @@ __all__ = [
 #: nothing, so stopping one (or its timer) stops nothing else.
 UNITS_OBSERVE_UNIT = "azazel-units-observe.service"
 UNITS_OBSERVE_TIMER = "azazel-units-observe.timer"
-OBSERVER_SERVICE_UNITS = (UNITS_OBSERVE_UNIT,)
+NOC_OBSERVE_UNIT = "azazel-noc-observe.service"
+NOC_OBSERVE_TIMER = "azazel-noc-observe.timer"
+OBSERVER_SERVICE_UNITS = (UNITS_OBSERVE_UNIT, NOC_OBSERVE_UNIT)
 
 #: Applied to every unit, with no per-daemon exceptions.
 #:
@@ -840,6 +842,10 @@ SYSTEM_ACCOUNTS = (
     "azremote",
     "azknowledge",
     "azdecoy",
+    # The passive NOC observer (U3). Not a specification service account:
+    # no daemon classifies it as a service principal, and it is in no
+    # socket group.
+    "aznoc",
 )
 
 
@@ -2006,6 +2012,33 @@ OBSERVER_PROFILES: tuple[ServiceProfile, ...] = (
             "requires or binds to it"
         ),
     ),
+    ServiceProfile(
+        unit=NOC_OBSERVE_UNIT,
+        executable="/usr/libexec/azazel/az-noc-observe",
+        account="aznoc",
+        description="Azazel-Nexus passive NOC observer",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/noc-observation.md",
+        # Netlink for the one NETLINK_ROUTE dump; no internet family, and
+        # no PrivateNetwork, because the host's links are what it reads.
+        address_families=("AF_NETLINK", "AF_UNIX"),
+        read_write_paths=(),
+        optional_read_write_paths=("/var/lib/azazel/run/noc-status",),
+        unit_type="oneshot",
+        extra=(("TimeoutStartSec", "60s"),),
+        wanted_by=(),
+        rationale=(
+            "Runs once per period of azazel-noc-observe.timer. It makes the "
+            "passive observation az-nexus-noc prints: one NETLINK_ROUTE dump "
+            "of links, addresses and routes, sysfs counters read twice, the "
+            "resolver files and DHCP lease files. It sends no packet, probes "
+            "nothing and resolves no name, and `IPAddressDeny=any` holds. It "
+            "writes counts and codes keyed by ifindex into its own leaf, "
+            "which the operator group may read: no interface name, MAC or "
+            "address. It runs as its own unprivileged account aznoc, which is "
+            "in no socket group. It is not governed, has no [Install] "
+            "section, and no unit requires or binds to it"
+        ),
+    ),
 )
 
 
@@ -2130,6 +2163,9 @@ OBSERVER_UNIT_FILES: tuple[tuple[str, str], ...] = (
     (UNITS_OBSERVE_TIMER, render_observer_timer(
         UNITS_OBSERVE_TIMER, UNITS_OBSERVE_UNIT, "30s",
         "Azazel-Nexus unit state observer period")),
+    (NOC_OBSERVE_TIMER, render_observer_timer(
+        NOC_OBSERVE_TIMER, NOC_OBSERVE_UNIT, "60s",
+        "Azazel-Nexus passive NOC observer period")),
 )
 
 

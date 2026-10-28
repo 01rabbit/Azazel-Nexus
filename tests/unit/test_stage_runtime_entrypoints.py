@@ -431,7 +431,7 @@ def test_copied_installer_clears_python_environment_and_retains_destdir_for_stag
         "az-activated", "az-commissiond", "az-auditd", "az-watchdog",
         "az-edge-probed", "az-edge-intaked", "az-incident-explaind", "az-model-fetchd", "az-mio-locald", "az-mio-identity", "az-mio-remoted",
         "az-mio-entryd", "az-mio-referenced", "az-knowledge-lited", "az-decoy-netd", "az-decoyd",
-        "az-units-observe",
+        "az-units-observe", "az-noc-observe",
     )
     stager = tools / "stage_runtime_entrypoints.py"
     stager.write_text(

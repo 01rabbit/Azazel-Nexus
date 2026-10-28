@@ -40,8 +40,9 @@ leaving the field empty.
 broker's local state, the loop snapshots), each once and through its
 existing reader, and the operator snapshots of U2 (`operator_snapshots`:
 Knowledge Lite's and entryd's status, the packaged units' states, and the
-free space under fixed labels). Those four sections are in the read model
-only; the text screen is unchanged. Nothing here opens a socket, starts a
+free space under fixed labels) and of U3 (`noc_status`: the passive NOC
+observation). Those five sections are in the read model only; the text
+screen is unchanged. Nothing here opens a socket, starts a
 process or writes a file, and nothing here decides anything.
 """
 
@@ -98,6 +99,8 @@ REASON_CODES = frozenset({
     # The operator snapshots (U2): their own words, beside Knowledge Lite's.
     "capability_record_uncertain", "unit_failed", "unit_state_unread",
     "no_location_measured", "status_unrecognised",
+    # The NOC section (U3).
+    "collection_failed", "active_check_not_performed", "role_evidence_not_provided",
 })
 #: Knowledge Lite's closed status shape (`lite_import.status_summary`).
 KNOWLEDGE_STATES = frozenset({"available", "stale", "unavailable", "quarantined"})
@@ -903,6 +906,40 @@ def _storage(now) -> dict:
                        "withheld": ["path"]}}
 
 
+#: The NOC snapshot's top-level fields (U3). Below them the snapshot is the
+#: closed shape `noc_status.read_noc_status` checked, copied as checked.
+NOC_FIELDS = ("collection", "reason_code", "observed_at", "active_checks", "interfaces",
+              "interfaces_omitted", "uplink", "routes", "dns")
+
+
+def _noc(now) -> dict:
+    from . import noc_status
+    from .runtime_paths import noc_status_path
+
+    section = _snapshot_section(noc_status_path(), noc_status.read_noc_status,
+                                noc_status.NOC_BYTES, now, noc_status.NOC_STALE_S, NOC_FIELDS,
+                                schema=noc_status.NOC_SCHEMA, writer="az-noc-observe")
+    snapshot = section["snapshot"]
+    if _fresh(section):
+        if snapshot["collection"] == "failed":
+            section["status"], section["reason_code"] = "unknown", snapshot["reason_code"]
+        else:
+            # Observed, which is not "healthy": the fields say what was seen.
+            section["status"], section["reason_code"] = "observed", None
+    # Fixed statements, not observations: what this observer never does, so
+    # a reader cannot take "not measured" for "down".
+    section["observation"] = {"kind": "passive", "transmission": "none",
+                              "active_checks": "none", "policy_rules_evaluated": False}
+    section["not_measured"] = [{"field": name, "status": "not_measured",
+                                "reason_code": "active_check_not_performed"}
+                               for name in noc_status.ACTIVE_CHECK_FIELDS]
+    section["role"] = {"status": "unknown", "reason_code": "role_evidence_not_provided"}
+    section["identity"] = {"interfaces_by": "ifindex",
+                           "withheld": ["interface_name", "mac", "address", "gateway",
+                                        "nameserver", "search_domain"]}
+    return section
+
+
 def _guarded_section(build_section, now) -> dict:
     try:
         return build_section(now)
@@ -984,6 +1021,7 @@ def build(
         "mio_status": _guarded_section(_mio_status, now),
         "services": _guarded_section(_services, now),
         "storage": _guarded_section(_storage, now),
+        "noc": _guarded_section(_noc, now),
     }
     sections["next_actions"] = _next_actions(report, lab_host, terminal)
     view = {

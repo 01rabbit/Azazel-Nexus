@@ -298,6 +298,7 @@ OBSERVED_UNITS = (
     "azazel-mio-referenced.service",
     "azazel-mio-remoted.service",
     "azazel-model-fetchd.service",
+    "azazel-noc-observe.service",
     "azazel-units-observe.service",
     "azazel-watchdog.service",
 )

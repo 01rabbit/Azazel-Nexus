@@ -46,7 +46,8 @@ DECOY_VERIFY = "azazel-decoy-verify.service"
 DECOY_WATCH_FILES = (DECOY_VERIFY, "azazel-decoy-verify.timer", "azazel-decoy-trip.target")
 ALL_UNITS = GOVERNED + (ACTIVATION_CONTROLLER_UNIT, PROBE_PREFLIGHT)
 #: The operator observers (U2): not governed, never masked or enabled.
-OBSERVER_FILES = ("azazel-units-observe.service", "azazel-units-observe.timer")
+OBSERVER_FILES = ("azazel-units-observe.service", "azazel-units-observe.timer",
+                  "azazel-noc-observe.service", "azazel-noc-observe.timer")
 
 
 def _installer() -> str:
@@ -364,6 +365,7 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
         "/var/lib/azazel/run/knowledge-status",
         "/var/lib/azazel/run/mio-status",
         "/var/lib/azazel/run/units-status",
+        "/var/lib/azazel/run/noc-status",
         "/var/lib/azazel/run/commission",
         "/var/lib/azazel/run/watchdog",
         "/var/lib/azazel/run/edge-probe",

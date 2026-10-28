@@ -35,3 +35,7 @@ def mio_status_path(root=None) -> Path:
 
 def units_status_path(root=None) -> Path:
     return _root(root) / "var/lib/azazel/run/units-status/status.json"
+
+
+def noc_status_path(root=None) -> Path:
+    return _root(root) / "var/lib/azazel/run/noc-status/status.json"

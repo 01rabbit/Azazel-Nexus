@@ -1023,7 +1023,8 @@ def test_the_only_ungoverned_unit_is_the_probe_preflight():
     # each is started by its own timer, which an operator enables.
     from azazel_nexus_runtime.hardening import OBSERVER_PROFILES
 
-    assert [p.unit for p in OBSERVER_PROFILES] == ["azazel-units-observe.service"]
+    assert [p.unit for p in OBSERVER_PROFILES] == ["azazel-units-observe.service",
+                                                   "azazel-noc-observe.service"]
     assert ALL_PROFILES == (PROFILES + UNGOVERNED_PROFILES + DECOY_WATCH_PROFILES
                             + OBSERVER_PROFILES)
 
