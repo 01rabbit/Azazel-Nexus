@@ -44,6 +44,11 @@ Text marked **要確認 (to confirm)** is a point this runbook could not settle
 from the code or existing documents; resolve it on the VM and record the
 answer with the run.
 
+The §6 start, §7 to §9 and the fault, storage-pressure and restart checks
+are also scripted, with a record, in the
+[real-systemd integration run](vm-integration.md) (`tools/vm_integration.py`),
+which runs the same way in a systemd container and on a VM.
+
 ## 1. Preconditions and safety
 
 1. **The VM.** Debian 13 x86_64 with systemd as PID 1, Nexus installed with
