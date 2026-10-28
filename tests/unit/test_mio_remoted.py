@@ -22,7 +22,10 @@ import ast
 import base64
 import hashlib
 import json
+import os
 import sys
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -46,7 +49,9 @@ from azazel_nexus.remote_envelope import (  # noqa: E402
     NonceLedger,
     envelope_payload,
 )
+from azazel_nexus.mio_profile import PREREQUISITES, RemoteOptIn  # noqa: E402
 from azazel_nexus.sanitizer import NEVER_REMOTE, PrivacyClass  # noqa: E402
+from azazel_nexus_runtime.mio_remote_consent import ConsentReading  # noqa: E402
 from azazel_nexus_runtime import mio_remoted  # noqa: E402
 from azazel_nexus_runtime.hardening import PROFILES, SYSTEM_ACCOUNTS  # noqa: E402
 from azazel_nexus_runtime.inference_egress import (  # noqa: E402
@@ -65,6 +70,7 @@ LATER = "2026-09-21T13:00:00Z"
 PROVIDER = "vendor-advisory"
 REVISION = 3
 FRAME = json.dumps({"observed": "scan"}, sort_keys=True).encode()
+GENERATION = 4
 
 
 def _key() -> nacl_signing.SigningKey:
@@ -82,6 +88,7 @@ def _seal(
     provider_id: str = PROVIDER,
     nonce: str = "n" * 48,
     policy_revision: int = REVISION,
+    opt_in_generation: int = GENERATION,
 ) -> bytes:
     payload = envelope_payload(
         content_digest="sha256:" + hashlib.sha256(frame).hexdigest(),
@@ -92,8 +99,29 @@ def _seal(
         nonce=nonce,
         expires_at=LATER,
         frame_bytes=len(frame),
+        opt_in_generation=opt_in_generation,
     )
     return bytes(_key().sign(ENVELOPE_DOMAIN + payload).signature) + payload
+
+
+class _Consent:
+    """A send gate yielding a fixed reading; counts each entry."""
+
+    def __init__(self, reading: ConsentReading) -> None:
+        self.reading = reading
+        self.entered = 0
+
+    @contextmanager
+    def send_gate(self):
+        self.entered += 1
+        yield self.reading
+
+
+GRANTED = ConsentReading(
+    RemoteOptIn(granted=frozenset(PREREQUISITES), operator="uid:1001",
+                at="2026-09-21T11:00:00Z"),
+    GENERATION, "granted",
+)
 
 
 def _record(**overrides) -> ProviderRecord:
@@ -141,6 +169,7 @@ def _service(**overrides) -> mio_remoted.RemoteInferenceService:
         nonces=NonceLedger(),
         transport=None,
         clock=lambda: NOW,
+        consent=_Consent(GRANTED),
     )
     fields.update(overrides)
     return mio_remoted.RemoteInferenceService(**fields)
@@ -825,3 +854,204 @@ def test_every_state_is_reachable_and_distinct():
     assert outcomes["response_not_advice"] == "not_advice"
     assert outcomes["tls_failed"] == "tls_failed"
     assert len({o for o in outcomes.values()}) >= 4
+
+
+# == the remote opt-in in force, immediately before the transport =========
+
+
+def _withdrawn(generation=GENERATION + 1) -> ConsentReading:
+    from azazel_nexus.mio_profile import Withdrawal
+
+    return ConsentReading(
+        RemoteOptIn(granted=frozenset(PREREQUISITES), operator="uid:1001",
+                    at="2026-09-21T11:00:00Z",
+                    withdrawn=Withdrawal("uid:1001", "2026-09-21T11:30:00Z", "operator_request")),
+        generation, "withdrawn",
+    )
+
+
+def _spy_transport(calls):
+    def transport(*, record, frame, path, **kw):
+        calls.append(frame)
+        return (EgressReport(TransportOutcome.RECEIVED, 2, 200, "ok"),
+                json.dumps({"advice": "ok"}).encode())
+    return transport
+
+
+@pytest.mark.parametrize("reading, refusal", [
+    (_withdrawn(), "opt_in_not_granted"),
+    (ConsentReading(GRANTED.opt_in, GENERATION + 1, "granted"), "opt_in_generation_mismatch"),
+    (ConsentReading(GRANTED.opt_in, GENERATION - 1, "granted"), "opt_in_generation_mismatch"),
+    (ConsentReading(RemoteOptIn(granted=frozenset(PREREQUISITES[:3]), operator="uid:1",
+                                at="t"), GENERATION, "incomplete"), "opt_in_not_granted"),
+    (ConsentReading(GRANTED.opt_in, None, "unavailable"), "opt_in_unavailable"),
+], ids=["withdrawn", "newer", "older", "incomplete", "unavailable"])
+def test_an_envelope_not_minted_under_the_opt_in_in_force_is_not_sent(reading, refusal):
+    calls, events = [], []
+    consent = _Consent(reading)
+    reply = _service(transport=_spy_transport(calls), consent=consent).handle(
+        Request(frame=FRAME, envelope=_seal()), audit=events.append)
+    assert calls == [] and consent.entered == 1
+    assert reply["outcome"] == "not_sent" and reply["refusal"] == refusal
+    checked = next(e for e in events if e["event_type"] == "mio.remote.opt_in.checked")
+    assert checked["envelope_generation"] == GENERATION
+
+
+def test_the_opt_in_is_checked_before_the_absent_transport_is_reported():
+    """The shipped state has no transport. The check still runs first, so a
+    withdrawn opt-in is refused as itself, not as "no transport"."""
+
+    consent = _Consent(_withdrawn())
+    reply = _service(transport=None, consent=consent).handle(
+        Request(frame=FRAME, envelope=_seal()))
+    assert reply["refusal"] == "opt_in_not_granted" and consent.entered == 1
+    consent = _Consent(GRANTED)
+    reply = _service(transport=None, consent=consent).handle(
+        Request(frame=FRAME, envelope=_seal()))
+    assert reply["refusal"] == "no_transport" and consent.entered == 1
+
+
+def test_the_gate_is_held_while_the_transport_runs():
+    held = []
+
+    class Gate(_Consent):
+        inside = False
+
+        @contextmanager
+        def send_gate(self):
+            Gate.inside = True
+            try:
+                yield self.reading
+            finally:
+                Gate.inside = False
+
+    def transport(*, record, frame, path, **kw):
+        held.append(Gate.inside)
+        return EgressReport(TransportOutcome.RECEIVED, 2, 200, "ok"), b'{"advice":"ok"}'
+
+    reply = _service(transport=transport, consent=Gate(GRANTED)).handle(
+        Request(frame=FRAME, envelope=_seal()))
+    assert held == [True] and reply["outcome"] == "advisory"
+    assert Gate.inside is False
+
+
+def test_without_a_readable_store_nothing_is_sent(tmp_path, monkeypatch):
+    """The default reader is entryd's store, read as `azmioentry`. On a node
+    where this account cannot read it -- or the account does not exist --
+    that is a refusal, before any transport."""
+
+    calls = []
+    service = _service(transport=_spy_transport(calls), consent=None)
+    monkeypatch.setattr("pwd.getpwnam", lambda name: (_ for _ in ()).throw(KeyError(name)))
+    reply = service.handle(Request(frame=FRAME, envelope=_seal()))
+    assert calls == [] and reply["refusal"] == "opt_in_unavailable"
+
+    from azazel_nexus_runtime import runtime_paths
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
+    monkeypatch.setattr("pwd.getpwnam", lambda name: SimpleNamespace(pw_uid=os.geteuid()))
+    runtime_paths.mio_state_dir().mkdir(parents=True)
+    runtime_paths.mio_state_dir().chmod(0o700)
+    service = _service(transport=_spy_transport(calls), consent=None)
+    reply = service.handle(Request(frame=FRAME, envelope=_seal(nonce="m" * 48)))
+    assert calls == [] and reply["refusal"] == "opt_in_not_granted"
+
+
+# -- a real store: withdrawal racing sends (threads, real flock) -----------
+
+
+def _real_store(tmp_path):
+    from azazel_nexus_runtime.mio_remote_consent import ConsentStore
+
+    directory = tmp_path / "mio"
+    directory.mkdir()
+    directory.chmod(0o700)
+    store = ConsentStore(directory, owner=os.geteuid())
+    record = None
+    for prerequisite in PREREQUISITES:
+        record = store.set_prerequisite(prerequisite, operator="uid:1001")
+    return directory, store, record.generation
+
+
+def test_a_confirmed_withdrawal_is_never_followed_by_a_send(tmp_path):
+    """Senders loop on envelopes minted under the granted generation while
+    another thread withdraws. Every transport call starts -- and returns --
+    before the withdrawal is confirmed; none starts after it."""
+
+    from azazel_nexus_runtime.mio_remote_consent import ConsentStore
+
+    directory, _, generation = _real_store(tmp_path)
+    log, lock = [], threading.Lock()
+    stop, inside = threading.Event(), threading.Event()
+
+    def note(entry):
+        with lock:
+            log.append(entry)
+
+    def transport(*, record, frame, path, **kw):
+        note("send")
+        inside.set()
+        threading.Event().wait(0.01)  # inside the transport, gate held
+        note("end")
+        return EgressReport(TransportOutcome.RECEIVED, 2, 200, "ok"), b'{"advice":"ok"}'
+
+    def sender(worker):
+        store = ConsentStore(directory, owner=os.geteuid())
+        service = _service(transport=transport, consent=store)
+        count = 0
+        while not stop.is_set() and count < 2000:
+            count += 1
+            nonce = f"{worker:02d}{count:06d}".ljust(48, "x")
+            reply = service.handle(Request(frame=FRAME, envelope=_seal(
+                nonce=nonce, opt_in_generation=generation)))
+            note(("reply", reply["refusal"] if reply["outcome"] == "not_sent" else "sent"))
+
+    workers = [threading.Thread(target=sender, args=(n,)) for n in range(4)]
+    for worker in workers:
+        worker.start()
+    # Let some sends through first, and withdraw while one is in flight.
+    for _ in range(2000):
+        with lock:
+            if log.count("send") >= 8:
+                break
+        threading.Event().wait(0.001)
+    inside.clear()
+    assert inside.wait(10)
+    record, drained = ConsentStore(directory, owner=os.geteuid()).withdraw(
+        "operator_request", operator="uid:1002")
+    note("confirmed")
+    # Keep sending for a while after the confirmation.
+    threading.Event().wait(0.2)
+    stop.set()
+    for worker in workers:
+        worker.join(30)
+
+    assert drained is True and record.generation == generation + 1
+    confirmed = log.index("confirmed")
+    assert "send" in log[:confirmed]
+    assert "send" not in log[confirmed:]
+    # The calls in flight at the withdrawal were drained before it returned.
+    assert "end" not in log[confirmed:]
+    after = [entry[1] for entry in log[confirmed:] if isinstance(entry, tuple)]
+    # Replies after the confirmation that were not already in flight.
+    assert after and set(after) - {"sent"} <= {"opt_in_not_granted", "opt_in_unavailable"}
+    assert "opt_in_not_granted" in after
+
+
+def test_after_a_restart_a_withdrawal_is_still_in_force(tmp_path):
+    from azazel_nexus_runtime.mio_remote_consent import ConsentStore
+
+    directory, store, generation = _real_store(tmp_path)
+    store.withdraw("incident_response", operator="uid:1001")
+    calls = []
+    restarted = ConsentStore(directory, owner=os.geteuid())
+    reply = _service(transport=_spy_transport(calls), consent=restarted).handle(
+        Request(frame=FRAME, envelope=_seal(opt_in_generation=generation)))
+    assert calls == [] and reply["refusal"] == "opt_in_not_granted"
+    # A re-grant moves the generation again: the old envelope still fails.
+    for prerequisite in PREREQUISITES:
+        restarted.set_prerequisite(prerequisite, operator="uid:1001")
+    reply = _service(transport=_spy_transport(calls), consent=restarted).handle(
+        Request(frame=FRAME, envelope=_seal(nonce="r" * 48, opt_in_generation=generation)))
+    assert calls == [] and reply["refusal"] == "opt_in_generation_mismatch"

@@ -65,8 +65,9 @@ a caller saying so. What reaches the daemon has crossed a process boundary,
 so what it receives is bytes.
 
 It believes one shape: a detached Ed25519 signature under
-`azazel-nexus/sanitized-envelope/v1` over a canonical payload binding five
-things a forgery would have to get right together.
+`azazel-nexus/sanitized-envelope/v1` over a canonical payload (schema
+`azazel-nexus/sanitized-envelope/2`) binding six things a forgery would have
+to get right together.
 
 | bound | what a mismatch would otherwise allow |
 | --- | --- |
@@ -75,6 +76,7 @@ things a forgery would have to get right together.
 | `policy_revision` | a frame sanitised under a policy since withdrawn |
 | `expires_at` | an envelope kept and used later, under conditions nobody re-checked |
 | `nonce` + `provider_id` | the same authorised request replayed, or sent to a provider it was never authorised for |
+| `opt_in_generation` | a frame authorised under a remote opt-in the operator has since withdrawn |
 
 The nonce is spent **last**, after every other check: spending it earlier
 would let a malformed envelope burn the nonce a correct request needs. The
@@ -91,6 +93,24 @@ A different **kind** of signing target from a catalog or a registry: those
 authorise a *document*, this authorises *one request, once*. A key that signs
 catalogs does not thereby authorise egress of a frame, even if the same key
 holds both roles.
+
+### Remote opt-in at the send gate
+
+`opt_in_generation` is a positive integer (an envelope minted with no opt-in
+in force authorises nothing); schema 1, which bound none, is refused as an
+unknown schema. Opening the envelope only believes the number. Immediately
+before the transport -- and before the "no transport" refusal, so this runs
+in the shipped build too -- the daemon takes the send gate of the remote
+opt-in store ([runtime](mio-runtime.md) *Remote opt-in store*), and refuses
+with `opt_in_unavailable` (store unreadable, malformed, rolled back or busy),
+`opt_in_not_granted` (absent, incomplete or withdrawn) or
+`opt_in_generation_mismatch` (any other generation in force). The gate stays
+held until the transport returns, and a withdrawal returns only after it has
+drained, so no send starts after a confirmed withdrawal. Without an injected
+reader the daemon reads entryd's store as `azmioentry`; on a node where
+`azremote` cannot read that leaf (every node as shipped) the answer is
+`opt_in_unavailable`. Making it readable to `azremote` is part of wiring a
+transport, not of this build.
 
 ### It ships unmintable
 

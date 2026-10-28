@@ -76,6 +76,7 @@ def _seal(
     frame_bytes: int = None,
     seed: bytes = _SEED,
     domain: bytes = ENVELOPE_DOMAIN,
+    opt_in_generation=1,
 ) -> bytes:
     """Mint an envelope the way a sanitizer boundary would."""
 
@@ -88,6 +89,7 @@ def _seal(
         nonce=nonce,
         expires_at=expires_at,
         frame_bytes=len(frame) if frame_bytes is None else frame_bytes,
+        opt_in_generation=opt_in_generation,
     )
     return bytes(_key(seed).sign(domain + payload).signature) + payload
 
@@ -146,6 +148,7 @@ def test_an_unsigned_envelope_is_refused():
         nonce=NONCE,
         expires_at=LATER,
         frame_bytes=len(FRAME),
+        opt_in_generation=1,
     )
     assert _refusal(b"\x00" * 64 + payload) is EnvelopeRefusal.UNSIGNED
 
@@ -204,6 +207,7 @@ def test_a_class_outside_the_vocabulary_is_refused():
             nonce=NONCE,
             expires_at=LATER,
             frame_bytes=len(FRAME),
+            opt_in_generation=1,
         )
     )
     payload["privacy_class"] = "P0-public-ish"
@@ -335,7 +339,7 @@ def test_a_non_canonical_payload_is_refused():
 
 def test_an_unknown_schema_is_refused_rather_than_read_leniently():
     payload = json.loads(_seal()[64:])
-    payload["schema"] = "azazel-nexus/sanitized-envelope/2"
+    payload["schema"] = "azazel-nexus/sanitized-envelope/3"
     body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     raw = bytes(_key().sign(ENVELOPE_DOMAIN + body).signature) + body
     assert _refusal(raw) is EnvelopeRefusal.UNKNOWN_SCHEMA
@@ -414,3 +418,36 @@ def test_it_signs_nothing_and_reaches_nothing():
         "the verifier gained a signer; a component that can mint what it "
         "checks is not a check"
     )
+
+
+# -- 7. it names the remote opt-in generation it was minted under --------
+
+
+def test_the_opt_in_generation_is_bound_and_reported():
+    opened = _open(_seal(opt_in_generation=7))
+    assert opened.opt_in_generation == 7
+    assert opened.as_event()["opt_in_generation"] == 7
+
+
+@pytest.mark.parametrize("generation", [0, -1, True, "1", 1.0, None, 2**63])
+def test_an_envelope_without_a_positive_opt_in_generation_is_refused(generation):
+    """Minted with no opt-in in force (generation 0) authorises nothing."""
+
+    assert _refusal(_seal(opt_in_generation=generation)) is EnvelopeRefusal.MALFORMED
+
+
+def test_an_envelope_of_the_previous_schema_is_refused():
+    """Schema 1 bound no opt-in generation; it is not read as generation 0."""
+
+    document = json.loads(envelope_payload(
+        content_digest="sha256:" + hashlib.sha256(FRAME).hexdigest(),
+        privacy_class=PrivacyClass.P1_SANITIZED, policy_version="v",
+        policy_revision=REVISION, provider_id=PROVIDER, nonce=NONCE,
+        expires_at=LATER, frame_bytes=len(FRAME), opt_in_generation=1,
+    ))
+    assert document["schema"] == ENVELOPE_SCHEMA == "azazel-nexus/sanitized-envelope/2"
+    del document["opt_in_generation"]
+    document["schema"] = "azazel-nexus/sanitized-envelope/1"
+    body = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+    raw = bytes(_key().sign(ENVELOPE_DOMAIN + body).signature) + body
+    assert _refusal(raw) is EnvelopeRefusal.UNKNOWN_SCHEMA

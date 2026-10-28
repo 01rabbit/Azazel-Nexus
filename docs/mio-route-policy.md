@@ -148,12 +148,31 @@ recheck that refuses, raises or returns anything but a permitting
 (`remote_opt_in_withdrawn` / `remote_recheck_failed`), and
 `mio_profile.disposition_on_withdrawal` decides between one local fallback and
 refusal. Entry passes a recheck that re-evaluates `remote_admission` with the
-same inputs as the selection; this build has no opt-in reader (always
-`NO_OPT_IN`), so remote is never selected and production behaviour is
-unchanged. Evidence: `tests/unit/test_mio_router.py`,
-`tests/unit/test_mio_router_deadline.py` and `tests/unit/test_mio_entryd.py`,
+same inputs as the selection, except that the opt-in is read again from the
+remote opt-in store (`mio_remote_consent`): a generation moved since the
+selection, a withdrawn or incomplete opt-in, or a store that cannot be
+believed (unreadable, malformed, rolled back) reads as `NO_OPT_IN`. Trust is
+still `unchecked` and the endpoint allowlist empty, so remote is never
+selected and production behaviour is unchanged. Evidence:
+`tests/unit/test_mio_router.py`, `tests/unit/test_mio_router_deadline.py`,
+`tests/unit/test_mio_entryd.py` and `tests/unit/test_mio_entryd_opt_in.py`,
 all with mock providers. Cancelling a remote request **already in flight** is
 not implemented: there is no remote transport in this build.
+
+**Opt-in store and withdrawal generation** (implemented; mock and
+temporary-directory evidence only). The opt-in is written only by the
+operator's `mio.remote.opt_in.set` / `mio.remote.opt_in.withdraw` verbs on
+entryd's operator socket (`OPERATOR` class only; no file, flag or environment
+variable grants one) and persisted with a generation that every change raises
+and nothing lowers, so a withdrawal survives a restart. The signed envelope
+binds the generation the sanitizer boundary read (`opt_in_generation`), and
+`mio_remoted` compares it with the generation in force under a send gate held
+until its transport returns, **before** the absent transport is reported; a
+withdrawal returns only once senders on the previous generation have drained.
+So a send never starts after a confirmed withdrawal
+(`tests/unit/test_mio_remoted.py`, threads with real `flock`). Details:
+[runtime](mio-runtime.md) *Remote opt-in store*. This consent is separate from
+Knowledge peer authorisation and grants nothing there.
 
 ### A profile is a ceiling, not a grant
 
