@@ -86,6 +86,19 @@ def send(server, data=None):
         )
 
 
+def send_refused(server, data):
+    """Offer a line from a peer the intake refuses at accept.
+
+    The intake closes such a connection without reading it, possibly before
+    the line is written: that write then fails with EPIPE, which is the
+    refusal seen from the sender's side, not a test failure.
+    """
+    try:
+        send(server, data)
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+
+
 def test_event_stored_chain_verifies_and_status_is_readable(running):
     server = running()
     send(server)
@@ -1354,7 +1367,7 @@ def test_malformed_forward_stats_are_refused_and_keep_the_last_report(running):
     assert server.edge_forward["dropped"] == 3 and server.edge_forward["sent"] == 40
     assert server.accepted == 0 and server.processed == 0
     server.peer_uid = lambda _: 999
-    send(server, forward_stats(sent=77) + b"\n")
+    send_refused(server, forward_stats(sent=77) + b"\n")
     wait_for(lambda: server.refused["peer_refused"] == 1)
     assert server.edge_forward["sent"] == 40
 
