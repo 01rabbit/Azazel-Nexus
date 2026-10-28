@@ -84,28 +84,46 @@ EDGE_MANIFEST = "azazel-edge-core-0.1.0-x86_64.manifest.json"
 EDGE_ARCHIVE = "azazel-edge-core-0.1.0-x86_64.tar.gz"
 EVE = "/var/log/suricata/eve.json"
 
-#: Words a record must never carry (inventory confidentiality): addresses,
-#: 64/32-hex digests and ids, UUIDs. The commit is kept outside this filter.
+#: Words a record must never carry (inventory confidentiality): addresses
+#: (IPv4, IPv6), MACs (colon or hyphen), 64/32-hex digests and ids, UUIDs,
+#: incident ids, 0x values and any other run of 12+ hex digits (container ids,
+#: fingerprints), in either case. The commit is kept outside this filter, and
+#: the node's own host names are removed by name (`redact(..., words=...)`).
+_OCTET = r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
 _REDACT = (
-    (re.compile(r"\b[0-9a-f]{64}\b"), "<sha256>"),
-    (re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"), "<uuid>"),
-    (re.compile(r"\b[0-9a-f]{32}\b"), "<id>"),
-    (re.compile(r"\binc-[0-9a-f]{16}\b"), "inc-<redacted>"),
-    (re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"), "<addr>"),
-    (re.compile(r"\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b", re.I), "<mac>"),
+    (re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I), "<uuid>"),
+    (re.compile(r"\binc-[0-9a-f]{16}\b", re.I), "inc-<redacted>"),
+    (re.compile(r"\b(?:[0-9a-f]{2}([:-]))(?:[0-9a-f]{2}\1){4}[0-9a-f]{2}\b", re.I), "<mac>"),
+    (re.compile(r"\b0x[0-9a-f]+\b", re.I), "<hex>"),
+    (re.compile(r"\b[0-9a-f]{64}\b", re.I), "<sha256>"),
+    (re.compile(r"\b[0-9a-f]{32}\b", re.I), "<id>"),
+    # A version string ("version 1.2.3.4", "v1.2.3.4") is not an address.
+    (re.compile(rf"(?<![\w.])(?<!v)(?<!version )(?<!version=){_OCTET}(?:\.{_OCTET}){{3}}(?![\w.])", re.I), "<addr>"),
+    # IPv6: five or more groups, or any form with "::" and at least one group.
+    # Clock times (13:46:28) have three groups and stay readable.
+    (re.compile(r"(?<![\w:])(?:[0-9a-f]{1,4}:){4,7}[0-9a-f]{1,4}(?![\w:])", re.I), "<addr>"),
+    (re.compile(r"(?<![\w:])(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?(?![\w:])",
+                re.I), lambda m: m.group(0) if m.group(0) == "::" else "<addr>"),
+    (re.compile(r"(?<![\w-])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{12,}(?![\w-])", re.I), "<hex>"),
 )
 
 
-def redact(value):
-    """Apply the confidentiality filter to every string in a JSON value."""
+def redact(value, *, words=()):
+    """Apply the confidentiality filter to every string in a JSON value.
+
+    `words` are exact names to remove as well (the node's host names).
+    """
+    words = [w for w in words if w and len(w) >= 3]
     if isinstance(value, str):
+        for word in words:
+            value = re.sub(rf"(?<![\w.-]){re.escape(word)}(?![\w-])", "<host>", value, flags=re.I)
         for pattern, replacement in _REDACT:
             value = pattern.sub(replacement, value)
         return value
     if isinstance(value, list):
-        return [redact(item) for item in value]
+        return [redact(item, words=words) for item in value]
     if isinstance(value, dict):
-        return {key: redact(item) for key, item in value.items()}
+        return {key: redact(item, words=words) for key, item in value.items()}
     return value
 
 
@@ -134,6 +152,9 @@ class Target:
 
     def kind(self) -> str:
         raise NotImplementedError
+
+    def host_words(self) -> list[str]:
+        return []
 
 
 class DockerTarget(Target):
@@ -173,16 +194,19 @@ class DockerTarget(Target):
     def kind(self):
         return "container"
 
+    def host_words(self):
+        return [self.name]
+
 
 class SshTarget(Target):
     def __init__(self, destination: str) -> None:
-        if not re.fullmatch(r"[A-Za-z0-9_.@:-]+", destination):
+        if not re.fullmatch(r"[A-Za-z0-9_.@:-]+", destination) or destination.startswith("-"):
             raise SystemExit("refused: ssh destination")
         self.destination = destination
         self.description = "ssh to a VM; node commands run through sudo -n"
 
     def _ssh(self) -> list[str]:
-        return ["ssh", "-o", "BatchMode=yes", self.destination]
+        return ["ssh", "-o", "BatchMode=yes", "--", self.destination]
 
     def run(self, argv, *, input=None, timeout=600):
         command = "cd / && sudo -n " + " ".join(shlex.quote(part) for part in argv)
@@ -190,7 +214,7 @@ class SshTarget(Target):
 
     def put(self, local, remote):
         staging = "azn-vmit-upload-" + Path(remote).name
-        subprocess.run(["scp", "-q", "-o", "BatchMode=yes", str(local), f"{self.destination}:{staging}"],
+        subprocess.run(["scp", "-q", "-o", "BatchMode=yes", "--", str(local), f"{self.destination}:{staging}"],
                        check=True, timeout=600)
         result = self.run(["sh", "-c", f'install -m 0600 -o root -g root "$(getent passwd "$SUDO_USER" | cut -d: -f6)/{staging}" {shlex.quote(remote)} && rm -f "$(getent passwd "$SUDO_USER" | cut -d: -f6)/{staging}"'])
         if result.returncode:
@@ -218,6 +242,9 @@ class SshTarget(Target):
 
     def kind(self):
         return "vm"
+
+    def host_words(self):
+        return [self.destination.rsplit("@", 1)[-1]]
 
 
 def make_target(spec: str) -> Target:
@@ -278,24 +305,40 @@ def run(args: argparse.Namespace) -> int:
                 target.put(package / name, f"{NODE_WORK}/edge/{name}")
                 edge[name] = hashlib.sha256((package / name).read_bytes()).hexdigest()
     options = {"rosetta": args.rosetta, "edge": bool(args.edge_package), "wheelhouse": args.wheelhouse,
-               "kind": target.kind(), "run_id": hashlib.sha256(f"{started}{source['commit']}".encode()).hexdigest()[:12]}
+               "kind": target.kind(), "disposable_node": args.disposable_node,
+               "run_id": hashlib.sha256(f"{started}{source['commit']}".encode()).hexdigest()[:12]}
     phases = []
-    for phase in ("prepare", "start", "scenarios"):
-        result = node_phase(target, phase, options)
-        phases.append(result)
-        if any(check["status"] == "fail" and check.get("blocking") for check in result["checks"]):
-            break
-    else:
-        how = target.restart()
-        result = node_phase(target, "after-restart", options)
-        result["restart"] = how
-        phases.append(result)
-    phases.append(node_phase(target, "cleanup", options))
+    interrupted = None
+    try:
+        for phase in ("prepare", "start", "scenarios"):
+            result = node_phase(target, phase, options)
+            phases.append(result)
+            if any(check["status"] == "fail" and check.get("blocking") for check in result["checks"]):
+                break
+        else:
+            how = target.restart()
+            result = node_phase(target, "after-restart", options)
+            result["restart"] = how
+            phases.append(result)
+    except BaseException as exc:  # noqa: BLE001 - SystemExit, timeouts and Ctrl-C still clean up
+        interrupted = exc
+        phases.append({"phase": "controller", "checks": [{
+            "id": "controller.interrupted", "status": "fail", "title": "the run was interrupted",
+            "detail": f"{type(exc).__name__}: {str(exc)[:300]}"}]})
+    finally:
+        try:
+            phases.append(node_phase(target, "cleanup", options, timeout=600))
+        except BaseException as exc:  # noqa: BLE001 - recorded; the node is then reverted by hand
+            phases.append({"phase": "cleanup", "checks": [{
+                "id": "cleanup.unreachable", "status": "fail", "title": "cleanup could not run on the node",
+                "detail": f"{type(exc).__name__}: {str(exc)[:300]}; discard the container or revert the VM"}]})
     record = {
         "schema": SCHEMA,
         "scope": ("Container rehearsal inside a privileged container whose PID 1 is systemd: "
                   "not a VM and not hardware" if target.kind() == "container" else
-                  "VM software integration: not hardware evidence"),
+                  "VM software integration: not hardware evidence")
+                 + ("; x86_64 under Rosetta emulation (MemoryDenyWriteExecute off, seccomp not enforced)"
+                    if args.rosetta else ""),
         "started_at": started,
         "finished_at": utc_now(),
         "source": source,
@@ -304,7 +347,7 @@ def run(args: argparse.Namespace) -> int:
         "options": {k: v for k, v in options.items() if k != "run_id"},
         "phases": phases,
     }
-    record = dict(redact(record), source=source)
+    record = dict(redact(record, words=target.host_words()), source=source)
     text = json.dumps(record, indent=1, sort_keys=True, ensure_ascii=False) + "\n"
     if args.out:
         Path(args.out).write_text(text)
@@ -312,6 +355,8 @@ def run(args: argparse.Namespace) -> int:
         sys.stdout.write(text)
     counts = summary(record)
     print(json.dumps(counts), file=sys.stderr)
+    if isinstance(interrupted, KeyboardInterrupt):
+        raise interrupted
     return 1 if counts["fail"] else 0
 
 
@@ -463,9 +508,39 @@ def facts() -> dict:
 SRC = Path(NODE_WORK) / "src"
 
 
+CAPACITY_KEEP = Path("/var/lib/azn-vmit-capacity")
+
+
+def rosetta_detected() -> bool:
+    """x86_64 user space translated by Rosetta: the translator is mapped into this process."""
+    try:
+        maps = Path("/proc/self/maps").read_text()
+    except OSError:
+        return False
+    return os.uname().machine == "x86_64" and any(
+        line.rstrip().endswith("/rosetta") for line in maps.splitlines())
+
+
 def node_prepare(options: dict) -> dict:
     checks = Checks("prepare")
     checks.extra["facts"] = facts()
+    # A fresh, disposable node, positively: the operator said so on the
+    # controller, and nothing of an earlier install or interrupted run is here.
+    found = [str(path) for path in (Path(VENV), Path("/etc/azazel"), Path("/var/lib/azazel"), CAPACITY_KEEP)
+             if path.exists()]
+    if not options.get("disposable_node") or found:
+        checks.add("fresh-node", "fail", "the node is a fresh, disposable lab node",
+                   ("--disposable-node was not given; " if not options.get("disposable_node") else "")
+                   + (f"already present: {', '.join(found)} (an installed node or an interrupted run; inspect it, "
+                      "do not run here)" if found else ""), blocking=True)
+        return checks.result()
+    checks.add("fresh-node", "pass", "the node is a fresh, disposable lab node",
+               "the operator passed --disposable-node; no venv, /etc/azazel, /var/lib/azazel or kept capacity data")
+    if options.get("rosetta") and not rosetta_detected():
+        checks.add("rosetta", "fail", "--rosetta needs x86_64 user space under Rosetta",
+                   f"machine {os.uname().machine}; no Rosetta translator mapped: refused (the drop-in would only "
+                   "weaken a real node)", blocking=True)
+        return checks.result()
     Path(NODE_LAB).mkdir(mode=0o700, exist_ok=True)
     with tarfile.open(Path(NODE_WORK) / "src.tar") as archive:
         archive.extractall(SRC, filter="data")
@@ -482,11 +557,6 @@ def node_prepare(options: dict) -> dict:
         return checks.result()
     if options.get("rosetta"):
         rosetta_adapt(checks)
-    if Path(VENV).exists():
-        checks.add("venv", "fail", "the production venv path is free",
-                   f"{VENV} already exists; use a fresh node (this run never reuses an installed venv)",
-                   blocking=True)
-        return checks.result()
     sh(["python3", "-m", "venv", VENV], check=True)
     pip = [VENV + "/bin/pip", "install", "-q"]
     if options.get("wheelhouse"):
@@ -572,6 +642,9 @@ def lab_sign(name: str, message: bytes) -> bytes:
 
 
 def knowledge_enroll(checks: Checks, options: dict) -> None:
+    if not options.get("disposable_node"):
+        raise RuntimeError("refused: the public fixture key is pinned only on a node the operator declared "
+                           "disposable (--disposable-node)")
     import grp
     import pwd
 
@@ -705,7 +778,7 @@ def edge_install(checks: Checks) -> None:
 # --- The rehearsal-only start ------------------------------------------------
 
 
-ROSETTA_DROPIN = Path("/etc/systemd/system/service.d/azn-vmit-rosetta.conf")
+ROSETTA_DROPIN = Path("/run/systemd/system/service.d/azn-vmit-rosetta.conf")
 
 
 def rosetta_adapt(checks: Checks) -> None:
@@ -714,9 +787,11 @@ def rosetta_adapt(checks: Checks) -> None:
     Rosetta translates into executable heap pages, so every x86_64 process
     under a unit with MemoryDenyWriteExecute=yes dies (SIGTRAP) -- systemd's
     own journald and logind included, and the activation controller at boot.
-    A top-level drop-in for every service turns it off for the whole run and
-    the restart; it is removed at cleanup. Seccomp is not enforced under
-    Rosetta either, so this run says nothing about either on real x86_64.
+    A top-level runtime drop-in (/run, gone at the next boot) turns it off; the
+    after-restart phase puts it back and runs the controller's pass once more
+    in that boot, because the boot's own pass dies before it decides. Seccomp
+    is not enforced under Rosetta either, so this run says nothing about
+    either on real x86_64.
     """
     ROSETTA_DROPIN.parent.mkdir(parents=True, exist_ok=True)
     ROSETTA_DROPIN.write_text("[Service]\nMemoryDenyWriteExecute=no\n")
@@ -1248,22 +1323,29 @@ def capacity(checks, loop, units, label, directory, writers, edge_unchanged):
     The directory's contents are copied onto a tmpfs with the same owner and
     mode, which is then shrunk to what it holds, so no new page can be written.
     Afterwards the (possibly grown) contents go back onto the real directory.
+
+    The copies live under CAPACITY_KEEP on the node's disk, outside the run's
+    work directory (which the next run deletes): if anything stops part-way,
+    they survive a reboot, the next run refuses the node, and nothing is lost.
     """
     path = Path(directory)
     repaired = ensure_running(units)
     for unit in writers:
         systemctl("stop", unit, timeout=60)
     info = path.stat()
-    staging = Path(NODE_WORK) / f"capacity-{label}"
-    sh(["rm", "-rf", "--", str(staging)])
-    staging.mkdir(mode=0o700)
-    sh(["cp", "-a", f"{directory}/.", str(staging) + "/"], check=True)
+    keep = CAPACITY_KEEP / label
+    before, after = keep / "before", keep / "after"
+    CAPACITY_KEEP.mkdir(mode=0o700, exist_ok=True)
+    keep.mkdir(mode=0o700)  # refuses to reuse anything left by an earlier attempt
+    before.mkdir(mode=0o700)
+    sh(["cp", "-a", f"{directory}/.", str(before) + "/"], check=True)
     mode = oct(info.st_mode & 0o7777)[2:]
     sh(["mount", "-t", "tmpfs", "-o", f"size=64m,mode={mode},uid={info.st_uid},gid={info.st_gid},nosuid,nodev,noexec",
         f"azn-vmit-{label}", directory], check=True)
     explain_before = explainer_status()
+    restore = []
     try:
-        sh(["cp", "-a", str(staging) + "/.", directory + "/"], check=True)
+        sh(["cp", "-a", str(before) + "/.", directory + "/"], check=True)
         used = int(out(["df", "-B1", "--output=used", directory]).splitlines()[-1])
         sh(["mount", "-o", f"remount,size={max(used, 4096)}", directory], check=True)
         free = int(out(["df", "-B1", "--output=avail", directory]).splitlines()[-1])
@@ -1288,21 +1370,30 @@ def capacity(checks, loop, units, label, directory, writers, edge_unchanged):
     finally:
         for unit in writers:
             systemctl("stop", unit, timeout=60)
-        sh(["rm", "-rf", "--", str(staging)])
-        staging.mkdir(mode=0o700)
-        sh(["cp", "-a", directory + "/.", str(staging) + "/"])
-        sh(["umount", directory], check=True)
-        sh(["cp", "-a", str(staging) + "/.", directory + "/"], check=True)
-        sh(["rm", "-rf", "--", str(staging)])
+        after.mkdir(mode=0o700)
+        copied = sh(["cp", "-a", directory + "/.", str(after) + "/"]).returncode == 0
+        unmounted = sh(["umount", directory]).returncode == 0
+        if not (copied and unmounted):
+            # Keep both copies; never write back onto a mount that is still there.
+            restore.append(f"copy {'ok' if copied else 'FAILED'}, umount {'ok' if unmounted else 'FAILED'}: "
+                           f"data kept under {keep} for the operator")
+        elif sh(["cp", "-a", str(after) + "/.", directory + "/"]).returncode:
+            restore.append(f"write-back FAILED: data kept under {keep} for the operator")
+        else:
+            sh(["rm", "-rf", "--", str(keep)])
+            try:
+                CAPACITY_KEEP.rmdir()
+            except OSError:
+                pass
         recovered = {unit: restart(unit) for unit in reversed(writers)}
     effects = capacity_effects(drives, intake, explain, explain_before, writer_state, label)
-    facts = {"free_bytes": free, "precondition_repaired": repaired, "drives": len(drives),
+    facts = {"free_bytes": free, "precondition_repaired": repaired, "drives": len(drives), "restore": restore or "ok",
              "writers_started": started, "writers_after": writer_state, "effects": effects,
              "edge_decisions": observation.get("edge_decisions_delta"), "recovered": recovered,
              "explanations": len(observation["explanations"]),
              "status_audit_line": next((l.strip() for l in text.splitlines() if l.strip().startswith("audit:")), "")}
     others_up = all(value == "active" for value in survivors.values())
-    checks.expect(f"capacity.{label}", bool(effects) and free == 0 and others_up and edge_unchanged()
+    checks.expect(f"capacity.{label}", bool(effects) and free == 0 and others_up and edge_unchanged() and not restore
                   and all(v == "active" for v in recovered.values()),
                   f"storage pressure on {label}: the writer's failure is visible and contained, other units "
                   "and Edge Core keep running, and it recovers when space returns",
@@ -1436,10 +1527,19 @@ print(accepted.sequence)
 
 def node_after_restart(options: dict) -> dict:
     checks = Checks("after-restart")
+    if options.get("rosetta"):
+        boot = unit_show("azazel-activated.service", "Result", "ExecMainStatus")
+        rosetta_adapt(checks)
+        systemctl("reset-failed", "azazel-activated.service")
+        systemctl("start", "azazel-activated.service", timeout=120)
+        checks.add("rosetta-pass", "pass", "Rosetta: the boot's own pass died before deciding; it ran again",
+                   f"boot pass {json.dumps(boot, sort_keys=True)} (MemoryDenyWriteExecute under Rosetta); the runtime "
+                   "drop-in was put back and the same controller was started once in this boot")
     journal = out(["journalctl", "-b", "-u", "azazel-activated.service", "-o", "cat", "--no-pager"])
-    outcome = next((l for l in journal.splitlines() if "az-activated completed" in l or "RollbackFailed" in l), "")
+    outcome = next((l for l in reversed(journal.splitlines())
+                    if "az-activated completed" in l or "RollbackFailed" in l), "")
     checks.expect("pass", "completed safely: granted=0" in outcome,
-                  "the boot's activation pass ran and granted nothing", outcome)
+                  "the activation pass ran and granted nothing", outcome)
     granted = Path("/run/azazel-activation/granted")
     markers = sorted(p.name for p in granted.iterdir()) if granted.exists() else []
     checks.expect("markers", not markers, "no grant marker survived the restart", f"{len(markers)} marker(s)")
@@ -1490,6 +1590,15 @@ def node_cleanup(options: dict) -> dict:
         ROSETTA_DROPIN.unlink()
         systemctl("daemon-reload")
         checks.add("rosetta-dropin", "pass", "the Rosetta drop-in is removed")
+    # After an interruption: stop the fake peers; report (never discard) what
+    # a storage-pressure scenario left mounted or kept.
+    for account in ("azmioref", "azknowledge"):
+        systemctl("stop", f"azn-vmit-fake-{account}.service", timeout=30)
+    mounts = [line.split()[1] for line in Path("/proc/mounts").read_text().splitlines()
+              if line.startswith("azn-vmit-")]
+    if mounts or CAPACITY_KEEP.exists():
+        checks.add("capacity-leftovers", "fail", "storage-pressure leftovers need the operator",
+                   f"still mounted: {mounts or 'none'}; kept copies: {CAPACITY_KEEP if CAPACITY_KEEP.exists() else 'none'}")
     checks.add("lab-keys", "pass", "lab key material destroyed (overwritten, then removed)",
                f"{len(removed)} file(s) overwritten and removed under {NODE_LAB}; the container or VM itself is "
                "discarded (or reverted to its snapshot) after the run")
@@ -1510,7 +1619,10 @@ def node(args) -> int:
     except Exception as exc:  # noqa: BLE001 - reported as a failed check
         result = {"phase": args.phase, "checks": [{"id": f"{args.phase}.error", "status": "fail", "blocking": True,
                                                     "title": "node phase raised", "detail": f"{type(exc).__name__}: {exc}"}]}
-    print(RESULT_PREFIX + json.dumps(redact(result), sort_keys=True))
+    import socket as _socket
+
+    names = {_socket.gethostname(), _socket.gethostname().split(".")[0], _socket.getfqdn()}
+    print(RESULT_PREFIX + json.dumps(redact(result, words=sorted(names)), sort_keys=True))
     return 0
 
 
@@ -1520,8 +1632,12 @@ def main(argv=None) -> int:
     runner = commands.add_parser("run", help="drive a node and write the JSON record")
     runner.add_argument("--target", required=True, help="docker:<container>[@<context>] or ssh:<destination>")
     runner.add_argument("--edge-package", help="directory with the Edge manifest and archive (Edge's packager output)")
+    runner.add_argument("--disposable-node", action="store_true",
+                        help="required: the operator states the node is a throwaway lab node (a container, or a "
+                             "VM reverted to its snapshot afterwards); the public fixture key is pinned only then")
     runner.add_argument("--rosetta", action="store_true",
-                        help="x86_64 under Rosetta: drop MemoryDenyWriteExecute in /run drop-ins (recorded)")
+                        help="x86_64 under Rosetta only (checked on the node): one runtime drop-in "
+                             "/run/systemd/system/service.d/ with MemoryDenyWriteExecute=no for every service (recorded)")
     runner.add_argument("--wheelhouse", help="node path of a wheelhouse for an offline pip install")
     runner.add_argument("--out", help="write the JSON record here")
     runner.add_argument("--scratch", help="local scratch directory (default: the system temporary directory)")
@@ -1532,6 +1648,8 @@ def main(argv=None) -> int:
     node_parser.add_argument("--options", required=True)
     args = parser.parse_args(argv)
     if args.command == "run":
+        if not args.disposable_node:
+            parser.error("run needs --disposable-node: it installs, pins a public test key and injects faults")
         return run(args)
     if args.command == "render":
         sys.stdout.write(render(args.records))

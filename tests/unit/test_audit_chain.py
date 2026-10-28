@@ -239,6 +239,26 @@ def test_a_partial_write_is_not_withdrawn_over_another_writers_bytes(tmp_path, m
     assert ledger.path.read_bytes().endswith(b"other writer\n")
 
 
+def test_a_private_ledger_also_withdraws_a_partial_write(tmp_path, monkeypatch):
+    from azazel_nexus import audit
+
+    ledger = AuditLedger(tmp_path / "audit" / "ledger.jsonl", private=True)
+    ledger.append({"event_type": "recorded"})
+    before = ledger.path.read_bytes()
+    real_open = open
+
+    def full(path, mode="r", *args, **kwargs):
+        handle = real_open(path, mode, *args, **kwargs)
+        return _FullDisk(handle, 11) if Path(path) == ledger.path and "a" in mode else handle
+
+    monkeypatch.setattr(audit, "open", full, raising=False)
+    with pytest.raises(AuditUnavailable, match="not recorded"):
+        ledger.append({"event_type": "torn", "detail": "y" * 100})
+    monkeypatch.undo()
+    assert ledger.path.read_bytes() == before
+    ledger.verify()
+
+
 def test_canonical_bytes_do_not_depend_on_key_order():
     assert canonical_event_bytes({"b": 1, "a": 2}) == canonical_event_bytes(
         {"a": 2, "b": 1}

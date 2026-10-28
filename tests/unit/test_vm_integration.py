@@ -42,7 +42,7 @@ def test_the_record_filter_removes_inventory_facts():
 def test_the_commit_stays_readable_while_details_are_filtered():
     # run() puts the source block back after filtering; a commit id is not an
     # inventory fact and the record must name what was installed.
-    assert "record = dict(redact(record), source=source)" in SOURCE
+    assert "record = dict(redact(record, words=target.host_words()), source=source)" in SOURCE
 
 
 def _record(tmp_path, checks):
@@ -82,7 +82,7 @@ def test_a_scenario_that_raises_is_a_recorded_failure_not_a_crash():
 
 
 @pytest.mark.parametrize("spec", ["docker:", "docker:bad name", "docker:-x", "ssh:", "ssh:host;rm",
-                                  "ftp:host", "plain"])
+                                  "ssh:-oProxyCommand=x", "ssh:-x", "ftp:host", "plain"])
 def test_targets_refuse_malformed_specs(spec):
     with pytest.raises(SystemExit):
         vmit.make_target(spec)
@@ -99,9 +99,10 @@ def test_docker_and_ssh_targets_build_the_documented_commands(monkeypatch):
     ssh = vmit.make_target("ssh:rabbit@vm.example")
     ssh.run(["python3", "-c", "print('a b')"])
     argv = calls[-1]
-    assert argv[:3] == ["ssh", "-o", "BatchMode=yes"] and argv[3] == "rabbit@vm.example"
+    # "--" ends ssh's options before the destination.
+    assert argv[:5] == ["ssh", "-o", "BatchMode=yes", "--", "rabbit@vm.example"]
     # One remote shell word list, quoted, always through sudo -n (no password prompt).
-    assert argv[4] == "cd / && sudo -n python3 -c 'print('\"'\"'a b'\"'\"')'"
+    assert argv[5] == "cd / && sudo -n python3 -c 'print('\"'\"'a b'\"'\"')'"
     assert docker.kind() == "container" and ssh.kind() == "vm"
 
 
@@ -128,7 +129,14 @@ def test_the_runner_never_touches_activation_inputs_or_admission():
                       "model_admission_cli", "mission-pack.json", "commission_cli"):
         assert forbidden not in SOURCE, forbidden
     starts = re.findall(r'systemctl\("start",[^)]*\)', SOURCE)
-    assert starts and all("--job-mode=ignore-requirements" in call or "unit, timeout" in call for call in starts)
+    controller = [call for call in starts if "azazel-activated" in call]
+    assert starts and all("--job-mode=ignore-requirements" in call or "unit, timeout" in call
+                          for call in starts if call not in controller)
+    # The controller is started by hand only after a restart under Rosetta, where
+    # the boot's own pass died before deciding; it then runs one ordinary pass.
+    assert len(controller) == 1
+    after = SOURCE[SOURCE.index("def node_after_restart"):]
+    assert after.index('if options.get("rosetta")') < after.index(controller[0]) < after.index("journal = out(")
     assert re.findall(r'"/run/azazel-activation/granted"', SOURCE)
 
 
@@ -166,3 +174,84 @@ def test_a_vm_restart_waits_for_a_new_boot_id_and_survives_the_hang_up(monkeypat
     assert target.restart() == "systemctl reboot (a new kernel boot)"
     # The same boot id after "running" is not a reboot: it waited for the new one.
     assert calls.count(["cat", "/proc/sys/kernel/random/boot_id"]) == 3
+
+
+@pytest.mark.parametrize("leak", [
+    "fe80::1ff:fe23:4567:890a", "2001:db8::8a2e:370:7334", "::ffff:10.0.0.1",
+    "2001:0db8:0000:0000:0000:ff00:0042:8329", "02-42-AC-11-00-02", "02:42:ac:11:00:02", "0xDEADBEEF",
+    "ABCDEF0123456789ABCDEF0123456789", "aa8f381b99a4", "10.0.3.8", "192.168.40.100",
+])
+def test_the_filter_covers_addresses_in_every_spelling(leak):
+    assert leak.lower() not in vmit.redact(f"seen {leak} here").lower()
+
+
+@pytest.mark.parametrize("kept", ["13:46:28", "2026-10-28T13:23:11Z", "version 1.2.3.4", "v6.0.3.1",
+                                  "std::map", "granted=0, withheld=16", "T1110", "257.13-1"])
+def test_the_filter_keeps_times_versions_and_words(kept):
+    assert vmit.redact(f"x {kept} y") == f"x {kept} y"
+
+
+def test_the_node_host_name_is_removed_by_name():
+    assert vmit.redact({"d": "on azn-vm1 and AZN-VM1.lab"}, words=["azn-vm1"]) == {"d": "on <host> and <host>.lab"}
+
+
+class _Node(vmit.Target):
+    description = "fake"
+
+    def __init__(self, failure):
+        self.failure = failure
+
+    def run(self, argv, *, input=None, timeout=600):
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    def put(self, local, remote):
+        pass
+
+    def restart(self):
+        raise self.failure
+
+    def kind(self):
+        return "container"
+
+
+@pytest.mark.parametrize("failure", [SystemExit("node did not come back"), subprocess.TimeoutExpired("x", 1),
+                                     KeyboardInterrupt()])
+def test_cleanup_runs_even_when_the_restart_fails(tmp_path, monkeypatch, failure):
+    node = _Node(failure)
+    phases = []
+    monkeypatch.setattr(vmit, "make_target", lambda spec: node)
+    monkeypatch.setattr(vmit, "source_archive",
+                        lambda repo, scratch: (scratch / "a.tar", {"commit": "c" * 40, "worktree": "clean"}))
+    monkeypatch.setattr(vmit, "node_phase", lambda target, phase, options, **kw: phases.append(phase) or {
+        "phase": phase, "checks": [{"id": f"{phase}.ok", "status": "pass", "title": "", "detail": ""}]})
+    out = tmp_path / "run.json"
+    args = vmit.argparse.Namespace(target="docker:x", edge_package=None, rosetta=False, wheelhouse=None,
+                                   out=str(out), scratch=str(tmp_path), disposable_node=True)
+    if isinstance(failure, KeyboardInterrupt):
+        with pytest.raises(KeyboardInterrupt):
+            vmit.run(args)
+    else:
+        assert vmit.run(args) == 1
+    assert phases == ["prepare", "start", "scenarios", "cleanup"]
+    record = json.loads(out.read_text())
+    ids = [c["id"] for p in record["phases"] for c in p["checks"]]
+    assert ids[-2:] == ["controller.interrupted", "cleanup.ok"]
+
+
+def test_run_needs_the_operators_disposable_node_statement():
+    with pytest.raises(SystemExit):
+        vmit.main(["run", "--target", "docker:x"])
+    assert 'options.get("disposable_node")' in SOURCE
+
+
+def test_rosetta_is_checked_on_the_node_and_its_drop_in_is_runtime_only():
+    assert str(vmit.ROSETTA_DROPIN).startswith("/run/systemd/system/service.d/")
+    prepare = SOURCE[SOURCE.index("def node_prepare"):SOURCE.index("def knowledge_reason")]
+    assert prepare.index("rosetta_detected()") < prepare.index("rosetta_adapt(checks)")
+    assert prepare.index("Path(VENV)") < prepare.index("rosetta_adapt(checks)")
+
+
+def test_capacity_copies_survive_the_next_runs_work_directory_reset():
+    assert not str(vmit.CAPACITY_KEEP).startswith(vmit.NODE_WORK)
+    prepare = SOURCE[SOURCE.index("def node_prepare"):SOURCE.index("def knowledge_reason")]
+    assert "CAPACITY_KEEP" in prepare  # an interrupted run's copies make the next run refuse

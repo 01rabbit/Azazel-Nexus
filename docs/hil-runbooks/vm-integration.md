@@ -36,12 +36,12 @@ collects them into one record.
 
 | phase | what happens on the node |
 | --- | --- |
-| `prepare` | records the OS, kernel, systemd and CPU; checks the prerequisites; builds `/opt/azazel-nexus/venv` from the copied source (refuses if it already exists); runs `packaging/install.sh`; checks that every governed unit this run uses is installed masked and that the activation controller is enabled |
+| `prepare` | records the OS, kernel, systemd and CPU; refuses unless the operator passed `--disposable-node` and the node has no venv, no `/etc/azazel`, no `/var/lib/azazel` and no kept storage-pressure copies; with `--rosetta`, refuses unless the node is x86_64 user space translated by Rosetta; checks the prerequisites; builds `/opt/azazel-nexus/venv` from the copied source; runs `packaging/install.sh`; checks that every governed unit this run uses is installed masked and that the activation controller is enabled |
 | `start` | enrolls Knowledge Lite from the public fixture bundle ([knowledge-lite-consumer §11](../knowledge-lite-consumer.md#11-first-enrollment-from-a-fresh-install-to-available), with the substitutions in §2); installs and verifies the Edge package when one is given; makes this boot's grant markers by hand; starts the auditd rehearsal copy, `azazel-knowledge-lited`, `azazel-mio-referenced`, `azazel-mio-entryd`, `azazel-edge-intaked`, `azazel-incident-explaind` and (with a package) the probe and `azazel-edge-core`, all with `--job-mode=ignore-requirements` |
 | `scenarios` | the checks of §4: the model-free reference path, Knowledge citations and status; SIGKILL; broken replies; malformed Edge lines; Lite expiry; storage pressure; Edge Core with the advisory side stopped (H1–H3); a Lite revocation |
 | restart | the controller restarts the node: `docker restart` for a container (systemd boots again, the kernel does not), `systemctl reboot` for a VM (a new boot id is required) |
 | `after-restart` | the boot's activation pass ran and granted nothing; no marker survived; every hand-unmasked unit is masked again and none is running; a start without a marker is skipped; the Lite revocation still holds; the activation ledger's last entry |
-| `cleanup` | overwrites and removes everything under `/run/azn-vmit` (already gone after a restart) |
+| `cleanup` | overwrites and removes everything under `/run/azn-vmit` (already gone after a restart), removes the Rosetta drop-in, stops the fake peers, and reports (never discards) a storage-pressure mount or kept copy left by an interruption. It runs also when the run is interrupted (a failed restart, a timeout, Ctrl-C) |
 
 A check that raises is recorded as `fail` with its exception, never as a
 crash of the run. A blocking failure in `prepare` or `start` stops the run
@@ -91,8 +91,12 @@ before the scenarios.
   heap pages, so every x86_64 process under `MemoryDenyWriteExecute=yes` dies
   with SIGTRAP -- systemd's own `systemd-journald` and `systemd-logind` too,
   and the activation controller at boot. `prepare` therefore writes one
-  top-level drop-in for every service, `/etc/systemd/system/service.d/azn-vmit-rosetta.conf`
+  runtime top-level drop-in for every service,
+  `/run/systemd/system/service.d/azn-vmit-rosetta.conf`
   (`MemoryDenyWriteExecute=no`), restarts journald, and `cleanup` removes it.
+  Being under `/run`, it is gone at the restart, so the boot's own pass dies
+  before it decides; `after-restart` records that, puts the drop-in back and
+  starts the same controller once in that boot (`after-restart.rosetta-pass`).
   Seccomp filters are not enforced under Rosetta either. That run says nothing
   about `MemoryDenyWriteExecute` or `SystemCallFilter` on x86_64
   ([§17 of the admission runbook](mio-admission.md#17-vm-rehearsal-never-evidence)).
@@ -134,15 +138,21 @@ then the same package installation as §3.1.
 
 - Debian 13 with systemd as PID 1, either CPU. **Take snapshot S0 first**:
   the install, the ledgers and the Lite revocation are not undone otherwise.
-- A fresh node: no `/opt/azazel-nexus/venv` (the run refuses to reuse one),
-  no earlier Azazel-Nexus install, no lab marker.
+- A fresh node: no `/opt/azazel-nexus/venv`, no earlier Azazel-Nexus install
+  (`/etc/azazel`, `/var/lib/azazel`), no lab marker. The run refuses otherwise,
+  and it never runs without `--disposable-node`: the operator's statement that
+  the node is a throwaway lab node, since the run pins the public fixture key
+  and injects faults. Never pass it for a node that matters.
 - The SSH user can run `sudo -n` (non-interactive). The run never asks for a
   password; a temporary sudo grant is removed after the whole run.
 - Packages: `apparmor`, `iproute2`, `openssl`, and for the venv either network
   access with `gcc` and `python3-dev` (the runtime's C extension is built by
   pip) or a wheelhouse on the node passed as `--wheelhouse PATH`.
 - The VM is reverted to S0 afterwards; the run's own cleanup only removes the
-  lab key.
+  lab key and the Rosetta drop-in. Storage-pressure copies live under
+  `/var/lib/azn-vmit-capacity/` on the node's disk only while a scenario runs;
+  if a run stops part-way they are kept there (and the next run refuses the
+  node) so that nothing is lost.
 
 ## 4. The Edge package
 
@@ -159,11 +169,11 @@ anything executes it and refuses on a mismatch.
 From the checkout to be installed (its `HEAD` is what the node gets):
 
 ```sh
-python3 -m tools.vm_integration run --target docker:azn-vmit@colima \
+python3 -m tools.vm_integration run --disposable-node --target docker:azn-vmit@colima \
   --edge-package edge-dist --out RESULT.json --scratch SCRATCH_DIR
-python3 -m tools.vm_integration run --target docker:azn-vmit-amd64@colima-rosetta --rosetta \
+python3 -m tools.vm_integration run --disposable-node --target docker:azn-vmit-amd64@colima-rosetta --rosetta \
   --edge-package edge-dist --out RESULT.json --scratch SCRATCH_DIR
-python3 -m tools.vm_integration run --target ssh:NODE --edge-package edge-dist --out RESULT.json
+python3 -m tools.vm_integration run --disposable-node --target ssh:NODE --edge-package edge-dist --out RESULT.json
 python3 -m tools.vm_integration render RESULT.json
 ```
 
@@ -197,9 +207,15 @@ when any check failed. Remove the container afterwards
 ## 7. The record
 
 `run --out` writes `azazel-nexus/vm-integration-run/v1` JSON. Every string in
-it passes the confidentiality filter of the script: addresses, 32/64-hex
-digests and ids, UUIDs (boot ids), incident ids and MACs are replaced; only
-the source commit stays readable. Never add a hostname, interface name, the
+it passes the confidentiality filter of the script: IPv4 and IPv6 addresses,
+MACs (colon or hyphen), UUIDs (boot ids), incident ids, `0x` values, 32/64-hex
+digests and ids and any other run of 12 or more hex digits (container ids,
+fingerprints), in upper or lower case, are replaced, and the node's own host
+names (and the SSH destination's host or the container name) are replaced by
+name. Clock times and version strings written `version 1.2.3.4` or `v1.2.3.4`
+stay readable; a bare four-part version is indistinguishable from an IPv4
+address and is replaced. Only the source commit stays readable. Never add a
+hostname, interface name, the
 Edge journal, evidence or ledger contents to it
 ([inventory confidentiality](../inventory-confidentiality.md)). Commit the JSON
 records and a short Markdown summary under `docs/evidence/`, labelled with
