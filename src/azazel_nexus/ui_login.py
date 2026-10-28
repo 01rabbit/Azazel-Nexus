@@ -122,6 +122,8 @@ def run(out: TextIO, *, now: float, path: Optional[Path] = None) -> int:
           f"{format_code(value['code'])}", file=out)
     print(f"Open {value['url']} in a browser on this host and type the code there.",
           file=out)
+    print("Type it only while `systemctl is-active azazel-ui.socket` says active: "
+          "8443 is not a privileged port.", file=out)
     print("The code is never part of a URL. The UI is read-only: it shows what "
           "`azazel-nexus status --json` shows and performs no action.", file=out)
     return 0

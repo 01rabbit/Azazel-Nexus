@@ -82,8 +82,14 @@ LISTEN_FD = 3
 #: stays redeemable for `CODE_TTL_S` (60 s) from issue, so an operator who
 #: read the newest code always has at least 30 seconds.
 ROTATE_S = 30
-#: Wrong codes tolerated before every outstanding code is withdrawn.
-MAX_FAILED_LOGINS = 5
+#: Wrong codes evaluated in one `FAILURE_WINDOW_S` window, from anyone.
+#: Beyond them every login attempt in that window is refused **without being
+#: evaluated** (`login_throttled`), so guessing is bounded at 20 tries a
+#: minute against a 49-bit code that lives 60 seconds. Nothing is withdrawn:
+#: another local account that sends wrong codes can delay an operator's login
+#: until the window ends, and cannot invalidate the code the operator holds.
+MAX_FAILED_PER_WINDOW = 10
+FAILURE_WINDOW_S = 30
 
 SESSION_IDLE_S = 600
 SESSION_MAX_S = 3600
@@ -92,7 +98,11 @@ LOGIN_TOKEN_TTL_S = 300
 
 MAX_BODY = 1024
 MAX_CONNECTIONS = 16
-REQUEST_TIMEOUT_S = 10
+#: Per receive. A connection also has `REQUEST_DEADLINE_S` in total, from
+#: accept to close, so a client that sends one byte at a time (slowloris)
+#: frees its slot by then however slowly it sends.
+REQUEST_TIMEOUT_S = 5
+REQUEST_DEADLINE_S = 10.0
 VIEW_CACHE_S = 2.0
 FIXTURE_BYTES = 1 << 20
 
@@ -200,10 +210,27 @@ class AdoptedServer(socketserver.ThreadingMixIn, socketserver.BaseServer):
         return True
 
     def process_request_thread(self, request, client_address):
+        # The total deadline: shutting the socket down makes a blocked read
+        # return at once, so the handler ends and the slot is released.
+        deadline = threading.Timer(REQUEST_DEADLINE_S, self._cut, args=(request,))
+        deadline.daemon = True
+        deadline.start()
         try:
             super().process_request_thread(request, client_address)
         finally:
+            deadline.cancel()
             self._slots.release()
+
+    @staticmethod
+    def _cut(request) -> None:
+        try:
+            request.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def handle_error(self, request, client_address):
+        """One fixed word: never a traceback or the client's address."""
+        _log("request_error")
 
     def shutdown_request(self, request):
         try:
@@ -226,10 +253,11 @@ class LoginCodes:
     """One-use login codes, published to the operator-readable file.
 
     Each code is redeemable for `CODE_TTL_S` from its issue, once. A new code
-    is published every `ROTATE_S`, at once after a redemption, and after
-    `MAX_FAILED_LOGINS` wrong attempts (which also withdraws every code still
-    outstanding). Only this process holds the codes; the file shows the
-    newest one to the operator group and nobody else.
+    is published every `ROTATE_S` and at once after a redemption. Wrong codes
+    are bounded per window (`MAX_FAILED_PER_WINDOW`); past the bound attempts
+    are refused unevaluated until the window ends, and no code is withdrawn.
+    Only this process holds the codes; the file shows the newest one to the
+    operator group and nobody else.
     """
 
     def __init__(self, publish: Callable[[dict], None], url: str):
@@ -239,6 +267,7 @@ class LoginCodes:
         self._codes: dict[str, float] = {}
         self._newest_at: Optional[float] = None
         self._failures = 0
+        self._window_start: Optional[float] = None
 
     def _issue(self, now: float) -> None:
         code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
@@ -256,9 +285,15 @@ class LoginCodes:
             if self._newest_at is None or now - self._newest_at >= ROTATE_S or now < self._newest_at:
                 self._issue(now)
 
-    def redeem(self, typed, now: float) -> bool:
+    def redeem(self, typed, now: float) -> str:
+        """`"accepted"`, `"refused"` or `"throttled"` (not evaluated)."""
         code = normalize_code(typed)
         with self._lock:
+            if (self._window_start is None or now - self._window_start >= FAILURE_WINDOW_S
+                    or now < self._window_start):
+                self._window_start, self._failures = now, 0
+            if self._failures >= MAX_FAILED_PER_WINDOW:
+                return "throttled"
             match = None
             for candidate, until in list(self._codes.items()):
                 if until <= now:
@@ -267,16 +302,12 @@ class LoginCodes:
                     match = candidate
             if match is not None:
                 del self._codes[match]
-                self._failures = 0
                 self._issue(now)
-                return True
+                return "accepted"
             self._failures += 1
-            if self._failures >= MAX_FAILED_LOGINS:
-                _log("login_codes_withdrawn_after_failures")
-                self._codes.clear()
-                self._failures = 0
-                self._issue(now)
-            return False
+            if self._failures == MAX_FAILED_PER_WINDOW:
+                _log("login_throttled")
+            return "refused"
 
 
 class Sessions:
@@ -344,7 +375,7 @@ class LoginTokens:
         if not token or len(token) > 200 or token.count(".") != 2:
             return False
         issued, nonce, mac = token.split(".")
-        if not issued.isdigit() or not hmac.compare_digest(mac, self._mac(f"{issued}.{nonce}")):
+        if not (issued.isascii() and issued.isdigit()) or not hmac.compare_digest(mac, self._mac(f"{issued}.{nonce}")):
             return False
         return 0 <= now - int(issued) <= LOGIN_TOKEN_TTL_S
 
@@ -597,12 +628,20 @@ class UiHandler(BaseHTTPRequestHandler):
         if self.headers.get("Transfer-Encoding") is not None:
             raise Refused(411, "length_required")
         length = self.headers.get("Content-Length")
-        if length is None or not length.isdigit():
+        if length is None or not (length.isascii() and length.isdigit()) or len(length) > 6:
             raise Refused(411, "length_required")
         if int(length) > MAX_BODY:
             raise Refused(413, "body_too_large")
         try:
-            value = json.loads(self.rfile.read(int(length)).decode("utf-8"))
+            raw = self.rfile.read(int(length))
+        except (OSError, ValueError):
+            self.close_connection = True
+            raise Refused(400, "body_unreadable") from None
+        if len(raw) != int(length):
+            self.close_connection = True
+            raise Refused(400, "body_unreadable")
+        try:
+            value = json.loads(raw.decode("utf-8"))
         except ValueError:
             raise Refused(400, "json_refused") from None
         if not isinstance(value, dict):
@@ -659,7 +698,10 @@ class UiHandler(BaseHTTPRequestHandler):
                 if (header is None or cookie is None or not hmac.compare_digest(header, cookie)
                         or not self.app.tokens.check(cookie, now)):
                     raise Refused(403, "csrf_refused")
-                if not self.app.codes.redeem(body.get("code"), now):
+                outcome = self.app.codes.redeem(body.get("code"), now)
+                if outcome == "throttled":
+                    raise Refused(429, "login_throttled")
+                if outcome != "accepted":
                     raise Refused(403, "login_refused")
                 sid, csrf = self.app.sessions.create(now)
                 _log("login")

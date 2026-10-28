@@ -82,16 +82,45 @@ decision and is not part of this change.
 
 | Rule | How |
 | --- | --- |
-| Login | `azazel-nexus ui-login` prints a one-use code (10 symbols, about 49 bits) that the UI wrote to `/var/lib/azazel/run/ui-login/login-code.json`, readable only by `azazel-operator`. Each code is redeemable once, for 60 seconds from issue; a new code appears every 30 seconds and at once after a login; 5 wrong codes withdraw every outstanding code. The code is typed into a form and sent in a POST body, never in a URL. |
+| Login | `azazel-nexus ui-login` prints a one-use code (10 symbols, about 49 bits) that the UI wrote to `/var/lib/azazel/run/ui-login/login-code.json`, readable only by `azazel-operator`. Each code is redeemable once, for 60 seconds from issue; a new code appears every 30 seconds and at once after a login. At most 10 wrong codes are evaluated per 30-second window, from anyone; past that, every login attempt in the window is refused **unevaluated** (`429 login_throttled`), the correct code included, and no code is withdrawn. Guessing is thus bounded at 20 tries a minute against a 49-bit code that lives 60 seconds. The code is typed into a form and sent in a POST body, never in a URL. |
 | Session | Cookie `azui_session`: `HttpOnly; SameSite=Strict; Path=/; Max-Age=3600`, no `Secure` (loopback HTTP). Held in memory only; idle 10 minutes, at most 60 minutes, at most 8 sessions; a restart ends all. A clock step backwards ends a session. |
 | Host | `Host` must be exactly `127.0.0.1:<port>` or `localhost:<port>` (DNS rebinding); anything else is `421`. |
 | CSRF | A POST (login, logout) needs `Origin` equal to `http://<Host>`, `Content-Type: application/json`, a body of at most 1024 bytes, no `Sec-Fetch-Site` other than `same-origin`, and a token: the session's synchroniser token for logout, a signed double-submit token (`azui_login` cookie, 5 minutes) for login. |
 | GET | Changes no state on the server. |
+| Slow or broken clients | Each read has a 5-second timeout and each connection a 10-second total deadline from accept, after which the server shuts the socket down and frees the slot (at most 16 at once). A `Content-Length` that is not ASCII digits is `411`; a body that is shorter than declared or stops arriving is `400 body_unreadable`. A handler failure is journalled as the one word `request_error`, never a traceback or a client address. |
 | URL | No query string or fragment is accepted anywhere (`400`), so no token can travel in a URL. |
 | Headers | Every response, refusals included: `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`, `X-Frame-Options: DENY`, `Cross-Origin-Opener-Policy` and `-Resource-Policy: same-origin`, a `Permissions-Policy` that disables device features. |
 | Static files | Five request paths mapped to four files read once at start; a request path is never joined to a filesystem path. |
 | XSS | The page writes with `textContent` only. `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval` and the `Function` constructor are absent (tested by scanning `app.js`). JSON is escaped (`<`, `>`, `&`, U+2028, U+2029). An AI summary or a Knowledge name is shown as text and never linked. |
 | Not sent | Keys, credentials, the login code (only the operator's terminal shows it), raw logs, journal lines, exception text, interface names or addresses. The document (`azazel-nexus/ui-model/1`, `azazel_nexus.ui_model`) is an allowlist over the status read model, which is itself an allowlist; the interface list is not copied at all. |
+
+### What another account on the same host can do
+
+Loopback is shared by every account on the host, so the boundary above is
+against reading, not against interference:
+
+* **Login interference.** Any local account can send wrong codes and so keep
+  the login throttled (`login_throttled`) for as long as it keeps sending.
+  It cannot learn or invalidate the operator's code, and sessions already
+  open are unaffected. The page tells the operator that another account on
+  the host may be sending codes; `journalctl -u azazel-ui.service` shows
+  `az-ui: login_throttled`, and stopping the UI ends it. A local account can
+  likewise hold the 16 connection slots, each for at most 10 seconds at a
+  time. Neither touches anything but the UI.
+* **Cookies are not isolated by port.** A browser sends `127.0.0.1` cookies
+  to every port on `127.0.0.1`, and a page served from another port on this
+  host is same-site for `SameSite=Strict`. A local account that serves a page
+  on another port can therefore overwrite or delete the UI's cookies in the
+  operator's browser (log the operator out, or plant a login token so the
+  next login attempt fails). It cannot read the `HttpOnly` session cookie
+  through the page, and the `Origin` check refuses its POSTs, so the limit
+  is login interference, not access.
+* **Check the listener before typing a code.** 8443 is not a privileged
+  port: if the UI's socket is not active, another local account could listen
+  there and show a look-alike login page to collect a code. Before typing a
+  code, check `systemctl is-active azazel-ui.socket` (it must say `active`).
+  A collected code is one use and expires in 60 seconds, and the page it
+  would open shows only what `status --json` shows.
 
 ## Screens and vocabulary
 
@@ -130,6 +159,7 @@ until it is listed.
 
 ```sh
 sudo systemctl enable --now azazel-ui.socket   # listens on 127.0.0.1:8443
+systemctl is-active azazel-ui.socket           # must say "active" before a code is typed
 azazel-nexus ui-login                          # as a member of azazel-operator
 # open http://127.0.0.1:8443/ on this host and type the code
 ```

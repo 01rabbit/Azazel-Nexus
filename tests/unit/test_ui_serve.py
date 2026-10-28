@@ -413,15 +413,43 @@ def test_a_code_expires_after_its_lifetime_and_rotation_keeps_one_valid(ui):
                    ).status == 200
 
 
-def test_wrong_codes_withdraw_every_outstanding_code(ui):
+def test_wrong_codes_throttle_logins_and_withdraw_nothing(ui):
+    """Guessing is bounded; another local account can delay, not invalidate.
+
+    After `MAX_FAILED_PER_WINDOW` wrong codes every attempt in the window is
+    refused unevaluated (`429 login_throttled`), the correct code included.
+    When the window ends, the operator's code -- still within its 60 s --
+    works: nothing was withdrawn.
+    """
     code = ui.code()
     token = ui.login_token()
     cookie = f"azui_login={token}"
-    for _ in range(ui_serve.MAX_FAILED_LOGINS):
+    for _ in range(ui_serve.MAX_FAILED_PER_WINDOW):
         assert ui.post("/api/login", {"code": "ZZZZZ-ZZZZZ"}, token=token, cookie=cookie
                        ).status == 403
-    assert ui.post("/api/login", {"code": code}, token=token, cookie=cookie).status == 403
-    assert ui.post("/api/login", {"code": ui.code()}, token=token, cookie=cookie).status == 200
+    throttled = ui.post("/api/login", {"code": code}, token=token, cookie=cookie)
+    assert throttled.status == 429 and throttled.json() == {"error": "login_throttled"}
+    assert code in ui.app.codes._codes, "a throttled window withdraws no code"
+    ui.clock.advance(ui_serve.FAILURE_WINDOW_S)
+    assert ui_serve.FAILURE_WINDOW_S < ui_login.CODE_TTL_S
+    assert ui.post("/api/login", {"code": code}, token=token, cookie=cookie).status == 200
+
+
+def test_throttled_attempts_are_not_evaluated_or_counted(ui):
+    codes = ui.app.codes
+    for _ in range(ui_serve.MAX_FAILED_PER_WINDOW):
+        assert codes.redeem("ZZZZZZZZZZ", ui.clock()) == "refused"
+    for _ in range(50):
+        assert codes.redeem(ui.code(), ui.clock()) == "throttled"
+    assert codes._failures == ui_serve.MAX_FAILED_PER_WINDOW
+    ui.clock.advance(ui_serve.FAILURE_WINDOW_S)
+    assert codes.redeem(ui.code(), ui.clock()) == "accepted"
+
+
+def test_the_guessing_bound_per_code_lifetime_is_small():
+    evaluated = ui_serve.MAX_FAILED_PER_WINDOW * (ui_login.CODE_TTL_S // ui_serve.FAILURE_WINDOW_S
+                                                  + 1)
+    assert evaluated / len(ui_login.CODE_ALPHABET) ** ui_login.CODE_LENGTH < 1e-12
 
 
 @pytest.mark.parametrize("typed", [None, 123, ["A"], "", "abcde", "ABCDE-FGHJ", "ABCDE-FGHJKL",
@@ -447,6 +475,124 @@ def test_the_code_file_is_group_readable_only_and_not_a_symlink_target(tmp_path)
                                "url": "http://127.0.0.1:8443/"})
     assert (path.stat().st_mode & 0o777) & ~0o640 == 0
     assert [p.name for p in tmp_path.iterdir()] == ["login-code.json"]
+
+
+# -- malformed bodies and slow clients ----------------------------------------------------
+
+
+def _raw(port, data, *, close_write=False, timeout=5):
+    connection = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+    try:
+        connection.sendall(data)
+        if close_write:
+            connection.shutdown(socket.SHUT_WR)
+        chunks = []
+        while True:
+            try:
+                chunk = connection.recv(65536)
+            except (TimeoutError, ConnectionResetError):
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        connection.close()
+
+
+def _login_request(ui, length, body=b"", token="t"):
+    head = (f"POST /api/login HTTP/1.1\r\nHost: 127.0.0.1:{ui.port}\r\n"
+            f"Origin: {ui.origin}\r\nContent-Type: application/json\r\n"
+            f"X-CSRF-Token: {token}\r\nCookie: azui_login={token}\r\n"
+            f"Content-Length: {length}\r\n\r\n")
+    try:
+        encoded = head.encode("latin-1")  # how the stdlib decodes header bytes
+    except UnicodeEncodeError:
+        encoded = head.encode("utf-8")
+    return encoded + body
+
+
+@pytest.mark.parametrize("length", ["\u00b2", "\uff11\uff12", "\u0663", "-1", "+5", "1e3",
+                                    " 5", "5 ", "0x10", "99999999999"])
+def test_a_content_length_that_is_not_ascii_digits_is_refused_quietly(ui, length, capsys):
+    answer = _raw(ui.port, _login_request(ui, length, b'{"code": "x"}'), close_write=True)
+    status = int(answer.split(b" ", 2)[1])
+    assert status in (400, 411, 413), answer[:80]
+    assert b"Content-Security-Policy" in answer
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and "127.0.0.1" not in err
+
+
+def test_a_body_shorter_than_its_length_is_refused_quietly(ui, capsys):
+    answer = _raw(ui.port, _login_request(ui, 200, b'{"code"'), close_write=True)
+    assert b" 400 " in answer.split(b"\r\n", 1)[0]
+    assert b'"body_unreadable"' in answer
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and "127.0.0.1" not in err
+
+
+def test_a_body_that_stops_arriving_is_refused_quietly(tmp_path, monkeypatch, capsys):
+    """A read that times out mid-body is a 400, not an unhandled error."""
+    monkeypatch.setattr(ui_serve.UiHandler, "timeout", 0.3)
+    harness = Harness(tmp_path)
+    try:
+        answer = _raw(harness.port, _login_request(harness, 200, b'{"code"'))
+    finally:
+        harness.close()
+    assert b" 400 " in answer.split(b"\r\n", 1)[0]
+    assert b'"body_unreadable"' in answer
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and "request_error" not in err
+
+
+def test_a_handler_error_is_one_fixed_word_without_traceback_or_address(ui, capsys):
+    ui.server.handle_error(None, ("127.0.0.1", 40000))
+    err = capsys.readouterr().err
+    assert err == "az-ui: request_error\n"
+
+
+def test_slow_clients_are_cut_at_the_total_deadline_and_free_their_slots(tmp_path, monkeypatch):
+    """Slowloris: one byte at a time, never idle long enough for the per-read
+    timeout. Every slot is freed at the total deadline and a real request is
+    then served."""
+    monkeypatch.setattr(ui_serve, "REQUEST_DEADLINE_S", 1.0)
+    harness = Harness(tmp_path)
+    stop = threading.Event()
+    slow = []
+    try:
+        for _ in range(ui_serve.MAX_CONNECTIONS):
+            connection = socket.create_connection(("127.0.0.1", harness.port), timeout=5)
+            connection.sendall(b"GET / HTTP/1.1\r\n")
+            slow.append(connection)
+        closed = []
+
+        def trickle(connection):
+            started = time.monotonic()
+            try:
+                while not stop.is_set() and time.monotonic() - started < 6:
+                    connection.sendall(b"X")
+                    time.sleep(0.2)
+            except OSError:
+                closed.append(time.monotonic() - started)
+        threads = [threading.Thread(target=trickle, args=(c,), daemon=True) for c in slow]
+        for thread in threads:
+            thread.start()
+        time.sleep(0.3)
+        # Every slot is held: a new connection is closed without an answer.
+        assert _raw(harness.port, f"GET / HTTP/1.1\r\nHost: 127.0.0.1:{harness.port}\r\n\r\n"
+                    .encode()) == b""
+        time.sleep(1.5)  # past the deadline
+        response = harness.request("GET", "/")
+        assert response.status == 200
+        for thread in threads:
+            thread.join(timeout=10)
+        assert len(closed) == ui_serve.MAX_CONNECTIONS
+        assert max(closed) < 4, closed
+    finally:
+        stop.set()
+        for connection in slow:
+            connection.close()
+        harness.close()
 
 
 # -- sessions --------------------------------------------------------------------------------
@@ -972,11 +1118,21 @@ def test_the_real_process_serves_the_screens_on_the_socket_it_is_given(tmp_path)
         assert logout.status == 200
         assert _request(port, "GET", "/api/view",
                         headers=[("Cookie", f"azui_session={sid}")]).status == 401
+        for length in ("\u00b2", "50"):
+            raw = socket.create_connection(("127.0.0.1", port), timeout=10)
+            raw.sendall((f"POST /api/login HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+                         f"Origin: {origin}\r\nContent-Type: application/json\r\n"
+                         f"Content-Length: {length}\r\n\r\n{{").encode("latin-1"))
+            raw.shutdown(socket.SHUT_WR)
+            assert raw.recv(65536).split(b" ", 2)[1] in (b"400", b"411")
+            raw.close()
         assert process.poll() is None
     finally:
         process.terminate()
         process.wait(timeout=10)
-    assert "az-ui: serving_fixture" in process.stderr.read()
+    err = process.stderr.read()
+    assert "az-ui: serving_fixture" in err
+    assert "Traceback" not in err and "127.0.0.1" not in err, err
 
 
 _LAUNCH = r"""
