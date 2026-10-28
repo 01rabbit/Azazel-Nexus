@@ -443,6 +443,21 @@ def test_remote_is_disabled_and_that_is_not_unavailable() -> None:
     assert RemoteState.DISABLED.value != RemoteState.UNAVAILABLE.value
 
 
+def test_remote_disabled_reason_says_it_cannot_send_not_how_to_enable() -> None:
+    """The status names the three refusals and offers no way to turn it on.
+
+    `docs/mio-sanitizer.md` §5: send-path code exists, but the shipped
+    transport is `None` and no registry or sanitizer signer is commissioned.
+    """
+
+    reason = cognition.REMOTE_DISABLED_REASON
+    assert "cannot send" in reason
+    for refusal in ("inference transport", "Provider Registry", "sanitizer signer"):
+        assert refusal in reason
+    assert "enabl" not in reason.lower()
+    assert "no egress path" not in reason
+
+
 def test_hybrid_is_unreachable_while_remote_is_disabled() -> None:
     reading = read([a_provider()])
     assert reading.state is not CognitionState.HYBRID

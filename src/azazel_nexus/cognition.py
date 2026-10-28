@@ -19,11 +19,14 @@ currently *say*, never what it may decide.
 Remote assistance is **disabled by default and has no code path here**. It is
 not "configured off"; there is no client, no socket, no URL and no egress
 function in this module, and `tests/unit/test_cognition.py` scans for their
-absence. Enabling it needs three things this repository does not have: an
-enumerated privacy-class admission, a deterministic sanitizer, and explicit
-operator permission. Until all three exist, `remote` reads `disabled`, which
-is a decision, not a failure -- and `disabled` and `unavailable` are therefore
-different words here, as they are everywhere else in this product.
+absence. Send-path code exists elsewhere (the runtime's `mio_remoted.py` and
+`inference_egress.py`), and **this build still cannot send**: the shipped
+`mio_remoted.TRANSPORT` is `None`, no Provider Registry is commissioned and no
+key holds the sanitizer role, and each of the three refuses on its own
+(`docs/mio-sanitizer.md` §5). There is no setting that turns it on. `remote`
+therefore reads `disabled`, which is a decision, not a failure -- and
+`disabled` and `unavailable` are different words here, as they are
+everywhere else in this product.
 
 ## The Core reserve is unmeasured, so the resource gate refuses
 
@@ -79,7 +82,8 @@ class CognitionState(str, Enum):
 class RemoteState(str, Enum):
     """Why remote assistance is not in use. The two are not the same fact."""
 
-    #: A decision: it is not enabled, and no egress path exists to enable.
+    #: A decision: it is not enabled, and this build cannot send -- no
+    #: inference transport, no Provider Registry, no sanitizer signer.
     DISABLED = "disabled"
     #: Enabled and not reachable or not healthy. Unreachable in this build.
     UNAVAILABLE = "unavailable"
@@ -353,12 +357,11 @@ class CognitionReading:
 
 
 #: Why remote assistance is off, stated once so every caller says it the same
-#: way. All three conditions are outstanding; none is a failure of this node.
+#: way. Each of the three refuses on its own; none is a failure of this node.
 REMOTE_DISABLED_REASON = (
-    "remote assistance is disabled by default and has no egress path in this "
-    "build; enabling it requires an enumerated privacy-class admission, a "
-    "deterministic sanitizer, and explicit operator permission, and none of the "
-    "three exists yet"
+    "remote assistance is disabled and cannot send in this build: the send-path "
+    "code ships with no inference transport, no commissioned Provider Registry "
+    "and no sanitizer signer"
 )
 
 
