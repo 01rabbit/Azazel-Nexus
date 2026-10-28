@@ -68,7 +68,7 @@ def local_request(deadline_ms):
 
 
 def invoke(target, *, deadline_ms=1000, remote_permitted=True, local_first=False,
-           deadline_at=None, request_deadline=None):
+           deadline_at=None, request_deadline=None, **extra):
     return target.handle(
         local_request=local_request(request_deadline or deadline_ms),
         remote_request=SimpleNamespace(arguments={}),
@@ -84,6 +84,7 @@ def invoke(target, *, deadline_ms=1000, remote_permitted=True, local_first=False
         },
         deadline_ms=deadline_ms,
         deadline_at=deadline_at,
+        **extra,
     )
 
 
@@ -334,3 +335,53 @@ def test_the_remote_service_hands_the_deadline_to_its_transport():
     nothing = _service(transport=lambda **kw: pytest.fail("sent with no time left")).handle(
         Request(frame=frame, envelope=_seal(frame=frame)), deadline_ms=0)
     assert nothing["outcome"] == "not_sent" and nothing["refusal"] == "deadline"
+
+
+def test_remote_recheck_time_comes_out_of_the_same_deadline(tmp_path, monkeypatch):
+    clock = Clock()
+    remote = Provider(clock, "remote", ADVISORY)
+    target = router(tmp_path, monkeypatch, clock, remote=remote,
+                    local=Provider(clock, "local", FAILED))
+
+    def slow_recheck():
+        clock.now += 0.3
+        return RemoteAdmission(True, None, "fixture permitted")
+
+    result = invoke(target, deadline_ms=1000, remote_recheck=slow_recheck)
+    assert result.route is Route.REMOTE
+    # The recheck took 300 ms of the one deadline; the attempt gets what is left.
+    assert remote.deadlines == [1000 - 300 - mio_router.HANDOFF_RESERVE_MS]
+
+
+def test_a_recheck_that_spends_the_budget_starts_no_attempt(tmp_path, monkeypatch):
+    clock = Clock()
+    remote = Provider(clock, "remote", ADVISORY)
+    local = Provider(clock, "local", ADVISORY)
+    target = router(tmp_path, monkeypatch, clock, remote=remote, local=local)
+
+    def slow_recheck():
+        clock.now += 0.75
+        return RemoteAdmission(True, None, "fixture permitted")
+
+    result = invoke(target, deadline_ms=1000, remote_recheck=slow_recheck)
+    assert remote.calls == [] and local.calls == []
+    assert result.route is Route.DETERMINISTIC_HANDOFF and result.ai_attempts == 0
+    handoff = next(e for e in events(target) if e["event_type"] == "mio.route.handoff")
+    assert handoff["cause"] == "deadline_budget_insufficient"
+
+
+def test_withdrawal_fallback_to_local_gets_what_is_left(tmp_path, monkeypatch):
+    clock = Clock()
+    remote = Provider(clock, "remote", ADVISORY)
+    local = Provider(clock, "local", ADVISORY)
+    target = router(tmp_path, monkeypatch, clock, remote=remote, local=local)
+
+    def withdrawn():
+        clock.now += 0.1
+        return RemoteAdmission(False, Exclusion.CONSENT, "fixture consent withdrawn")
+
+    result = invoke(target, deadline_ms=1000, remote_recheck=withdrawn)
+    assert remote.calls == []
+    assert result.route is Route.LOCAL and result.outcome is RequestOutcome.ANSWERED
+    assert local.calls[0].arguments["deadline_ms"] == 1000 - 100 - mio_router.HANDOFF_RESERVE_MS
+    assert mio_router.MAX_AI_ATTEMPTS == 2

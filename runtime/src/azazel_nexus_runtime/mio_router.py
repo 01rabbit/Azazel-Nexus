@@ -10,6 +10,16 @@ given a fresh copy of the caller's budget, no AI attempt starts without room
 for one, and a reply that arrives after the deadline is discarded. At most two
 AI attempts are made. Every request that no AI answered ends in the
 deterministic handoff, which calls no AI and records why it was reached.
+
+Remote permission is looked at again, and may only narrow. A caller that can
+re-read the remote admission passes `remote_recheck`; it is consulted before
+every remote attempt and at every fallback that could land on remote, and only
+ever for a remote route the selection already permitted. It is a synchronous
+call with no timeout of its own: it must not block. A recheck that refuses, raises, or returns
+anything but a permitting `RemoteAdmission` removes the remote route: the
+attempt is not made, `OPT_IN_WITHDRAWN` is recorded, and the request falls
+back to local once or is refused (`mio_profile.disposition_on_withdrawal`).
+Nothing a recheck returns adds a route the selection did not permit.
 """
 
 from __future__ import annotations
@@ -23,7 +33,11 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
-from azazel_nexus.mio_profile import MioProfile
+from azazel_nexus.mio_profile import (
+    InFlightDisposition,
+    MioProfile,
+    disposition_on_withdrawal,
+)
 from azazel_nexus.remote_envelope import EnvelopeRefusal
 from azazel_nexus.remote_trust import RemoteAdmission
 from azazel_nexus.route_audit import (
@@ -59,6 +73,10 @@ HANDOFF_RESERVE_MS = 200
 #: starting one would only spend the time the handoff needs.
 MIN_AI_ATTEMPT_MS = 100
 _FIXED_REFUSAL = re.compile(r"[a-z][a-z0-9_]{0,63}")
+#: Fixed reason words for a remote route removed by a recheck. The admission's
+#: own reason was recorded with the selection; none is copied from a recheck.
+REMOTE_WITHDRAWN = "remote_opt_in_withdrawn"
+REMOTE_RECHECK_FAILED = "remote_recheck_failed"
 
 
 @dataclass(frozen=True)
@@ -150,6 +168,48 @@ class MioRouter:
         fields["arguments"] = {**arguments, "deadline_ms": budget_ms}
         return SimpleNamespace(**fields)
 
+    @staticmethod
+    def _remote_recheck(selection: Selection,
+                        recheck: Callable[[], RemoteAdmission] | None) -> str | None:
+        """None while remote stays permitted; otherwise the fixed reason it went.
+
+        Narrowing only. A remote route the selection did not permit is never
+        reported as permitted, whatever the recheck says -- it is not even
+        asked. Without a recheck the selection's admission stands. A recheck
+        that raises or returns anything but a permitting `RemoteAdmission`
+        removes the route (fail-closed); its exception text is not recorded.
+        """
+        if Route.REMOTE not in selection.permitted:
+            return REMOTE_WITHDRAWN
+        if recheck is None:
+            return None
+        try:
+            admission = recheck()
+        except Exception:
+            return REMOTE_RECHECK_FAILED
+        if type(admission) is not RemoteAdmission:
+            return REMOTE_RECHECK_FAILED
+        return None if admission.permitted is True else REMOTE_WITHDRAWN
+
+    def _still_permitted(
+        self, selection: Selection, failed: Route,
+        recheck: Callable[[], RemoteAdmission] | None,
+    ) -> tuple[tuple[Route, ...], str | None]:
+        """The recorded permitted set, less remote if it is gone or just failed.
+
+        A subset of `selection.permitted` by construction, and never empty --
+        the deterministic handoff is always in it -- so `fallback_once` reads
+        it as a narrowing and never as "unrestricted". The recheck is asked
+        only when remote could be the fallback's target; the second value is
+        its fixed withdrawal reason when it removed remote, otherwise None.
+        """
+        withdrawn = None
+        if Route.REMOTE in selection.permitted and failed is not Route.REMOTE:
+            withdrawn = self._remote_recheck(selection, recheck)
+        remote_gone = failed is Route.REMOTE or withdrawn is not None
+        return tuple(route for route in selection.permitted
+                     if not (route is Route.REMOTE and remote_gone)), withdrawn
+
     def _attempt(self, route: Route, local_request: Any, remote_request: Any,
                  budget_ms: int) -> dict:
         if route is Route.REMOTE:
@@ -185,6 +245,7 @@ class MioRouter:
         predictions: Mapping[Route, Prediction],
         deadline_ms: int,
         deadline_at: float | None = None,
+        remote_recheck: Callable[[], RemoteAdmission] | None = None,
     ) -> RouterReply:
         # The request's one deadline. An entry that started measuring earlier
         # passes its own; otherwise it begins here. Nothing below adds to it.
@@ -207,9 +268,47 @@ class MioRouter:
         attempts = 0
         failures: list[dict] = []
         cause = "selected"
+        #: The one fallback, whether a failure or a withdrawal spent it.
+        spent = False
         # Two AI attempts maximum. There is no retry to the failed provider,
         # and the fallback target comes from the permitted set recorded above.
         while route is not Route.DETERMINISTIC_HANDOFF and attempts < MAX_AI_ATTEMPTS:
+            if route is Route.REMOTE:
+                # Looked at again just before the attempt, inside the same
+                # deadline: the budget below is taken after it returns.
+                withdrawn = self._remote_recheck(selection, remote_recheck)
+                if withdrawn is not None:
+                    # A permit change, not a failure: nothing is sent, and the
+                    # withdrawn route is not the one that serves the request.
+                    disposition = disposition_on_withdrawal(
+                        local_available=not spent and Route.LOCAL in selection.permitted,
+                    )
+                    outcome_and_record(
+                        ledger=self.ledger,
+                        occurred_at=self._clock(),
+                        route=route,
+                        terminal_event=TerminalEvent.OPT_IN_WITHDRAWN,
+                        fallback_available=disposition is InFlightDisposition.LOCAL_FALLBACK,
+                        reason=withdrawn,
+                    )
+                    if disposition is not InFlightDisposition.LOCAL_FALLBACK:
+                        cause = REMOTE_WITHDRAWN
+                        break
+                    # Reached only with the fallback unspent (`local_available`
+                    # above requires it). The failed route is remote itself,
+                    # so `fallback_once` already excludes it; no narrowed set
+                    # is needed to keep the withdrawn route out.
+                    fallback = fallback_once(
+                        selection=selection,
+                        failed=route,
+                        already_spent=False,
+                    )
+                    self._record(fallback.as_event())
+                    spent = True
+                    route = fallback.route
+                    cause = ("no_permitted_fallback" if route is Route.DETERMINISTIC_HANDOFF
+                             else "fallback")
+                    continue
             budget = self.remaining_ms(deadline_at) - HANDOFF_RESERVE_MS
             if budget < MIN_AI_ATTEMPT_MS:
                 # Not started: an attempt with no room cannot answer, and it
@@ -253,7 +352,8 @@ class MioRouter:
                 occurred_at=self._clock(),
                 route=route,
                 terminal_event=terminal,
-                fallback_available=reason is None and attempts < MAX_AI_ATTEMPTS,
+                fallback_available=(reason is None and attempts < MAX_AI_ATTEMPTS
+                                    and not spent),
                 **({"reason": reason} if reason is not None else {}),
             )
             if outcome is RequestOutcome.ANSWERED:
@@ -270,18 +370,40 @@ class MioRouter:
                 # nothing wider is tried in its place.
                 cause = "ai_attempts_ended"
                 break
+            # Re-read at the fallback: a remote withdrawn since the selection
+            # is not the route a fallback lands on.
+            still_permitted, withdrawn = self._still_permitted(selection, route, remote_recheck)
+            if withdrawn is not None:
+                # Remote was a permitted target and the recheck removed it.
+                # Recorded as the permit change it is, so the audit says why
+                # the fallback cannot reach it; nothing is sent to it.
+                outcome_and_record(
+                    ledger=self.ledger,
+                    occurred_at=self._clock(),
+                    route=Route.REMOTE,
+                    terminal_event=TerminalEvent.OPT_IN_WITHDRAWN,
+                    fallback_available=False,
+                    reason=withdrawn,
+                )
             fallback = fallback_once(
                 selection=selection,
                 failed=route,
+                # Reached only with the fallback unspent: `fallback_available`
+                # above requires it, so a FELL_BACK outcome implies this.
                 already_spent=False,
+                still_permitted=still_permitted,
             )
+            spent = True
             event = fallback.as_event()
             if route is Route.LOCAL and "readiness" in reply:
                 event["reason"] = "local readiness refused: " + reply["reason"] + "; " + fallback.reason
+            if withdrawn is not None:
+                event["reason"] += "; remote removed by recheck: " + withdrawn
             self._record(event)
             route = fallback.route
-            cause = ("no_permitted_fallback" if route is Route.DETERMINISTIC_HANDOFF
-                     else "fallback")
+            cause = ("fallback" if route is not Route.DETERMINISTIC_HANDOFF
+                     else REMOTE_WITHDRAWN if withdrawn is not None
+                     else "no_permitted_fallback")
         return self._handoff(selection, attempts, failures, cause)
 
     def _handoff(self, selection: Selection, attempts: int, failures: list[dict],
