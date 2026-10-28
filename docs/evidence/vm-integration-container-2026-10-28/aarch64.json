@@ -1,0 +1,1005 @@
+{
+ "edge_package_sha256": {
+  "azazel-edge-core-0.1.0-x86_64.manifest.json": "<sha256>",
+  "azazel-edge-core-0.1.0-x86_64.tar.gz": "<sha256>"
+ },
+ "finished_at": "2026-10-28T14:18:01Z",
+ "options": {
+  "edge": true,
+  "kind": "container",
+  "rosetta": false,
+  "wheelhouse": null
+ },
+ "phases": [
+  {
+   "checks": [
+    {
+     "detail": "apparmor_parser, ip, setpriv, runuser, systemd-run, openssl, gcc",
+     "id": "prepare.tools",
+     "status": "pass",
+     "title": "installer and run prerequisites present"
+    },
+    {
+     "detail": "pip from the package index, exit 0",
+     "id": "prepare.venv",
+     "status": "pass",
+     "title": "azazel-nexus and the runtime installed into the production venv"
+    },
+    {
+     "detail": "exit 0; Azazel-Nexus installed. Operational units are masked. / The next boot records a fail-closed activation decision; no unit is / admitted until the required admission and health evidence is available.",
+     "id": "prepare.install",
+     "status": "pass",
+     "title": "packaging/install.sh (production units and accounts)"
+    },
+    {
+     "detail": "{\"azazel-auditd.service\": \"masked\", \"azazel-edge-core.service\": \"masked\", \"azazel-edge-intaked.service\": \"masked\", \"azazel-edge-probed.service\": \"masked\", \"azazel-incident-explaind.service\": \"masked\", \"azazel-knowledge-lited.service\": \"masked\", \"azazel-mio-entryd.service\": \"masked\", \"azazel-mio-referenced.service\": \"masked\"}",
+     "id": "prepare.masked",
+     "status": "pass",
+     "title": "every governed unit this run uses is installed masked"
+    },
+    {
+     "detail": "",
+     "id": "prepare.controller",
+     "status": "pass",
+     "title": "the activation controller is enabled for the next boot"
+    },
+    {
+     "detail": "",
+     "id": "prepare.no-lab-marker",
+     "status": "pass",
+     "title": "no lab marker (/etc/azazel-lab/LAB-HOST) on the node"
+    }
+   ],
+   "facts": {
+    "kernel": "6.8.0-117-generic",
+    "machine": "aarch64",
+    "os": "Debian GNU/Linux 13",
+    "python": "Python 3.13.5",
+    "systemd": "257",
+    "virtualization": "docker"
+   },
+   "phase": "prepare"
+  },
+  {
+   "checks": [
+    {
+     "detail": "{\"Result\": \"success\", \"ActiveState\": \"inactive\"}",
+     "id": "start.controller-idle",
+     "status": "pass",
+     "title": "the activation controller is not running (its boot pass is over)"
+    },
+    {
+     "detail": "reasons seen by azknowledge in order: trust_unreadable -> unverified -> no_bundle -> available; fixture anchor key pinned (public, test-only), revocation policy with this run's lab key written by the repin library call as azcommission (not through az-commissiond)",
+     "evidence": {
+      "import_outcome": "lite.knowledge.reading"
+     },
+     "id": "start.knowledge-enroll",
+     "status": "pass",
+     "title": "Knowledge Lite enrolled from the public fixture (knowledge-lite-consumer §11)"
+    },
+    {
+     "detail": "binary architecture aarch64 under the packager's fixed x86_64 name (a recorded deviation: the packager labels every package x86_64); eve.json created empty, azedge group read (no Suricata)",
+     "id": "start.edge-package",
+     "status": "pass",
+     "title": "Edge package verified against its manifest and installed"
+    },
+    {
+     "detail": "",
+     "id": "start.audit-copy",
+     "status": "pass",
+     "title": "auditd rehearsal copy (integration-loop §6.1) passes systemd-analyze verify with no warning"
+    },
+    {
+     "detail": "{\"azn-rehearsal-auditd.service\": \"started\", \"azazel-knowledge-lited.service\": \"started\", \"azazel-mio-referenced.service\": \"started\", \"azazel-mio-entryd.service\": \"started\", \"azazel-edge-intaked.service\": \"started\", \"azazel-incident-explaind.service\": \"started\", \"azazel-edge-probed.service\": \"started\", \"azazel-edge-core.service\": \"started\"}",
+     "id": "start.hand-start",
+     "status": "pass",
+     "title": "rehearsal-only start (§6): hand-made grant markers, --job-mode=ignore-requirements"
+    },
+    {
+     "detail": "{\"defense_dry_run\": \"true\", \"defense_enforce\": \"false\", \"defense_enforce_level\": \"advisory\", \"high_impact_auto\": \"false\"}",
+     "id": "start.edge-posture",
+     "status": "pass",
+     "title": "Edge Core started observe-only (dry run, advisory)"
+    },
+    {
+     "detail": "{\"health\": \"passed\", \"running\": \"passed\"}",
+     "id": "start.edge-probe",
+     "status": "pass",
+     "title": "the four-check probe reads health and running passed after Edge started"
+    }
+   ],
+   "edge_probe_before_core": {
+    "health": "passed",
+    "running": "failed"
+   },
+   "phase": "start"
+  },
+  {
+   "checks": [
+    {
+     "detail": "{\"state\": \"available\", \"reason_code\": \"available\", \"freshness\": \"current\"}",
+     "id": "scenarios.knowledge-status",
+     "status": "pass",
+     "title": "knowledge-lited answers knowledge.status: available"
+    },
+    {
+     "detail": "{\"route\": \"deterministic handoff\", \"outcome\": \"refused\", \"reason\": \"degraded to the deterministic handoff: no candidate is permitted besides it\"}",
+     "id": "scenarios.entry-route",
+     "status": "pass",
+     "title": "entryd routes an operator request to the deterministic handoff (no model admitted)"
+    },
+    {
+     "detail": "{\"ok\": false, \"refusal\": \"principal_denied\"}",
+     "id": "scenarios.reference-direct-refused",
+     "status": "pass",
+     "title": "referenced refuses an operator connecting directly (service principal only)"
+    },
+    {
+     "detail": "[{\"transition\": \"opened\", \"edge_would\": \"notify\", \"route\": \"deterministic handoff\", \"outcome\": \"refused\", \"reason\": \"mio_handoff:no_pack\", \"content_kind\": \"deterministic_notice\", \"knowledge_state\": \"available\", \"citations\": [\"T1110\"], \"failure_codes\": [\"mio_handoff\"]}, {\"transition\": \"updated\", \"edge_would\": \"isolate\", \"route\": \"deterministic handoff\", \"outcome\": \"refused\", \"reason\": \"mio_handoff:no_pack\", \"content_kind\": \"deterministic_notice\", \"knowledge_state\": \"available\", \"citations\": [\"T1110\"], \"failure_codes\": [\"mio_handoff\"]}]",
+     "evidence": {
+      "observation": {
+       "edge_decisions_delta": 2,
+       "explanations": [
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": "deterministic_notice",
+         "edge_would": "notify",
+         "failure_codes": [
+          "mio_handoff"
+         ],
+         "knowledge_state": "available",
+         "outcome": "refused",
+         "reason": "mio_handoff:no_pack",
+         "route": "deterministic handoff",
+         "transition": "opened"
+        },
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": "deterministic_notice",
+         "edge_would": "isolate",
+         "failure_codes": [
+          "mio_handoff"
+         ],
+         "knowledge_state": "available",
+         "outcome": "refused",
+         "reason": "mio_handoff:no_pack",
+         "route": "deterministic handoff",
+         "transition": "updated"
+        }
+       ],
+       "intake_accepted_delta": 2,
+       "replay_sent_failed": null,
+       "stimulus": "eve.json append for the real Edge Core"
+      }
+     },
+     "id": "scenarios.reference-display",
+     "status": "pass",
+     "title": "explainer records the deterministic handoff with referenced's fixed missing-reference word"
+    },
+    {
+     "detail": "[[\"T1110\"], [\"T1110\"]]",
+     "id": "scenarios.knowledge-citation",
+     "status": "pass",
+     "title": "explanations cite the fixture bundle (T1110) through knowledge-lited"
+    },
+    {
+     "detail": "edge loop section and Knowledge Lite section read",
+     "id": "scenarios.status",
+     "status": "pass",
+     "title": "azazel-nexus status shows intake, explainer, the observe-only incident and Lite available"
+    },
+    {
+     "detail": "0 address(es) found",
+     "id": "scenarios.status-private",
+     "status": "pass",
+     "title": "status carries no address from the incident"
+    },
+    {
+     "detail": "2 decision line(s)",
+     "id": "scenarios.edge-decisions",
+     "status": "pass",
+     "title": "Edge Core decided twice (notify then isolate) on the two alerts, dry run"
+    },
+    {
+     "detail": "the loop still explained, with the fixed failure for the missing service; repaired before: none; state after kill failed/signal, Restart=no, NRestarts=0; others active: True; Edge Core unchanged: True; restarted: active",
+     "evidence": {
+      "observation": {
+       "edge_decisions_delta": 2,
+       "explanations": [
+        {
+         "citations": [],
+         "content_kind": "deterministic_notice",
+         "edge_would": "notify",
+         "failure_codes": [
+          "mio_handoff",
+          "knowledge_unavailable"
+         ],
+         "knowledge_state": "unavailable",
+         "outcome": "refused",
+         "reason": "mio_handoff:no_pack",
+         "route": "deterministic handoff",
+         "transition": "opened"
+        },
+        {
+         "citations": [],
+         "content_kind": "deterministic_notice",
+         "edge_would": "isolate",
+         "failure_codes": [
+          "mio_handoff",
+          "knowledge_unavailable"
+         ],
+         "knowledge_state": "unavailable",
+         "outcome": "refused",
+         "reason": "mio_handoff:no_pack",
+         "route": "deterministic handoff",
+         "transition": "updated"
+        }
+       ],
+       "intake_accepted_delta": 2,
+       "replay_sent_failed": null,
+       "stimulus": "eve.json append for the real Edge Core"
+      }
+     },
+     "id": "scenarios.kill.azazel-knowledge-lited",
+     "status": "pass",
+     "title": "SIGKILL azazel-knowledge-lited.service: others keep running, fail-closed degradation, hand restart recovers"
+    },
+    {
+     "detail": "the loop still explained, with the fixed failure for the missing service; repaired before: none; state after kill failed/signal, Restart=no, NRestarts=0; others active: True; Edge Core unchanged: True; restarted: active",
+     "evidence": {
+      "observation": {
+       "edge_decisions_delta": 2,
+       "explanations": [
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": "deterministic_notice",
+         "edge_would": "notify",
+         "failure_codes": [
+          "mio_handoff"
+         ],
+         "knowledge_state": "available",
+         "outcome": "refused",
+         "reason": "mio_handoff:reference_service_unavailable",
+         "route": "deterministic handoff",
+         "transition": "opened"
+        },
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": "deterministic_notice",
+         "edge_would": "isolate",
+         "failure_codes": [
+          "mio_handoff"
+         ],
+         "knowledge_state": "available",
+         "outcome": "refused",
+         "reason": "mio_handoff:reference_service_unavailable",
+         "route": "deterministic handoff",
+         "transition": "updated"
+        }
+       ],
+       "intake_accepted_delta": 2,
+       "replay_sent_failed": null,
+       "stimulus": "eve.json append for the real Edge Core"
+      }
+     },
+     "id": "scenarios.kill.azazel-mio-referenced",
+     "status": "pass",
+     "title": "SIGKILL azazel-mio-referenced.service: others keep running, fail-closed degradation, hand restart recovers"
+    },
+    {
+     "detail": "the loop still explained, with the fixed failure for the missing service; repaired before: none; state after kill failed/signal, Restart=no, NRestarts=0; others active: True; Edge Core unchanged: True; restarted: active",
+     "evidence": {
+      "observation": {
+       "edge_decisions_delta": 2,
+       "explanations": [
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": null,
+         "edge_would": "notify",
+         "failure_codes": [
+          "mio_unavailable"
+         ],
+         "knowledge_state": "available",
+         "outcome": "unavailable",
+         "reason": "mio_unavailable",
+         "route": "unavailable",
+         "transition": "opened"
+        },
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": null,
+         "edge_would": "isolate",
+         "failure_codes": [
+          "mio_unavailable"
+         ],
+         "knowledge_state": "available",
+         "outcome": "unavailable",
+         "reason": "mio_unavailable",
+         "route": "unavailable",
+         "transition": "updated"
+        }
+       ],
+       "intake_accepted_delta": 2,
+       "replay_sent_failed": null,
+       "stimulus": "eve.json append for the real Edge Core"
+      }
+     },
+     "id": "scenarios.kill.azazel-mio-entryd",
+     "status": "pass",
+     "title": "SIGKILL azazel-mio-entryd.service: others keep running, fail-closed degradation, hand restart recovers"
+    },
+    {
+     "detail": "the loop still explained, with the fixed failure for the missing service; repaired before: none; state after kill failed/signal, Restart=no, NRestarts=0; others active: True; Edge Core unchanged: True; restarted: active",
+     "evidence": {
+      "observation": {
+       "edge_decisions_delta": 2,
+       "explanations": [
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": "deterministic_notice",
+         "edge_would": "notify",
+         "failure_codes": [
+          "mio_handoff"
+         ],
+         "knowledge_state": "available",
+         "outcome": "refused",
+         "reason": "mio_handoff:no_pack",
+         "route": "deterministic handoff",
+         "transition": "opened"
+        },
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": "deterministic_notice",
+         "edge_would": "isolate",
+         "failure_codes": [
+          "mio_handoff"
+         ],
+         "knowledge_state": "available",
+         "outcome": "refused",
+         "reason": "mio_handoff:no_pack",
+         "route": "deterministic handoff",
+         "transition": "updated"
+        }
+       ],
+       "intake_accepted_delta": 2,
+       "replay_sent_failed": null,
+       "stimulus": "eve.json append for the real Edge Core"
+      }
+     },
+     "id": "scenarios.kill.azn-rehearsal-auditd",
+     "status": "pass",
+     "title": "SIGKILL azn-rehearsal-auditd.service: others keep running, fail-closed degradation, hand restart recovers"
+    },
+    {
+     "detail": "intake kept accepting with the explainer dead; nothing explained; repaired before: none; state after kill failed/signal, Restart=no, NRestarts=0; others active: True; Edge Core unchanged: True; restarted: active",
+     "evidence": {
+      "observation": {
+       "edge_decisions_delta": 2,
+       "explanations": [],
+       "intake_accepted_delta": 2,
+       "replay_sent_failed": null,
+       "stimulus": "eve.json append for the real Edge Core"
+      }
+     },
+     "id": "scenarios.kill.azazel-incident-explaind",
+     "status": "pass",
+     "title": "SIGKILL azazel-incident-explaind.service: others keep running, fail-closed degradation, hand restart recovers"
+    },
+    {
+     "detail": "Edge kept deciding with intake dead (its forward fails, decisions stay in its journal); repaired before: none; state after kill failed/signal, Restart=no, NRestarts=0; others active: True; Edge Core unchanged: True; restarted: active",
+     "evidence": {
+      "observation": {
+       "edge_decisions_delta": 2,
+       "explanations": [],
+       "intake_accepted_delta": 0,
+       "replay_sent_failed": null,
+       "stimulus": "eve.json append for the real Edge Core"
+      }
+     },
+     "id": "scenarios.kill.azazel-edge-intaked",
+     "status": "pass",
+     "title": "SIGKILL azazel-edge-intaked.service: others keep running, fail-closed degradation, hand restart recovers"
+    },
+    {
+     "detail": "[{\"transition\": \"opened\", \"edge_would\": \"notify\", \"route\": \"deterministic handoff\", \"outcome\": \"refused\", \"reason\": \"mio_handoff:reference_refused\", \"content_kind\": \"deterministic_notice\", \"knowledge_state\": \"available\", \"citations\": [\"T1110\"], \"failure_codes\": [\"mio_handoff\"]}, {\"transition\": \"updated\", \"edge_would\": \"isolate\", \"route\": \"deterministic handoff\", \"outcome\": \"refused\", \"reason\": \"mio_handoff:reference_refused\", \"content_kind\": \"deterministic_notice\", \"knowledge_state\": \"available\", \"citations\": [\"T1110\"], \"failure_codes\": [\"mio_handoff\"]}, {\"transition\": \"opened\", \"edge_would\": ",
+     "evidence": {
+      "observation": {
+       "edge_decisions_delta": 2,
+       "explanations": [
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": "deterministic_notice",
+         "edge_would": "notify",
+         "failure_codes": [
+          "mio_handoff"
+         ],
+         "knowledge_state": "available",
+         "outcome": "refused",
+         "reason": "mio_handoff:reference_refused",
+         "route": "deterministic handoff",
+         "transition": "opened"
+        },
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": "deterministic_notice",
+         "edge_would": "isolate",
+         "failure_codes": [
+          "mio_handoff"
+         ],
+         "knowledge_state": "available",
+         "outcome": "refused",
+         "reason": "mio_handoff:reference_refused",
+         "route": "deterministic handoff",
+         "transition": "updated"
+        },
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": "deterministic_notice",
+         "edge_would": "notify",
+         "failure_codes": [
+          "mio_handoff"
+         ],
+         "knowledge_state": "available",
+         "outcome": "refused",
+         "reason": "mio_handoff:reference_refused",
+         "route": "deterministic handoff",
+         "transition": "opened"
+        },
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": "deterministic_notice",
+         "edge_would": "isolate",
+         "failure_codes": [
+          "mio_handoff"
+         ],
+         "knowledge_state": "available",
+         "outcome": "refused",
+         "reason": "mio_handoff:reference_refused",
+         "route": "deterministic handoff",
+         "transition": "updated"
+        }
+       ],
+       "intake_accepted_delta": 2,
+       "replay_sent_failed": null,
+       "stimulus": "eve.json append for the real Edge Core"
+      }
+     },
+     "id": "scenarios.broken.referenced-injection",
+     "status": "pass",
+     "title": "referenced-injection: a reference reply under azmioref is refused; the loop explains without it"
+    },
+    {
+     "detail": "[{\"transition\": \"opened\", \"edge_would\": \"notify\", \"route\": \"deterministic handoff\", \"outcome\": \"refused\", \"reason\": \"mio_handoff:reference_service_unavailable\", \"content_kind\": \"deterministic_notice\", \"knowledge_state\": \"available\", \"citations\": [\"T1110\"], \"failure_codes\": [\"mio_handoff\"]}, {\"transition\": \"updated\", \"edge_would\": \"isolate\", \"route\": \"deterministic handoff\", \"outcome\": \"refused\", \"reason\": \"mio_handoff:reference_service_unavailable\", \"content_kind\": \"deterministic_notice\", \"knowledge_state\": \"available\", \"citations\": [\"T1110\"], \"failure_codes\": [\"mio_handoff\"]}]",
+     "evidence": {
+      "observation": {
+       "edge_decisions_delta": 2,
+       "explanations": [
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": "deterministic_notice",
+         "edge_would": "notify",
+         "failure_codes": [
+          "mio_handoff"
+         ],
+         "knowledge_state": "available",
+         "outcome": "refused",
+         "reason": "mio_handoff:reference_service_unavailable",
+         "route": "deterministic handoff",
+         "transition": "opened"
+        },
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": "deterministic_notice",
+         "edge_would": "isolate",
+         "failure_codes": [
+          "mio_handoff"
+         ],
+         "knowledge_state": "available",
+         "outcome": "refused",
+         "reason": "mio_handoff:reference_service_unavailable",
+         "route": "deterministic handoff",
+         "transition": "updated"
+        }
+       ],
+       "intake_accepted_delta": 2,
+       "replay_sent_failed": null,
+       "stimulus": "eve.json append for the real Edge Core"
+      }
+     },
+     "id": "scenarios.broken.referenced-garbage",
+     "status": "pass",
+     "title": "referenced-garbage: a garbage reply under azmioref is refused; the loop explains without it"
+    },
+    {
+     "detail": "[{\"transition\": \"opened\", \"edge_would\": \"notify\", \"route\": \"deterministic handoff\", \"outcome\": \"refused\", \"reason\": \"mio_handoff:no_pack\", \"content_kind\": \"deterministic_notice\", \"knowledge_state\": \"unavailable\", \"citations\": [], \"failure_codes\": [\"mio_handoff\", \"knowledge_reply_refused\"]}, {\"transition\": \"updated\", \"edge_would\": \"isolate\", \"route\": \"deterministic handoff\", \"outcome\": \"refused\", \"reason\": \"mio_handoff:no_pack\", \"content_kind\": \"deterministic_notice\", \"knowledge_state\": \"unavailable\", \"citations\": [], \"failure_codes\": [\"mio_handoff\", \"knowledge_reply_refused\"]}]",
+     "evidence": {
+      "observation": {
+       "edge_decisions_delta": 2,
+       "explanations": [
+        {
+         "citations": [],
+         "content_kind": "deterministic_notice",
+         "edge_would": "notify",
+         "failure_codes": [
+          "mio_handoff",
+          "knowledge_reply_refused"
+         ],
+         "knowledge_state": "unavailable",
+         "outcome": "refused",
+         "reason": "mio_handoff:no_pack",
+         "route": "deterministic handoff",
+         "transition": "opened"
+        },
+        {
+         "citations": [],
+         "content_kind": "deterministic_notice",
+         "edge_would": "isolate",
+         "failure_codes": [
+          "mio_handoff",
+          "knowledge_reply_refused"
+         ],
+         "knowledge_state": "unavailable",
+         "outcome": "refused",
+         "reason": "mio_handoff:no_pack",
+         "route": "deterministic handoff",
+         "transition": "updated"
+        }
+       ],
+       "intake_accepted_delta": 2,
+       "replay_sent_failed": null,
+       "stimulus": "eve.json append for the real Edge Core"
+      }
+     },
+     "id": "scenarios.broken.knowledge-injection",
+     "status": "pass",
+     "title": "knowledge-injection: a knowledge reply under azknowledge is refused; the loop explains without it"
+    },
+    {
+     "detail": "[{\"transition\": \"opened\", \"edge_would\": \"notify\", \"route\": \"deterministic handoff\", \"outcome\": \"refused\", \"reason\": \"mio_handoff:no_pack\", \"content_kind\": \"deterministic_notice\", \"knowledge_state\": \"unavailable\", \"citations\": [], \"failure_codes\": [\"mio_handoff\", \"knowledge_unavailable\"]}, {\"transition\": \"updated\", \"edge_would\": \"isolate\", \"route\": \"deterministic handoff\", \"outcome\": \"refused\", \"reason\": \"mio_handoff:no_pack\", \"content_kind\": \"deterministic_notice\", \"knowledge_state\": \"unavailable\", \"citations\": [], \"failure_codes\": [\"mio_handoff\", \"knowledge_unavailable\"]}]",
+     "evidence": {
+      "observation": {
+       "edge_decisions_delta": 2,
+       "explanations": [
+        {
+         "citations": [],
+         "content_kind": "deterministic_notice",
+         "edge_would": "notify",
+         "failure_codes": [
+          "mio_handoff",
+          "knowledge_unavailable"
+         ],
+         "knowledge_state": "unavailable",
+         "outcome": "refused",
+         "reason": "mio_handoff:no_pack",
+         "route": "deterministic handoff",
+         "transition": "opened"
+        },
+        {
+         "citations": [],
+         "content_kind": "deterministic_notice",
+         "edge_would": "isolate",
+         "failure_codes": [
+          "mio_handoff",
+          "knowledge_unavailable"
+         ],
+         "knowledge_state": "unavailable",
+         "outcome": "refused",
+         "reason": "mio_handoff:no_pack",
+         "route": "deterministic handoff",
+         "transition": "updated"
+        }
+       ],
+       "intake_accepted_delta": 2,
+       "replay_sent_failed": null,
+       "stimulus": "eve.json append for the real Edge Core"
+      }
+     },
+     "id": "scenarios.broken.knowledge-garbage",
+     "status": "pass",
+     "title": "knowledge-garbage: a garbage reply under azknowledge is refused; the loop explains without it"
+    },
+    {
+     "detail": "not exercised: model admission is closed (LOCAL_MODEL_ADMISSION_ENABLED=False), so entryd never contacts locald and azazel-mio-locald.service is never granted; altering a reply nobody reads proves nothing",
+     "id": "scenarios.broken.locald",
+     "status": "skip",
+     "title": "locald reply alteration"
+    },
+    {
+     "detail": "refusals +4; accepted unchanged: True",
+     "id": "scenarios.broken.edge-lines",
+     "status": "pass",
+     "title": "malformed Edge lines are refused by intake, counted, and nothing is accepted"
+    },
+    {
+     "detail": "import admitted=False, transitions ['lite.import.started', 'lite.import.quarantined']; azknowledge reads available/current",
+     "evidence": {
+      "import_result": {
+       "admitted": false,
+       "events": [
+        "lite.import.started",
+        "lite.import.quarantined"
+       ],
+       "outcome": "lite.knowledge.reading"
+      }
+     },
+     "id": "scenarios.expiry.lite-replace",
+     "status": "pass",
+     "title": "an equal-version bundle (the expired fixture) cannot replace the admitted one; the daemon's store keeps serving the current bundle"
+    },
+    {
+     "detail": "admitted=True; time-bound stale, static available; dated rows served 0, reference rows 4 at the node's current time",
+     "id": "scenarios.expiry.lite-reader",
+     "status": "pass",
+     "title": "an expired bundle verifies, serves no indicator and still serves static reference (library on the node, not the daemon)"
+    },
+    {
+     "detail": "not exercised: no Mission Pack can be ACTIVE here -- pack admission needs commissioning on LUKS storage and a measured Core reserve (HG-05), and this run fabricates neither; referenced therefore answers no_pack, which is the fixed missing-reference word recorded above",
+     "id": "scenarios.expiry.pack",
+     "status": "skip",
+     "title": "Mission Pack expiry"
+    },
+    {
+     "detail": "{\"free_bytes\": 0, \"precondition_repaired\": [], \"drives\": 1, \"writers_started\": {\"azazel-mio-entryd.service\": \"active\"}, \"writers_after\": {\"azazel-mio-entryd.service\": \"failed\"}, \"effects\": [\"azazel-mio-entryd.service failed\", \"explanation failure codes mio_unavailable\"], \"edge_decisions\": 2, \"recovered\": {\"azazel-mio-entryd.service\": \"active\"}, \"explanations\": 2, \"status_audit_line\": \"audit: ok -- chain verified at auditd start; chain 5.9 KiB in 1 segment(s); 69.9 GiB free on its filesystem; warns at >= 1.0 GiB chain or < 1.0 GiB free; rate_limited: none (snapshot 54s old)\"}",
+     "evidence": {
+      "observation": {
+       "drives": 1,
+       "edge_decisions_delta": 2,
+       "explanations": [
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": null,
+         "edge_would": "notify",
+         "failure_codes": [
+          "mio_unavailable"
+         ],
+         "knowledge_state": "available",
+         "outcome": "unavailable",
+         "reason": "mio_unavailable",
+         "route": "unavailable",
+         "transition": "opened"
+        },
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": null,
+         "edge_would": "isolate",
+         "failure_codes": [
+          "mio_unavailable"
+         ],
+         "knowledge_state": "available",
+         "outcome": "unavailable",
+         "reason": "mio_unavailable",
+         "route": "unavailable",
+         "transition": "updated"
+        }
+       ],
+       "free_bytes": 0,
+       "intake_accepted_delta": 2,
+       "replay_sent_failed": null,
+       "stimulus": "eve.json append for the real Edge Core"
+      }
+     },
+     "id": "scenarios.capacity.route-ledger",
+     "status": "pass",
+     "title": "storage pressure on route-ledger: the writer's failure is visible and contained, other units and Edge Core keep running, and it recovers when space returns"
+    },
+    {
+     "detail": "{\"free_bytes\": 0, \"precondition_repaired\": [], \"drives\": 1, \"writers_started\": {\"azazel-edge-intaked.service\": \"active\"}, \"writers_after\": {\"azazel-edge-intaked.service\": \"active\"}, \"effects\": [\"intake storage_failed\", \"intake refused {\\\"storage_failed\\\": 2}\"], \"edge_decisions\": 2, \"recovered\": {\"azazel-edge-intaked.service\": \"active\"}, \"explanations\": 0, \"status_audit_line\": \"audit: ok -- chain verified at auditd start; chain 9.3 KiB in 1 segment(s); 70.5 GiB free on its filesystem; warns at >= 1.0 GiB chain or < 1.0 GiB free; rate_limited: none (snapshot 9s old)\"}",
+     "evidence": {
+      "observation": {
+       "drives": 1,
+       "edge_decisions_delta": 2,
+       "explanations": [],
+       "free_bytes": 0,
+       "intake_accepted_delta": 0,
+       "replay_sent_failed": null,
+       "stimulus": "eve.json append for the real Edge Core"
+      }
+     },
+     "id": "scenarios.capacity.intake-segment",
+     "status": "pass",
+     "title": "storage pressure on intake-segment: the writer's failure is visible and contained, other units and Edge Core keep running, and it recovers when space returns"
+    },
+    {
+     "detail": "{\"free_bytes\": 0, \"precondition_repaired\": [], \"drives\": 2, \"writers_started\": {\"azazel-edge-intaked.service\": \"active\"}, \"writers_after\": {\"azazel-edge-intaked.service\": \"active\"}, \"effects\": [\"intake storage_failed\", \"intake refused {\\\"storage_failed\\\": 2}\"], \"edge_decisions\": 2, \"recovered\": {\"azazel-edge-intaked.service\": \"active\"}, \"explanations\": 0, \"status_audit_line\": \"audit: ok -- chain verified at auditd start; chain 9.3 KiB in 1 segment(s); 70.5 GiB free on its filesystem; warns at >= 1.0 GiB chain or < 1.0 GiB free; rate_limited: none (snapshot 45s old)\"}",
+     "evidence": {
+      "observation": {
+       "drives": 2,
+       "edge_decisions_delta": 2,
+       "explanations": [],
+       "free_bytes": 0,
+       "intake_accepted_delta": 0,
+       "replay_sent_failed": null,
+       "stimulus": "eve.json append for the real Edge Core"
+      }
+     },
+     "id": "scenarios.capacity.incident-ledger",
+     "status": "pass",
+     "title": "storage pressure on incident-ledger: the writer's failure is visible and contained, other units and Edge Core keep running, and it recovers when space returns"
+    },
+    {
+     "detail": "{\"free_bytes\": 0, \"precondition_repaired\": [], \"drives\": 3, \"writers_started\": {\"azn-rehearsal-auditd.service\": \"active\"}, \"writers_after\": {\"azn-rehearsal-auditd.service\": \"failed\"}, \"effects\": [\"azn-rehearsal-auditd.service failed\", \"explainer audit_forward_dropped +1\"], \"edge_decisions\": 2, \"recovered\": {\"azn-rehearsal-auditd.service\": \"active\"}, \"explanations\": 6, \"status_audit_line\": \"audit: ok -- WARNING: capacity warning (filesystem_free): nothing is deleted (retention policy: never delete, warn only); see docs/operations.md (Audit chain retention); chain verified at auditd start; chain 9.3 KiB in 1 segment(s); 0 B free on its filesystem; warns at >= 1.0 GiB chain or < 1.0 GiB free; capacity warning (filesystem_free); rate_limited: none (snapshot 70s old)\"}",
+     "evidence": {
+      "observation": {
+       "drives": 3,
+       "edge_decisions_delta": 2,
+       "explanations": [
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": "deterministic_notice",
+         "edge_would": "notify",
+         "failure_codes": [
+          "mio_handoff"
+         ],
+         "knowledge_state": "available",
+         "outcome": "refused",
+         "reason": "mio_handoff:no_pack",
+         "route": "deterministic handoff",
+         "transition": "opened"
+        },
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": "deterministic_notice",
+         "edge_would": "isolate",
+         "failure_codes": [
+          "mio_handoff"
+         ],
+         "knowledge_state": "available",
+         "outcome": "refused",
+         "reason": "mio_handoff:no_pack",
+         "route": "deterministic handoff",
+         "transition": "updated"
+        },
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": "deterministic_notice",
+         "edge_would": "notify",
+         "failure_codes": [
+          "mio_handoff"
+         ],
+         "knowledge_state": "available",
+         "outcome": "refused",
+         "reason": "mio_handoff:no_pack",
+         "route": "deterministic handoff",
+         "transition": "opened"
+        },
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": "deterministic_notice",
+         "edge_would": "isolate",
+         "failure_codes": [
+          "mio_handoff"
+         ],
+         "knowledge_state": "available",
+         "outcome": "refused",
+         "reason": "mio_handoff:no_pack",
+         "route": "deterministic handoff",
+         "transition": "updated"
+        },
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": "deterministic_notice",
+         "edge_would": "notify",
+         "failure_codes": [
+          "mio_handoff"
+         ],
+         "knowledge_state": "available",
+         "outcome": "refused",
+         "reason": "mio_handoff:no_pack",
+         "route": "deterministic handoff",
+         "transition": "opened"
+        },
+        {
+         "citations": [
+          "T1110"
+         ],
+         "content_kind": "deterministic_notice",
+         "edge_would": "isolate",
+         "failure_codes": [
+          "mio_handoff"
+         ],
+         "knowledge_state": "available",
+         "outcome": "refused",
+         "reason": "mio_handoff:no_pack",
+         "route": "deterministic handoff",
+         "transition": "updated"
+        }
+       ],
+       "free_bytes": 0,
+       "intake_accepted_delta": 2,
+       "replay_sent_failed": null,
+       "stimulus": "eve.json append for the real Edge Core"
+      }
+     },
+     "id": "scenarios.capacity.audit",
+     "status": "pass",
+     "title": "storage pressure on audit: the writer's failure is visible and contained, other units and Edge Core keep running, and it recovers when space returns"
+    },
+    {
+     "detail": "advisory units: {\"azn-rehearsal-auditd.service\": \"inactive\", \"azazel-knowledge-lited.service\": \"inactive\", \"azazel-mio-referenced.service\": \"inactive\", \"azazel-mio-entryd.service\": \"inactive\", \"azazel-edge-intaked.service\": \"inactive\", \"azazel-incident-explaind.service\": \"inactive\"}; Edge Core active, same PID: True; decisions on the new alerts: 2; intake accepted +0 (H1: the decisions exist only in Edge's journal while intake is down; forward-related journal lines seen: 1)",
+     "evidence": {
+      "observation": {
+       "edge_decisions_delta": 2,
+       "explanations": [],
+       "intake_accepted_delta": 0,
+       "replay_sent_failed": null,
+       "stimulus": "eve.json append for the real Edge Core"
+      }
+     },
+     "id": "scenarios.isolation",
+     "status": "pass",
+     "title": "with auditd, Knowledge, referenced, entryd, intake and the explainer stopped, Edge Core keeps running and deciding (dry run)"
+    },
+    {
+     "detail": "Edge Core failed/signal after 5 s, Restart=no, NRestarts=0: nothing restarts it in this build (finding reported, unit unchanged)",
+     "evidence": {
+      "restart_policy": "no",
+      "state": "failed"
+     },
+     "id": "scenarios.h2-edge-restart",
+     "status": "pass",
+     "title": "H2 observed: Edge Core after SIGKILL"
+    },
+    {
+     "detail": "{\"Requires\": \"sysinit.target system.slice azazel-activated.service\", \"BindsTo\": \"\", \"PartOf\": \"\", \"Wants\": \"tmp.mount\"}",
+     "id": "scenarios.h-deps",
+     "status": "pass",
+     "title": "Edge Core's unit names no advisory, Knowledge, explainer, intake or audit unit as Requires/BindsTo/PartOf/Wants"
+    },
+    {
+     "detail": "AZAZEL_FORWARD_LOG=false: with intake stopped or full, Edge's decisions persist only in its journal (LogRateLimitBurst applies); finding reported, unit unchanged",
+     "id": "scenarios.h1",
+     "status": "pass",
+     "title": "H1 observed: Edge's own normalized log"
+    },
+    {
+     "detail": "azazel-auditd BindsTo=; azazel-activated Requires=system.slice BindsTo=-: no unit dependency lets auditd stop the controller or Edge Core; a full audit store is read by the next boot's pass (node health), which is outside a container hand start",
+     "id": "scenarios.h3",
+     "status": "pass",
+     "title": "H3 observed: auditd and the controller"
+    },
+    {
+     "detail": "modes written by accept {\"revocations.signed\": \"0o600\", \"revocation-policy.json\": \"0o600\"} (set to trust.json's for the reader); accept exit 0 ; azknowledge reads quarantined/revoked; knowledge-lited answers quarantined/revoked",
+     "evidence": {
+      "admitted_files": 1
+     },
+     "id": "scenarios.revoke.lite",
+     "status": "pass",
+     "title": "a lab-signed Lite revocation of the admitted bundle stops serving it"
+    }
+   ],
+   "phase": "scenarios",
+   "pre_restart": {
+    "active": {
+     "azazel-edge-core.service": "active",
+     "azazel-edge-intaked.service": "active",
+     "azazel-incident-explaind.service": "active",
+     "azazel-knowledge-lited.service": "active",
+     "azazel-mio-entryd.service": "active",
+     "azazel-mio-referenced.service": "active",
+     "azn-rehearsal-auditd.service": "active"
+    },
+    "knowledge": {
+     "freshness": "absent",
+     "generation": 1,
+     "reason_code": "revoked",
+     "state": "quarantined"
+    }
+   }
+  },
+  {
+   "checks": [
+    {
+     "detail": "az-activated completed safely: granted=0, withheld=16, reasons=no_generation",
+     "id": "after-restart.pass",
+     "status": "pass",
+     "title": "the boot's activation pass ran and granted nothing"
+    },
+    {
+     "detail": "0 marker(s)",
+     "id": "after-restart.markers",
+     "status": "pass",
+     "title": "no grant marker survived the restart"
+    },
+    {
+     "detail": "{\"azazel-knowledge-lited.service\": \"masked\", \"azazel-mio-referenced.service\": \"masked\", \"azazel-mio-entryd.service\": \"masked\", \"azazel-edge-intaked.service\": \"masked\", \"azazel-incident-explaind.service\": \"masked\", \"azazel-edge-core.service\": \"masked\", \"azazel-edge-probed.service\": \"masked\"}",
+     "id": "after-restart.remasked",
+     "status": "pass",
+     "title": "every hand-unmasked unit is masked again by the pass"
+    },
+    {
+     "detail": "{\"azazel-knowledge-lited.service\": \"inactive\", \"azazel-mio-referenced.service\": \"inactive\", \"azazel-mio-entryd.service\": \"inactive\", \"azazel-edge-intaked.service\": \"inactive\", \"azazel-incident-explaind.service\": \"inactive\", \"azazel-edge-core.service\": \"inactive\", \"azazel-edge-probed.service\": \"inactive\", \"azn-rehearsal-auditd.service\": \"inactive\"}",
+     "id": "after-restart.not-running",
+     "status": "pass",
+     "title": "no hand-started unit came back"
+    },
+    {
+     "detail": "",
+     "id": "after-restart.no-rehearsal-files",
+     "status": "pass",
+     "title": "the auditd copy and the lab key (both on tmpfs) are gone"
+    },
+    {
+     "detail": "exit 0; {\"ActiveState\": \"inactive\", \"ConditionResult\": \"no\"}",
+     "id": "after-restart.start-refused",
+     "status": "pass",
+     "title": "a start without this boot's grant marker is skipped (ConditionPathExists)"
+    },
+    {
+     "detail": "quarantined/revoked",
+     "id": "after-restart.revocation-holds",
+     "status": "pass",
+     "title": "the Lite revocation made before the restart still holds"
+    },
+    {
+     "detail": "activation.inputs_incomplete; missing_producers authoritative_commissioning_admission, renderer_measurement, edge_evidence, authenticated_commissioning, inventory_binding, node_identity, activation_policy, epoch_high_water",
+     "id": "after-restart.ledger",
+     "status": "pass",
+     "title": "the activation ledger's last entry"
+    }
+   ],
+   "phase": "after-restart",
+   "restart": "docker restart (container stop/start; systemd re-runs the boot, the kernel does not)"
+  },
+  {
+   "checks": [
+    {
+     "detail": "0 file(s) overwritten and removed under /run/azn-vmit; the container or VM itself is discarded (or reverted to its snapshot) after the run",
+     "id": "cleanup.lab-keys",
+     "status": "pass",
+     "title": "lab key material destroyed (overwritten, then removed)"
+    }
+   ],
+   "phase": "cleanup"
+  }
+ ],
+ "schema": "azazel-nexus/vm-integration-run/v1",
+ "scope": "Container rehearsal inside a privileged container whose PID 1 is systemd: not a VM and not hardware",
+ "source": {
+  "commit": "341002d48cfe8c3e59ae70f6b70dfc181bea9ba0",
+  "worktree": "clean"
+ },
+ "started_at": "2026-10-28T14:10:42Z",
+ "transport": "docker exec into a privileged container with systemd as PID 1"
+}
