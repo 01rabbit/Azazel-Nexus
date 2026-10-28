@@ -279,6 +279,8 @@ def test_proc_meter_tracks_only_socket_owner_and_hwm(monkeypatch, tmp_path):
     (process / "stat").write_text("123 (llama server) " + " ".join(fields))
     (process / "status").write_text("VmRSS:\t1024 kB\nVmHWM:\t2048 kB\n")
     monkeypatch.setattr(metrics, "Path", lambda path: proc if str(path) == "/proc" else Path(path))
+    # tests/unit/conftest.py (private_os) does not reach bench/; pytest does
+    # not call os.sysconf.
     monkeypatch.setattr(metrics.os, "sysconf", lambda name: 100)
     meter = metrics.ProcessMeter("/tmp/unique.sock")
     meter._sample()

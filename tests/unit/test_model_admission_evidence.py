@@ -109,6 +109,9 @@ def read_test(root, *, trust, now=NOW):
 
 def test_disabled_is_first_and_does_no_io(monkeypatch):
     assert admission.LOCAL_MODEL_ADMISSION_ENABLED is False
+    # Process-wide on purpose, not private_os(loader): the loader opens through
+    # audit, model_paths, model_runtime and operator_store, and "no I/O" must
+    # hold for all of them. pytest itself does not call os.open.
     monkeypatch.setattr(loader.os, "open", lambda *a, **kw: pytest.fail("disabled loader opened a file"))
     reading = loader.read_admissions(now=NOW)
     assert reading.embedding == loader.Refused("ADMISSION_DISABLED")
