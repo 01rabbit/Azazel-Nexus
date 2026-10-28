@@ -164,6 +164,101 @@ def test_a_failed_write_raises_rather_than_reporting_success(tmp_path, monkeypat
     ledger.verify()
 
 
+class _FullDisk:
+    """A file handle whose device fills part-way through one write."""
+
+    def __init__(self, real, room, *, intruder=None):
+        self.real, self.room, self.intruder = real, room, intruder
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.real.close()
+
+    def fileno(self):
+        return self.real.fileno()
+
+    def write(self, data):
+        if self.room <= 0:
+            if self.intruder is not None:
+                self.intruder()
+            raise OSError(28, "No space left on device")
+        done = self.real.write(data[:self.room])
+        self.room -= done
+        return done
+
+
+def _fill_disk_at(monkeypatch, ledger, room, intruder=None):
+    real_open = Path.open
+
+    def full(self, *args, **kwargs):
+        handle = real_open(self, *args, **kwargs)
+        if self == ledger.path and args and "a" in args[0]:
+            return _FullDisk(handle, room, intruder=intruder)
+        return handle
+
+    monkeypatch.setattr(Path, "open", full)
+
+
+def test_a_write_that_fills_the_disk_part_way_leaves_no_torn_line(tmp_path, monkeypatch):
+    """Found under real systemd (A7): a full disk tore the route ledger and
+    the audit chain, and entryd and auditd then refused every later start.
+    The append that failed must take its own partial bytes back."""
+
+    ledger = AuditLedger(tmp_path / "audit" / "ledger.jsonl")
+    ledger.append({"event_type": "recorded"})
+    before = ledger.path.read_bytes()
+
+    _fill_disk_at(monkeypatch, ledger, room=17)
+    with pytest.raises(AuditUnavailable, match="not recorded"):
+        ledger.append({"event_type": "torn", "detail": "x" * 200})
+    monkeypatch.undo()
+
+    assert ledger.path.read_bytes() == before
+    ledger.verify()
+    # Space came back: the writer carries on from the same head.
+    ledger.append({"event_type": "after"})
+    ledger.verify()
+    assert [e.event["event_type"] for e in ledger] == ["recorded", "after"]
+
+
+def test_a_partial_write_is_not_withdrawn_over_another_writers_bytes(tmp_path, monkeypatch):
+    ledger = AuditLedger(tmp_path / "audit" / "ledger.jsonl")
+    ledger.append({"event_type": "recorded"})
+
+    def intruder():
+        with open(ledger.path, "ab") as other:
+            other.write(b"other writer\n")
+
+    _fill_disk_at(monkeypatch, ledger, room=9, intruder=intruder)
+    with pytest.raises(AuditUnavailable):
+        ledger.append({"event_type": "torn"})
+    monkeypatch.undo()
+    # The file no longer ends where this append left it: nothing is truncated.
+    assert ledger.path.read_bytes().endswith(b"other writer\n")
+
+
+def test_a_private_ledger_also_withdraws_a_partial_write(tmp_path, monkeypatch):
+    from azazel_nexus import audit
+
+    ledger = AuditLedger(tmp_path / "audit" / "ledger.jsonl", private=True)
+    ledger.append({"event_type": "recorded"})
+    before = ledger.path.read_bytes()
+    real_open = open
+
+    def full(path, mode="r", *args, **kwargs):
+        handle = real_open(path, mode, *args, **kwargs)
+        return _FullDisk(handle, 11) if Path(path) == ledger.path and "a" in mode else handle
+
+    monkeypatch.setattr(audit, "open", full, raising=False)
+    with pytest.raises(AuditUnavailable, match="not recorded"):
+        ledger.append({"event_type": "torn", "detail": "y" * 100})
+    monkeypatch.undo()
+    assert ledger.path.read_bytes() == before
+    ledger.verify()
+
+
 def test_canonical_bytes_do_not_depend_on_key_order():
     assert canonical_event_bytes({"b": 1, "a": 2}) == canonical_event_bytes(
         {"a": 2, "b": 1}

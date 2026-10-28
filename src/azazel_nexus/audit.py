@@ -317,10 +317,21 @@ class AuditLedger:
                     raise
                 return fd
 
-            with (open(self.path, "a", encoding="utf-8", opener=opener)
-                  if self.private else self.path.open("a", encoding="utf-8")) as handle:
-                handle.write(line + "\n")
-                handle.flush()
+            # Unbuffered bytes: a failed write leaves nothing queued for close()
+            # to retry, and the bytes this call did put down are known exactly.
+            data = (line + "\n").encode("utf-8")
+            with (open(self.path, "ab", buffering=0, opener=opener)
+                  if self.private else self.path.open("ab", buffering=0)) as handle:
+                offset = os.fstat(handle.fileno()).st_size
+                written = 0
+                try:
+                    while written < len(data):
+                        written += handle.write(data[written:])
+                except OSError:
+                    _withdraw(handle.fileno(), offset, written)
+                    raise
+                # A complete line whose sync failed is left as it is: its
+                # outcome is unknown, and callers settle it from the ledger.
                 if sync:
                     os.fsync(handle.fileno())
         except OSError as exc:
@@ -330,3 +341,26 @@ class AuditLedger:
             ) from exc
 
         return entry
+
+
+def _withdraw(fd: int, offset: int, written: int) -> None:
+    """Take back the partial line of a write that failed (for example, a full disk).
+
+    A write that stops part-way (no space left, an I/O error) leaves a torn
+    final line, and a torn line is a broken chain: every later start of the
+    writer refuses until an operator repairs it, although the caller was told
+    the event was *not* recorded. Truncate to where this append began, but only
+    when the file still ends exactly where this call left it -- anything else
+    means another writer appended too, and then nothing is touched.
+    Best effort: if the truncation itself fails, the refusal stands as before.
+    Only a partial write is withdrawn; a complete line whose fsync failed is
+    not (see `append`).
+    """
+    if not written:
+        return
+    try:
+        if os.fstat(fd).st_size == offset + written:
+            os.ftruncate(fd, offset)
+            os.fsync(fd)
+    except OSError:
+        pass
