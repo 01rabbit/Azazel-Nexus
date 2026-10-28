@@ -12,7 +12,8 @@ What it is not, by construction:
   or Knowledge module, holds no model path and starts no process. Model
   execution stays with `azazel-mio-locald.service`, which keeps its own
   `local_model_provider` wiring gate and its own admission; nothing here
-  reads, satisfies or relaxes either (`tests/unit/test_mio_referenced.py`).
+  reads, satisfies or relaxes either (`tests/unit/test_mio_reference.py`,
+  `tests/unit/test_mio_reference_socket.py`).
 * **Not an answer.** The reply is a reference: keyword-matched, deterministic,
   `provenance.source == "keyword"`, `model_id == "deterministic"`, and it
   carries a fixed banner instead of advice (`local_advisory.read_reference`).

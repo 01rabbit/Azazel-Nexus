@@ -158,6 +158,10 @@ needs owner agreement and a Fabric-owned record first
 | Edge NOC result ingestion | not started | needs owner agreement (§6) |
 | active checks (DNS query, ICMP, TCP, HTTP) | not implemented | owner decision (§8) |
 
+The target-hardware procedure, including the independent capture inside an
+SO-10 run, is the [NOC observation runbook](hil-runbooks/noc-observation.md)
+(not run).
+
 ## 8. Owner decisions
 
 1. **Active checks.** Whether any active check (DNS query, ICMP to the

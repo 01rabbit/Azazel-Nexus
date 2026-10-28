@@ -46,7 +46,7 @@ evidence):
 | Notice and content kind kept in the incident record | implemented: `mio.content_kind`, `mio.notice`; labelled in status | `tests/unit/test_mio_reference.py` |
 | Deterministic terminal step after AI failure | implemented: at most two AI attempts, then `mio.route.handoff` with causes and failures; no AI is called after it | same |
 | Loop scope including the reference unit | proposed, pending owner ratification ([§6](activation-observe-baseline.md#6-owner-decisions)) | `tests/unit/test_activation_policy.py` |
-| Installed systemd lifecycle on target hardware | not established | — |
+| Installed systemd lifecycle on target hardware | not established | procedure: [M.I.O. reference runbook](hil-runbooks/mio-reference.md) (not run) |
 
 ## Current selected-bootstrap gate snapshot (2026-10-15)
 

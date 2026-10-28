@@ -252,6 +252,10 @@ administrator.
   procedure in §3d, like the activation high-water recovery; there is no
   lowering path in code, by design.
 
+The target-hardware procedure for the anchor, the floor write under the
+activation sandbox and the refusals, with a throwaway test key that is never
+promoted, is the [Edge issuer runbook](hil-runbooks/edge-issuer.md) (not run).
+
 ### 3d. Recovering from a wrongly raised floor (root, manual)
 
 There is no command that lowers or clears the floor. If it was raised wrongly
