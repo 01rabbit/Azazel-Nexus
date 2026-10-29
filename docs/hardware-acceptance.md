@@ -1,8 +1,8 @@
 # 実機受入手順
 
 Status: **実機の項目（A1〜A8）は未実行。Arm VM の項目（V1〜V3）は 2026-10-29 に Arm VM
-（VMware Fusion、Apple silicon）で実行した（main `7ef1702`。
-[記録](evidence/arm-vm-acceptance-vm-arm64-2026-10-29.md)）。VM の結果であり、ハードウェアゲートは閉じない。**
+（VMware Fusion、Apple silicon）で実行した（main `7ef1702`。V1 は pass 55 / fail 0 / skip 2、
+うち 24 件は Edge Core の逸脱（D1）の上での pass。[記録](evidence/arm-vm-acceptance-vm-arm64-2026-10-29.md)）。VM の結果であり、ハードウェアゲートは閉じない。**
 この文書は、VM やコンテナで確かめた範囲と、実機でしか確かめられない範囲を分け、
 実機と Arm VM で行う受入の手順・合格条件・記録の形を 1 か所にまとめたもの。
 個々の手順がすでに runbook にあるものは、ここで繰り返さずにリンクする。
@@ -213,7 +213,7 @@ Arm VM の結果は ADR-0003 D5 の「VM ソフトウェア統合の証拠」で
 
 **実行状況（2026-10-29、main `7ef1702`、VMware Fusion 上の Debian 13.7 arm64 VM）：**
 V1 は pass 55 / fail 0 / skip 2（kernel の再起動を含む。Edge Core は arm64 の pin が無いまま
-aarch64 の実バイナリで実行した逸脱付き）、V2 は systemd 段まで導入し合格条件の各項を観測、
+aarch64 の実バイナリで実行した逸脱付きで、うち 24 件は Edge Core の逸脱（D1）の上での pass）、V2 は systemd 段まで導入し合格条件の各項を観測、
 V3 は VMware の 1 基盤だけ観測した。まとめは
 [Arm VM での受入の記録](evidence/arm-vm-acceptance-vm-arm64-2026-10-29.md)。どれも VM の結果であり、
 ハードウェアゲートは閉じない。

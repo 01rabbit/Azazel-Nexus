@@ -17,7 +17,7 @@ HIL の証跡ではなく、キャンペーンに使わず、HG の欄にも載�
 | 導入した commit | `7ef1702`（worktree clean、`git archive HEAD`） |
 | Python と venv | Debian の CPython 3.13.5。VM は外部に出られない（host-only の NIC のみ、既定経路なし）ので `--wheelhouse` を使った：V2 と同じ aarch64 lab の wheelhouse に build backend の `setuptools==84.0.0` の wheel を足したもの。本番 venv `/opt/azazel-nexus/venv` は pip `--no-index` で source から構築 |
 | ノードに足したもの | runtime の C 拡張を source から build するための `gcc` と `python3-dev`（Debian 13.7 の公式 deb を Mac で取得して VM に置き、VM の署名済み apt の索引と照合して `apt-get install --no-download` で導入） |
-| Edge | Azazel-Edge `cc769e0` を `rust:1-trixie`（aarch64）で build し Edge の packager で包装したもの（[コンテナの記録](vm-integration-container-2026-10-28.md) と同じ package）。契約 3 ファイルは Nexus の `contract/azazel-edge-core/` と一致。**中身は aarch64、名前は packager 固定の x86_64。arm64 の Edge Core pin は無い**（[オーナー判断 H5](../owner-decisions.md#2-優先度の高いもの)）。逸脱として下に記録する |
+| Edge | Azazel-Edge `cc769e0` を `rust:1-trixie`（aarch64）で build し Edge の packager で包装したもの（[コンテナの記録](vm-integration-container-2026-10-28.md) と同じ package）。JSON の `edge_package_sha256` が `<sha256>` なのは、道具の秘匿フィルタが 64 桁の 16 進を一律に伏せるためで、[実機受入 §5](../hardware-acceptance.md) も記録に digest を書かないとしているので実値は入れない。同じ package であることは、コンテナの記録の aarch64 の run で使った同じ build 出力の directory（manifest と archive の 2 ファイル）をそのまま `--edge-package` に渡したことと、この run の `start.edge-package` が archive と binary を manifest の digest と照合して pass したことによる（中身の digest 同士は記録の上で突き合わせていない）。契約 3 ファイルは Nexus の `contract/azazel-edge-core/` と一致。**中身は aarch64、名前は packager 固定の x86_64。arm64 の Edge Core pin は無い**（[オーナー判断 H5](../owner-decisions.md#2-優先度の高いもの)）。逸脱として下に記録する |
 | 起動経路 | リハーサル専用の手動起動（統合ループ手順書 §6）。**activation admission: not exercised** |
 | 再起動 | `systemctl reboot`（**新しい kernel boot**。boot id が変わったことを道具が確認） |
 
@@ -30,6 +30,7 @@ Edge Core は aarch64 の実バイナリ（dry run、advisory）、刺激は合�
 ## 結果の要約
 
 - **pass 55 / fail 0 / skip 2**（`{"pass": 55, "fail": 0, "skip": 2}`、終了コード 0）。
+  うち 24 件は Edge Core の逸脱（D1）の上での pass（内訳は逸脱 D1）。
   skip は「locald の応答改変」（admission が閉じていて locald は誰にも呼ばれない）と
   「Mission Pack の期限」（commissioning と HG-05 がなく、pack を ACTIVE にできない）。
   コンテナの aarch64（54 / 0 / 2）より 1 件多いのは、その後に入った `start.lab-marker`。
@@ -46,7 +47,7 @@ Edge Core は aarch64 の実バイナリ（dry run、advisory）、刺激は合�
 
 | # | 内容 |
 | --- | --- |
-| D1 | Edge Core は aarch64 の実バイナリだが、arm64 の Edge Core pin は無く、package の名前と manifest の `architecture` は packager 固定の `x86_64`（道具の `start.edge-package` も逸脱として記録）。Edge Core を含む検査（`edge-decisions`、`kill.*` の Edge 継続、`isolation`、`h2-edge-restart`、`h-deps`、`start.edge-posture`・`edge-probe`）は **この逸脱の上での pass** であり、arm64 の Edge 配備の証拠ではない。偽の digest や amd64 バイナリは使っていない |
+| D1 | Edge Core は aarch64 の実バイナリだが、arm64 の Edge Core pin は無く、package の名前と manifest の `architecture` は packager 固定の `x86_64`（道具の `start.edge-package` も逸脱として記録）。偽の digest や amd64 バイナリは使っていない。**この逸脱の上での pass は 24 件**で、arm64 の Edge 配備の証拠ではない。数え方：Edge Core のバイナリを動かした、Edge Core の状態・判断を確かめた、または刺激が Edge Core を通った（package があると刺激は `eve.json` への追記で、Edge Core の判断が intake に届く）検査。内訳は `start.edge-package`・`start.edge-posture`・`start.edge-probe`（3）、同じ刺激による `scenarios.reference-display`・`knowledge-citation`・`status`・`status-private`（4）、`scenarios.edge-decisions`（1）、`scenarios.kill.*`（6。Edge Core が同じ PID で動き続けることも条件）、`scenarios.broken.referenced-*`・`knowledge-*`（4）、`scenarios.capacity.*`（4。同上）、`scenarios.isolation`（1）、`scenarios.h2-edge-restart`（1）。数えていないもの：unit ファイルや設定だけを読む `scenarios.h-deps`・`h1`・`h3`、Edge Core の unit を対象に含むが masking だけを見る `after-restart.remasked`・`not-running`、Edge Core を通らない `scenarios.broken.edge-lines` |
 | D2 | VM は S0 の残骸を手で除いた状態で、新しく入れた OS ではない（条件の表） |
 | D3 | 本番 venv の依存は lab の wheelhouse から入れ、Nexus の 2 つは source から build（ノードに gcc と python3-dev を足した）。V2 のオフライン bundle による導入とは別の経路 |
 

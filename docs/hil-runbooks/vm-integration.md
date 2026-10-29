@@ -23,7 +23,8 @@ x86_64 (colima under Rosetta), recorded in
 [`docs/evidence/vm-integration-container-2026-10-28.md`](../evidence/vm-integration-container-2026-10-28.md).
 **Run on an Arm VM on 2026-10-29** (VMware Fusion on Apple silicon, Debian
 13.7 arm64, `--target ssh:<NODE>`, `systemctl reboot` between the phases):
-pass 55 / fail 0 / skip 2, recorded in
+pass 55 / fail 0 / skip 2 (24 of the passes rest on the Edge Core
+deviation below), recorded in
 [`docs/evidence/vm-integration-vm-arm64-2026-10-29.md`](../evidence/vm-integration-vm-arm64-2026-10-29.md)
 with the Edge Core checks run on an aarch64 build that has no arm64 pin (a
 recorded deviation). Not run on an x86_64 VM. Nothing here is HIL

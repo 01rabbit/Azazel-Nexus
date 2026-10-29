@@ -7,7 +7,7 @@ V1〜V3 をこの VM 1 台で行った記録の索引と、V3・全件試験・�
 
 | 項目 | 結果 | 記録 |
 | --- | --- | --- |
-| V1 `tools/vm_integration.py`（kernel の再起動を含む） | pass 55 / fail 0 / skip 2。Edge Core は arm64 の pin が無いまま aarch64 の実バイナリで実行（逸脱 D1） | [vm-integration-vm-arm64-2026-10-29.md](vm-integration-vm-arm64-2026-10-29.md) |
+| V1 `tools/vm_integration.py`（kernel の再起動を含む） | pass 55 / fail 0 / skip 2。うち 24 件は Edge Core の逸脱（D1）の上での pass（Edge Core は arm64 の pin が無いまま aarch64 の実バイナリで実行） | [vm-integration-vm-arm64-2026-10-29.md](vm-integration-vm-arm64-2026-10-29.md) |
 | V2 arm64 lab のオフライン導入（systemd 段まで） | 導入 exit 0、unit は masked、host は `debian-13-arm64-cp313-lab`、本番用途 5 つは `LAB_PROFILE_NOT_FOR_PRODUCTION`、Edge slot は build・verify・install のすべてで拒否 | [offline-install-aarch64-lab-vm-2026-10-29.json](offline-install-aarch64-lab-vm-2026-10-29.json) |
 | V3 仮想化センサー | `dmi_vendor`・`dmi_product` が observed、`cpu_hypervisor` は clear。`systemd-detect-virt` は `vmware` | 下の §V3、[JSON](arm-vm-acceptance-vm-arm64-2026-10-29/v3-virtualization-sensors.json) |
 | tests/unit 全件（参考） | 最終の実行で 5 failed, 17529 passed, 166 skipped, 2 deselected。5 件はすべて環境由来と判断（下の §全件試験） | [要約](arm-vm-acceptance-vm-arm64-2026-10-29/unit-suite-summary.txt) |

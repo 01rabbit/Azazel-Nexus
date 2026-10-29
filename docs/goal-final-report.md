@@ -7,8 +7,9 @@ Azazel-Nexus を Arm Linux VM で検証できる構成・amd64 と Arm に共通
 squash コミット、各 PR の本文とレビュー対応のコメントである。PR 番号は
 [01rabbit/Azazel-Nexus](https://github.com/01rabbit/Azazel-Nexus) の pull request。
 
-**この文書が示さないもの**：実機・Arm VM での結果（§3・§5）。ここにある試験の結果は
-すべて Linux コンテナでのものである。有限回のレビューで見つけて直した問題を挙げるが、
+**この文書が示さないもの**：実機での結果（§3・§5）。ここにある試験の結果は
+すべて Linux コンテナでのものである（この報告の後、2026-10-29 に Arm VM で V1〜V3 を実行した。
+[記録](evidence/arm-vm-acceptance-vm-arm64-2026-10-29.md)。VM の結果でありハードウェアゲートは閉じない）。有限回のレビューで見つけて直した問題を挙げるが、
 それで安全が証明されたとは言えない（§4）。オーナー判断はどれも未決である（§6）。
 
 関連：[契約表](contract-table.md) ·
@@ -57,7 +58,8 @@ squash コミット、各 PR の本文とレビュー対応のコメントであ
 
 ## 3. 検証結果
 
-**どれも Linux コンテナでの結果であり、実機・Arm VM での結果ではない。** arm64 は
+**どれも Linux コンテナでの結果であり、実機・Arm VM での結果ではない**（Arm VM での結果は §5 の
+最初の項を参照）。 arm64 は
 colima（Apple Silicon 上の VM）のコンテナ、amd64 は colima の Rosetta による x86_64 の
 変換で、amd64 ホストでの実行でもない（[ADR-0003](adr/0003-arm-software-verification-profile.md)、
 [実機受入手順 §1](hardware-acceptance.md#1-規則vm-の結果を-hardware-evidence-に一般化しない)）。
@@ -116,15 +118,22 @@ main `331657a`（#380 のマージ後、#383 の直前。#383 は文書だけの
 
 ## 5. やっていないこと・制約
 
-- **実機・Arm VM では未実行。** このゴールの成果は、どれも実機（amd64）でも Arm VM
-  でも実行していない。手順と合格条件は [実機受入手順](hardware-acceptance.md) の
+- **実機では未実行。Arm VM では V1〜V3 を 2026-10-29 に実行した。** このゴールの成果は、
+  どれも実機（amd64・Arm）では実行していない。Arm VM（VMware Fusion、Apple silicon、
+  Debian 13.7 arm64）では、main `7ef1702` で V1（pass 55 / fail 0 / skip 2、kernel の再起動を含む。
+  うち 24 件は arm64 の pin が無いまま aarch64 で build した Edge Core の上での pass という逸脱付き）、
+  V2（arm64 lab のオフライン導入を systemd 段まで）、V3（仮想化センサーの観測）を行った
+  （[記録](evidence/arm-vm-acceptance-vm-arm64-2026-10-29.md)）。VM の結果であり、ハードウェア
+  ゲートは閉じない。手順と合格条件は [実機受入手順](hardware-acceptance.md) の
   A1〜A8（amd64 実機）と V1〜V3（Arm VM）にある。それ以前の Arm VM の記録
   （commissioning・activation のリハーサル、unit の hardening）は
   [実機受入手順 §2](hardware-acceptance.md#2-これまでに確かめた範囲) の表のとおり。
 - **Arm の仮想化センサー**：aarch64 では `cpu_hypervisor` が常に `clear` を読む。代わりの
-  信号は実 Arm VM で値を確かめてから決める（V3、オーナー判断 H4）。
+  信号は実 Arm VM で値を確かめてから決める（V3、オーナー判断 H4）。VMware Fusion の Arm VM では
+  `dmi_vendor`・`dmi_product` が observed だった（他の基盤は未観測）。
 - **arm64 の Edge Core の pin が無い**：aarch64 の bundle は Edge slot を拒否する。Arm VM
-  では Edge Core を含む経路を通しで確かめられない（H5）。
+  では Edge Core を含む経路を、aarch64 で build した実バイナリを使う逸脱付きでしか通せない
+  （2026-10-29 の V1 はその条件で実行、H5）。
 - **Knowledge 本体の `/v1/context` の adapter が無い**（調査の項目 P7・P8）：Nexus の peer
   プロトコルは実 Azazel-Knowledge の API と相互運用せず、Nexus のコードが実 API と要求を
   交わしたことは無い（[契約表 §5](contract-table.md#5-実-knowledge-の-v1context-との差)）。
