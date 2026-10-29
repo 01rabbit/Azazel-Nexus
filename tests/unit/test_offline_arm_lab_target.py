@@ -144,6 +144,17 @@ def test_the_source_built_fabric_wheel_is_pinned_by_the_same_hash_on_both_target
         assert lab[requirement] == baseline[requirement]
 
 
+@pytest.mark.parametrize("name", sorted(offline_bundle.TARGETS))
+def test_the_verifier_reads_the_lock_of_the_target_it_is_given(name):
+    """verify / recheck / install call reviewed_pins with the manifest's target."""
+
+    lock, versions = offline_bundle.reviewed_pins(target=name)
+    assert lock == build_wheelhouse.parse_lock(ROOT / offline_bundle.TARGETS[name]["lock"])
+    assert versions == build_wheelhouse.own_versions(ROOT)
+    other = next(t for t in offline_bundle.TARGETS if t != name)
+    assert lock != offline_bundle.reviewed_pins(target=other)[0]
+
+
 def test_an_undeclared_target_has_no_lock():
     with pytest.raises(BundleRefused, match="not a declared target"):
         offline_bundle.target_lock("debian-13-riscv64-cp313")
