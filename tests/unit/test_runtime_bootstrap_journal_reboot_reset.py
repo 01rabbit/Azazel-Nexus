@@ -27,6 +27,7 @@ from azazel_nexus_runtime.units import UnitOperationFailed
 from test_runtime_bootstrap_journal_retire import NEW_BOOT, OLD_BOOT, _drop_pair, _stage
 from test_runtime_bootstrap_journal_retire_callsite import _abandoned_grant
 from test_runtime_bootstrap_manager_stopped import _cgroup_root
+from test_runtime_bootstrap_overlay_files import _replace_mask
 from test_runtime_bootstrap_overlay_withdraw import PAIR, _withdraw_environment
 from test_runtime_bootstrap_unpublished_withdrawal import _real_manager
 from test_runtime_bootstrap_unpublished_withdrawal import _transaction as _grant
@@ -162,9 +163,7 @@ def test_prior_boot_fence_check_refuses_after_change(tmp_path, change):
         elif change == "journal":
             env["store"].replace(journal, OverlayJournal(journal.intent, "closed"))
         else:
-            mask = env["masks_path"] / PAIR[0]
-            mask.unlink()
-            mask.symlink_to("/dev/null")
+            _replace_mask(env["masks_path"] / PAIR[0])
         with pytest.raises(ApprovalRefused):
             files.check()
 
@@ -294,9 +293,7 @@ def test_unowned_overlay_entry_refuses_containment_and_is_untouched(tmp_path):
 def test_mask_changed_after_containment_refuses_retirement(tmp_path):
     with _host(tmp_path, "published") as (env, manager, journal):
         assert manager.close_starts() is None
-        mask = env["masks_path"] / PAIR[1]
-        mask.unlink()
-        mask.symlink_to("/dev/null")
+        _replace_mask(env["masks_path"] / PAIR[1])
         calls = _spy(env)
         with pytest.raises(ApprovalRefused, match="masks changed"):
             _retire(env, manager)

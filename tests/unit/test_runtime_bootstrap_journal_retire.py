@@ -10,7 +10,7 @@ from azazel_nexus.bootstrap_overlay_journal import (
     advance_overlay,
 )
 from azazel_nexus.operator_trust import ApprovalRefused
-from test_runtime_bootstrap_overlay_files import _intent, _publish
+from test_runtime_bootstrap_overlay_files import _intent, _publish, _replace_mask
 from test_runtime_bootstrap_overlay_withdraw import PAIR, _withdraw_environment
 from test_runtime_bootstrap_withdrawal_binding import _transaction, _withdrawal
 
@@ -207,9 +207,7 @@ def test_mask_changed_after_binding_refuses(tmp_path):
         closed = _stage(env, "closed")
         files = _withdrawal(env)
         files.bind(_transaction(closed.intent))
-        mask = env["masks_path"] / PAIR[0]
-        mask.unlink()
-        mask.symlink_to("/dev/null")
+        _replace_mask(env["masks_path"] / PAIR[0])
         audit = Audit()
 
         with pytest.raises(ApprovalRefused, match="masks changed"):
@@ -219,17 +217,19 @@ def test_mask_changed_after_binding_refuses(tmp_path):
         _assert_untouched(env, closed)
 
 
-def test_mask_changed_during_audit_refuses_before_any_mutation(tmp_path):
+@pytest.mark.parametrize("target, refusal", [
+    ("/dev/null", "retirement masks changed"),       # same content: the stamp moved
+    ("/dev/zero", "persistent helper mask changed"),  # no longer a mask: content check
+])
+def test_mask_changed_during_audit_refuses_before_any_mutation(tmp_path, target, refusal):
     with _withdraw_environment(tmp_path) as env:
         journal = _stage(env, "published")
 
         def swap_mask():
-            mask = env["masks_path"] / PAIR[1]
-            mask.unlink()
-            mask.symlink_to("/dev/null")
+            _replace_mask(env["masks_path"] / PAIR[1], target)
 
         files = _bound(env)
-        with pytest.raises(ApprovalRefused, match="masks changed"):
+        with pytest.raises(ApprovalRefused, match=refusal):
             files.retire_prior_boot(journal, NEW_BOOT, Audit(before=swap_mask))
 
         _assert_untouched(env, journal)

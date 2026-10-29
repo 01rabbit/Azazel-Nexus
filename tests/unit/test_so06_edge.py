@@ -136,9 +136,22 @@ def test_a_library_that_does_not_pin_both_clocks_is_refused(tmp_path, monkeypatc
 
 
 def test_a_library_that_freezes_the_monotonic_clock_is_refused(tmp_path, monkeypatch):
-    monkeypatch.setattr(so06_edge, "SHIM_SOURCE", so06_edge.SHIM_SOURCE.replace(
-        "return id == CLOCK_BOOTTIME || id == CLOCK_BOOTTIME_ALARM;",
-        "return id == CLOCK_BOOTTIME || id == CLOCK_BOOTTIME_ALARM || id == CLOCK_MONOTONIC;"))
+    # The probe's `time.sleep` waits in the kernel for an absolute
+    # CLOCK_MONOTONIC deadline taken from the frozen reading. Freezing the
+    # clock at zero keeps that deadline in the past on every node, however
+    # long it has been up, so the probe returns and the refusal is the
+    # "does not pin" one. (Freezing at PINNED_BOOTTIME_NS, one hour, made a
+    # node booted less than an hour ago wait out the probe's timeout instead:
+    # still refused, but for a reason this test does not check.)
+    real = "    static clock_fn real;\n"
+    frozen = ("    if (id == CLOCK_MONOTONIC) {\n"
+              "        ts->tv_sec = 0;\n"
+              "        ts->tv_nsec = 0;\n"
+              "        return 0;\n"
+              "    }\n")
+    assert so06_edge.SHIM_SOURCE.count(real) == 1
+    monkeypatch.setattr(so06_edge, "SHIM_SOURCE",
+                        so06_edge.SHIM_SOURCE.replace(real, frozen + real))
     with pytest.raises(so06_edge.EdgeUnavailable, match="does not pin"):
         so06_edge.build_shim(tmp_path)
 
