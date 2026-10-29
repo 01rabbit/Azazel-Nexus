@@ -124,6 +124,13 @@ def test_a_failing_projection_never_costs_the_explanation(monkeypatch):
     assert daemon.with_fabric_claims(record) == record
 
 
+def test_the_writer_and_the_reader_name_claims_alike():
+    from azazel_nexus import incident_explain
+
+    assert fabric_boundary.EDGE_CLAIM_SUFFIX == incident_explain.EDGE_CLAIM_SUFFIX
+    assert fabric_boundary.KNOWLEDGE_CLAIM_PREFIX == incident_explain.KNOWLEDGE_CLAIM_PREFIX
+
+
 def test_privacy_classes_correspond_and_the_never_remote_sets_coincide():
     assert set(FABRIC_PRIVACY_CLASS) == {c.value for c in PrivacyClass}
     assert {FABRIC_PRIVACY_CLASS[c.value] for c in NEVER_REMOTE} == {"sensitive", "restricted"}

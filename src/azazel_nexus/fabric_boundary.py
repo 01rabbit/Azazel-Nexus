@@ -1139,6 +1139,13 @@ FABRIC_PRIVACY_CLASS = {
     "P3-restricted": "restricted",
 }
 
+#: The Edge decision's claim id after the incident id, and the prefix of each
+#: cited reference's claim id. `incident_explain` states the same two words
+#: for its reader; `test_fabric_explanation_projection` keeps them equal.
+EDGE_CLAIM_SUFFIX = ":edge"
+KNOWLEDGE_CLAIM_PREFIX = "knowledge:"
+
+
 @dataclass(frozen=True)
 class ExplanationProjection:
     """One explanation-ledger record as Fabric `mio_contracts` claims.
@@ -1158,6 +1165,8 @@ class ExplanationProjection:
 
 def project_explanation(record, evidence=()) -> Projection:
     """Project one explanation-ledger record onto Fabric's `ClaimSet`.
+
+    `record` must already have been read by `incident_explain.read_record`.
 
     Internal only. The result is kept in the explanation ledger beside the
     record it was made from (`incident_explaind`); it is not sent, displayed
@@ -1188,13 +1197,10 @@ def project_explanation(record, evidence=()) -> Projection:
 
         from azazel_fabric.mio_contracts import Claim, ClaimSet
 
-        from azazel_nexus.incident_explain import (
-            EDGE_CLAIM_SUFFIX,
-            KNOWLEDGE_CLAIM_PREFIX,
-            read_record,
-        )
-
-        r = read_record(record)
+        # The record is read by `incident_explain.read_record` before it gets
+        # here; importing that module from this one would pull the whole
+        # explanation plane into everything that imports the Fabric boundary.
+        r = record
         refs = []
         for item in evidence:
             projected = project_edge_evidence(item)
