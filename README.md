@@ -152,15 +152,18 @@ This division is intentional. It keeps the authority to change the field boundar
 - [ADR-0003: the Arm software-verification profile](docs/adr/0003-arm-software-verification-profile.md) — amd64 stays the deployment baseline; what an Arm VM run is evidence of, and what it is not.
 - [ADR-0006: tested tuples, Fabric and Arm](docs/adr/0006-tested-tuple-fabric-and-arm-lab.md) — the admitted CPU comes from the baseline profile; Nexus ↔ Fabric `TestedCompatibilityTuple` field mapping; an Arm tuple is lab-only and never admits.
 - [Integration evidence](docs/integration-evidence.md) · [Edge package verification](docs/edge-package-verification.md) · [degradation matrix](docs/degradation-matrix.md).
+- [実機受入手順](docs/hardware-acceptance.md) — VM・コンテナで確かめた範囲と実機でしか確かめられない範囲を分け、amd64 実機と Arm VM の受入手順・合格条件・記録の形をまとめたもの（VM の結果は hardware evidence にしない）。
 
 **Contracts and release**
 
+- [契約表](docs/contract-table.md) — Nexus と Edge・Fabric・Knowledge・UI・M.I.O. の間の契約を、形式・認証・失敗時の挙動・実装・試験・CPU 間の確認で一覧にしたもの。
 - [Contract ownership](docs/contract-ownership.md) · [Implementation specification](docs/IMPLEMENTATION_SPEC.md) · [Support matrix](docs/support-matrix.md) · [Update channel](docs/update-channel.md) · [Inheritance ledger](docs/inheritance-ledger.md).
 
 **Plan**
 
 - [Implementation roadmap](docs/roadmap.md) — the staged delivery plan. It describes what is intended, not what exists; this page's table is what exists.
 - [Redirect to Deception Lite: the Nexus-side prerequisites](docs/deception-redirect-prerequisites.md) — design proposal for I4 (#196): enforcement, the decision key and a reachable decoy; awaiting owner decisions.
+- [オーナー判断の一覧](docs/owner-decisions.md) — #355〜#382 の PR が残したオーナー判断を、既定値・選択肢・影響・優先度で表にしたもの。
 - [Live issue map and evidence status](docs/issue-map.md) — current open-issue classifications, main CI evidence, and hardware boundary.
 
 **Project**
