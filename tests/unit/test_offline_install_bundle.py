@@ -181,10 +181,10 @@ def empty_third_party_lock(monkeypatch):
 
     real = offline_bundle.reviewed_pins
 
-    def pins(root: Path | None = None):
+    def pins(root: Path | None = None, target: str = offline_bundle.BASELINE_TARGET):
         if root is not None:
-            return real(root)
-        return {}, real()[1]
+            return real(root, target)
+        return {}, real(target=target)[1]
 
     monkeypatch.setattr(offline_bundle, "reviewed_pins", pins)
 
@@ -314,7 +314,7 @@ def _valid(built) -> dict:
     "mutate, match",
     [
         (lambda d: d.update(schema="other@1"), "schema"),
-        (lambda d: d.update(target="debian-13-aarch64-cp313"), "not a declared target"),
+        (lambda d: d.update(target="debian-13-riscv64-cp313"), "not a declared target"),
         (lambda d: d.update(extra=1), "unexpected"),
         (lambda d: d["artifacts"][0].update(kind="firmware"), "kind"),
         (lambda d: d["artifacts"][0].update(path="wheels/x.py"), "not under"),
@@ -870,7 +870,7 @@ def test_the_reviewed_lock_is_the_real_one():
 
 def test_a_verifier_without_a_reviewed_lock_refuses(built, tmp_path, monkeypatch):
     real = offline_bundle.reviewed_pins
-    monkeypatch.setattr(offline_bundle, "reviewed_pins", lambda: real(tmp_path / "nowhere"))
+    monkeypatch.setattr(offline_bundle, "reviewed_pins", lambda target: real(tmp_path / "nowhere", target))
     with pytest.raises(BundleRefused, match="reviewed checkout"):
         offline_bundle.extract_and_verify(built[2], tmp_path / "out")
 

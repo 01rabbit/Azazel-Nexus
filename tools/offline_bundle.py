@@ -81,10 +81,21 @@ SLOT_KINDS = ("edge-package", "deb", "model", "knowledge")
 SLOT_STATES = ("empty", "filled")
 MODES = ("0644", "0755")
 
-#: The only target this bundle format declares: the reference OS and
-#: architecture of docs/support-matrix.md §3, with Debian 13's system CPython.
-#: Defined here, never read from the manifest, so a bundle cannot name its own
-#: target into acceptance.
+#: The targets this bundle format declares. Defined here, never read from the
+#: manifest, so a bundle cannot name its own target into acceptance.
+#:
+#: Each target names the reviewed platform profile it serves
+#: (``azazel_nexus.platform_profile``, ADR-0003) and that profile's purpose;
+#: tests/unit/test_offline_arm_lab_target.py holds them equal, so this table
+#: cannot give a CPU a purpose its profile does not have.
+#:
+#: * ``debian-13-x86_64-cp313`` -- the reference OS and architecture of
+#:   docs/support-matrix.md §3 (ADR-0002), the **deployment baseline**.
+#: * ``debian-13-aarch64-cp313`` -- the Arm **lab-software-verification**
+#:   target (ADR-0005). It exists so the software can be installed offline on
+#:   an Arm VM; it does not move the baseline, and a bundle, wheelhouse or
+#:   install report made for it is VM software-integration evidence at most.
+#:   Every report carries the purpose, and no production reader accepts it.
 TARGETS = {
     "debian-13-x86_64-cp313": {
         "os": "debian-13",
@@ -94,8 +105,52 @@ TARGETS = {
         "python_version": (3, 13),
         # Debian 13 ships glibc 2.41; a manylinux wheel needing more is refused.
         "glibc_max": (2, 41),
+        "lock": Path("packaging/offline/requirements-x86_64-cp313.lock"),
+        "platform_profile_id": "debian-13-amd64-cp313",
+        "purpose": "deployment-baseline",
+    },
+    "debian-13-aarch64-cp313": {
+        "os": "debian-13",
+        "architecture": "aarch64",
+        "deb_architectures": ("arm64", "all"),
+        "python_tag": "cp313",
+        "python_version": (3, 13),
+        "glibc_max": (2, 41),
+        "lock": Path("packaging/offline/requirements-aarch64-cp313.lock"),
+        "platform_profile_id": "debian-13-arm64-cp313-lab",
+        "purpose": "lab-software-verification",
     },
 }
+#: The deployment-baseline target, and the default wherever a caller names none.
+BASELINE_TARGET = "debian-13-x86_64-cp313"
+PURPOSE_DEPLOYMENT_BASELINE = "deployment-baseline"
+#: What every report of a non-baseline target says about itself.
+LAB_TARGET_NOTE = (
+    "lab-software-verification target: VM software-integration evidence at most; never "
+    "hardware-gate evidence, a deployment-baseline install or a production admission (ADR-0005)"
+)
+
+
+def target_lock(target: str) -> Path:
+    """The third-party lock of a declared target; an undeclared target is refused."""
+
+    if type(target) is not str or target not in TARGETS:
+        raise BundleRefused(f"target {target!r} is not a declared target")
+    return TARGETS[target]["lock"]
+
+
+def target_purpose(target: str) -> dict[str, Any]:
+    """The purpose fields every report of ``target`` carries."""
+
+    declared = TARGETS[target]
+    fields: dict[str, Any] = {
+        "platform_profile_id": declared["platform_profile_id"],
+        "purpose": declared["purpose"],
+    }
+    if declared["purpose"] != PURPOSE_DEPLOYMENT_BASELINE:
+        fields["purpose_note"] = LAB_TARGET_NOTE
+    return fields
+
 
 # `%` because apt names an epoch `1%3a` in a .deb file name.
 _COMPONENT = re.compile(r"[A-Za-z0-9_+~=%-][A-Za-z0-9._+~=%-]*\Z")
@@ -116,7 +171,8 @@ OWN_DISTRIBUTIONS = ("azazel-nexus", "azazel-nexus-runtime")
 #: only when their name, version and sha256 are in its lock; the two Nexus
 #: wheels only when their versions equal its pyproject files.
 REVIEWED_ROOT = Path(__file__).resolve().parents[1]
-WHEEL_LOCK = Path("packaging/offline/requirements-x86_64-cp313.lock")
+#: The deployment-baseline lock. Each target's own lock is ``target_lock``.
+WHEEL_LOCK = TARGETS[BASELINE_TARGET]["lock"]
 
 
 class BundleRefused(Exception):
@@ -753,13 +809,21 @@ def parse_lock(path: Path) -> dict[str, list[str]]:
     return pins
 
 
-def reviewed_pins(root: Path = REVIEWED_ROOT) -> tuple[dict[str, list[str]], dict[str, str]]:
-    """The reviewed checkout's third-party lock and its own distributions' versions."""
+def reviewed_pins(
+    root: Path = REVIEWED_ROOT, target: str = BASELINE_TARGET
+) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """The reviewed checkout's third-party lock for ``target`` and its own distributions' versions.
+
+    The lock is per target because native wheels (pydantic-core, PyYAML) are
+    per CPU: an aarch64 bundle is checked against the aarch64 lock only, and
+    an x86_64 wheel hash never satisfies it (or the other way round).
+    """
 
     import tomllib  # noqa: PLC0415 - stdlib from 3.11, the declared floor
 
+    lock_path = target_lock(target)
     try:
-        lock = parse_lock(root / WHEEL_LOCK)
+        lock = parse_lock(root / lock_path)
         versions = {}
         for path in (root / "pyproject.toml", root / "runtime" / "pyproject.toml"):
             project = tomllib.loads(path.read_text(encoding="utf-8"))["project"]
@@ -806,7 +870,8 @@ def check_wheels_against_lock(
             raise BundleRefused(f"{entry['path']} ({name}=={version}) is not in the reviewed lock")
         if entry["sha256"] not in hashes:
             raise BundleRefused(f"{entry['path']} does not have a sha256 the reviewed lock pins")
-        checked.append({"requirement": f"{name}=={version}", "pinned_by": WHEEL_LOCK.as_posix()})
+        checked.append({"requirement": f"{name}=={version}",
+                        "pinned_by": target_lock(document["target"]).as_posix()})
     return checked
 
 
@@ -1303,7 +1368,7 @@ def verify_extracted(
 
     document = extracted.manifest
     root = extracted.root
-    pins = reviewed_pins() if pins is None else pins
+    pins = reviewed_pins(target=document["target"]) if pins is None else pins
     wheels = check_wheels_against_lock(document, pins)
     check_lock_is_carried(wheels, pins[0])
     slots: dict[str, Any] = {}
@@ -1326,6 +1391,7 @@ def verify_extracted(
     return {
         "schema": "azazel-nexus-offline-bundle-report@1",
         "target": document["target"],
+        **target_purpose(document["target"]),
         "manifest_sha256": hashlib.sha256(extracted.manifest_bytes).hexdigest(),
         "integrity": "every declared member matched its manifest size and sha256",
         "bundle_authenticated": verdict.authenticated,
@@ -1408,7 +1474,7 @@ def recheck_tree(
     if hashlib.sha256(raw).hexdigest() != expected_manifest_sha256:
         raise BundleRefused("MANIFEST.json is not the manifest extraction verified")
     document = load_manifest(raw, limits)
-    pins = reviewed_pins() if pins is None else pins
+    pins = reviewed_pins(target=document["target"]) if pins is None else pins
     check_lock_is_carried(check_wheels_against_lock(document, pins), pins[0])
     declared = {entry["path"]: entry for entry in document["artifacts"]}
     found: set[str] = set()
@@ -1432,6 +1498,8 @@ def recheck_tree(
         raise BundleRefused(f"declared files are missing from the tree: {missing[:5]}")
     return {
         "recheck": "pass",
+        "target": document["target"],
+        **target_purpose(document["target"]),
         "files": len(found),
         "manifest_sha256": expected_manifest_sha256,
         "own_wheels": OWN_WHEELS_NOTE,
@@ -1586,6 +1654,12 @@ def _install_verified(extracted: Extracted, report: dict, into: Path, venv: Path
     _run([str(venv_python), "-I", "-c",
           "import azazel_nexus, azazel_nexus_runtime, azazel_nexus_runtime._bootstrap_deadline, "
           "yaml, dbus_next, pydantic_core._pydantic_core, azazel_fabric.provisioning_contracts"])
+    observed = _observe_installed_platform(venv_python)
+    if observed != (target["platform_profile_id"], target["purpose"]):
+        raise BundleRefused(
+            f"this host observes as platform profile {observed[0]!r} ({observed[1]}); the bundle "
+            f"targets {target['platform_profile_id']!r} ({target['purpose']})"
+        )
     report["install"] = {
         "venv": str(venv),
         "distributions": sorted(
@@ -1594,8 +1668,35 @@ def _install_verified(extracted: Extracted, report: dict, into: Path, venv: Path
         "pip": "--no-index --find-links --require-hashes --only-binary=:all:",
         "pip_check": "pass",
         "imports": "pass",
+        # Observed by the installed runtime (platform_observation.select), not
+        # taken from the manifest: the purpose of this install is the host's.
+        "observed_platform": {"platform_profile_id": observed[0], "purpose": observed[1]},
         "not_done": "accounts, units and activation are packaging/install.sh's and the operator's steps",
     }
+
+
+_OBSERVE_PLATFORM = (
+    "from azazel_nexus_runtime.platform_observation import observe, select; "
+    "selected = select(observe()); print(selected.profile_id, selected.purpose)"
+)
+
+
+def _observe_installed_platform(venv_python: Path) -> tuple[str, str]:
+    """The reviewed platform profile the installed runtime observes on this host.
+
+    ``platform_observation.select`` reads uname, os-release, SOABI, LP64, the
+    byte order and dpkg; an unreviewed host is refused with its reason code.
+    """
+
+    result = subprocess.run([str(venv_python), "-I", "-c", _OBSERVE_PLATFORM], env=_FIXED_ENV,
+                            capture_output=True, text=True, check=False)
+    fields = result.stdout.split()
+    if result.returncode != 0 or len(fields) != 2:
+        raise BundleRefused(
+            f"the installed runtime did not identify a reviewed platform profile: "
+            f"{result.stderr.strip()[-1000:]}"
+        )
+    return fields[0], fields[1]
 
 
 # --------------------------------------------------------------------------

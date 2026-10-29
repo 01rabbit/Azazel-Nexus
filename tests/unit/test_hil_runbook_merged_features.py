@@ -268,9 +268,9 @@ def test_offline_runbook_states_the_report_and_the_systemd_stage():
     tool = _literals(REPO / "tools" / "offline_bundle.py")
     assert "azazel-nexus-offline-bundle-report@1" in tool
     assert "`azazel-nexus-offline-bundle-report@1`" in text
-    from tools.offline_bundle import TARGETS
+    from tools.offline_bundle import BASELINE_TARGET, TARGETS
 
-    (target,) = TARGETS.values()
+    target = TARGETS[BASELINE_TARGET]
     probe = f"{target['architecture']} cpython {target['python_version'][0]} {target['python_version'][1]}"
     assert f"`'{probe}'`" in text
     install_doc = (REPO / "docs" / "debian-live-install.md").read_text(encoding="utf-8")
