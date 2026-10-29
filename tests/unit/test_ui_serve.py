@@ -713,6 +713,19 @@ def test_the_page_has_no_inline_code_style_or_outside_resource():
     assert "url(" not in css and "@import" not in css and "http" not in css
 
 
+def test_nested_tables_stack_and_times_are_shown_as_times():
+    """U6 (headless Chromium): a deep NOC tree squeezed values into a column a
+    few characters wide and out of its card, and `*_at` epoch seconds were
+    shown as raw numbers. The browser record is the evidence; this pins the fix."""
+    css = (STATIC / "app.css").read_text(encoding="utf-8")
+    assert ".grid > * { min-width: 0; }" in css
+    assert "dl.kv dl.kv { grid-template-columns: minmax(0, 1fr);" in css
+    assert re.search(r"dl\.kv \{[^}]*minmax\(9em, 1fr\)", css)
+    assert "#panel-noc .grid { grid-template-columns: minmax(0, 1fr); }" in css
+    script = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert '/_at$/.test(key) && typeof v === "number"' in script
+
+
 # -- labels: one table, unknown never healthy ---------------------------------------------------
 
 

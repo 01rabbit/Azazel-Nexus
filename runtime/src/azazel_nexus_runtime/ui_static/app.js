@@ -203,6 +203,7 @@
       if (WORD_KEYS[key] && typeof v === "string") { rows.push([key, badge(v)]); }
       else if (REASON_KEYS[key] && typeof v === "string") { rows.push([key, reasonLine(v)]); }
       else if (key === "conditions" && Array.isArray(v) && v.length) { rows.push([key, list(v.map(reasonLine))]); }
+      else if (/_at$/.test(key) && typeof v === "number") { rows.push([key, when("時刻", v)]); }
       else if (v !== null && typeof v === "object") { rows.push([key, tree(v, depth + 1)]); }
       else { rows.push([key, v]); }
     });

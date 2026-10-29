@@ -52,7 +52,7 @@ input[type=text] { min-height: 44px; padding: 8px; border: 1px solid var(--line)
 .card.tone-bad { border-left-color: var(--bad); border-left-style: solid; border-left-width: 8px; }
 .card.tone-unknown { border-left-color: var(--unknown); border-left-style: dashed; }
 .card.tone-info { border-left-color: var(--info); }
-.badge { display: inline-flex; align-items: baseline; gap: .3em; padding: 1px 8px; border-radius: 999px;
+.badge { display: inline-flex; flex-wrap: wrap; max-width: 100%; align-items: baseline; gap: 0 .3em; padding: 1px 8px; border-radius: 12px;
   border: 1px solid currentColor; font-weight: 600; }
 .badge.tone-ok { color: var(--ok); background: var(--ok-bg); }
 .badge.tone-warn { color: var(--warn); background: var(--warn-bg); }
@@ -62,9 +62,16 @@ input[type=text] { min-height: 44px; padding: 8px; border: 1px solid var(--line)
 .badge .en { color: inherit; opacity: .85; }
 .reason { display: block; margin-top: 4px; font-size: .9rem; }
 .when { display: block; margin-top: 6px; font-size: .82rem; color: var(--muted); }
-dl.kv { display: grid; grid-template-columns: minmax(7em, max-content) 1fr; gap: 2px 10px; margin: 8px 0 0; font-size: .92rem; }
-dl.kv dt { color: var(--muted); }
-dl.kv dd { margin: 0; }
+.grid > * { min-width: 0; }
+/* The NOC screen is one deep observation: give it the full width. */
+#panel-noc .grid { grid-template-columns: minmax(0, 1fr); }
+dl.kv { display: grid; grid-template-columns: minmax(6em, max-content) minmax(9em, 1fr); gap: 2px 10px; margin: 8px 0 0; font-size: .92rem; }
+dl.kv dt { color: var(--muted); min-width: 0; }
+dl.kv dd { margin: 0; min-width: 0; }
+/* A nested table stacks key above value, so depth never squeezes a value
+   into a column a few characters wide (U6: the NOC tree overflowed its card). */
+dl.kv dl.kv { grid-template-columns: minmax(0, 1fr); gap: 0; margin-top: 2px; }
+dl.kv dl.kv dd { padding-left: .8em; border-left: 1px dotted var(--line); margin-bottom: 4px; }
 ul.plain { margin: 6px 0 0; padding-left: 1.2em; }
 .block { border-top: 1px dashed var(--line); margin-top: 8px; padding-top: 6px; }
 .summary { white-space: pre-wrap; background: var(--unknown-bg); padding: 6px 8px; border-radius: 4px; margin: 4px 0; }

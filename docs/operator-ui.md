@@ -1,12 +1,18 @@
 # Read-only operator UI (`az-ui`)
 
-Status: **implemented (first stage, read-only), not verified on a systemd host
-or in a browser.** In-process and real-process tests cover the server, the
-browser boundary and the unit files (`tests/unit/test_ui_serve.py`,
-`tests/unit/test_ui_model_and_login.py`). What systemd enforces for the unit
-(`PrivateNetwork=`, `RestrictAddressFamilies=`, the socket's IP filter) and
-how a browser renders the page are checked in a later step (U6) and are
-**not** claimed here.
+Status: **implemented (first stage, read-only); checked in a browser and under
+systemd in containers only, not on a VM or hardware.** In-process and
+real-process tests cover the server, the browser boundary and the unit files
+(`tests/unit/test_ui_serve.py`, `tests/unit/test_ui_model_and_login.py`).
+Headless Chromium 156 in a container without a network (aarch64, and one
+state on x86_64 under Rosetta) logged in with a real code and rendered the
+five screens in the normal, degraded (absent, broken, stale, future-dated,
+symlinked, oversized snapshot), recovered, 360 px and XSS-fixture states;
+a container whose PID 1 is systemd ran the unit by socket activation as
+`azui` and showed unreadable sections as permission denied, and stopping the
+UI stopped nothing else. The record, its screenshots and what it does **not**
+show (no VM, no hardware, no hands-on Chrome session on a Mac) are in
+[ui-browser-2026-10-29.md](evidence/ui-browser-2026-10-29.md).
 
 The UI is a local web page that shows what `azazel-nexus status --json`
 (schema `azazel-nexus/status-view/1`) and `azazel-nexus setup --json` show,
