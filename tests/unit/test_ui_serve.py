@@ -1055,6 +1055,10 @@ def test_every_field_name_a_card_shows_has_a_japanese_label(tmp_path, monkeypatc
         parts = path.split(".")
         if parts[0] == "sections" and len(parts) > 1 and parts[1] in TREE_SECTIONS:
             names |= {part.removesuffix("[]") for part in parts[2:] if part != "{code}"}
+        # The M.I.O. card's liveness rows (#370) are named through the same table.
+        if parts[:2] == ["sections", "mio"] and len(parts) > 2 and parts[2] in (
+                "age_s", "age_reason", "liveness"):
+            names |= set(parts[2:])
     names -= {""}
     assert sorted(names - set(keys)) == []
     for key, label in keys.items():
