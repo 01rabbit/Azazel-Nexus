@@ -61,6 +61,14 @@ maps, reported and never assumed.
 `schema.evidence.EvidenceRef`. It is tested against the pin and has no
 production caller yet, so it attests that the shapes agree, not that
 evidence is exported through Fabric.
+
+`project_tested_tuple` and `check_tested_tuple` relate a Nexus
+`compatibility.TestedTuple` to Fabric's `TestedCompatibilityTuple`
+(ADR-0006). Fabric's record is a descriptive claim -- "recording that a tuple
+was tested is not admitting it" -- and both functions keep it one: neither
+builds a `TestedTuple` from a Fabric record, and a tuple that conforms is
+admitted, if at all, only by the commissioned `TestedTupleSet`, which refuses
+every lab-purpose tuple. Fabric's ``arm64`` reads as the lab profile's CPU.
 """
 
 from __future__ import annotations
@@ -80,6 +88,8 @@ __all__ = [
     "Projection",
     "CONFIRMATION_METHODS",
     "CommissioningRecordUnavailable",
+    "TupleConformance",
+    "check_tested_tuple",
     "confirm_role",
     "identify_interface",
     "inventory_digest",
@@ -90,6 +100,7 @@ __all__ = [
     "project_resource_profile",
     "project_reviewed_topology",
     "project_hardware_inventory",
+    "project_tested_tuple",
 ]
 
 
@@ -962,3 +973,124 @@ def project_edge_evidence(record) -> Projection:
     except (ImportError, ValueError, TypeError, AttributeError, KeyError, OverflowError):
         return Projection(available=False, reason='edge evidence projection unavailable')
     return Projection(available=True, reason='', fabric_version=fabric.__version__, view=view)
+
+
+def project_tested_tuple(tested, *, tuple_id: str, product_version: str,
+                         evidence_ref: str | None = None,
+                         deployment_profile: str | None = None) -> Projection:
+    """Describe a Nexus tested tuple as Fabric's `TestedCompatibilityTuple`.
+
+    The shared fields come from `compatibility.fabric_shared_fields`; the
+    claim's identity (`tuple_id`, `product_version`, `evidence_ref`,
+    `deployment_profile`) is the caller's, because Nexus's tuple has none.
+    Nexus-only fields (`compatibility.NEXUS_ONLY_FIELDS`) are not carried --
+    Fabric's record has no place for them -- so the projection describes the
+    tuple and cannot stand in for it. A lab-purpose tuple projects to
+    ``arm64``, which a reader maps back to the lab profile through
+    `platform_profile`. Unavailable, with a reason, when Fabric is absent,
+    not the pin, or refuses the record.
+    """
+
+    from .compatibility import (  # noqa: PLC0415
+        FABRIC_TUPLE_PRODUCT, CompatibilityRefused, fabric_shared_fields)
+
+    fabric, failure = _import_fabric()
+    if fabric is None:
+        return Projection(available=False, reason=failure)
+    if getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+        return Projection(available=False, reason="pinned Fabric is required")
+    try:
+        shared = fabric_shared_fields(tested)
+    except CompatibilityRefused as refused:
+        return Projection(available=False, reason=f"tested tuple not projectable: {refused}")
+    try:
+        from azazel_fabric.provisioning_contracts import (  # noqa: PLC0415
+            TestedCompatibilityTuple)
+        view = TestedCompatibilityTuple(
+            tuple_id=tuple_id, product=FABRIC_TUPLE_PRODUCT,
+            product_version=product_version, deployment_profile=deployment_profile,
+            evidence_ref=evidence_ref, **shared)
+    except (ImportError, ValueError, TypeError):
+        return Projection(available=False, reason="Fabric refused the tested tuple projection")
+    return Projection(available=True, reason="", fabric_version=fabric.__version__, view=view)
+
+
+@dataclass(frozen=True)
+class TupleConformance:
+    """Whether a Fabric tuple claim describes the same tested combination.
+
+    Descriptive only. `conforms` says the shared fields agree after the
+    vocabulary step; it is not an admission and nothing reads it as one.
+    `purpose` is the purpose the reviewed profile table gives the claim's
+    CPU (``arm64`` is ``lab-software-verification``), when the claim could
+    be read at all.
+    """
+
+    conforms: bool
+    #: Why not. Empty exactly when `conforms`.
+    reason: str
+    purpose: str | None = None
+    fabric_version: str | None = None
+
+
+def check_tested_tuple(tested, claim) -> TupleConformance:
+    """Compare a Nexus tested tuple with a Fabric `TestedCompatibilityTuple`.
+
+    `claim` is a Fabric model or its JSON mapping; either is validated by
+    Fabric's own model (closed, so an unknown field is Fabric's refusal, not
+    ours). Each shared field is compared exactly after the one vocabulary step
+    for it (`compatibility.fabric_shared_fields`); a feature list that
+    repeats an entry is refused rather than folded into a set, and the claim
+    must be about `azazel-nexus`. The first field that differs is the reason.
+    """
+
+    from . import platform_profile as pp  # noqa: PLC0415
+    from .compatibility import (  # noqa: PLC0415
+        FABRIC_SHARED_FIELDS, FABRIC_TUPLE_PRODUCT, CompatibilityRefused,
+        fabric_shared_fields)
+
+    fabric, failure = _import_fabric()
+    if fabric is None:
+        return TupleConformance(False, failure)
+    if getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+        return TupleConformance(False, "pinned Fabric is required")
+    version = fabric.__version__
+    try:
+        from azazel_fabric.provisioning_contracts import (  # noqa: PLC0415
+            TestedCompatibilityTuple)
+        if type(claim) is not TestedCompatibilityTuple:
+            if not isinstance(claim, dict):
+                return TupleConformance(False, "not a Fabric tested tuple", None, version)
+            claim = TestedCompatibilityTuple.model_validate(claim)
+    except (ImportError, ValueError, TypeError):
+        return TupleConformance(False, "Fabric refused the tested tuple claim", None, version)
+    try:
+        purpose = pp.purpose_for_architecture(
+            pp.from_boundary("fabric", claim.architecture))
+    except pp.PlatformRefused as refused:
+        return TupleConformance(False, f"claim architecture refused: {refused.reason}",
+                                None, version)
+    if claim.product != FABRIC_TUPLE_PRODUCT:
+        return TupleConformance(
+            False, f"the claim is about {claim.product!r}, not {FABRIC_TUPLE_PRODUCT!r}",
+            purpose, version)
+    fields = dict(claim)  # a pydantic model iterates as (field, value)
+    for name in ("cpu_features", "schema_features"):
+        values = fields[name]
+        if len(set(values)) != len(values):
+            return TupleConformance(
+                False, f"the claim's {name} repeats an entry; a tested tuple is exact",
+                purpose, version)
+    try:
+        expected = fabric_shared_fields(tested)
+    except CompatibilityRefused as refused:
+        return TupleConformance(False, f"tested tuple not comparable: {refused}",
+                                purpose, version)
+    for nexus_name, fabric_name in FABRIC_SHARED_FIELDS:
+        theirs = fields[fabric_name]
+        if fabric_name in ("cpu_features", "schema_features"):
+            theirs = tuple(sorted(theirs))
+        if theirs != expected[fabric_name]:
+            return TupleConformance(
+                False, f"{nexus_name} differs from the claim's {fabric_name}", purpose, version)
+    return TupleConformance(True, "", purpose, version)

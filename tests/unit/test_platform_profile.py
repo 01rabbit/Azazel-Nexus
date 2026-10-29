@@ -111,6 +111,40 @@ def test_the_deployment_baseline_is_still_adr_0002():
         base.os_id, base.os_version_id)
 
 
+def test_the_baseline_and_each_cpus_purpose_come_from_the_reviewed_table():
+    """ADR-0006: `compatibility.ADMITTED_ARCHITECTURE` is read from here."""
+
+    assert pp.deployment_baseline_profile() is pp.DEPLOYMENT_BASELINE
+    assert pp.profile_for_architecture("amd64") is pp.DEPLOYMENT_BASELINE
+    assert pp.profile_for_architecture("arm64") is pp.ARM64_LAB
+    assert pp.purpose_for_architecture("amd64") == pp.PURPOSE_DEPLOYMENT_BASELINE
+    assert pp.purpose_for_architecture("arm64") == pp.PURPOSE_LAB_SOFTWARE_VERIFICATION
+
+
+@pytest.mark.parametrize("raw", ["x86_64", "aarch64", *NEAR_MISSES, None, 1])
+def test_a_purpose_is_given_only_to_a_canonical_name(raw):
+    with pytest.raises(pp.PlatformRefused) as caught:
+        pp.purpose_for_architecture(raw)
+    assert caught.value.reason == pp.UNKNOWN_ARCHITECTURE
+
+
+def test_a_table_with_two_baselines_or_two_profiles_for_one_cpu_is_refused(monkeypatch):
+    second = pp.PlatformProfile(
+        profile_id="debian-13-amd64-cp313-b", purpose=pp.PURPOSE_DEPLOYMENT_BASELINE,
+        os_id="debian", os_version_id="13", architecture="amd64", python_tag="cp313",
+        soabi="cpython-313-x86_64-linux-gnu", features=pp.DEPLOYMENT_BASELINE.features)
+    monkeypatch.setattr(pp, "REVIEWED_PROFILES", {**pp.REVIEWED_PROFILES,
+                                                  second.profile_id: second})
+    for call in (pp.deployment_baseline_profile, lambda: pp.purpose_for_architecture("amd64")):
+        with pytest.raises(pp.PlatformRefused) as caught:
+            call()
+        assert caught.value.reason == pp.UNREVIEWED_COMBINATION
+    assert pp.purpose_for_architecture("arm64") == pp.PURPOSE_LAB_SOFTWARE_VERIFICATION
+    monkeypatch.setattr(pp, "REVIEWED_PROFILES", {pp.ARM64_LAB.profile_id: pp.ARM64_LAB})
+    with pytest.raises(pp.PlatformRefused):
+        pp.deployment_baseline_profile()
+
+
 @pytest.mark.parametrize("bad", [
     dict(purpose="production"),
     dict(architecture="x86_64"),

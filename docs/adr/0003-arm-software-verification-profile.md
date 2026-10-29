@@ -32,6 +32,9 @@ as written. `hil_preflight.BASELINE_ARCHITECTURE` and
 `compatibility.ADMITTED_ARCHITECTURE` keep the value `x86_64`; HIL preflight
 `A-2`, product admission and model admission continue to refuse any other
 CPU. Nothing in this ADR makes Arm a supported deployment target.
+([ADR-0006](0006-tested-tuple-fabric-and-arm-lab.md) derives
+`ADMITTED_ARCHITECTURE` from the deployment-baseline profile; its value is
+unchanged.)
 
 **D2. One module names the CPUs.**
 [`platform_profile.py`](../../src/azazel_nexus/platform_profile.py) is a pure
