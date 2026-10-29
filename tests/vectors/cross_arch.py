@@ -553,7 +553,11 @@ def knowledge_lite_refusals(ctx: Context):
         ("not_utf8", b"\xff\xfe\n"),
         ("not_jsonl", b"{\n"),
         ("not_object", b"[1]\n"),
-        ("line_too_long", b'{"x":"' + b"a" * (64 * 1024) + b'"}\n'),
+        # Hex digests, not one repeated byte: a line of 64 KiB of "a" gzips
+        # past the producer's 100:1 ratio and would be refused as a bomb
+        # before the row cap it exists to reach.
+        ("line_too_long", b'{"x":"' + b"".join(
+            hashlib.sha256(b"%d" % i).hexdigest().encode() for i in range(1025)) + b'"}\n'),
         ("expiry_unreadable", b'{"agg_next_expiry":"soon"}\n'),
         ("expiry_naive", b'{"agg_next_expiry":"2027-01-01T00:00:00"}\n'),
         ("expiry_offset", b'{"agg_next_expiry":"2026-09-21T09:00:01+09:00"}\n'),

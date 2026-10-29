@@ -37,7 +37,11 @@ bundle と、それを変えた bundle を両方の検証器で判定する。
    bundle で取り出した member が食い違えば、終了コードは 1。
 
 実行例（Knowledge の clone は読取専用でよい。Knowledge の中核依存
-PyYAML・idna・PyNaCl が要る）：
+PyYAML・idna・PyNaCl が要る）。子プロセスはすべて `python -I -B` で動かすので、
+Knowledge の clone には `__pycache__` も書かない。作業ディレクトリ（ラボ鍵の seed を
+一時的に置く、権限 0700）は `--work-dir` の下に作る。指定しなければ Python の
+`tempfile` の既定（`$TMPDIR`、無ければ `/tmp`）になる。共有の `/tmp` を避けたいときは
+`--work-dir` か `TMPDIR` で、自分だけが使う場所を指定する：
 
 ```sh
 docker run --rm -v "$PWD":/src:ro -v /path/to/Azazel-Knowledge:/k:ro python:3.12 bash -c '
@@ -70,7 +74,7 @@ pin する経路ができるからである（守る設計 6：ラボの鍵を�
 x86_64（colima-rosetta、`--platform linux/amd64`）の両方で実行し、表はバイト単位で
 同じだった。実機・VM の結果ではない。
 
-42 件のうち、**一致 27 件・不一致 15 件**。全件が記録値どおり。両方が受理した 5 件
+44 件のうち、**一致 28 件・不一致 16 件**。全件が記録値どおり。両方が受理した 5 件
 （valid、expired、rollback_advances、threshold2_both_hold_role、
 member_eight_components）は、取り出した member の digest も一致した。
 
@@ -88,6 +92,7 @@ member_eight_components）は、取り出した member の digest も一致し�
 |---|---|---|---|
 | `threshold2_one_holds_role`（threshold 2、署名 2 本のうち必要な役割を持つのは 1 本） | 受理 | `BUNDLE_SIGNER_ROLE_NOT_PERMITTED` | Knowledge は「役割を持つ署名者の数 ≥ threshold」を求める（`verify.py` `_check_signer_role`）。ADR-0015 D5b は、別の目的の鍵の署名は threshold を満たしても拒否するとしている。Nexus は役割を持つ署名者が 1 人いれば通しており、別の目的の鍵で threshold を埋められた。Nexus を Knowledge と同じ数え方に直した |
 | `member_nine_components`（`tables/a/b/c/d/e/f/g/x.jsonl`） | 受理 | `BUNDLE_MEMBER_PATH_TOO_DEEP` | 両者とも上限は 8。Knowledge は成分の数を数え、Nexus は区切りの数を数えていたため、Nexus は 1 階層深くまで通していた。成分の数に直した（8 成分は両方とも受理） |
+| `ratio_over_100`（4 MiB のゼロ） | 受理 | `BUNDLE_DECOMPRESSION_BOMB` | **署名の検証より前**に、全 member を 1 つ 256 MiB・合計 1 GiB まで読み込んでいた。未署名の約 1 MB の bundle（256 MiB のゼロの member を 4 つ）で、最大 RSS が 1.3 GiB になった（独立レビューで再現）。gzip の展開を Nexus 自身が行い、「中身が圧縮後の 100 倍」（Knowledge の `DEFAULT_MAX_RATIO`）に manifest と署名の上限と tar の枠を足した量を超えた時点で、展開しながら打ち切るようにした。宣言された中身の合計にも、Knowledge と同じ 100:1 の規則を掛ける。同じ bundle での最大 RSS は約 156 MiB。合計の上限 `MAX_TOTAL_BYTES` も、最大の Lite profile（`knowledge-lite-32g`、中身 512 MiB）に manifest と署名の分を足した値に下げた（以前は 1 GiB） |
 
 ### 4.3 残る差（直していない）
 
@@ -101,10 +106,11 @@ member_eight_components）は、取り出した member の digest も一致し�
 | `member_name_214_bytes` | 受理 | `BUNDLE_MEMBER_NAME_TOO_LONG` | Nexus | 上限の違い（Nexus 200 文字、Knowledge 1024 バイト）。builder が出す名前は 30 バイト前後で、どちらにも届かない。実害なし |
 | `member_component_296_bytes`（1 成分が 255 バイト超） | `BUNDLE_ARCHIVE_UNREADABLE` | `BUNDLE_MEMBER_NAME_TOO_LONG` | 両方拒否 | コードだけが違う。Knowledge の 1024 バイトの上限は 1 成分の長さを抑えないので、staging への書込みでファイルシステムの NAME_MAX に当たり、その OSError が `BUNDLE_ARCHIVE_UNREADABLE` として出る。Knowledge の docstring が目指す「自分の語彙で拒否する」に反する（K10） |
 | `members_over_64` | 受理 | `BUNDLE_TOO_MANY_MEMBERS` | Nexus | 上限の違い（Nexus 64、Knowledge 256）。builder が出すのは最大 14。Knowledge のスキーマが 60 表を超えるまでは実害なし |
-| `ratio_over_100`（4 MiB のゼロ） | `BUNDLE_DECOMPRESSION_BOMB` | 受理 | Knowledge | Knowledge は展開率 100:1 も上限にする。Nexus は絶対量（member 256 MiB、合計 1 GiB）だけ。Nexus はメモリ上で読むので、上限は絶対量の方が効く。採否はオーナー判断 |
 | `manifest_not_first` | `BUNDLE_MANIFEST_MISSING` | 受理 | Knowledge | 形式の定義は Knowledge にあり、manifest.json と manifest.sig を先頭 2 つに置く。Nexus は全 member を読んでから判定するので順序に依存しないが、形式に合わない bundle を通している。Nexus 側で拒否するかはオーナー判断 |
 | `manifest_pretty_signed_canonical`（manifest は整形、署名は正準形に対して） | 受理 | `BUNDLE_SIGNATURE_THRESHOLD_NOT_MET` | Nexus | 署名の対象の定義が違う。Knowledge は `canonical(json.loads(raw))` を検証し、Nexus は raw の bytes を検証する |
 | `manifest_pretty_signed_raw`（manifest は整形、署名も整形した bytes に対して） | `BUNDLE_SIGNATURE_THRESHOLD_NOT_MET` | **受理** | Knowledge | 上と同じ差の逆向き。Knowledge が決して出さない bundle を Nexus が受理する。**オーナー判断（下記）** |
+| `manifest_bom_signed_raw`（manifest の先頭に UTF-8 の BOM、署名は BOM 付きの bytes に対して） | `BUNDLE_SIGNATURE_THRESHOLD_NOT_MET` | `BUNDLE_MANIFEST_INVALID` | 両方拒否 | コードだけが違う。修正前の Nexus は受理していた（`json.loads(bytes)` が BOM を読み飛ばすため）。この PR で、manifest を BOM なしの厳密な UTF-8 として読むようにした（UTF-16・UTF-32 も拒否） |
+| `manifest_bom_signed_canonical`（BOM 付き、署名は正準形に対して） | 受理 | `BUNDLE_MANIFEST_INVALID` | Nexus | Knowledge は読み直した正準形で署名を確かめるので通す。Knowledge の builder は BOM を書かない |
 | `manifest_shadows_trust`（manifest に `trust`） | `BUNDLE_SHADOWS_TRUST_ANCHOR` | 受理 | Knowledge | 禁止する manifest の欄の一覧が違う。Knowledge は `anchors`・`trust` と rollback 状態の欄（`last_import_at` ほか）も禁止する |
 | `manifest_shadows_key_roles`（manifest に `key_roles`） | 受理 | `BUNDLE_SHADOWS_TRUST_ANCHOR` | Nexus | 上の逆。Nexus は `key_roles`・`required_signer_role`・`minimum_security_epoch`・`accepted_export_policy_digests` も禁止する。両方の和集合にするのが自然（K11 と Nexus の両方） |
 | `manifest_local_tier_table`（`tables/reaction.jsonl`） | `BUNDLE_TOUCHES_LOCAL_TIER` | 受理 | Knowledge | Knowledge のローカル層の表（ノード自身の記録）を名乗る bundle。Nexus にはローカル層が無く、読む表だけを使うので害は無いが、誤って作られた bundle を見逃す |
@@ -118,8 +124,9 @@ member_eight_components）は、取り出した member の digest も一致し�
    `knowledge_lite.refusals` など）は `indent=2` の manifest に署名しており、Knowledge の
    検証器ではすべて拒否される形である。直すと試験とベクトルの digest を大きく作り直す
    ことになるため、この PR では直していない。
-2. **形式の順序**（`manifest_not_first`）と**展開率**（`ratio_over_100`）、**禁止欄の和集合**、
-   **ローカル層の表名**を Nexus でも拒否するか。
+2. **形式の順序**（`manifest_not_first`）、**禁止欄の和集合**、**ローカル層の表名**を
+   Nexus でも拒否するか。BOM は §4.3 のとおりこの PR で拒否した。それ以外の正準形の
+   要求は 1 に含める。
 3. Knowledge 側への修正提案：K8（threshold 0 の anchor を拒否）、K9（`bundle_version` を
    整数に限る）、K10（1 成分の長さの上限）、K11（禁止欄に Nexus の 4 欄を足す）。
    調査 c の K1〜K7 に続く番号。Knowledge リポジトリはこの作業では変更していない。

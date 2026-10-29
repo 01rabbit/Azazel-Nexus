@@ -25,8 +25,12 @@ and the fixture's anchor carries none of the gates a production anchor uses
 
     python tools/knowledge_lite_differential.py --knowledge /path/to/Azazel-Knowledge
 
-The Knowledge checkout is only read. Knowledge's core dependencies (PyYAML,
-idna, PyNaCl) must be importable by this interpreter.
+The Knowledge checkout is only read: every child interpreter runs with
+`-I -B`, so nothing (not even `__pycache__`) is written into it. Knowledge's
+core dependencies (PyYAML, idna, PyNaCl) must be importable by this
+interpreter. The private working directory, which holds the lab seeds while
+Knowledge signs, is created under `--work-dir`, else where `tempfile` puts it
+(`$TMPDIR`, else `/tmp`); it is mode 0700 and removed at the end.
 
 Nexus CI cannot fetch Azazel-Knowledge (a private repository), so it cannot
 run step 2 or the Knowledge column of step 3. `tests/unit/test_knowledge_lite_
@@ -247,6 +251,7 @@ def build_cases(bases: Mapping[str, bytes], keys: LabKeys) -> list[Case]:
     no_policy["profile"]["selection_inputs"].pop("export_policy_digest")
     first_table = base.content[0]
     pretty = json.dumps(m, indent=2, sort_keys=True).encode("utf-8")
+    bom = b"\xef\xbb\xbf" + canonical(m)
     deep = "tables/a/b/c/d/e/f/g/x.jsonl"  # nine path components
     deep_ok = "tables/a/b/c/d/e/f/x.jsonl"  # eight
     long_name = "tables/" + "n" * 100 + "/" + "m" * 100 + ".jsonl"  # 214 bytes
@@ -304,6 +309,9 @@ def build_cases(bases: Mapping[str, bytes], keys: LabKeys) -> list[Case]:
         Case("manifest_pretty_signed_canonical",
              base.signed(manifest_bytes=pretty, signed_bytes=canonical(m)), prod),
         Case("manifest_pretty_signed_raw", base.signed(manifest_bytes=pretty), prod),
+        Case("manifest_bom_signed_raw", base.signed(manifest_bytes=bom), prod),
+        Case("manifest_bom_signed_canonical",
+             base.signed(manifest_bytes=bom, signed_bytes=canonical(m)), prod),
         Case("manifest_shadows_trust", base.signed(edit(trust={})), prod),
         Case("manifest_shadows_key_roles", base.signed(edit(key_roles={})), prod),
         Case("manifest_local_tier_table", declared(
@@ -382,10 +390,12 @@ EXPECTED: dict[str, tuple[str, str]] = {
     "member_name_214_bytes": (ACCEPTED, "BUNDLE_MEMBER_NAME_TOO_LONG"),
     "member_component_296_bytes": ("BUNDLE_ARCHIVE_UNREADABLE", "BUNDLE_MEMBER_NAME_TOO_LONG"),
     "members_over_64": (ACCEPTED, "BUNDLE_TOO_MANY_MEMBERS"),
-    "ratio_over_100": ("BUNDLE_DECOMPRESSION_BOMB", ACCEPTED),
+    "ratio_over_100": ("BUNDLE_DECOMPRESSION_BOMB", "BUNDLE_DECOMPRESSION_BOMB"),
     "manifest_not_first": ("BUNDLE_MANIFEST_MISSING", ACCEPTED),
     "manifest_pretty_signed_canonical": (ACCEPTED, _T),
     "manifest_pretty_signed_raw": (_T, ACCEPTED),
+    "manifest_bom_signed_raw": (_T, "BUNDLE_MANIFEST_INVALID"),
+    "manifest_bom_signed_canonical": (ACCEPTED, "BUNDLE_MANIFEST_INVALID"),
     "manifest_shadows_trust": ("BUNDLE_SHADOWS_TRUST_ANCHOR", ACCEPTED),
     "manifest_shadows_key_roles": (ACCEPTED, "BUNDLE_SHADOWS_TRUST_ANCHOR"),
     "manifest_local_tier_table": ("BUNDLE_TOUCHES_LOCAL_TIER", ACCEPTED),
@@ -410,8 +420,6 @@ DIVERGENCES: dict[str, tuple[str, str]] = {
                                    "OSError surfaces as BUNDLE_ARCHIVE_UNREADABLE: a refusal "
                                    "under the wrong code"),
     "members_over_64": ("nexus", "Nexus caps members at 64, Knowledge at 256; builders emit at most 14"),
-    "ratio_over_100": ("knowledge", "Knowledge also caps the decompression ratio at 100:1; Nexus "
-                       "caps only absolute sizes"),
     "manifest_not_first": ("knowledge", "Knowledge requires manifest.json, manifest.sig as the "
                            "first two members; Nexus reads all members first and ignores order"),
     "manifest_pretty_signed_canonical": ("nexus", "Knowledge signs canonical bytes and verifies "
@@ -425,6 +433,12 @@ DIVERGENCES: dict[str, tuple[str, str]] = {
     "manifest_local_tier_table": ("knowledge", "Knowledge refuses a bundle naming a local-tier "
                                   "table; Nexus has no local tier and serves only tables it reads"),
     "signature_33_lines": ("nexus", "Nexus caps manifest.sig at 32 lines"),
+    "manifest_bom_signed_raw": ("both refuse", "Nexus reads the manifest as strict UTF-8 with no "
+                                "byte-order mark; Knowledge's json.loads(bytes) accepts the BOM "
+                                "and then fails the signature over its canonical re-encoding"),
+    "manifest_bom_signed_canonical": ("nexus", "Knowledge strips the BOM by re-encoding and the "
+                                      "signature over canonical bytes verifies; Nexus refuses a "
+                                      "manifest Knowledge's builder never writes"),
 }
 
 
@@ -524,7 +538,7 @@ def destroy(paths) -> None:
 def knowledge_bases(knowledge: Path, keys: LabKeys, work: Path) -> dict[str, bytes]:
     """Let Knowledge's own builder produce every base bundle."""
     python = sys.executable
-    meta = json.loads(_run([python, "-I", "-c", KNOWLEDGE_SOURCE, str(knowledge), str(work)]).stdout)
+    meta = json.loads(_run([python, "-I", "-B", "-c", KNOWLEDGE_SOURCE, str(knowledge), str(work)]).stdout)
     seed_files = {label: work / f"lab-{label}.seed" for label in KEY_LABELS}
     alias = work / "alias.key"
     try:
@@ -544,7 +558,7 @@ def knowledge_bases(knowledge: Path, keys: LabKeys, work: Path) -> dict[str, byt
         bases = {}
         for name, (db, signers, epoch) in plans.items():
             out = work / f"{name}.tar.gz"
-            args = [python, "-I", str(knowledge / "tools" / "bundle_build.py"), "build-lite",
+            args = [python, "-I", "-B", str(knowledge / "tools" / "bundle_build.py"), "build-lite",
                     "--source-db", str(work / db), "--out", str(out),
                     "--version", str(BUILD_VERSION), "--profile", BUILD_PROFILE,
                     "--export-policy", meta["policy"], "--alias-key-file", str(alias),
@@ -573,7 +587,7 @@ def knowledge_verdicts(knowledge: Path, cases, work: Path) -> dict[str, Verdict]
         (d / "anchors.toml").write_text(case.anchors, encoding="utf-8")
         (d / "state.toml").write_text(f"last_imported_version = {case.watermark}\n", encoding="utf-8")
     (work / "cases.json").write_text(json.dumps([c.name for c in cases]), encoding="utf-8")
-    raw = json.loads(_run([sys.executable, "-I", "-c", KNOWLEDGE_VERIFY, str(knowledge),
+    raw = json.loads(_run([sys.executable, "-I", "-B", "-c", KNOWLEDGE_VERIFY, str(knowledge),
                            str(work)]).stdout)
     return {name: Verdict(v["verdict"], v.get("files", {})) for name, v in raw.items()}
 
@@ -638,17 +652,17 @@ def compare(cases, nexus: Mapping[str, Verdict], knowledge: Mapping[str, Verdict
     return rows
 
 
-def nexus_only(signer: Signer) -> list[Row]:
+def nexus_only(signer: Signer, work_dir: Path | None = None) -> list[Row]:
     keys = LabKeys.generate(signer)
     cases = build_cases(contract_bases(keys), keys)
-    with tempfile.TemporaryDirectory(prefix="nexus-differential-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="nexus-differential-", dir=work_dir) as tmp:
         nexus = {c.name: nexus_verdict(c, Path(tmp)) for c in cases}
     return compare(cases, nexus, None)
 
 
-def differential(knowledge: Path, signer: Signer) -> list[Row]:
+def differential(knowledge: Path, signer: Signer, work_dir: Path | None = None) -> list[Row]:
     keys = LabKeys.generate(signer)
-    with tempfile.TemporaryDirectory(prefix="knowledge-differential-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="knowledge-differential-", dir=work_dir) as tmp:
         work = Path(tmp)
         os.chmod(work, 0o700)
         bases = knowledge_bases(knowledge, keys, work)
@@ -693,15 +707,19 @@ def main(argv=None) -> int:
     parser.add_argument("--nexus-only", action="store_true",
                         help="judge the contract-fixture cases with Nexus alone (the CI mode)")
     parser.add_argument("--json", type=Path, help="also write the rows as JSON here")
+    parser.add_argument("--work-dir", type=Path,
+                        help="where the private working directory (lab seeds included) is "
+                        "created; default: Python's tempfile choice, i.e. $TMPDIR or /tmp")
     args = parser.parse_args(argv)
     if not args.nexus_only and (
             args.knowledge is None or not (args.knowledge / "tools" / "bundle_build.py").is_file()):
         parser.error("--knowledge must name an Azazel-Knowledge checkout")
     signer = nacl_signer()
     if args.nexus_only:
-        rows, rev = nexus_only(signer), None
+        rows, rev = nexus_only(signer, args.work_dir), None
     else:
-        rows, rev = differential(args.knowledge.resolve(), signer), _rev(args.knowledge)
+        rows, rev = (differential(args.knowledge.resolve(), signer, args.work_dir),
+                     _rev(args.knowledge))
     print(render(rows, knowledge_rev=rev))
     if args.json:
         args.json.write_text(json.dumps([r.__dict__ | {"agree": r.agree, "as_recorded": r.as_recorded}
