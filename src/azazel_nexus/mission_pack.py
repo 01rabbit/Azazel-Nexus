@@ -383,7 +383,7 @@ class MissionPack:
         _require(installed_digest == asset.digest, "installed asset hash or size mismatch")
 
     def stage(self, media: Path, *, now: str, actor: str, dry_run: bool = False) -> dict:
-        refuse_lab_host()
+        # self.verify refuses a marked host before the media is read.
         pack = self.verify(media, now=now)  # Before ANY local staging write.
         _require(type(actor) is str and 0 < len(actor.strip()) <= 128, "bounded actor required")
         if dry_run:
