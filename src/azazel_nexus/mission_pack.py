@@ -13,6 +13,7 @@ import os
 import re
 import stat
 import tempfile
+import time
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -43,6 +44,39 @@ NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 
 class PackRefused(Exception):
     """No selection was changed; first-install failures leave CORE available."""
+
+
+def refuse_lab_host() -> None:
+    """``LAB_HOST_MARKER`` before any media, state or generation is read (H7)."""
+    _require(not lab_host.is_lab_host(), "LAB_HOST_MARKER")
+
+
+@contextmanager
+def writer_lock(root: Path, *, wait_seconds: float = 0.0):
+    """The single host writer lock on the Mission Pack state at ``root``.
+
+    Every stage/activate/rollback publication holds it, and so does whoever
+    writes the lab marker (`azazel_nexus_lab.cli.mark_host`,
+    `tools/vm_integration.mark_lab_host`): the marker can never appear between
+    a Pack's last marker check and its publication. Nothing is taken while it
+    is held, so there is no lock order to invert. ``wait_seconds`` bounds the
+    wait; then it refuses (Pack operations do not wait).
+    """
+    _make_store_root(root)
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise PackRefused("Mission Pack writer already active") from None
+                time.sleep(0.05)
+        yield
+    finally:
+        os.close(fd)
 
 
 def _require(condition: bool, reason: str) -> None:
@@ -246,6 +280,7 @@ class MissionPack:
                 "authority": "selection only; ActivationController and Edge unchanged"}
 
     def verify(self, media: Path, *, now: str) -> VerifiedPack:
+        refuse_lab_host()  # Before the media is read.
         return self._verify(_media(media), now=now, predecessor=True)
 
     def _verify(self, raw: bytes, *, now: str, predecessor: bool) -> VerifiedPack:
@@ -253,7 +288,7 @@ class MissionPack:
         # no Pack is verified, staged, activated or rolled back there, so a
         # Pack's knowledge_lite slice can never name a fixture-signed bundle
         # (owner-decisions H7). Every stage/transition goes through here.
-        _require(not lab_host.is_lab_host(), "LAB_HOST_MARKER")
+        refuse_lab_host()
         doc = _manifest(raw)
         ctx = self.context
         pack_digest = digest(raw)
@@ -348,6 +383,7 @@ class MissionPack:
         _require(installed_digest == asset.digest, "installed asset hash or size mismatch")
 
     def stage(self, media: Path, *, now: str, actor: str, dry_run: bool = False) -> dict:
+        refuse_lab_host()
         pack = self.verify(media, now=now)  # Before ANY local staging write.
         _require(type(actor) is str and 0 < len(actor.strip()) <= 128, "bounded actor required")
         if dry_run:
@@ -360,6 +396,7 @@ class MissionPack:
                       "predecessor_generation": current.number if current else None,
                       "actor": actor, "admitted_at": now}
             self.checkpoint("before_generation")
+            refuse_lab_host()  # Held lock: the marker writer waits for us.
             generation = self.store.create(
                 {"mission-pack.signed": pack.raw, "admission.json": canonical(record)},
                 created_at=now, commissioning_digest=self.context.commissioning_digest)
@@ -370,10 +407,12 @@ class MissionPack:
 
     def activate(self, number: int, *, now: str, actor: str, reason: str,
                  dry_run: bool = False) -> dict:
+        refuse_lab_host()
         return self._transition(number, now=now, actor=actor, reason=reason,
                                 dry_run=dry_run, rollback=False)
 
     def rollback(self, *, now: str, actor: str, reason: str, dry_run: bool = False) -> dict:
+        refuse_lab_host()  # Before the current generation is read.
         current = self.current()
         _require(current is not None, "no predecessor; CORE (no previous provider)")
         number = self._record(current)["predecessor_generation"]
@@ -394,6 +433,8 @@ class MissionPack:
             pack, target = self._candidate(number, now=now, rollback=rollback)
             current = self.current()
             action = "rollback" if rollback else "activation"
+            self.checkpoint("transition_prechecked")
+            refuse_lab_host()  # Held lock: nothing is published on a marked host.
             if rollback:
                 # Native GenerationStore rollback makes history monotonic.
                 record = dict(self._record(target))
@@ -405,6 +446,7 @@ class MissionPack:
                     expected_latest_generation=self.store.current().number)
                 self.checkpoint("rollback_generation_published")
             self.checkpoint("before_intent")
+            refuse_lab_host()
             self._audit(action + ".commit_intent", pack, current, target, actor, reason, now)
             self.checkpoint("intent_durable")
             _pointer(self.context.root / "current", target.number, self.checkpoint)
@@ -511,17 +553,9 @@ class MissionPack:
     @contextmanager
     def _lock(self, *, now):
         # Trusted encrypted state, single writer. Removable media never names it.
-        _make_store_root(self.context.root)
-        fd = os.open(self.context.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        try:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                raise PackRefused("Mission Pack writer already active") from None
+        with writer_lock(self.context.root):
             self._recover(now=now)
             yield
-        finally:
-            os.close(fd)
 
 
 def _version(value) -> tuple[int, ...]:

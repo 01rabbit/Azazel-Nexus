@@ -643,7 +643,15 @@ def lab_sign(name: str, message: bytes) -> bytes:
 
 
 def mark_lab_host() -> None:
-    """Write the persistent lab marker as the lab tooling does: root, 0644, no link."""
+    """Write the persistent lab marker as the lab tooling does: root, 0644, no
+    link, under the Mission Pack host writer lock (owner-decisions H7)."""
+    from azazel_nexus import mission_pack, mission_pack_cli
+
+    with mission_pack.writer_lock(mission_pack_cli.STATE, wait_seconds=60):
+        _write_lab_marker()
+
+
+def _write_lab_marker() -> None:
     directory = Path("/etc/azazel-lab")
     directory.mkdir(mode=0o755, exist_ok=True)
     info = directory.lstat()

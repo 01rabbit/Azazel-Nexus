@@ -831,8 +831,13 @@ def test_bench_restore_refuses_planted_symlink(tmp_path, monkeypatch, file_owner
     assert victim.read_bytes() == b"untouched"
 
 
-def test_mark_host_os_error_is_a_lab_refusal_with_a_reason(monkeypatch):
+def test_mark_host_os_error_is_a_lab_refusal_with_a_reason(monkeypatch, tmp_path):
     from azazel_nexus_lab.refusal import LabRefused
+
+    from azazel_nexus import mission_pack_cli
+
+    # The Mission Pack writer lock is taken (H7); the write itself is denied.
+    monkeypatch.setattr(mission_pack_cli, "STATE", tmp_path / "mission-packs")
 
     def denied(*args):
         raise PermissionError(13, "Permission denied")
