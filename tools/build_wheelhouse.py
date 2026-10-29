@@ -2,16 +2,23 @@
 
 This is the **online, build-host** half of the offline path. It must run with
 the target's interpreter on the target's architecture -- Debian 13's CPython
-3.13 on x86_64 -- because ``azazel-nexus-runtime`` carries a native extension
-(``_bootstrap_deadline``) that is compiled against that ABI. It refuses any
-other host rather than producing a wheel the target cannot load.
+3.13 on x86_64 for the deployment-baseline target -- because
+``azazel-nexus-runtime`` carries a native extension (``_bootstrap_deadline``)
+that is compiled against that ABI. It refuses any other host rather than
+producing a wheel the target cannot load.
+
+``--target`` selects one of ``offline_bundle.TARGETS``; the default is the
+deployment baseline, ``debian-13-x86_64-cp313``. ``debian-13-aarch64-cp313``
+is the Arm **lab-software-verification** target (ADR-0005): it is built on
+Debian 13 aarch64 with its own lock, and its ``wheelhouse.json`` records the
+target's purpose. It never becomes a deployment-baseline wheelhouse.
 
 Steps, each with no resolver latitude:
 
 1. Install the build backend from ``packaging/offline/build-backend.lock``
    with ``--require-hashes`` into a private venv.
-2. Download the third-party wheels named by
-   ``packaging/offline/requirements-x86_64-cp313.lock`` with
+2. Download the third-party wheels named by the target's lock
+   (``packaging/offline/requirements-<arch>-cp313.lock``) with
    ``--require-hashes --only-binary=:all: --no-deps``. pip refuses any file
    whose sha256 is not in the lock. The lock's one source-built entry,
    ``azazel-fabric`` (``SOURCE_BUILDS``), is not downloaded from an index.
@@ -59,8 +66,10 @@ except ImportError:  # pragma: no cover - script execution
 
 
 WHEELHOUSE_SCHEMA = "azazel-nexus-wheelhouse@1"
-TARGET = "debian-13-x86_64-cp313"
-LOCK = Path("packaging/offline/requirements-x86_64-cp313.lock")
+#: The default target: the deployment baseline (ADR-0002).
+TARGET = offline_bundle.BASELINE_TARGET
+#: The default target's lock. Every target's own is ``offline_bundle.target_lock``.
+LOCK = offline_bundle.target_lock(TARGET)
 BACKEND_LOCK = Path("packaging/offline/build-backend.lock")
 UV_LOCK = Path("uv.lock")
 BUILD_UMASK = 0o022
@@ -258,7 +267,8 @@ def fetch_source_build(name: str, scratch: Path) -> Path:
     return tree
 
 
-def source_build_origin(filename: str, digest: str, lock: dict[str, list[str]]) -> str:
+def source_build_origin(filename: str, digest: str, lock: dict[str, list[str]],
+                        lock_path: Path = LOCK) -> str:
     """The wheelhouse ``source`` of a source-built wheel, if it reproduced the locked sha256."""
 
     parts = offline_bundle.parse_wheel_name(filename)
@@ -269,33 +279,35 @@ def source_build_origin(filename: str, digest: str, lock: dict[str, list[str]]) 
     if digest not in lock.get(f"{name}=={parts['version']}", []):
         raise ValueError(
             f"{filename} built from {build['commit']} has sha256 {digest}, which "
-            f"{LOCK.as_posix()} does not pin; the build did not reproduce the locked wheel"
+            f"{lock_path.as_posix()} does not pin; the build did not reproduce the locked wheel"
         )
     return (f"built:{build['repository']}@{build['commit']} (tag {build['tag']}; "
-            f"hash-pinned in {LOCK.as_posix()})")
+            f"hash-pinned in {lock_path.as_posix()})")
 
 
-def build_wheelhouse(root: Path, output: Path, *, python: str = sys.executable) -> dict:
+def build_wheelhouse(root: Path, output: Path, *, python: str = sys.executable,
+                     target_name: str = TARGET) -> dict:
     root = root.resolve(strict=True)
-    target = offline_bundle.TARGETS[TARGET]
+    lock_path = offline_bundle.target_lock(target_name)
+    target = offline_bundle.TARGETS[target_name]
     if os.path.lexists(output):
         raise ValueError(f"{output} already exists")
     host = _run([python, "-I", "-c",
                  "import platform, sys; print(platform.machine(), *sys.version_info[:2])"]).split()
     if host != [target["architecture"], *map(str, target["python_version"])]:
         raise ValueError(
-            f"this host is {host}; the {TARGET} wheelhouse must be built on "
+            f"this host is {host}; the {target_name} wheelhouse must be built on "
             f"{target['architecture']} with CPython {target['python_version']}, because the "
             "runtime's native extension is compiled for the build host's ABI"
         )
-    lock = parse_lock(root / LOCK)
+    lock = parse_lock(root / lock_path)
     declared = bundled_requirements(root)
     if set(lock) != declared:
-        raise ValueError(f"{LOCK} pins {sorted(lock)}; the pyproject files and the bundled "
+        raise ValueError(f"{lock_path} pins {sorted(lock)}; the pyproject files and the bundled "
                          f"extras' uv.lock closure need {sorted(declared)}")
     source_built = {f"{name}=={build['version']}" for name, build in SOURCE_BUILDS.items()}
     if not source_built <= set(lock):
-        raise ValueError(f"{LOCK} does not pin the source-built {sorted(source_built - set(lock))}")
+        raise ValueError(f"{lock_path} does not pin the source-built {sorted(source_built - set(lock))}")
 
     with tempfile.TemporaryDirectory(prefix="azazel-wheelhouse-") as scratch_name:
         scratch = Path(scratch_name)
@@ -340,9 +352,9 @@ def build_wheelhouse(root: Path, output: Path, *, python: str = sys.executable) 
             if path.name in downloaded:
                 if digest not in lock.get(requirement, []):
                     raise ValueError(f"{path.name} is not a locked file")
-                origin = f"pypi:{requirement} (hash-pinned in {LOCK.as_posix()})"
+                origin = f"pypi:{requirement} (hash-pinned in {lock_path.as_posix()})"
             elif path.name in from_source:
-                origin = source_build_origin(path.name, digest, lock)
+                origin = source_build_origin(path.name, digest, lock, lock_path)
             else:
                 if versions.get(name) != parts["version"]:
                     raise ValueError(f"{path.name} is not a distribution this repository builds")
@@ -351,7 +363,7 @@ def build_wheelhouse(root: Path, output: Path, *, python: str = sys.executable) 
                     f"source-bundle-sha256:{source['bundle_sha256']}"
                 )
             if not offline_bundle.wheel_fits_target(path.name, target):
-                raise ValueError(f"{path.name} does not fit {TARGET}")
+                raise ValueError(f"{path.name} does not fit {target_name}")
             wheels.append({
                 "file": path.name,
                 "requirement": requirement,
@@ -364,7 +376,8 @@ def build_wheelhouse(root: Path, output: Path, *, python: str = sys.executable) 
             raise ValueError(f"the wheelhouse holds {sorted(names)}; it is incomplete or has extras")
         record = {
             "schema": WHEELHOUSE_SCHEMA,
-            "target": TARGET,
+            "target": target_name,
+            **offline_bundle.target_purpose(target_name),
             "repository_identity": source["repository_identity"],
             "source_bundle_sha256": source["bundle_sha256"],
             "builder": {
@@ -386,12 +399,17 @@ def build_wheelhouse(root: Path, output: Path, *, python: str = sys.executable) 
     return record
 
 
-def load_wheelhouse(directory: Path) -> dict:
-    """Read ``wheelhouse.json`` and re-derive every listed wheel's sha256 and size."""
+def load_wheelhouse(directory: Path, target_name: str = TARGET) -> dict:
+    """Read ``wheelhouse.json`` and re-derive every listed wheel's sha256 and size.
 
+    ``target_name`` is the caller's, never the record's: a lab wheelhouse is
+    refused where the deployment-baseline one is expected, and the other way round.
+    """
+
+    offline_bundle.target_lock(target_name)
     record = json.loads((directory / "wheelhouse.json").read_text(encoding="utf-8"))
-    if record.get("schema") != WHEELHOUSE_SCHEMA or record.get("target") != TARGET:
-        raise ValueError("wheelhouse.json is not a wheelhouse for the declared target")
+    if record.get("schema") != WHEELHOUSE_SCHEMA or record.get("target") != target_name:
+        raise ValueError(f"wheelhouse.json is not a wheelhouse for the {target_name} target")
     listed = {w["file"] for w in record["wheels"]}
     present = {p.name for p in directory.iterdir()} - {"wheelhouse.json"}
     if listed != present:
@@ -408,10 +426,13 @@ def load_wheelhouse(directory: Path) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--output", required=True, type=Path, help="wheelhouse directory; must not exist")
+    parser.add_argument("--target", choices=sorted(offline_bundle.TARGETS), default=TARGET,
+                        help=f"declared bundle target (default: the deployment baseline, {TARGET}); "
+                        "debian-13-aarch64-cp313 is a lab-software-verification target")
     args = parser.parse_args(argv)
     root = Path(__file__).resolve().parents[1]
     try:
-        record = build_wheelhouse(root, args.output)
+        record = build_wheelhouse(root, args.output, target_name=args.target)
     except (OSError, ValueError, RuntimeError) as error:
         parser.error(str(error))
     print(json.dumps(record, sort_keys=True))

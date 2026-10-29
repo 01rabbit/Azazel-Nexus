@@ -55,7 +55,9 @@ sha256sum /path/to/azazel-nexus-offline.tar.gz
 ```
 
 The wheelhouse build refuses any architecture or interpreter other than
-x86_64 CPython 3.13 (target `debian-13-x86_64-cp313`). Keep the bundle's
+x86_64 CPython 3.13 (target `debian-13-x86_64-cp313`, the default). The
+aarch64 lab target of [ADR-0005](../adr/0005-arm-lab-offline-target.md) is
+never used for this runbook. Keep the bundle's
 sha256 in the protected record only; it identifies the bundle you will carry,
 it does not authenticate it.
 

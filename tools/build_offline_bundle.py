@@ -312,13 +312,19 @@ def build_install_bundle(
     models: Sequence[Path] = (),
     knowledge: Sequence[Path] = (),
     assets_source: Optional[str] = None,
+    target: str = offline_bundle.BASELINE_TARGET,
 ) -> dict[str, object]:
-    """Write the single-file offline install bundle and return its manifest."""
+    """Write the single-file offline install bundle and return its manifest.
+
+    ``target`` must be named by the caller for anything but the deployment
+    baseline, and the wheelhouse must have been built for it: a lab
+    (aarch64) wheelhouse never becomes a baseline bundle by default.
+    """
 
     try:
-        from tools.build_wheelhouse import TARGET, load_wheelhouse
+        from tools.build_wheelhouse import load_wheelhouse
     except ImportError:  # pragma: no cover - script execution
-        from build_wheelhouse import TARGET, load_wheelhouse  # type: ignore[no-redef]
+        from build_wheelhouse import load_wheelhouse  # type: ignore[no-redef]
 
     root = root.resolve(strict=True)
     output = output.absolute()
@@ -329,7 +335,7 @@ def build_install_bundle(
         mode = "0755" if _regular_file(source).st_mode & 0o111 else "0644"
         entries.append(_entry(source, "source/" + name, "source", origin, mode=mode))
 
-    record = load_wheelhouse(wheelhouse)
+    record = load_wheelhouse(wheelhouse, target)
     if record["repository_identity"]["commit"] != identity["commit"]:
         raise ValueError("the wheelhouse was built from a different commit than this source")
     # A wheelhouse built before a lock entry was added (say, before Fabric was
@@ -338,7 +344,7 @@ def build_install_bundle(
         [w for w in record["wheels"]
          if offline_bundle.canonical_name(w["requirement"].partition("==")[0])
          not in offline_bundle.OWN_DISTRIBUTIONS],
-        offline_bundle.parse_lock(root / offline_bundle.WHEEL_LOCK),
+        offline_bundle.parse_lock(root / offline_bundle.target_lock(target)),
     )
     for wheel in record["wheels"]:
         entry, path = _entry(wheelhouse / wheel["file"], "wheels/" + wheel["file"], "wheel",
@@ -349,6 +355,7 @@ def build_install_bundle(
 
     slots = {kind: "empty" for kind in offline_bundle.SLOT_KINDS}
     if edge_package is not None:
+        offline_bundle.refuse_edge_slot_unless_allowed(target)
         if not edge_source:
             raise ValueError("--edge-package needs --edge-source naming where it came from")
         offline_bundle.verify_edge_slot(edge_package)
@@ -375,7 +382,7 @@ def build_install_bundle(
     artifacts = [entry for entry, _ in entries]
     document: dict[str, object] = {
         "schema": offline_bundle.SCHEMA,
-        "target": TARGET,
+        "target": target,
         "repository_identity": identity,
         "slots": slots,
         "artifacts": artifacts,
@@ -439,6 +446,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", type=Path, action="append", default=[])
     parser.add_argument("--knowledge", type=Path, action="append", default=[])
     parser.add_argument("--assets-source", help="where the model/Knowledge files came from")
+    parser.add_argument("--target", choices=sorted(offline_bundle.TARGETS),
+                        default=offline_bundle.BASELINE_TARGET,
+                        help="the wheelhouse's declared target (default: the deployment baseline); "
+                        "debian-13-aarch64-cp313 is a lab-software-verification target")
     args = parser.parse_args(argv)
     root = Path(__file__).resolve().parents[1]
     slot_args = (args.edge_package, args.deb, args.model, args.knowledge)
@@ -453,6 +464,7 @@ def main(argv: list[str] | None = None) -> int:
                 edge_package=args.edge_package, edge_source=args.edge_source,
                 debs=args.deb, deb_source=args.deb_source,
                 models=args.model, knowledge=args.knowledge, assets_source=args.assets_source,
+                target=args.target,
             )
     except (OSError, ValueError, RuntimeError, tarfile.TarError, offline_bundle.BundleRefused) as error:
         parser.error(str(error))

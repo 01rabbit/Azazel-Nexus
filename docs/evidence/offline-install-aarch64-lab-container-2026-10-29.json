@@ -1,0 +1,200 @@
+{
+  "schema": "azazel-nexus/prototype-offline-install-evidence/v1",
+  "date": "2026-10-29",
+  "covers_commit": "9a667e6d4985ebc1748a20de5297252c9f01911b",
+  "target": "debian-13-aarch64-cp313",
+  "platform_profile_id": "debian-13-arm64-cp313-lab",
+  "purpose": "lab-software-verification",
+  "scope": "Container rehearsal only: Debian 13 (debian:trixie) linux/arm64 containers running natively on the aarch64 colima VM of a macOS host (no emulation). Not Arm hardware, not an Arm VM with systemd, not the deployment baseline (ADR-0002 is Debian 13 / amd64), not hardware-gate evidence, not production activation or admission (ADR-0005).",
+  "source": {
+    "commit": "9a667e6d4985ebc1748a20de5297252c9f01911b",
+    "worktree": "clean",
+    "selected_inputs_sha256": "d9c60d2cec93b04dcc9a54051e2d2d8b5fb5fd54aab557c585aaaf9ee40481f3"
+  },
+  "build_container": {
+    "network": "online",
+    "image": "debian:trixie (linux/arm64, native aarch64)",
+    "python": "Debian python3 3.13.5",
+    "machine": "aarch64",
+    "build_user": "uid 1001, umask 022, clean git clone of the commit",
+    "command": [
+      "python3 tools/build_wheelhouse.py --target debian-13-aarch64-cp313 --output <wheelhouse>",
+      "python3 tools/build_offline_bundle.py --target debian-13-aarch64-cp313 --wheelhouse <wheelhouse> --output <bundle>"
+    ],
+    "backend": {
+      "setuptools": "84.0.0",
+      "pinned_by": "packaging/offline/build-backend.lock (sha256)"
+    },
+    "pip": "25.1.1 (Debian ensurepip; not pinned)",
+    "reproducibility": "not measured for the two Nexus wheels; each source-built third-party wheel reproduced its locked sha256 (checked)",
+    "wheelhouse_record": {
+      "target": "debian-13-aarch64-cp313",
+      "platform_profile_id": "debian-13-arm64-cp313-lab",
+      "purpose": "lab-software-verification",
+      "purpose_note": "lab-software-verification target: VM software-integration evidence at most; never hardware-gate evidence, a deployment-baseline install or a production admission (ADR-0005)"
+    },
+    "wheels": {
+      "annotated_types-0.8.0-py3-none-any.whl": {
+        "sha256": "f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0",
+        "source": "pypi:annotated-types==0.8.0 (hash-pinned in packaging/offline/requirements-aarch64-cp313.lock)"
+      },
+      "azazel_fabric-0.9.0rc5-py3-none-any.whl": {
+        "sha256": "5eb6593ee6824400bc5a00c3e5c799abb2f88def6273a2486c8b88959c908eda",
+        "source": "built:https://github.com/01rabbit/Azazel-Fabric.git@450d9502884ba533653210056a6fb85012b96b84 (tag v0.9.0rc5; hash-pinned in packaging/offline/requirements-aarch64-cp313.lock)"
+      },
+      "azazel_nexus-0.0.1.dev0-py3-none-any.whl": {
+        "sha256": "9adec30b8517e511e11d7ee3630129743b7668db249d91c12a6f0a78b863070e",
+        "source": "built:9a667e6d4985ebc1748a20de5297252c9f01911b source-bundle-sha256:56a30d9dd1a33c09b399966c16bcac6120b0b645bd07e721dc2cf9f1e5e5b01c"
+      },
+      "azazel_nexus_runtime-0.0.1.dev0-cp313-cp313-linux_aarch64.whl": {
+        "sha256": "70989f4f46d766e94abf7913dd3e80efd53878e7bcab43c317063648dab71924",
+        "source": "built:9a667e6d4985ebc1748a20de5297252c9f01911b source-bundle-sha256:56a30d9dd1a33c09b399966c16bcac6120b0b645bd07e721dc2cf9f1e5e5b01c"
+      },
+      "dbus_next-0.2.3-py3-none-any.whl": {
+        "sha256": "58948f9aff9db08316734c0be2a120f6dc502124d9642f55e90ac82ffb16a18b",
+        "source": "pypi:dbus-next==0.2.3 (hash-pinned in packaging/offline/requirements-aarch64-cp313.lock)"
+      },
+      "pydantic-2.13.5-py3-none-any.whl": {
+        "sha256": "346a034f080da3755d8e9cb5e00e8b07de1d39e4f6e2c87d8ab7cafa0b269a73",
+        "source": "pypi:pydantic==2.13.5 (hash-pinned in packaging/offline/requirements-aarch64-cp313.lock)"
+      },
+      "pydantic_core-2.46.5-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl": {
+        "sha256": "193375f3548919d3f0b60936ca113ada3e38f264f91b9b8e0508efaad57be931",
+        "source": "pypi:pydantic-core==2.46.5 (hash-pinned in packaging/offline/requirements-aarch64-cp313.lock)"
+      },
+      "pyyaml-6.0.3-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl": {
+        "sha256": "ee2922902c45ae8ccada2c5b501ab86c36525b883eff4255313a253a3160861c",
+        "source": "pypi:pyyaml==6.0.3 (hash-pinned in packaging/offline/requirements-aarch64-cp313.lock)"
+      },
+      "typing_extensions-4.16.0-py3-none-any.whl": {
+        "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+        "source": "pypi:typing-extensions==4.16.0 (hash-pinned in packaging/offline/requirements-aarch64-cp313.lock)"
+      },
+      "typing_inspection-0.4.4-py3-none-any.whl": {
+        "sha256": "65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147",
+        "source": "pypi:typing-inspection==0.4.4 (hash-pinned in packaging/offline/requirements-aarch64-cp313.lock)"
+      }
+    },
+    "fabric_wheel": "built from the pinned commit and equal to the sha256 both locks pin (the build refuses otherwise)",
+    "bundle": {
+      "sha256": "12ab56da36dd959c072ab53350019207331e272ccd8748daac0ea6e9272c1b3d",
+      "manifest_sha256": "52337b1b3c9d5dcf15c211fac838688d68eda2b89b055c0be9b6119bf893a509",
+      "members": 342,
+      "slots": "all empty (no Edge package, .deb, model or Knowledge carried)"
+    }
+  },
+  "offline_container": {
+    "network": "--network none (lo and sit0 only; outbound TCP connect failed: Network is unreachable)",
+    "image": "debian:trixie linux/arm64 + python3 python3-venv only (prepared online beforehand, committed to a temporary image and removed afterwards; no compiler, no git, no Nexus files)",
+    "host": {
+      "uname_machine": "aarch64",
+      "dpkg_architecture": "arm64",
+      "debian_version": "13.7"
+    },
+    "verifier": "tools/offline_bundle.py from a copy of the reviewed checkout at the covered commit (mounted read-only, copied)",
+    "tampered_copy": "refused (one bit flipped near the end; gzip data check failed in the streamed reader); destination not created",
+    "bundle_authenticated": false,
+    "report": {
+      "target": "debian-13-aarch64-cp313",
+      "platform_profile_id": "debian-13-arm64-cp313-lab",
+      "purpose": "lab-software-verification",
+      "purpose_note": "lab-software-verification target: VM software-integration evidence at most; never hardware-gate evidence, a deployment-baseline install or a production admission (ADR-0005)"
+    },
+    "wheel_lock_check": [
+      {
+        "pinned_by": "packaging/offline/requirements-aarch64-cp313.lock",
+        "requirement": "annotated-types==0.8.0"
+      },
+      {
+        "pinned_by": "packaging/offline/requirements-aarch64-cp313.lock",
+        "requirement": "azazel-fabric==0.9.0rc5"
+      },
+      {
+        "pinned_by": "reviewed pyproject version only",
+        "requirement": "azazel-nexus==0.0.1.dev0"
+      },
+      {
+        "pinned_by": "reviewed pyproject version only",
+        "requirement": "azazel-nexus-runtime==0.0.1.dev0"
+      },
+      {
+        "pinned_by": "packaging/offline/requirements-aarch64-cp313.lock",
+        "requirement": "dbus-next==0.2.3"
+      },
+      {
+        "pinned_by": "packaging/offline/requirements-aarch64-cp313.lock",
+        "requirement": "pydantic==2.13.5"
+      },
+      {
+        "pinned_by": "packaging/offline/requirements-aarch64-cp313.lock",
+        "requirement": "pydantic-core==2.46.5"
+      },
+      {
+        "pinned_by": "packaging/offline/requirements-aarch64-cp313.lock",
+        "requirement": "pyyaml==6.0.3"
+      },
+      {
+        "pinned_by": "packaging/offline/requirements-aarch64-cp313.lock",
+        "requirement": "typing-extensions==4.16.0"
+      },
+      {
+        "pinned_by": "packaging/offline/requirements-aarch64-cp313.lock",
+        "requirement": "typing-inspection==0.4.4"
+      }
+    ],
+    "install": {
+      "pip": "--no-index --find-links --require-hashes --only-binary=:all:",
+      "pip_check": "pass",
+      "imports": "pass",
+      "observed_platform": {
+        "platform_profile_id": "debian-13-arm64-cp313-lab",
+        "purpose": "lab-software-verification"
+      }
+    },
+    "imports_checked": "azazel_nexus, azazel_nexus_runtime, _bootstrap_deadline (cpython-313-aarch64-linux-gnu.so), yaml (with the libyaml CSafeLoader), dbus_next, pydantic_core 2.46.5, azazel_fabric.provisioning_contracts",
+    "recheck_before_install_sh": {
+      "result": "pass",
+      "files": 342,
+      "bundle_authenticated": false
+    },
+    "installer": {
+      "command": "/bin/sh <tree>/source/packaging/install.sh --without-service-manager, run by install --run-installer as root with PYTHON=<root-owned venv>",
+      "exit": 0,
+      "stdout_tail": [
+        "platform: arm64 (lab-software-verification)",
+        "NOTE: arm64 is a lab-software-verification platform, not the deployment baseline. What this install runs is VM software-integration evidence only, never hardware-gate evidence or a production admission.",
+        "staged 19 fixed Nexus runtime entrypoints under /usr/libexec/azazel",
+        "MISSION PACK STORE NOT PROVISIONED: mount commissioned LUKS storage and rerun installer.",
+        "SERVICE-MANAGER STAGE NOT EXECUTED: no unit was masked or enabled.",
+        "Files and accounts are installed. The node is not configured to",
+        "start anything, and nothing here established that it would not."
+      ],
+      "service_manager_stage": "not executed (no systemd in container)"
+    },
+    "install_sh_platform_field": "arm64 lab-software-verification",
+    "production_uses_on_this_host": {
+      "selected_profile": "debian-13-arm64-cp313-lab",
+      "require_deployment_baseline": {
+        "core-reserve-record": "refused LAB_PROFILE_NOT_FOR_PRODUCTION",
+        "hardware-gate-record": "refused LAB_PROFILE_NOT_FOR_PRODUCTION",
+        "hil-preflight": "refused LAB_PROFILE_NOT_FOR_PRODUCTION",
+        "model-admission": "refused LAB_PROFILE_NOT_FOR_PRODUCTION",
+        "product-admission": "refused LAB_PROFILE_NOT_FOR_PRODUCTION"
+      }
+    },
+    "cli_smoke": {
+      "azazel-nexus --help": "ok",
+      "azazel-nexus setup --next --json": "exit 0"
+    },
+    "venv_mode_after_install": "0755 root"
+  },
+  "limitations": [
+    "Container on the aarch64 colima VM of a macOS host: not Arm hardware and not an Arm VM; no systemd, so the service-manager stage, units, activation and services were not exercised",
+    "Lab-software-verification target: VM software-integration evidence at most once repeated on an Arm VM; never hardware-gate evidence, a deployment-baseline install or a production admission (ADR-0002 unchanged, ADR-0005)",
+    "Bundle unsigned and unencrypted; bundle_authenticated false; hashes are integrity, not authenticity",
+    "Own Nexus wheels are checked only by version against the reviewed pyproject; their hashes above are what this build produced, reproducibility not measured",
+    "Target Python interpreter and python3-venv were provisioned into the offline image online beforehand",
+    "No Edge package, .deb set, model or Knowledge asset carried; no arm64 Edge pin exists",
+    "The e2e harness was not run against the offline venv in this record"
+  ]
+}

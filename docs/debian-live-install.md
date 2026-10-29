@@ -554,6 +554,40 @@ sudo python3 -I /path/to/reviewed/Azazel-Nexus/tools/offline_bundle.py install \
   --run-installer
 ```
 
+**Arm lab target.** `--target debian-13-aarch64-cp313` on both builders
+selects the Arm **lab-software-verification** target
+([ADR-0005](adr/0005-arm-lab-offline-target.md)); without it they build the
+deployment baseline above, which is unchanged
+([ADR-0002](adr/0002-debian-13-baseline.md)). Its build host is Debian 13
+aarch64 with the same packages, its lock is
+`packaging/offline/requirements-aarch64-cp313.lock` (the same names and
+versions; `pydantic-core` and `PyYAML` pinned by the manylinux aarch64 wheel
+hash PyPI publishes; Fabric built from its pinned commit to the same hash),
+and the install command on the Arm host is the same:
+
+```sh
+# Arm build host (Debian 13, aarch64), online:
+python3 tools/build_wheelhouse.py --target debian-13-aarch64-cp313 --output /path/to/wheelhouse
+python3 tools/build_offline_bundle.py --target debian-13-aarch64-cp313 \
+  --output /path/to/azazel-nexus-offline-aarch64.tar.gz --wheelhouse /path/to/wheelhouse
+# Arm lab host, no network, as root: the same `offline_bundle.py install` as above.
+```
+
+A lab wheelhouse is refused by the baseline bundle builder and the other way
+round; a bundle is checked against the lock of its manifest's target only.
+The lab target carries no Edge package: a filled Edge slot is refused at
+build and at verify, since the only Edge pin is for x86_64.
+`wheelhouse.json` and every report carry `platform_profile_id`
+(`debian-13-arm64-cp313-lab`), `purpose` (`lab-software-verification`) and a
+`purpose_note`, and `install` refuses unless the installed runtime observes
+this host as that profile (`install.observed_platform`); `install.sh` prints
+its lab notice. The result is VM software-integration evidence at most —
+never hardware-gate evidence, a deployment-baseline install or a production
+admission. It was rehearsed in containers only
+([aarch64 container record](evidence/offline-install-aarch64-lab-container-2026-10-29.json):
+native aarch64 build, `--network none` install); not on Arm hardware, and not
+yet on an Arm VM with systemd.
+
 `build_wheelhouse.py` installs the build backend from
 `packaging/offline/build-backend.lock` (`setuptools==84.0.0`, by file hash),
 downloads the third-party wheels named in
@@ -647,7 +681,8 @@ Extraction refuses:
 A staging directory is named `.<dest>.staging-<pid>-<random>`; one whose
 process no longer exists, owned by this user, is removed on the next run, and
 a concurrent run's staging is left alone. Every third-party wheel must match
-the reviewed checkout's `packaging/offline/requirements-x86_64-cp313.lock` by
+the reviewed checkout's `packaging/offline/requirements-x86_64-cp313.lock`
+(for the Arm lab target, `requirements-aarch64-cp313.lock`) by
 name, version and sha256; a wheel the lock does not pin, such as an extra
 `evil==1.0` with a self-consistent manifest hash, is refused. The two Nexus
 wheels are pinned **by version only** (an exact string compare with the
@@ -685,7 +720,8 @@ but never installed by this tool.
 | Item | Status | Evidence / what is missing |
 | --- | --- | --- |
 | Hash-pinned wheelhouse build (backend, `dbus-next`, `PyYAML`, both Nexus wheels incl. native `_bootstrap_deadline`) | implemented; container-rehearsed | [container evidence](evidence/offline-install-container-2026-10-28.json); x86_64 under Rosetta emulation, not hardware |
-| Pinned Fabric and pydantic in the wheelhouse ([ADR-0004](adr/0004-fabric-in-offline-wheelhouse.md)) | implemented; container-rehearsed (build, `--network none` install, Fabric hardware projection) | x86_64 under Rosetta emulation; the Fabric wheel hash reproduced on x86_64 and aarch64 containers; no aarch64 lock; Fabric's release signature not verified by Nexus |
+| Pinned Fabric and pydantic in the wheelhouse ([ADR-0004](adr/0004-fabric-in-offline-wheelhouse.md)) | implemented; container-rehearsed (build, `--network none` install, Fabric hardware projection) | x86_64 under Rosetta emulation; the Fabric wheel hash reproduced on x86_64 and aarch64 containers; Fabric's release signature not verified by Nexus |
+| Arm lab target `debian-13-aarch64-cp313` ([ADR-0005](adr/0005-arm-lab-offline-target.md)) | implemented; container-rehearsed (native aarch64 build, `--network none` install, `install.sh --without-service-manager`) | [aarch64 container record](evidence/offline-install-aarch64-lab-container-2026-10-29.json); lab-software-verification only, not the baseline; not Arm hardware, no Arm VM/systemd run, no arm64 Edge pin |
 | Single bundle manifest (source, wheels, slots; sha256/size/kind/source) | implemented | `tests/unit/test_offline_install_bundle.py` |
 | Safe atomic extraction and refusal cases | implemented | same tests; one tampered bundle refused in the container |
 | Offline install with `--no-index --find-links --require-hashes` | implemented; container-rehearsed | `--network none` container at the commit the evidence names; lock check, `pip check`, imports, `recheck` and `install.sh --without-service-manager` passed. The e2e harness needs PyNaCl for its fixtures; with a separate harness-only PyNaCl set (not in the bundle or the lock) 21 of 22 stages passed, the systemd stage not run |
