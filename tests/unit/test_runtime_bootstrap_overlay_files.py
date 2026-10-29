@@ -22,6 +22,25 @@ def _mkdir_private(path):
     path.chmod(0o700)
 
 
+def _replace_mask(mask, target="/dev/null"):
+    """Replace a mask symlink and make the replacement visible in its stamp.
+
+    The writer stamps a mask by (dev, inode, uid, mode, mtime, ctime) and
+    separately requires an owned symlink to /dev/null on every read. A
+    recreated link with the same target can come back with the same inode and
+    the same timestamps (ext4 reuses the freed inode within one timestamp
+    tick), so the stamp alone may not change. Moving the link's mtime
+    explicitly makes the change certain on any filesystem; a different target
+    is a replacement the content check must refuse whatever the stamp.
+    """
+    before = os.lstat(mask)
+    mask.unlink()
+    mask.symlink_to(target)
+    os.utime(mask, ns=(before.st_atime_ns, before.st_mtime_ns - 1_000_000_000),
+             follow_symlinks=False)
+    assert os.lstat(mask).st_mtime_ns != before.st_mtime_ns
+
+
 @contextmanager
 def _environment(tmp_path):
     lock_path = tmp_path / "lock"

@@ -43,7 +43,7 @@ from test_runtime_bootstrap_device_closure import (
     DEVICE_INTERFACE, DEVICE_NAMES, DeviceFakeBus, _graph as _device_graph,
 )
 from test_runtime_bootstrap_masked import PROFILE_PATHS, PROFILE_VERSION
-from test_runtime_bootstrap_overlay_files import PAIR, _approval, _environment
+from test_runtime_bootstrap_overlay_files import PAIR, _approval, _environment, _replace_mask
 from azazel_nexus_runtime import bootstrap_overlay_files
 
 
@@ -459,9 +459,7 @@ def test_retained_publication_refuses_changed_inputs(tmp_path, monkeypatch, chan
         elif change == "journal":
             (env["journal_path"] / "overlay-journal.json").write_bytes(b"{}\n")
         elif change == "mask":
-            mask = env["masks_path"] / PAIR[0]
-            mask.unlink()
-            mask.symlink_to("/dev/null")  # same target, different retained identity
+            _replace_mask(env["masks_path"] / PAIR[0])  # same target, different retained identity
         elif change == "policy":
             monkeypatch.setattr(
                 manager_module, "load_loaded_bootstrap_policy",
