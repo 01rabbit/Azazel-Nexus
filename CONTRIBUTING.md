@@ -174,6 +174,14 @@ diverge silently.
   ```
 
   It needs only Python 3 from the standard library.
+- Run `tests/unit` as a **non-root** user, the way the `test` job in
+  [`.github/workflows/ci.yml`](.github/workflows/ci.yml) does. Several tests
+  stand the current account in for a service account or for a path owner, and
+  as root that account is uid 0, which the product refuses by design. Those
+  tests skip as root, and a counterpart checks the refusal instead; this is not
+  a way to run the suite as root. What must run as root is limited to the
+  `integration-as-root` job in the same workflow. Do not loosen a root refusal
+  in product code to make `tests/unit` pass as root.
 - If you add a document, link it from `README.md`. An unreferenced document
   drifts.
 - Cite, do not restate. When a rule comes from the program plan or from another

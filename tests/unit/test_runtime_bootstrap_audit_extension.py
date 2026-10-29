@@ -101,6 +101,7 @@ def test_extension_flag_requires_exact_boolean_true(tmp_path):
         os.close(fd)
 
 
+@pytest.mark.usefixtures("audit_owner_is_this_account")
 def test_public_extension_inspector_uses_only_redirected_ordinary_directory(
     tmp_path, monkeypatch,
 ):

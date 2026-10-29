@@ -80,6 +80,7 @@ def genesis_ctx(tmp_path_factory, monkeypatch):
     return _install(tmp_path_factory.mktemp("adm"), monkeypatch)
 
 
+@pytest.mark.usefixtures("audit_owner_is_this_account")
 def test_genesis_policy_with_empty_dir_returns_genesis_and_checks_helpers(
     genesis_ctx, tmp_path, monkeypatch,
 ):
@@ -159,6 +160,7 @@ def test_policy_change_during_observation_refused(genesis_ctx, monkeypatch):
             expected=genesis_ctx, manager=ReadOnlyManager())
 
 
+@pytest.mark.usefixtures("audit_owner_is_this_account")
 def test_extension_from_genesis_with_genesis_policy_succeeds(genesis_ctx, tmp_path, monkeypatch):
     root = tmp_path / "audit"
     root.mkdir()
@@ -168,6 +170,7 @@ def test_extension_from_genesis_with_genesis_policy_succeeds(genesis_ctx, tmp_pa
         expected=genesis_ctx, previous=GENESIS) == GENESIS
 
 
+@pytest.mark.usefixtures("audit_owner_is_this_account")
 def test_extension_to_first_record_succeeds(genesis_ctx, tmp_path, monkeypatch):
     ledger = _chain(tmp_path / "audit", days=(DAY1,))
     _ledger(monkeypatch, ledger.root)

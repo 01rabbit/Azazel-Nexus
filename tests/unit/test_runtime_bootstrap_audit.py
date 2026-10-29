@@ -222,6 +222,7 @@ def test_empty_segment_and_invalid_expected_heads_are_refused(tmp_path):
         _observe(ledger.root, (1, "A" * 64))
 
 
+@pytest.mark.usefixtures("audit_owner_is_this_account")
 def test_public_inspector_opens_existing_ledger_and_ignores_root_override(
     tmp_path, monkeypatch
 ):
@@ -241,6 +242,28 @@ def test_public_inspector_opens_existing_ledger_and_ignores_root_override(
     assert result.sequence == 2
     assert calls == [OWNER, OWNER]
     assert not (tmp_path / "different-root").exists()
+
+
+def test_public_inspector_refuses_an_audit_account_with_uid_0_as_root(tmp_path, monkeypatch):
+    # The counterpart of the test above: as root, this account's uid is 0,
+    # and an azaudit with uid 0 is refused before any ledger is opened (the
+    # public refusal is generic, so "no ledger opened" is what pins the cause).
+    if os.geteuid() != 0:
+        pytest.skip("not running as root: the stand-in azaudit uid is not 0")
+    ledger = _chain(tmp_path / "audit")
+    calls = []
+
+    def open_ledger(owner):
+        calls.append(owner)
+        return os.open(ledger.root, os.O_RDONLY | os.O_DIRECTORY)
+
+    monkeypatch.setattr(bootstrap_audit.pwd, "getpwnam", lambda _name: type("Account", (), {"pw_uid": OWNER})())
+    monkeypatch.setattr(bootstrap_audit, "_open_ledger", open_ledger)
+    with pytest.raises(ApprovalRefused, match="continuity refused"):
+        bootstrap_audit.inspect_existing_audit(
+            expected_head=_head(ledger), max_total_bytes=65536, max_segments=8
+        )
+    assert calls == []
 
 
 @pytest.mark.parametrize("failure", ["account", "path"])
