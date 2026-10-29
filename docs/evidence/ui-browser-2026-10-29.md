@@ -24,6 +24,11 @@ HIL の証跡ではなく、HG の欄にも載せない。対象は [読取専�
   Edge loop（intake・explainer・recent・audit）は status read model の試験の生成関数、
   Knowledge・M.I.O.・unit 状態は `operator_snapshots.*_snapshot`、NOC だけは
   **実際の受動観測**（`noc_snapshot.observe` が、そのコンテナの netlink と sysfs を読んだもの）。
+  この一時ノードには Knowledge Lite の store も M.I.O. の route ledger も置いていない。通常状態の
+  Knowledge と M.I.O. の snapshot は、daemon が同じノードを読んだときに書く内容
+  （`unavailable`／`trust_unreadable`、「遷移の記録なし」）にそろえた。「食い違い」状態だけは、
+  snapshot に `available` と記録ありの読取値を書き、直接の読取と食い違わせた。
+  最近のインシデントの引用（T1059）は記録済みの過去の引用で、現在の Lite の状態とは別の事実。
   Edge loop の snapshot は 30 秒で古くなるので、通常状態の間は 3 秒ごとに書き直した（daemon の代わり）。
 - XSS の確認は保存済み fixture（`tests/fixtures/ui/demo-status-view.json` に HTML/JS を埋めたもの）。
   画面には「fixture 表示」の帯が出る。
@@ -42,12 +47,15 @@ Chromium は DevTools Protocol を `--remote-debugging-pipe` で操作し、デ�
 | 1 | 5 画面（概況・インシデント・NOC・Knowledge・セットアップ・復旧）がログイン後に表示される | pass | `normal-*.png`、`aarch64-result.json` の `states.normal` |
 | 2 | 日本語：`lang="ja"`、見出しの和文は Noto Sans CJK JP で描画（`CSS.getPlatformFontsForNode`）。語には英語の enum を併記 | pass | `fonts_ja_heading`、各画像 |
 | 3 | 劣化 6 種（snapshot が無い・壊れている・古い・時刻が未来・symlink・サイズ超過 300 KiB）：snapshot を読む 6 枚のカード（通信、M.I.O. snapshot、Knowledge snapshot、サービス、intake、explainer）のどれも緑（`tone-ok`）にならず、中に緑の badge も「正常」の語も無い | pass（6/6） | `degraded-*-overview.png`、`checks.degraded.*`。下の表 |
+| 3b | 食い違い：同じ対象を直接読むカード（Knowledge Lite、AI 経路）と daemon の snapshot のカードで結果が分かれると、4 枚とも「▲ 直接の読取（…）と daemon の snapshot（…）が一致しません」と表示し、各カードに経路（「この画面のアカウント（azui）が直接読んだ結果」／「daemon（…）が書いた snapshot」）を出す | pass | `mismatch-overview.png`、`states.mismatch.notes` |
 | 4 | 復旧：snapshot を新しく書き戻すと、ページの 5 秒ごとの更新で通常と同じ表示（6 枚のカードの tone が通常と一致）に戻る。再ログイン不要 | pass | `recovered-overview.png`、`checks.recovered.same_as_normal` |
+| 4b | 項目名と固定文：カードの表に出る項目名は、すべて日本語ラベルと英語の鍵の併記（全状態の DOM で「未登録の項目名」0 件）。M.I.O.・セットアップ・引継ぎ通知・Knowledge Lite の意味・外部 module の固定文は日本語で出し、原文を小さく併記。動的な英文（セットアップ手順の理由など）は「詳細（英語の原文）」として小さく出す | pass | `checks.labels.every_field_name_has_a_japanese_label`、各画像 |
+| 4c | 保存容量：1 行 1 場所の表（場所・状態・空き/全体、GiB 等の単位、null は出さない）。概況の高さは 1280 px で 2322 px（修正前 3774 px） | pass | `normal-overview.png` |
 | 5 | 狭い画面（幅 360 px、モバイル表示）：横スクロールなし（`scrollWidth` 360 = `clientWidth` 360）。タブは 2 列に折り返し、44 px 以上の押下領域 | pass | `narrow-overview.png`、`narrow-incidents.png` |
 | 6 | XSS：status の値（Fabric の `status`・`reason_code`・`version`）、インシデント ID、AI 要約、Knowledge 引用名に `<img src=x onerror=…><script>…</script>` を入れた fixture で、`window.__azxss` は未定義、`document.images` 0、`<script>` は `/static/app.js` の 1 個だけ、ページ文中に文字として 14 箇所。`/x` への要求も無い。未知の語の Fabric カードは「？ 未定義の語」（unknown）で緑にならない | pass | `xss-*.png`、`states.xss.probe` |
-| 7 | 外部通信：ページが出した要求は全件 `http://127.0.0.1:<port>/`（aarch64 31 件、x86_64 8 件、systemd 8 件。CDP の `Network.requestWillBeSent`）。NetLog でも、ページを起点とする（`initiator` がページの origin）外部要求は 0 件 | pass | `page_requests_external`、`netlog.page_initiated_external` |
+| 7 | 外部通信：ページが出した要求は全件 `http://127.0.0.1:<port>/`（aarch64 32 件、x86_64 9 件、systemd 8 件。CDP の `Network.requestWillBeSent`）。NetLog でも、ページを起点とする（`initiator` がページの origin）外部要求は 0 件 | pass | `page_requests_external`、`netlog.page_initiated_external` |
 | 8 | Chromium 自身の背景通信（component updater `update.googleapis.com`、x86_64 では DoH の `chrome.cloudflare-dns.com`）は `initiator: not an origin` の要求として NetLog に現れ、すべて `ERR_INTERNET_DISCONNECTED`（-106）で終わった。完了した外部要求は 0 件 | 記録（UI の要求ではない） | `netlog.browser_initiated`、`netlog.external_completed` |
-| 9 | systemd：`azui` の UI はソケット起動で動き、`azui` が読めない snapshot の節を **権限なし（`permission_denied` / `access_permission_denied`）** と表示する（概況・インシデント・NOC・Knowledge・セットアップの 15 枚）。「無い」とも「正常」とも表示しない | pass | `systemd-overview.png`、`systemd-result.json` |
+| 9 | systemd：`azui` の UI はソケット起動で動き、`azui` が読めない snapshot の節を **権限なし（`permission_denied` / `access_permission_denied`）** と表示する（概況・インシデント・NOC・Knowledge・セットアップの 15 枚）。「無い」とも「正常」とも表示しない。直接読むカード（Knowledge Lite、AI 経路）には「このアカウントでは直接読めません。daemon の snapshot（「運用者向け snapshot」のカード）を参照してください」と出す | pass | `systemd-overview.png`、`systemd-result.json` |
 | 10 | systemd：UI のプロセスは uid/gid とも `azui`、補助グループ無し、`CapEff` 0、`NoNewPrivs` 1、seccomp 有効、ネットワーク名前空間は `lo`（と `sit0`）だけ。unit は `RestrictAddressFamilies=AF_UNIX`、`PrivateNetwork=yes`、`IPAddressDeny=any`。listener は systemd が持つ `127.0.0.1:8443` だけ | pass | 実行時の `/proc/<pid>/status`、`systemctl show`、`ss -ltn`（下記手順 §3） |
 | 11 | systemd：`systemctl stop azazel-ui.socket azazel-ui.service` の後も `azazel-noc-observe.timer`・`azazel-units-observe.timer` は active、両 service は手動起動で `Result=success`、snapshot は書き直された。8443 は閉じて接続できない。逆依存は `azazel-ui.service` 自身のみ | pass | 下記手順 §3 |
 | 12 | x86_64（Rosetta）で通常状態を 1 回：43 枚のカードの（画面・題・tone・語・理由）が aarch64 と完全一致。概況・インシデント・Knowledge の文字列も数字を伏せて一致。NOC とセットアップの差は、コンテナの interface の数と経過秒の小数だけ（環境差） | pass | `amd64-normal-overview.png`、`amd64-result.json` |
@@ -56,7 +64,7 @@ Chromium は DevTools Protocol を `--remote-debugging-pipe` で操作し、デ�
 
 | 状態 | 語（enum） | 理由コード |
 | --- | --- | --- |
-| 通常（参考） | intake・explainer は `running`（● 緑）、Knowledge snapshot は `available`（● 緑）、サービスは `degraded`（▲）、NOC・M.I.O. snapshot は `observed`・`recorded`（◆ 情報） | — |
+| 通常（参考） | intake・explainer は `running`（● 緑）、Knowledge snapshot は `degraded`（▲、`trust_unreadable`）、M.I.O. snapshot は `unknown`（`no_recorded_capability_transition`）、サービスは `degraded`（▲）、NOC は `observed`（◆ 情報） | — |
 | 無い | `unavailable` | `snapshot_absent_or_refused` |
 | 壊れている（`{"schema":`） | `unavailable` | `snapshot_absent_or_refused` |
 | 古い（1 時間前） | `stale` | `snapshot_expired` |
@@ -71,6 +79,7 @@ Chromium は DevTools Protocol を `--remote-debugging-pipe` で操作し、デ�
 | 通常（1280 px） | [概況](ui-browser-2026-10-29/normal-overview.png)・[インシデント](ui-browser-2026-10-29/normal-incidents.png)・[NOC](ui-browser-2026-10-29/normal-noc.png)・[Knowledge](ui-browser-2026-10-29/normal-knowledge.png)・[セットアップ・復旧](ui-browser-2026-10-29/normal-setup.png) |
 | 劣化 | [無い](ui-browser-2026-10-29/degraded-absent-overview.png)・[壊れている](ui-browser-2026-10-29/degraded-broken-overview.png)・[古い](ui-browser-2026-10-29/degraded-stale-overview.png)・[未来](ui-browser-2026-10-29/degraded-future-overview.png)・[symlink](ui-browser-2026-10-29/degraded-symlink-overview.png)・[サイズ超過](ui-browser-2026-10-29/degraded-oversize-overview.png) |
 | 復旧 | [概況](ui-browser-2026-10-29/recovered-overview.png) |
+| 食い違い（直接の読取と snapshot） | [概況](ui-browser-2026-10-29/mismatch-overview.png) |
 | 狭い画面（360 px） | [概況](ui-browser-2026-10-29/narrow-overview.png)・[インシデント](ui-browser-2026-10-29/narrow-incidents.png) |
 | XSS（fixture） | [概況](ui-browser-2026-10-29/xss-overview.png)・[インシデント](ui-browser-2026-10-29/xss-incidents.png) |
 | systemd（権限なし） | [概況](ui-browser-2026-10-29/systemd-overview.png) |
@@ -89,6 +98,9 @@ NOC とセットアップの画面は 2600 px より長く、画像は上端か�
 | F4 | ブラウザが自動で取りに行く `/favicon.ico` が 404 になり、コンソールに 1 行出る | 報告のみ（UI は 5 つの経路しか持たない設計どおり） |
 | F5 | fixture 表示では、保存時の評価（例：intake「● 稼働（snapshot が新しい）」）がそのまま出て、同じカードに「38 日前」と並ぶ。画面上部の「fixture 表示：…このノードの現在の状態ではありません」の帯で区別される | 報告のみ（fixture は保存した read model を写す設計） |
 | F6 | live 表示の「AI 経路（M.I.O.）」「Knowledge Lite」「防御状態（Edge）」は、このリハーサルでは route ledger・Lite・Edge package を置いていないので通常状態でも `unknown`／`unavailable`／`absent` | 欠陥ではない（入力が無いことを正しく示している） |
+| F7 | 保存容量カードが locations の辞書をそのまま縦に並べ、概況が 2600 px を超えていた。バイト数は生の数値で、null も「なし」と出ていた | **修正済み**（`app.js` の `storageCard`）。1 行 1 場所の表（場所・状態・空き/全体）、人が読める単位、null は出さない、`same_filesystem_as`・`read_only` は日本語の注記。カードは全幅。セットアップの unit 一覧も同じ形の表にした（`unitsCard`、セットアップ画面 15522 px → 4780 px） |
+| F8 | カードの項目名（`conditions`・`freshness`・`notice`・`content_freshness_evaluated_at` など）と、固定の英文（「The recorded ceiling is not a grant…」など）が英語のまま出ていた | **修正済み**。`labels.json` に `keys`（項目名と保存場所の日本語）と `texts`（固定文の日本語）を足した。表の項目名は日本語と英語の鍵を併記し、固定文は日本語＋小さい原文、それ以外の英文は「詳細（英語の原文）」として小さく出す。ラベルの無い項目名・固定文は試験で落ちる（`test_every_field_name_a_card_shows_has_a_japanese_label`、`test_fixed_english_sentences_have_a_japanese_rendering`） |
+| F9 | 「Knowledge Lite：利用不可 trust_unreadable」と「Knowledge Lite（snapshot）：利用可能」、「AI 経路：不明」と「AI 経路（snapshot）：記録あり」が並び、食い違って見えた | **原因はこの撮影の入力**：最初の撮影では、Lite store も route ledger も無い一時ノードに、snapshot だけ `available`・記録ありと書いていた（daemon が実際に書く内容ではない）。azui の権限は関係していない（live の撮影では UI と入力が同じ uid）。実ノードでは azui は Lite store・route ledger・snapshot のどれも読めず、両方「権限なし」になる（systemd の撮影）。**処置**：入力を daemon が書く内容にそろえた。UI 側は、直接読むカードと snapshot のカードに経路を出し、直接読めないときは「このアカウントでは直接読めません。daemon の snapshot を参照」、結果が分かれたときは両方に「一致しません」と出す（`pairNotes`）。理由ラベル `access_permission_denied` は「この snapshot」から「この情報源」に直した（Lite store にも使うため）。権限は広げていない |
 
 ## 手順（再現）
 
@@ -140,8 +152,6 @@ useradd -m -G azazel-operator u6op
 docker --context colima network disconnect bridge azn-u6sd     # 以後 lo のみ
 # 最初の接続で azazel-ui.service が起動しコードを書く。u6op で ui-login してコードを得て、
 # Chromium を --network container:azn-u6sd で起動し harness.py --attach-code <file>
-# （この撮影は、ハーネスが Chromium を /bin/sh 経由で起動していた版で行った。
-#   以後の変更はその 1 行を bash にしただけ：dash は 2 桁の記述子を受け付けず x86_64 で失敗したため）
 systemctl stop azazel-ui.socket azazel-ui.service              # 他の unit の状態を前後で比較
 ```
 
@@ -161,6 +171,7 @@ systemctl stop azazel-ui.socket azazel-ui.service              # 他の unit の
 - systemd リハーサルの「権限なし」は、snapshot の leaf（`2750 <writer>:azazel-operator`）に
   `azui` が入れないことによる。読取グループを作るかどうか（オーナー判断）はここで決めていない。
 - x86_64 は Rosetta エミュレーション。x86_64 の systemd では UI を動かしていない。
+- 「機能としての成立」の語（`functional`）、AI 要約、引用名、セットアップ手順の理由などの動的な英文は訳していない（原文として表示）。
 - 外部通信 0 件はページの要求について。Chromium 自身の背景通信は止めきれず（上の結果 #8）、
   `--network none` で失敗した。ネットワークがある環境で Chromium が自分で外へ出ることは、UI の性質ではなく
   ブラウザの設定の問題として残る。

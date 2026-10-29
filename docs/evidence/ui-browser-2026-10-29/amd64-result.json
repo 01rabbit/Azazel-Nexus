@@ -12,43 +12,43 @@
    "screens": {
     "overview": {
      "png": "amd64-normal-overview.png",
-     "bytes": 118639,
-     "raw_bytes": 405111,
+     "bytes": 141348,
+     "raw_bytes": 498413,
      "width": 1280,
-     "height": 2600,
-     "page_height": 3774
+     "height": 2322,
+     "page_height": 2322
     },
     "incidents": {
      "png": "amd64-normal-incidents.png",
-     "bytes": 116994,
-     "raw_bytes": 404737,
+     "bytes": 124817,
+     "raw_bytes": 431080,
      "width": 1280,
-     "height": 2488,
-     "page_height": 2488
+     "height": 2577,
+     "page_height": 2577
     },
     "noc": {
      "png": "amd64-normal-noc.png",
-     "bytes": 73744,
-     "raw_bytes": 250187,
+     "bytes": 86303,
+     "raw_bytes": 294719,
      "width": 1280,
      "height": 2600,
      "page_height": 8700
     },
     "knowledge": {
      "png": "amd64-normal-knowledge.png",
-     "bytes": 85158,
-     "raw_bytes": 293306,
+     "bytes": 110074,
+     "raw_bytes": 382981,
      "width": 1280,
-     "height": 1530,
-     "page_height": 1530
+     "height": 1779,
+     "page_height": 1779
     },
     "setup": {
      "png": "amd64-normal-setup.png",
-     "bytes": 122048,
-     "raw_bytes": 431277,
+     "bytes": 130991,
+     "raw_bytes": 463650,
      "width": 1280,
      "height": 2600,
-     "page_height": 11522
+     "page_height": 4651
     }
    },
    "cards": [
@@ -95,11 +95,11 @@
     {
      "panel": "overview",
      "title": "AI 経路（運用者向け snapshot）",
-     "tone": "info",
-     "word": "記録あり",
-     "en": "recorded",
-     "mark": "◆",
-     "reason": "",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "no_recorded_capability_transition",
      "ok_badges_inside": 1
     },
     {
@@ -115,12 +115,12 @@
     {
      "panel": "overview",
      "title": "Knowledge Lite（運用者向け snapshot）",
-     "tone": "ok",
-     "word": "利用可能",
-     "en": "available",
-     "mark": "●",
-     "reason": "",
-     "ok_badges_inside": 2
+     "tone": "warn",
+     "word": "劣化（条件付き）",
+     "en": "degraded",
+     "mark": "▲",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 1
     },
     {
      "panel": "overview",
@@ -255,12 +255,12 @@
     {
      "panel": "knowledge",
      "title": "Knowledge Lite（運用者向け snapshot）",
-     "tone": "ok",
-     "word": "利用可能",
-     "en": "available",
-     "mark": "●",
-     "reason": "",
-     "ok_badges_inside": 4
+     "tone": "warn",
+     "word": "劣化（条件付き）",
+     "en": "degraded",
+     "mark": "▲",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 1
     },
     {
      "panel": "knowledge",
@@ -434,7 +434,7 @@
     },
     {
      "panel": "setup",
-     "title": "provider admission",
+     "title": "provider admission（提供元の承認）",
      "tone": "bad",
      "word": "阻止中",
      "en": "blocked",
@@ -470,7 +470,7 @@
      "en": "degraded",
      "mark": "▲",
      "reason": "unit_failed",
-     "ok_badges_inside": 1
+     "ok_badges_inside": 0
     },
     {
      "panel": "setup",
@@ -483,18 +483,22 @@
      "ok_badges_inside": 0
     }
    ],
+   "unlabelled_field_names": [],
    "banner": "出所：このノードの read model（azazel-nexus status --json、アカウント azui で読取）",
-   "conn": "最終取得：8:50:39"
+   "conn": "最終取得：9:20:16"
   }
  },
  "checks": {
   "normal.fresh_snapshots_shown": {
    "ok": true,
    "detail": [
-    "Knowledge Lite（運用者向け snapshot）",
     "Edge 受信（intake）",
     "説明器（explainer）"
    ]
+  },
+  "labels.every_field_name_has_a_japanese_label": {
+   "ok": true,
+   "detail": []
   },
   "network.page_requests_all_loopback": {
    "ok": true,
@@ -556,7 +560,7 @@
  "page_requests_total": 9,
  "page_requests_external": [],
  "netlog": {
-  "events": 3490,
+  "events": 3489,
   "requests": 19,
   "page_initiated": [
    {

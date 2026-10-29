@@ -148,6 +148,20 @@ or `collection` goes through the label table and every `reason_code`,
 `reason` and `conditions` entry through the reason table (`app.js`
 `WORD_KEYS`/`REASON_KEYS`, kept equal to the tests).
 Each card shows when it was observed and how long ago.
+Field names in a card's table are shown in Japanese with the field name
+beside them (`labels.json` `keys`); fixed English sentences (the M.I.O.
+notice, the setup notice, the handoff notice, what Knowledge Lite's
+"functional" means and does not mean, the external modules' reasons) are
+shown in Japanese with the original in small type (`texts`); any other
+English sentence is shown as the original, labelled so. A field name or a
+fixed sentence without a label fails the tests. Storage and the units list
+are tables, one row per location or unit, sizes in readable units.
+
+Knowledge Lite and the M.I.O. route are each shown twice: as read directly
+by `azui`, and as the owning daemon's snapshot. Each card says which path it
+is; a direct read `azui` may not make says so and points at the snapshot;
+and when the two disagree, both cards say they disagree rather than leaving
+one of them to look wrong.
 
 | Screen | Shows | Source |
 | --- | --- | --- |

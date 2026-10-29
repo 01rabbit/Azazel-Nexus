@@ -254,7 +254,17 @@ class Node:
         self._lock = threading.Lock()
         threading.Thread(target=self._keep_fresh, daemon=True).start()
 
-    def build(self, written_at: float) -> dict[str, dict]:
+    def build(self, written_at: float, claims: bool = False) -> dict[str, dict]:
+        """Every snapshot, written at `written_at`.
+
+        By default the Knowledge and M.I.O. snapshots say what knowledge-lited
+        and mio-entryd would write over this scratch node, which has no Lite
+        store and no route ledger: `unavailable`/`trust_unreadable` and "no
+        record yet" -- the same as the page's direct reads of the same node.
+        `claims=True` writes snapshots that claim `available` and a recorded
+        reading instead, which the direct reads cannot confirm (the mismatch
+        state).
+        """
         import test_status_view as tsv
         from azazel_nexus import operator_snapshots as snap
         from azazel_nexus_runtime import noc_snapshot
@@ -276,14 +286,16 @@ class Node:
             "audit_status": tsv._audit(written_at - 20),
             "knowledge_status": snap.knowledge_snapshot(
                 {"state": "available", "reason_code": "available", "generation": 5,
-                 "freshness": "current"}, written_at),
+                 "freshness": "current"} if claims else
+                {"state": "unavailable", "reason_code": "trust_unreadable", "generation": None,
+                 "freshness": "absent"}, written_at),
             "mio_status": snap.mio_snapshot(
                 {"state": "CORE", "reasons": {
                     "profile": "LITE", "resource": "core_reserve_unmeasured",
                     "trust": "not-checked", "topology": "no_verified_egress",
-                    "health": {"local": "not_admitted", "remote": "unavailable"}}},
-                time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(written_at - 60)),
-                uncertain=False, written_at=written_at),
+                    "health": {"local": "not_admitted", "remote": "unavailable"}}} if claims else None,
+                time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(written_at - 60))
+                if claims else None, uncertain=False, written_at=written_at),
             "units_status": snap.units_snapshot(units, written_at),
             # The real passive observer, on this container's netlink and sysfs.
             "noc_status": noc_snapshot.observe(
@@ -308,13 +320,16 @@ class Node:
         os.replace(tmp, path)
 
     def write(self, mode: str, now: float | None = None):
-        """Put every snapshot into `mode` (fresh, absent, broken, stale, future, symlink, oversize)."""
+        """Put every snapshot into `mode` (fresh, mismatch, absent, broken, stale, future,
+        symlink, oversize)."""
 
         self._fresh.clear()
         now = time.time() if now is None else now
         with self._lock:
             if mode == "fresh":
                 values = self.build(now)
+            elif mode == "mismatch":
+                values = self.build(now, claims=True)
             elif mode == "stale":
                 values = self.build(now - 3600)
             elif mode == "future":
@@ -336,7 +351,7 @@ class Node:
                     path.symlink_to(real)
                 else:
                     self._place(path, data)
-        if mode == "fresh":
+        if mode in ("fresh", "mismatch"):
             self._fresh.set()
 
     def _keep_fresh(self):
@@ -428,6 +443,9 @@ def capture(page: Page, out: Path, label: str, screens=SCREENS) -> dict:
         (out / "text" / f"{label}-{name}.txt").write_text(text, encoding="utf-8")
         record["screens"][name] = {"png": png.name, **size}
     record["cards"] = page.eval(CARDS_JS)
+    record["unlabelled_field_names"] = page.eval(
+        "[...document.querySelectorAll('.key')].filter(k => k.textContent.startsWith('（未登録の項目名）'))"
+        ".map(k => k.querySelector('.en').textContent)")
     record["banner"] = page.eval("document.getElementById('origin').innerText")
     record["conn"] = page.eval("document.getElementById('conn').innerText")
     tab(page, "overview")
@@ -460,7 +478,7 @@ def main(argv=None) -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--chromium", default="/usr/bin/chromium")
     ap.add_argument("--only", nargs="*", default=None,
-                    help="run only these steps (normal, narrow, degraded, recovered, xss)")
+                    help="run only these steps (normal, narrow, mismatch, degraded, recovered, xss)")
     ap.add_argument("--prefix", default="")
     ap.add_argument("--attach-code", type=Path, default=None,
                     help="do not start a UI: log into the one already listening on "
@@ -474,7 +492,7 @@ def main(argv=None) -> int:
     work = Path(os.environ.get("HARNESS_WORK", "/w/harness"))
     root = Path(os.environ["AZAZEL_ROOT"])
     work.mkdir(parents=True, exist_ok=True)
-    steps = set(args.only or ("normal", "narrow", "degraded", "recovered", "xss"))
+    steps = set(args.only or ("normal", "narrow", "mismatch", "degraded", "recovered", "xss"))
     pre = args.prefix
 
     node = Node(root)
@@ -538,6 +556,23 @@ def main(argv=None) -> int:
             check("narrow.no_horizontal_scroll", rec["scroll_width"] <= rec["client_width"],
                   [rec["scroll_width"], rec["client_width"]])
             page.size(*WIDE)
+
+        if "mismatch" in steps:
+            node.write("mismatch")
+            wait_for(page, card_tone_js("Knowledge Lite（運用者向け snapshot）") + " === 'tone-ok'",
+                     "mismatch", timeout=40)
+            time.sleep(1)
+            rec = capture(page, out, pre + "mismatch", screens=("overview",))
+            rec["notes"] = page.eval(
+                "[...document.querySelectorAll('#panel-overview article.card')].map(c => ["
+                "(c.querySelector('h3')||{}).textContent, [...c.querySelectorAll(':scope > .note, :scope > .path')]"
+                ".map(n => n.textContent)]).filter(r => r[1].length)")
+            result["states"]["mismatch"] = rec
+            said = {title: " ".join(notes) for title, notes in rec["notes"]}
+            check("mismatch.both_cards_say_they_disagree", all(
+                "一致しません" in said.get(t, "") for t in (
+                    "Knowledge Lite", "Knowledge Lite（運用者向け snapshot）",
+                    "AI 経路（M.I.O.）", "AI 経路（運用者向け snapshot）")), said)
 
         if "degraded" in steps:
             for mode in ("absent", "broken", "stale", "future", "symlink", "oversize"):
@@ -613,6 +648,9 @@ def main(argv=None) -> int:
             except subprocess.TimeoutExpired:
                 proc.kill()
 
+    unlabelled = sorted({name for rec in result["states"].values()
+                         for name in rec.get("unlabelled_field_names", [])})
+    check("labels.every_field_name_has_a_japanese_label", not unlabelled, unlabelled)
     allowed = (f"http://127.0.0.1:{UI_PORT}/", f"http://127.0.0.1:{XSS_PORT}/")
     page_reqs = result.get("requests_live", []) + result.get("requests_xss", [])
     external = [u for u in page_reqs if not u.startswith(allowed)]

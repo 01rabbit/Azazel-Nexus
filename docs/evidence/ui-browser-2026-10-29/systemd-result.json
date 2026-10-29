@@ -12,43 +12,43 @@
    "screens": {
     "overview": {
      "png": "systemd-overview.png",
-     "bytes": 124760,
-     "raw_bytes": 425867,
+     "bytes": 162710,
+     "raw_bytes": 564877,
      "width": 1280,
-     "height": 2600,
-     "page_height": 3867
+     "height": 2511,
+     "page_height": 2511
     },
     "incidents": {
      "png": "systemd-incidents.png",
-     "bytes": 36056,
-     "raw_bytes": 135730,
+     "bytes": 36092,
+     "raw_bytes": 135651,
      "width": 1280,
      "height": 1000,
      "page_height": 1000
     },
     "noc": {
      "png": "systemd-noc.png",
-     "bytes": 52855,
-     "raw_bytes": 168673,
+     "bytes": 57615,
+     "raw_bytes": 185329,
      "width": 1280,
      "height": 1441,
      "page_height": 1441
     },
     "knowledge": {
      "png": "systemd-knowledge.png",
-     "bytes": 78922,
-     "raw_bytes": 272991,
+     "bytes": 104641,
+     "raw_bytes": 362020,
      "width": 1280,
-     "height": 1552,
-     "page_height": 1552
+     "height": 1898,
+     "page_height": 1898
     },
     "setup": {
      "png": "systemd-setup.png",
-     "bytes": 123138,
-     "raw_bytes": 433076,
+     "bytes": 133579,
+     "raw_bytes": 463438,
      "width": 1280,
      "height": 2600,
-     "page_height": 5654
+     "page_height": 3832
     }
    },
    "cards": [
@@ -404,7 +404,7 @@
     },
     {
      "panel": "setup",
-     "title": "provider admission",
+     "title": "provider admission（提供元の承認）",
      "tone": "bad",
      "word": "阻止中",
      "en": "blocked",
@@ -453,8 +453,9 @@
      "ok_badges_inside": 0
     }
    ],
+   "unlabelled_field_names": [],
    "banner": "出所：このノードの read model（azazel-nexus status --json、アカウント azui で読取）",
-   "conn": "最終取得：8:45:25",
+   "conn": "最終取得：9:19:39",
    "access_words": [
     [
      "panel-overview",
@@ -668,7 +669,7 @@
     ],
     [
      "panel-setup",
-     "provider admission",
+     "provider admission（提供元の承認）",
      "blocked",
      null
     ],
@@ -728,7 +729,7 @@
   }
  ],
  "netlog": {
-  "events": 1134,
+  "events": 1135,
   "requests": 10,
   "page_initiated": [
    {
