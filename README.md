@@ -164,6 +164,7 @@ This division is intentional. It keeps the authority to change the field boundar
 - [Implementation roadmap](docs/roadmap.md) — the staged delivery plan. It describes what is intended, not what exists; this page's table is what exists.
 - [Redirect to Deception Lite: the Nexus-side prerequisites](docs/deception-redirect-prerequisites.md) — design proposal for I4 (#196): enforcement, the decision key and a reachable decoy; awaiting owner decisions.
 - [オーナー判断の一覧](docs/owner-decisions.md) — #355〜#382 の PR が残したオーナー判断を、既定値・選択肢・影響・優先度で表にしたもの。
+- [ゴールの最終報告](docs/goal-final-report.md) — Arm・共通中核・UI・Knowledge 連携のゴール（#355〜#383）で守った設計原則、成果物の所在、コンテナでの検証結果、レビューで直した問題、実機・Arm VM で未実行のものをまとめたもの。
 - [Live issue map and evidence status](docs/issue-map.md) — current open-issue classifications, main CI evidence, and hardware boundary.
 
 **Project**
