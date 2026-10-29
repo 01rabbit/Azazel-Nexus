@@ -214,7 +214,7 @@ activation. Each tuple records:
 | `renderer_digest` | digest of the configuration renderer that produced the generation |
 | `toolchain_digest` | compiler/build toolchain identity used for the payload |
 | `os_abi` | distribution ABI and kernel series the tuple was tested against |
-| `architecture` | `x86_64` for Nexus; other values are rejected |
+| `architecture` | the kernel name of the deployment-baseline profile's CPU (`x86_64`), read from `platform_profile.REVIEWED_PROFILES`; an `aarch64` tuple is accepted only as `purpose` `lab-software-verification` and never admits ([ADR-0006](adr/0006-tested-tuple-fabric-and-arm-lab.md)); other values are rejected |
 | `cpu_features` | required instruction-set features (model admission in particular) |
 | `fabric_version` | exact Fabric release pin |
 | `fabric_features` | required Fabric feature IDs from the feature-to-minimum-version matrix |
@@ -223,6 +223,12 @@ activation. Each tuple records:
 | `overlay_schema` | deployment-overlay schema version |
 | `security_epoch` | minimum acceptable security epoch |
 | `max_rollback_version` | oldest version this generation may roll back to |
+| `purpose` | the platform-profile purpose of `architecture`: `deployment-baseline` (the default, omitted from the record) or `lab-software-verification` (recorded; refused for every admission) |
+
+Fabric's `TestedCompatibilityTuple` describes the same combination as a
+descriptive claim; `fabric_boundary.project_tested_tuple` and
+`check_tested_tuple` map and compare the two field by field (ADR-0006 D5).
+A Fabric claim is never an admission input.
 
 A correctly signed artifact that matches no tested tuple is rejected. A
 correctly signed artifact from the wrong delegated role is rejected. A

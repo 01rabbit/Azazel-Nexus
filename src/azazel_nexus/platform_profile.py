@@ -27,9 +27,10 @@ profile carries a **purpose**:
   more; `DeploymentBaseline` cannot be constructed from it.
 
 A profile does not authorize anything by itself, and it does not move the
-deployment baseline: `hil_preflight.BASELINE_ARCHITECTURE` and
-`compatibility.ADMITTED_ARCHITECTURE` keep their values, and a test holds
-them equal to the kernel name of `DEPLOYMENT_BASELINE`. Asset digests that
+deployment baseline: `hil_preflight.BASELINE_ARCHITECTURE` keeps its value and
+`compatibility.ADMITTED_ARCHITECTURE` is *derived* from the one
+deployment-baseline profile in `REVIEWED_PROFILES` (ADR-0006); a test holds
+both equal to the kernel name of `DEPLOYMENT_BASELINE`. Asset digests that
 legitimately differ per CPU (the llama runtime, native extensions, wheels,
 Edge binaries) stay in the module that owns each pin, keyed by the boundary
 name that module already uses.
@@ -235,6 +236,48 @@ ARM64_LAB = _profile(
 REVIEWED_PROFILES: Mapping[str, PlatformProfile] = MappingProxyType({
     profile.profile_id: profile for profile in (DEPLOYMENT_BASELINE, ARM64_LAB)
 })
+
+
+def deployment_baseline_profile() -> PlatformProfile:
+    """The one reviewed profile whose purpose is the deployment baseline.
+
+    Read from `REVIEWED_PROFILES` rather than named, so a second baseline (or
+    none) is a refusal here instead of a silent choice in each caller.
+    """
+
+    found = [p for p in REVIEWED_PROFILES.values()
+             if p.purpose == PURPOSE_DEPLOYMENT_BASELINE]
+    if len(found) != 1:
+        raise PlatformRefused(UNREVIEWED_COMBINATION, tuple(p.profile_id for p in found))
+    return found[0]
+
+
+def profile_for_architecture(architecture: object) -> PlatformProfile:
+    """The one reviewed profile for a canonical CPU, or a reasoned refusal.
+
+    Every reviewed profile is Debian 13 / cp313, so a CPU names at most one
+    of them today. A table that ever lists two profiles for one CPU makes
+    this refuse (`UNREVIEWED_COMBINATION`) rather than pick one, and a caller
+    that needs the OS and ABI as well uses `select_profile`.
+    """
+
+    canonical(architecture)
+    found = [p for p in REVIEWED_PROFILES.values() if p.architecture == architecture]
+    if len(found) != 1:
+        raise PlatformRefused(UNREVIEWED_COMBINATION, tuple(p.profile_id for p in found))
+    return found[0]
+
+
+def purpose_for_architecture(architecture: object) -> str:
+    """What results on this CPU may be used for: the reviewed profile's purpose.
+
+    ``amd64`` is the deployment baseline; ``arm64`` is lab software
+    verification. Used where a record names a CPU but no profile -- Fabric's
+    `TestedCompatibilityTuple` carries ``architecture`` and no purpose -- so
+    the purpose is read from the reviewed table, never from the record.
+    """
+
+    return profile_for_architecture(architecture).purpose
 
 
 def profile(profile_id: object) -> PlatformProfile:

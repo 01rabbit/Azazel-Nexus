@@ -693,6 +693,14 @@ jobs:
                   f"and say why, got available={projection.available!r} "
                   f"reason={projection.reason!r}"
               )
+          # The tested-tuple adapter (ADR-0006) answers the same way: with no
+          # Fabric, a comparison is unavailable and says why, never an error.
+          conformance = boundary.check_tested_tuple(None, {})
+          if conformance.conforms or "not installed" not in conformance.reason:
+              raise SystemExit(
+                  "with no Fabric installed the tuple comparison must be "
+                  f"unavailable and say why, got {conformance!r}"
+              )
           claims = status.collect_status()
           if not claims:
               raise SystemExit("collect_status returned nothing with no Fabric installed")
@@ -1102,6 +1110,8 @@ jobs:
             tests/unit/test_platform_profile.py \
             tests/unit/test_commissioning_fabric.py \
             tests/unit/test_inventory_fabric.py \
+            tests/unit/test_fabric_tested_tuple.py \
+            tests/unit/test_compatibility.py \
             -q --no-header -rs | tee /tmp/boundary.txt
           if grep -qE '[0-9]+ skipped' /tmp/boundary.txt; then
             echo "a Fabric-dependent test skipped on the job that installs Fabric" >&2

@@ -150,6 +150,7 @@ This division is intentional. It keeps the authority to change the field boundar
 - [Deployment candidates](docs/deployment-candidates.md) — what a target machine has to be, and why no machine is named.
 - [Core reserve measurement](docs/core-reserve-measurement.md) — the procedure that would close `HG-05`, and the shape the result has to take.
 - [ADR-0003: the Arm software-verification profile](docs/adr/0003-arm-software-verification-profile.md) — amd64 stays the deployment baseline; what an Arm VM run is evidence of, and what it is not.
+- [ADR-0006: tested tuples, Fabric and Arm](docs/adr/0006-tested-tuple-fabric-and-arm-lab.md) — the admitted CPU comes from the baseline profile; Nexus ↔ Fabric `TestedCompatibilityTuple` field mapping; an Arm tuple is lab-only and never admits.
 - [Integration evidence](docs/integration-evidence.md) · [Edge package verification](docs/edge-package-verification.md) · [degradation matrix](docs/degradation-matrix.md).
 
 **Contracts and release**
