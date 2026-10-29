@@ -235,37 +235,59 @@ def test_validator_requires_listed_canonical_record_and_untampered_bundle(tmp_pa
     assert result.reserve_mib is None
 
 
-@pytest.mark.parametrize("gate", ["hg-01", "hg-04"])
-def test_capture_on_the_arm64_lab_profile_records_it_and_records_refuse_it(
-    gate, monkeypatch, capsys
-):
-    """R3: a capture taken on the arm64 lab VM says so, and a gate record
-    that declares the x86_64 platform cannot embed it."""
+#: The arm64 lab VM's platform as the observer would report it. Injected.
+LAB_HOST = HostObservation(**dict(BASELINE_HOST.as_record(), machine="aarch64",
+                                  soabi="cpython-313-aarch64-linux-gnu",
+                                  dpkg_architecture="arm64"))
+#: A negative filter as an arm64 host would pass it: the x86 flag is
+#: unobservable, never clear. Hypothetical: the VMware Arm VM reads DMI observed.
+ARM64_CLEAR = dict(dict.fromkeys(SENSORS, "clear"), cpu_hypervisor="unobservable")
 
-    lab = HostObservation(**dict(BASELINE_HOST.as_record(), machine="aarch64",
-                                 soabi="cpython-313-aarch64-linux-gnu",
-                                 dpkg_architecture="arm64"))
-    monkeypatch.setattr(capture, "observe_virtualization", lambda: dict.fromkeys(SENSORS, "clear"))
-    monkeypatch.setattr(capture, "observe_platform", lambda: lab)
-    monkeypatch.setattr(capture, "run_identity", lambda: dict(IDENTITY))
-    monkeypatch.setattr(capture, "ReadOnlySystemd", Manager)
-    monkeypatch.setattr(capture, "capture_hg04", lambda: {
-        "schema": "azazel-nexus/hil-capture/hg-04/2", "gate_id": "HG-04",
-        "capture_method": "RTM_GETLINK/IFLA_PERM_ADDRESS", "interfaces": []})
-    assert capture.main([gate]) == 0
-    report = json.loads(capsys.readouterr().out)
-    assert report["platform_profile_id"] == "debian-13-arm64-cp313-lab"
-    assert report["uname_machine"] == "aarch64"
-    assert report["dpkg_architecture"] == "arm64"
-    # The capture is a well-formed observation of a lab host ...
+
+@pytest.mark.parametrize("gate", ["hg-01", "hg-04"])
+def test_capture_refuses_the_arm64_lab_profile_before_acquisition(gate, monkeypatch, capsys):
+    """H4: like core_reserve_probe, the capture refuses a profile that can
+    back no hardware-gate record, before the filter, identity or acquisition."""
+
+    monkeypatch.setattr(capture, "observe_platform", lambda: LAB_HOST)
+    monkeypatch.setattr(capture, "observe_virtualization",
+                        lambda: pytest.fail("lab profile reached the filter"))
+    monkeypatch.setattr(capture, "run_identity", lambda: pytest.fail("lab profile acquired"))
+    assert capture.main([gate]) == 2
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err == "refused: LAB_PROFILE_NOT_FOR_PRODUCTION\n"
+
+
+@pytest.mark.parametrize("gate", ["HG-01", "HG-04"])
+def test_a_lab_profile_capture_from_an_earlier_tool_is_still_refused(gate):
+    """R3: a capture recorded on the arm64 lab profile (as the tool before
+    2026-10-30 wrote it) is a well-formed observation of a lab host, and a
+    gate record declaring the x86_64 platform cannot embed it."""
+
+    report = {
+        "schema": f"azazel-nexus/hil-capture/{gate.lower()}/2", "gate_id": gate,
+        **({"capture_method": "systemd-system-bus-read-only", "systemd_version": "257 (test)",
+            "unit_files": {"test.service": "masked"},
+            "units": {"test.service": {"active_state": "inactive", "sub_state": "dead"}}} if gate == "HG-01" else
+           {"capture_method": "RTM_GETLINK/IFLA_PERM_ADDRESS", "interfaces": []}),
+        **{k: v for k, v in IDENTITY.items() if k != "host_digest"},
+        "dut_fingerprint": IDENTITY["host_digest"], "dut_id": DUT,
+        "platform_profile_id": "debian-13-arm64-cp313-lab", "uname_machine": "aarch64",
+        "dpkg_architecture": "arm64",
+        "virtualization_not_observed": True, "virtualization_observations": dict(ARM64_CLEAR),
+    }
     assert validate_acquisition(report).status is Status.SHAPE_ONLY
-    # ... and a gate record declaring the x86_64 platform refuses it.
     record = fixture_envelope(GATE_SCHEMA)
-    record.update(gate_id=gate.upper(), platform="rugged-x86_64-linux",
+    record.update(gate_id=gate, platform="rugged-x86_64-linux",
                   acquisition=report, observations={})
     reasons = validate_record(record).reasons
     assert any("observed platform is not the deployment baseline" in r for r in reasons)
     assert any("declared platform differs" in r for r in reasons)
+    # The pre-2026-10-30 observer wrote `clear` for the absent x86 flag; the
+    # capture's own filter, read for aarch64, refuses that reading.
+    report["virtualization_observations"]["cpu_hypervisor"] = "clear"
+    assert validate_acquisition(report).status is Status.REFUSED
 
 
 @pytest.mark.parametrize("machine", ["riscv64", "armv7l"])

@@ -377,6 +377,10 @@ def test_campaign_v2_copy_refused_even_with_distinct_run_envelopes():
 # -- the declared platform is compared with what was observed (ADR-0003 R3) --
 
 
+#: A negative filter as an arm64 host passes it: the x86 flag unobservable.
+ARM64_CLEAR = dict(dict.fromkeys(SENSORS, "clear"), cpu_hypervisor="unobservable")
+
+
 def baseline_capture(record, **changes):
     """An HG-01 capture as `az-hil-capture` writes it (schema 2). Injected."""
     from azazel_nexus.hil_records.contracts import anonymous_dut
@@ -428,13 +432,20 @@ def test_a_baseline_capture_matches_the_declared_platform():
 
 
 @pytest.mark.parametrize(("changes", "reason"), [
-    # The arm64 lab VM, honestly observed: never hardware evidence.
+    # The arm64 lab profile, observed (its x86 flag unobservable): never
+    # hardware evidence.
     ({"platform_profile_id": "debian-13-arm64-cp313-lab", "uname_machine": "aarch64",
-      "dpkg_architecture": "arm64"},
+      "dpkg_architecture": "arm64", "virtualization_observations": ARM64_CLEAR},
      "observed platform is not the deployment baseline"),
     ({"platform_profile_id": "debian-13-arm64-cp313-lab", "uname_machine": "aarch64",
-      "dpkg_architecture": "arm64"},
+      "dpkg_architecture": "arm64", "virtualization_observations": ARM64_CLEAR},
      "declared platform differs from the observed platform profile"),
+    # ... and read for aarch64, a `clear` x86 flag is not an observation (H4).
+    ({"platform_profile_id": "debian-13-arm64-cp313-lab", "uname_machine": "aarch64",
+      "dpkg_architecture": "arm64"}, "acquisition: invalid acquisition shape"),
+    # On x86 the flag must have been read.
+    ({"virtualization_observations": ARM64_CLEAR}, "acquisition: invalid acquisition shape"),
+    ({"virtualization_not_observed": False}, "acquisition: invalid acquisition shape"),
     # A capture whose uname contradicts its own profile is malformed.
     ({"uname_machine": "aarch64"}, "acquisition: invalid acquisition shape"),
     ({"platform_profile_id": "debian-13-amd64-cp313-lab"}, "acquisition: invalid acquisition shape"),
@@ -464,7 +475,8 @@ def test_the_capture_is_read_under_either_key_but_not_both():
     record = fixture_record()
     record.update(gate_id="HG-01")
     capture = baseline_capture(record, platform_profile_id="debian-13-arm64-cp313-lab",
-                               uname_machine="aarch64", dpkg_architecture="arm64")
+                               uname_machine="aarch64", dpkg_architecture="arm64",
+                               virtualization_observations=ARM64_CLEAR)
     record["capture"] = capture
     assert any("not the deployment baseline" in r for r in platform_reasons(record))
     record["acquisition"] = capture
@@ -480,7 +492,7 @@ def test_a_campaign_run_measured_on_the_lab_profile_is_refused():
             schema=RESERVE_SCHEMA_V4, boot_fingerprint=run["boot_fingerprint"],
             run_sequence=index + 1, build_commit="c" * 40, kernel_release="6.12.0-test",
             host_digest=campaign["dut_fingerprint"], virtualization_not_observed=True,
-            virtualization_observations=dict.fromkeys(SENSORS, "clear"),
+            virtualization_observations=ARM64_CLEAR,
             architecture="arm64", platform_profile_id="debian-13-arm64-cp313-lab")
     reasons = refused(campaign)
     assert "runs[0]: measurement: observed platform is not the deployment baseline" in reasons

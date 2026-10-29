@@ -6,9 +6,15 @@ no hardware-only/synthetic assertion: only an operator can attest the DUT.
 Each capture also records the platform it was taken on (schema version 2,
 ADR-0003 R3): the reviewed `platform_profile_id` selected from the host
 observation and the observed ``uname`` machine. A host no reviewed profile
-matches is refused with the reason code. An arm64 lab host is *recorded* as
-the lab profile, and `hil_records` refuses that capture as hardware evidence.
-The observation is what the host reported, not attestation.
+matches is refused with the reason code, and so is a reviewed profile that is
+not the deployment baseline (`LAB_PROFILE_NOT_FOR_PRODUCTION`, the arm64 lab
+profile): a capture is only ever an input to a hardware-gate record, which
+cannot be backed by a lab profile, so the capture is refused before
+acquisition as `core_reserve_probe` refuses its measurement. `hil_records`
+still refuses a lab-profile capture taken by an earlier version. The
+negative virtualization filter is applied for the observed CPU
+(`azazel_nexus.virtualization`). The observation is what the host reported,
+not attestation.
 """
 
 from __future__ import annotations
@@ -88,22 +94,25 @@ def main(argv=None):
     parser.add_argument("gate", choices=("hg-01", "hg-04"))
     args = parser.parse_args(argv)
     from azazel_nexus.lab_host import is_lab_host
-    from azazel_nexus.platform_profile import PlatformRefused
+    from azazel_nexus.platform_profile import PlatformRefused, require_deployment_baseline
 
     if is_lab_host():
         print("refused: LAB_HOST_MARKER", file=sys.stderr)
         return 2
     try:
-        observations = observe_virtualization()
-        if not virtualization_not_observed(observations):
-            print("refused: RESERVE_VIRTUALIZATION_OBSERVED", file=sys.stderr)
-            return 2
         platform_observed = observe_platform()
         try:
             platform = select_platform(platform_observed)
+            # The same gate as core_reserve_probe: a lab profile can back no
+            # hardware-gate record, so nothing is acquired on it (H4).
+            require_deployment_baseline(platform, "hardware-gate-record")
         except PlatformRefused as refused:
             # A reason code only; the observed values stay off stderr.
             print(f"refused: {refused.reason}", file=sys.stderr)
+            return 2
+        observations = observe_virtualization()
+        if not virtualization_not_observed(observations, platform_observed.machine):
+            print("refused: RESERVE_VIRTUALIZATION_OBSERVED", file=sys.stderr)
             return 2
         identity = run_identity()
         if args.gate == "hg-01":

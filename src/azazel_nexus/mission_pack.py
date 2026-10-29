@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from . import lab_host
 from .audit import AuditLedger
 from .compatibility import HostFacts, TestedTupleSet
 from .core_reserve import load_reserve
@@ -248,6 +249,11 @@ class MissionPack:
         return self._verify(_media(media), now=now, predecessor=True)
 
     def _verify(self, raw: bytes, *, now: str, predecessor: bool) -> VerifiedPack:
+        # A marked lab host may hold the published fixture anchor (lab_keys);
+        # no Pack is verified, staged, activated or rolled back there, so a
+        # Pack's knowledge_lite slice can never name a fixture-signed bundle
+        # (owner-decisions H7). Every stage/transition goes through here.
+        _require(not lab_host.is_lab_host(), "LAB_HOST_MARKER")
         doc = _manifest(raw)
         ctx = self.context
         pack_digest = digest(raw)

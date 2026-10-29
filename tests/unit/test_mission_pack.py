@@ -450,10 +450,59 @@ def test_every_generation_file_write_interruption_keeps_first_install_core(node,
     assert service.status()["fallback"] == "CORE (no previous provider)"
 
 
-def test_real_model_and_lite_slices_are_reused_and_not_reimported(node, tmp_path, lab_host):
-    # The producer's published fixture key is a commissioned anchor only on a
-    # marked lab host (lab_keys).
+def _lite_slice(tmp_path, *, fixture: bool):
+    """A commissioned Lite slice holding one admitted bundle.
+
+    ``fixture`` uses the producer's published fixture (anchor and bundle), a
+    commissioned anchor only on a marked lab host (lab_keys). Otherwise the
+    bundle is signed by a key generated here, as a site signer would.
+    """
+    import hashlib
+
+    from test_lite_bundle import _manifest, _tar
+
     from azazel_nexus.lite_import import CommissionedLite, LiteImport
+
+    lite_root = tmp_path / "lite"
+    (lite_root / "trust").mkdir(parents=True)
+    (lite_root / "inbox").mkdir()
+    if fixture:
+        contract = Path(__file__).resolve().parents[2] / "contract" / "azazel-knowledge-lite"
+        shutil.copyfile(contract / "anchors.toml", lite_root / "trust" / "anchors.toml")
+        shutil.copyfile(contract / "lite.tar.gz", lite_root / "inbox" / "lite.tar.gz")
+    else:
+        signer = SigningKey.generate()
+        (lite_root / "trust" / "anchors.toml").write_text(
+            f'threshold = 1\n[keys]\n"site" = "{signer.verify_key.encode().hex()}"\n')
+        tables = {"tables/attack_technique.jsonl": json.dumps(
+            {"technique_id": "T1110", "name": "Brute Force",
+             "agg_next_expiry": "2027-01-01T00:00:00Z"}).encode() + b"\n"}
+        manifest = json.dumps({**_manifest(bundle_version=5), "files": {
+            path: hashlib.sha256(body).hexdigest() for path, body in tables.items()}},
+            indent=2, sort_keys=True).encode()
+        signature = signer.sign(manifest).signature.hex()
+        (lite_root / "inbox" / "lite.tar.gz").write_bytes(_tar(
+            {"manifest.json": manifest, "manifest.sig": f"site:{signature}\n".encode(), **tables}))
+    lite = LiteImport(CommissionedLite(lite_root))
+    assert lite.import_entry(lite.list_inbox()[0].entry_id, now=NOW).admitted
+    accepted = lite._admitted_bundle()
+    lite_path = lite.commissioned.admitted / "current.tar.gz"
+    asset = mp.InstalledAsset(lite_path, accepted.bundle_digest, lite_path.stat().st_size,
+                              str(accepted.bundle_version))
+    return lite, asset
+
+
+def _with_lite(ctx, doc, lite, lite_asset):
+    assets = dict(ctx.assets)
+    assets[("knowledge_lite", "lite", lite_asset.digest)] = lite_asset
+    newer = json.loads(mp.canonical(doc))
+    newer["components"].append({"kind": "knowledge_lite", "id": "lite", "digest": lite_asset.digest,
+                                "size_bytes": lite_asset.size_bytes, "version": lite_asset.version})
+    newer["total_size_bytes"] += lite_asset.size_bytes
+    return replace(ctx, assets=assets, lite=lite), newer
+
+
+def test_real_model_and_lite_slices_are_reused_and_not_reimported(node, tmp_path):
     from azazel_nexus.model_catalog import (
         CATALOG_DOMAIN,
         CATALOG_FILENAME,
@@ -481,29 +530,16 @@ def test_real_model_and_lite_slices_are_reused_and_not_reimported(node, tmp_path
     imported = models.import_entry(entry_id_for(display_name="weights", size=len(weights)),
                                    "advisor", now=NOW, actor=ACTOR)
     assert imported.promoted
-    lite_root = tmp_path / "lite"
-    (lite_root / "trust").mkdir(parents=True)
-    (lite_root / "inbox").mkdir()
-    contract = Path(__file__).resolve().parents[2] / "contract" / "azazel-knowledge-lite"
-    shutil.copyfile(contract / "anchors.toml", lite_root / "trust" / "anchors.toml")
-    shutil.copyfile(contract / "lite.tar.gz", lite_root / "inbox" / "lite.tar.gz")
-    lite = LiteImport(CommissionedLite(lite_root))
-    assert lite.import_entry(lite.list_inbox()[0].entry_id, now=NOW).admitted
-    accepted = lite._admitted_bundle()
+    lite, lite_asset = _lite_slice(tmp_path, fixture=False)
+    lite_path = lite_asset.path
     model_asset = mp.InstalledAsset(models.commissioned.store / artifact_filename(entry),
                                     entry.digest, entry.size_bytes, "1.0.0", 4096)
-    lite_path = lite.commissioned.admitted / "current.tar.gz"
-    lite_asset = mp.InstalledAsset(lite_path, accepted.bundle_digest, lite_path.stat().st_size,
-                                   str(accepted.bundle_version))
-    assets = dict(ctx.assets)
-    assets[("model", "advisor", model_asset.digest)] = model_asset
-    assets[("knowledge_lite", "lite", lite_asset.digest)] = lite_asset
-    ctx = replace(ctx, assets=assets, models=models, lite=lite)
-    newer = json.loads(mp.canonical(doc))
-    for kind, identity, asset in [("model", "advisor", model_asset), ("knowledge_lite", "lite", lite_asset)]:
-        newer["components"].append({"kind": kind, "id": identity, "digest": asset.digest,
-                                    "size_bytes": asset.size_bytes, "version": asset.version})
-        newer["total_size_bytes"] += asset.size_bytes
+    ctx, newer = _with_lite(ctx, doc, lite, lite_asset)
+    ctx = replace(ctx, assets={**ctx.assets, ("model", "advisor", model_asset.digest): model_asset},
+                  models=models)
+    newer["components"].append({"kind": "model", "id": "advisor", "digest": model_asset.digest,
+                                "size_bytes": model_asset.size_bytes, "version": model_asset.version})
+    newer["total_size_bytes"] += model_asset.size_bytes
     newer["memory_need_mib"] = 5000
     service = mp.MissionPack(ctx)
     before_model = models.current_generation()
@@ -511,23 +547,41 @@ def test_real_model_and_lite_slices_are_reused_and_not_reimported(node, tmp_path
     stage_activate(service, media(newer))
     assert models.current_generation() == before_model
     assert lite_path.read_bytes() == before_lite
-    # Off a marked lab host the Pack's knowledge_lite slice refuses the same
-    # fixture-signed bundle: its gate reads the commissioned anchors (lab_keys).
-    from azazel_nexus import lab_host as lab_marker
-
-    marked = lab_marker.LAB_HOST_MARKER
-    lab_marker.LAB_HOST_MARKER = tmp_path / "no-lab-marker"
-    try:
-        newer["rollback_predecessor"] = service.status()["pack_digest"]
-        with pytest.raises(mp.PackRefused, match="Knowledge Lite reference refused"):
-            service.verify(media(newer), now=NOW)
-    finally:
-        lab_marker.LAB_HOST_MARKER = marked
     # A pack cannot revive missing or unverified installed assets.
     model_asset.path.write_bytes(b"x" * model_asset.size_bytes)
     newer["rollback_predecessor"] = service.status()["pack_digest"]
     with pytest.raises(mp.PackRefused, match="model verification"):
         service.verify(media(newer), now=NOW)
+
+
+def test_a_marked_lab_host_verifies_no_pack(node, tmp_path, lab_host):
+    """H7: the marker that lets a lab pin the published fixture anchor also
+    refuses every Pack, so its knowledge_lite slice cannot name a
+    fixture-signed bundle; off the marker, that slice refuses the bundle."""
+
+    from azazel_nexus import lab_host as lab_marker
+
+    ctx, doc, media = node
+    lite, lite_asset = _lite_slice(tmp_path, fixture=True)  # admitted: the host is marked
+    lab_ctx, newer = _with_lite(ctx, doc, lite, lite_asset)
+    service = mp.MissionPack(lab_ctx)
+    for pack in (media(newer), media()):  # with and without the fixture-signed slice
+        with pytest.raises(mp.PackRefused, match="LAB_HOST_MARKER"):
+            service.verify(pack, now=NOW)
+        with pytest.raises(mp.PackRefused, match="LAB_HOST_MARKER"):
+            service.stage(pack, now=NOW, actor=ACTOR, dry_run=True)
+    assert not ctx.root.exists()
+    # Unmarked, the Pack is verified and its knowledge_lite slice refuses the
+    # same fixture-signed bundle (its gate reads the commissioned anchors).
+    lab_marker.LAB_HOST_MARKER = tmp_path / "no-lab-marker"
+    with pytest.raises(mp.PackRefused, match="Knowledge Lite reference refused"):
+        service.verify(media(newer), now=NOW)
+    # A generation staged before the host was marked is not activated after.
+    staged = mp.MissionPack(ctx).stage(media(), now=NOW, actor=ACTOR)["staged_generation"]
+    lab_marker.LAB_HOST_MARKER = lab_host
+    with pytest.raises(mp.PackRefused, match="LAB_HOST_MARKER"):
+        mp.MissionPack(ctx).activate(staged, now=NOW, actor=ACTOR, reason="reviewed")
+    assert mp.MissionPack(ctx).current() is None
 
 
 def test_audit_failure_prevents_pointer_change(node, monkeypatch):

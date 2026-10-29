@@ -410,7 +410,11 @@ def test_a_v4_record_round_trips_with_its_cpu() -> None:
 
 def test_a_reserve_measured_on_the_arm64_lab_profile_is_refused() -> None:
     record = a_record(provenance=Provenance.MEASURED, architecture="arm64",
-                      platform_profile_id="debian-13-arm64-cp313-lab")
+                      platform_profile_id="debian-13-arm64-cp313-lab",
+                      # The x86 flag on arm64 is unobservable, never clear (H4).
+                      virtualization_observations=dict(
+                          V4_METADATA["virtualization_observations"],
+                          cpu_hypervisor="unobservable"))
     # It parses: it is a well-formed record of a lab run ...
     assert parse_record(json.dumps(record_as_document(record))) == record
     # ... and it is never the deployment baseline's reserve.
