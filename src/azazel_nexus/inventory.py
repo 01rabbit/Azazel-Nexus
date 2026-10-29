@@ -69,10 +69,10 @@ DEFAULT_SYSFS_NET = Path("/sys/class/net")
 
 #: The composite identity components, in the order `docs/commissioning.md` §3
 #: tabulates them. Deliberately a **local restatement of nothing**: these are
-#: the keys this module fills in, and `tests/unit/test_inventory.py` pins them
-#: against Fabric's `COMPOSITE_IDENTITY_FIELDS` so the two cannot drift apart
-#: unnoticed. A module that imported Fabric to get them would put a second
-#: Fabric import site in the CORE path.
+#: the keys this module fills in, and `tests/unit/test_inventory_fabric.py`
+#: pins them against Fabric's `COMPOSITE_IDENTITY_FIELDS` so the two cannot
+#: drift apart unnoticed. A module that imported Fabric to get them would put a
+#: second Fabric import site in the CORE path.
 IDENTITY_FIELDS = (
     "bus_path",
     "permanent_mac",
