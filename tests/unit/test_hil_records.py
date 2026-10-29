@@ -390,7 +390,8 @@ def baseline_capture(record, **changes):
         "dut_id": record["dut_id"], "dut_fingerprint": record["dut_fingerprint"],
         "boot_fingerprint": "hmac-sha256:" + "c" * 64, "build_commit": "d" * 40,
         "kernel_release": "6.12.0-test", "platform_profile_id": "debian-13-amd64-cp313",
-        "uname_machine": "x86_64", "virtualization_not_observed": True,
+        "uname_machine": "x86_64", "dpkg_architecture": "amd64",
+        "virtualization_not_observed": True,
         "virtualization_observations": dict.fromkeys(SENSORS, "clear"),
     }
     capture.update(changes)
@@ -428,14 +429,20 @@ def test_a_baseline_capture_matches_the_declared_platform():
 
 @pytest.mark.parametrize(("changes", "reason"), [
     # The arm64 lab VM, honestly observed: never hardware evidence.
-    ({"platform_profile_id": "debian-13-arm64-cp313-lab", "uname_machine": "aarch64"},
+    ({"platform_profile_id": "debian-13-arm64-cp313-lab", "uname_machine": "aarch64",
+      "dpkg_architecture": "arm64"},
      "observed platform is not the deployment baseline"),
-    ({"platform_profile_id": "debian-13-arm64-cp313-lab", "uname_machine": "aarch64"},
+    ({"platform_profile_id": "debian-13-arm64-cp313-lab", "uname_machine": "aarch64",
+      "dpkg_architecture": "arm64"},
      "declared platform differs from the observed platform profile"),
     # A capture whose uname contradicts its own profile is malformed.
     ({"uname_machine": "aarch64"}, "acquisition: invalid acquisition shape"),
     ({"platform_profile_id": "debian-13-amd64-cp313-lab"}, "acquisition: invalid acquisition shape"),
     ({"platform_profile_id": None}, "acquisition: invalid acquisition shape"),
+    # dpkg must have been read and name the profile's CPU (F1).
+    ({"dpkg_architecture": "unavailable"}, "acquisition: invalid acquisition shape"),
+    ({"dpkg_architecture": "i386"}, "acquisition: invalid acquisition shape"),
+    ({"dpkg_architecture": None}, "acquisition: invalid acquisition shape"),
     # The version 1 capture had no observation to compare with.
     ({"schema": "azazel-nexus/hil-capture/hg-01/1"}, "acquisition: invalid acquisition shape"),
 ])
@@ -457,7 +464,7 @@ def test_the_capture_is_read_under_either_key_but_not_both():
     record = fixture_record()
     record.update(gate_id="HG-01")
     capture = baseline_capture(record, platform_profile_id="debian-13-arm64-cp313-lab",
-                               uname_machine="aarch64")
+                               uname_machine="aarch64", dpkg_architecture="arm64")
     record["capture"] = capture
     assert any("not the deployment baseline" in r for r in platform_reasons(record))
     record["acquisition"] = capture

@@ -117,7 +117,8 @@ def main(argv=None):
             raise ValueError("platform observation changed")
         report.update(identity)
         report.update(platform_profile_id=platform.profile_id,
-                      uname_machine=platform_observed.machine)
+                      uname_machine=platform_observed.machine,
+                      dpkg_architecture=platform_observed.dpkg_architecture)
         report.update(virtualization_not_observed=True,
                       virtualization_observations=observations)
         report["dut_fingerprint"] = report.pop("host_digest")

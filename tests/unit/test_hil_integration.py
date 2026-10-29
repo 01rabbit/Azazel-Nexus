@@ -100,6 +100,7 @@ def test_capture_stdout_passes_gate_acquisition_shape_and_bundle_lint(
     assert report["schema"].endswith("/2")
     assert report["platform_profile_id"] == "debian-13-amd64-cp313"
     assert report["uname_machine"] == "x86_64"
+    assert report["dpkg_architecture"] == "amd64"
     assert validate_acquisition(report).status is Status.SHAPE_ONLY
     assert not validate_acquisition(report).admissible
     assert validate_record(report).status is Status.REFUSED
@@ -255,6 +256,7 @@ def test_capture_on_the_arm64_lab_profile_records_it_and_records_refuse_it(
     report = json.loads(capsys.readouterr().out)
     assert report["platform_profile_id"] == "debian-13-arm64-cp313-lab"
     assert report["uname_machine"] == "aarch64"
+    assert report["dpkg_architecture"] == "arm64"
     # The capture is a well-formed observation of a lab host ...
     assert validate_acquisition(report).status is Status.SHAPE_ONLY
     # ... and a gate record declaring the x86_64 platform refuses it.
@@ -276,3 +278,34 @@ def test_capture_refuses_an_unreviewed_platform_with_a_reason(machine, monkeypat
     output = capsys.readouterr()
     assert not output.out
     assert output.err.strip() == "refused: UNKNOWN_ARCHITECTURE"
+
+
+@pytest.mark.parametrize("gate", ["hg-01", "hg-04"])
+def test_capture_refuses_when_the_platform_changes_during_acquisition(gate, monkeypatch, capsys):
+    """F4: the second observation must equal the first, or nothing is printed."""
+
+    hosts = iter([BASELINE_HOST, HostObservation(**dict(BASELINE_HOST.as_record(),
+                                                         release="6.12.1-test"))])
+    monkeypatch.setattr(capture, "observe_virtualization", lambda: dict.fromkeys(SENSORS, "clear"))
+    monkeypatch.setattr(capture, "observe_platform", lambda: next(hosts))
+    monkeypatch.setattr(capture, "run_identity", lambda: dict(IDENTITY))
+    monkeypatch.setattr(capture, "ReadOnlySystemd", Manager)
+    monkeypatch.setattr(capture, "capture_hg04", lambda: {
+        "schema": "azazel-nexus/hil-capture/hg-04/2", "gate_id": "HG-04",
+        "capture_method": "RTM_GETLINK/IFLA_PERM_ADDRESS", "interfaces": []})
+    assert capture.main([gate]) != 0
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "6.12.1-test" not in output.err
+
+
+@pytest.mark.parametrize("dpkg", ["unavailable", "i386"])
+def test_capture_refuses_an_unread_or_foreign_dpkg(dpkg, monkeypatch, capsys):
+    host = HostObservation(**dict(BASELINE_HOST.as_record(), dpkg_architecture=dpkg))
+    monkeypatch.setattr(capture, "observe_virtualization", lambda: dict.fromkeys(SENSORS, "clear"))
+    monkeypatch.setattr(capture, "observe_platform", lambda: host)
+    monkeypatch.setattr(capture, "run_identity", lambda: pytest.fail("acquired without dpkg"))
+    assert capture.main(["hg-01"]) == 2
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err.strip() in ("refused: DPKG_UNOBSERVED", "refused: DPKG_ARCHITECTURE_MISMATCH")

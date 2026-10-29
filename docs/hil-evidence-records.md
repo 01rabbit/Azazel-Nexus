@@ -133,9 +133,10 @@ Both capture outputs carry `gate_id`, `capture_method`, `dut_id`,
 `virtualization_not_observed`, `virtualization_observations`, and (version 2,
 [ADR-0003](adr/0003-arm-software-verification-profile.md) R3) the observed
 platform: `platform_profile_id`, the reviewed profile selected from the host
-observation, and `uname_machine`. A host no reviewed profile matches is
-refused before acquisition with only its reason code on stderr (for example
-`refused: UNKNOWN_ARCHITECTURE`). An arm64 lab host is recorded as
+observation, `uname_machine`, and `dpkg_architecture`. A host no reviewed
+profile matches -- including one whose dpkg cannot be read
+(`DPKG_UNOBSERVED`) -- is refused before acquisition with only its reason
+code on stderr (for example `refused: UNKNOWN_ARCHITECTURE`). An arm64 lab host is recorded as
 `debian-13-arm64-cp313-lab`, and the record validator refuses that capture.
 Before acquiring either gate, `az-hil-capture` applies the negative filter;
 a failed filter emits only `refused: RESERVE_VIRTUALIZATION_OBSERVED` on stderr
@@ -150,8 +151,9 @@ read as the same field; both at once are refused); its gate and DUT must
 match. HG-01 and HG-04 records **must** embed it, because it is the only
 observation of the platform they were taken on: the declared `platform`
 (`rugged-x86_64-linux`) must name the observed profile, that profile must be
-the deployment baseline (`debian-13-amd64-cp313`), and `uname_machine` must be
-its CPU (`x86_64`); otherwise the record is refused. Gates without a capture
+the deployment baseline (`debian-13-amd64-cp313`), and `uname_machine` and
+`dpkg_architecture` must be its CPU (`x86_64`, `amd64`); otherwise the record
+is refused. Gates without a capture
 tool (HG-02, HG-06, HG-07), behaviour and drill records still carry only the
 declared string. Its `observations` must still supply all gate-specific
 outcomes and artifact references. Do not fill unobserved outcomes to make

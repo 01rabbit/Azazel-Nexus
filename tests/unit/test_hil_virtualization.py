@@ -95,7 +95,8 @@ def protocol_record(tmp_path, monkeypatch, private_os):
                 "dut_id": record["dut_id"], "dut_fingerprint": record["dut_fingerprint"],
                 "boot_fingerprint": "hmac-sha256:" + "c" * 64, "build_commit": "d" * 40,
                 "kernel_release": "6.12.0-test", "platform_profile_id": "debian-13-amd64-cp313",
-                "uname_machine": "x86_64", "virtualization_not_observed": True,
+                "uname_machine": "x86_64", "dpkg_architecture": "amd64",
+        "virtualization_not_observed": True,
                 "virtualization_observations": dict.fromkeys(SENSORS, "clear"),
             }
             record.update(gate_id="HG-01", observations={

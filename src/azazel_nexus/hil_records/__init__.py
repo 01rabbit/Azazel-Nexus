@@ -219,13 +219,16 @@ def _descriptions(
             reasons.append(f"observations.{key}: capture/reference required")
 
 
-def _observed_platform(record: dict, profile_id: object, machine: object,
+def _observed_platform(record: dict, profile_id: object,
                        reasons: list[str], *, where: str, use: str) -> None:
     """Compare the record's declared platform with what was observed.
 
     Refused: an unknown profile, a profile that is not the one the declared
-    platform names, a profile that cannot back ``use`` (the arm64 lab profile
-    never can), and an observed uname that is not the profile's CPU.
+    platform names, and a profile that cannot back ``use`` (the arm64 lab
+    profile never can). That the observed uname and dpkg are the profile's
+    CPU is checked where each observation is parsed: `validate_acquisition`
+    for a capture, `core_reserve.parse_record` (v4) for a measurement; a
+    shape that fails those never reaches this comparison.
     """
 
     try:
@@ -241,8 +244,6 @@ def _observed_platform(record: dict, profile_id: object, machine: object,
         reasons.append(
             f"{where}: observed platform is not the deployment baseline; "
             "lab/VM observations are not hardware evidence")
-    if machine is not None and machine != platform_profile.kernel_name(observed.architecture):
-        reasons.append(f"{where}: observed uname machine differs from the observed platform")
 
 
 def _embedded_capture(record: dict, reasons: list[str]) -> dict | None:
@@ -279,8 +280,7 @@ def _gate(record: dict, reasons: list[str]) -> None:
                  ("gate_id", "dut_id", "dut_fingerprint")):
             reasons.append("acquisition: gate/DUT identity mismatch")
         else:
-            _observed_platform(record, acquisition.get("platform_profile_id"),
-                               acquisition.get("uname_machine"), reasons,
+            _observed_platform(record, acquisition.get("platform_profile_id"), reasons,
                                where="acquisition", use="hardware-gate-record")
     if gate == "HG-01":
         _descriptions(
@@ -597,6 +597,10 @@ def validate_acquisition(record: object) -> Validation:
                 raise ValueError("platform_profile_id: reviewed profile required") from None
             if record.get("uname_machine") != platform_profile.kernel_name(observed.architecture):
                 raise ValueError("uname_machine: the observed profile's CPU required")
+            # dpkg was read and named the profile's CPU (F1): a capture whose
+            # dpkg was unreadable or foreign is not an observation of it.
+            if record.get("dpkg_architecture") != platform_profile.debian_name(observed.architecture):
+                raise ValueError("dpkg_architecture: the observed profile's CPU required")
             if gate == "HG-01":
                 if record.get("capture_method") != "systemd-system-bus-read-only":
                     raise ValueError("capture_method mismatch")
@@ -696,7 +700,7 @@ def _campaign(
             environment = current
             if measurement.get("boot_fingerprint") != boot:
                 errors.append("measurement boot differs from run")
-            _observed_platform(run, measurement.get("platform_profile_id"), None, errors,
+            _observed_platform(run, measurement.get("platform_profile_id"), errors,
                                where="measurement", use="core-reserve-record")
         try:
             parsed = parse_record(json.dumps(measurement, allow_nan=False))
