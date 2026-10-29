@@ -201,12 +201,15 @@ def test_every_response_kind_carries_the_security_headers(ui):
     for response in responses:
         _assert_security_headers(response)
     # The stdlib's own malformed-request path goes through the same sender.
-    raw = socket.create_connection(("127.0.0.1", ui.port), timeout=5)
-    raw.sendall(b"BREW / HTTP/1.1\r\nHost: x\r\n\r\n")
-    answer = raw.recv(65536).decode("latin-1")
-    raw.close()
-    assert "Content-Security-Policy: default-src 'none'" in answer
-    assert "nosniff" in answer and '"malformed_request"' in answer
+    # The server writes the head and the body in separate sends and then
+    # closes, so read to the close: one recv may return the head alone.
+    answer = _raw(ui.port, b"BREW / HTTP/1.1\r\nHost: x\r\n\r\n")
+    head, _, body = answer.partition(b"\r\n\r\n")
+    length = re.search(rb"(?im)^content-length: *(\d+)\r?$", head)
+    assert length and int(length.group(1)) == len(body), answer
+    head = head.decode("latin-1")
+    assert "Content-Security-Policy: default-src 'none'" in head
+    assert "nosniff" in head and json.loads(body) == {"error": "malformed_request"}
 
 
 def test_static_types_and_no_inline_resources(ui):
@@ -1448,13 +1451,11 @@ def test_the_real_process_serves_the_screens_on_the_socket_it_is_given(tmp_path)
         assert _request(port, "GET", "/api/view",
                         headers=[("Cookie", f"azui_session={sid}")]).status == 401
         for length in ("\u00b2", "50"):
-            raw = socket.create_connection(("127.0.0.1", port), timeout=10)
-            raw.sendall((f"POST /api/login HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
-                         f"Origin: {origin}\r\nContent-Type: application/json\r\n"
-                         f"Content-Length: {length}\r\n\r\n{{").encode("latin-1"))
-            raw.shutdown(socket.SHUT_WR)
-            assert raw.recv(65536).split(b" ", 2)[1] in (b"400", b"411")
-            raw.close()
+            answer = _raw(port, (f"POST /api/login HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+                                 f"Origin: {origin}\r\nContent-Type: application/json\r\n"
+                                 f"Content-Length: {length}\r\n\r\n{{").encode("latin-1"),
+                          close_write=True, timeout=10)
+            assert answer.split(b" ", 2)[1] in (b"400", b"411")
         assert process.poll() is None
     finally:
         process.terminate()
