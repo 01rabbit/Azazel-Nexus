@@ -1,0 +1,22 @@
+{
+  "files": [
+    {
+      "bytes": 14432,
+      "media_type": "application/json",
+      "name": "handoff.json",
+      "sha256": "c8bec695029f39440ec97e4c3f53739cbd26f93d5451de9bcf26b45ab17fbc66"
+    },
+    {
+      "bytes": 7050,
+      "media_type": "text/markdown; charset=utf-8",
+      "name": "handoff.ja.md",
+      "sha256": "8df445a6bf9264efbe42c9bab7b6feeec8872530fa3914e240b18c29896a4487"
+    }
+  ],
+  "generated_at": "2026-10-29T05:14:00Z",
+  "incident_id": "inc-5eed0000c0ffee01",
+  "package_schema": "azazel-nexus/handoff-package/1",
+  "provenance": "fixture",
+  "schema": "azazel-nexus/handoff-manifest/1",
+  "upload": "none"
+}

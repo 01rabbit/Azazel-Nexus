@@ -1,0 +1,485 @@
+{
+  "ai_assessment": {
+    "authority": "advisory_only_not_fact",
+    "explanations": [
+      {
+        "content_kind": "ai_advice",
+        "content_label": "AI advice (local model)",
+        "explained_at": "2026-10-29T03:14:30Z",
+        "failure_codes": [],
+        "generation_method": "not_recorded",
+        "labelled_ai_output": true,
+        "local_route_answered": true,
+        "notice": null,
+        "outcome": "answered",
+        "route": "local",
+        "text": "決定論的な照合による候補の提示です。結論ではありません。重要な判断は担当者が根拠を確認してから行ってください。",
+        "transition": "opened"
+      },
+      {
+        "content_kind": "ai_advice",
+        "content_label": "AI advice (local model)",
+        "explained_at": "2026-10-29T03:16:00Z",
+        "failure_codes": [],
+        "generation_method": "not_recorded",
+        "labelled_ai_output": true,
+        "local_route_answered": true,
+        "notice": null,
+        "outcome": "answered",
+        "route": "local",
+        "text": "決定論的な照合による候補の提示です。結論ではありません。重要な判断は担当者が根拠を確認してから行ってください。",
+        "transition": "updated"
+      }
+    ],
+    "label_basis": "the explainer's content_kind: every answered local-route reply is labelled AI advice, whether a model generated text or the local route matched deterministically; which one is not recorded",
+    "model_identity": {
+      "reason_code": "model_identity_not_recorded_in_explanation_ledger",
+      "status": "unavailable"
+    },
+    "reason_code": null,
+    "remote_route": "not_used_by_incident_explainer",
+    "route_capability_now": {
+      "reason_code": "snapshot_unavailable",
+      "status": "unavailable"
+    },
+    "source": "explanation_ledger",
+    "status": "available"
+  },
+  "authority": {
+    "ai": "advisory_only_not_fact",
+    "decision_and_enforcement": "edge",
+    "edge_decisions": "would_not_executed",
+    "nexus": "observe_explain_advise",
+    "this_package": "record_not_instruction"
+  },
+  "business_impact": {
+    "assessment": {
+      "reason_code": "business_impact_not_assessed_by_node",
+      "status": "unavailable"
+    },
+    "connectivity_observed": {
+      "reason_code": "noc_snapshot_unavailable",
+      "status": "unavailable"
+    },
+    "means": "The node does not know which services matter to the business. The operator states the impact to the expert directly.",
+    "restrictions_executed_by_nexus": 0
+  },
+  "confidentiality": {
+    "external_release": "operator_decision_outside_this_tool",
+    "not_read": [
+      "edge_evidence_payloads",
+      "decoy_evidence",
+      "commissioning_record",
+      "secrets_directory",
+      "interface_identity",
+      "torn_tail_quarantine"
+    ],
+    "policy": "allowlist_default_suppressed",
+    "raw_payload_included": false,
+    "suppressed": {
+      "citation_text": 0,
+      "email": 0,
+      "host_port": 0,
+      "interface_name": 0,
+      "mac_address": 0,
+      "network_address": 2,
+      "operator_identity": 1,
+      "path": 0,
+      "producer_free_text": 2,
+      "rule_identifier": 2,
+      "secret_like": 0,
+      "service_port": 2,
+      "url": 0
+    },
+    "suppressed_total": 9,
+    "upload": "none"
+  },
+  "edge_decision": {
+    "authority": "edge_deterministic_rules",
+    "decided_by": "edge",
+    "decisions": [
+      {
+        "action": "throttle",
+        "at": "2026-10-29T03:14:00Z",
+        "executed": false,
+        "kind": "would",
+        "policy_reason": "severity_elevated_throttle_reversible"
+      },
+      {
+        "action": "redirect",
+        "at": "2026-10-29T03:15:00Z",
+        "executed": false,
+        "kind": "would",
+        "policy_reason": "severity_high_redirect_to_decoy"
+      }
+    ],
+    "latest": {
+      "action": "redirect",
+      "at": "2026-10-29T03:15:00Z",
+      "executed": false,
+      "kind": "would",
+      "policy_reason": "severity_high_redirect_to_decoy"
+    },
+    "reason_code": null,
+    "status": "available"
+  },
+  "evidence_refs": {
+    "note": "digests only; whether the record is still retained was not checked (the store is private)",
+    "raw_payload_included": false,
+    "reason_code": "evidence_not_stored",
+    "refs": [
+      {
+        "cited_at": "2026-10-29T03:14:00Z",
+        "content_included": false,
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "held_at": "node private evidence store (retention 14 days or 256 MiB)",
+        "kind": "edge_evidence_record",
+        "role": "first",
+        "source": "edge-core"
+      },
+      {
+        "cited_at": "2026-10-29T03:15:00Z",
+        "content_included": false,
+        "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "held_at": "node private evidence store (retention 14 days or 256 MiB)",
+        "kind": "edge_evidence_record",
+        "role": "latest",
+        "source": "edge-core"
+      }
+    ],
+    "retention_checked": false,
+    "status": "partial",
+    "transitions_with_evidence_not_stored": 1
+  },
+  "execution": {
+    "authority": "execution_result",
+    "automatic_actions": [
+      {
+        "action": "throttle",
+        "executed": false,
+        "expires_at": null,
+        "lease": {
+          "reason_code": "not_executed",
+          "status": "not_applicable"
+        },
+        "release": {
+          "reason_code": "not_executed",
+          "status": "not_applicable"
+        },
+        "state": "would"
+      },
+      {
+        "action": "redirect",
+        "executed": false,
+        "expires_at": null,
+        "lease": {
+          "reason_code": "not_executed",
+          "status": "not_applicable"
+        },
+        "release": {
+          "reason_code": "not_executed",
+          "status": "not_applicable"
+        },
+        "state": "would"
+      }
+    ],
+    "executed_count": 0,
+    "intake_refused_not_observe_only": 0,
+    "means": "Edge reported what it would do; Nexus accepts observe-only events, so no restriction, redirect or isolation was executed through Nexus",
+    "reason_code": "nexus_accepts_observe_only",
+    "status": "not_executed"
+  },
+  "generated_at": "2026-10-29T05:14:00Z",
+  "generator": {
+    "command": "azazel-nexus handoff export",
+    "network_used": false,
+    "nexus_version": "0.0.1.dev0",
+    "principal_class": "root",
+    "uploaded": false
+  },
+  "incident": {
+    "incident_id": "inc-5eed0000c0ffee01",
+    "state": "open"
+  },
+  "knowledge": {
+    "authority": "knowledge_advisory",
+    "citations": [
+      {
+        "age_s_at_generation": 7170,
+        "bundle_digest": "sha256:abababababababababababababababababababababababababababababababab",
+        "citation": "MITRE ATT&CK technique, as ingested into azazel-knowledge",
+        "citation_state": "shown",
+        "claim_id": "T1046",
+        "freshness_at_lookup": "current",
+        "generation": 7,
+        "generation_now": 8,
+        "looked_up_at": "2026-10-29T03:14:30Z",
+        "name": "Network Service Discovery",
+        "source_kind": "knowledge_lite",
+        "summary": "Adversaries may scan for services running on remote hosts.",
+        "superseded": true,
+        "technique_id": "T1046",
+        "trust_check": "verified"
+      }
+    ],
+    "lite_now": {
+      "freshness": "current",
+      "generation": 8,
+      "reason_code": "available",
+      "snapshot_age_s": 20,
+      "snapshot_written_at": "2026-10-29T05:13:40Z",
+      "state": "available",
+      "status": "read"
+    },
+    "reason_code": null,
+    "source": "explanation_ledger",
+    "status": "available"
+  },
+  "loop_health": {
+    "explainer": {
+      "age_s": 1,
+      "chain_broken": false,
+      "knowledge_available": true,
+      "mio_available": true,
+      "refused": {},
+      "status": "read",
+      "storage_failed": false,
+      "written_at": "2026-10-29T05:13:59Z"
+    },
+    "intake": {
+      "age_s": 3,
+      "refused": {
+        "evidence_segment_full": 1
+      },
+      "status": "read",
+      "storage_failed": false,
+      "written_at": "2026-10-29T05:13:57Z"
+    }
+  },
+  "observed_facts": {
+    "authority": "edge_observation",
+    "ledger": {
+      "chain": "verified_continuity_of_retained_segments",
+      "gaps": []
+    },
+    "reason_code": null,
+    "source": "incident_ledger",
+    "status": "available",
+    "summary": {
+      "category": "Attempted Information Leak",
+      "count": 14,
+      "first_seen": "2026-10-29T03:14:00Z",
+      "last_seen": "2026-10-29T03:15:00Z",
+      "most_severe": 2,
+      "protocol": "tcp",
+      "severity_scale": "1 = most severe (Suricata priority)",
+      "technique_ids": [
+        "T1046"
+      ]
+    },
+    "transitions": [
+      {
+        "at": "2026-10-29T03:14:00Z",
+        "category": "Attempted Information Leak",
+        "close_reason": null,
+        "count": 1,
+        "event_type": "opened",
+        "evidence_stored": true,
+        "first_seen": "2026-10-29T03:14:00Z",
+        "last_seen": "2026-10-29T03:14:00Z",
+        "most_severe": 3,
+        "protocol": "tcp",
+        "technique_ids": [
+          "T1046"
+        ]
+      },
+      {
+        "at": "2026-10-29T03:15:00Z",
+        "category": "Attempted Information Leak",
+        "close_reason": null,
+        "count": 14,
+        "event_type": "updated",
+        "evidence_stored": false,
+        "first_seen": "2026-10-29T03:14:00Z",
+        "last_seen": "2026-10-29T03:15:00Z",
+        "most_severe": 2,
+        "protocol": "tcp",
+        "technique_ids": [
+          "T1046"
+        ]
+      }
+    ],
+    "withheld_fields": [
+      "source_address",
+      "rule_id",
+      "destination_port",
+      "signature_text"
+    ]
+  },
+  "operator_actions": {
+    "chain": "verified_continuity_of_segments_read",
+    "incident_audit": [
+      {
+        "edge_would": "throttle",
+        "event_type": "edge.incident.opened",
+        "most_severe": 3,
+        "occurred_at": "2026-10-29T03:14:00Z"
+      },
+      {
+        "edge_would": "redirect",
+        "event_type": "edge.incident.escalated",
+        "most_severe": 2,
+        "occurred_at": "2026-10-29T03:15:00Z"
+      }
+    ],
+    "incident_scoped": {
+      "reason_code": "no_operator_action_record_type_for_incidents",
+      "status": "unavailable"
+    },
+    "means": "Nexus records no acknowledgement or approval of an incident; listed are node-level actions in the window, not actions taken on this incident",
+    "node_actions": [
+      {
+        "actor": "withheld",
+        "event_type": "activation.unit_granted",
+        "generation": 3,
+        "occurred_at": "2026-10-29T02:50:00Z",
+        "unit": "auditd"
+      }
+    ],
+    "node_actions_omitted": 0,
+    "reason_code": null,
+    "source": "audit_chain",
+    "status": "available",
+    "window": {
+      "from": "2026-10-29T02:14:00Z",
+      "to": "2026-10-29T05:14:00Z"
+    }
+  },
+  "provenance": "fixture",
+  "schema": "azazel-nexus/handoff-package/1",
+  "sources": [
+    {
+      "readable_by": "operator",
+      "reason_code": null,
+      "source": "recent_incidents_snapshot",
+      "status": "read"
+    },
+    {
+      "readable_by": "operator",
+      "reason_code": null,
+      "source": "explainer_status_snapshot",
+      "status": "read"
+    },
+    {
+      "readable_by": "operator",
+      "reason_code": null,
+      "source": "intake_status_snapshot",
+      "status": "read"
+    },
+    {
+      "readable_by": "operator",
+      "reason_code": null,
+      "source": "knowledge_status_snapshot",
+      "status": "read"
+    },
+    {
+      "readable_by": "operator",
+      "reason_code": "absent",
+      "source": "mio_status_snapshot",
+      "status": "unavailable"
+    },
+    {
+      "readable_by": "operator",
+      "reason_code": "absent",
+      "source": "noc_status_snapshot",
+      "status": "unavailable"
+    },
+    {
+      "readable_by": "root",
+      "reason_code": null,
+      "source": "incident_ledger",
+      "status": "read"
+    },
+    {
+      "readable_by": "root",
+      "reason_code": null,
+      "source": "explanation_ledger",
+      "status": "read"
+    },
+    {
+      "readable_by": "root",
+      "reason_code": null,
+      "source": "audit_chain",
+      "status": "read"
+    },
+    {
+      "readable_by": "everyone",
+      "reason_code": null,
+      "source": "timesyncd_marker",
+      "status": "read"
+    },
+    {
+      "readable_by": "root",
+      "reason_code": null,
+      "source": "knowledge_clock_floor",
+      "status": "read"
+    }
+  ],
+  "time": {
+    "basis": "node_wall_clock_at_intake",
+    "clock": {
+      "generated_at": "2026-10-29T05:14:00Z",
+      "knowledge_floor": {
+        "floor_utc": "2026-10-29T05:00:00Z",
+        "now_behind_floor": false,
+        "reason_code": null,
+        "status": "read"
+      },
+      "reason_code": null,
+      "signals": [],
+      "status": "synchronized_this_boot",
+      "synchronized_this_boot": {
+        "means": "a synchronization happened in this boot; not that it is still synchronized or that the time source was authenticated",
+        "source": "timesyncd_marker",
+        "status": "present"
+      }
+    },
+    "last_seen": "2026-10-29T03:15:00Z",
+    "occurred_at": "2026-10-29T03:14:00Z",
+    "occurred_at_source": "incident_ledger.first_seen"
+  },
+  "unconfirmed": [
+    {
+      "code": "edge_judgement_unreviewed",
+      "text_ja": "Edge の判断（would）が妥当かは人が確認していない"
+    },
+    {
+      "code": "evidence_content_not_included",
+      "text_ja": "証拠の中身（生データ）は含めていない。必要なら digest で現地に依頼する"
+    },
+    {
+      "code": "business_impact_not_assessed",
+      "text_ja": "業務影響はノードでは評価していない。担当者が直接伝える"
+    },
+    {
+      "code": "source_address_withheld",
+      "text_ja": "送信元アドレス・ルール番号・宛先ポートは伏せている"
+    },
+    {
+      "code": "ai_advice_unverified",
+      "text_ja": "AI の見解は推測であり検証されていない"
+    },
+    {
+      "code": "evidence_not_stored",
+      "text_ja": "一部の証拠は保存されていない（容量上限）"
+    },
+    {
+      "code": "knowledge_superseded",
+      "text_ja": "引用した Knowledge の世代は現在の世代と異なる"
+    },
+    {
+      "code": "incident_open",
+      "text_ja": "インシデントはまだ閉じていない（生成後も続く可能性がある）"
+    }
+  ]
+}

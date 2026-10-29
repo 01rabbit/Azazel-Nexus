@@ -718,6 +718,9 @@ def main(
     from .broker_cli import add_parser as add_broker_parser
     add_broker_parser(sub)
 
+    from .handoff_cli import add_parser as add_handoff_parser
+    add_handoff_parser(sub)
+
     sub.add_parser("inventory", help="read-only hardware and interface list")
     sub.add_parser("profile", help="measured RAM and the profile it selects")
     status_parser = sub.add_parser("status", help="everything above, as it currently stands")
@@ -832,6 +835,10 @@ def main(
     if args.command == "broker":
         from .broker_cli import run as run_broker
         return run_broker(args, now=_now(), out=stream)
+
+    if args.command == "handoff":
+        from .handoff_cli import run as run_handoff
+        return run_handoff(args, now=_now(), out=stream)
 
     if args.command == "setup":
         from .operator_flow_cli import run as run_setup

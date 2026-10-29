@@ -61,6 +61,7 @@ The operator CLI, `azazel-nexus`, answers every subcommand with no network:
 | `status` | everything above, as it currently stands |
 | `health` | units and the audit chain |
 | `ui-login` | print the read-only UI's current one-use login code (operator group only) |
+| `handoff` | `export --incident ID --output-dir DIR` (ID may be `latest`): write one incident's offline expert handoff package (JSON + Japanese Markdown + digest manifest); identifiers suppressed, nothing uploaded; [handoff package](docs/handoff-package.md) |
 | `hil-preflight` | whether the 8 GiB HG-05 campaign may start on this node. It takes **no arguments**, no sample, and reboots or activates nothing |
 
 The privileged half is a **separate distribution**, `azazel-nexus-runtime`
