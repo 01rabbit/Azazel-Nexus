@@ -87,3 +87,17 @@ def private_os(monkeypatch):
             monkeypatch.setattr(module, "os", _ModuleOs())
         return module.os
     return isolate
+
+
+@pytest.fixture
+def audit_owner_is_this_account():
+    """Skip, as root, a test that stands this account in for ``azaudit``.
+
+    These tests own their temporary ledger, so the fake ``azaudit`` account is
+    given this process's uid. As root that uid is 0, and the inspector refuses
+    an audit account with uid 0 by design (``bootstrap_audit``), so the stand-in
+    no longer works. ``tests/unit`` runs as a non-root user; the refusal of uid
+    0 is checked as root in ``test_runtime_bootstrap_audit.py``.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("running as root: the stand-in azaudit uid would be 0, which is refused by design")

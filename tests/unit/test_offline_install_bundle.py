@@ -1251,11 +1251,24 @@ def test_a_file_that_is_also_a_directory_prefix_is_refused(built):
 
 
 def test_a_sticky_world_writable_parent_is_accepted(built, tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("running as root: a sticky shared parent is refused (see the next test)")
     parent = tmp_path / "sticky"
     parent.mkdir()
     parent.chmod(0o1777)
     extract_bundle(built[2], parent / "out")
     assert (parent / "out" / "MANIFEST.json").is_file()
+
+
+def test_a_sticky_world_writable_parent_is_refused_as_root(built, tmp_path):
+    if os.geteuid() != 0:
+        pytest.skip("not running as root: a sticky shared parent is accepted (see the previous test)")
+    parent = tmp_path / "sticky"
+    parent.mkdir()
+    parent.chmod(0o1777)
+    with pytest.raises(BundleRefused, match="writable by group/others"):
+        extract_bundle(built[2], parent / "out")
+    assert list(parent.iterdir()) == []
 
 
 def test_a_group_writable_destination_parent_is_refused(built, tmp_path):

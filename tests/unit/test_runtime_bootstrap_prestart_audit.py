@@ -131,6 +131,7 @@ def test_policy_change_after_audit_observation_refuses(configured, monkeypatch):
         )
 
 
+@pytest.mark.usefixtures("audit_owner_is_this_account")
 def test_actual_ordinary_audit_chain_matches_rewritten_pinned_policy(
     configured, tmp_path, monkeypatch,
 ):

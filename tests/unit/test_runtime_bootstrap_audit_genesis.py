@@ -107,6 +107,7 @@ def _public(monkeypatch, directory):
                         lambda owner: os.open(directory, os.O_RDONLY | os.O_DIRECTORY))
 
 
+@pytest.mark.usefixtures("audit_owner_is_this_account")
 def test_public_genesis_inspector_ignores_root_override_and_creates_nothing(tmp_path, monkeypatch):
     root = _empty(tmp_path / "audit")
     _public(monkeypatch, root)
