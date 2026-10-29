@@ -67,6 +67,13 @@ def runtime(tmp_path):
     made.stop()
 
 
+def _read_to_close(client: socket.socket) -> bytes:
+    chunks = []
+    while chunk := client.recv(1024):
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def _connect(path: Path) -> socket.socket:
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     client.settimeout(5)
@@ -205,7 +212,9 @@ def test_a_connection_gets_the_responder_the_catalogue_names(runtime):
     client = _connect(runtime.path_for("alpha"))
     try:
         observation = runtime.serve_once("alpha")
-        assert client.recv(1024) == runtime.catalogue.entry("alpha").banner
+        # serve_once has closed its end by now: read to the close, so a
+        # banner that arrives in more than one piece is still compared whole.
+        assert _read_to_close(client) == runtime.catalogue.entry("alpha").banner
     finally:
         client.close()
     assert observation is not None
