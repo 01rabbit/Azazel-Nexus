@@ -32,10 +32,11 @@ Rosetta 変換によるコンテナ）で同じ digest になることを確認�
 | `edge.incident` | golden 観測 2 巡を `IncidentTracker` に通した遷移（opened・updated・idle の closed）、incident_id、件数、most_severe | 判断 |
 | `edge.explain` | 上の遷移から作る説明要求 frame（`explanation_input`・`build_frame`）と recent incident の行 | 判断の説明 |
 | `knowledge_lite.verify` | Knowledge の公開 fixture（valid と negative 5 件）への `verify_bundle` の受理・拒否（gate と code）、member の digest、2 時点の `read_claims` と reading | 認可（署名・完全性）・期限 |
+| `knowledge_lite.refusals` | 公開 fixture の無い `verify_bundle` の拒否経路を試験用の signer で組み立てたもの（`BUNDLE_SHADOWS_TRUST_ANCHOR` を信頼欄ごとに、manifest・形式・署名・signer の役割・security epoch・export policy・巻戻し・内容・member 名・archive の各 gate）と、受理後の行の読取り（UTF-8 でない、JSONL でない、行が長すぎる、期限が読めない・naive・時差付き・境界ちょうど）。Knowledge が出すものの証拠ではなく、どの gate とコードで拒否するかの固定 | 認可（完全性・信頼の分離） |
 | `knowledge_lite.lookup` | producer の anchor を pin した node での import 結果と `lookup_context_reading`（valid・expired・corrupt-signature × 技術 ID 5 通り × 2 時点） | 根拠の提供 |
 | `revocation` | [`tests/fixtures/revocation/`](../tests/fixtures/revocation/generate.py) の 3 件（ドメイン分離、`RevocationStore.accept`、`verify_bundle`）と、署名済み失効リストの受理・再送拒否・再有効化拒否・`reason_for` | 認可（失効） |
 | `signature.ed25519` | RFC 8032 §7.1 の 4 ベクトル。検証が通ること、試験用 signer が RFC と同じ署名を作ること、改変 4 種（署名の 1 bit、メッセージの 1 bit、`s + L`、切詰め）が通らないこと、不正な公開鍵の拒否 | 認可（暗号） |
-| `audit.chain` | 同じ 4 イベントから同じ監査チェーン（各 link、head、ファイルの sha256）になること。改変 3 種の検出 | 監査 |
+| `audit.chain` | 同じ 4 イベントから同じ監査チェーン（各 link、head、ファイルの sha256）になること。改変 5 種（イベントの編集、前の hash の差替え、hash の改変、sequence の飛び、sequence の重複）を 3 か所（1・2・4 番目）に入れ、検証が壊れたと報告する sequence（`broken_at`）と固定文を記録する | 監査 |
 | `status.read_model` | `azazel-nexus status --json` の read model。[`test_status_view.py`](../tests/unit/test_status_view.py) の golden 10 場面 | 状態表示 |
 | `platform_profile.selection` | `select_profile` の入力 12 通りに対する profile と拒否理由、production use ごとの可否、境界名の対応と読取りの拒否 | 認可（実行基盤） |
 | `mio.route` | `remote_admission` の全組合せ、route の `select` 7 場面と `fallback_once`、`outcome_for`、`terminal_for` | M.I.O. の経路判定 |
@@ -55,6 +56,13 @@ allow_nan=False)` を UTF-8 にしたもの。`audit.canonical_event_bytes` や
 `edge_intake.canonical` と同じ形である。`ensure_ascii=False` なので、非 ASCII の
 文字（説明要求の日本語の質問など）は `\uXXXX` に置き換えず UTF-8 のまま比べる。製品が
 書くバイト列と同じものを比べるためである。
+
+**Unicode の正規化はしない。** NFC と NFD は別の文字列として比べる（製品も正規化せずに
+書くので、正規化すれば製品のバイト列と比べたことにならない）。**キーは Python の
+`sort_keys` の順、すなわち Unicode の code point の順に並ぶ。** これは
+[RFC 8785（JCS）](https://www.rfc-editor.org/rfc/rfc8785) の UTF-16 code unit の順とは
+違う（例：U+FF71 は code point 順では U+1F512 より前、UTF-16 順では後）。この形を JCS と
+呼ばず、JCS の実装と突き合わせない。試験は NFC・NFD・非 ASCII のキーでこの 2 点を固定する。
 
 受け付ける型は object（キーは文字列）、array、string、整数、true・false・null だけ。
 **float は拒否する**。tuple や set などほかの型も拒否する。ベクトルを書く側が明示的に
@@ -106,10 +114,15 @@ python3 tools/cross_arch_vectors.py --python 3.12 --out report.json
 ```
 
 各コンテナはこの checkout を読取り専用で mount して複製し、uid 1001・umask 022 で
-ベクトルを実行する。amd64 側は `--platform linux/amd64` を付けて Rosetta 上で動かす
+ベクトルを実行する。mount は `--mount type=bind` で、path は resolve したうえで `:` か
+`,` を含むものを拒否する（`--pip-cache` も同じ）。試験の依存（pytest、PyNaCl とその
+依存）は `uv.lock` から `uv export --frozen` で書き出し、`pip install --require-hashes
+--no-deps` で入れるので、両 CPU で同じ版になる（uv 自身は版を固定して pip で入れる。
+runtime の依存は `runtime/pyproject.toml` の `==` 固定）。amd64 側は `--platform linux/amd64` を付けて Rosetta 上で動かす
 （付けないと colima-rosetta でも aarch64 のイメージになる）。報告は CPU ごとの
 digest、両者の一致、固定値との一致を持ち、終了コードは全件が一致したときだけ 0 である。
-片方の CPU で走らなかったベクトルは `null` と記録し、もう一方の値で埋めない。
+片方の CPU で走らなかったベクトルは `null` と記録し、もう一方の値で埋めない。コンテナが
+失敗した CPU は `failed_runs` に入り、その場合も報告を書いたうえで非 0 で終わる。
 
 ## 5. 固定値を更新する手順
 
@@ -133,9 +146,15 @@ digest、両者の一致、固定値との一致を持ち、終了コードは�
    何を意図して変えたかと、どの PR・issue の変更かを書く。古い履歴は消さない。
 4. `python3 tools/cross_arch_vectors.py` で両 CPU が新しい値で一致することを確かめ、
    PR 本文にその結果（一致したかどうか。digest そのものは書かない）を書く。
-5. 試験（`test_each_pin_says_what_it_covers_and_why_it_last_changed`）は、履歴の
-   最後の値が固定値と一致すること、理由が空でないこと、日付が古い順であることを
-   確かめる。
+5. 試験は次を確かめる。
+   - 履歴の最後の値が固定値と一致し、理由が空でなく、日付が古い順であること
+     （`test_each_pin_says_what_it_covers_and_why_it_last_changed`）。
+   - 履歴の各エントリの sha256 が互いに異なること。値の変わらない追記は変更の記録に
+     ならない（`test_each_recorded_change_is_a_different_digest`）。
+   - **履歴は追記だけ**であること。`origin/main` と `HEAD` に commit 済みの履歴が、
+     作業中のファイルの履歴の先頭にそのまま残っていなければならない。理由の書換え・
+     削除・ベクトルの削除は失敗する（`test_history_is_append_only_against_main_and_the_last_commit`。
+     git もどちらの ref も無い環境では skip し、理由を表示する）。
 
 ## 6. 既知の差の扱い
 

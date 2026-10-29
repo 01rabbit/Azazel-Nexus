@@ -408,6 +408,159 @@ def knowledge_lite_lookup(ctx: Context):
     return {"outcomes": outcomes, "lookups": lookups}
 
 
+def _archive(members) -> bytes:
+    """A gzip'd PAX tar of ``(name, bytes[, tar type])``, in order, mtime 0."""
+    import gzip
+    import tarfile
+
+    raw = io.BytesIO()
+    with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz:
+        with tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as archive:
+            for name, body, *kind in members:
+                info = tarfile.TarInfo(name=name)
+                info.size, info.mtime = len(body), 0
+                if kind:
+                    info.type, info.size = kind[0], 0
+                    archive.addfile(info)
+                    continue
+                archive.addfile(info, io.BytesIO(body))
+    return raw.getvalue()
+
+
+def knowledge_lite_refusals(ctx: Context):
+    """Every `verify_bundle` gate that the producer publishes no fixture for.
+
+    Built here with the test-only signer, as `test_lite_bundle` does. These
+    are not evidence about what Knowledge emits; they fix which gate and code
+    each constructed artifact is refused at, on every CPU. The archive's own
+    digest is left out: it is gzip output, not a decision.
+    """
+    from azazel_nexus.lite_bundle import (
+        TRUST_SHADOWING_FIELDS,
+        BundleRefused,
+        read_claims,
+        verify_bundle,
+    )
+    from signing_oracle import sign_detached
+    from test_lite_bundle import KEY_ID, SEED, _local_anchors, _manifest
+
+    table = b'{"technique_id":"T1110","name":"Brute Force"}\n'
+
+    def signed(manifest, tables=None, *, extra=(), files=None, key_id=KEY_ID,
+               signature_text=None, signature_raw=None, manifest_bytes=None):
+        tables = {"tables/a.jsonl": table} if tables is None else tables
+        declared = files if files is not None else {
+            path: hashlib.sha256(body).hexdigest() for path, body in sorted(tables.items())}
+        body = manifest_bytes if manifest_bytes is not None else json.dumps(
+            {**manifest, "files": declared}, indent=2, sort_keys=True).encode()
+        sig = sign_detached(seed=SEED, message=body).hex()
+        text = signature_text if signature_text is not None else f"{key_id}:{sig}\n"
+        raw_sig = signature_raw if signature_raw is not None else text.encode()
+        return _archive([("manifest.json", body), ("manifest.sig", raw_sig),
+                         *tables.items(), *extra])
+
+    anchors = _local_anchors()
+    policy = "c" * 64
+    cases = [("control", signed(_manifest()), anchors, 0)]
+    for field in TRUST_SHADOWING_FIELDS:
+        cases.append((f"shadows:{field}", signed(_manifest(**{field: 1})), anchors, 0))
+    cases += [
+        ("manifest_missing", _archive([("manifest.sig", b"x:00\n")]), anchors, 0),
+        ("signature_missing", _archive([("manifest.json", b"{}")]), anchors, 0),
+        ("manifest_not_json", signed({}, manifest_bytes=b"{"), anchors, 0),
+        ("manifest_not_object", signed({}, manifest_bytes=b"[]"), anchors, 0),
+        ("format_not_integer", signed(_manifest(bundle_format_version="1")), anchors, 0),
+        ("format_unsupported", signed(_manifest(bundle_format_version=2)), anchors, 0),
+        ("kind_delta", signed(_manifest(kind="delta")), anchors, 0),
+        ("signature_line_malformed", signed(_manifest(), signature_text="no colon\n"),
+         anchors, 0),
+        ("signature_not_text", signed(_manifest(), signature_raw=b"\xff:00\n"), anchors, 0),
+        ("signature_too_many_lines",
+         signed(_manifest(), signature_text="".join(f"k{i}:00\n" for i in range(33))),
+         anchors, 0),
+        ("signer_revoked", signed(_manifest()), _local_anchors(revoked=frozenset({KEY_ID})), 0),
+        ("signer_unknown", signed(_manifest(), key_id="someone-else"), anchors, 0),
+        ("signer_role_missing", signed(_manifest()),
+         _local_anchors(required_signer_role="bundle-signing"), 0),
+        ("security_epoch_missing", signed(_manifest()),
+         _local_anchors(minimum_security_epoch=3), 0),
+        ("security_epoch_not_integer", signed(_manifest(security_epoch="3")),
+         _local_anchors(minimum_security_epoch=3), 0),
+        ("security_epoch_too_low", signed(_manifest(security_epoch=2)),
+         _local_anchors(minimum_security_epoch=3), 0),
+        ("security_epoch_met", signed(_manifest(security_epoch=3)),
+         _local_anchors(minimum_security_epoch=3), 0),
+        ("export_policy_missing", signed(_manifest()),
+         _local_anchors(accepted_export_policy_digests=frozenset({policy})), 0),
+        ("export_policy_not_accepted",
+         signed(_manifest(profile={"selection_inputs": {"export_policy_digest": "d" * 64}})),
+         _local_anchors(accepted_export_policy_digests=frozenset({policy})), 0),
+        ("export_policy_accepted",
+         signed(_manifest(profile={"selection_inputs": {"export_policy_digest": policy}})),
+         _local_anchors(accepted_export_policy_digests=frozenset({policy})), 0),
+        ("version_not_integer", signed(_manifest(bundle_version="7")), anchors, 0),
+        ("version_regression_equal", signed(_manifest()), anchors, 7),
+        ("version_above_watermark", signed(_manifest()), anchors, 6),
+        ("files_not_a_map", signed(_manifest(), files=[]), anchors, 0),
+        ("file_missing", signed(_manifest(), {}, files={"tables/a.jsonl": "0" * 64}),
+         anchors, 0),
+        ("member_undeclared", signed(_manifest(), extra=[("tables/b.jsonl", table)]),
+         anchors, 0),
+        ("file_hash_mismatch", signed(_manifest(), files={"tables/a.jsonl": "0" * 64}),
+         anchors, 0),
+        ("file_digest_not_text", signed(_manifest(), files={"tables/a.jsonl": 7}), anchors, 0),
+        ("member_parent", signed(_manifest(), extra=[("../escape", b"x")]), anchors, 0),
+        ("member_absolute", signed(_manifest(), extra=[("/abs", b"x")]), anchors, 0),
+        ("member_unnormalised", signed(_manifest(), extra=[("tables//x", b"x")]), anchors, 0),
+        ("member_too_deep", signed(_manifest(), extra=[("/".join("d" * 10), b"x")]),
+         anchors, 0),
+        ("member_name_too_long", signed(_manifest(), extra=[("n" * 201, b"x")]), anchors, 0),
+        ("member_directory", signed(_manifest(), extra=[("dir", b"", b"5")]), anchors, 0),
+        ("member_symlink", signed(_manifest(), extra=[("link", b"", b"2")]), anchors, 0),
+        ("manifest_too_large",
+         signed({}, manifest_bytes=b" " * (8 * 1024 * 1024 + 1)), anchors, 0),
+        ("member_duplicate", signed(_manifest(), extra=[("tables/a.jsonl", table)]),
+         anchors, 0),
+        ("too_many_members", signed(_manifest(), extra=[(f"m/{i}", b"") for i in range(64)]),
+         anchors, 0),
+        ("not_gzip", b"this is not a gzip stream at all", anchors, 0),
+        ("gzip_cut", signed(_manifest())[:60], anchors, 0),
+    ]
+    results = []
+    for name, raw, trust, watermark in cases:
+        try:
+            accepted = verify_bundle(raw, anchors=trust, last_imported_version=watermark)
+        except BundleRefused as exc:
+            results.append({"case": name, **_refusal(exc, "gate", "code")})
+            continue
+        event = accepted.as_event()
+        event.pop("bundle_digest")
+        results.append({"case": name, "accepted": event})
+
+    # Rows that verify but cannot be read, and expiries that cannot be parsed.
+    rows = []
+    for name, body in (
+        ("not_utf8", b"\xff\xfe\n"),
+        ("not_jsonl", b"{\n"),
+        ("not_object", b"[1]\n"),
+        ("line_too_long", b'{"x":"' + b"a" * (64 * 1024) + b'"}\n'),
+        ("expiry_unreadable", b'{"agg_next_expiry":"soon"}\n'),
+        ("expiry_naive", b'{"agg_next_expiry":"2027-01-01T00:00:00"}\n'),
+        ("expiry_offset", b'{"agg_next_expiry":"2026-09-21T09:00:01+09:00"}\n'),
+        ("expiry_equal", b'{"agg_next_expiry":"2026-09-21T00:00:00Z"}\n'),
+    ):
+        accepted = verify_bundle(signed(_manifest(), {"tables/a.jsonl": body}), anchors=anchors)
+        try:
+            claims = read_claims(accepted, query_as_of=FRESH)
+        except BundleRefused as exc:
+            rows.append({"case": name, **_refusal(exc, "gate", "code")})
+            continue
+        rows.append({"case": name, "served": claims.served_count,
+                     "withheld": claims.withheld_count, "timeless": claims.timeless_count,
+                     "next_expiry": claims.next_expiry})
+    return {"bundles": results, "rows": rows}
+
+
 # -- revocation ------------------------------------------------------------
 
 
@@ -597,28 +750,43 @@ def audit_chain(ctx: Context):
                       "file_sha256": hashlib.sha256(ledger.path.read_bytes()).hexdigest()})
     if heads[0] != heads[1]:
         raise AssertionError("the same events gave two chains in one process")
-    # An edit and a splice are refused; which link breaks is part of the vector.
+    # Each tamper is refused, and *where* the chain breaks is part of the
+    # vector: the sequence the verifier names and its fixed message.
+    import re
+
     tampered = []
-    for change in ("edit", "splice", "truncate_hash"):
-        ledger = AuditLedger(ctx.tmp / change / "ledger.jsonl")
-        for event in _AUDIT_EVENTS:
-            ledger.append(dict(event))
-        lines = ledger.path.read_text(encoding="utf-8").splitlines()
-        raw = json.loads(lines[1])
-        if change == "edit":
-            raw["event"]["reason"] = "edited"
-        elif change == "splice":
-            raw["previous_hash"] = GENESIS_HASH
-        else:
-            raw["event_hash"] = raw["event_hash"][:-1] + "0"
-        lines[1] = json.dumps(raw)
-        ledger.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        try:
-            ledger.verify()
-        except AuditChainBroken:
-            tampered.append({"change": change, "refused": "AuditChainBroken"})
-        else:  # pragma: no cover - a tamper that verifies is a finding
-            tampered.append({"change": change, "refused": None})
+    for change in ("edit", "splice", "truncate_hash", "sequence_gap", "sequence_repeat"):
+        for position in (1, 2, 4):
+            ledger = AuditLedger(ctx.tmp / f"{change}-{position}" / "ledger.jsonl")
+            for event in _AUDIT_EVENTS:
+                ledger.append(dict(event))
+            lines = ledger.path.read_text(encoding="utf-8").splitlines()
+            raw = json.loads(lines[position - 1])
+            if change == "edit":
+                raw["event"]["edited"] = True
+            elif change == "splice":
+                raw["previous_hash"] = GENESIS_HASH if position > 1 else "1" * 64
+            elif change == "truncate_hash":
+                raw["event_hash"] = raw["event_hash"][:-1] + (
+                    "1" if raw["event_hash"][-1] == "0" else "0")
+            elif change == "sequence_gap":
+                raw["sequence"] += 1
+            else:
+                raw["sequence"] = max(1, raw["sequence"] - 1) if position > 1 else 2
+            lines[position - 1] = json.dumps(raw)
+            ledger.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            try:
+                ledger.verify()
+            except AuditChainBroken as exc:
+                message = str(exc)
+                found = re.match(r"entry (\d+)|expected sequence (\d+)", message)
+                tampered.append({"change": change, "position": position,
+                                 "refused": "AuditChainBroken",
+                                 "broken_at": int(found.group(1) or found.group(2))
+                                 if found else None,
+                                 "message": message})
+            else:  # pragma: no cover - a tamper that verifies is a finding
+                tampered.append({"change": change, "position": position, "refused": None})
     return {"genesis": GENESIS_HASH, "chain": heads[0], "tampered": tampered}
 
 
@@ -905,6 +1073,7 @@ VECTORS: dict[str, Callable[[Context], object]] = {
     "edge.explain": edge_explain,
     "knowledge_lite.verify": knowledge_lite_verify,
     "knowledge_lite.lookup": knowledge_lite_lookup,
+    "knowledge_lite.refusals": knowledge_lite_refusals,
     "revocation": revocation,
     "signature.ed25519": signature,
     "audit.chain": audit_chain,
