@@ -84,7 +84,9 @@ def with_fabric_claims(value):
     Internal only: the view stays in this ledger. Summaries, recent rows,
     status and audit events are built from the record's own fields and never
     carry it. Any failure leaves the record exactly as it was, because Fabric
-    is optional (ADR-0001) and a projection must not cost an explanation.
+    is optional (ADR-0001) and a projection must not cost an explanation --
+    including a full day: `Explainer.explain` writes the plain record when the
+    projected one no longer fits.
     """
     try:
         projection = project_explanation(value)
@@ -560,7 +562,16 @@ class Explainer:
                 "reason": "mio_reply_refused", "text": None})
             self.mio_available = False
             value = read_record(record)
-        self.store.append_record(with_fabric_claims(value))
+        stored = with_fabric_claims(value)
+        try:
+            self.store.append_record(stored)
+        except SegmentFull:
+            # The projection makes the record larger. A day that still has
+            # room for the record itself must keep the explanation, so retry
+            # once without it; a record that does not fit alone still raises.
+            if stored is value:
+                raise
+            self.store.append_record(value)
         self._future()
         for row in self.recent:
             if row["incident_id"] == t["incident_id"]:

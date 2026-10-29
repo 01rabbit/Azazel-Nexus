@@ -97,7 +97,6 @@ __all__ = [
     "CONFIRMATION_METHODS",
     "CommissioningRecordUnavailable",
     "ExplanationProjection",
-    "FABRIC_PRIVACY_CLASS",
     "TupleConformance",
     "check_tested_tuple",
     "confirm_role",
@@ -106,6 +105,7 @@ __all__ = [
     "project_capability",
     "project_edge_evidence",
     "project_explanation",
+    "unique_citations",
     "project_interface_identity",
     "project_inventory",
     "project_resource_profile",
@@ -1123,27 +1123,28 @@ def check_tested_tuple(tested, claim) -> TupleConformance:
     return TupleConformance(True, "", purpose, version)
 
 
-#: Nexus's privacy classes (`sanitizer.PrivacyClass`, P0–P3) against Fabric's
-#: `mio_contracts.PrivacyClass`. The two "never leaves the node" sets coincide:
-#: Nexus's `NEVER_REMOTE` is P2/P3 and Fabric's
-#: `NON_EGRESSIBLE_PRIVACY_CLASSES` is sensitive/restricted, and Fabric's
-#: `SanitizedRemoteFrame` admits only public/internal. The words differ in one
-#: place that matters: Nexus's P1 means "sanitized for this route", Fabric's
-#: `internal` means "internal to the operator". Nothing is sent in Fabric's
-#: shape (docs/contract-ownership.md §3.3), so this table is a correspondence,
-#: not a wire mapping.
-FABRIC_PRIVACY_CLASS = {
-    "P0-public": "public",
-    "P1-sanitized": "internal",
-    "P2-mission": "sensitive",
-    "P3-restricted": "restricted",
-}
-
 #: The Edge decision's claim id after the incident id, and the prefix of each
 #: cited reference's claim id. `incident_explain` states the same two words
 #: for its reader; `test_fabric_explanation_projection` keeps them equal.
 EDGE_CLAIM_SUFFIX = ":edge"
 KNOWLEDGE_CLAIM_PREFIX = "knowledge:"
+
+
+def unique_citations(refs) -> list:
+    """The cited references with each claim id once, first occurrence kept.
+
+    A `ClaimSet` refuses a repeated claim id, and a lookup may cite one
+    technique twice; without this the whole projection would fail and be
+    dropped without a word. The Edge claim records that a merge happened.
+    `incident_explain` applies the same rule when it reads the projection back.
+    """
+    seen = set()
+    out = []
+    for ref in refs:
+        if ref["claim_id"] not in seen:
+            seen.add(ref["claim_id"])
+            out.append(ref)
+    return out
 
 
 @dataclass(frozen=True)
@@ -1201,6 +1202,7 @@ def project_explanation(record, evidence=()) -> Projection:
         # here; importing that module from this one would pull the whole
         # explanation plane into everything that imports the Fabric boundary.
         r = record
+        cited = unique_citations(r["knowledge_refs"])
         refs = []
         for item in evidence:
             projected = project_edge_evidence(item)
@@ -1213,10 +1215,12 @@ def project_explanation(record, evidence=()) -> Projection:
             source="deterministic_core",
             input_refs=tuple(ref.evidence_id for ref in refs),
             limitations=("reported_by_edge_core_not_executed_by_nexus",)
-            + (() if refs else ("evidence_refs_not_carried",)),
+            + (() if refs else ("evidence_refs_not_carried",))
+            + (("duplicate_knowledge_refs_merged",)
+               if len(cited) != len(r["knowledge_refs"]) else ()),
         )
         claims = [edge]
-        for ref in r["knowledge_refs"]:
+        for ref in cited:
             statement = ref["name"] + (f": {ref['summary']}" if ref["summary"] else "")
             limitations = (f"source_kind={ref['source_kind']}", f"generation={ref['generation']}",
                            f"as_of={ref['as_of']}", f"trust_check={ref['trust_check']}")

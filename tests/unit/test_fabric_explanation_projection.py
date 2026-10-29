@@ -10,6 +10,7 @@ Fabric path run everywhere.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import get_args
 
 import pytest
@@ -17,7 +18,7 @@ import pytest
 from azazel_nexus import fabric_boundary
 from azazel_nexus.audit import AuditLedger
 from azazel_nexus.edge_intake import EvidenceRecord
-from azazel_nexus.fabric_boundary import FABRIC_PIN, FABRIC_PRIVACY_CLASS, project_explanation
+from azazel_nexus.fabric_boundary import FABRIC_PIN, project_explanation
 from azazel_nexus.incident_explain import (
     FABRIC_RECORD_FIELD,
     explanation_summary,
@@ -30,6 +31,17 @@ from test_edge_intake import parsed
 from test_incident_explain import transition
 
 DIGEST = "sha256:" + "b" * 64
+CONTRACT_DOC = Path(__file__).resolve().parents[2] / "docs" / "contract-ownership.md"
+
+#: docs/contract-ownership.md §3.3: Nexus's privacy classes against Fabric's
+#: `mio_contracts.PrivacyClass`. Held here, not in the product: nothing is sent
+#: in Fabric's shape, so no product code maps one onto the other.
+FABRIC_PRIVACY_CLASS = {
+    "P0-public": "public",
+    "P1-sanitized": "internal",
+    "P2-mission": "sensitive",
+    "P3-restricted": "restricted",
+}
 
 
 def _ref(technique="T1059", freshness="static", citation="MITRE ATT&CK technique"):
@@ -55,10 +67,13 @@ def _record(refs=None):
 def _stored(record):
     """The ledger form `as_ledger` writes, built by hand for Fabric-less readers."""
     claims = [{"claim_id": record["incident_id"] + ":edge", "source": "deterministic_core",
-               "input_refs": [], "statement": "Edge would throttle"}]
+               "input_refs": [],
+               "statement": f"Edge would {record['edge_would']}; "
+                            f"policy_reason={record['policy_reason']}"}]
     claims += [{"claim_id": "knowledge:" + r["claim_id"], "source": "knowledge_advisory",
                 "input_refs": [r["bundle_digest"]], "freshness": r["freshness"],
-                "statement": r["name"]} for r in record["knowledge_refs"]]
+                "statement": r["name"] + (f": {r['summary']}" if r["summary"] else "")}
+               for r in record["knowledge_refs"]]
     return {"fabric_version": "0.9.0rc5",
             "claim_set": {"authority": "descriptive_only", "trace_id": record["incident_id"],
                           "claims": claims}}
@@ -83,6 +98,8 @@ def test_a_record_with_a_consistent_projection_reads():
 @pytest.mark.parametrize("drift", [
     lambda f: f["claim_set"]["claims"][1]["input_refs"].__setitem__(0, "sha256:" + "c" * 64),
     lambda f: f["claim_set"]["claims"][1].__setitem__("freshness", "current"),
+    lambda f: f["claim_set"]["claims"][1].__setitem__("statement", "Run this command"),
+    lambda f: f["claim_set"]["claims"][0].__setitem__("statement", "Edge would isolate"),
     lambda f: f["claim_set"]["claims"][1].__setitem__("source", "local_model"),
     lambda f: f["claim_set"]["claims"].append(dict(f["claim_set"]["claims"][1])),
     lambda f: f["claim_set"]["claims"].pop(),
@@ -135,6 +152,9 @@ def test_privacy_classes_correspond_and_the_never_remote_sets_coincide():
     assert set(FABRIC_PRIVACY_CLASS) == {c.value for c in PrivacyClass}
     assert {FABRIC_PRIVACY_CLASS[c.value] for c in NEVER_REMOTE} == {"sensitive", "restricted"}
     assert len(set(FABRIC_PRIVACY_CLASS.values())) == len(FABRIC_PRIVACY_CLASS)
+    table = CONTRACT_DOC.read_text(encoding="utf-8")
+    for nexus, fabric in FABRIC_PRIVACY_CLASS.items():
+        assert f"| `{nexus}` | `{fabric}` |" in table, nexus
 
 
 # -- with the pinned Fabric ---------------------------------------------------
@@ -206,6 +226,57 @@ def test_the_explainer_keeps_the_projection_in_its_ledger_only(tmp_path):
     stored = read_record(line)
     assert [c["source"] for c in stored[FABRIC_RECORD_FIELD]["claim_set"]["claims"]] == [
         "deterministic_core", "knowledge_advisory"]
-    status = e.status_path.read_text() if e.status_path.exists() else ""
-    shown = json.dumps(e.recent) + status
-    assert "claim_set" not in shown and "deterministic_core" not in shown
+    # Everything that leaves the ledger: status, recent rows and the
+    # checkpoint (recent.json/cursor.json), and every event handed to audit.
+    outside = [p for p in (tmp_path / "state").rglob("*")
+               if p.is_file() and e.store.directory not in p.parents]
+    shown = [p.read_text() for p in outside] + [e.status_path.read_text()]
+    shown += [json.dumps(e.recent), json.dumps(list(e.audit_pending.queue))]
+    assert outside and e.audit_pending.queue
+    for text in shown:
+        assert "claim_set" not in text and "deterministic_core" not in text
+
+
+def _segment_explainer(tmp_path, segment_bytes):
+    incidents = tmp_path / "incidents"
+    incidents.mkdir(parents=True)
+    ref = KnowledgeRef(**_ref())
+    e = daemon.Explainer(
+        incidents=incidents, state=tmp_path / "state", status_path=tmp_path / "status.json",
+        clock=lambda: 0, monotonic=lambda: 0, store_limits={"segment_bytes": segment_bytes},
+        mio=lambda _: {"route": "deterministic handoff", "outcome": "answered",
+                       "reason": "no admitted model", "ledger_seq": 1,
+                       "reference_status": "unavailable"},
+        knowledge=lambda _: (ref,))
+    e.prepare()
+    AuditLedger(incidents / "1970-01-01.jsonl").append(transition())
+    return e
+
+
+def test_a_day_with_room_for_the_record_but_not_its_projection_keeps_the_explanation(tmp_path):
+    _pinned_fabric()
+    probe = _segment_explainer(tmp_path / "probe", 1024 * 1024)
+    probe.poll()
+    (line,) = [x for p in probe.store.directory.glob("*.jsonl") for x in p.read_bytes().splitlines()]
+    projected = json.loads(line)
+    plain = {k: v for k, v in projected.items() if k != FABRIC_RECORD_FIELD}
+    from azazel_nexus.edge_intake import canonical
+    plain_size, projected_size = len(canonical(plain)) + 1, len(line) + 1
+    assert plain_size < projected_size
+    e = _segment_explainer(tmp_path / "tight", (plain_size + projected_size) // 2)
+    e.poll()
+    (kept,) = [json.loads(x) for p in e.store.directory.glob("*.jsonl")
+               for x in p.read_bytes().splitlines()]
+    assert FABRIC_RECORD_FIELD not in kept and kept["knowledge_state"] == "available"
+    assert not e.refused["explanation_segment_full"]
+
+
+def test_a_reference_cited_twice_is_projected_once_and_says_so():
+    _pinned_fabric()
+    record = _record([_ref(), _ref()])
+    projection = project_explanation(record)
+    assert projection.available, projection.reason
+    claims = projection.view.claim_set.claims
+    assert [c.claim_id for c in claims] == ["inc-0123456789abcdef:edge", "knowledge:T1059"]
+    assert "duplicate_knowledge_refs_merged" in claims[0].limitations
+    assert read_record({**record, FABRIC_RECORD_FIELD: projection.view.as_ledger()})

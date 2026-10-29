@@ -147,10 +147,11 @@ interoperable form.
 | router state, request budget, deadline accounting | **Nexus-local** | — | product-local |
 | model asset layout, sandbox, and cgroup budgets | **Nexus-local** | — | product-local execution |
 
-Privacy classes. `fabric_boundary.FABRIC_PRIVACY_CLASS` holds the
-correspondence and a test checks it against Fabric's own `PrivacyClass` and
+Privacy classes. The table below is the correspondence, and
+`tests/unit/test_fabric_explanation_projection.py` checks it against Nexus's
+`PrivacyClass` and `NEVER_REMOTE` and against Fabric's own `PrivacyClass` and
 `NON_EGRESSIBLE_PRIVACY_CLASSES`. It is a correspondence, not a wire mapping:
-nothing is sent in Fabric's shape.
+nothing is sent in Fabric's shape, so no product code holds it.
 
 | Nexus (`sanitizer.PrivacyClass`) | Fabric (`mio_contracts.PrivacyClass`) | Leaves the node? | Note |
 | --- | --- | --- | --- |
