@@ -493,7 +493,9 @@ def _check_member_name(name: str) -> None:
             "BUNDLE_UNSAFE_MEMBER",
             f"{name!r} is not a plain relative path inside the bundle",
         )
-    if name.count("/") > MAX_MEMBER_DEPTH:
+    # Components, as the producer counts them: `a/b` is two deep. Counting
+    # separators admitted one level more than Knowledge's verifier does.
+    if name.count("/") + 1 > MAX_MEMBER_DEPTH:
         raise BundleRefused(
             Gate.ARCHIVE, "BUNDLE_MEMBER_PATH_TOO_DEEP", f"{name!r} is nested too deeply"
         )
@@ -588,19 +590,26 @@ def _check_signatures(
 
 
 def _check_signer_role(signers: set[str], anchors: TrustAnchors) -> None:
-    """Which key signed, separately from whether the signature is valid."""
+    """Which key signed, separately from whether the signature is valid.
+
+    The threshold applies to the role holders, as in the producer's verifier:
+    with `threshold = 2`, two verified signatures of which only one holds the
+    required role are refused here. Counting any one holder would let a key
+    provisioned for another purpose make up the threshold
+    (`tools/knowledge_lite_differential.py`, `threshold2_one_holds_role`).
+    """
 
     required = anchors.required_signer_role
     if required is None:
         return
     holders = {key_id for key_id in signers if anchors.key_roles.get(key_id) == required}
-    if not holders:
+    if len(holders) < anchors.threshold:
         raise BundleRefused(
             Gate.SIGNER_ROLE,
             "BUNDLE_SIGNER_ROLE_NOT_PERMITTED",
-            f"this node requires a signature from role {required!r} and the "
-            f"verified signer(s) {sorted(signers)} hold "
-            f"{sorted({anchors.key_roles.get(k) for k in signers})}",
+            f"this node requires {anchors.threshold} signature(s) from role "
+            f"{required!r} and the verified signer(s) {sorted(signers)} hold "
+            f"{sorted({str(anchors.key_roles.get(k)) for k in signers})}",
         )
 
 
