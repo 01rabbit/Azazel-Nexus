@@ -107,6 +107,8 @@ from azazel_nexus.audit_status import (
 )
 from azazel_nexus.edge_intake import ACTIONS
 from azazel_nexus.incident_explain import CLOSE_REASONS
+from azazel_nexus.lite_bundle import Gate
+from azazel_nexus.lite_import import IMPORT_REFUSAL_CODES, REVOCATION_REFUSAL_CODES
 
 from .principal import PrincipalClass
 from .protocol import (
@@ -267,6 +269,67 @@ INCIDENT_FUTURE_SKEW_S = 5
 for _kind in ("opened", "escalated", "closed"):
     EVENT_SCHEMAS["edge.incident." + _kind] = _INCIDENT_FIELDS + (
         (Argument("reason", ArgumentKind.ENUM, choices=CLOSE_REASONS),) if _kind == "closed" else ())
+
+#: Knowledge Lite import and revocation acceptance (assess-c P4). Each type is
+#: bound to the one account whose daemon performs that transition
+#: (`BOUND_WRITERS`); no other principal, root included, may write it, and that
+#: account may write no other event type (both directions, as the explainer's
+#: incident binding). Digests, counts and fixed codes only: never a claim body,
+#: a key or a path.
+_ENTRY_ID = Argument("entry_id", ArgumentKind.IDENTIFIER)
+_LITE_GENERATION = Argument("bundle_version", ArgumentKind.ORDINAL, maximum=2**63 - 1)
+_COUNT = 2**63 - 1
+EVENT_SCHEMAS.update({
+    "knowledge.lite.import_started": (
+        _ENTRY_ID, Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
+    "knowledge.lite.import_store_tightened": (
+        _ENTRY_ID, Argument("directories", ArgumentKind.ORDINAL, maximum=3),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
+    "knowledge.lite.import_refused": (
+        _ENTRY_ID, Argument("code", ArgumentKind.ENUM, choices=IMPORT_REFUSAL_CODES),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
+    "knowledge.lite.import_quarantined": (
+        _ENTRY_ID, Argument("bundle_digest", ArgumentKind.DIGEST),
+        Argument("gate", ArgumentKind.ENUM, choices=tuple(gate.value for gate in Gate)),
+        Argument("code", ArgumentKind.IDENTIFIER),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
+    "knowledge.lite.import_admitted": (
+        _ENTRY_ID, Argument("bundle_digest", ArgumentKind.DIGEST), _LITE_GENERATION,
+        Argument("served", ArgumentKind.ORDINAL, maximum=_COUNT),
+        Argument("withheld", ArgumentKind.ORDINAL, maximum=_COUNT),
+        Argument("static_reference", ArgumentKind.ORDINAL, maximum=_COUNT),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
+    "knowledge.lite.revocation_requested": (
+        Argument("statement_digest", ArgumentKind.DIGEST),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
+    "knowledge.lite.revocation_refused": (
+        Argument("statement_digest", ArgumentKind.DIGEST),
+        Argument("code", ArgumentKind.ENUM, choices=REVOCATION_REFUSAL_CODES),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
+    "knowledge.lite.revocation_accepted": (
+        Argument("statement_digest", ArgumentKind.DIGEST),
+        Argument("sequence", ArgumentKind.ORDINAL, maximum=_COUNT),
+        Argument("generation", ArgumentKind.ORDINAL, maximum=_COUNT),
+        Argument("revoked_digests", ArgumentKind.ORDINAL, maximum=_COUNT),
+        Argument("revoked_generations", ArgumentKind.ORDINAL, maximum=_COUNT),
+        Argument("revoked_keys", ArgumentKind.ORDINAL, maximum=_COUNT),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
+})
+
+#: Event-type prefix -> the only account that may append it, and the only
+#: prefix that account may append.
+BOUND_WRITERS: Mapping[str, str] = {
+    "knowledge.lite.import_": "azknowledge",
+    "knowledge.lite.revocation_": "azcommission",
+}
 
 #: What `audit.append` may carry, fixed before the daemon's own summary type
 #: is declared below: a caller that could write `audit.rate_limited` could
@@ -581,6 +644,13 @@ class AuditService:
             self._explainer_uid = pwd.getpwnam("azexplain").pw_uid
         except KeyError:
             self._explainer_uid = None
+        #: prefix -> uid of its one writer, or None (then nobody may write it).
+        self._bound_writer_uids: dict[str, Optional[int]] = {}
+        for prefix, account in BOUND_WRITERS.items():
+            try:
+                self._bound_writer_uids[prefix] = pwd.getpwnam(account).pw_uid
+            except KeyError:
+                self._bound_writer_uids[prefix] = None
         self.verified = False
         self.break_reason: Optional[str] = None
         self.head_sequence = 0
@@ -858,6 +928,18 @@ class AuditService:
         if ((is_explainer and (request.verb.name != "audit.append" or not incident))
                 or (incident and not is_explainer)):
             raise RequestRefused(Refusal.PRINCIPAL_DENIED, "incident_writer")
+        event_type = str(arguments.get("event_type", ""))
+        for prefix, writer in self._bound_writer_uids.items():
+            # Both directions, as for the explainer above. Only the daemon that
+            # performed the transition may record it (a missing account means
+            # nobody may: the absent case fails closed), and that daemon's
+            # account may record nothing else: it reaches this chain only to
+            # record its own Knowledge Lite transitions.
+            bound = event_type.startswith(prefix)
+            is_writer = (principal is not None and writer is not None
+                         and principal.uid == writer)
+            if bound != is_writer or (is_writer and request.verb.name != "audit.append"):
+                raise RequestRefused(Refusal.PRINCIPAL_DENIED, "bound_writer")
         if request.verb.name == "audit.bootstrap.observe":
             if not self.verified:
                 raise RequestRefused(Refusal.ARGUMENT_RANGE, "chain")

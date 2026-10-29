@@ -25,7 +25,7 @@ BindsTo=azazel-auditd.service
 [Service]
 Type=notify
 User=azcommission
-SupplementaryGroups=azknowledge
+SupplementaryGroups=azknowledge azaudit-submit
 ExecStart=/usr/libexec/azazel/az-commissiond
 Restart=no
 KillMode=control-group

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from types import SimpleNamespace
 
 import pytest
 from azazel_nexus_runtime import auditd
@@ -56,7 +55,7 @@ def _iso(at):
 
 
 def _service(tmp_path, monkeypatch, clocks=None, warnings=None):
-    monkeypatch.setattr(auditd.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=EXPLAINER.uid))
+    monkeypatch.setattr(auditd.pwd, "getpwnam", _explainer_account(EXPLAINER.uid))
     root = tmp_path / "ledger"
     root.mkdir(parents=True, exist_ok=True)
     clocks = clocks or Clocks()
@@ -373,7 +372,7 @@ def test_a_summary_that_cannot_be_appended_is_kept_not_raised(tmp_path, monkeypa
     assert _refused(lambda: _incident(service, clocks)) == "rate"
     assert sum(service._summary_pending.values()) == 1
     monkeypatch.undo()
-    monkeypatch.setattr(auditd.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=EXPLAINER.uid))
+    monkeypatch.setattr(auditd.pwd, "getpwnam", _explainer_account(EXPLAINER.uid))
     clocks.advance(SUMMARY_WINDOW_S)
     service.tick()
     assert [s["refused"] for s in _summaries(service)] == [1]
@@ -567,7 +566,7 @@ def test_the_serve_loop_ticks_and_filters_refusals(tmp_path, monkeypatch):
                         lambda name, registry: (tmp_path / f"{name}.sock", 0, registry))
     ticks = []
     monkeypatch.setattr(AuditService, "tick", lambda self: ticks.append(1))
-    monkeypatch.setattr(auditd.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=EXPLAINER.uid))
+    monkeypatch.setattr(auditd.pwd, "getpwnam", _explainer_account(EXPLAINER.uid))
     from azazel_nexus_runtime import principal
     monkeypatch.setattr(principal.PrincipalPolicy, "resolve", classmethod(lambda cls, **_: None))
     recorded = []
@@ -577,3 +576,20 @@ def test_the_serve_loop_ticks_and_filters_refusals(tmp_path, monkeypatch):
     calls["audit"]({"reason": "rate_limited"})
     calls["audit"]({"reason": "malformed_frame"})
     assert recorded == [{"reason": "malformed_frame"}]
+
+
+def _explainer_account(uid):
+    """`pwd.getpwnam` resolving only azexplain; other accounts are absent.
+
+    auditd binds Knowledge Lite event types to azknowledge and azcommission
+    in both directions (P4); a stub that gave every account the explainer's
+    uid would make the explainer those writers too.
+    """
+    import types
+
+    def getpwnam(name):
+        if name != "azexplain":
+            raise KeyError(name)
+        return types.SimpleNamespace(pw_uid=uid)
+
+    return getpwnam

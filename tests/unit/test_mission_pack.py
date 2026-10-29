@@ -450,7 +450,9 @@ def test_every_generation_file_write_interruption_keeps_first_install_core(node,
     assert service.status()["fallback"] == "CORE (no previous provider)"
 
 
-def test_real_model_and_lite_slices_are_reused_and_not_reimported(node, tmp_path):
+def test_real_model_and_lite_slices_are_reused_and_not_reimported(node, tmp_path, lab_host):
+    # The producer's published fixture key is a commissioned anchor only on a
+    # marked lab host (lab_keys).
     from azazel_nexus.lite_import import CommissionedLite, LiteImport
     from azazel_nexus.model_catalog import (
         CATALOG_DOMAIN,
@@ -509,6 +511,18 @@ def test_real_model_and_lite_slices_are_reused_and_not_reimported(node, tmp_path
     stage_activate(service, media(newer))
     assert models.current_generation() == before_model
     assert lite_path.read_bytes() == before_lite
+    # Off a marked lab host the Pack's knowledge_lite slice refuses the same
+    # fixture-signed bundle: its gate reads the commissioned anchors (lab_keys).
+    from azazel_nexus import lab_host as lab_marker
+
+    marked = lab_marker.LAB_HOST_MARKER
+    lab_marker.LAB_HOST_MARKER = tmp_path / "no-lab-marker"
+    try:
+        newer["rollback_predecessor"] = service.status()["pack_digest"]
+        with pytest.raises(mp.PackRefused, match="Knowledge Lite reference refused"):
+            service.verify(media(newer), now=NOW)
+    finally:
+        lab_marker.LAB_HOST_MARKER = marked
     # A pack cannot revive missing or unverified installed assets.
     model_asset.path.write_bytes(b"x" * model_asset.size_bytes)
     newer["rollback_predecessor"] = service.status()["pack_digest"]

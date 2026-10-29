@@ -687,9 +687,8 @@ def test_watchdog_schema_refuses_invalid_fields(tmp_path, field, value):
 
 
 def test_incident_writer_is_exclusive_and_verify_accepts_events(tmp_path, monkeypatch):
-    from types import SimpleNamespace
     from azazel_nexus_runtime import auditd
-    monkeypatch.setattr(auditd.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=901))
+    monkeypatch.setattr(auditd.pwd, "getpwnam", _explainer_account(901))
     explainer = Principal(uid=901, gid=901, pid=1, classes=frozenset({PrincipalClass.SERVICE}))
     service = _service(tmp_path)
     service.clock = lambda: _INCIDENT_AT
@@ -744,14 +743,13 @@ def _incident(occurred_at="2026-10-19T00:00:00Z"):
 
 
 def _incident_service(tmp_path, monkeypatch, uid=901):
-    from types import SimpleNamespace
     from azazel_nexus_runtime import auditd
     if uid is None:
         def absent(_):
             raise KeyError("azexplain")
         monkeypatch.setattr(auditd.pwd, "getpwnam", absent)
     else:
-        monkeypatch.setattr(auditd.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=uid))
+        monkeypatch.setattr(auditd.pwd, "getpwnam", _explainer_account(uid))
     service = _service(tmp_path)
     service.clock = lambda: _INCIDENT_AT
     return service
@@ -838,3 +836,20 @@ def test_incident_event_without_a_principal_is_refused(tmp_path, monkeypatch):
         service.handle(request)
     assert exc.value.refusal is Refusal.PRINCIPAL_DENIED and exc.value.detail == "incident_writer"
     assert service.ledger.segments() == ()
+
+
+def _explainer_account(uid):
+    """`pwd.getpwnam` resolving only azexplain; other accounts are absent.
+
+    auditd binds Knowledge Lite event types to azknowledge and azcommission
+    in both directions (P4); a stub that gave every account the explainer's
+    uid would make the explainer those writers too.
+    """
+    import types
+
+    def getpwnam(name):
+        if name != "azexplain":
+            raise KeyError(name)
+        return types.SimpleNamespace(pw_uid=uid)
+
+    return getpwnam

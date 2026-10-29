@@ -49,13 +49,14 @@ _SERVICE_EXPECTED = {
 }
 #: Per-unit pins, each exactly the value of the shipped unit and overlay
 #: profile, never a subset or a wildcard (#93). commissiond carries
-#: `SupplementaryGroups=azknowledge` (#86: it reads the Knowledge Lite trust
-#: anchor through that group); auditd carries none.
+#: `SupplementaryGroups=azknowledge azaudit-submit` (#86: it reads the
+#: Knowledge Lite trust anchor through the first; P4: it records accepted
+#: Lite revocations through auditd's append-only listener); auditd carries none.
 #: tests/unit/test_runtime_bootstrap_loaded_drift.py compares every pin
 #: with the shipped unit files and the rendered overlay.
 _SERVICE_EXPECTED_BY_UNIT = {
     UnitKey.AUDITD: {"SupplementaryGroups": ("as", [])},
-    UnitKey.COMMISSIOND: {"SupplementaryGroups": ("as", ["azknowledge"])},
+    UnitKey.COMMISSIOND: {"SupplementaryGroups": ("as", ["azknowledge", "azaudit-submit"])},
 }
 
 

@@ -111,7 +111,8 @@ def test_a_feature_cannot_be_both_functional_and_loopback_only() -> None:
 # -- each declaration, tied to the code that makes it true -----------------
 
 
-def test_knowledge_lite_is_functional_because_a_real_bundle_is_admitted_and_served() -> None:
+def test_knowledge_lite_is_functional_because_a_real_bundle_is_admitted_and_served(lab_host) -> None:
+    # The producer's published fixture key is an anchor only on a marked lab host.
     """The mechanical tie for the one feature that crossed the line.
 
     Not a declaration checked against itself: the producer's own pinned

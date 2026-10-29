@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -34,12 +35,19 @@ __all__ = [
     "RevocationRefused",
     "RevocationStore",
     "encode_signed",
+    "parse_signed",
 ]
 
 REVOCATION_DOMAIN = b"azazel-nexus/revocation/v1\0"
 _MULTISIG = b"AZRV1\n"
 
 REVOCATION_FILENAME = "revocations.signed"
+
+#: The trust record whose owner, group and mode every file this store writes
+#: takes, when the store lives in a commissioned Lite trust root (F3 of the
+#: 2026-10-28 integration rehearsal). `lite_trust.TRUST_FILENAME`, named here
+#: rather than imported: lite_trust imports this module.
+_TRUST_RECORD = "trust.json"
 
 
 class RevocationRefused(Exception):
@@ -184,6 +192,26 @@ class RevocationStore:
     def path(self) -> Path:
         return self.root / REVOCATION_FILENAME
 
+    def _metadata(self) -> os.stat_result | None:
+        """`trust.json`'s owner, group and mode, when this is a trust root.
+
+        A revocation written by the commissioning account under a private
+        `0600` would be unreadable to the account that serves the cache, which
+        then reads `unverified` instead of `revoked`: fail-closed, but the
+        wrong reason. Repin gives its files the same metadata for the same
+        reason (`lite_trust._apply_metadata`). Outside a trust root (no
+        `trust.json`) files stay private to the writer.
+        """
+        try:
+            metadata = (self.root / _TRUST_RECORD).lstat()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise RevocationRefused("unverified: the trust record is unreadable") from exc
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) & 0o022:
+            raise RevocationRefused("unverified: the trust record is not a private regular file")
+        return metadata
+
     def _record(self, *, path: Path | None = None) -> Mapping | None:
         if self.continuity is None:
             return None
@@ -254,11 +282,12 @@ class RevocationStore:
             # already verified and durably checkpointed before the interruption.
             self._verify(signatures, payload, incoming, self._floor(record))
             self._check_policy_path(path)
-            _atomic_write(self.path, blob)
+            _atomic_write(self.path, blob, metadata=self._metadata())
             return incoming
         self._verify(signatures, payload, incoming, in_force)
         _extends(incoming, in_force)
         record = self._record(path=path)
+        metadata = self._metadata()
         if record is not None:
             updated = dict(record)
             updated["floor"] = incoming.as_payload().decode("utf-8")
@@ -266,9 +295,10 @@ class RevocationStore:
             # Persist the high-water mark first: interruption before publishing
             # the blob holds the cache closed rather than losing a revocation.
             self._check_policy_path(path)
-            _atomic_write(path, json.dumps(updated, sort_keys=True).encode("utf-8"))
+            _atomic_write(path, json.dumps(updated, sort_keys=True).encode("utf-8"),
+                          metadata=metadata)
         self._check_policy_path(path)
-        _atomic_write(self.path, blob)
+        _atomic_write(self.path, blob, metadata=metadata)
         return incoming
 
     def _verify(
@@ -326,6 +356,11 @@ def _extends(incoming: RevocationList, old: RevocationList, *, allow_equal: bool
         raise RevocationRefused("revoked entries cannot be re-enabled")
 
 
+def parse_signed(blob: bytes) -> RevocationList:
+    """The statement a signed transport carries, unverified. Refuses malformed."""
+    return RevocationList.parse(_split(blob)[1])
+
+
 def encode_signed(payload: bytes, signatures: Sequence[bytes]) -> bytes:
     """Package externally produced signatures; this function does not sign."""
     if not signatures or any(len(sig) != SIGNATURE_BYTES for sig in signatures):
@@ -356,12 +391,20 @@ def _split(blob: bytes) -> tuple[tuple[bytes, ...], bytes]:
     return (blob[:SIGNATURE_BYTES],), blob[SIGNATURE_BYTES:]
 
 
-def _atomic_write(path: Path, blob: bytes) -> None:
+def _atomic_write(path: Path, blob: bytes, *, metadata: os.stat_result | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary = tempfile.mkstemp(dir=str(path.parent), prefix=".revocations-")
     try:
         with os.fdopen(handle, "wb") as stream:
             stream.write(blob)
+            if metadata is not None:
+                # Before the rename, so no reader ever sees the file with any
+                # other owner or mode. Group change needs membership (the
+                # commissioning account holds azknowledge), never privilege.
+                observed = os.fstat(stream.fileno())
+                if (observed.st_uid, observed.st_gid) != (metadata.st_uid, metadata.st_gid):
+                    os.fchown(stream.fileno(), metadata.st_uid, metadata.st_gid)
+                os.fchmod(stream.fileno(), stat.S_IMODE(metadata.st_mode))
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)

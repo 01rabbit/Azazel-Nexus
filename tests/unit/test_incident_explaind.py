@@ -320,8 +320,14 @@ def test_explainer_reaches_only_its_own_listeners_not_operator_sockets():
         spec = specs[f"/var/lib/azazel/run/{name}"]
         assert (spec.mode, spec.owner, spec.group) == (0o2710, owner, group)
         assert socket_group(name) == group
-        # Only the explainer carries the client group; only the owning daemon writes the leaf.
-        assert [p.unit for p in PROFILES if group in p.supplementary_groups] == [profile.unit]
+        # Only the explainer carries the advise client group. The audit-submit
+        # group (append only) is also carried by the two daemons that record
+        # Knowledge Lite imports and revocations (P4); neither is an operator
+        # group. Only the owning daemon writes the leaf.
+        holders = {p.unit for p in PROFILES if group in p.supplementary_groups}
+        assert holders == ({profile.unit, "azazel-commissiond.service",
+                            "azazel-knowledge-lited.service"}
+                           if name == "audit-submit" else {profile.unit})
         assert [p.unit for p in PROFILES if spec.path in p.read_write_paths] == [unit]
     assert auditd.SUBMIT_REGISTRY.names() == ("audit.append",)
     assert mio_entryd.ADVISE_REGISTRY.names() == ("mio.advise",)

@@ -196,7 +196,6 @@ def test_a_broken_chain_is_in_the_snapshot(tmp_path, monkeypatch):
 
 
 def test_main_writes_the_snapshot_before_serving(tmp_path, monkeypatch):
-    from types import SimpleNamespace
 
     from azazel_nexus_runtime import principal, serve
     seen = {}
@@ -214,14 +213,13 @@ def test_main_writes_the_snapshot_before_serving(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime_paths, "dedicated_listener",
                         lambda name, registry: (tmp_path / f"{name}.sock", 0, registry))
     monkeypatch.setattr(runtime_paths, "audit_sink", lambda _: lambda event: None)
-    monkeypatch.setattr(auditd.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=901))
+    monkeypatch.setattr(auditd.pwd, "getpwnam", _explainer_account(901))
     monkeypatch.setattr(principal.PrincipalPolicy, "resolve", classmethod(lambda cls, **_: None))
     assert auditd.main([], ready=lambda: None) == 0
     assert seen == {"snapshot": True}
 
 
 def test_main_serves_when_the_leaf_is_missing(tmp_path, monkeypatch, capsys):
-    from types import SimpleNamespace
 
     from azazel_nexus_runtime import principal, serve
     monkeypatch.setattr(serve, "serve_forever", lambda **_: 0)
@@ -232,7 +230,7 @@ def test_main_serves_when_the_leaf_is_missing(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(runtime_paths, "dedicated_listener",
                         lambda name, registry: (tmp_path / f"{name}.sock", 0, registry))
     monkeypatch.setattr(runtime_paths, "audit_sink", lambda _: lambda event: None)
-    monkeypatch.setattr(auditd.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=901))
+    monkeypatch.setattr(auditd.pwd, "getpwnam", _explainer_account(901))
     monkeypatch.setattr(principal.PrincipalPolicy, "resolve", classmethod(lambda cls, **_: None))
     assert auditd.main([], ready=lambda: None) == 0
     assert capsys.readouterr().err.count("cannot write") == 1
@@ -392,3 +390,20 @@ def test_temp_files_a_killed_predecessor_left_are_removed_once(tmp_path, monkeyp
     service.write_status()
     assert sorted(p.name for p in leaf.iterdir()) == ["other", "status.json"]
     assert _read(service) is not None
+
+
+def _explainer_account(uid):
+    """`pwd.getpwnam` resolving only azexplain; other accounts are absent.
+
+    auditd binds Knowledge Lite event types to azknowledge and azcommission
+    in both directions (P4); a stub that gave every account the explainer's
+    uid would make the explainer those writers too.
+    """
+    import types
+
+    def getpwnam(name):
+        if name != "azexplain":
+            raise KeyError(name)
+        return types.SimpleNamespace(pw_uid=uid)
+
+    return getpwnam

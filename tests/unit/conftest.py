@@ -42,6 +42,24 @@ def negative_cases(negative_index) -> dict[str, dict]:
 
 
 @pytest.fixture
+def lab_host(tmp_path, monkeypatch) -> Path:
+    """Mark this test's host as a lab host (`lab_host.LAB_HOST_MARKER`).
+
+    The public Knowledge Lite fixture key is refused as a commissioned anchor
+    everywhere else (`azazel_nexus.lab_keys`). A test that drives the
+    producer's published fixture through a commissioned reader declares
+    itself a lab, exactly as the lab tooling marks a rehearsal host.
+    """
+    from azazel_nexus import lab_host as module
+
+    marker = tmp_path / "etc-azazel-lab" / "LAB-HOST"
+    marker.parent.mkdir()
+    marker.write_text("lab\n")
+    monkeypatch.setattr(module, "LAB_HOST_MARKER", marker)
+    return marker
+
+
+@pytest.fixture
 def cache_root(tmp_path) -> Path:
     root = tmp_path / "knowledge-lite-cache"
     root.mkdir()

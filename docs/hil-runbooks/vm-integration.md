@@ -62,17 +62,26 @@ before the scenarios.
   would stop it at once). `systemd-analyze verify` must print no warning.
 - **Knowledge Lite** is enrolled with the **public fixture key** of
   `contract/azazel-knowledge-lite/anchors.toml` (published by Azazel-Knowledge,
-  test-only; it must never be pinned on a real node). Two steps of §11 have no
-  shipped entrypoint and run as library calls, as §11 says; one more is
-  substituted here:
+  test-only; it must never be pinned on a real node). Production code refuses
+  that key as an anchor except on a host carrying the lab marker
+  `/etc/azazel-lab/LAB-HOST` ([knowledge-lite-consumer §9](../knowledge-lite-consumer.md#9-the-fixture-contract-and-where-it-came-from)),
+  so the run writes the marker right before the pin (check `lab-marker`) and
+  never removes it: the node is a lab node from then on, and activation
+  health, the bootstrap overlay, commissioning approval and model admission
+  refuse it. The install-time check
+  `no-lab-marker` still requires a fresh node without one. Not re-run since
+  this change. The pin and the import run as library calls here; the import
+  does not use `knowledge.import` because this run starts `knowledge-lited`
+  afterwards. One more step is substituted:
   - step 5 (revocation policy) is the library call the repin path uses,
     `commission_policy`, run as `azcommission`, not through `az-commissiond`
     (only the supporting bootstrap starts it); the written file is given
     `trust.json`'s owner and mode, as the repin does for its own files;
   - the revocation key is this run's lab key, and the revocation statement in
-    §4 is accepted with `RevocationStore.accept` as `azcommission` (no shipped
-    entrypoint either); its two files are then given `trust.json`'s metadata
-    (finding F3 in the evidence record).
+    §4 is accepted with `RevocationStore.accept` as `azcommission`, not through
+    `az-commissiond`'s `trust.revocation.accept`; its two files are then given
+    `trust.json`'s metadata (finding F3 in the evidence record; `accept` now
+    does that itself, so this step is a no-op on a current build).
   The commissioning digest the pin and the policy carry is a label derived
   from `azn-vmit-lab` and the run id: the node has no commissioning record.
 - **Edge** decisions are dry runs (`defense_enforce=false`,

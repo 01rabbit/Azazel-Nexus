@@ -29,8 +29,11 @@ import tarfile
 from pathlib import Path
 
 import pytest
-from azazel_nexus_runtime import runtime_paths
+from azazel_nexus_runtime import knowledge_lited, runtime_paths
+from azazel_nexus_runtime.knowledge_clock_floor import ClockFloor
+from azazel_nexus_runtime.lite_audit import ImportAudit
 from azazel_nexus_runtime.principal import PrincipalPolicy
+from azazel_nexus_runtime.transport import Request
 from azazel_nexus_runtime.repin_confirmation import (
     ANCHOR_FILENAME,
     REASONS,
@@ -199,8 +202,26 @@ def test_the_documented_sequence_reaches_available(tmp_path, monkeypatch) -> Non
     placed.write_bytes(_bundle(bundle_key, key_id))
     entry_id = hashlib.sha256(placed.read_bytes()).hexdigest()
 
-    # Step 7: the store-owner import, exactly as printed.
-    assert _run(_python(steps[7]), tmp_path, entry_id, AS_OF) == 0
+    # Step 7: the documented command, then the daemon verb it sends, as root.
+    (command,) = re.findall(
+        r"-m (azazel_nexus_runtime\.commission_cli) knowledge-import --entry \"<entry id>\"",
+        steps[7])
+    assert command == "azazel_nexus_runtime.commission_cli"
+    recorded = []
+    floor = runtime_paths.knowledge_state_dir()
+    floor.mkdir(parents=True, exist_ok=True)
+    floor.chmod(0o700)
+    service = knowledge_lited.KnowledgeLiteService(
+        root=runtime_paths.knowledge_store_root(), trust_root=runtime_paths.lite_trust_root(),
+        clock_floor=ClockFloor(floor), now=lambda: AS_OF,
+        import_audit=lambda: ImportAudit(append=recorded.append))
+    result = service.handle(Request(verb=knowledge_lited.IMPORT_VERB,
+                                    arguments={"entry_id": entry_id}, principal=PRINCIPAL,
+                                    payload={}))
+    assert result["outcome"] == "admitted" and result["audit_complete"] is True, result
+    kinds = [event["event_type"] for event in recorded]
+    assert kinds[0] == "knowledge.lite.import_started"
+    assert kinds[-1] == "knowledge.lite.import_admitted"
     reasons.append(_reason(tmp_path))
 
     documented = re.search(
@@ -254,9 +275,11 @@ def test_no_shipped_code_pins_trust_or_imports_a_lite_bundle() -> None:
     # ModelImport has its own `import_entry`; no LiteImport caller exists.
     lite_users = set(_calls("LiteImport", roots=PRODUCTION))
     importers = set(_calls("import_entry", roots=PRODUCTION))
-    assert not lite_users & importers
+    # The one shipped importer is the daemon's ROOT-only verb (P4).
+    assert lite_users & importers == {
+        Path("runtime/src/azazel_nexus_runtime/knowledge_lited.py")}
     assert "No command calls `TrustStore.pin`" in _steps()[3]
-    assert "No shipped command calls `import_entry`" in _steps()[7]
+    assert "`knowledge.import`" in _steps()[7]
 
 
 def test_commission_policy_has_no_production_caller() -> None:
@@ -276,7 +299,7 @@ def test_repin_document_points_at_the_procedure() -> None:
         assert "knowledge-lite-consumer.md#11-first-enrollment-from-a-fresh-install-to-available" in text
 
 
-@pytest.mark.parametrize("step", [3, 7])
+@pytest.mark.parametrize("step", [3])
 def test_documented_programs_compile(step) -> None:
     compile(_python(_steps()[step]), "<doc>", "exec")
 
@@ -425,7 +448,7 @@ ALLOWED_COMMANDS = (
     "sudo chown ",
     "sudo chmod ",
     "sudo /opt/azazel-nexus/venv/bin/python -I -c '",
-    "sudo runuser -u azknowledge -- /opt/azazel-nexus/venv/bin/python -I -c '",
+    "sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus_runtime.commission_cli knowledge-import ",
     "sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus_runtime.commission_cli trust-repin ",
     "sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus.cli status",
     "sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus.cli setup",
@@ -485,7 +508,7 @@ def test_the_procedure_runs_only_the_allowed_commands() -> None:
         assert ".pem" not in command and "umask" not in command, command
 
 
-@pytest.mark.parametrize("step", (3, 7))
+@pytest.mark.parametrize("step", (3,))
 def test_the_documented_programs_change_no_permissions(step) -> None:
     program = _python(_steps()[step])
     for word in ("chmod", "chown", "umask", "subprocess", "os.system", "shutil"):

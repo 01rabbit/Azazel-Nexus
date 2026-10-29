@@ -861,6 +861,11 @@ def _lite_import(harness: Harness) -> str:
     inbox, select by content id, verify, admit or quarantine, then serve. All
     six cases, in finite time, against real files.
 
+    The two readable bundles are re-signed under a key made for this run and
+    never written down: the producer's fixture key is published, and a
+    commissioned anchor refuses it off a marked lab host (lab_keys). The
+    content, expiry and the three broken archives are the producer's bytes.
+
     Edge readiness and action authority are read before and after each one
     and must be identical. Knowledge is advice; it does not move authority.
     """
@@ -874,6 +879,29 @@ def _lite_import(harness: Harness) -> str:
     contract = _Path(__file__).resolve().parents[1] / "contract" / "azazel-knowledge-lite"
     as_of = "2026-09-21T00:00:00Z"
     no_edge = harness.root / "no-edge-core"
+
+    import io
+    import tarfile
+
+    from nacl.signing import SigningKey
+
+    run_key = SigningKey.generate()
+    key_id = "e2e-run-key"
+    anchors_text = (f'threshold = 1\n[keys]\n"{key_id}" = '
+                    f'"{run_key.verify_key.encode().hex()}"\n')
+
+    def resigned(bundle: str) -> bytes:
+        with tarfile.open(contract / bundle, "r:gz") as archive:
+            members = {e.name: archive.extractfile(e).read() for e in archive if e.isfile()}
+        signature = run_key.sign(members["manifest.json"]).signature.hex()
+        members["manifest.sig"] = f"{key_id}:{signature}\n".encode()
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w:gz") as archive:
+            for member, data in members.items():
+                info = tarfile.TarInfo(member)
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+        return stream.getvalue()
 
     def edge_answer():
         answer = inspect_edge(no_edge)
@@ -899,8 +927,10 @@ def _lite_import(harness: Harness) -> str:
                 else harness.root / f"knowledge-lite-{name}")
         (root / "inbox").mkdir(parents=True, exist_ok=True)
         (root / "trust").mkdir(parents=True, exist_ok=True)
-        shutil.copy(contract / "anchors.toml", root / "trust" / "anchors.toml")
-        if bundle is not None:
+        (root / "trust" / "anchors.toml").write_text(anchors_text)
+        if bundle is not None and name in ("valid", "expired"):
+            (root / "inbox" / _Path(bundle).name).write_bytes(resigned(bundle))
+        elif bundle is not None:
             shutil.copy(contract / bundle, root / "inbox" / _Path(bundle).name)
 
         transitions = []
@@ -968,7 +998,7 @@ def _lite_import(harness: Harness) -> str:
 
     trust = harness.root / "var/lib/azazel/lite-trust"
     (trust / "trust").mkdir(parents=True, exist_ok=True)
-    shutil.copy(contract / "anchors.toml", trust / "trust/anchors.toml")
+    (trust / "trust/anchors.toml").write_text(anchors_text)
     anchors = read_anchors(trust / "trust/anchors.toml")
     TrustStore(trust).pin([key.hex() for key in anchors.keys.values()],
                          commissioning_digest="sha256:" + "e" * 64,

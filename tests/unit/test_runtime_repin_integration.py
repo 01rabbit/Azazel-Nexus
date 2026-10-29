@@ -131,7 +131,7 @@ def test_production_paths_and_least_privilege_declaration():
         "/var/lib/azazel/lite-trust", "/var/lib/azazel/state/commission",
         "/var/lib/azazel/run/commission",
     }
-    assert profile.supplementary_groups == ("azknowledge",)
+    assert profile.supplementary_groups == ("azknowledge", "azaudit-submit")
     assert runtime_paths.lite_trust_root() == runtime_paths.ROOT / "var/lib/azazel/lite-trust"
     assert runtime_paths.commission_ledger_path() == (
         runtime_paths.ROOT / "var/lib/azazel/state/commission/commission.jsonl"

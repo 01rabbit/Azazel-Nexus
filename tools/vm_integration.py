@@ -52,6 +52,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import tarfile
@@ -641,6 +642,21 @@ def lab_sign(name: str, message: bytes) -> bytes:
     return signature
 
 
+def mark_lab_host() -> None:
+    """Write the persistent lab marker as the lab tooling does: root, 0644, no link."""
+    directory = Path("/etc/azazel-lab")
+    directory.mkdir(mode=0o755, exist_ok=True)
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        raise RuntimeError("refused: /etc/azazel-lab is not a root-owned directory")
+    fd = os.open(directory / "LAB-HOST", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+    try:
+        os.write(fd, b"azn-vmit-lab\n")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def knowledge_enroll(checks: Checks, options: dict) -> None:
     if not options.get("disposable_node"):
         raise RuntimeError("refused: the public fixture key is pinned only on a node the operator declared "
@@ -651,6 +667,15 @@ def knowledge_enroll(checks: Checks, options: dict) -> None:
     from azazel_nexus.lite_bundle import read_anchors
     from azazel_nexus.lite_trust import TrustStore
 
+    # The public fixture key is a commissioned anchor only on a marked lab
+    # host (azazel_nexus.lab_keys). The node is disposable and the operator
+    # said so: mark it, persistently, before pinning. The marker is never
+    # removed (the VM is reverted to its snapshot); it also keeps activation
+    # health, the bootstrap overlay, commissioning approval and model
+    # admission closed on this node.
+    mark_lab_host()
+    checks.add("lab-marker", "pass", "the node is marked as a lab host before the public fixture key is pinned",
+               "/etc/azazel-lab/LAB-HOST written by this run (azazel_nexus.lab_keys)")
     reasons = [knowledge_reason()["reason_code"]]
     knowledge_gid = grp.getgrnam("azknowledge").gr_gid
     for directory in (TRUST / "trust", STORE / "trust"):

@@ -150,7 +150,7 @@ def test_legitimate_service_callers_are_still_services(accounts):
     for account in ("azarbiter", "azwatch", "azcommission", "azaudit"):
         assert admitted("auditd", "main", account, "audit.append")
         assert admitted("model_fetchd", "main", account, "model.fetch")
-    assert admitted("knowledge_lited", "main", "azexplain", by_stem["knowledge_lited"][1]["main"].names()[0])
+    assert admitted("knowledge_lited", "main", "azexplain", "knowledge.status")
 
 
 # -- real kernel peer credentials ------------------------------------------
