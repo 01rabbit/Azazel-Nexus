@@ -66,11 +66,13 @@ stays valid for that tag only.
 overtaken.** `provisioning_contracts` and `mio_contracts` were absent at
 `v0.8.0` and are present from `v0.9.0rc1` onward. Azazel-Boot, which does pin
 Fabric, records that directly: its `PLANNED_FABRIC_MODULES` names both and its
-projection reports nothing missing at `v0.9.0rc1` (ADR-0007). §3.3 and §3.4
-below still call every record in those two families a *target*; what has
-changed is that the module now exists to be consumed, not that any mapping has
-been verified. Nexus MUST still not adopt a pin for them without a conformance
-attestation.
+projection reports nothing missing at `v0.9.0rc1` (ADR-0007). Nexus now pins
+`v0.9.0rc5` (ADR-0001), where both are present. §3.3 records `mio_contracts` as
+**published, not adopted**: the one record Nexus produces in that family is an
+internal `ClaimSet` projection of its own explanation ledger, kept in that
+ledger and never sent (§3.3). §3.4 records `provisioning_contracts`. A module
+existing in the pin is still not a verified mapping; each row says what was
+attested and where.
 
 | Fabric module | Records observed |
 | --- | --- |
@@ -98,7 +100,7 @@ that the program plan assigns to those modules is therefore a target contract.
 | --- | --- | --- | --- |
 | enforcement intent issued by the arbiter | Fabric | `schema.action.ActionIntent` + plan variants | Fabric-owned (available) |
 | operator-facing decision explanation | Fabric | `schema.decision.DecisionExplanation` | Fabric-owned (available) |
-| evidence citation carried by any advisory record | Fabric | `schema.evidence.EvidenceRef` | Fabric-owned (available); Edge evidence pointer projected by `fabric_boundary.project_edge_evidence` and checked against the pin in `tests/unit/test_edge_intake_fabric.py`; **not called in production** — intake stores its own digest and never needs Fabric, and no advisory record carries an `EvidenceRef` yet |
+| evidence citation carried by any advisory record | Fabric | `schema.evidence.EvidenceRef` | Fabric-owned (available); Edge evidence pointer projected by `fabric_boundary.project_edge_evidence` and checked against the pin in `tests/unit/test_edge_intake_fabric.py`. `project_explanation` (§3.3) turns given evidence records into `EvidenceRef`s and cites them from the Edge claim (`tests/unit/test_fabric_explanation_projection.py`), but **the explainer gives it none**: its durable pending queue carries no evidence digests by design (`incident_explain.explanation_input`), so the stored Edge claim says `evidence_refs_not_carried`. Carrying evidence digests into the explanation path is an owner decision. Intake stores its own digest and never needs Fabric |
 | audit envelope and canonical bytes | Fabric | `schema.audit.AuditEvent`, `audit.jsonl` | Fabric-owned (available) |
 | capability/mode publication to the UI | Fabric | `schema.mode.ModeState`, `schema.state.StateSnapshot`, `view.status.StatusView` | Fabric-owned (available); `ModeState` and `StatusView` **attested** by `fabric_boundary.project_capability` (`tests/unit/test_fabric_boundary.py`) and called by production `azazel-nexus status` (`fabric status view:` line, `edge_loop_status.render_fabric_status`); `StateSnapshot` not projected |
 | trust material presentation | Fabric | `schema.trust.TrustCapsule` | Fabric-owned (available) |
@@ -114,7 +116,8 @@ trust decision that Fabric MUST NOT make.
 
 | Nexus usage | Owner | Fabric artifact | Status |
 | --- | --- | --- | --- |
-| Knowledge Lite context query and cited response | Fabric | `cti_contracts.context`, `cti_contracts.advisory` | Fabric-owned (available) |
+| Knowledge Lite lookup and cited response | **Nexus-local** | — (`cti_contracts.context`/`.advisory` exist in the pin and are **not** the shape used) | `knowledge.lookup` over the local Unix socket returns `lite_import.KnowledgeRef` rows (claim id, verified bundle digest, generation, freshness, `as_of`, dataset citation). Neither this nor the real Knowledge `/v1/context` uses the `CtiContextRequest`/`CtiContextResponse` shape (Knowledge `api/contracts.py` adopts only Fabric's advisory-only check on its own response), and `cti_contracts.SourceProduct` is `edge`/`gadget`, so Nexus cannot be the requester. Not adopted |
+| cited Knowledge reference inside an explanation | Fabric | `mio_contracts.Claim` (`source="knowledge_advisory"`) | projected internally by `fabric_boundary.project_explanation` (one claim per `KnowledgeRef`: bundle digest as the only input reference, Lite freshness as freshness); kept in the explanation ledger only (§3.3) |
 | Deception package description and host capability requirements | Fabric | `deception_contracts.models` | Fabric-owned (available) |
 | Deception activation/transition/termination decision carried to a decoy runtime | Fabric | `deception_contracts.models` decision records | Fabric-owned (available) |
 | decoy telemetry and environment outcome returned to Evidence | Fabric | `EnvironmentEvent`, `EnvironmentOutcome` | Fabric-owned (available) |
@@ -127,17 +130,49 @@ trust decision that Fabric MUST NOT make.
 
 | Nexus usage | Owner | Fabric artifact | Status |
 | --- | --- | --- | --- |
-| `MioSituationFrame` (local situation record) | Fabric | `mio_contracts` | **Fabric-owned (target, R1)** |
-| `MioRemoteFrame` (sanitized remote frame) | Fabric | `mio_contracts` | **Fabric-owned (target, R1)** |
-| advisory result returned by a local or remote model | Fabric | `mio_contracts` | **Fabric-owned (target, R1)** |
-| provenance-preserving merge output and disagreement marking | Fabric | `mio_contracts` | **Fabric-owned (target, R1)** |
-| sanitizer policy file, alias key material, redaction records | **Nexus-local** | — | product-local; the redaction *record reference* is carried in the Fabric frame, the record itself is not exported |
+`mio_contracts` is present in the pinned `v0.9.0rc5` (and from `v0.9.0rc1`);
+it is **published, not adopted** (`docs/mio-dual-cognition.md`). Nexus's own
+frames (`azazel-nexus/sanitized-envelope/1`, `advisory_response`,
+`local_advisory`) keep their Nexus-local shapes and are not published as the
+interoperable form.
+
+| Nexus usage | Owner | Fabric artifact | Status |
+| --- | --- | --- | --- |
+| local situation record | Fabric | `mio_contracts.SituationFrame` | published, **not adopted** (Nexus builds its own frame, `incident_explain.build_frame`) |
+| sanitized remote frame | Fabric | `mio_contracts.SanitizedRemoteFrame` | published, **not adopted**; see the redaction row and the owner decision below |
+| advisory result returned by a local or remote model | Fabric | `mio_contracts.AdvisoryResult` | published, **not adopted** (`advisory_response`, `local_advisory`) |
+| provenance-preserving merge output and disagreement marking | Fabric | `mio_contracts.MergedAdvisory`, `Disagreement` | published, **not adopted** (Nexus merges nothing) |
+| explanation claims: the Edge decision and each cited Knowledge reference | Fabric | `mio_contracts.ClaimSet`, `Claim` | **projected internally**: `fabric_boundary.project_explanation` builds a `ClaimSet` from each explanation-ledger record (Edge decision `deterministic_core`, each `KnowledgeRef` `knowledge_advisory`), and `incident_explaind` keeps Fabric's own JSON dump beside the record in its ledger when the pinned Fabric is present. Never sent, displayed or served; `read_record` refuses a stored projection that drifted from its record. The M.I.O. advice in the record is not projected: the ledger names the route, not the model and generation a model-sourced `Claim` must carry. Tests: `tests/unit/test_fabric_explanation_projection.py` |
+| sanitizer policy file, alias key material, redaction records | **Nexus-local** | — | product-local. Only the redaction record's id (`redaction_record_id`, a digest) travels in Nexus's sanitized envelope; the record (which fields were removed, aliased or bucketed) stays on the node |
 | router state, request budget, deadline accounting | **Nexus-local** | — | product-local |
 | model asset layout, sandbox, and cgroup budgets | **Nexus-local** | — | product-local execution |
 
-Until `mio_contracts` is adopted, Nexus documentation MUST describe these
-frames as target contracts and MUST NOT publish a Nexus-local canonical JSON
-form as if it were the interoperable shape.
+Privacy classes. The table below is the correspondence, and
+`tests/unit/test_fabric_explanation_projection.py` checks it against Nexus's
+`PrivacyClass` and `NEVER_REMOTE` and against Fabric's own `PrivacyClass` and
+`NON_EGRESSIBLE_PRIVACY_CLASSES`. It is a correspondence, not a wire mapping:
+nothing is sent in Fabric's shape, so no product code holds it.
+
+| Nexus (`sanitizer.PrivacyClass`) | Fabric (`mio_contracts.PrivacyClass`) | Leaves the node? | Note |
+| --- | --- | --- | --- |
+| `P0-public` | `public` | may, under policy | same meaning |
+| `P1-sanitized` | `internal` | may, under policy | Nexus's word says the field was sanitized for this route; Fabric's says the data is internal to the operator. Both are the two classes a remote frame may carry |
+| `P2-mission` | `sensitive` | never | Nexus `NEVER_REMOTE` = Fabric `NON_EGRESSIBLE_PRIVACY_CLASSES` |
+| `P3-restricted` | `restricted` | never | as above |
+
+Redaction actions. Nexus records `removed`, `aliased` and `bucketed`; Fabric's
+`RedactionRecord.action` also has `truncated` and `generalized`, which Nexus
+never does (an over-budget frame is refused, not truncated).
+
+**Owner decision (redaction records).** Fabric's `SanitizedRemoteFrame`
+*carries* its `redactions` (field reference, privacy class, action, reason) to
+the remote side. Nexus's policy is the opposite: the record stays local and
+only its id travels. Adopting `SanitizedRemoteFrame` therefore requires one of:
+(a) send the redaction records, which tells the remote side which fields of a
+mission frame existed and why they were withheld; (b) send `redactions=()` with
+the id elsewhere, which would state "nothing was redacted" when something was;
+or (c) ask Fabric for an additive reference-only field. Nexus has not chosen;
+until it does, `SanitizedRemoteFrame` is not adopted and nothing is sent in it.
 
 ### 3.4 Provisioning path
 

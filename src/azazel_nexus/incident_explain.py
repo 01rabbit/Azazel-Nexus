@@ -458,8 +458,19 @@ RECORD_FIELDS = {"incident_id", "explained_at", "transition", "edge_would", "pol
                  "attack_type", "technique_ids", "mio", "knowledge_refs", "knowledge_state", "failure_codes"}
 
 
+#: The optional, internal Fabric projection of a record
+#: (`fabric_boundary.project_explanation`). Written only when the pinned Fabric
+#: is present; never summarised, displayed or sent.
+FABRIC_RECORD_FIELD = "fabric"
+FABRIC_RECORD_BYTES = 32 * 1024
+#: The claim id of the Edge decision, after the incident id, and the prefix of
+#: each cited Knowledge reference's claim id.
+EDGE_CLAIM_SUFFIX = ":edge"
+KNOWLEDGE_CLAIM_PREFIX = "knowledge:"
+
+
 def read_record(value):
-    _shape(value, RECORD_FIELDS)
+    _shape(value, RECORD_FIELDS, (FABRIC_RECORD_FIELD,))
     if type(value["incident_id"]) is not str or not re.fullmatch(r"inc-[0-9a-f]{16}", value["incident_id"]):
         raise ValueError("record_refused")
     _number(value["explained_at"])
@@ -489,7 +500,59 @@ def read_record(value):
     if m["text"] is not None:
         _text(m["text"], 4096)
     _read_content(m)
+    if FABRIC_RECORD_FIELD in value:
+        _read_fabric_projection(value[FABRIC_RECORD_FIELD], value)
     return json.loads(json.dumps(value, allow_nan=False))
+
+
+def _read_fabric_projection(f, record):
+    """Check the stored projection against the record it was made from.
+
+    Fabric's own models validated it when it was written; this reader runs
+    without Fabric, so it checks what it can state from the record alone:
+
+    - exactly the keys `fabric_version` and `claim_set`, a release-shaped
+      version, and at most `FABRIC_RECORD_BYTES` of claim set;
+    - `authority` is `descriptive_only` and `trace_id` is the incident id;
+    - the first claim is the Edge decision: its id, `deterministic_core`, and
+      the statement made from the record's `edge_would` and `policy_reason`;
+    - the rest are the record's cited references, each claim id once (first
+      occurrence kept), in order: the id, `knowledge_advisory`, the statement
+      from the reference's name and summary, the bundle digest as the only
+      input reference, and the freshness.
+
+    Other claim fields (limitations, schema version) are not checked here.
+    A projection that drifted from its record is refused with the record.
+    """
+    _shape(f, ("fabric_version", "claim_set"))
+    if (type(f["fabric_version"]) is not str
+            or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:rc[0-9]+)?", f["fabric_version"])):
+        raise ValueError("record_refused")
+    cs = f["claim_set"]
+    if (type(cs) is not dict or len(json.dumps(cs, allow_nan=False)) > FABRIC_RECORD_BYTES
+            or cs.get("authority") != "descriptive_only" or cs.get("trace_id") != record["incident_id"]
+            or type(cs.get("claims")) is not list or not cs["claims"]):
+        raise ValueError("record_refused")
+    claims = cs["claims"]
+    if any(type(c) is not dict for c in claims):
+        raise ValueError("record_refused")
+    edge, cited = claims[0], claims[1:]
+    if (edge.get("claim_id") != record["incident_id"] + EDGE_CLAIM_SUFFIX
+            or edge.get("source") != "deterministic_core"
+            or edge.get("statement") != (f"Edge would {record['edge_would']}; "
+                                         f"policy_reason={record['policy_reason']}")):
+        raise ValueError("record_refused")
+    refs, seen = [], set()
+    for r in record["knowledge_refs"]:  # each claim id once, first kept
+        if r["claim_id"] not in seen:
+            seen.add(r["claim_id"])
+            refs.append(r)
+    if len(cited) != len(refs) or any(
+            c.get("claim_id") != KNOWLEDGE_CLAIM_PREFIX + r["claim_id"] or c.get("source") != "knowledge_advisory"
+            or c.get("statement") != r["name"] + (f": {r['summary']}" if r["summary"] else "")
+            or c.get("input_refs") != [r["bundle_digest"]] or c.get("freshness") != r["freshness"]
+            for c, r in zip(cited, refs)):
+        raise ValueError("record_refused")
 
 
 RECENT_SCHEMA = "azazel-nexus/recent-incidents/v1"

@@ -1099,6 +1099,8 @@ jobs:
       # test_commissioning_fabric.py and test_inventory_fabric.py hold the
       # halves of their files that need Fabric; the halves that do not were
       # split off so that a run without the extra still runs them.
+      # test_fabric_explanation_projection.py checks the explanation ledger's
+      # ClaimSet projection against the pin and skips without the extra.
       - name: Refuse a run where the Fabric-dependent tests skipped
         run: |
           python -m pytest \
@@ -1112,6 +1114,7 @@ jobs:
             tests/unit/test_inventory_fabric.py \
             tests/unit/test_fabric_tested_tuple.py \
             tests/unit/test_compatibility.py \
+            tests/unit/test_fabric_explanation_projection.py \
             -q --no-header -rs | tee /tmp/boundary.txt
           if grep -qE '[0-9]+ skipped' /tmp/boundary.txt; then
             echo "a Fabric-dependent test skipped on the job that installs Fabric" >&2
