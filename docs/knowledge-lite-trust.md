@@ -9,7 +9,8 @@ states an operator sees (§7). Wiring those states into `cli.py`, `status.py`,
 `degradation.py` and the audit ledger is E4 and is **not** in this change.
 
 Related: [the Knowledge Lite consumer](knowledge-lite-consumer.md) ·
-[capability model](capability-model.md) · [contract ownership](contract-ownership.md)
+[capability model](capability-model.md) · [contract ownership](contract-ownership.md) ·
+[the Knowledge-vs-Nexus verifier differential](knowledge-lite-differential.md)
 
 ## 1. What was missing, and what was broken
 

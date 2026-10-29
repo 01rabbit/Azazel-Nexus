@@ -73,6 +73,7 @@ import json
 import posixpath
 import tarfile
 import tomllib
+import zlib
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -118,9 +119,23 @@ IMPLICIT_FORMAT = 1
 #: Ceilings. Every one of them bounds work done on bytes an adversary chose.
 MAX_BUNDLE_BYTES = 512 * 1024 * 1024
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
-MAX_MEMBER_BYTES = 256 * 1024 * 1024
-MAX_TOTAL_BYTES = 1024 * 1024 * 1024
 MAX_MEMBERS = 64
+MAX_MEMBER_BYTES = 256 * 1024 * 1024
+#: The largest Lite profile Knowledge builds (`knowledge-lite-32g`) carries at
+#: most 512 MiB of content; the manifest and signature members come on top.
+#: This was 1 GiB, twice anything a producer can emit.
+MAX_TOTAL_BYTES = 512 * 1024 * 1024 + 2 * MAX_MANIFEST_BYTES
+#: Content may decompress to at most this many times the bundle's own size,
+#: the producer verifier's `DEFAULT_MAX_RATIO`. The size of the archive is the
+#: one number an attacker cannot inflate, so this is what bounds the memory a
+#: small hostile bundle can make this reader spend before any signature is
+#: checked.
+MAX_RATIO = 100
+#: Tar framing allowed on top of the content: per member a header, a PAX
+#: header and its record, and padding; then the end blocks and the record.
+TAR_OVERHEAD_BYTES = (MAX_MEMBERS + 2) * 2048 + 20 * 512
+#: How much is inflated per step before the ceiling is checked again.
+INFLATE_STEP_BYTES = 1024 * 1024
 MAX_MEMBER_NAME = 200
 MAX_MEMBER_DEPTH = 8
 MAX_SIGNATURE_LINES = 32
@@ -373,7 +388,9 @@ def verify_bundle(
         )
 
     try:
-        manifest = json.loads(manifest_bytes)
+        # Strict UTF-8 text with no byte-order mark. `json.loads(bytes)` would
+        # also take UTF-16/32 and a UTF-8 BOM, none of which Knowledge emits.
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
     except ValueError as exc:
         raise BundleRefused(
             Gate.MANIFEST, "BUNDLE_MANIFEST_INVALID", f"manifest.json is not JSON: {exc}"
@@ -414,12 +431,27 @@ def _read_members(raw: bytes) -> dict[str, bytes]:
     Nothing is written to disk. The producer's `corrupt-payload` fixture
     exists because a reader that stages before verifying can promote what it
     staged; a reader with no staging cannot.
+
+    All of this runs before any signature is checked, so it is the part an
+    unauthenticated sender reaches. The gzip stream is therefore inflated
+    here, not by `tarfile`, and inflation stops as soon as it passes
+    `MAX_RATIO` times the archive's size (or `MAX_TOTAL_BYTES`) plus room for
+    the two metadata members and the tar framing: a megabyte of compressed
+    zeros costs at most about a hundred megabytes,
+    never the gigabyte its headers declare. The content rule after it is the
+    producer's: declared member sizes, metadata members excluded, against
+    `MAX_RATIO` times the archive's size.
     """
 
+    content_cap = min(MAX_TOTAL_BYTES, MAX_RATIO * len(raw))
     found: dict[str, bytes] = {}
-    total = 0
+    total = content = 0
     try:
-        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as archive:
+        # The two metadata members are bounded by their own ceiling, not by
+        # the ratio, as in the producer: an oversized manifest is refused as
+        # BUNDLE_MANIFEST_TOO_LARGE, not as a bomb.
+        tar_bytes = _inflate(raw, content_cap + 2 * MAX_MANIFEST_BYTES + TAR_OVERHEAD_BYTES)
+        with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:") as archive:
             for index, info in enumerate(archive):
                 if index >= MAX_MEMBERS:
                     raise BundleRefused(
@@ -449,11 +481,15 @@ def _read_members(raw: bytes) -> dict[str, bytes]:
                         f"{info.name!r} declares {info.size} bytes",
                     )
                 total += info.size
-                if total > MAX_TOTAL_BYTES:
+                if info.name not in (MANIFEST_MEMBER, SIGNATURE_MEMBER):
+                    content += info.size
+                if total > MAX_TOTAL_BYTES or content > MAX_RATIO * len(raw):
                     raise BundleRefused(
                         Gate.ARCHIVE,
                         "BUNDLE_DECOMPRESSION_BOMB",
-                        f"the members total more than {MAX_TOTAL_BYTES} bytes",
+                        f"the members declare {total} bytes from a {len(raw)}-byte "
+                        f"archive; the ceilings are {MAX_TOTAL_BYTES} bytes and "
+                        f"{MAX_RATIO}:1",
                     )
                 handle = archive.extractfile(info)
                 if handle is None:
@@ -482,6 +518,37 @@ def _read_members(raw: bytes) -> dict[str, bytes]:
     return found
 
 
+def _inflate(raw: bytes, limit: int) -> bytes:
+    """The gzip stream's bytes, or a refusal once they would exceed `limit`.
+
+    Concatenated gzip members and trailing zero padding are read as
+    `gzip.GzipFile` reads them; anything else after the stream is refused as
+    unreadable rather than ignored.
+    """
+
+    out = bytearray()
+    data = raw
+    while True:
+        inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        pending = data
+        # A step at a time, so a refusal costs `limit` and not one more step.
+        while pending and not inflater.eof:
+            out += inflater.decompress(pending, INFLATE_STEP_BYTES)
+            pending = inflater.unconsumed_tail
+            if len(out) > limit:
+                raise BundleRefused(
+                    Gate.ARCHIVE,
+                    "BUNDLE_DECOMPRESSION_BOMB",
+                    f"the archive inflates past {limit} bytes from {len(raw)}; the "
+                    f"ceiling is {MAX_RATIO}:1 plus tar framing",
+                )
+        if not inflater.eof:
+            raise EOFError("the gzip stream ended before its end marker")
+        data = inflater.unused_data
+        if not data.strip(b"\0"):
+            return bytes(out)
+
+
 def _check_member_name(name: str) -> None:
     if len(name) > MAX_MEMBER_NAME:
         raise BundleRefused(
@@ -493,7 +560,9 @@ def _check_member_name(name: str) -> None:
             "BUNDLE_UNSAFE_MEMBER",
             f"{name!r} is not a plain relative path inside the bundle",
         )
-    if name.count("/") > MAX_MEMBER_DEPTH:
+    # Components, as the producer counts them: `a/b` is two deep. Counting
+    # separators admitted one level more than Knowledge's verifier does.
+    if name.count("/") + 1 > MAX_MEMBER_DEPTH:
         raise BundleRefused(
             Gate.ARCHIVE, "BUNDLE_MEMBER_PATH_TOO_DEEP", f"{name!r} is nested too deeply"
         )
@@ -588,19 +657,26 @@ def _check_signatures(
 
 
 def _check_signer_role(signers: set[str], anchors: TrustAnchors) -> None:
-    """Which key signed, separately from whether the signature is valid."""
+    """Which key signed, separately from whether the signature is valid.
+
+    The threshold applies to the role holders, as in the producer's verifier:
+    with `threshold = 2`, two verified signatures of which only one holds the
+    required role are refused here. Counting any one holder would let a key
+    provisioned for another purpose make up the threshold
+    (`tools/knowledge_lite_differential.py`, `threshold2_one_holds_role`).
+    """
 
     required = anchors.required_signer_role
     if required is None:
         return
     holders = {key_id for key_id in signers if anchors.key_roles.get(key_id) == required}
-    if not holders:
+    if len(holders) < anchors.threshold:
         raise BundleRefused(
             Gate.SIGNER_ROLE,
             "BUNDLE_SIGNER_ROLE_NOT_PERMITTED",
-            f"this node requires a signature from role {required!r} and the "
-            f"verified signer(s) {sorted(signers)} hold "
-            f"{sorted({anchors.key_roles.get(k) for k in signers})}",
+            f"this node requires {anchors.threshold} signature(s) from role "
+            f"{required!r} and the verified signer(s) {sorted(signers)} hold "
+            f"{sorted({str(anchors.key_roles.get(k)) for k in signers})}",
         )
 
 
