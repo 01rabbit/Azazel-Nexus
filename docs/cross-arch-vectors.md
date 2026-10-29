@@ -83,6 +83,7 @@ allow_nan=False)` を UTF-8 にしたもの。`audit.canonical_event_bytes` や
 | 時間に依存する M.I.O. の処理 | 含めない。`MioRouter` の期限計算と試行、send gate の drain の待ち時間は実時間に依存する。判定の部分（`select`・`fallback_once`・`outcome_for`・`terminal_for`・`remote_admission`・同意の世代）だけを含める | — |
 | 例外の文 | 他の package や標準ライブラリの例外文（tar・JSON の decoder など）は Python の版で変わるので含めない。拒否は型名と固定のコード（`gate`・`code`）で比べる。製品が固定文で書く理由（失効の `reason_for`、`RevocationRefused` の固定文）は比べる | `refused_reading` の `reason`（拒否の detail を含む）は外す |
 | パス・uid | 含めない。status の場面では一時ディレクトリの path が出力に無いことを確かめる。実行ユーザー（root か uid 1001 か）で digest は変わらない | — |
+| lab host の印 | `knowledge_lite.lookup` は producer の公開 fixture 鍵を pin するので、印の無い host では `PUBLIC_FIXTURE_KEY` で拒否される。ベクトルは一時ディレクトリに `LAB-HOST` の印を置いて lab を宣言する（`tests/unit/conftest.py` の `lab_host` と同じ）。拒否そのものは緩めず、単体試験で確かめる | `_commissioned_lite` |
 | tar の生成 | `revocation` で組み立てる bundle は mtime 0 の PAX 形式で、その `bundle_digest` は判断ではないので外す | — |
 
 出力から取り除いた float の path：

@@ -353,8 +353,18 @@ def _commissioned_lite(ctx: Context):
         RevocationPolicy,
         commission_policy,
     )
+    from azazel_nexus import lab_host
     from signing_oracle import public_key_for
 
+    # The producer's anchors and the revocation seed below are published test
+    # keys, which a commissioned reader refuses off a marked lab host
+    # (`azazel_nexus.lab_keys`). The vector declares itself a lab exactly as
+    # `tests/unit/conftest.py::lab_host` does; the refusal itself is not
+    # loosened and stays covered by the unit tests.
+    marker = ctx.tmp / "etc-azazel-lab" / "LAB-HOST"
+    marker.parent.mkdir(exist_ok=True)
+    marker.write_text("lab\n")
+    ctx.mp.setattr(lab_host, "LAB_HOST_MARKER", marker)
     ctx.mp.setenv("AZAZEL_ROOT", str(ctx.tmp))
     root = ctx.tmp / "var/lib/azazel/knowledge"
     trust = ctx.tmp / "var/lib/azazel/lite-trust"
