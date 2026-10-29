@@ -8,6 +8,13 @@ option, automatic discovery broadcast, runtime URL or network dependency is
 installed. The existing CLI's “no module endpoint is configured” semantics
 remain unchanged.
 
+**The protocol below does not interoperate with the real Azazel-Knowledge
+API.** They share no endpoint, transport, authentication, request or response
+shape; see [the comparison](#the-real-knowledge-api-and-this-protocol). No
+production code constructs a `KnowledgeClient` (no daemon or CLI calls it), so
+nothing on a node depends on this protocol today. Knowledge reaches a node
+through the signed Lite bundle instead ([Knowledge Lite consumer](knowledge-lite-consumer.md)).
+
 ## Boundaries and reuse
 
 `src/azazel_nexus/knowledge_peer.py` makes pure decisions. It reuses
@@ -132,6 +139,34 @@ The actual AZ-04 protocol and signed capability format must be agreed with
 Azazel-Knowledge before production interoperability can be claimed. A real
 peer, its commissioning/revocation lifecycle and deployment wiring remain
 outstanding. This change does not close that part of issue #6.
+
+## The real Knowledge API and this protocol
+
+Read from Azazel-Knowledge `2445c1b` (`src/azazel_knowledge/api/`,
+`security/auth.py`, `ops/docker-compose.yml`). Rows marked *measured* were
+observed against that revision's API started in a disposable container during
+the Fabric/Knowledge survey of 2026-10-28; the rest are from the code. No Nexus
+code has exchanged a request with the real API.
+
+| | This protocol (`knowledge_peer.py`, `knowledge_egress.py`) | Real Knowledge `/v1/context` |
+| --- | --- | --- |
+| Endpoints | `POST /knowledge/v1/capabilities`, then `POST /knowledge/v1/query` | `POST /v1/context` (plus `/v1/health`, lookup, ingest and admin routes). `/knowledge/v1/capabilities` answers 404 (*measured*) |
+| Transport | mTLS required: commissioned CA, signed hostname, SPKI pin, client certificate; numeric address from the signed registry, no DNS | **Plain HTTP**: gunicorn/uvicorn binds `0.0.0.0:8443` with no TLS settings. Knowledge `docs/api.md` says "mTLS optional"; nothing implements it |
+| Authentication | Client certificate only; no `Authorization` header is ever sent | **Bearer token** `azcti_<key_id>_<secret>` with the `query` scope, required on every endpoint; no token is `401 missing_bearer_token` (*measured*) |
+| Response authenticity | Ed25519-signed documents under separate capability and response domains, verified against the commissioned peer key | **Unsigned** JSON. Knowledge records the advisory in its own audit chain; nothing a client can verify comes back |
+| Request | `{schema: "azazel-nexus/knowledge-peer/1", correlation, query}`, `query` being the sanitizer's whole output (policy version, privacy class, redaction id) | `ContextApiRequest{entities: [{type, value}], event, edge_id, actor_key, event_id, trace_id}`. Unknown fields are ignored, not refused: a Fabric `CtiContextRequest`-shaped body returns 200 (*measured*) |
+| Response | exactly `schema, peer_id, correlation, issued_at, expires_at, bundle_version, facts[], inferences[]` | `threat_context, threat_score, confidence, reason[], confidence_reason[], recommendation, source_freshness, advisory_notice, advisory_id, multi_ioc_scope, engage_refs[], rule_refs[], reported_defensive_state, engagement_advisory, …`; Knowledge checks its own response with Fabric's `assert_advisory_only` |
+| Expiry | `issued_at`/`expires_at` on every signed document, compared as UTC instants | no expiry on the response; `source_freshness` describes the data, not the answer |
+| Requester identity | the client certificate's commissioned identity | the token's `key_id`; `edge_id` is a free string, and Fabric's `cti_contracts.SourceProduct` has no `nexus` |
+| Size and concurrency | request 64 KiB, response 256 KiB, headers 8 KiB, 10 s total, `max_inflight` 1–8, queue 0, no retry | request body capped at 256 KiB (`api/limits.py`); no client-side bound is defined by the server |
+| Privacy | P2/P3 never leave; P1 needs policy; sanitizer before any connection; redaction record stays local | the request carries entity values (`ip`, `domain`, …) as given; there is no privacy class or sanitizer contract on the server side |
+
+What a real integration would need is tracked outside this document: an
+adapter shaped like Edge's `engagement_advisory_client.py` (Bearer token by
+reference, TLS through a lab CA proxy until Knowledge terminates TLS itself,
+fail-closed response checks), and a Knowledge decision on response
+authenticity. Neither is implemented here, and the loopback tests above do not
+count as interoperability.
 
 Related: [Knowledge Lite trust](knowledge-lite-trust.md),
 [Knowledge Lite consumer](knowledge-lite-consumer.md),

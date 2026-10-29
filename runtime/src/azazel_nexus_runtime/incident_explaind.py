@@ -16,8 +16,9 @@ from pathlib import Path
 
 from azazel_nexus.audit import AuditEntry, GENESIS_HASH
 from azazel_nexus.edge_intake import canonical
+from azazel_nexus.fabric_boundary import project_explanation
 from azazel_nexus.incident_explain import (
-    CODES, MAX_LINE, MAX_PENDING, Selection, build_frame, decode,
+    FABRIC_RECORD_FIELD, CODES, MAX_LINE, MAX_PENDING, Selection, build_frame, decode,
     build_recent_incident, build_recent_incidents, read_recent_incidents, explanation_summary,
     SHOWN_STATES, closed_pairs, read_control, read_retention_boundary, read_mio_reply, read_record, read_transition, read_pending,
 )
@@ -75,6 +76,23 @@ def append_audit(event):
     if set(result) != {"sequence", "event_hash"}:
         raise ValueError("audit_receipt_refused")
     return AuditAppendReceipt(**result)
+
+
+def with_fabric_claims(value):
+    """The record, with Fabric's `ClaimSet` view of it when the pin is present.
+
+    Internal only: the view stays in this ledger. Summaries, recent rows,
+    status and audit events are built from the record's own fields and never
+    carry it. Any failure leaves the record exactly as it was, because Fabric
+    is optional (ADR-0001) and a projection must not cost an explanation.
+    """
+    try:
+        projection = project_explanation(value)
+        if not projection.available:
+            return value
+        return read_record({**value, FABRIC_RECORD_FIELD: projection.view.as_ledger()})
+    except Exception:  # noqa: BLE001 - the plain record is always written
+        return value
 
 
 class ExplanationStore(EvidenceStore):
@@ -542,7 +560,7 @@ class Explainer:
                 "reason": "mio_reply_refused", "text": None})
             self.mio_available = False
             value = read_record(record)
-        self.store.append_record(value)
+        self.store.append_record(with_fabric_claims(value))
         self._future()
         for row in self.recent:
             if row["incident_id"] == t["incident_id"]:

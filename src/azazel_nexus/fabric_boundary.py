@@ -59,8 +59,16 @@ maps, reported and never assumed.
 
 `project_edge_evidence` projects an Edge intake evidence record onto
 `schema.evidence.EvidenceRef`. It is tested against the pin and has no
-production caller yet, so it attests that the shapes agree, not that
-evidence is exported through Fabric.
+production caller of its own; `project_explanation` uses it when it is given
+evidence records, and the explainer gives it none (see there).
+
+`project_explanation` projects one explanation-ledger record onto
+`mio_contracts.ClaimSet`: the Edge decision as a `deterministic_core` claim and
+each cited Knowledge reference as a `knowledge_advisory` claim. The explainer
+calls it for every record it writes and keeps the result in its own ledger,
+beside the record, when the pinned Fabric is present. That is an internal
+record: nothing sends, displays or serves it, so it attests that the ledger
+projects onto the pinned contract, not that Nexus speaks M.I.O. to anyone.
 
 `project_tested_tuple` and `check_tested_tuple` relate a Nexus
 `compatibility.TestedTuple` to Fabric's `TestedCompatibilityTuple`
@@ -88,6 +96,8 @@ __all__ = [
     "Projection",
     "CONFIRMATION_METHODS",
     "CommissioningRecordUnavailable",
+    "ExplanationProjection",
+    "FABRIC_PRIVACY_CLASS",
     "TupleConformance",
     "check_tested_tuple",
     "confirm_role",
@@ -95,6 +105,7 @@ __all__ = [
     "inventory_digest",
     "project_capability",
     "project_edge_evidence",
+    "project_explanation",
     "project_interface_identity",
     "project_inventory",
     "project_resource_profile",
@@ -1110,3 +1121,117 @@ def check_tested_tuple(tested, claim) -> TupleConformance:
             return TupleConformance(
                 False, f"{nexus_name} differs from the claim's {fabric_name}", purpose, version)
     return TupleConformance(True, "", purpose, version)
+
+
+#: Nexus's privacy classes (`sanitizer.PrivacyClass`, P0–P3) against Fabric's
+#: `mio_contracts.PrivacyClass`. The two "never leaves the node" sets coincide:
+#: Nexus's `NEVER_REMOTE` is P2/P3 and Fabric's
+#: `NON_EGRESSIBLE_PRIVACY_CLASSES` is sensitive/restricted, and Fabric's
+#: `SanitizedRemoteFrame` admits only public/internal. The words differ in one
+#: place that matters: Nexus's P1 means "sanitized for this route", Fabric's
+#: `internal` means "internal to the operator". Nothing is sent in Fabric's
+#: shape (docs/contract-ownership.md §3.3), so this table is a correspondence,
+#: not a wire mapping.
+FABRIC_PRIVACY_CLASS = {
+    "P0-public": "public",
+    "P1-sanitized": "internal",
+    "P2-mission": "sensitive",
+    "P3-restricted": "restricted",
+}
+
+@dataclass(frozen=True)
+class ExplanationProjection:
+    """One explanation-ledger record as Fabric `mio_contracts` claims.
+
+    `claim_set` is a Fabric `ClaimSet` and `evidence_refs` a tuple of Fabric
+    `EvidenceRef`. Typed `Any` for the reason `Projection.view` is.
+    """
+
+    claim_set: Any
+    evidence_refs: tuple = ()
+
+    def as_ledger(self) -> dict:
+        """The internal ledger form: Fabric's own JSON dump, never re-shaped."""
+        return {"fabric_version": FABRIC_PIN.lstrip("v"),
+                "claim_set": self.claim_set.model_dump(mode="json")}
+
+
+def project_explanation(record, evidence=()) -> Projection:
+    """Project one explanation-ledger record onto Fabric's `ClaimSet`.
+
+    Internal only. The result is kept in the explanation ledger beside the
+    record it was made from (`incident_explaind`); it is not sent, displayed
+    or returned by any socket, and Fabric's absence leaves the record exactly
+    as it was. The claims describe; none of them is a decision:
+
+    - the Edge decision as reported by Edge Core, `source="deterministic_core"`;
+    - each cited `KnowledgeRef` as `source="knowledge_advisory"`, with the
+      verified bundle digest as its only input reference and the Lite
+      freshness (`static` or `current`) as its freshness.
+
+    `evidence` takes Edge intake `EvidenceRecord`s and projects each through
+    `project_edge_evidence`; their ids become the Edge claim's input
+    references. The explainer passes none: its durable pending queue carries
+    no evidence digests by design (`incident_explain.explanation_input`), so
+    the Edge claim says `evidence_refs_not_carried` rather than pointing at
+    nothing. The M.I.O. advice in the record is not projected: the ledger
+    names its route, not the model and generation a model-sourced `Claim`
+    must carry.
+    """
+    fabric, failure = _import_fabric()
+    if fabric is None:
+        return Projection(available=False, reason=failure)
+    if getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+        return Projection(available=False, reason="pinned Fabric is required")
+    try:
+        from datetime import UTC, datetime
+
+        from azazel_fabric.mio_contracts import Claim, ClaimSet
+
+        from azazel_nexus.incident_explain import (
+            EDGE_CLAIM_SUFFIX,
+            KNOWLEDGE_CLAIM_PREFIX,
+            read_record,
+        )
+
+        r = read_record(record)
+        refs = []
+        for item in evidence:
+            projected = project_edge_evidence(item)
+            if not projected.available:
+                raise ValueError(projected.reason)
+            refs.append(projected.view)
+        edge = Claim(
+            claim_id=r["incident_id"] + EDGE_CLAIM_SUFFIX,
+            statement=f"Edge would {r['edge_would']}; policy_reason={r['policy_reason']}",
+            source="deterministic_core",
+            input_refs=tuple(ref.evidence_id for ref in refs),
+            limitations=("reported_by_edge_core_not_executed_by_nexus",)
+            + (() if refs else ("evidence_refs_not_carried",)),
+        )
+        claims = [edge]
+        for ref in r["knowledge_refs"]:
+            statement = ref["name"] + (f": {ref['summary']}" if ref["summary"] else "")
+            limitations = (f"source_kind={ref['source_kind']}", f"generation={ref['generation']}",
+                           f"as_of={ref['as_of']}", f"trust_check={ref['trust_check']}")
+            if ref["citation"]:
+                limitations += (f"citation={ref['citation']}",)
+            claims.append(Claim(
+                claim_id=KNOWLEDGE_CLAIM_PREFIX + ref["claim_id"],
+                statement=statement,
+                source="knowledge_advisory",
+                input_refs=(ref["bundle_digest"],),
+                freshness=ref["freshness"],
+                limitations=limitations,
+            ))
+        frozen_at = datetime.fromtimestamp(r["explained_at"], UTC)
+        view = ClaimSet(
+            claim_set_id=f"{r['incident_id']}:{r['transition']}:{frozen_at.isoformat()}",
+            trace_id=r["incident_id"],
+            frozen_at=frozen_at,
+            claims=tuple(claims),
+        )
+    except (ImportError, ValueError, TypeError, KeyError, AttributeError, OverflowError):
+        return Projection(available=False, reason="explanation claim projection unavailable")
+    return Projection(available=True, reason="", fabric_version=fabric.__version__,
+                      view=ExplanationProjection(claim_set=view, evidence_refs=tuple(refs)))
