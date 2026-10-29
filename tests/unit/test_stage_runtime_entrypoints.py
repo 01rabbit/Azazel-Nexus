@@ -414,7 +414,7 @@ def test_copied_installer_clears_python_environment_and_retains_destdir_for_stag
         " 'preset_directory': '/usr/lib/systemd/system-preset',\n"
         " 'libexec_directory': '/usr/libexec/azazel',\n"
         " 'service_manager': 'systemd', 'required_tools': '',\n"
-        " 'platform_architecture': 'amd64', 'platform_purpose': 'deployment-baseline',\n"
+        " 'platform': 'amd64 deployment-baseline',\n"
         "}\nprint(values[field])\n",
         encoding="utf-8",
     )

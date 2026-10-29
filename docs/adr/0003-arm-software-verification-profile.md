@@ -123,7 +123,7 @@ admission refuses a non-`x86_64` host first.
 | R3 | A HIL record's `platform` is a declared string, not an observation. | Record the observed profile in `hil_capture` and compare. |
 | R4 | The Edge package check compares the manifest with the pin, not with the host CPU. | Pin per CPU and add an architecture-mismatch finding (with Edge). |
 | R5 | `mission_pack_cli` builds `HostFacts.architecture` from configuration. | Use the observed value. |
-| R6 | `install.sh` does not evaluate the CPU. | **Done** (host observation): `install.sh` refuses an unreviewed CPU, a foreign dpkg userland, a non-LP64 libc or another byte order with a reason code, and identifies arm64 as `lab-software-verification` without refusing it. |
+| R6 | `install.sh` does not evaluate the CPU. | **Done** (host observation): `install.sh` refuses an unreviewed CPU, an unreadable dpkg, a foreign dpkg userland, a non-LP64 libc or another byte order with a reason code, and identifies arm64 as `lab-software-verification` without refusing it. |
 | R7 | `principal._GENERIC_SOCKET_MACHINES` lists CPUs beyond the reviewed two. | None needed: an unlisted CPU loses supplementary groups, which narrows access. |
 | R8 | Embedding similarity may differ between CPUs near `SCOPE_MIN`. | Shared vectors exclude inputs within ε of the threshold; advisory only, never Edge's decision. |
 
@@ -134,7 +134,14 @@ SOABI, LP64, the byte order and dpkg's native architecture (`unavailable`
 when dpkg cannot be read), and `select(observed)` returns the reviewed profile
 or refuses with the first failing check (`UNREVIEWED_KERNEL`,
 `UNKNOWN_ARCHITECTURE`, `LP64_NOT_OBSERVED`, `UNREVIEWED_BYTE_ORDER`,
-`DPKG_ARCHITECTURE_MISMATCH`, `UNREVIEWED_OS`, `UNREVIEWED_PYTHON_ABI`).
+`DPKG_UNOBSERVED`, `DPKG_ARCHITECTURE_MISMATCH`, `UNREVIEWED_OS`,
+`UNREVIEWED_PYTHON_ABI`). Every reviewed profile is Debian, so a dpkg that
+cannot be read (missing, refused, unparseable) is treated as an anomaly and
+refused as `DPKG_UNOBSERVED` -- by `select`, and therefore by every path
+that selects the deployment baseline, and by `install.sh` for both profiles,
+lab included. Without it a foreign userland (armhf on arm64, i386 on amd64)
+would pass unseen. This default may be revisited by the owner; it is not
+relaxed by any setting.
 Selecting the lab profile identifies the host; it is not an admission. The
 arm64 offline-bundle target and lock, and the cross-CPU vector runner, are
 further follow-ups.

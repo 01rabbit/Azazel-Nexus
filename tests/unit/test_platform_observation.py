@@ -59,6 +59,9 @@ def test_unreadable_fields_are_unavailable_never_a_reviewed_value(tmp_path):
     assert observation.dpkg_architecture == po.UNAVAILABLE
     with pytest.raises(pp.PlatformRefused) as refused:
         po.select(observation)
+    assert refused.value.reason == po.DPKG_UNOBSERVED
+    with pytest.raises(pp.PlatformRefused) as refused:
+        po.select(observed(tmp_path, os_release=None, soabi=None))
     assert refused.value.reason == pp.UNREVIEWED_OS
 
 
@@ -112,9 +115,37 @@ def test_select_takes_only_an_observation():
     assert refused.value.reason == po.UNOBSERVED
 
 
-def test_unavailable_dpkg_is_recorded_and_decides_nothing(tmp_path):
-    profile = po.select(observed(tmp_path, dpkg=po.UNAVAILABLE))
-    assert profile is pp.DEPLOYMENT_BASELINE
+@pytest.mark.parametrize("architecture", sorted(HOSTS))
+def test_an_unreadable_dpkg_is_refused_for_every_profile(tmp_path, architecture):
+    """F1: a Debian host whose dpkg cannot be read is an anomaly. Without dpkg
+    a foreign userland would pass unseen, so neither the baseline nor the lab
+    profile is selected, and the installer refuses too."""
+
+    host = dict(HOSTS[architecture], dpkg=po.UNAVAILABLE)
+    with pytest.raises(pp.PlatformRefused) as refused:
+        po.select(observed(tmp_path, **host))
+    assert refused.value.reason == po.DPKG_UNOBSERVED
+    with pytest.raises(pp.PlatformRefused) as refused:
+        evaluate_install_architecture(INSTALL_PROFILE, observed(tmp_path, **host))
+    assert refused.value.reason == po.DPKG_UNOBSERVED
+
+
+@pytest.mark.parametrize("query", [
+    ("/nonexistent/dpkg-query",),                       # dpkg-query missing
+    ("/bin/echo", "not a package listing"),             # garbage output
+    ("/bin/false",),                                    # failing query
+])
+def test_installer_resolver_refuses_when_the_real_dpkg_reader_fails(tmp_path, monkeypatch, query):
+    """The reproduction of F1, through the real reader and a real process."""
+
+    from azazel_nexus_runtime import debian_packages
+
+    monkeypatch.setattr(debian_packages, "QUERY_ARGV", query)
+    release = tmp_path / "os-release"
+    release.write_text(DEBIAN_13, encoding="utf-8")
+    assert po.read_dpkg_architecture() == po.UNAVAILABLE
+    with pytest.raises(pp.PlatformRefused, match=po.DPKG_UNOBSERVED):
+        resolve_profile_field(field="platform", os_release_path=release)
 
 
 def test_dpkg_reader_reuses_the_reviewed_package_observer(monkeypatch):
@@ -148,8 +179,7 @@ def test_the_real_host_observation_is_consistent():
     assert observation.sysname == "Linux"
     architecture = pp.from_machine(observation.machine)
     assert observation.lp64 is True and observation.byteorder == "little"
-    if observation.dpkg_architecture != po.UNAVAILABLE:
-        assert observation.dpkg_architecture == pp.debian_name(architecture)
+    assert observation.dpkg_architecture == pp.debian_name(architecture)
     assert po.check_host_abi(observation) == architecture
 
 
@@ -176,6 +206,7 @@ def test_install_identifies_the_cpu(tmp_path, architecture, purpose):
     ({"dpkg": "i386"}, po.DPKG_ARCHITECTURE_MISMATCH),
     ({"long_size": 4}, po.LP64_NOT_OBSERVED),
     ({"sysname": "FreeBSD"}, po.UNREVIEWED_KERNEL),
+    ({"dpkg": po.UNAVAILABLE}, po.DPKG_UNOBSERVED),
 ])
 def test_install_refuses_an_unreviewed_cpu_with_a_reason(tmp_path, facts, reason):
     with pytest.raises(pp.PlatformRefused) as refused:
@@ -198,14 +229,17 @@ def test_installer_field_resolver_emits_the_cpu_and_purpose(tmp_path, architectu
     release = tmp_path / "os-release"
     release.write_text(DEBIAN_13, encoding="utf-8")
     observation = observed(tmp_path, **HOSTS[architecture])
-    fields = {
-        field: resolve_profile_field(field=field, os_release_path=release,
-                                     observe_platform=lambda: observation)
-        for field in ("platform_architecture", "platform_purpose")
-    }
-    assert fields["platform_architecture"] == architecture
-    assert fields["platform_purpose"] == pp.REVIEWED_PROFILES[
-        po.select(observation).profile_id].purpose
+    calls = []
+
+    def observe_once():
+        calls.append(1)
+        return observation
+
+    value = resolve_profile_field(field="platform", os_release_path=release,
+                                  observe_platform=observe_once)
+    assert value == f"{architecture} {po.select(observation).purpose}"
+    # F6: one field, one observation (one dpkg query) per install.
+    assert len(calls) == 1
 
 
 def test_installer_field_resolver_refuses_an_unknown_cpu(tmp_path):
@@ -213,13 +247,15 @@ def test_installer_field_resolver_refuses_an_unknown_cpu(tmp_path):
     release.write_text(DEBIAN_13, encoding="utf-8")
     observation = observed(tmp_path, machine="riscv64")
     with pytest.raises(pp.PlatformRefused, match="UNKNOWN_ARCHITECTURE"):
-        resolve_profile_field(field="platform_architecture", os_release_path=release,
+        resolve_profile_field(field="platform", os_release_path=release,
                               observe_platform=lambda: observation)
 
 
 def test_installer_refuses_before_writing_and_reports_the_lab_purpose():
     text = (Path(__file__).resolve().parents[2] / "packaging/install.sh").read_text()
-    evaluation = text.index("profile_field platform_architecture")
+    evaluation = text.index("profile_field platform)")
+    # F6: the host (and dpkg) is observed by exactly one resolver call.
+    assert text.count("profile_field platform") == 1
     # Before any file, account, wrapper or unit is touched.
     assert evaluation < text.index("profile_field unit_directory")
     assert evaluation < text.index('"$STAGER"')

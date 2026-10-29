@@ -39,7 +39,8 @@ C `long` size (LP64), the byte order and the architecture of the installed
 `dpkg` package (through the existing `debian_packages` observer), and
 `install_platform.evaluate_install_architecture` matches them, with the OS
 just selected, against `platform_profile.REVIEWED_PROFILES`. A CPU no profile
-names (`riscv64`, `armv7l`, `i686`, ...), a dpkg userland of another
+names (`riscv64`, `armv7l`, `i686`, ...), a dpkg that cannot be read
+(`DPKG_UNOBSERVED`), a dpkg userland of another
 architecture (armhf on an arm64 kernel, i386 on amd64), a non-LP64 libc or a
 big-endian interpreter is refused with its reason code. The installer prints
 `platform: <architecture> (<purpose>)`. amd64 is the `deployment-baseline`;

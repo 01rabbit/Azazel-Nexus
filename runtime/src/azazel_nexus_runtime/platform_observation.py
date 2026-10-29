@@ -47,6 +47,7 @@ from azazel_nexus.platform_profile import PlatformProfile, PlatformRefused
 
 __all__ = [
     "DPKG_ARCHITECTURE_MISMATCH",
+    "DPKG_UNOBSERVED",
     "HostObservation",
     "LP64_NOT_OBSERVED",
     "OS_RELEASE",
@@ -75,6 +76,7 @@ UNREVIEWED_KERNEL = "UNREVIEWED_KERNEL"
 LP64_NOT_OBSERVED = "LP64_NOT_OBSERVED"
 UNREVIEWED_BYTE_ORDER = "UNREVIEWED_BYTE_ORDER"
 DPKG_ARCHITECTURE_MISMATCH = "DPKG_ARCHITECTURE_MISMATCH"
+DPKG_UNOBSERVED = "DPKG_UNOBSERVED"
 UNOBSERVED = "UNOBSERVED"
 
 
@@ -174,12 +176,15 @@ def check_host_abi(observed: HostObservation) -> str:
         raise PlatformRefused(LP64_NOT_OBSERVED, observed.machine)
     if observed.byteorder != REVIEWED_BYTE_ORDER:
         raise PlatformRefused(UNREVIEWED_BYTE_ORDER, observed.byteorder)
+    # Every reviewed profile is Debian, so dpkg is always there. A dpkg that
+    # cannot be read (missing, refused, garbage) is an anomaly, not an absent
+    # fact: without it a foreign userland on this kernel could not be seen.
+    if observed.dpkg_architecture == UNAVAILABLE:
+        raise PlatformRefused(DPKG_UNOBSERVED, observed.dpkg_architecture)
     # A dpkg that names another architecture is a foreign userland on this
     # kernel (armhf on an arm64 kernel, i386 on amd64): its packages, wheels
-    # and native extensions are not the profile's. An unreadable dpkg is
-    # recorded as unavailable and decides nothing either way.
-    if (observed.dpkg_architecture != UNAVAILABLE
-            and observed.dpkg_architecture != platform_profile.debian_name(architecture)):
+    # and native extensions are not the profile's.
+    if observed.dpkg_architecture != platform_profile.debian_name(architecture):
         raise PlatformRefused(DPKG_ARCHITECTURE_MISMATCH, observed.dpkg_architecture)
     return architecture
 
@@ -188,7 +193,9 @@ def select(observed: HostObservation) -> PlatformProfile:
     """The reviewed profile ``observed`` matches exactly, or a reasoned refusal.
 
     The first check that fails is the reason: kernel, CPU name
-    (``UNKNOWN_ARCHITECTURE``), LP64, byte order, dpkg, then OS and Python ABI
+    (``UNKNOWN_ARCHITECTURE``), LP64, byte order, dpkg (unreadable:
+    ``DPKG_UNOBSERVED``; another architecture: ``DPKG_ARCHITECTURE_MISMATCH``),
+    then OS and Python ABI
     through `platform_profile.select_profile`. A lab profile is returned, not
     refused: identifying the host is this function's job, admitting it is
     `platform_profile.require_deployment_baseline`'s.

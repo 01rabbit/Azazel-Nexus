@@ -141,15 +141,17 @@ fi
 # The CPU, read from this host and evaluated against the reviewed platform
 # profiles (ADR-0003 R6), before anything is written. An unknown CPU, a dpkg
 # userland of another architecture, a non-LP64 libc or another byte order is
-# refused with its reason code. arm64 is *identified* as the
+# refused with its reason code, and so is a dpkg that cannot be read
+# (DPKG_UNOBSERVED): every target is Debian. arm64 is *identified* as the
 # lab-software-verification profile and installs exactly as before (the VM
 # software rehearsals); that identification admits nothing, and no record,
 # admission or hardware gate accepts it as the amd64 deployment baseline.
-if ! PLATFORM_ARCHITECTURE=$(profile_field platform_architecture); then
+if ! PLATFORM=$(profile_field platform); then
     echo "refusing to install: this host's CPU is not in a reviewed platform profile." >&2
     exit 1
 fi
-PLATFORM_PURPOSE=$(profile_field platform_purpose) || exit 1
+PLATFORM_ARCHITECTURE=${PLATFORM%% *}
+PLATFORM_PURPOSE=${PLATFORM#* }
 echo "platform: $PLATFORM_ARCHITECTURE ($PLATFORM_PURPOSE)"
 if [ "$PLATFORM_PURPOSE" != deployment-baseline ]; then
     echo "NOTE: $PLATFORM_ARCHITECTURE is a lab-software-verification platform, not the" \

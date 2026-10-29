@@ -36,8 +36,8 @@ _FIELDS = (
     "enable_units",
     # The observed CPU, evaluated against the reviewed platform profiles
     # (ADR-0003 R6). Refused with a reason code when no profile has it.
-    "platform_architecture",
-    "platform_purpose",
+    # One line, "<architecture> <purpose>", so the host is observed once.
+    "platform",
 )
 
 
@@ -53,7 +53,7 @@ def resolve(
         raise ValueError("unknown install profile field")
     values = parse_os_release(os_release_path.read_text(encoding="utf-8"))
     profile = select_install_profile(values)
-    if field in {"platform_architecture", "platform_purpose"}:
+    if field == "platform":
         if observe_platform is None:
             from azazel_nexus_runtime.platform_observation import observe
 
@@ -61,9 +61,7 @@ def resolve(
                 return observe(os_release_path=os_release_path)
 
         selected = evaluate_install_architecture(profile, observe_platform())
-        if field == "platform_architecture":
-            return selected.architecture
-        return selected.purpose
+        return f"{selected.architecture} {selected.purpose}"
     preset = (ROOT / "packaging" / "azazel-nexus.preset").read_text(encoding="utf-8")
     plan = build_install_plan(
         profile,
