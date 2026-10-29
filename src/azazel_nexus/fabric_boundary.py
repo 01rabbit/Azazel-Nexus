@@ -986,11 +986,13 @@ def project_tested_tuple(tested, *, tuple_id: str, product_version: str,
     Nexus-only fields (`compatibility.NEXUS_ONLY_FIELDS`) are not carried --
     Fabric's record has no place for them -- so the projection describes the
     tuple and cannot stand in for it. A lab-purpose tuple projects to
-    ``arm64``, which a reader maps back to the lab profile through
-    `platform_profile`. Unavailable, with a reason, when Fabric is absent,
+    ``arm64`` with `deployment_profile` set to the lab profile id (``...-lab``),
+    so the Fabric record alone shows it is lab; a different caller-supplied
+    value is refused. Unavailable, with a reason, when Fabric is absent,
     not the pin, or refuses the record.
     """
 
+    from . import platform_profile as pp  # noqa: PLC0415
     from .compatibility import (  # noqa: PLC0415
         FABRIC_TUPLE_PRODUCT, CompatibilityRefused, fabric_shared_fields)
 
@@ -1003,6 +1005,17 @@ def project_tested_tuple(tested, *, tuple_id: str, product_version: str,
         shared = fabric_shared_fields(tested)
     except CompatibilityRefused as refused:
         return Projection(available=False, reason=f"tested tuple not projectable: {refused}")
+    if tested.purpose != pp.PURPOSE_DEPLOYMENT_BASELINE:
+        # Fabric's tuple has no purpose field, so a lab tuple names the lab
+        # profile here: a reader of the Fabric record alone can tell it apart.
+        lab_profile = pp.profile_for_architecture(
+            pp.from_boundary("kernel", tested.architecture)).profile_id
+        if deployment_profile not in (None, lab_profile):
+            return Projection(
+                available=False,
+                reason=f"a {tested.purpose} tuple projects as deployment_profile "
+                       f"{lab_profile!r}, not {deployment_profile!r}")
+        deployment_profile = lab_profile
     try:
         from azazel_fabric.provisioning_contracts import (  # noqa: PLC0415
             TestedCompatibilityTuple)
@@ -1058,11 +1071,14 @@ def check_tested_tuple(tested, claim) -> TupleConformance:
     try:
         from azazel_fabric.provisioning_contracts import (  # noqa: PLC0415
             TestedCompatibilityTuple)
-        if type(claim) is not TestedCompatibilityTuple:
-            if not isinstance(claim, dict):
-                return TupleConformance(False, "not a Fabric tested tuple", None, version)
-            claim = TestedCompatibilityTuple.model_validate(claim)
-    except (ImportError, ValueError, TypeError):
+        if type(claim) is TestedCompatibilityTuple:
+            # Re-validated, not trusted: `model_construct` builds an instance
+            # that never passed Fabric's validators.
+            claim = claim.model_dump(warnings=False)
+        if not isinstance(claim, dict):
+            return TupleConformance(False, "not a Fabric tested tuple", None, version)
+        claim = TestedCompatibilityTuple.model_validate(claim)
+    except Exception:  # noqa: BLE001 -- every failure is a reasoned refusal
         return TupleConformance(False, "Fabric refused the tested tuple claim", None, version)
     try:
         purpose = pp.purpose_for_architecture(

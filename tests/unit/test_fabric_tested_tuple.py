@@ -281,3 +281,27 @@ def test_an_arm64_lab_tuple_projects_and_conforms_and_is_still_refused_for_admis
 def test_a_conforming_arm64_claim_does_not_make_the_baseline_tuple_admit_an_arm_host():
     matched, reason = TestedTupleSet.of([a_tuple()]).admits(COMPONENT, lab_host())
     assert matched is None and "architecture" in reason
+
+
+def test_an_unvalidated_fabric_instance_is_validated_again_and_refused():
+    """`model_construct` skips Fabric's validators; the adapter does not."""
+
+    fields = {k: v for k, v in golden_tuple().items() if k != "adapter_digest"}
+    forged = contracts.TestedCompatibilityTuple.model_construct(**fields)
+    result = check_tested_tuple(a_tuple(), forged)
+    assert not result.conforms and result.reason == "Fabric refused the tested tuple claim"
+    bad_digest = contracts.TestedCompatibilityTuple.model_construct(
+        **{**golden_tuple(), "artifact_digest": "not-a-digest"})
+    assert not check_tested_tuple(a_tuple(), bad_digest).conforms
+
+
+def test_a_lab_projection_names_the_lab_profile_in_the_fabric_record():
+    view = projected(a_lab_tuple())
+    assert view.deployment_profile == pp.ARM64_LAB.profile_id
+    assert view.deployment_profile.endswith("-lab")
+    assert projected(a_lab_tuple(), deployment_profile=pp.ARM64_LAB.profile_id
+                     ).deployment_profile == pp.ARM64_LAB.profile_id
+    refused = project_tested_tuple(a_lab_tuple(), tuple_id="t", product_version="0",
+                                   deployment_profile="nexus-embedded-lite")
+    assert not refused.available and "-lab" in refused.reason
+    assert projected(a_tuple()).deployment_profile is None

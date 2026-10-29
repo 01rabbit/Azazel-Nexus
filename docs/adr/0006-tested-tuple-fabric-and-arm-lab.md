@@ -84,7 +84,7 @@ The vocabulary, in one place each:
 | `cpu_features` (set) | `cpu_features` (list) | same set; a repeated entry in the claim is refused |
 | `schema_features` (set) | `schema_features` (list) | same set; a repeated entry is refused |
 | `overlay_schema` | `overlay_schema_version` | exact; a claim without one does not conform |
-| `purpose` | — | read from `architecture` through `REVIEWED_PROFILES`: `arm64` is lab |
+| `purpose` | `deployment_profile` (lab only) | read from `architecture` through `REVIEWED_PROFILES`: `arm64` is lab; a lab tuple projects `deployment_profile` = the lab profile id (`debian-13-arm64-cp313-lab`) |
 | `renderer_digest`, `toolchain_digest`, `fabric_features`, `profile`, `security_epoch`, `max_rollback_version`, `model_role` | — | Nexus-only; not exported, never inferred |
 | — | `tuple_id`, `product`, `product_version`, `deployment_profile`, `evidence_ref`, `schema_version` | claim identity; supplied when projecting, ignored when comparing (`product` must be `azazel-nexus`) |
 
