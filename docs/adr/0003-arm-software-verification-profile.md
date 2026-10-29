@@ -143,8 +143,10 @@ lab included. Without it a foreign userland (armhf on arm64, i386 on amd64)
 would pass unseen. This default may be revisited by the owner; it is not
 relaxed by any setting.
 Selecting the lab profile identifies the host; it is not an admission. The
-arm64 offline-bundle target and lock, and the cross-CPU vector runner, are
-further follow-ups.
+arm64 offline-bundle target and lock are now
+[ADR-0005](0005-arm-lab-offline-target.md) (`debian-13-aarch64-cp313`,
+purpose `lab-software-verification`; the baseline target is unchanged); the
+cross-CPU vector runner is a further follow-up.
 
 ## Limits of host observation
 

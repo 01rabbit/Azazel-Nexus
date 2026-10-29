@@ -328,3 +328,46 @@ def test_no_production_module_reads_an_offline_bundle_or_wheelhouse_record():
             if pattern.search(path.read_text(encoding="utf-8")):
                 hits.append(path.relative_to(ROOT).as_posix())
     assert hits == []
+
+
+# -- the container record and the documents ------------------------------------
+
+
+EVIDENCE = ROOT / "docs/evidence/offline-install-aarch64-lab-container-2026-10-29.json"
+
+
+def test_the_container_record_is_a_lab_container_record_with_the_locked_hashes():
+    record = json.loads(EVIDENCE.read_text(encoding="utf-8"))
+    assert (record["target"], record["platform_profile_id"], record["purpose"]) == (
+        LAB, "debian-13-arm64-cp313-lab", "lab-software-verification")
+    assert "Not Arm hardware, not an Arm VM" in record["scope"]
+    assert "not hardware-gate evidence" in record["scope"]
+    lock = _locks()[1]
+    third_party = 0
+    for filename, wheel in record["build_container"]["wheels"].items():
+        parts = offline_bundle.parse_wheel_name(filename)
+        requirement = f"{offline_bundle.canonical_name(parts['name'])}=={parts['version']}"
+        assert offline_bundle.wheel_fits_target(filename, offline_bundle.TARGETS[LAB]), filename
+        if requirement in lock:
+            third_party += 1
+            assert lock[requirement] == [wheel["sha256"]], filename
+    assert third_party == len(lock)
+    assert record["offline_container"]["install"]["observed_platform"] == {
+        "platform_profile_id": "debian-13-arm64-cp313-lab", "purpose": "lab-software-verification"}
+    refused = record["offline_container"]["production_uses_on_this_host"]["require_deployment_baseline"]
+    assert set(refused) == platform_profile.PRODUCTION_USES
+    assert set(refused.values()) == {"refused LAB_PROFILE_NOT_FOR_PRODUCTION"}
+
+
+def test_the_documents_name_the_lab_target_and_keep_the_baseline():
+    install = (ROOT / "docs/debian-live-install.md").read_text(encoding="utf-8")
+    adr = (ROOT / "docs/adr/0005-arm-lab-offline-target.md").read_text(encoding="utf-8")
+    runbook = (ROOT / "docs/hil-runbooks/offline-install.md").read_text(encoding="utf-8")
+    for flag in ("--target debian-13-aarch64-cp313",):
+        assert flag in install
+    for text in (install, adr):
+        assert "requirements-aarch64-cp313.lock" in text
+        assert "lab-software-verification" in text
+    assert "Leaves\n[ADR-0002](0002-debian-13-baseline.md) unchanged" in adr
+    assert "never used for this runbook" in runbook
+    assert "--target" not in runbook.split("## 1. Build the bundle", 1)[1].split("## 2", 1)[0]
