@@ -17,10 +17,10 @@ import sys
 from pathlib import Path
 
 import pytest
-
-from azazel_nexus import platform_profile
 from azazel_nexus_runtime import install_platform
 from azazel_nexus_runtime.platform_observation import HostObservation
+
+from azazel_nexus import platform_profile
 from tests.unit.test_offline_bundle import _repo
 from tests.unit.test_offline_install_bundle import _wheelhouse
 from tools import build_wheelhouse, offline_bundle
