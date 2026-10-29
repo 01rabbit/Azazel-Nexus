@@ -66,8 +66,9 @@ before the scenarios.
   that key as an anchor except on a host carrying the lab marker
   `/etc/azazel-lab/LAB-HOST` ([knowledge-lite-consumer §9](../knowledge-lite-consumer.md#9-the-fixture-contract-and-where-it-came-from)),
   so the run writes the marker right before the pin (check `lab-marker`) and
-  never removes it: the node is a lab node from then on, and every production
-  gate (activation health among them) refuses it. The install-time check
+  never removes it: the node is a lab node from then on, and activation
+  health, the bootstrap overlay, commissioning approval and model admission
+  refuse it. The install-time check
   `no-lab-marker` still requires a fresh node without one. Not re-run since
   this change. The pin and the import run as library calls here; the import
   does not use `knowledge.import` because this run starts `knowledge-lited`

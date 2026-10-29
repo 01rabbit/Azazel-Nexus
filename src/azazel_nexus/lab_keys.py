@@ -7,13 +7,18 @@ Knowledge's public source, so a bundle or a statement "signed" by it proves
 nothing about who made it.
 
 **Listed, not inferred.** The set below is the public keys of published
-fixtures, compared byte for byte. `tests/unit/test_lab_keys.py` keeps it in
-step with every vendored fixture anchor, so a new fixture key cannot arrive
-without being listed here.
+fixtures, compared byte for byte.
+`tests/unit/test_knowledge_lite_operator_entry.py`
+(`test_every_vendored_fixture_key_is_listed`) keeps it in step with every
+vendored fixture anchor, so a new fixture key cannot arrive without being
+listed here.
 
 **Refused at registration and on every production read.** Pinning
-(`TrustStore.pin`), replacing (`TrustStore.repin`), the commissioned anchor
-reader (`lite_import.CommissionedLite.anchors`) and the daemon's trust reader
+(`TrustStore.pin`), replacing (`TrustStore.repin`), a revocation policy
+(`revocation_policy.prepare_policy_record`, and every reader of one through
+`lite_service.KnowledgeLite.revocations`), the commissioned anchor reader
+(`lite_import.CommissionedLite.anchors`, which the Mission Pack's
+`knowledge_lite` slice also goes through) and the daemon's trust reader
 (`lite_import.CommissionedTrust`) all call `refuse_public_fixture_keys`. A
 trust root that holds one is unusable, never "usable minus that key": an
 operator who pinned it made a mistake that should be seen.
@@ -21,9 +26,12 @@ operator who pinned it made a mistake that should be seen.
 **The one exception is a marked lab host.** The persistent contamination
 marker (`lab_host.LAB_HOST_MARKER`, written by the lab tooling and never
 removed by it) is what lets a lab rehearsal pin the public fixture. A marked
-host is already refused by every production gate (activation health, the
-bootstrap overlay, commissioning approval, model admission), so a fixture key
-accepted there cannot reach a node that runs under an activation grant. The
+host is refused by activation health, the bootstrap overlay, commissioning
+approval and model admission, so a fixture key accepted there cannot reach a
+daemon that runs under an activation grant. Not every gate checks the marker:
+Mission Pack verification does not, so on a marked host a Pack's
+`knowledge_lite` slice can name a fixture-signed bundle (an owner decision;
+off a marked host that slice refuses it like every other reader). The
 marker is not an approval: removing it grants nothing, and it never widens
 what a production host accepts. There is no flag, argument or environment
 variable that does the same.

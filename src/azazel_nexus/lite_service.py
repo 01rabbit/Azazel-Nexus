@@ -46,6 +46,7 @@ from typing import Callable, Mapping, Sequence
 
 from .content_store import ContentRefused, ContentStore, digest_bytes
 from .knowledge_peer import PeerContext
+from .lab_keys import refuse_public_fixture_keys
 from .lite_cache import split_by_freshness
 from .lite_generation import LiteGeneration, LiteGenerationRefused, LiteGenerationStore
 from .lite_trust import TrustRefused, TrustStore
@@ -172,6 +173,10 @@ class KnowledgeLite:
         try:
             record = read_policy_record(self.root, self.commissioning_digest)
             policy = RevocationPolicy.from_record(record["policy"])
+            # A published test key never authorizes revocations (lab_keys):
+            # every reader and acceptor of this root comes through here
+            # (CommissionedTrust.snapshot and accept_revocation among them).
+            refuse_public_fixture_keys(policy.revocation_keys, RevocationPolicyRefused)
             if policy.revocation_keys.intersection(bundle_keys):
                 raise RevocationPolicyRefused(
                     "pinned bundle key material has the revocation-signing role"

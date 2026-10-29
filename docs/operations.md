@@ -626,7 +626,10 @@ for privacy, deadlines, rate/retention limits and fixed refusal codes.
 **Upgrading to the explainer-only listeners (#213 O1).** The explainer no
 longer holds `azazel-operator`. auditd and M.I.O. entry each bind a second
 listener for it, in the `run/audit-submit` (`azaudit-submit`) and
-`run/mio-advise` (`azmio-advise`) leaves. The installer creates the groups,
+`run/mio-advise` (`azmio-advise`) leaves. `azazel-knowledge-lited` and
+`azazel-commissiond` also carry `azaudit-submit`, and auditd lets each record
+only its own Knowledge Lite import or revocation events (P4; see
+[integration loop I2](integration-loop.md#i2--explanation-explain--implemented)). The installer creates the groups,
 the leaves and the units' new `ReadWritePaths`. An upgraded runtime on a node
 where install.sh was not re-run refuses to start auditd and
 `azazel-mio-entryd` with `SocketMisconfigured` naming the missing group or

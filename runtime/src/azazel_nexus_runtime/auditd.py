@@ -272,8 +272,10 @@ for _kind in ("opened", "escalated", "closed"):
 
 #: Knowledge Lite import and revocation acceptance (assess-c P4). Each type is
 #: bound to the one account whose daemon performs that transition
-#: (`BOUND_WRITERS`); no other principal, root included, may write it. Digests,
-#: counts and fixed codes only: never a claim body, a key or a path.
+#: (`BOUND_WRITERS`); no other principal, root included, may write it, and that
+#: account may write no other event type (both directions, as the explainer's
+#: incident binding). Digests, counts and fixed codes only: never a claim body,
+#: a key or a path.
 _ENTRY_ID = Argument("entry_id", ArgumentKind.IDENTIFIER)
 _LITE_GENERATION = Argument("bundle_version", ArgumentKind.ORDINAL, maximum=2**63 - 1)
 _COUNT = 2**63 - 1
@@ -322,7 +324,8 @@ EVENT_SCHEMAS.update({
     ),
 })
 
-#: Event-type prefix -> the only account that may append it.
+#: Event-type prefix -> the only account that may append it, and the only
+#: prefix that account may append.
 BOUND_WRITERS: Mapping[str, str] = {
     "knowledge.lite.import_": "azknowledge",
     "knowledge.lite.revocation_": "azcommission",
@@ -927,10 +930,15 @@ class AuditService:
             raise RequestRefused(Refusal.PRINCIPAL_DENIED, "incident_writer")
         event_type = str(arguments.get("event_type", ""))
         for prefix, writer in self._bound_writer_uids.items():
-            # Only the daemon that performed the transition may record it. A
-            # missing account means nobody may: the absent case fails closed.
-            if event_type.startswith(prefix) and (
-                    principal is None or writer is None or principal.uid != writer):
+            # Both directions, as for the explainer above. Only the daemon that
+            # performed the transition may record it (a missing account means
+            # nobody may: the absent case fails closed), and that daemon's
+            # account may record nothing else: it reaches this chain only to
+            # record its own Knowledge Lite transitions.
+            bound = event_type.startswith(prefix)
+            is_writer = (principal is not None and writer is not None
+                         and principal.uid == writer)
+            if bound != is_writer or (is_writer and request.verb.name != "audit.append"):
                 raise RequestRefused(Refusal.PRINCIPAL_DENIED, "bound_writer")
         if request.verb.name == "audit.bootstrap.observe":
             if not self.verified:

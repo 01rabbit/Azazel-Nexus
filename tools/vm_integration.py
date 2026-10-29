@@ -670,8 +670,9 @@ def knowledge_enroll(checks: Checks, options: dict) -> None:
     # The public fixture key is a commissioned anchor only on a marked lab
     # host (azazel_nexus.lab_keys). The node is disposable and the operator
     # said so: mark it, persistently, before pinning. The marker is never
-    # removed (the VM is reverted to its snapshot); it also keeps every
-    # production gate closed on this node.
+    # removed (the VM is reverted to its snapshot); it also keeps activation
+    # health, the bootstrap overlay, commissioning approval and model
+    # admission closed on this node.
     mark_lab_host()
     checks.add("lab-marker", "pass", "the node is marked as a lab host before the public fixture key is pinned",
                "/etc/azazel-lab/LAB-HOST written by this run (azazel_nexus.lab_keys)")

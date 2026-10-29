@@ -161,8 +161,13 @@ def prepare_policy_record(
     """Validate continuity without publishing; repin stages the returned record."""
     from .revocation import EMPTY, RevocationRefused, RevocationStore
 
+    from .lab_keys import refuse_public_fixture_keys
+
     if not isinstance(commissioning_digest, str) or not commissioning_digest.strip():
         raise RevocationPolicyRefused("a commissioning digest is required")
+    # A published test key is never a revocation authority (lab_keys); this
+    # covers commission_policy and repin, which both come through here.
+    refuse_public_fixture_keys(new_policy.revocation_keys, RevocationPolicyRefused)
     new_policy.check_anchors(anchors_key_roles, anchors_keys)
     path = policy_path(root)
     floor = EMPTY

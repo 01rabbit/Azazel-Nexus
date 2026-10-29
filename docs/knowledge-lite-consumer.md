@@ -265,7 +265,9 @@ seed is in Knowledge's public source; anything "signed" by it proves nothing.
 `azazel_nexus.lab_keys.PUBLIC_FIXTURE_KEYS` lists it (a test keeps the list in
 step with every vendored fixture anchor), and it is refused with
 `PUBLIC_FIXTURE_KEY` when it is pinned (`TrustStore.pin`), proposed by a repin
-(as a bundle key or a revocation key), read from a commissioned
+(as a bundle key or a revocation key), named by a revocation policy
+(`prepare_policy_record`, which `commission_policy` and repin use, and every
+reader of the policy), read from a commissioned
 `anchors.toml` (`CommissionedLite.anchors`, gate `anchors`, code
 `ANCHOR_PUBLIC_FIXTURE_KEY`) or found in the pin the daemon reads (status and
 lookup report `trust_unreadable`; `knowledge.import` refuses with
@@ -274,10 +276,13 @@ anchors it is given, so the conformance cases above still run against the
 producer's bytes.
 
 The only exception is a host carrying the persistent lab marker
-`/etc/azazel-lab/LAB-HOST` (`lab_host.py`). A marked host is already refused
-by every production gate (activation health, the bootstrap overlay,
-commissioning approval, model admission), so a fixture key accepted there
-never reaches a node that runs under an activation grant. The
+`/etc/azazel-lab/LAB-HOST` (`lab_host.py`). A marked host is refused by
+activation health, the bootstrap overlay, commissioning approval and model
+admission, so a fixture key accepted there never reaches a daemon that runs
+under an activation grant. Mission Pack verification does not check the
+marker: on a marked host a Pack's `knowledge_lite` slice can name a
+fixture-signed bundle, while off one it refuses it like every other reader
+(an owner decision). The
 [VM integration rehearsal](hil-runbooks/vm-integration.md) writes the marker
 before it pins the fixture key; unit tests that drive the fixture through a
 commissioned reader declare the same marker, and the end-to-end harness
@@ -479,8 +484,14 @@ the commissioned trust root it serves from (the pin, the trust-root
 `anchors.toml` and the cumulative revocation list; never the store-local
 copy) and appends `knowledge.lite.import_*` records to `az-auditd` through
 auditd's append-only `audit-submit` listener. The start is recorded before
-anything is touched: if auditd cannot record it, the import is refused with
-`audit_unavailable` and nothing changes.
+the store is touched: if auditd cannot record it, the import is refused with
+`audit_unavailable` and the store is not changed. Every other refusal
+(`refused` below) admits, quarantines and moves nothing and leaves the
+watermark as it was; the store directories may already have been tightened
+by then (§7), which stays and is recorded as
+`knowledge.lite.import_store_tightened`. A repin or an accepted revocation
+list that lands while the bundle is verified is caught just before promotion
+(`trust_changed`).
 
 ```sh
 sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus_runtime.commission_cli knowledge-import --entry "<entry id>"

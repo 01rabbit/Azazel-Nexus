@@ -52,6 +52,7 @@ from azazel_nexus.lite_import import (
     CommissionedTrust,
     LiteImport,
     Transition,
+    TrustUnusable,
     status_summary,
 )
 from azazel_nexus.lite_trust import RepinConfirmation, RepinRequest, TrustRefused, TrustStore
@@ -556,3 +557,110 @@ def test_a_missing_writer_account_means_nobody_writes(auditd):
     with pytest.raises(RequestRefused):
         _append(auditd, policy.classify(4444, 4444, 9), "knowledge.lite.import_started",
                 {"entry_id": "a" * 64, "occurred_at": NOW})
+
+
+def _other_events():
+    from azazel_nexus_runtime.units import UNIT_NAMES
+    from azazel_nexus_runtime.watchdog import FenceReason
+
+    return [
+        ("activation.unit_granted", {"unit": "auditd", "generation": 1,
+                                     "digest": "sha256:" + "e" * 64, "occurred_at": NOW,
+                                     "actor": "operator@console"}),
+        ("activation.unit_withheld", {"unit": "auditd", "generation": 1,
+                                      "reason": "lease_absent", "occurred_at": NOW,
+                                      "actor": "operator@console"}),
+        ("commissioning.permanent_mac_read", {"ordinal": 0, "snapshot": "sha256:" + "e" * 64,
+                                              "readable": True, "occurred_at": NOW,
+                                              "actor": "operator@console"}),
+        ("watchdog.fenced", {"unit": next(iter(UNIT_NAMES.values())),
+                             "reason": next(iter(FenceReason)).value, "detail": "x",
+                             "previous_state": "in_service", "previous_reason": None,
+                             "state": "fenced", "occurred_at": NOW}),
+    ]
+
+
+@pytest.mark.parametrize("writer", [4444, 5555])
+def test_a_lite_writer_may_record_nothing_but_its_own_events(auditd, writer):
+    """M1: the binding holds in both directions, as the explainer's does."""
+    policy = PrincipalPolicy(operator_gid=None, service_uids=frozenset({4444, 5555, 6666}))
+    for event_type, payload in _other_events():
+        with pytest.raises(RequestRefused) as refused:
+            _append(auditd, policy.classify(writer, writer, 9), event_type, payload)
+        assert refused.value.refusal is Refusal.PRINCIPAL_DENIED, event_type
+        assert refused.value.detail == "bound_writer", event_type
+        # The same record from an unbound service account is still accepted:
+        # the refusal above is the binding, not the payload.
+        assert set(_append(auditd, policy.classify(6666, 6666, 9), event_type, payload)) == {
+            "sequence", "event_hash"}
+    other = "knowledge.lite.revocation_requested" if writer == 4444 else "knowledge.lite.import_started"
+    payload = ({"statement_digest": "sha256:" + "c" * 64, "occurred_at": NOW} if writer == 4444
+               else {"entry_id": "a" * 64, "occurred_at": NOW})
+    with pytest.raises(RequestRefused):
+        _append(auditd, policy.classify(writer, writer, 9), other, payload)
+
+
+# -- M3: a published revocation key is no authority either -------------------
+
+
+def test_a_fixture_revocation_key_is_refused_by_commissioning(tmp_path):
+    from azazel_nexus.revocation_policy import RevocationPolicyRefused
+
+    policy = RevocationPolicy(keys={"fixture": bytes.fromhex(_fixture_key())},
+                              key_roles={"fixture": REVOCATION_SIGNING}, threshold=1, generation=1)
+    with pytest.raises(RevocationPolicyRefused, match="PUBLIC_FIXTURE_KEY"):
+        commission_policy(tmp_path, policy, commissioning_digest=DIGEST,
+                          anchors_key_roles={}, anchors_keys={})
+    assert not (tmp_path / "revocation-policy.json").exists()
+
+
+def test_a_hand_written_fixture_revocation_key_makes_the_root_unverified(node):
+    record = json.loads((node.trust / "revocation-policy.json").read_text())
+    record["policy"]["keys"] = {"r": _fixture_key()}
+    (node.trust / "revocation-policy.json").write_text(json.dumps(record))
+    with pytest.raises(TrustUnusable) as unusable:
+        CommissionedTrust(node.trust).snapshot()
+    assert unusable.value.code == "unverified"
+    from azazel_nexus.revocation import RevocationRefused
+
+    with pytest.raises(RevocationRefused):
+        CommissionedTrust(node.trust).accept_revocation(
+            _statement(node.revoker, sequence=1, revoked_generations=frozenset({5})))
+    assert not (node.trust / "revocations.signed").exists()
+
+
+def test_a_fixture_revocation_key_is_accepted_on_a_marked_lab_host(tmp_path, lab_host):
+    policy = RevocationPolicy(keys={"fixture": bytes.fromhex(_fixture_key())},
+                              key_roles={"fixture": REVOCATION_SIGNING}, threshold=1, generation=1)
+    commission_policy(tmp_path, policy, commissioning_digest=DIGEST,
+                      anchors_key_roles={}, anchors_keys={})
+
+
+# -- M4/M5: what changes while a bundle is verified is caught before promotion --
+
+
+@pytest.mark.parametrize("change", ["repin", "revocation"])
+def test_trust_that_changes_during_verification_is_not_admitted_under(node, monkeypatch, change):
+    import azazel_nexus.lite_import as module
+
+    real = module.verify_bundle
+
+    def verify_then_change(*args, **kwargs):
+        accepted = real(*args, **kwargs)
+        if change == "repin":
+            record = json.loads((node.trust / "trust.json").read_text())
+            record["pinned_at"] = "2026-10-18T00:00:01Z"
+            (node.trust / "trust.json").write_text(json.dumps(record))
+        else:
+            # The commissioning daemon accepts a list in the meantime; it
+            # does not name this bundle, and still the import starts over.
+            CommissionedTrust(node.trust).accept_revocation(
+                _statement(node.revoker, sequence=1, revoked_generations=frozenset({99})))
+        return accepted
+
+    monkeypatch.setattr(module, "verify_bundle", verify_then_change)
+    result = _import(node, _place(node, _bundle(node.key)))
+    assert (result["outcome"], result["refused"]) == ("refused", "trust_changed")
+    assert _store(node) == {}
+    assert (node.events[-1]["event_type"], node.events[-1]["code"]) == (
+        "knowledge.lite.import_refused", "trust_changed")

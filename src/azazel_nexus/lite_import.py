@@ -61,7 +61,9 @@ copy, and a bundle whose digest, generation or signing key the cumulative
 revocation list names is quarantined rather than admitted: a revoked bundle
 must not replace the admitted one or raise the anti-rollback watermark. An
 unusable trust root (unreadable, unverified revocations, a published test key)
-refuses the import with nothing changed. Without `trust`, the library keeps its
+refuses the import: nothing is admitted, quarantined or moved and the
+watermark is unchanged (directory tightening, if it already happened, stays
+and is recorded as `store tightened`). Without `trust`, the library keeps its
 store-local behaviour for the harnesses that drive it directly.
 """
 
@@ -147,8 +149,9 @@ class Transition(str, Enum):
     QUARANTINED = "lite.import.quarantined"
     ROLLED_BACK = "lite.import.rolled_back"
     REVOKED = "lite.serving.stopped_by_revocation"
-    #: The commissioned trust root could not be used, or changed during the
-    #: import: nothing was verified, moved or written.
+    #: The commissioned trust root could not be used, changed during the
+    #: import, or the entry changed after it was listed: nothing was admitted,
+    #: quarantined or moved and the watermark is unchanged.
     REFUSED = "lite.import.refused"
 
 
@@ -165,7 +168,10 @@ REVOCATION_REFUSAL_CODES = (
 
 
 class ImportRefused(Exception):
-    """The import did not happen, and nothing was changed.
+    """The import did not happen: no bundle was admitted, quarantined or moved.
+
+    The watermark is unchanged. Store directories the import already
+    tightened stay tightened (that is recorded as `store tightened`).
 
     `code` is a fixed word a daemon may return; the message is for a human at
     a library call and is never sent over a socket.
@@ -488,12 +494,12 @@ class LiteImport:
         )
 
     def _refuse(self, entry_id: str, now: str, code: str) -> None:
-        """Record why nothing changed, then say so. Never returns."""
+        """Record why nothing was admitted, then say so. Never returns."""
 
         self._record(Transition.REFUSED, {"entry_id": entry_id, "at": now, "code": code})
         raise ImportRefused(
-            "The import was refused before anything was verified, moved or "
-            f"written ({code}).",
+            "The import was refused; no bundle was admitted, quarantined or "
+            f"moved and the watermark is unchanged ({code}).",
             code=code,
         )
 
@@ -681,15 +687,24 @@ class TrustSnapshot:
     keys: tuple[bytes, ...]
     anchors: TrustAnchors
     revocations: object  # revocation.RevocationList; imported lazily
+    #: SHA-256 of the signed revocation list as read before it was verified,
+    #: or None when there was none.
+    revocations_digest: Optional[str] = None
 
     def unchanged(self) -> bool:
-        """Whether the trust record read here is still the one in force."""
+        """Whether the trust record and revocation list read here are still in force.
+
+        A repin, or a revocation list accepted by the commissioning daemon
+        while a bundle was being verified, makes this False: the caller
+        verifies again rather than admit under what was superseded.
+        """
         from .lite_trust import TrustRefused, TrustStore
         from .model_paths import bounded_read
 
         try:
             return (TrustStore(self.root).path == self.trust_path
-                    and bounded_read(self.trust_path, 65536) == self.trust_bytes)
+                    and bounded_read(self.trust_path, 65536) == self.trust_bytes
+                    and _revocations_digest(self.root) == self.revocations_digest)
         except (OSError, ValueError, TrustRefused):
             return False
 
@@ -708,6 +723,17 @@ class TrustSnapshot:
                 Gate.ANCHORS, "BUNDLE_REVOKED",
                 "the commissioned revocation list names this bundle's digest, "
                 "generation or signing key")
+
+
+def _revocations_digest(root: Path) -> Optional[str]:
+    """SHA-256 of the signed revocation list in a trust root, or None."""
+    from .model_paths import bounded_read
+    from .revocation import REVOCATION_FILENAME
+
+    try:
+        return hashlib.sha256(bounded_read(root / REVOCATION_FILENAME, 1 << 20)).hexdigest()
+    except FileNotFoundError:
+        return None
 
 
 @dataclass(frozen=True)
@@ -749,10 +775,14 @@ class CommissionedTrust:
                 SignatureRefused):
             raise TrustUnusable("trust_unreadable") from None
         try:
+            # Read before verification: a list replaced in between then reads
+            # as changed at promotion, never as the one verified here.
+            revocations_digest = _revocations_digest(self.root)
             revocations = KnowledgeLite(self.root, digest).revocations(bundle_keys=keys).current()
-        except RevocationRefused:
+        except (RevocationRefused, OSError, ValueError):
             raise TrustUnusable("unverified") from None
-        return TrustSnapshot(self.root, trust_path, trust_bytes, keys, anchors, revocations)
+        return TrustSnapshot(self.root, trust_path, trust_bytes, keys, anchors, revocations,
+                             revocations_digest)
 
     def accept_revocation(self, blob: bytes):
         """Accept one signed cumulative revocation list into this root.
