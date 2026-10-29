@@ -16,6 +16,10 @@ Related: [Azazel program plan](https://github.com/01rabbit/Azazel/blob/main/docs
 [R0 baseline](https://github.com/01rabbit/Azazel/blob/main/docs/roadmaps/nexus-boot-r0-baseline.md) ·
 [Capability model](capability-model.md) · [Commissioning and activation](commissioning.md)
 
+The wire and file forms of each contract (direction, schema, authentication,
+failure behaviour, implementation, tests, cross-CPU vectors) are listed in the
+[contract table](contract-table.md) (Japanese).
+
 ## 1. Ownership rule
 
 > **Azazel-Fabric describes. Azazel-Knowledge advises. Azazel-Edge decides and
@@ -132,7 +136,7 @@ trust decision that Fabric MUST NOT make.
 | --- | --- | --- | --- |
 `mio_contracts` is present in the pinned `v0.9.0rc5` (and from `v0.9.0rc1`);
 it is **published, not adopted** (`docs/mio-dual-cognition.md`). Nexus's own
-frames (`azazel-nexus/sanitized-envelope/1`, `advisory_response`,
+frames (`azazel-nexus/sanitized-envelope/2`, `advisory_response`,
 `local_advisory`) keep their Nexus-local shapes and are not published as the
 interoperable form.
 

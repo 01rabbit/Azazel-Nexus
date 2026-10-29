@@ -17,6 +17,9 @@ zero frames, or that the node booted inside a time budget.
 
 The [campaign](hil-campaign.md) fixes ownership and execution order;
 [HIL evidence records](hil-evidence-records.md) separates field records from CI.
+The [hardware acceptance procedure](hardware-acceptance.md) (Japanese) lists
+what the VM and container runs did and did not cover, and the acceptance steps
+left for the target hardware and the Arm VM.
 No gate state changes in this preparation.
 
 Every gate names four things: what is claimed, what CI actually executed, why
