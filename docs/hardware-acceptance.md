@@ -1,6 +1,8 @@
 # 実機受入手順
 
-Status: **手順のみ。どの項目も実機では未実行（2026-10-29、main `331657a` 時点）。**
+Status: **実機の項目（A1〜A8）は未実行。Arm VM の項目（V1〜V3）は 2026-10-29 に Arm VM
+（VMware Fusion、Apple silicon）で実行した（main `7ef1702`。
+[記録](evidence/arm-vm-acceptance-vm-arm64-2026-10-29.md)）。VM の結果であり、ハードウェアゲートは閉じない。**
 この文書は、VM やコンテナで確かめた範囲と、実機でしか確かめられない範囲を分け、
 実機と Arm VM で行う受入の手順・合格条件・記録の形を 1 か所にまとめたもの。
 個々の手順がすでに runbook にあるものは、ここで繰り返さずにリンクする。
@@ -40,13 +42,14 @@ Status: **手順のみ。どの項目も実機では未実行（2026-10-29、mai
 
 | 項目 | 確かめた環境 | 記録 | 実機で残るもの |
 | --- | --- | --- | --- |
-| 本番 `install.sh` での導入と、導入後に unit が masked であること | aarch64 のコンテナ、Rosetta 上の x86_64 のコンテナ（どちらも systemd が PID 1） | [vm-integration（コンテナ）](evidence/vm-integration-container-2026-10-28.md) | HG-01（A1） |
-| オフライン bundle の導入 | x86_64 のコンテナ、aarch64 lab のコンテナ（どちらも `install.sh --without-service-manager`。systemd 段は未実行） | [x86_64](evidence/offline-install-container-2026-10-28.json)、[aarch64 lab](evidence/offline-install-aarch64-lab-container-2026-10-29.json) | systemd 段まで（A1、V2） |
-| 統合ループの起動・障害注入・再起動後の失効（A7） | 上の 2 つのコンテナ（リハーサル専用の手動起動。activation ではない） | [vm-integration（コンテナ）](evidence/vm-integration-container-2026-10-28.md) | VM での実行（V1）、kernel の再起動 |
+| 本番 `install.sh` での導入と、導入後に unit が masked であること | aarch64 のコンテナ、Rosetta 上の x86_64 のコンテナ（どちらも systemd が PID 1）、Debian 13 arm64 の VM（V1・V2） | [vm-integration（コンテナ）](evidence/vm-integration-container-2026-10-28.md)、[V1（Arm VM）](evidence/vm-integration-vm-arm64-2026-10-29.md) | HG-01（A1） |
+| オフライン bundle の導入 | x86_64 のコンテナ、aarch64 lab のコンテナ（どちらも `install.sh --without-service-manager`）、aarch64 lab を Debian 13 arm64 の VM で systemd 段まで（V2） | [x86_64](evidence/offline-install-container-2026-10-28.json)、[aarch64 lab](evidence/offline-install-aarch64-lab-container-2026-10-29.json)、[aarch64 lab（Arm VM）](evidence/offline-install-aarch64-lab-vm-2026-10-29.json) | 配備基準（x86_64）の systemd 段まで（A1） |
+| 統合ループの起動・障害注入・再起動後の失効（A7） | 上の 2 つのコンテナと Debian 13 arm64 の VM（V1。kernel の再起動を含む。リハーサル専用の手動起動で、activation ではない） | [vm-integration（コンテナ）](evidence/vm-integration-container-2026-10-28.md)、[V1（Arm VM）](evidence/vm-integration-vm-arm64-2026-10-29.md) | 実機での実行、arm64 の Edge Core pin（H5） |
 | commissioning と activation の仕組み | Debian 13 arm64 の VM（loop-file の LUKS、VM 専用の鍵） | [activation リハーサル](hil-runbooks/activation-rehearsal.md#01-run-of-2026-10-23-mechanics-only)、[commissioning リハーサル](hil-runbooks/commissioning-rehearsal.md) | 実 dm-crypt、恒久 MAC、TPM（A2） |
 | unit の hardening の宣言と systemd の読取りの一致 | Debian 13 arm64 の VM（entryd と knowledge-lited） | [milestone1 の記録](evidence/milestone1-real-systemd-smoke-2026-10-18.md) | x86_64 での MDWE と SystemCallFilter（A8） |
 | 読取専用 UI の表示・劣化・XSS・外部通信なし | aarch64 のコンテナの headless Chromium、x86_64（Rosetta）は通常状態 1 回、aarch64 の systemd コンテナでソケット起動 | [UI のブラウザ確認](evidence/ui-browser-2026-10-29.md) | 実操作・IME・タッチ（A6）、IP フィルタの実効（A7） |
-| 判断・認可・監査の意味が CPU 間で同じこと | aarch64 のコンテナと amd64（Rosetta）のコンテナ | [共通試験ベクトル](evidence/cross-arch-vectors-2026-10-29.md) | 実機の両 CPU での実行（V1 のあとに任意） |
+| 判断・認可・監査の意味が CPU 間で同じこと | aarch64 のコンテナと amd64（Rosetta）のコンテナ、Debian 13 arm64 の VM（amd64 は Rosetta のコンテナと比較） | [共通試験ベクトル](evidence/cross-arch-vectors-2026-10-29.md)、[Arm VM](evidence/arm-vm-acceptance-vm-arm64-2026-10-29.md#共通試験ベクトル) | 実機の両 CPU での実行 |
+| 仮想化センサーの値（ADR-0003 R1） | Debian 13 arm64 の VM（VMware Fusion だけ）（V3） | [Arm VM](evidence/arm-vm-acceptance-vm-arm64-2026-10-29.md#v3-仮想化センサー) | 他の仮想化基盤、Arm 実機（否定側）、R1 の対処 |
 
 どれも VM かコンテナの結果であり、§1 のとおり実機の証拠ではない。
 
@@ -207,6 +210,13 @@ drop-in で外しており、seccomp も効かない。そのため x86_64 で�
 
 Arm VM の結果は ADR-0003 D5 の「VM ソフトウェア統合の証拠」であり、§1 のとおり
 ハードウェアゲートを閉じない。VM は使い捨てとし、始める前に snapshot（S0）を取る。
+
+**実行状況（2026-10-29、main `7ef1702`、VMware Fusion 上の Debian 13.7 arm64 VM）：**
+V1 は pass 55 / fail 0 / skip 2（kernel の再起動を含む。Edge Core は arm64 の pin が無いまま
+aarch64 の実バイナリで実行した逸脱付き）、V2 は systemd 段まで導入し合格条件の各項を観測、
+V3 は VMware の 1 基盤だけ観測した。まとめは
+[Arm VM での受入の記録](evidence/arm-vm-acceptance-vm-arm64-2026-10-29.md)。どれも VM の結果であり、
+ハードウェアゲートは閉じない。
 
 ### V1 `tools/vm_integration.py` の実行
 

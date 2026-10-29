@@ -585,8 +585,10 @@ its lab notice. The result is VM software-integration evidence at most —
 never hardware-gate evidence, a deployment-baseline install or a production
 admission. It was rehearsed in containers only
 ([aarch64 container record](evidence/offline-install-aarch64-lab-container-2026-10-29.json):
-native aarch64 build, `--network none` install); not on Arm hardware, and not
-yet on an Arm VM with systemd.
+native aarch64 build, `--network none` install) and on an Arm VM with systemd
+through the service-manager stage
+([Arm VM record](evidence/offline-install-aarch64-lab-vm-2026-10-29.json):
+VMware Fusion, Debian 13.7 arm64, no default route); not on Arm hardware.
 
 `build_wheelhouse.py` installs the build backend from
 `packaging/offline/build-backend.lock` (`setuptools==84.0.0`, by file hash),

@@ -1,0 +1,250 @@
+{
+  "schema": "azazel-nexus/prototype-offline-install-evidence/v1",
+  "date": "2026-10-29",
+  "covers_commit": "7ef1702",
+  "target": "debian-13-aarch64-cp313",
+  "platform_profile_id": "debian-13-arm64-cp313-lab",
+  "purpose": "lab-software-verification",
+  "scope": "Arm VM software-integration evidence (ADR-0003 D5, hardware-acceptance V2): Debian 13.7 arm64 VM on VMware Fusion (Apple silicon host), systemd 257 as PID 1, kernel 6.12 arm64. Not Arm hardware, not the deployment baseline (ADR-0002 is Debian 13 / amd64), not hardware-gate evidence, not production activation or admission (ADR-0005). Build in a container, install on the VM.",
+  "source": {
+    "commit": "7ef1702",
+    "worktree": "clean (git clone of the commit, uid 1001, umask 022)"
+  },
+  "build_container": {
+    "network": "online",
+    "image": "debian:trixie (linux/arm64, native aarch64 on the colima default context of the macOS host; --rm)",
+    "python": "Debian python3 3.13.5",
+    "machine": "aarch64",
+    "build_user": "uid 1001, umask 022, clean git clone of the commit",
+    "command": [
+      "python3 tools/build_wheelhouse.py --target debian-13-aarch64-cp313 --output <wheelhouse>",
+      "python3 tools/build_offline_bundle.py --target debian-13-aarch64-cp313 --wheelhouse <wheelhouse> --output <bundle>"
+    ],
+    "result": {
+      "build_wheelhouse": "exit 0",
+      "build_offline_bundle": "exit 0",
+      "bundle_members": 346,
+      "slots": "all empty"
+    },
+    "wheels": [
+      "annotated-types==0.8.0",
+      "azazel-fabric==0.9.0rc5",
+      "azazel-nexus-runtime==0.0.1.dev0",
+      "azazel-nexus==0.0.1.dev0",
+      "dbus-next==0.2.3",
+      "pydantic-core==2.46.5",
+      "pydantic==2.13.5",
+      "pyyaml==6.0.3",
+      "typing-extensions==4.16.0",
+      "typing-inspection==0.4.4"
+    ],
+    "digests": "omitted from this record (hardware-acceptance §5); the bundle report on the VM checked every member against its manifest sha256",
+    "edge_slot_at_build": {
+      "command": "build_offline_bundle.py --target debian-13-aarch64-cp313 ... --edge-package <aarch64 Edge package dir> --edge-source TEXT",
+      "result": "refused, exit 2: target debian-13-aarch64-cp313 carries no Edge package: the reviewed Edge pin is for another CPU and no Edge pin exists for this one (ADR-0003 R4, ADR-0005)"
+    }
+  },
+  "vm": {
+    "host": {
+      "uname_machine": "aarch64",
+      "dpkg_architecture": "arm64",
+      "debian_version": "13.7",
+      "python": "3.13.5",
+      "systemd": "257"
+    },
+    "starting_state": "VM snapshot S0 with the residue of earlier Azazel installs removed by hand (/opt/azazel*, /etc/azazel*, /var/lib/azazel*, /usr/libexec/azazel, azazel units, AppArmor profiles, az* accounts and groups). Not a freshly installed OS. An /etc/crypttab entry from an earlier commissioning rehearsal was left in place; its systemd-cryptsetup unit fails at every boot (pre-existing, before this install) and makes the boot wait for its timeout.",
+    "network": {
+      "method": "both VM NICs are VMware host-only; the VM has no IPv4 or IPv6 default route; nothing was changed for this run (the state of S0). The only reachable peer is the macOS host on the host-only subnet, used for ssh control and to copy the bundle.",
+      "checks": {
+        "default_route_ipv4": "none",
+        "default_route_ipv6": "none",
+        "dns": "deb.debian.org not resolved",
+        "outbound_tcp_443": "OSError Network is unreachable (2 addresses)"
+      }
+    },
+    "compiler": "absent (no gcc on the VM during V2)",
+    "verifier": "tools/offline_bundle.py from a root-owned git clone of the reviewed commit at a separate path, run with python3 -I as root (never from inside the bundle)",
+    "tampered_copy": "refused before extraction (one bit flipped near the end: gzip data check failed); destination not created",
+    "edge_slot_at_verify": {
+      "input": "a lab-target bundle whose Edge slot was filled by a one-off harness that replaced the builder's two Edge refusals with no-ops in its own process (crafted adversarial input, not a product path); the Edge files were a real aarch64 Edge package",
+      "verify": "refused, exit 2: target debian-13-aarch64-cp313 carries no Edge package ... (ADR-0003 R4, ADR-0005); destination not created",
+      "install": "refused, exit 2 with the same reason; neither the tree nor /opt/azazel-nexus/venv was created"
+    },
+    "install": {
+      "command": "python3 -I <reviewed>/tools/offline_bundle.py install --bundle <bundle> --into /var/lib/azazel-offline/bundle --venv /opt/azazel-nexus/venv --python /usr/bin/python3 --run-installer (as root, no --installer-option)",
+      "exit": 0,
+      "report": {
+        "bundle_authenticated": false,
+        "counts": {
+          "deb": 0,
+          "edge-package": 0,
+          "knowledge": 0,
+          "model": 0,
+          "source": 336,
+          "wheel": 10
+        },
+        "integrity": "every declared member matched its manifest size and sha256",
+        "own_wheels": "azazel-nexus and azazel-nexus-runtime are pinned by version only (exact string match against the reviewed pyproject files); their content is built per bundle and is unauthenticated until bundle signing exists",
+        "platform_profile_id": "debian-13-arm64-cp313-lab",
+        "purpose": "lab-software-verification",
+        "purpose_note": "lab-software-verification target: VM software-integration evidence at most; never hardware-gate evidence, a deployment-baseline install or a production admission (ADR-0005)",
+        "signature": {
+          "present": false,
+          "reason": "unsigned: the bundle carries no MANIFEST.sig and no bundle signature is defined"
+        },
+        "slots": {
+          "deb": {
+            "state": "empty"
+          },
+          "edge-package": {
+            "state": "empty"
+          },
+          "knowledge": {
+            "state": "empty"
+          },
+          "model": {
+            "state": "empty"
+          }
+        },
+        "target": "debian-13-aarch64-cp313",
+        "wheels": [
+          {
+            "pinned_by": "packaging/offline/requirements-aarch64-cp313.lock",
+            "requirement": "annotated-types==0.8.0"
+          },
+          {
+            "pinned_by": "packaging/offline/requirements-aarch64-cp313.lock",
+            "requirement": "azazel-fabric==0.9.0rc5"
+          },
+          {
+            "pinned_by": "reviewed pyproject version only",
+            "requirement": "azazel-nexus==0.0.1.dev0"
+          },
+          {
+            "pinned_by": "reviewed pyproject version only",
+            "requirement": "azazel-nexus-runtime==0.0.1.dev0"
+          },
+          {
+            "pinned_by": "packaging/offline/requirements-aarch64-cp313.lock",
+            "requirement": "dbus-next==0.2.3"
+          },
+          {
+            "pinned_by": "packaging/offline/requirements-aarch64-cp313.lock",
+            "requirement": "pydantic==2.13.5"
+          },
+          {
+            "pinned_by": "packaging/offline/requirements-aarch64-cp313.lock",
+            "requirement": "pydantic-core==2.46.5"
+          },
+          {
+            "pinned_by": "packaging/offline/requirements-aarch64-cp313.lock",
+            "requirement": "pyyaml==6.0.3"
+          },
+          {
+            "pinned_by": "packaging/offline/requirements-aarch64-cp313.lock",
+            "requirement": "typing-extensions==4.16.0"
+          },
+          {
+            "pinned_by": "packaging/offline/requirements-aarch64-cp313.lock",
+            "requirement": "typing-inspection==0.4.4"
+          }
+        ]
+      },
+      "pip": "--no-index --find-links --require-hashes --only-binary=:all:",
+      "pip_check": "pass",
+      "imports": "pass",
+      "observed_platform": {
+        "platform_profile_id": "debian-13-arm64-cp313-lab",
+        "purpose": "lab-software-verification"
+      },
+      "recheck_before_install_sh": {
+        "result": "pass",
+        "files": 346,
+        "bundle_authenticated": false
+      },
+      "installer": {
+        "exit": 0,
+        "stdout_tail": [
+          "platform: arm64 (lab-software-verification)",
+          "NOTE: arm64 is a lab-software-verification platform, not the deployment baseline. What this install runs is VM software-integration evidence only, never hardware-gate evidence or a production admission.",
+          "staged 19 fixed Nexus runtime entrypoints under /usr/libexec/azazel",
+          "MISSION PACK STORE NOT PROVISIONED: mount commissioned LUKS storage and rerun installer.",
+          "AppArmor compiled-policy hashes recorded in /etc/azazel/activation/apparmor-compiled.json (nothing loaded).",
+          "Azazel-Nexus installed. Operational units are masked.",
+          "The next boot records a fail-closed activation decision; no unit is",
+          "admitted until the required admission and health evidence is available."
+        ],
+        "stderr_tail_summary": "systemctl created the masking symlinks (/etc/systemd/system/<unit> -> /dev/null) and enabled azazel-activated.service and azazel-edge-probe-preflight.service in multi-user.target.wants",
+        "service_manager_stage": "executed (systemd 257 as PID 1)"
+      }
+    },
+    "after_install": {
+      "masked": [
+        "azazel-auditd",
+        "azazel-commissiond",
+        "azazel-decoy-netd",
+        "azazel-decoy-nsd",
+        "azazel-decoyd",
+        "azazel-edge-core",
+        "azazel-edge-intaked",
+        "azazel-edge-probed",
+        "azazel-incident-explaind",
+        "azazel-knowledge-lited",
+        "azazel-mio-entryd",
+        "azazel-mio-locald",
+        "azazel-mio-referenced",
+        "azazel-mio-remoted",
+        "azazel-model-fetchd",
+        "azazel-watchdog"
+      ],
+      "enabled": [
+        "azazel-activated.service",
+        "azazel-edge-probe-preflight.service"
+      ],
+      "disabled_or_static": "azazel-ui.socket, the observe timers disabled; their services, decoy-verify and the trip target static; none active",
+      "venv_mode": "0755 root:root",
+      "tree_mode": "0700 root:root",
+      "imports_checked": "azazel_nexus, azazel_nexus_runtime, _bootstrap_deadline (cpython-313-aarch64-linux-gnu.so), yaml with CSafeLoader, dbus_next, pydantic_core 2.46.5, azazel_fabric.provisioning_contracts: ok",
+      "cli_smoke": {
+        "<venv>/bin/azazel-nexus --help": "ok",
+        "<venv>/bin/azazel-nexus setup --next --json": "exit 0"
+      },
+      "lab_marker": "absent (the offline install writes none)",
+      "production_uses_on_this_host": {
+        "selected_profile": "debian-13-arm64-cp313-lab",
+        "require_deployment_baseline": {
+          "core-reserve-record": "refused LAB_PROFILE_NOT_FOR_PRODUCTION",
+          "hardware-gate-record": "refused LAB_PROFILE_NOT_FOR_PRODUCTION",
+          "hil-preflight": "refused LAB_PROFILE_NOT_FOR_PRODUCTION",
+          "model-admission": "refused LAB_PROFILE_NOT_FOR_PRODUCTION",
+          "product-admission": "refused LAB_PROFILE_NOT_FOR_PRODUCTION"
+        }
+      },
+      "virtualization_sensors_installed_venv": {
+        "hypervisor_type": "absent",
+        "cpu_hypervisor": "clear",
+        "systemd_container": "absent",
+        "dockerenv": "absent",
+        "dmi_vendor": "observed",
+        "dmi_product": "observed",
+        "init_cgroup": "clear"
+      }
+    },
+    "after_reboot": {
+      "how": "systemctl reboot; a new kernel boot id was confirmed",
+      "activation_pass": "azazel-activated.service Result=success: az-activated completed safely: granted=0, withheld=16, reasons=no_generation",
+      "units": "every governed unit still masked and inactive; nothing of Azazel-Nexus running",
+      "observed_platform": "debian-13-arm64-cp313-lab",
+      "system_state": "degraded only by the pre-existing systemd-cryptsetup unit noted in starting_state"
+    }
+  },
+  "limitations": [
+    "Arm VM (VMware Fusion on Apple silicon): VM software-integration evidence only; not Arm hardware, not hardware-gate evidence, not the deployment baseline",
+    "Build in a container on the colima aarch64 VM, not on a separate Arm build host",
+    "The VM started from S0 with earlier Azazel residue removed by hand, not from a fresh OS install",
+    "Network isolation is the VM's host-only NICs with no default route; the host-only link to the macOS host remained up for control",
+    "Bundle unsigned; bundle_authenticated false; hashes are integrity, not authenticity",
+    "No Edge package, .deb set, model or Knowledge asset carried; no arm64 Edge pin exists",
+    "No activation, commissioning or service start was exercised after the install (the boot's pass granted nothing, as designed)"
+  ]
+}

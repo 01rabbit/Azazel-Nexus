@@ -1,0 +1,36 @@
+tests/unit on the Arm VM (VMware Fusion on Apple silicon, Debian 13.7 aarch64, systemd 257, Debian CPython 3.13.5)
+commit 7ef1702, user venv (pip -e .[dev] and ./runtime, offline from the lab wheelhouse + pytest/PyNaCl wheels)
+uid 1000 (non-root), umask 022, ci.yml's two --deselect, one run at a time on the VM
+
+run 1: TMPDIR=/tmp (tmpfs 1.5 GiB), interpreter invoked as ../venv/bin/python (non-canonical path)
+186 failed, 17348 passed, 166 skipped, 2 deselected, 2 warnings in 275.88s (0:04:35)
+  68 FAILED tests/unit/test_mission_pack.py
+  54 FAILED tests/unit/test_model_acquire_e2e.py
+  27 FAILED tests/unit/test_playbook_selection.py
+  22 FAILED tests/unit/test_model_import.py
+   7 FAILED tests/unit/test_stage_runtime_entrypoints.py
+   2 FAILED tests/unit/test_operator_view.py
+   2 FAILED tests/unit/test_fetch_commissioning.py
+   1 FAILED tests/unit/test_so06_edge.py
+   1 FAILED tests/unit/test_model_acquisition.py
+   1 FAILED tests/unit/test_mio_reference_socket.py
+   1 FAILED tests/unit/test_exposure_route_dump.py
+
+run 2: TMPDIR on the ext4 root (long path under the home directory), absolute interpreter path
+5 failed, 17529 passed, 166 skipped, 2 deselected, 3 warnings in 292.07s (0:04:52)
+FAILED tests/unit/test_exposure_route_dump.py::test_the_dump_equals_ip_j_in_a_fresh_namespace
+FAILED tests/unit/test_knowledge_lited.py::test_socket_round_trip_and_refusals
+FAILED tests/unit/test_runtime_bootstrap_journal_reboot_reset.py::test_prior_boot_fence_check_refuses_after_change[mask]
+FAILED tests/unit/test_runtime_bootstrap_journal_retire.py::test_mask_changed_during_audit_refuses_before_any_mutation
+FAILED tests/unit/test_so06_edge.py::test_a_library_that_freezes_the_monotonic_clock_is_refused
+
+run 3: TMPDIR=/var/tmp/azp (ext4), absolute interpreter path; VM uptime about 26 min at start
+FAILED tests/unit/test_exposure_route_dump.py::test_the_dump_equals_ip_j_in_a_fresh_namespace
+FAILED tests/unit/test_knowledge_lited.py::test_socket_round_trip_and_refusals
+FAILED tests/unit/test_runtime_bootstrap_journal_reboot_reset.py::test_prior_boot_fence_check_refuses_after_change[mask]
+FAILED tests/unit/test_runtime_bootstrap_journal_retire.py::test_mask_changed_during_audit_refuses_before_any_mutation
+FAILED tests/unit/test_so06_edge.py::test_a_library_that_freezes_the_monotonic_clock_is_refused
+5 failed, 17529 passed, 166 skipped, 2 deselected, 3 warnings in 277.75s (0:04:37)
+53 passed in 0.49s
+internal links OK (148 Markdown files checked)
+vectors exit 0
