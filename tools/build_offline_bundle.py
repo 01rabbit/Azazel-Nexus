@@ -355,6 +355,7 @@ def build_install_bundle(
 
     slots = {kind: "empty" for kind in offline_bundle.SLOT_KINDS}
     if edge_package is not None:
+        offline_bundle.refuse_edge_slot_unless_allowed(target)
         if not edge_source:
             raise ValueError("--edge-package needs --edge-source naming where it came from")
         offline_bundle.verify_edge_slot(edge_package)

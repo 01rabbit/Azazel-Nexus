@@ -382,3 +382,79 @@ def test_the_documents_name_the_lab_target_and_keep_the_baseline():
     assert "Leaves\n[ADR-0002](0002-debian-13-baseline.md) unchanged" in adr
     assert "never used for this runbook" in runbook
     assert "--target" not in runbook.split("## 1. Build the bundle", 1)[1].split("## 2", 1)[0]
+
+
+# -- review follow-ups: CLI defaults, probe exit status, no Edge slot on lab ---
+
+
+def test_the_bundle_cli_builds_the_baseline_unless_a_target_is_named(tmp_path, monkeypatch):
+    from tools import build_offline_bundle
+
+    seen = []
+    monkeypatch.setattr(build_offline_bundle, "build_install_bundle",
+                        lambda root, output, **kwargs: seen.append(kwargs["target"]) or {})
+    build_offline_bundle.main(["--output", str(tmp_path / "b.tar.gz"), "--wheelhouse", str(tmp_path)])
+    build_offline_bundle.main(["--output", str(tmp_path / "b.tar.gz"), "--wheelhouse", str(tmp_path),
+                               "--target", LAB])
+    assert seen == [BASELINE, LAB]
+
+
+def test_the_wheelhouse_cli_builds_the_baseline_unless_a_target_is_named(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(build_wheelhouse, "build_wheelhouse",
+                        lambda root, output, **kwargs: seen.append(kwargs["target_name"]) or {})
+    build_wheelhouse.main(["--output", str(tmp_path / "wh")])
+    build_wheelhouse.main(["--output", str(tmp_path / "wh"), "--target", LAB])
+    assert seen == [BASELINE, LAB]
+
+
+def test_the_installed_platform_probe_refuses_a_failed_run_even_with_two_words(tmp_path):
+    fake = tmp_path / "python"
+    fake.write_text("#!/bin/sh\necho 'debian-13-arm64-cp313-lab lab-software-verification'\nexit 1\n")
+    fake.chmod(0o755)
+    with pytest.raises(BundleRefused, match="did not identify a reviewed platform profile"):
+        offline_bundle._observe_installed_platform(fake)
+
+
+def test_the_lab_target_declares_no_edge_slot_and_the_baseline_does():
+    assert offline_bundle.TARGETS[BASELINE]["edge_slot"] is True
+    assert offline_bundle.TARGETS[LAB]["edge_slot"] is False
+
+
+def test_a_lab_bundle_with_an_edge_package_is_refused_at_build(tmp_path, monkeypatch):
+    from tests.unit.test_offline_install_bundle import _edge_package, _pin_edge
+
+    root = _lab_repo(tmp_path / "repo")
+    wheelhouse = _lab_wheelhouse(tmp_path, repository_identity(root)["commit"])
+    edge = _edge_package(tmp_path / "edge")
+    _pin_edge(monkeypatch, edge)
+    with pytest.raises(BundleRefused, match="carries no Edge package"):
+        build_install_bundle(root, tmp_path / "b.tar.gz", wheelhouse=wheelhouse, target=LAB,
+                             edge_package=edge, edge_source="test")
+    assert not (tmp_path / "b.tar.gz").exists()
+
+
+def _with_edge_slot(document: dict) -> dict:
+    document = json.loads(json.dumps(document))
+    document["artifacts"].append({"path": "edge/azazel-edge-core.tar.gz", "kind": "edge-package",
+                                  "sha256": "0" * 64, "size": 1, "mode": "0644", "source": "test"})
+    document["artifacts"].sort(key=lambda entry: entry["path"])
+    document["slots"]["edge-package"] = "filled"
+    document["totals"] = {"count": len(document["artifacts"]),
+                          "bytes": sum(entry["size"] for entry in document["artifacts"])}
+    return document
+
+
+def test_a_lab_manifest_with_a_filled_edge_slot_is_refused_at_verify(lab_bundle, tmp_path):
+    document = _with_edge_slot(lab_bundle[0])
+    with pytest.raises(BundleRefused, match="carries no Edge package"):
+        offline_bundle.validate_manifest(document)
+    baseline = dict(document, target=BASELINE)
+    assert offline_bundle.validate_manifest(baseline) is baseline
+    extracted = offline_bundle.Extracted(root=tmp_path, manifest=document, manifest_bytes=b"{}",
+                                         signature=None)
+    with pytest.raises(BundleRefused, match="carries no Edge package"):
+        offline_bundle.verify_extracted(extracted, pins=(
+            {e["requirement"]: [e["sha256"]] for e in document["artifacts"]
+             if e["kind"] == "wheel" and not e["requirement"].startswith("azazel-")},
+            build_wheelhouse.own_versions(ROOT)))

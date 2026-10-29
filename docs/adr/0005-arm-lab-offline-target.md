@@ -40,7 +40,9 @@ target names `debian-13-arm64-cp313-lab`; tests hold every target's purpose,
 CPU spellings (kernel, Debian), OS and Python tag equal to its reviewed
 profile in `platform_profile`, and to what the `install.sh` platform
 evaluation (ADR-0003 R6) selects for the same host. A target is still
-defined in code and never read from a manifest.
+defined in code and never read from a manifest. The aarch64 target refuses a
+filled Edge slot at build and at verify, because the only reviewed Edge pin
+is an x86_64 artifact.
 
 **D3. The lock is per target.** `packaging/offline/requirements-aarch64-cp313.lock`
 pins the same names and versions as the x86_64 lock (tested against the
@@ -111,8 +113,10 @@ target. The owner may prefer the suffix on the target as well (see below).
 ## Open for the owner
 
 - Whether the target identifier should also end in `-lab`.
-- An arm64 Edge Core pin (ADR-0003 R4); until it exists an aarch64 bundle
-  carries no Edge slot.
+- An arm64 Edge Core pin (ADR-0003 R4). Until it exists, a filled Edge slot
+  on the aarch64 target is refused by `build_offline_bundle.py` and by
+  `verify` / `recheck` / `install` (`TARGETS[...]["edge_slot"]` is false), so
+  the x86_64 Edge artifact cannot ride in an Arm bundle.
 - Repeating the offline install on a real Arm VM with systemd, which would
   make it VM software-integration evidence (ADR-0003 D5) — still not a
   hardware gate.

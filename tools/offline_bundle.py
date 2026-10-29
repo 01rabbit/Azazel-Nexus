@@ -108,6 +108,8 @@ TARGETS = {
         "lock": Path("packaging/offline/requirements-x86_64-cp313.lock"),
         "platform_profile_id": "debian-13-amd64-cp313",
         "purpose": "deployment-baseline",
+        # The reviewed Edge pin (edge_package.PIN) is an x86_64 artifact.
+        "edge_slot": True,
     },
     "debian-13-aarch64-cp313": {
         "os": "debian-13",
@@ -119,6 +121,9 @@ TARGETS = {
         "lock": Path("packaging/offline/requirements-aarch64-cp313.lock"),
         "platform_profile_id": "debian-13-arm64-cp313-lab",
         "purpose": "lab-software-verification",
+        # No arm64 Edge pin exists (ADR-0003 R4): an Edge slot here could only
+        # carry the x86_64 artifact, so it is refused at build and at verify.
+        "edge_slot": False,
     },
 }
 #: The deployment-baseline target, and the default wherever a caller names none.
@@ -137,6 +142,16 @@ def target_lock(target: str) -> Path:
     if type(target) is not str or target not in TARGETS:
         raise BundleRefused(f"target {target!r} is not a declared target")
     return TARGETS[target]["lock"]
+
+
+def refuse_edge_slot_unless_allowed(target: str) -> None:
+    """Refuse a filled Edge slot for a target that has no Edge pin of its CPU."""
+
+    if not TARGETS[target]["edge_slot"]:
+        raise BundleRefused(
+            f"target {target} carries no Edge package: the reviewed Edge pin is for another CPU "
+            "and no Edge pin exists for this one (ADR-0003 R4, ADR-0005)"
+        )
 
 
 def target_purpose(target: str) -> dict[str, Any]:
@@ -698,6 +713,8 @@ def validate_manifest(document: object, limits: Limits = DEFAULT_LIMITS) -> dict
             raise BundleRefused(f"slot {kind} has a refused state {state!r}")
         if (state == "filled") != (kind in kinds_present):
             raise BundleRefused(f"slot {kind} is {state!r} but the artifacts say otherwise")
+    if slots["edge-package"] == "filled":
+        refuse_edge_slot_unless_allowed(document["target"])
     if document["totals"] != {"count": len(artifacts), "bytes": total}:
         raise BundleRefused("manifest totals do not match its artifacts")
     if [entry["path"] for entry in artifacts] != sorted(seen):
@@ -1373,6 +1390,7 @@ def verify_extracted(
     check_lock_is_carried(wheels, pins[0])
     slots: dict[str, Any] = {}
     if document["slots"]["edge-package"] == "filled":
+        refuse_edge_slot_unless_allowed(document["target"])
         slots["edge-package"] = verify_edge_slot(root / "edge")
     else:
         slots["edge-package"] = {"state": "empty"}

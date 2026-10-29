@@ -101,7 +101,10 @@ successor ADR. The offline bundle is that artifact.
 6. **x86_64 only, for now.** The bundle format declares one target,
    `debian-13-x86_64-cp313`. An aarch64 lock (with the aarch64
    `pydantic-core` wheel) belongs with an aarch64 target and is not added
-   here.
+   here. *Amended for a lab target only by
+   [ADR-0005](0005-arm-lab-offline-target.md), which adds
+   `debian-13-aarch64-cp313` as a lab-software-verification target; the
+   deployment-baseline target is unchanged.*
 
 ## Alternatives considered
 

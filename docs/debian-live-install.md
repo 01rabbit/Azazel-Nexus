@@ -575,6 +575,8 @@ python3 tools/build_offline_bundle.py --target debian-13-aarch64-cp313 \
 
 A lab wheelhouse is refused by the baseline bundle builder and the other way
 round; a bundle is checked against the lock of its manifest's target only.
+The lab target carries no Edge package: a filled Edge slot is refused at
+build and at verify, since the only Edge pin is for x86_64.
 `wheelhouse.json` and every report carry `platform_profile_id`
 (`debian-13-arm64-cp313-lab`), `purpose` (`lab-software-verification`) and a
 `purpose_note`, and `install` refuses unless the installed runtime observes
