@@ -21,7 +21,13 @@
 Status: **container rehearsal run on 2026-10-28** on aarch64 (colima, native) and
 x86_64 (colima under Rosetta), recorded in
 [`docs/evidence/vm-integration-container-2026-10-28.md`](../evidence/vm-integration-container-2026-10-28.md).
-**Not run on a VM**: the Arm VM is not available yet. Nothing here is HIL
+**Run on an Arm VM on 2026-10-29** (VMware Fusion on Apple silicon, Debian
+13.7 arm64, `--target ssh:<NODE>`, `systemctl reboot` between the phases):
+pass 55 / fail 0 / skip 2 (24 of the passes rest on the Edge Core
+deviation below), recorded in
+[`docs/evidence/vm-integration-vm-arm64-2026-10-29.md`](../evidence/vm-integration-vm-arm64-2026-10-29.md)
+with the Edge Core checks run on an aarch64 build that has no arm64 pin (a
+recorded deviation). Not run on an x86_64 VM. Nothing here is HIL
 evidence, nothing is attested for a campaign, and every artefact is labelled
 `rehearsal`. Like the other runbooks in this directory,
 `tests/unit/test_runbook_references.py` checks every command and flag named

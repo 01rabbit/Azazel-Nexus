@@ -1,0 +1,30 @@
+{
+  "schema": "azazel-nexus/virtualization-sensor-observation/v1",
+  "date": "2026-10-29",
+  "covers_commit": "7ef1702",
+  "scope": "Observation only (hardware-acceptance V3, ADR-0003 R1). One Arm VM on one hypervisor. Not a decision on R1, not hardware evidence.",
+  "platform": {
+    "hypervisor": "VMware Fusion on a macOS host (Apple silicon)",
+    "guest": "Debian 13.7, kernel 6.12 arm64, systemd 257, aarch64",
+    "cpuinfo_implementer": "Apple (implementer code 0x61)"
+  },
+  "runs": [
+    {
+      "python": "a user venv on the VM holding the main checkout (pip -e, Debian CPython 3.13.5)",
+      "sensors": {"hypervisor_type": "absent", "cpu_hypervisor": "clear", "systemd_container": "absent", "dockerenv": "absent", "dmi_vendor": "observed", "dmi_product": "observed", "init_cgroup": "clear"}
+    }
+  ],
+  "systemd_detect_virt": {"default": "vmware", "--vm": "vmware", "--container": "none (exit 1)"},
+  "raw_non_identifying": {
+    "/sys/hypervisor/type": "absent",
+    "/proc/cpuinfo": "no line carries the word 'hypervisor' (the x86 flag does not exist on arm64)",
+    "dmi sys_vendor": "VMware, Inc.",
+    "dmi product_name": "a VMware model string (generic, matches /vmware/; not an individual identifier)",
+    "dmi bios_vendor / board_vendor / chassis_vendor": "VMware, Inc.",
+    "/proc/1/cgroup": "0::/init.scope",
+    "/sys/firmware/devicetree/base/hypervisor": "absent (ACPI boot)",
+    "kernel log": "ACPI tables carry the VMware OEM id"
+  },
+  "reading": "On this platform the two DMI sensors read observed and the x86-only cpu_hypervisor reads clear, as ADR-0003 R1 predicted. systemd-detect-virt also identifies VMware (on arm64 from DMI). Apple Virtualization and other hypervisors were not available and were not observed.",
+  "not_observed": ["Apple Virtualization.framework guests", "QEMU/KVM, UTM, Parallels on arm64", "Arm hardware (the negative case)"]
+}
