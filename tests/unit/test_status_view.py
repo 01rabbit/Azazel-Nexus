@@ -394,6 +394,12 @@ ALLOWED = {
         "reading.reasons", "reading.reasons.{code}", "reading.reasons.health",
         "reading.reasons.health.{code}",
         "reading.source", "reading.observed_at", "reading.availability", "reading.notice",
+        "age_s", "age_reason", "liveness", "liveness.status", "liveness.reason_code",
+        "liveness.evidence", "liveness.operator_snapshot", "liveness.route_ledger_record",
+        *(f"liveness.operator_snapshot.{k}" for k in (
+            "status", "reason_code", "written_at", "age_s", "stale_after_s")),
+        *(f"liveness.route_ledger_record.{k}" for k in (
+            "status", "reason_code", "recorded_at", "basis", "age_s", "stale_after_s")),
         "source", "source.kind", "source.reader", "source.observed_at")),
     # capability
     "sections.capability", *(f"sections.capability.{k}" for k in (
@@ -925,7 +931,9 @@ def _recorded_mio(monkeypatch, observed_at):
 @pytest.mark.parametrize("observed_at, as_of, expected", [
     ("2026-09-21T04:00:00+00:00", AS_OF, ("recorded", None)),
     ("2026-09-21T04:05:00+00:00", AS_OF, ("stale", "observed_at_in_future")),
-    ("2026-09-18T04:00:00+00:00", AS_OF, ("stale", "observed_at_expired")),
+    # No snapshot here (`_absent`): the three-day-old record is the only
+    # liveness evidence, and it is past its limit (#358 option 1).
+    ("2026-09-18T04:00:00+00:00", AS_OF, ("stale", "liveness_evidence_expired")),
     ("2026-09-21T04:00:00+00:00", "not a time", ("unknown", "clock_unknown")),
     ("2026-09-21T04:00:00", AS_OF, ("unknown", "observed_at_unreadable")),
 ])
@@ -1246,8 +1254,11 @@ def test_bundle_facts_beside_a_state_without_a_trusted_bundle_are_withheld(tmp_p
 
 
 @pytest.mark.parametrize("observed_at, expected", [
+    # Without a snapshot the record's own time is the liveness evidence, so
+    # the two-day boundary stands; only its code says what expired (#358
+    # option 1: the evidence that entryd is alive, not the observation).
     ("2026-09-19T04:01:00+00:00", ("recorded", None)),                  # exactly two days
-    ("2026-09-19T04:00:59+00:00", ("stale", "observed_at_expired")),    # two days and a second
+    ("2026-09-19T04:00:59+00:00", ("stale", "liveness_evidence_expired")),  # and a second
     ("2026-09-21T04:01:05+00:00", ("recorded", None)),                  # five seconds ahead
     ("2026-09-21T04:01:06+00:00", ("stale", "observed_at_in_future")),  # six seconds ahead
 ])
@@ -1306,3 +1317,201 @@ def test_a_refused_audit_snapshot_is_unknown_not_ok(tmp_path, monkeypatch):
     text = io.StringIO()
     assert main(_argv(tmp_path / "text"), out=text) == 0
     assert "    audit: unknown -- WARNING: capacity warning" in text.getvalue()
+
+
+# -- M.I.O. liveness (#358 option 1): an unchanged reading is not a stopped writer --
+
+
+THREE_DAYS_AGO = "2026-09-18T04:01:00+00:00"
+
+
+def _mio_snapshot(tmp_path, *, written_at, observed_at=THREE_DAYS_AGO, state="CORE",
+                  uncertain=False, recorded=True):
+    """entryd's operator snapshot, as `mio_snapshot` writes it."""
+    from azazel_nexus import operator_snapshots as snap
+    from azazel_nexus.runtime_paths import mio_status_path
+
+    reasons = {"profile": "LITE", "resource": "core_reserve_unmeasured",
+               "trust": "not-checked", "topology": "no_verified_egress",
+               "health": {"local": "not_admitted", "remote": "unavailable"}}
+    value = snap.mio_snapshot({"state": state, "reasons": reasons} if recorded else None,
+                              observed_at, uncertain=uncertain, written_at=written_at)
+    path = mio_status_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+
+def _mio_view(tmp_path, monkeypatch, *, observed_at=THREE_DAYS_AGO, recorded_at=None,
+              as_of=AS_OF):
+    from azazel_nexus import cli, mio_status
+
+    reading = _recorded_mio(monkeypatch, observed_at)
+    if recorded_at is not None:
+        monkeypatch.setattr(mio_status, "status_summary",
+                            lambda: {**json.loads(json.dumps(reading)), "recorded_at": recorded_at})
+    view = cli._status_view(cli._report(None, None), as_of=as_of).view
+    assert set(_paths(view)) <= ALLOWED
+    return view["sections"]["mio"]
+
+
+def test_a_stable_node_with_a_fresh_snapshot_is_not_stale(tmp_path, monkeypatch):
+    """The transition was three days ago; entryd wrote its snapshot a minute ago."""
+    _absent(tmp_path, monkeypatch)
+    _mio_snapshot(tmp_path, written_at=NOW - 60)
+    mio = _mio_view(tmp_path, monkeypatch)
+    assert (mio["status"], mio["reason_code"]) == ("recorded", None)
+    assert mio["age_s"] == 3 * 86400  # unchanged for three days: shown, not judged
+    live = mio["liveness"]
+    assert (live["status"], live["reason_code"], live["evidence"]) == (
+        "evidenced", None, "operator_snapshot")
+    assert live["operator_snapshot"] == {"status": "counted", "reason_code": None,
+                                         "written_at": NOW - 60, "age_s": 60,
+                                         "stale_after_s": 300}
+    assert live["route_ledger_record"]["reason_code"] == "route_record_expired"
+
+
+def test_a_stopped_node_whose_snapshot_is_old_is_stale(tmp_path, monkeypatch):
+    """entryd stopped: its last snapshot is ten minutes old and the record three days."""
+    _absent(tmp_path, monkeypatch)
+    _mio_snapshot(tmp_path, written_at=NOW - 600)
+    mio = _mio_view(tmp_path, monkeypatch)
+    assert (mio["status"], mio["reason_code"]) == ("stale", "liveness_evidence_expired")
+    live = mio["liveness"]
+    assert (live["status"], live["evidence"]) == ("not_evidenced", None)
+    assert live["operator_snapshot"]["reason_code"] == "snapshot_expired"
+    assert live["route_ledger_record"]["status"] == "not_counted"
+
+
+@pytest.mark.parametrize("age, expected", [
+    (300, ("recorded", None)), (301, ("stale", "liveness_evidence_expired")),
+    (-5, ("recorded", None)), (-6, ("stale", "liveness_evidence_in_future")),
+])
+def test_the_snapshot_evidence_uses_the_snapshot_stale_limit(tmp_path, monkeypatch, age, expected):
+    """Kills `>` -> `>=` on `MIO_STALE_S` and a missing future allowance."""
+    _absent(tmp_path, monkeypatch)
+    _mio_snapshot(tmp_path, written_at=NOW - age)
+    mio = _mio_view(tmp_path, monkeypatch)
+    assert (mio["status"], mio["reason_code"]) == expected
+
+
+@pytest.mark.parametrize("change, code", [
+    ({"state": "LITE"}, "snapshot_reading_differs"),
+    ({"observed_at": "2026-09-18T04:00:59+00:00"}, "snapshot_reading_differs"),
+    ({"uncertain": True}, "capability_record_uncertain"),
+    ({"recorded": False}, "no_recorded_capability_transition"),
+])
+def test_a_fresh_snapshot_of_another_reading_does_not_vouch_for_this_one(
+        tmp_path, monkeypatch, change, code):
+    _absent(tmp_path, monkeypatch)
+    _mio_snapshot(tmp_path, written_at=NOW - 60, **change)
+    mio = _mio_view(tmp_path, monkeypatch)
+    assert (mio["status"], mio["reason_code"]) == ("stale", "liveness_evidence_expired")
+    assert mio["liveness"]["operator_snapshot"]["status"] == "not_counted"
+    assert mio["liveness"]["operator_snapshot"]["reason_code"] == code
+
+
+def test_a_damaged_snapshot_is_no_evidence(tmp_path, monkeypatch):
+    from azazel_nexus.runtime_paths import mio_status_path
+
+    _absent(tmp_path, monkeypatch)
+    path = mio_status_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b'{"schema":')
+    mio = _mio_view(tmp_path, monkeypatch)
+    assert (mio["status"], mio["reason_code"]) == ("stale", "liveness_evidence_expired")
+    assert mio["liveness"]["operator_snapshot"]["reason_code"] == "snapshot_absent_or_refused"
+
+
+@pytest.mark.parametrize("recorded_at, expected, basis", [
+    # The carried record a day's first write opened a segment with.
+    ("2026-09-20T00:00:00+00:00", ("recorded", None), "record_written"),
+    ("2026-09-19T04:01:00+00:00", ("recorded", None), "record_written"),      # two days
+    ("2026-09-19T04:00:59+00:00", ("stale", "liveness_evidence_expired"), "record_written"),
+    ("2026-09-21T04:01:06+00:00", ("stale", "liveness_evidence_in_future"), "record_written"),
+    # Not later than the ledger holds: an earlier, unzoned or unreadable time
+    # falls back to the observation, which is three days old.
+    ("2026-09-17T00:00:00+00:00", ("stale", "liveness_evidence_expired"), "observation"),
+    ("2026-09-20T00:00:00", ("stale", "liveness_evidence_expired"), "observation"),
+    ("not a time", ("stale", "liveness_evidence_expired"), "observation"),
+])
+def test_the_route_ledger_record_is_the_secondary_evidence(
+        tmp_path, monkeypatch, recorded_at, expected, basis):
+    _absent(tmp_path, monkeypatch)
+    mio = _mio_view(tmp_path, monkeypatch, recorded_at=recorded_at)
+    assert (mio["status"], mio["reason_code"]) == expected
+    record = mio["liveness"]["route_ledger_record"]
+    assert record["basis"] == basis and record["stale_after_s"] == 2 * 86400
+    if expected[0] == "recorded":
+        assert mio["liveness"]["evidence"] == "route_ledger_record"
+
+
+def test_a_future_dated_snapshot_outranks_a_recent_record(tmp_path, monkeypatch):
+    """A clock that went back: stale, even though the ledger would vouch."""
+    _absent(tmp_path, monkeypatch)
+    _mio_snapshot(tmp_path, written_at=NOW + 3600, observed_at="2026-09-21T03:00:00+00:00")
+    mio = _mio_view(tmp_path, monkeypatch, observed_at="2026-09-21T03:00:00+00:00")
+    assert (mio["status"], mio["reason_code"]) == ("stale", "liveness_evidence_in_future")
+    # The snapshot is there, so the recent record is not counted either.
+    assert mio["liveness"]["route_ledger_record"]["reason_code"] == "operator_snapshot_present"
+
+
+@pytest.mark.parametrize("observed_at, as_of, expected", [
+    ("2026-09-21T04:05:00+00:00", AS_OF, ("stale", "observed_at_in_future")),
+    ("2026-09-21T04:00:00", AS_OF, ("unknown", "observed_at_unreadable")),
+    ("2026-09-21T04:00:00+00:00", "not a time", ("unknown", "clock_unknown")),
+])
+def test_a_fresh_snapshot_does_not_rescue_an_unsafe_reading(
+        tmp_path, monkeypatch, observed_at, as_of, expected):
+    _absent(tmp_path, monkeypatch)
+    _mio_snapshot(tmp_path, written_at=NOW - 10, observed_at="2026-09-21T04:00:00+00:00")
+    mio = _mio_view(tmp_path, monkeypatch, observed_at=observed_at, as_of=as_of)
+    assert (mio["status"], mio["reason_code"]) == expected
+    assert mio["liveness"]["status"] == "unknown"
+    assert mio["liveness"]["reason_code"] == expected[1]
+    assert mio["age_s"] is None  # never a negative period
+
+
+def test_an_unreadable_ledger_is_unknown_whatever_the_snapshot_says(tmp_path, monkeypatch):
+    from azazel_nexus import cli
+
+    _absent(tmp_path, monkeypatch)
+    _mio_snapshot(tmp_path, written_at=NOW - 10)
+    mio = cli._status_view(cli._report(None, None), as_of=AS_OF).view["sections"]["mio"]
+    assert (mio["status"], mio["reason_code"]) == ("unknown", "route_ledger_unreadable_or_refused")
+    assert mio["liveness"] == {"status": "unknown",
+                               "reason_code": "route_ledger_unreadable_or_refused",
+                               "evidence": None, "operator_snapshot": None,
+                               "route_ledger_record": None}
+    assert mio["age_s"] is None
+
+
+@pytest.mark.parametrize("snapshot, ledger", [
+    # entryd stopped ten minutes ago; the day's carried record is a day old.
+    ({"written_at": NOW - 600}, {"recorded_at": "2026-09-20T04:01:00+00:00"}),
+    # The same, with a transition a day ago as the only record.
+    ({"written_at": NOW - 600, "observed_at": "2026-09-20T04:01:00+00:00"},
+     {"observed_at": "2026-09-20T04:01:00+00:00"}),
+    # A fresh snapshot that does not count is not replaced by the ledger.
+    ({"written_at": NOW - 60, "state": "LITE"}, {"recorded_at": "2026-09-20T04:01:00+00:00"}),
+    ({"written_at": NOW - 60, "uncertain": True}, {"recorded_at": "2026-09-20T04:01:00+00:00"}),
+    ({"written_at": NOW - 60, "recorded": False}, {"recorded_at": "2026-09-20T04:01:00+00:00"}),
+])
+def test_a_recent_record_does_not_keep_a_stopped_writer_alive(tmp_path, monkeypatch, snapshot, ledger):
+    """Review M1 of #370: with entryd's snapshot present, a route ledger
+    record up to two days old must not stand in for it."""
+    _absent(tmp_path, monkeypatch)
+    _mio_snapshot(tmp_path, **snapshot)
+    mio = _mio_view(tmp_path, monkeypatch, **ledger)
+    assert (mio["status"], mio["reason_code"]) == ("stale", "liveness_evidence_expired")
+    live = mio["liveness"]
+    assert (live["status"], live["evidence"]) == ("not_evidenced", None)
+    assert live["route_ledger_record"] == {**live["route_ledger_record"],
+                                           "status": "not_counted",
+                                           "reason_code": "operator_snapshot_present"}
+
+
+def test_without_a_snapshot_a_recent_record_still_counts(tmp_path, monkeypatch):
+    _absent(tmp_path, monkeypatch)
+    mio = _mio_view(tmp_path, monkeypatch, recorded_at="2026-09-20T04:01:00+00:00")
+    assert (mio["status"], mio["reason_code"]) == ("recorded", None)
+    assert mio["liveness"]["evidence"] == "route_ledger_record"

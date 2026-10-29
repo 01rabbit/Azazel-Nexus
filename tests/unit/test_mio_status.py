@@ -107,4 +107,12 @@ def test_timestamp_is_canonicalized(tmp_path, separator):
     ledger = tmp_path / ROUTE_LEDGER.lstrip("/")
     ledger.parent.mkdir(parents=True)
     AuditLedger(ledger).append(event)
-    assert status_summary(root=tmp_path)["observed_at"] == "2026-10-19T00:00:00+00:00"
+    reading = status_summary(root=tmp_path)
+    assert reading["observed_at"] == "2026-10-19T00:00:00+00:00"
+    # A transition is written when it is observed.
+    assert reading["recorded_at"] == reading["observed_at"]
+
+
+def test_an_unreadable_ledger_carries_no_record_time(tmp_path):
+    reading = status_summary(root=tmp_path)
+    assert reading["state"] is None and reading["recorded_at"] is None

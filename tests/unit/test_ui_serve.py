@@ -741,6 +741,54 @@ def test_unknown_unmeasured_and_stale_words_are_never_healthy():
                        "verified-ready", "ok"}
 
 
+def test_the_mio_liveness_words_are_labelled_and_never_healthy(tmp_path, monkeypatch):
+    """#358 option 1: the M.I.O. section's liveness words, as the read model
+    builds them for a stable and a stopped node, go through the label table
+    and none of them widens the healthy set."""
+    sys.path.insert(0, str(Path(__file__).parent))
+    import test_status_view as tsv
+
+    labels = _labels()
+    seen, reasons = set(), set()
+    for name, written_at in (("stable", tsv.NOW - 60), ("stopped", tsv.NOW - 600)):
+        with monkeypatch.context() as patch:
+            root = tmp_path / name
+            root.mkdir()
+            tsv._absent(root, patch)
+            tsv._mio_snapshot(root, written_at=written_at)
+            mio = tsv._mio_view(root, patch)
+            model = ui_model.project({"schema": "azazel-nexus/status-view/1",
+                                      "sections": {"mio": mio}},
+                                     origin={"kind": "fixture"}, served_at="t")
+            assert model["sections"]["mio"]["liveness"] == mio["liveness"]
+            _page_vocabulary(model["sections"]["mio"], seen, reasons)
+    assert {"evidenced", "not_evidenced", "counted", "not_counted"} <= seen
+    assert sorted(seen - set(labels["words"])) == []
+    assert sorted(reasons - set(labels["reasons"])) == []
+    for word in ("evidenced", "not_evidenced", "counted", "not_counted"):
+        assert labels["words"][word][1] != "ok", word
+    for word in ("not_evidenced", "not_counted"):
+        assert labels["words"][word][1] == "unknown", word
+
+
+def test_a_future_observation_reaches_the_page_without_a_period(tmp_path, monkeypatch):
+    """Review M3 of #370: no negative `age_s`; the card shows 不明 for it."""
+    sys.path.insert(0, str(Path(__file__).parent))
+    import test_status_view as tsv
+
+    tsv._absent(tmp_path, monkeypatch)
+    mio = tsv._mio_view(tmp_path, monkeypatch, observed_at="2026-09-21T04:05:00+00:00")
+    model = ui_model.project({"schema": "azazel-nexus/status-view/1", "sections": {"mio": mio}},
+                             origin={"kind": "fixture"}, served_at="t")
+    assert model["sections"]["mio"]["age_s"] is None
+    assert model["sections"]["mio"]["reason_code"] == "observed_at_in_future"
+    script = (STATIC / "app.js").read_text(encoding="utf-8")
+    body = script[script.index("function duration(s) {"):]
+    body = body[:body.index("\n  }\n") + 4]
+    assert 'if (typeof s !== "number" || !isFinite(s) || s < 0) { return "不明"; }' in body
+    assert "duration(mio.age_s)" in script
+
+
 def _vocabulary():
     from azazel_nexus.incident_explain import CONTENT_LABELS
     from azazel_nexus.integration import EdgePresence

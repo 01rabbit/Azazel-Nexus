@@ -135,7 +135,9 @@ denied are never green and never "正常"; only `attested`, `available`,
 `current`, `done`, `fresh`, `running`, `verified-ready` and `ok` are (tested).
 What a section says it read -- `observed` (NOC), `read` (services),
 `recorded` (M.I.O.), `measured` (storage) -- is shown as information, not as
-health. Inside a section, every value under `status`, `state`, `freshness`
+health. So are the M.I.O. card's unchanged period (`age_s`) and its writer's
+liveness (`evidenced`, `counted`: information; `not_evidenced`,
+`not_counted`: unknown). Inside a section, every value under `status`, `state`, `freshness`
 or `collection` goes through the label table and every `reason_code`,
 `reason` and `conditions` entry through the reason table (`app.js`
 `WORD_KEYS`/`REASON_KEYS`, kept equal to the tests).

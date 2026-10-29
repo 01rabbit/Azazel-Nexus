@@ -355,6 +355,22 @@
     "withheld": [
       "伏せた（端末でのみ表示）",
       "info"
+    ],
+    "evidenced": [
+      "生存の証拠あり",
+      "info"
+    ],
+    "not_evidenced": [
+      "生存の証拠なし",
+      "unknown"
+    ],
+    "counted": [
+      "証拠として採用",
+      "info"
+    ],
+    "not_counted": [
+      "証拠として不採用",
+      "unknown"
     ]
   },
   "reasons": {
@@ -394,7 +410,6 @@
     "no_interfaces_read": "interface を読めなかった",
     "reading_refused": "読取結果が検査を通らなかった",
     "observed_at_in_future": "観測時刻が未来",
-    "observed_at_expired": "観測が古い（最後の記録であり現在値ではない）",
     "observed_at_unreadable": "観測時刻が読めない",
     "snapshot_refused_by_view": "snapshot の値を read model が拒否した",
     "chain_broken": "インシデントチェーンが壊れている",
@@ -440,7 +455,13 @@
     "role_withheld": "役割は表示しない",
     "role_not_in_resolved_set": "役割が確定した集合に無い",
     "nexthop_object_not_resolved": "経路の nexthop を解決できない",
-    "wall_clock_implausible": "壁時計の値があり得ない"
+    "wall_clock_implausible": "壁時計の値があり得ない",
+    "liveness_evidence_expired": "書き手（entryd）の生存を示す新しい証拠が無い（snapshot・route ledger の記録とも期限内に無い）",
+    "liveness_evidence_in_future": "生存の証拠の時刻が未来（時計の巻き戻りの疑い）",
+    "snapshot_reading_differs": "snapshot の記録が route ledger の記録と異なる",
+    "route_record_expired": "route ledger の最新記録が古い",
+    "route_record_in_future": "route ledger の記録時刻が未来",
+    "operator_snapshot_present": "entryd の snapshot があるため route ledger の記録は生存の証拠にしない"
   },
   "sections": {
     "overview": "概況",

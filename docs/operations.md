@@ -55,8 +55,23 @@ snapshot is the source). Edge decisions appear only as `would` with
 `nexus_accepts_observe_only`, because the intake refuses any Edge event that is
 not observe-only. A loop component whose snapshot reports `chain_broken` or
 `storage_failed` is `degraded`, not `running`, and the M.I.O. reading is
-judged against the status clock (`observed_at_in_future`,
-`observed_at_expired`). `reason_code` names only the reason that ranks first
+judged against the status clock. The route ledger records transitions only,
+so on a stable node the reading stays unchanged for days: how long is shown
+as `age_s` and is information, not a verdict. What makes the reading `stale`
+is that its writer, entryd, is no longer shown to be alive (`liveness`,
+`liveness_evidence_expired`): entryd's operator snapshot (rewritten every
+minute) counts when it is fresh against its own 300-second limit and holds
+the same reading. Only when that snapshot cannot be read (absent or
+refused) does the route ledger's newest capability record (a transition, or
+the carried record a day's first write opens a segment with) count instead,
+when it is at most two days old (`MIO_OBSERVATION_STALE_S`); an expired
+snapshot, or one that holds no record, an uncertain record or another
+reading, is not replaced by the ledger (`operator_snapshot_present`).
+An observation dated in the future (`observed_at_in_future`), evidence dated
+in the future (`liveness_evidence_in_future`), an unreadable time or an
+unknown clock stay stale or unknown whatever else is fresh. This is option 1
+of the re-review, the default until the owner decides otherwise.
+`reason_code` names only the reason that ranks first
 (a stale snapshot stays `stale` even when it also reports `chain_broken`), so
 always read it together with `conditions`. Interface descriptions, filesystem paths, Edge finding
 reasons, exception text and any fixed sentence that names a path are shown on
