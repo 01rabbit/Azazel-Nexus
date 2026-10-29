@@ -89,6 +89,13 @@ record, framing/audit allowance and retained headroom; installed asset bytes
 are referenced and already consume local disk. Generations are retained rather
 than deleted. All dry runs are read-only and run the applicable gates.
 
+Verify, stage, activate and rollback all refuse on a host carrying the lab
+marker `/etc/azazel-lab/LAB-HOST` (`PackRefused: LAB_HOST_MARKER`), before the
+pack is read: a marked host may hold the published Knowledge Lite fixture
+anchor (`lab_keys`), and a Pack's `knowledge_lite` slice must never name a
+fixture-signed bundle (owner-decisions H7). The marker is not an approval;
+removing it grants nothing.
+
 Stage reports a generation number for explicit operator review. Activate takes
 that reviewed number and repeats all gates against the staged signed bytes and
 current commissioned state. A stale staged predecessor cannot be activated.

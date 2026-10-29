@@ -249,8 +249,9 @@ V3 は VMware の 1 基盤だけ観測した。まとめは
 
 ### V3 仮想化センサー（ADR-0003 R1 の値の確定）
 
-`cpu_hypervisor` は x86 専用の cpuinfo の印に依存し、aarch64 では常に `clear` を読む。
-Arm での代わりの信号は、実 Arm VM で値を確かめてから決めることになっている
+`cpu_hypervisor` は x86 専用の cpuinfo の印に依存する。2026-10-30 から、x86 の `flags` 行が無い
+aarch64 では `unobservable`（観測不能）と読み、`clear` とは区別する（2026-10-29 の V3 は
+それより前の観測器で `clear` を記録した）。Arm での追加の信号は、実 Arm VM で値を確かめてから決める
 （[ADR-0003 の既知の差 R1](adr/0003-arm-software-verification-profile.md#known-differences-and-follow-up-changes)、
 [オーナー判断 H4](owner-decisions.md#2-優先度の高いもの)）。
 
@@ -262,10 +263,11 @@ Arm での代わりの信号は、実 Arm VM で値を確かめてから決め�
   Apple Virtualization）で同じことを行う。
 - **合格条件**：判定ではなく観測の記録が目的である。どのセンサーが Arm VM で仮想化を
   `observed` と読むか（読まないか）が、基盤ごとに分かること。
-- **記録**：基盤の種類、各センサーの値（`observed`・`clear`・`absent`・`unknown`）、
+- **記録**：基盤の種類、各センサーの値（`observed`・`clear`・`absent`・`unknown`・`unobservable`）、
   `systemd-detect-virt` の値。DMI の製品名に個体を識別する文字列が含まれる場合は伏せる。
-  この結果をもとに、R1 の対処（arm64 での非適用の扱いと、capture へのゲート）を別の
-  PR で決める。
+  R1 の対処（arm64 での `unobservable` の扱いと、capture へのゲート）は 2026-10-30 に決めた
+  （[ADR-0003 R1](adr/0003-arm-software-verification-profile.md#known-differences-and-follow-up-changes)）。
+  ここでの観測は、他の基盤で追加の信号を使うかを決める材料になる。
 
 ## 5. 記録の形式
 

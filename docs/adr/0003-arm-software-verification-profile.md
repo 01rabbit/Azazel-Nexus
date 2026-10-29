@@ -115,13 +115,13 @@ Rosetta or qemu is recorded as emulated, not as an amd64 host.
 
 ## Known differences and follow-up changes
 
-These are open, recorded from the code at `ee52a38`, and not fixed by this
-ADR. None of them widens production admission on Arm today, because model
+These were recorded from the code at `ee52a38` and are not fixed by this
+ADR; rows marked **Done** were closed by later changes. None of them widens production admission on Arm today, because model
 admission refuses a non-`x86_64` host first.
 
 | # | Difference | Follow-up |
 | --- | --- | --- |
-| R1 | The `cpu_hypervisor` virtualization sensor relies on an x86-only cpuinfo flag; on aarch64 it always reads `clear`, so the negative virtualization finding is weaker for `core_reserve_probe` and `hil_capture`. | Treat the sensor as not-applicable on arm64 and gate both tools on a deployment-baseline profile; confirm alternative signals on a real Arm VM first. |
+| R1 | The `cpu_hypervisor` virtualization sensor relies on an x86-only cpuinfo flag; on aarch64 it read `clear`, so the negative virtualization finding was weaker for `core_reserve_probe` and `hil_capture`. | **Done** (2026-10-30 委任された技術判断で決定): without an x86 `flags` line the sensor reads `unobservable`, never `clear`. `virtualization_not_observed` is read for the observed CPU: on arm64 it accepts only `unobservable` there and refuses `clear`; `dmi_vendor`, `dmi_product` and `init_cgroup` must read `clear` on every CPU, so a host where they cannot be observed (an Arm board without DMI) is refused. The VMware Fusion V3 observation is not generalized to other platforms. Both tools refuse a non-baseline profile before acquiring (`hil_capture` now as `core_reserve_probe` did); `hil_records` and `core_reserve` read a capture's / v4 record's filter for its CPU. No schema version changed: the new value fails closed in older readers. Further Arm signals (device tree, ACPI) wait for measurements on those platforms. |
 | R2 | A core-reserve record carries no architecture. | **Done**: `core-reserve/4` records the observed `architecture` and `platform_profile_id`; the reader checks they agree and that the profile is the deployment baseline. v1-v3 records still parse and are refused as `ARCHITECTURE_UNKNOWN`; both HIL campaigns require v4; the probe refuses to sample on a non-baseline profile. |
 | R3 | A HIL record's `platform` is a declared string, not an observation. | **Done** for the records that carry an observation: `hil_capture` (schema `/2`) records `platform_profile_id` and `uname_machine`; HG-01/HG-04 records must embed it, and the declared platform must name the observed deployment-baseline profile. Campaign runs are compared through their v4 measurement. HG-02/06/07, behaviour and drill records have no capture tool and still carry only the declared string. |
 | R4 | The Edge package check compares the manifest with the pin, not with the host CPU. | Pin per CPU and add an architecture-mismatch finding (with Edge). |
