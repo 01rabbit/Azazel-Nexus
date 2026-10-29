@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from azazel_nexus_runtime import hil_capture as capture
 from azazel_nexus_runtime import hil_readiness as readiness
+from azazel_nexus_runtime.platform_observation import HostObservation
 
 
 class Manager:
@@ -78,6 +79,10 @@ def test_capture_refusal_does_not_print_exception_identity(monkeypatch, capsys):
     from azazel_nexus.virtualization import SENSORS
 
     monkeypatch.setattr(capture, "observe_virtualization", lambda: dict.fromkeys(SENSORS, "clear"))
+    monkeypatch.setattr(capture, "observe_platform", lambda: HostObservation(
+        sysname="Linux", release="6.12.0-test", machine="x86_64", os_id="debian",
+        os_version_id="13", soabi="cpython-313-x86_64-linux-gnu", lp64=True,
+        byteorder="little", dpkg_architecture="amd64"))
     monkeypatch.setattr(capture, "run_identity", refused)
     assert capture.main(["hg-04"]) == 2
     output = capsys.readouterr()

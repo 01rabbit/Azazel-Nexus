@@ -6,6 +6,7 @@ import os
 import stat
 from pathlib import Path
 
+from . import platform_profile
 from .compatibility import HostFacts, TestedTuple, TestedTupleSet
 from .hil_preflight import luks_backed
 from .lite_import import CommissionedLite, LiteImport
@@ -43,6 +44,28 @@ def add_parser(sub):
             operation.add_argument("--reason", required=True)
 
 
+def _observed_architecture(declared: object) -> str:
+    """The kernel's CPU, never the configuration's (ADR-0003 R5).
+
+    The commissioned config still declares ``host.architecture``; a value that
+    differs from what this kernel reports is refused rather than overridden,
+    and a CPU outside the reviewed table is refused by name. The result is the
+    kernel spelling `HostFacts`/`TestedTuple` compare (``x86_64``), so an
+    arm64 host never matches the x86_64 tested tuples.
+    """
+
+    machine = os.uname().machine
+    try:
+        architecture = platform_profile.from_boundary("kernel", machine)
+    except platform_profile.PlatformRefused as refused:
+        raise PackRefused(f"host architecture refused: {refused.reason}") from None
+    if declared != machine:
+        raise PackRefused(
+            "commissioned host architecture differs from the observed "
+            f"{platform_profile.fabric_name(architecture)} kernel")
+    return machine
+
+
 def _context() -> PackContext:
     # The CLI has no trust/root/egress overrides. Provisioning owns this file
     # and the encrypted /data volume. No test or guessed HG-05 values here.
@@ -58,6 +81,7 @@ def _context() -> PackContext:
     if doc["schema"] != "azazel-nexus/mission-pack-config/1":
         raise PackRefused("unknown commissioned config schema")
     facts = dict(doc["host"])
+    facts["architecture"] = _observed_architecture(facts.get("architecture"))
     facts["profile"] = ResourceProfile(facts["profile"])
     for name in ("cpu_features", "fabric_features", "schema_features"):
         facts[name] = frozenset(facts[name])

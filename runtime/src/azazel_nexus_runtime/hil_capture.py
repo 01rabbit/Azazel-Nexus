@@ -2,6 +2,13 @@
 
 These records describe what was read, not hardware qualification. They contain
 no hardware-only/synthetic assertion: only an operator can attest the DUT.
+
+Each capture also records the platform it was taken on (schema version 2,
+ADR-0003 R3): the reviewed `platform_profile_id` selected from the host
+observation and the observed ``uname`` machine. A host no reviewed profile
+matches is refused with the reason code. An arm64 lab host is *recorded* as
+the lab profile, and `hil_records` refuses that capture as hardware evidence.
+The observation is what the host reported, not attestation.
 """
 
 from __future__ import annotations
@@ -22,6 +29,8 @@ from .hil_readiness import (
     run_identity,
 )
 from .netlink import read_links
+from .platform_observation import observe as observe_platform
+from .platform_observation import select as select_platform
 from .virtualization_observation import observe_virtualization
 
 
@@ -39,7 +48,7 @@ def capture_hg01(manager):
             # a missing object does not prove an inactive unit on its own.
             states[unit] = {"active_state": "unobserved", "sub_state": "unobserved"}
     return {
-        "schema": "azazel-nexus/hil-capture/hg-01/1", "gate_id": "HG-01",
+        "schema": "azazel-nexus/hil-capture/hg-01/2", "gate_id": "HG-01",
         "capture_method": "systemd-system-bus-read-only",
         "systemd_version": manager.version(), "unit_files": files, "units": states,
     }
@@ -69,7 +78,7 @@ def capture_hg04(*, links_reader=read_links, key_reader=protection_key):
             ),
         })
     return {
-        "schema": "azazel-nexus/hil-capture/hg-04/1", "gate_id": "HG-04",
+        "schema": "azazel-nexus/hil-capture/hg-04/2", "gate_id": "HG-04",
         "capture_method": "RTM_GETLINK/IFLA_PERM_ADDRESS", "interfaces": interfaces,
     }
 
@@ -79,6 +88,7 @@ def main(argv=None):
     parser.add_argument("gate", choices=("hg-01", "hg-04"))
     args = parser.parse_args(argv)
     from azazel_nexus.lab_host import is_lab_host
+    from azazel_nexus.platform_profile import PlatformRefused
 
     if is_lab_host():
         print("refused: LAB_HOST_MARKER", file=sys.stderr)
@@ -88,6 +98,13 @@ def main(argv=None):
         if not virtualization_not_observed(observations):
             print("refused: RESERVE_VIRTUALIZATION_OBSERVED", file=sys.stderr)
             return 2
+        platform_observed = observe_platform()
+        try:
+            platform = select_platform(platform_observed)
+        except PlatformRefused as refused:
+            # A reason code only; the observed values stay off stderr.
+            print(f"refused: {refused.reason}", file=sys.stderr)
+            return 2
         identity = run_identity()
         if args.gate == "hg-01":
             with ReadOnlySystemd() as manager:
@@ -96,7 +113,12 @@ def main(argv=None):
             report = capture_hg04()
         if run_identity() != identity:
             raise ValueError("run identity changed")
+        if observe_platform() != platform_observed:
+            raise ValueError("platform observation changed")
         report.update(identity)
+        report.update(platform_profile_id=platform.profile_id,
+                      uname_machine=platform_observed.machine,
+                      dpkg_architecture=platform_observed.dpkg_architecture)
         report.update(virtualization_not_observed=True,
                       virtualization_observations=observations)
         report["dut_fingerprint"] = report.pop("host_digest")

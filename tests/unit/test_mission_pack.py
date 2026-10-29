@@ -761,6 +761,7 @@ def test_cli_inventory_keeps_distinct_pins_and_refuses_duplicate_triples(node, m
     monkeypatch.setattr(cli, "luks_backed", lambda path: True)
     monkeypatch.setattr(cli, "take_reading", lambda: ctx.resources)
     monkeypatch.setattr(cli, "_regular", lambda *args: json.dumps(document, default=list).encode())
+    monkeypatch.setattr(cli.os, "uname", lambda: SimpleNamespace(machine=ctx.host.architecture))
     assert set(cli._context().assets) == {("runbook", "same-id", asset.digest), ("runbook", "same-id", D)}
     document["assets"].append(entry)
     with pytest.raises(mp.PackRefused, match="duplicate commissioned asset"):
@@ -796,3 +797,45 @@ def test_writer_ledger_is_private_with_permissive_umask(node):
     finally:
         os.umask(previous)
     assert stat.S_IMODE(pack.ledger.path.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize(("machine", "declared", "match"), [
+    # An arm64 host whose config claims x86_64 (R5): refused, not matched
+    # against the x86_64 tested tuples.
+    ("aarch64", "x86_64", "differs from the observed arm64 kernel"),
+    # Declaring the truth does not help: no tested tuple is arm64.
+    ("aarch64", "aarch64", None),
+    ("riscv64", "riscv64", "host architecture refused: UNKNOWN_ARCHITECTURE"),
+    ("x86_64", "aarch64", "differs from the observed amd64 kernel"),
+])
+def test_cli_host_architecture_is_observed_not_declared(node, monkeypatch, tmp_path,
+                                                         machine, declared, match):
+    from dataclasses import asdict
+    from types import SimpleNamespace
+
+    from azazel_nexus import mission_pack_cli as cli
+
+    ctx, _, _ = node
+    host = dict(asdict(ctx.host), architecture=declared)
+    document = {"schema": "azazel-nexus/mission-pack-config/1", "host": host,
+                "tested_tuples": [t.as_record() for t in ctx.tuples.tuples],
+                "assets": [], "trusted_keys": {},
+                "signing_epoch": 3, "revoked_keys": [], "revoked_packs": [],
+                "host_digest": D, "commissioning_digest": D, "allowed_features": [],
+                "reserve_path": str(ctx.reserve_path), "max_pack_bytes": 1024**2,
+                "max_selected_bytes": 1024**3, "disk_headroom_bytes": 0}
+    monkeypatch.setattr(cli, "CONFIG", SimpleNamespace(lstat=lambda: SimpleNamespace(
+        st_mode=0o100600, st_uid=0)))
+    monkeypatch.setattr(cli, "STATE", tmp_path)
+    monkeypatch.setattr(cli, "luks_backed", lambda path: True)
+    monkeypatch.setattr(cli, "take_reading", lambda: ctx.resources)
+    monkeypatch.setattr(cli, "_regular", lambda *args: json.dumps(document, default=list).encode())
+    monkeypatch.setattr(cli.os, "uname", lambda: SimpleNamespace(machine=machine))
+    if match is not None:
+        with pytest.raises(mp.PackRefused, match=match):
+            cli._context()
+        return
+    context = cli._context()
+    assert context.host.architecture == machine
+    # The tested tuples are x86_64 only; an observed arm64 host matches none.
+    assert all(t.architecture != machine for t in context.tuples.tuples)

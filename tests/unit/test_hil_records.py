@@ -349,7 +349,7 @@ def test_v1_campaign_copy_repro_refused():
     result = validate_record(campaign)
     assert not result.admissible
     assert result.reserve_mib is None
-    assert any("core-reserve/2 required" in r for r in result.reasons)
+    assert any("core-reserve/4 required" in r for r in result.reasons)
     assert any("identical measurement payload" in r for r in result.reasons)
 
 
@@ -372,3 +372,117 @@ def test_campaign_v2_copy_refused_even_with_distinct_run_envelopes():
     reasons = refused(campaign)
     assert "identical measurement payload" in reasons
     assert "measurement boot differs" in reasons
+
+
+# -- the declared platform is compared with what was observed (ADR-0003 R3) --
+
+
+def baseline_capture(record, **changes):
+    """An HG-01 capture as `az-hil-capture` writes it (schema 2). Injected."""
+    from azazel_nexus.hil_records.contracts import anonymous_dut
+
+    record["dut_id"] = anonymous_dut(record["dut_fingerprint"])
+    capture = {
+        "schema": "azazel-nexus/hil-capture/hg-01/2", "gate_id": "HG-01",
+        "capture_method": "systemd-system-bus-read-only", "systemd_version": "257 (test)",
+        "unit_files": {"test.service": "masked"},
+        "units": {"test.service": {"active_state": "inactive", "sub_state": "dead"}},
+        "dut_id": record["dut_id"], "dut_fingerprint": record["dut_fingerprint"],
+        "boot_fingerprint": "hmac-sha256:" + "c" * 64, "build_commit": "d" * 40,
+        "kernel_release": "6.12.0-test", "platform_profile_id": "debian-13-amd64-cp313",
+        "uname_machine": "x86_64", "dpkg_architecture": "amd64",
+        "virtualization_not_observed": True,
+        "virtualization_observations": dict.fromkeys(SENSORS, "clear"),
+    }
+    capture.update(changes)
+    return capture
+
+
+def platform_reasons(record):
+    from azazel_nexus.hil_records import validate_record
+
+    return [r for r in validate_record(record).reasons
+            if r.startswith(("acquisition", "measurement", "runs["))]
+
+
+@pytest.mark.parametrize("gate", ["HG-01", "HG-04"])
+def test_captured_gates_require_the_capture(gate):
+    record = fixture_record()
+    record["gate_id"] = gate
+    assert any(f"{gate} requires the az-hil-capture acquisition" in r
+               for r in platform_reasons(record))
+
+
+@pytest.mark.parametrize("gate", ["HG-02", "HG-06", "HG-07"])
+def test_gates_without_a_capture_tool_are_not_asked_for_one(gate):
+    record = fixture_record()
+    record["gate_id"] = gate
+    assert not any("requires the az-hil-capture" in r for r in platform_reasons(record))
+
+
+def test_a_baseline_capture_matches_the_declared_platform():
+    record = fixture_record()
+    record.update(gate_id="HG-01")
+    record["acquisition"] = baseline_capture(record)
+    assert platform_reasons(record) == []
+
+
+@pytest.mark.parametrize(("changes", "reason"), [
+    # The arm64 lab VM, honestly observed: never hardware evidence.
+    ({"platform_profile_id": "debian-13-arm64-cp313-lab", "uname_machine": "aarch64",
+      "dpkg_architecture": "arm64"},
+     "observed platform is not the deployment baseline"),
+    ({"platform_profile_id": "debian-13-arm64-cp313-lab", "uname_machine": "aarch64",
+      "dpkg_architecture": "arm64"},
+     "declared platform differs from the observed platform profile"),
+    # A capture whose uname contradicts its own profile is malformed.
+    ({"uname_machine": "aarch64"}, "acquisition: invalid acquisition shape"),
+    ({"platform_profile_id": "debian-13-amd64-cp313-lab"}, "acquisition: invalid acquisition shape"),
+    ({"platform_profile_id": None}, "acquisition: invalid acquisition shape"),
+    # dpkg must have been read and name the profile's CPU (F1).
+    ({"dpkg_architecture": "unavailable"}, "acquisition: invalid acquisition shape"),
+    ({"dpkg_architecture": "i386"}, "acquisition: invalid acquisition shape"),
+    ({"dpkg_architecture": None}, "acquisition: invalid acquisition shape"),
+    # The version 1 capture had no observation to compare with.
+    ({"schema": "azazel-nexus/hil-capture/hg-01/1"}, "acquisition: invalid acquisition shape"),
+])
+def test_a_capture_that_is_not_the_declared_platform_is_refused(changes, reason):
+    record = fixture_record()
+    record.update(gate_id="HG-01")
+    record["acquisition"] = baseline_capture(record, **changes)
+    assert any(reason in r for r in platform_reasons(record))
+
+
+def test_a_declared_platform_other_than_the_baseline_does_not_match_an_observation():
+    record = fixture_record()
+    record.update(gate_id="HG-01", platform="rugged-aarch64-linux")
+    record["acquisition"] = baseline_capture(record)
+    assert any("declared platform differs" in r for r in platform_reasons(record))
+
+
+def test_the_capture_is_read_under_either_key_but_not_both():
+    record = fixture_record()
+    record.update(gate_id="HG-01")
+    capture = baseline_capture(record, platform_profile_id="debian-13-arm64-cp313-lab",
+                               uname_machine="aarch64", dpkg_architecture="arm64")
+    record["capture"] = capture
+    assert any("not the deployment baseline" in r for r in platform_reasons(record))
+    record["acquisition"] = capture
+    assert any("embed the capture once" in r for r in platform_reasons(record))
+
+
+def test_a_campaign_run_measured_on_the_lab_profile_is_refused():
+    from azazel_nexus.core_reserve import RESERVE_SCHEMA_V4
+
+    campaign = fixture_campaign()
+    for index, run in enumerate(campaign["runs"]):
+        run["measurement"].update(
+            schema=RESERVE_SCHEMA_V4, boot_fingerprint=run["boot_fingerprint"],
+            run_sequence=index + 1, build_commit="c" * 40, kernel_release="6.12.0-test",
+            host_digest=campaign["dut_fingerprint"], virtualization_not_observed=True,
+            virtualization_observations=dict.fromkeys(SENSORS, "clear"),
+            architecture="arm64", platform_profile_id="debian-13-arm64-cp313-lab")
+    reasons = refused(campaign)
+    assert "runs[0]: measurement: observed platform is not the deployment baseline" in reasons
+    assert "runs[0]: measurement: declared platform differs" in reasons
+    assert "LAB_PROFILE_NOT_FOR_PRODUCTION" in reasons

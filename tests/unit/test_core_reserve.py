@@ -25,6 +25,7 @@ from azazel_nexus.core_reserve import (
     RESERVE_MAX_BYTES,
     RESERVE_RECORD_PATH,
     RESERVE_SCHEMA,
+    RESERVE_SCHEMA_V4,
     CoreReserve,
     Provenance,
     ReserveRefused,
@@ -38,25 +39,55 @@ from azazel_nexus.core_reserve import (
     validate,
 )
 from azazel_nexus.resource_profile import ResourceProfile
+from azazel_nexus.virtualization import SENSORS
 
 REPOSITORY = pathlib.Path(__file__).resolve().parents[2]
 
 
+#: The v4 metadata a probe on the deployment baseline writes (ADR-0003 R2).
+#: Test values; no host was observed.
+V4_METADATA = {
+    "boot_fingerprint": "hmac-sha256:" + "b" * 64,
+    "run_sequence": 1,
+    "build_commit": "c" * 40,
+    "kernel_release": "test-kernel",
+    "virtualization_observations": dict.fromkeys(SENSORS, "clear"),
+    "architecture": "amd64",
+    "platform_profile_id": "debian-13-amd64-cp313",
+}
+
+
 def a_record(**overrides):
-    """An otherwise-admissible record. `provenance` must be overridden to use it."""
+    """An otherwise-admissible v4 record. `provenance` must be overridden to use it."""
 
     fields = {
         "provenance": Provenance.FIXTURE,
         "profile": ResourceProfile.LITE,
-        "host_digest": "sha256:" + "a" * 64,
+        "host_digest": "hmac-sha256:" + "a" * 64,
         "harness_version": "core-reserve-probe/1",
         "subsystems_active": REQUIRED_SUBSYSTEMS,
         "samples": tuple(
             Sample(offset_seconds=i * 10, resident_mib=1000 + i) for i in range(MIN_SAMPLES + 1)
         ),
+        **V4_METADATA,
     }
     fields.update(overrides)
     return build_record(**fields)
+
+
+def a_legacy_record(version, **overrides):
+    """A v1, v2 or v3 record, as the probe wrote before the CPU was recorded."""
+
+    drop = {1: tuple(V4_METADATA), 2: ("virtualization_observations", "architecture",
+                                          "platform_profile_id"),
+            3: ("architecture", "platform_profile_id")}[version]
+    fields = {key: value for key, value in V4_METADATA.items() if key not in drop}
+    fields.update(overrides)
+    for key in drop:
+        fields.setdefault(key, None)
+    record = a_record(**fields)
+    assert record.schema.endswith(f"/{version}")
+    return record
 
 
 # -- nothing on disk claims to be a measurement -----------------------------
@@ -336,8 +367,83 @@ def test_fits_subtracts_the_reserve_from_the_envelope() -> None:
 
 
 def test_the_schema_version_is_in_the_record_the_harness_writes() -> None:
-    assert record_as_document(a_record())["schema"] == RESERVE_SCHEMA
+    assert record_as_document(a_record())["schema"] == RESERVE_SCHEMA_V4
+    assert RESERVE_SCHEMA_V4.endswith("/4")
     assert RESERVE_SCHEMA.endswith("/1")
+
+
+# -- the CPU a record was measured on (core-reserve/4, ADR-0003 R2) ----------
+
+
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_older_records_still_parse_but_are_never_admissible(version) -> None:
+    """Reader compatibility is kept; admission is not. A record that does not
+    say which CPU it was measured on cannot be the amd64 baseline's reserve."""
+
+    record = a_legacy_record(version, provenance=Provenance.MEASURED)
+    document = record_as_document(record)
+    assert "architecture" not in document and "platform_profile_id" not in document
+    parsed = parse_record(json.dumps(document))
+    assert parsed == record
+    assert parsed.architecture is None and parsed.platform_profile_id is None
+    result = validate(parsed)
+    assert not result.admissible
+    assert any(r.startswith("ARCHITECTURE_UNKNOWN") for r in result.refusals)
+    assert reserve_from(parsed) is None
+
+
+def test_an_older_record_on_disk_yields_no_reserve(tmp_path) -> None:
+    path = tmp_path / "core-reserve.json"
+    path.write_text(json.dumps(record_as_document(
+        a_legacy_record(1, provenance=Provenance.MEASURED))))
+    assert load_reserve(path) is None
+
+
+def test_a_v4_record_round_trips_with_its_cpu() -> None:
+    record = a_record(provenance=Provenance.MEASURED)
+    document = record_as_document(record)
+    assert (document["architecture"], document["platform_profile_id"]) == (
+        "amd64", "debian-13-amd64-cp313")
+    assert parse_record(json.dumps(document)) == record
+    assert reserve_from(record) is not None
+
+
+def test_a_reserve_measured_on_the_arm64_lab_profile_is_refused() -> None:
+    record = a_record(provenance=Provenance.MEASURED, architecture="arm64",
+                      platform_profile_id="debian-13-arm64-cp313-lab")
+    # It parses: it is a well-formed record of a lab run ...
+    assert parse_record(json.dumps(record_as_document(record))) == record
+    # ... and it is never the deployment baseline's reserve.
+    result = validate(record)
+    assert not result.admissible
+    assert any(r.startswith("LAB_PROFILE_NOT_FOR_PRODUCTION") for r in result.refusals)
+    assert reserve_from(record) is None
+
+
+@pytest.mark.parametrize(("changes", "reason"), [
+    ({"architecture": "arm64"}, "ARCHITECTURE_MISMATCH"),
+    ({"architecture": "x86_64"}, "ARCHITECTURE_UNKNOWN"),
+    ({"architecture": "aarch64", "platform_profile_id": "debian-13-arm64-cp313-lab"},
+     "ARCHITECTURE_UNKNOWN"),
+    ({"architecture": None}, "ARCHITECTURE_UNKNOWN"),
+    ({"platform_profile_id": "debian-13-amd64-cp313-lab"}, "ARCHITECTURE_UNKNOWN"),
+    ({"platform_profile_id": None}, "ARCHITECTURE_UNKNOWN"),
+    ({"platform_profile_id": "debian-13-arm64-cp313-lab"}, "ARCHITECTURE_MISMATCH"),
+])
+def test_v4_cpu_fields_must_be_reviewed_and_agree(changes, reason) -> None:
+    document = dict(record_as_document(a_record(provenance=Provenance.MEASURED)))
+    document.update(changes)
+    with pytest.raises(ReserveRefused, match=reason):
+        parse_record(json.dumps(document))
+    for key in changes:
+        del document[key]
+    with pytest.raises(ReserveRefused, match="ARCHITECTURE_UNKNOWN"):
+        parse_record(json.dumps(document))
+
+
+def test_a_v4_record_needs_its_virtualization_observations() -> None:
+    with pytest.raises(ReserveRefused, match="virtualization"):
+        a_record(virtualization_observations=None)
 
 
 def test_the_module_imports_nothing_outside_the_standard_library() -> None:

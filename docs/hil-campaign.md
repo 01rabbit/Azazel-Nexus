@@ -35,7 +35,7 @@ campaign ownership decisions; issue relationship comments are reserved for the c
 | HG-02 | [Privilege refusal](hil-runbooks/hg-02.md) | per-account refusal and restoration observations | HIL gate validator | #115 pilot, #4 parent |
 | HG-03 / SO-10 | [Independent capture](service-objectives.md#so-10-field-exercise--hardware-only); include driver reload for HG-03 | SO-10 record and protected capture evidence | service-objective validator | #17, linked by #4 |
 | HG-04 | [Commissioning](hil-runbooks/hg-04.md) | permanent-identity availability and before/after reboot continuity | HIL gate validator | #115 pilot, #4 parent |
-| HG-05 | [Reserve](core-reserve-measurement.md#5-the-procedure); for admission inside [M.I.O. admission](hil-runbooks/mio-admission.md) | probe v3 (`azazel-nexus/core-reserve/3`) runs and class campaign, workload notes | core_reserve.validate and HIL campaign validator | #115 pilot; #100 consumes; #4 parent |
+| HG-05 | [Reserve](core-reserve-measurement.md#5-the-procedure); for admission inside [M.I.O. admission](hil-runbooks/mio-admission.md) | probe v4 (`azazel-nexus/core-reserve/4`) runs and class campaign, workload notes | core_reserve.validate and HIL campaign validator | #115 pilot; #100 consumes; #4 parent |
 | HG-06 | [Isolation](hil-runbooks/hg-06.md) | denied-path observations for every required zone | HIL gate validator | #4, explicit child work |
 | HG-07 | [Real Edge package](hil-runbooks/hg-07.md) | package/probe/status observations | HIL gate validator | #4, explicit child work |
 | SO-01 | [Cold boot](service-objectives.md#so-01-field-exercise--hardware-only) | ten cold-boot samples and durable-audit evidence | service-objective validator | #115 pilot, #17 objective, #4 parent |
@@ -123,7 +123,7 @@ preflight inventory into an issue, ordinary journal or terminal transcript.
    `not-run`/blocked. Do not hand-edit records or manually unmask services to
    manufacture a pass. Installation-state evidence and running-load evidence
    concern different phases and must not be conflated.
-3. On **each** subsequent boot, allocate a new run ID and retain the probe v3
+3. On **each** subsequent boot, allocate a new run ID and retain the probe v4
    HMAC boot fingerprint and sequence. Recheck the approved image, class,
    inventory continuity, A/B validity, encrypted storage and key availability.
    Use readiness, then HG-07, to establish what is present/running through the

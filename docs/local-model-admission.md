@@ -21,8 +21,12 @@ DUT, with the required Core subsystems under load. Probe schema
 CPU hypervisor flags, systemd container marker, container marker file, DMI
 vendor/product classes and init cgroups. A missing mandatory observation or a
 read failure refuses. Optional markers may be absent. Every campaign run must
-carry complete v3 observations. Earlier reserve schemas remain available to
-legacy diagnostics but cannot support this admission path.
+carry complete v3 observations, now as `azazel-nexus/core-reserve/4`, which
+also records the observed `architecture` and `platform_profile_id`; a run whose
+profile is not the deployment baseline is refused
+([ADR-0003](adr/0003-arm-software-verification-profile.md) R2). Earlier
+reserve schemas remain readable for legacy diagnostics but cannot support this
+admission path.
 
 The combined `azazel-nexus/hil-mio-campaign/v1` record extends the existing
 three-distinct-boot campaign with `virtualization_not_observed: true`,

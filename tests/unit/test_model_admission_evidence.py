@@ -308,7 +308,7 @@ def collected_store(tmp_path, monkeypatch):
     from test_model_catalog import an_entry
 
     from azazel_nexus import model_import, model_runtime
-    from azazel_nexus.core_reserve import RESERVE_SCHEMA_V3
+    from azazel_nexus.core_reserve import RESERVE_SCHEMA_V4
     from azazel_nexus.hil_records import MIO_CAMPAIGN_SCHEMA
     from azazel_nexus.hil_records.evidence import attestation_bytes
     from azazel_nexus.model_catalog import (
@@ -390,10 +390,11 @@ def collected_store(tmp_path, monkeypatch):
         run.update(provenance="measured", synthetic=False, physical_hardware=True,
                    hardware_class="16GiB", dut_fingerprint=H, operator_attestation_ref="hil-evidence:unit-test")
         measurement = run["measurement"]
-        measurement.update(schema=RESERVE_SCHEMA_V3, provenance="measured", profile="lite", host_digest=H,
+        measurement.update(schema=RESERVE_SCHEMA_V4, provenance="measured", profile="lite", host_digest=H,
                            boot_fingerprint=run["boot_fingerprint"], run_sequence=index + 1,
                            build_commit="a" * 40, kernel_release="test-linux",
-                           virtualization_not_observed=True, virtualization_observations=observations)
+                           virtualization_not_observed=True, virtualization_observations=observations,
+                           architecture="amd64", platform_profile_id="debian-13-amd64-cp313")
         measurement["samples"][0]["resident_mib"] += index
     files = {"artifacts/campaign.json": admission.canonical(campaign)}
     files.update({f"artifacts/run-{i}.json": admission.canonical(run) for i, run in enumerate(campaign["runs"])})
@@ -419,11 +420,20 @@ def test_full_collector_recomputes_observations_and_holds_verified_inodes(tmp_pa
     # Demonstrate that even a legacy file accepted by its old reader is not an
     # admission input. This record is created in the temporary test tree only.
     from azazel_nexus.core_reserve import REQUIRED_SUBSYSTEMS, load_reserve
+    from azazel_nexus.virtualization import SENSORS
 
-    legacy_path = write("/var/lib/azazel/run/core-reserve.json", admission.canonical({
+    legacy = {
         "schema": "azazel-nexus/core-reserve/1", "provenance": "measured", "profile": "lite",
         "host_digest": H, "harness_version": "unit-test", "subsystems_active": list(REQUIRED_SUBSYSTEMS),
-        "samples": [{"offset_seconds": i * 10, "resident_mib": 1} for i in range(31)]}))
+        "samples": [{"offset_seconds": i * 10, "resident_mib": 1} for i in range(31)]}
+    legacy_path = write("/var/lib/azazel/run/core-reserve.json", admission.canonical(legacy))
+    # A v1 record carries no CPU, so its reader no longer yields a reserve (R2).
+    assert load_reserve(legacy_path) is None
+    legacy_path = write("/var/lib/azazel/run/core-reserve.json", admission.canonical(dict(
+        legacy, schema="azazel-nexus/core-reserve/4", boot_fingerprint="hmac-sha256:" + "2" * 64,
+        run_sequence=1, build_commit="a" * 40, kernel_release="test-linux",
+        virtualization_not_observed=True, virtualization_observations=dict.fromkeys(SENSORS, "clear"),
+        architecture="amd64", platform_profile_id="debian-13-amd64-cp313")))
     assert load_reserve(legacy_path).reserve_mib == 1
     fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
