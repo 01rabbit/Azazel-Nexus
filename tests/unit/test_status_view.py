@@ -1451,7 +1451,8 @@ def test_a_future_dated_snapshot_outranks_a_recent_record(tmp_path, monkeypatch)
     _mio_snapshot(tmp_path, written_at=NOW + 3600, observed_at="2026-09-21T03:00:00+00:00")
     mio = _mio_view(tmp_path, monkeypatch, observed_at="2026-09-21T03:00:00+00:00")
     assert (mio["status"], mio["reason_code"]) == ("stale", "liveness_evidence_in_future")
-    assert mio["liveness"]["route_ledger_record"]["status"] == "counted"
+    # The snapshot is there, so the recent record is not counted either.
+    assert mio["liveness"]["route_ledger_record"]["reason_code"] == "operator_snapshot_present"
 
 
 @pytest.mark.parametrize("observed_at, as_of, expected", [
@@ -1467,7 +1468,7 @@ def test_a_fresh_snapshot_does_not_rescue_an_unsafe_reading(
     assert (mio["status"], mio["reason_code"]) == expected
     assert mio["liveness"]["status"] == "unknown"
     assert mio["liveness"]["reason_code"] == expected[1]
-    assert mio["age_s"] is None or expected[1] == "observed_at_in_future"
+    assert mio["age_s"] is None  # never a negative period
 
 
 def test_an_unreadable_ledger_is_unknown_whatever_the_snapshot_says(tmp_path, monkeypatch):
@@ -1482,3 +1483,35 @@ def test_an_unreadable_ledger_is_unknown_whatever_the_snapshot_says(tmp_path, mo
                                "evidence": None, "operator_snapshot": None,
                                "route_ledger_record": None}
     assert mio["age_s"] is None
+
+
+@pytest.mark.parametrize("snapshot, ledger", [
+    # entryd stopped ten minutes ago; the day's carried record is a day old.
+    ({"written_at": NOW - 600}, {"recorded_at": "2026-09-20T04:01:00+00:00"}),
+    # The same, with a transition a day ago as the only record.
+    ({"written_at": NOW - 600, "observed_at": "2026-09-20T04:01:00+00:00"},
+     {"observed_at": "2026-09-20T04:01:00+00:00"}),
+    # A fresh snapshot that does not count is not replaced by the ledger.
+    ({"written_at": NOW - 60, "state": "LITE"}, {"recorded_at": "2026-09-20T04:01:00+00:00"}),
+    ({"written_at": NOW - 60, "uncertain": True}, {"recorded_at": "2026-09-20T04:01:00+00:00"}),
+    ({"written_at": NOW - 60, "recorded": False}, {"recorded_at": "2026-09-20T04:01:00+00:00"}),
+])
+def test_a_recent_record_does_not_keep_a_stopped_writer_alive(tmp_path, monkeypatch, snapshot, ledger):
+    """Review M1 of #370: with entryd's snapshot present, a route ledger
+    record up to two days old must not stand in for it."""
+    _absent(tmp_path, monkeypatch)
+    _mio_snapshot(tmp_path, **snapshot)
+    mio = _mio_view(tmp_path, monkeypatch, **ledger)
+    assert (mio["status"], mio["reason_code"]) == ("stale", "liveness_evidence_expired")
+    live = mio["liveness"]
+    assert (live["status"], live["evidence"]) == ("not_evidenced", None)
+    assert live["route_ledger_record"] == {**live["route_ledger_record"],
+                                           "status": "not_counted",
+                                           "reason_code": "operator_snapshot_present"}
+
+
+def test_without_a_snapshot_a_recent_record_still_counts(tmp_path, monkeypatch):
+    _absent(tmp_path, monkeypatch)
+    mio = _mio_view(tmp_path, monkeypatch, recorded_at="2026-09-20T04:01:00+00:00")
+    assert (mio["status"], mio["reason_code"]) == ("recorded", None)
+    assert mio["liveness"]["evidence"] == "route_ledger_record"

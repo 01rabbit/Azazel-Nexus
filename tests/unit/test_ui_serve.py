@@ -771,6 +771,24 @@ def test_the_mio_liveness_words_are_labelled_and_never_healthy(tmp_path, monkeyp
         assert labels["words"][word][1] == "unknown", word
 
 
+def test_a_future_observation_reaches_the_page_without_a_period(tmp_path, monkeypatch):
+    """Review M3 of #370: no negative `age_s`; the card shows 不明 for it."""
+    sys.path.insert(0, str(Path(__file__).parent))
+    import test_status_view as tsv
+
+    tsv._absent(tmp_path, monkeypatch)
+    mio = tsv._mio_view(tmp_path, monkeypatch, observed_at="2026-09-21T04:05:00+00:00")
+    model = ui_model.project({"schema": "azazel-nexus/status-view/1", "sections": {"mio": mio}},
+                             origin={"kind": "fixture"}, served_at="t")
+    assert model["sections"]["mio"]["age_s"] is None
+    assert model["sections"]["mio"]["reason_code"] == "observed_at_in_future"
+    script = (STATIC / "app.js").read_text(encoding="utf-8")
+    body = script[script.index("function duration(s) {"):]
+    body = body[:body.index("\n  }\n") + 4]
+    assert 'if (typeof s !== "number" || !isFinite(s) || s < 0) { return "不明"; }' in body
+    assert "duration(mio.age_s)" in script
+
+
 def _vocabulary():
     from azazel_nexus.incident_explain import CONTENT_LABELS
     from azazel_nexus.integration import EdgePresence

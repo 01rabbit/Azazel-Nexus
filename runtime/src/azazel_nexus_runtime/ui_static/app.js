@@ -94,7 +94,7 @@
   }
 
   function duration(s) {
-    if (typeof s !== "number" || !isFinite(s)) { return "不明"; }
+    if (typeof s !== "number" || !isFinite(s) || s < 0) { return "不明"; }
     if (s < 120) { return s + " 秒"; }
     if (s < 7200) { return Math.round(s / 60) + " 分"; }
     if (s < 172800) { return Math.round(s / 3600) + " 時間"; }

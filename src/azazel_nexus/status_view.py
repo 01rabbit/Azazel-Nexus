@@ -94,7 +94,7 @@ REASON_CODES = frozenset({
     "nexus_accepts_observe_only", "profile_not_measured", "no_recorded_capability_transition",
     "route_ledger_unreadable_or_refused", "reading_refused", "observed_at_in_future",
     "liveness_evidence_expired", "liveness_evidence_in_future", "snapshot_reading_differs",
-    "route_record_expired", "route_record_in_future",
+    "route_record_expired", "route_record_in_future", "operator_snapshot_present",
     "observed_at_unreadable", "clock_unknown",
     "no_commissioning_record", "commissioning_incomplete", "no_interfaces_read",
     "not_collected", "not_inspected", "checks_not_all_passed", "fabric_extra_not_installed",
@@ -416,6 +416,7 @@ def _utc(epoch) -> Optional[str]:
 def _record_evidence(observed, recorded_at, now) -> dict:
     """Whether the route ledger's newest capability record is recent enough.
 
+    Only consulted when entryd's snapshot cannot be read (`_mio_freshness`).
     The record's own write time (`recorded_at`: a carried record's day, a
     transition's observation) when the reader gave a zoned one no earlier
     than the observation; otherwise the observation time, which entryd also
@@ -453,15 +454,26 @@ def _mio_freshness(reading, recorded_at, now, snapshot_section):
             **_no_liveness(), "reason_code": "observed_at_unreadable"}
     age, age_reason = _age(now, then)
     if then > now + FUTURE_S:
-        return "stale", "observed_at_in_future", age, age_reason, {
+        # A negative age is no period anybody can read: none is given.
+        return "stale", "observed_at_in_future", None, age_reason, {
             **_no_liveness(), "reason_code": "observed_at_in_future"}
     age = None if age is None else max(0, age)
     snapshot = _snapshot_evidence(reading, snapshot_section, now)
     record = _record_evidence(then, recorded_at, now)
     liveness = {"status": "not_evidenced", "reason_code": None, "evidence": None,
                 "operator_snapshot": snapshot, "route_ledger_record": record}
-    if (snapshot["reason_code"] == "snapshot_dated_in_future"
-            or record["reason_code"] == "route_record_in_future"):
+    in_future = (snapshot["reason_code"] == "snapshot_dated_in_future"
+                 or record["reason_code"] == "route_record_in_future")
+    # The ledger record is the fallback for a node whose snapshot cannot be
+    # read (absent, refused, not built). When entryd's snapshot is there,
+    # it alone speaks for the writer: an expired one is a stopped writer, and
+    # a fresh one that does not count (no record, an uncertain record,
+    # another reading) does not vouch for this reading -- a record up to two
+    # days old must not keep a stopped or diverged entryd looking alive.
+    if (isinstance(snapshot_section, dict) and snapshot_section.get("snapshot") is not None
+            and record["status"] == "counted"):
+        record.update(status="not_counted", reason_code="operator_snapshot_present")
+    if in_future:
         liveness["reason_code"] = "liveness_evidence_in_future"
     elif snapshot["status"] == "counted" or record["status"] == "counted":
         liveness.update(status="evidenced", evidence=(

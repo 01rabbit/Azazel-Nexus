@@ -61,9 +61,12 @@ as `age_s` and is information, not a verdict. What makes the reading `stale`
 is that its writer, entryd, is no longer shown to be alive (`liveness`,
 `liveness_evidence_expired`): entryd's operator snapshot (rewritten every
 minute) counts when it is fresh against its own 300-second limit and holds
-the same reading, and the route ledger's newest capability record (a
-transition, or the carried record a day's first write opens a segment
-with) counts when it is at most two days old (`MIO_OBSERVATION_STALE_S`).
+the same reading. Only when that snapshot cannot be read (absent or
+refused) does the route ledger's newest capability record (a transition, or
+the carried record a day's first write opens a segment with) count instead,
+when it is at most two days old (`MIO_OBSERVATION_STALE_S`); an expired
+snapshot, or one that holds no record, an uncertain record or another
+reading, is not replaced by the ledger (`operator_snapshot_present`).
 An observation dated in the future (`observed_at_in_future`), evidence dated
 in the future (`liveness_evidence_in_future`), an unreadable time or an
 unknown clock stay stale or unknown whatever else is fresh. This is option 1
