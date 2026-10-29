@@ -1,0 +1,5417 @@
+{
+ "chromium": {
+  "protocolVersion": "1.3",
+  "product": "Chrome/156.0.8078.47",
+  "revision": "@1d17a2e2ee147bb7d6ae2ab6abdb3a2510c17775",
+  "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+  "jsVersion": "15.6.75.19"
+ },
+ "states": {
+  "normal": {
+   "label": "normal",
+   "screens": {
+    "overview": {
+     "png": "normal-overview.png",
+     "bytes": 141467,
+     "raw_bytes": 498818,
+     "width": 1280,
+     "height": 2322,
+     "page_height": 2322
+    },
+    "incidents": {
+     "png": "normal-incidents.png",
+     "bytes": 124823,
+     "raw_bytes": 431167,
+     "width": 1280,
+     "height": 2577,
+     "page_height": 2577
+    },
+    "noc": {
+     "png": "normal-noc.png",
+     "bytes": 86257,
+     "raw_bytes": 294492,
+     "width": 1280,
+     "height": 2600,
+     "page_height": 12180
+    },
+    "knowledge": {
+     "png": "normal-knowledge.png",
+     "bytes": 110037,
+     "raw_bytes": 382847,
+     "width": 1280,
+     "height": 1779,
+     "page_height": 1779
+    },
+    "setup": {
+     "png": "normal-setup.png",
+     "bytes": 130928,
+     "raw_bytes": 458797,
+     "width": 1280,
+     "height": 2600,
+     "page_height": 4780
+    }
+   },
+   "cards": [
+    {
+     "panel": "overview",
+     "title": "防御状態（Edge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "checks_not_all_passed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "実行モード",
+     "tone": "info",
+     "word": "observe-only（実行結果を受理しない構成）",
+     "en": "observe-only-fixed",
+     "mark": "◆",
+     "reason": "nexus_accepts_observe_only",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "通信（NOC）",
+     "tone": "info",
+     "word": "観測済み（受動観測。正常の意味ではない）",
+     "en": "observed",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（M.I.O.）",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "route_ledger_unreadable_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "no_recorded_capability_transition",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "warn",
+     "word": "劣化（条件付き）",
+     "en": "degraded",
+     "mark": "▲",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "サービス",
+     "tone": "warn",
+     "word": "劣化（条件付き）",
+     "en": "degraded",
+     "mark": "▲",
+     "reason": "unit_failed",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "保存容量",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Edge 受信（intake）",
+     "tone": "ok",
+     "word": "稼働（snapshot が新しい）",
+     "en": "running",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "説明器（explainer）",
+     "tone": "ok",
+     "word": "稼働（snapshot が新しい）",
+     "en": "running",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "Fabric 状態表示",
+     "tone": "unknown",
+     "word": "未導入",
+     "en": "not_installed",
+     "mark": "？",
+     "reason": "fabric_extra_not_installed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "継続するもの",
+     "tone": "info",
+     "word": "継続",
+     "en": "continuing",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "Edge 受信（intake）",
+     "tone": "ok",
+     "word": "稼働（snapshot が新しい）",
+     "en": "running",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "incidents",
+     "title": "最近のインシデント（一覧の snapshot）",
+     "tone": "ok",
+     "word": "稼働（snapshot が新しい）",
+     "en": "running",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000a1",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000b2",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000c3",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "noc",
+     "title": "NOC 受動観測",
+     "tone": "info",
+     "word": "観測済み（受動観測。正常の意味ではない）",
+     "en": "observed",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "warn",
+     "word": "劣化（条件付き）",
+     "en": "degraded",
+     "mark": "▲",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "knowledge",
+     "title": "外部 Knowledge peer（AZ-04 Knowledge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "引用元（最近のインシデントの参照根拠）",
+     "tone": "info",
+     "word": "読取済み",
+     "en": "read",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "installed-files",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "host-preflight",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commission-review",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-deployment",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-selection",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-store",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-trust",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mission-pack",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "fetch-commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "model-import-fetched",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider-admission",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "activation-units",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "integration-broker",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mio-configuration",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider admission（提供元の承認）",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：systemd units",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "service_manager_not_queried",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：audit",
+     "tone": "ok",
+     "word": "正常",
+     "en": "ok",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "setup",
+     "title": "サービス（unit ごと）",
+     "tone": "warn",
+     "word": "劣化（条件付き）",
+     "en": "degraded",
+     "mark": "▲",
+     "reason": "unit_failed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "保存容量（場所ごと）",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    }
+   ],
+   "unlabelled_field_names": [],
+   "banner": "出所：このノードの read model（azazel-nexus status --json、アカウント azui で読取）",
+   "conn": "最終取得：9:17:43"
+  },
+  "narrow": {
+   "label": "narrow",
+   "screens": {
+    "overview": {
+     "png": "narrow-overview.png",
+     "bytes": 72115,
+     "raw_bytes": 246849,
+     "width": 360,
+     "height": 2600,
+     "page_height": 5400
+    },
+    "incidents": {
+     "png": "narrow-incidents.png",
+     "bytes": 56117,
+     "raw_bytes": 199509,
+     "width": 360,
+     "height": 2600,
+     "page_height": 6076
+    }
+   },
+   "cards": [
+    {
+     "panel": "overview",
+     "title": "防御状態（Edge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "checks_not_all_passed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "実行モード",
+     "tone": "info",
+     "word": "observe-only（実行結果を受理しない構成）",
+     "en": "observe-only-fixed",
+     "mark": "◆",
+     "reason": "nexus_accepts_observe_only",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "通信（NOC）",
+     "tone": "info",
+     "word": "観測済み（受動観測。正常の意味ではない）",
+     "en": "observed",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（M.I.O.）",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "route_ledger_unreadable_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "no_recorded_capability_transition",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "warn",
+     "word": "劣化（条件付き）",
+     "en": "degraded",
+     "mark": "▲",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "サービス",
+     "tone": "warn",
+     "word": "劣化（条件付き）",
+     "en": "degraded",
+     "mark": "▲",
+     "reason": "unit_failed",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "保存容量",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Edge 受信（intake）",
+     "tone": "ok",
+     "word": "稼働（snapshot が新しい）",
+     "en": "running",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "説明器（explainer）",
+     "tone": "ok",
+     "word": "稼働（snapshot が新しい）",
+     "en": "running",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "Fabric 状態表示",
+     "tone": "unknown",
+     "word": "未導入",
+     "en": "not_installed",
+     "mark": "？",
+     "reason": "fabric_extra_not_installed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "継続するもの",
+     "tone": "info",
+     "word": "継続",
+     "en": "continuing",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "Edge 受信（intake）",
+     "tone": "ok",
+     "word": "稼働（snapshot が新しい）",
+     "en": "running",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "incidents",
+     "title": "最近のインシデント（一覧の snapshot）",
+     "tone": "ok",
+     "word": "稼働（snapshot が新しい）",
+     "en": "running",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000a1",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000b2",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000c3",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "noc",
+     "title": "NOC 受動観測",
+     "tone": "info",
+     "word": "観測済み（受動観測。正常の意味ではない）",
+     "en": "observed",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "warn",
+     "word": "劣化（条件付き）",
+     "en": "degraded",
+     "mark": "▲",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "knowledge",
+     "title": "外部 Knowledge peer（AZ-04 Knowledge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "引用元（最近のインシデントの参照根拠）",
+     "tone": "info",
+     "word": "読取済み",
+     "en": "read",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "installed-files",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "host-preflight",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commission-review",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-deployment",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-selection",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-store",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-trust",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mission-pack",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "fetch-commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "model-import-fetched",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider-admission",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "activation-units",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "integration-broker",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mio-configuration",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider admission（提供元の承認）",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：systemd units",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "service_manager_not_queried",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：audit",
+     "tone": "ok",
+     "word": "正常",
+     "en": "ok",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "setup",
+     "title": "サービス（unit ごと）",
+     "tone": "warn",
+     "word": "劣化（条件付き）",
+     "en": "degraded",
+     "mark": "▲",
+     "reason": "unit_failed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "保存容量（場所ごと）",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    }
+   ],
+   "unlabelled_field_names": [],
+   "banner": "出所：このノードの read model（azazel-nexus status --json、アカウント azui で読取）",
+   "conn": "最終取得：9:17:48",
+   "scroll_width": 360,
+   "client_width": 360
+  },
+  "mismatch": {
+   "label": "mismatch",
+   "screens": {
+    "overview": {
+     "png": "mismatch-overview.png",
+     "bytes": 163600,
+     "raw_bytes": 611863,
+     "width": 1280,
+     "height": 2583,
+     "page_height": 2583
+    }
+   },
+   "cards": [
+    {
+     "panel": "overview",
+     "title": "防御状態（Edge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "checks_not_all_passed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "実行モード",
+     "tone": "info",
+     "word": "observe-only（実行結果を受理しない構成）",
+     "en": "observe-only-fixed",
+     "mark": "◆",
+     "reason": "nexus_accepts_observe_only",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "通信（NOC）",
+     "tone": "info",
+     "word": "観測済み（受動観測。正常の意味ではない）",
+     "en": "observed",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（M.I.O.）",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "route_ledger_unreadable_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（運用者向け snapshot）",
+     "tone": "info",
+     "word": "記録あり",
+     "en": "recorded",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "ok",
+     "word": "利用可能",
+     "en": "available",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 2
+    },
+    {
+     "panel": "overview",
+     "title": "サービス",
+     "tone": "warn",
+     "word": "劣化（条件付き）",
+     "en": "degraded",
+     "mark": "▲",
+     "reason": "unit_failed",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "保存容量",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Edge 受信（intake）",
+     "tone": "ok",
+     "word": "稼働（snapshot が新しい）",
+     "en": "running",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "説明器（explainer）",
+     "tone": "ok",
+     "word": "稼働（snapshot が新しい）",
+     "en": "running",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "Fabric 状態表示",
+     "tone": "unknown",
+     "word": "未導入",
+     "en": "not_installed",
+     "mark": "？",
+     "reason": "fabric_extra_not_installed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "継続するもの",
+     "tone": "info",
+     "word": "継続",
+     "en": "continuing",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "Edge 受信（intake）",
+     "tone": "ok",
+     "word": "稼働（snapshot が新しい）",
+     "en": "running",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "incidents",
+     "title": "最近のインシデント（一覧の snapshot）",
+     "tone": "ok",
+     "word": "稼働（snapshot が新しい）",
+     "en": "running",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000a1",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000b2",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000c3",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "noc",
+     "title": "NOC 受動観測",
+     "tone": "info",
+     "word": "観測済み（受動観測。正常の意味ではない）",
+     "en": "observed",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "ok",
+     "word": "利用可能",
+     "en": "available",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 4
+    },
+    {
+     "panel": "knowledge",
+     "title": "外部 Knowledge peer（AZ-04 Knowledge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "引用元（最近のインシデントの参照根拠）",
+     "tone": "info",
+     "word": "読取済み",
+     "en": "read",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "installed-files",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "host-preflight",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commission-review",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-deployment",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-selection",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-store",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-trust",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mission-pack",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "fetch-commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "model-import-fetched",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider-admission",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "activation-units",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "integration-broker",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mio-configuration",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider admission（提供元の承認）",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：systemd units",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "service_manager_not_queried",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：audit",
+     "tone": "ok",
+     "word": "正常",
+     "en": "ok",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "setup",
+     "title": "サービス（unit ごと）",
+     "tone": "warn",
+     "word": "劣化（条件付き）",
+     "en": "degraded",
+     "mark": "▲",
+     "reason": "unit_failed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "保存容量（場所ごと）",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    }
+   ],
+   "unlabelled_field_names": [],
+   "banner": "出所：このノードの read model（azazel-nexus status --json、アカウント azui で読取）",
+   "conn": "最終取得：9:17:53",
+   "notes": [
+    [
+     "AI 経路（M.I.O.）",
+     [
+      "経路：この画面のアカウント（azui）が直接読んだ結果",
+      "▲ 直接の読取（不明）と daemon の snapshot（記録あり）が一致しません。直接の読取は情報源が無い・読めない・壊れている場合に、snapshot は daemon が別の状態を見ているか古い場合に食い違います。各カードの理由と時刻を確認してください。"
+     ]
+    ],
+    [
+     "AI 経路（運用者向け snapshot）",
+     [
+      "経路：daemon（mio-entryd）が書いた snapshot。直接の読取とは別の経路",
+      "▲ 直接の読取（不明）と daemon の snapshot（記録あり）が一致しません。直接の読取は情報源が無い・読めない・壊れている場合に、snapshot は daemon が別の状態を見ているか古い場合に食い違います。各カードの理由と時刻を確認してください。"
+     ]
+    ],
+    [
+     "Knowledge Lite",
+     [
+      "経路：この画面のアカウント（azui）が直接読んだ結果",
+      "▲ 直接の読取（利用不可）と daemon の snapshot（利用可能）が一致しません。直接の読取は情報源が無い・読めない・壊れている場合に、snapshot は daemon が別の状態を見ているか古い場合に食い違います。各カードの理由と時刻を確認してください。"
+     ]
+    ],
+    [
+     "Knowledge Lite（運用者向け snapshot）",
+     [
+      "経路：daemon（knowledge-lited）が書いた snapshot。直接の読取とは別の経路",
+      "▲ 直接の読取（利用不可）と daemon の snapshot（利用可能）が一致しません。直接の読取は情報源が無い・読めない・壊れている場合に、snapshot は daemon が別の状態を見ているか古い場合に食い違います。各カードの理由と時刻を確認してください。"
+     ]
+    ]
+   ]
+  },
+  "degraded-absent": {
+   "label": "degraded-absent",
+   "screens": {
+    "overview": {
+     "png": "degraded-absent-overview.png",
+     "bytes": 153080,
+     "raw_bytes": 529412,
+     "width": 1280,
+     "height": 2408,
+     "page_height": 2408
+    }
+   },
+   "cards": [
+    {
+     "panel": "overview",
+     "title": "防御状態（Edge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "checks_not_all_passed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "実行モード",
+     "tone": "info",
+     "word": "observe-only（実行結果を受理しない構成）",
+     "en": "observe-only-fixed",
+     "mark": "◆",
+     "reason": "nexus_accepts_observe_only",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "通信（NOC）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（M.I.O.）",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "route_ledger_unreadable_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "サービス",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "保存容量",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Edge 受信（intake）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "説明器（explainer）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Fabric 状態表示",
+     "tone": "unknown",
+     "word": "未導入",
+     "en": "not_installed",
+     "mark": "？",
+     "reason": "fabric_extra_not_installed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "継続するもの",
+     "tone": "info",
+     "word": "継続",
+     "en": "continuing",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "Edge 受信（intake）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "最近のインシデント（一覧の snapshot）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "noc",
+     "title": "NOC 受動観測",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "外部 Knowledge peer（AZ-04 Knowledge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "引用元（最近のインシデントの参照根拠）",
+     "tone": "info",
+     "word": "なし",
+     "en": "none",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "installed-files",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "host-preflight",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commission-review",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-deployment",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-selection",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-store",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-trust",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mission-pack",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "fetch-commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "model-import-fetched",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider-admission",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "activation-units",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "integration-broker",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mio-configuration",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider admission（提供元の承認）",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：systemd units",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "service_manager_not_queried",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：audit",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "サービス（unit ごと）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "保存容量（場所ごと）",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    }
+   ],
+   "unlabelled_field_names": [],
+   "banner": "出所：このノードの read model（azazel-nexus status --json、アカウント azui で読取）",
+   "conn": "最終取得：9:18:03",
+   "overview_text_has_ok_word_in_snapshot_cards": false
+  },
+  "degraded-broken": {
+   "label": "degraded-broken",
+   "screens": {
+    "overview": {
+     "png": "degraded-broken-overview.png",
+     "bytes": 152853,
+     "raw_bytes": 528380,
+     "width": 1280,
+     "height": 2408,
+     "page_height": 2408
+    }
+   },
+   "cards": [
+    {
+     "panel": "overview",
+     "title": "防御状態（Edge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "checks_not_all_passed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "実行モード",
+     "tone": "info",
+     "word": "observe-only（実行結果を受理しない構成）",
+     "en": "observe-only-fixed",
+     "mark": "◆",
+     "reason": "nexus_accepts_observe_only",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "通信（NOC）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（M.I.O.）",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "route_ledger_unreadable_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "サービス",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "保存容量",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Edge 受信（intake）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "説明器（explainer）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Fabric 状態表示",
+     "tone": "unknown",
+     "word": "未導入",
+     "en": "not_installed",
+     "mark": "？",
+     "reason": "fabric_extra_not_installed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "継続するもの",
+     "tone": "info",
+     "word": "継続",
+     "en": "continuing",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "Edge 受信（intake）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "最近のインシデント（一覧の snapshot）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "noc",
+     "title": "NOC 受動観測",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "外部 Knowledge peer（AZ-04 Knowledge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "引用元（最近のインシデントの参照根拠）",
+     "tone": "info",
+     "word": "なし",
+     "en": "none",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "installed-files",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "host-preflight",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commission-review",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-deployment",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-selection",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-store",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-trust",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mission-pack",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "fetch-commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "model-import-fetched",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider-admission",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "activation-units",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "integration-broker",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mio-configuration",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider admission（提供元の承認）",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：systemd units",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "service_manager_not_queried",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：audit",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "サービス（unit ごと）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "保存容量（場所ごと）",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    }
+   ],
+   "unlabelled_field_names": [],
+   "banner": "出所：このノードの read model（azazel-nexus status --json、アカウント azui で読取）",
+   "conn": "最終取得：9:18:13",
+   "overview_text_has_ok_word_in_snapshot_cards": false
+  },
+  "degraded-stale": {
+   "label": "degraded-stale",
+   "screens": {
+    "overview": {
+     "png": "degraded-stale-overview.png",
+     "bytes": 145685,
+     "raw_bytes": 496315,
+     "width": 1280,
+     "height": 2341,
+     "page_height": 2341
+    }
+   },
+   "cards": [
+    {
+     "panel": "overview",
+     "title": "防御状態（Edge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "checks_not_all_passed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "実行モード",
+     "tone": "info",
+     "word": "observe-only（実行結果を受理しない構成）",
+     "en": "observe-only-fixed",
+     "mark": "◆",
+     "reason": "nexus_accepts_observe_only",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "通信（NOC）",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_expired",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（M.I.O.）",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "route_ledger_unreadable_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_expired",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_expired",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "サービス",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_expired",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "保存容量",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Edge 受信（intake）",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_expired",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "説明器（explainer）",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_expired",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Fabric 状態表示",
+     "tone": "unknown",
+     "word": "未導入",
+     "en": "not_installed",
+     "mark": "？",
+     "reason": "fabric_extra_not_installed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "継続するもの",
+     "tone": "info",
+     "word": "継続",
+     "en": "continuing",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "Edge 受信（intake）",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_expired",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "最近のインシデント（一覧の snapshot）",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_expired",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000a1",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000b2",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000c3",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "noc",
+     "title": "NOC 受動観測",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_expired",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_expired",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "外部 Knowledge peer（AZ-04 Knowledge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "引用元（最近のインシデントの参照根拠）",
+     "tone": "info",
+     "word": "読取済み",
+     "en": "read",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "installed-files",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "host-preflight",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commission-review",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-deployment",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-selection",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-store",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-trust",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mission-pack",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "fetch-commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "model-import-fetched",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider-admission",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "activation-units",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "integration-broker",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mio-configuration",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider admission（提供元の承認）",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：systemd units",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "service_manager_not_queried",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：audit",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "snapshot_expired",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "サービス（unit ごと）",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_expired",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "保存容量（場所ごと）",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    }
+   ],
+   "unlabelled_field_names": [],
+   "banner": "出所：このノードの read model（azazel-nexus status --json、アカウント azui で読取）",
+   "conn": "最終取得：9:18:23",
+   "overview_text_has_ok_word_in_snapshot_cards": false
+  },
+  "degraded-future": {
+   "label": "degraded-future",
+   "screens": {
+    "overview": {
+     "png": "degraded-future-overview.png",
+     "bytes": 148122,
+     "raw_bytes": 504913,
+     "width": 1280,
+     "height": 2341,
+     "page_height": 2341
+    }
+   },
+   "cards": [
+    {
+     "panel": "overview",
+     "title": "防御状態（Edge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "checks_not_all_passed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "実行モード",
+     "tone": "info",
+     "word": "observe-only（実行結果を受理しない構成）",
+     "en": "observe-only-fixed",
+     "mark": "◆",
+     "reason": "nexus_accepts_observe_only",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "通信（NOC）",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_dated_in_future",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（M.I.O.）",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "route_ledger_unreadable_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_dated_in_future",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_dated_in_future",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "サービス",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_dated_in_future",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "保存容量",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Edge 受信（intake）",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_dated_in_future",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "説明器（explainer）",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_dated_in_future",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Fabric 状態表示",
+     "tone": "unknown",
+     "word": "未導入",
+     "en": "not_installed",
+     "mark": "？",
+     "reason": "fabric_extra_not_installed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "継続するもの",
+     "tone": "info",
+     "word": "継続",
+     "en": "continuing",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "Edge 受信（intake）",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_dated_in_future",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "最近のインシデント（一覧の snapshot）",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_dated_in_future",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000a1",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000b2",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000c3",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "noc",
+     "title": "NOC 受動観測",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_dated_in_future",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_dated_in_future",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "外部 Knowledge peer（AZ-04 Knowledge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "引用元（最近のインシデントの参照根拠）",
+     "tone": "info",
+     "word": "読取済み",
+     "en": "read",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "installed-files",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "host-preflight",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commission-review",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-deployment",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-selection",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-store",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-trust",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mission-pack",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "fetch-commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "model-import-fetched",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider-admission",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "activation-units",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "integration-broker",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mio-configuration",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider admission（提供元の承認）",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：systemd units",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "service_manager_not_queried",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：audit",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "snapshot_dated_in_future",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "サービス（unit ごと）",
+     "tone": "unknown",
+     "word": "古い（stale）",
+     "en": "stale",
+     "mark": "？",
+     "reason": "snapshot_dated_in_future",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "保存容量（場所ごと）",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    }
+   ],
+   "unlabelled_field_names": [],
+   "banner": "出所：このノードの read model（azazel-nexus status --json、アカウント azui で読取）",
+   "conn": "最終取得：9:18:33",
+   "overview_text_has_ok_word_in_snapshot_cards": false
+  },
+  "degraded-symlink": {
+   "label": "degraded-symlink",
+   "screens": {
+    "overview": {
+     "png": "degraded-symlink-overview.png",
+     "bytes": 153007,
+     "raw_bytes": 529021,
+     "width": 1280,
+     "height": 2408,
+     "page_height": 2408
+    }
+   },
+   "cards": [
+    {
+     "panel": "overview",
+     "title": "防御状態（Edge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "checks_not_all_passed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "実行モード",
+     "tone": "info",
+     "word": "observe-only（実行結果を受理しない構成）",
+     "en": "observe-only-fixed",
+     "mark": "◆",
+     "reason": "nexus_accepts_observe_only",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "通信（NOC）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（M.I.O.）",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "route_ledger_unreadable_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "サービス",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "保存容量",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Edge 受信（intake）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "説明器（explainer）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Fabric 状態表示",
+     "tone": "unknown",
+     "word": "未導入",
+     "en": "not_installed",
+     "mark": "？",
+     "reason": "fabric_extra_not_installed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "継続するもの",
+     "tone": "info",
+     "word": "継続",
+     "en": "continuing",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "Edge 受信（intake）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "最近のインシデント（一覧の snapshot）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "noc",
+     "title": "NOC 受動観測",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "外部 Knowledge peer（AZ-04 Knowledge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "引用元（最近のインシデントの参照根拠）",
+     "tone": "info",
+     "word": "なし",
+     "en": "none",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "installed-files",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "host-preflight",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commission-review",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-deployment",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-selection",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-store",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-trust",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mission-pack",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "fetch-commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "model-import-fetched",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider-admission",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "activation-units",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "integration-broker",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mio-configuration",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider admission（提供元の承認）",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：systemd units",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "service_manager_not_queried",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：audit",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "サービス（unit ごと）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "保存容量（場所ごと）",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    }
+   ],
+   "unlabelled_field_names": [],
+   "banner": "出所：このノードの read model（azazel-nexus status --json、アカウント azui で読取）",
+   "conn": "最終取得：9:18:43",
+   "overview_text_has_ok_word_in_snapshot_cards": false
+  },
+  "degraded-oversize": {
+   "label": "degraded-oversize",
+   "screens": {
+    "overview": {
+     "png": "degraded-oversize-overview.png",
+     "bytes": 153331,
+     "raw_bytes": 529208,
+     "width": 1280,
+     "height": 2408,
+     "page_height": 2408
+    }
+   },
+   "cards": [
+    {
+     "panel": "overview",
+     "title": "防御状態（Edge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "checks_not_all_passed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "実行モード",
+     "tone": "info",
+     "word": "observe-only（実行結果を受理しない構成）",
+     "en": "observe-only-fixed",
+     "mark": "◆",
+     "reason": "nexus_accepts_observe_only",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "通信（NOC）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（M.I.O.）",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "route_ledger_unreadable_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "サービス",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "保存容量",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Edge 受信（intake）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "説明器（explainer）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Fabric 状態表示",
+     "tone": "unknown",
+     "word": "未導入",
+     "en": "not_installed",
+     "mark": "？",
+     "reason": "fabric_extra_not_installed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "継続するもの",
+     "tone": "info",
+     "word": "継続",
+     "en": "continuing",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "Edge 受信（intake）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "最近のインシデント（一覧の snapshot）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "noc",
+     "title": "NOC 受動観測",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "外部 Knowledge peer（AZ-04 Knowledge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "引用元（最近のインシデントの参照根拠）",
+     "tone": "info",
+     "word": "なし",
+     "en": "none",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "installed-files",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "host-preflight",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commission-review",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-deployment",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-selection",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-store",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-trust",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mission-pack",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "fetch-commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "model-import-fetched",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider-admission",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "activation-units",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "integration-broker",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mio-configuration",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider admission（提供元の承認）",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：systemd units",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "service_manager_not_queried",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：audit",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "サービス（unit ごと）",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "snapshot_absent_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "保存容量（場所ごと）",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    }
+   ],
+   "unlabelled_field_names": [],
+   "banner": "出所：このノードの read model（azazel-nexus status --json、アカウント azui で読取）",
+   "conn": "最終取得：9:18:53",
+   "overview_text_has_ok_word_in_snapshot_cards": false
+  },
+  "recovered": {
+   "label": "recovered",
+   "screens": {
+    "overview": {
+     "png": "recovered-overview.png",
+     "bytes": 141472,
+     "raw_bytes": 498820,
+     "width": 1280,
+     "height": 2322,
+     "page_height": 2322
+    }
+   },
+   "cards": [
+    {
+     "panel": "overview",
+     "title": "防御状態（Edge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "checks_not_all_passed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "実行モード",
+     "tone": "info",
+     "word": "observe-only（実行結果を受理しない構成）",
+     "en": "observe-only-fixed",
+     "mark": "◆",
+     "reason": "nexus_accepts_observe_only",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "通信（NOC）",
+     "tone": "info",
+     "word": "観測済み（受動観測。正常の意味ではない）",
+     "en": "observed",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（M.I.O.）",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "route_ledger_unreadable_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "no_recorded_capability_transition",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "warn",
+     "word": "劣化（条件付き）",
+     "en": "degraded",
+     "mark": "▲",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "サービス",
+     "tone": "warn",
+     "word": "劣化（条件付き）",
+     "en": "degraded",
+     "mark": "▲",
+     "reason": "unit_failed",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "保存容量",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Edge 受信（intake）",
+     "tone": "ok",
+     "word": "稼働（snapshot が新しい）",
+     "en": "running",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "説明器（explainer）",
+     "tone": "ok",
+     "word": "稼働（snapshot が新しい）",
+     "en": "running",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "Fabric 状態表示",
+     "tone": "unknown",
+     "word": "未導入",
+     "en": "not_installed",
+     "mark": "？",
+     "reason": "fabric_extra_not_installed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "継続するもの",
+     "tone": "info",
+     "word": "継続",
+     "en": "continuing",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "Edge 受信（intake）",
+     "tone": "ok",
+     "word": "稼働（snapshot が新しい）",
+     "en": "running",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "incidents",
+     "title": "最近のインシデント（一覧の snapshot）",
+     "tone": "ok",
+     "word": "稼働（snapshot が新しい）",
+     "en": "running",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000a1",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000b2",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000c3",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "noc",
+     "title": "NOC 受動観測",
+     "tone": "info",
+     "word": "観測済み（受動観測。正常の意味ではない）",
+     "en": "observed",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "利用不可",
+     "en": "unavailable",
+     "mark": "？",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "warn",
+     "word": "劣化（条件付き）",
+     "en": "degraded",
+     "mark": "▲",
+     "reason": "trust_unreadable",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "knowledge",
+     "title": "外部 Knowledge peer（AZ-04 Knowledge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "引用元（最近のインシデントの参照根拠）",
+     "tone": "info",
+     "word": "読取済み",
+     "en": "read",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "installed-files",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "host-preflight",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commission-review",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-deployment",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-selection",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-store",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-trust",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mission-pack",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "fetch-commissioning",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "model-import-fetched",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider-admission",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "activation-units",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "integration-broker",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mio-configuration",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider admission（提供元の承認）",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：systemd units",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "service_manager_not_queried",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：audit",
+     "tone": "ok",
+     "word": "正常",
+     "en": "ok",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "setup",
+     "title": "サービス（unit ごと）",
+     "tone": "warn",
+     "word": "劣化（条件付き）",
+     "en": "degraded",
+     "mark": "▲",
+     "reason": "unit_failed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "保存容量（場所ごと）",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    }
+   ],
+   "unlabelled_field_names": [],
+   "banner": "出所：このノードの read model（azazel-nexus status --json、アカウント azui で読取）",
+   "conn": "最終取得：9:18:58"
+  },
+  "xss": {
+   "label": "xss",
+   "screens": {
+    "overview": {
+     "png": "xss-overview.png",
+     "bytes": 166546,
+     "raw_bytes": 596266,
+     "width": 1280,
+     "height": 2585,
+     "page_height": 2585
+    },
+    "incidents": {
+     "png": "xss-incidents.png",
+     "bytes": 145870,
+     "raw_bytes": 529532,
+     "width": 1280,
+     "height": 2600,
+     "page_height": 3518
+    }
+   },
+   "cards": [
+    {
+     "panel": "overview",
+     "title": "防御状態（Edge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "checks_not_all_passed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "実行モード",
+     "tone": "info",
+     "word": "observe-only（実行結果を受理しない構成）",
+     "en": "observe-only-fixed",
+     "mark": "◆",
+     "reason": "nexus_accepts_observe_only",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "通信（NOC）",
+     "tone": "info",
+     "word": "観測済み（受動観測。正常の意味ではない）",
+     "en": "observed",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（M.I.O.）",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "route_ledger_unreadable_or_refused",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（運用者向け snapshot）",
+     "tone": "info",
+     "word": "記録あり",
+     "en": "recorded",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite",
+     "tone": "ok",
+     "word": "利用可能",
+     "en": "available",
+     "mark": "●",
+     "reason": "available",
+     "ok_badges_inside": 2
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "ok",
+     "word": "利用可能",
+     "en": "available",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 2
+    },
+    {
+     "panel": "overview",
+     "title": "サービス",
+     "tone": "info",
+     "word": "読取済み",
+     "en": "read",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "保存容量",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Edge 受信（intake）",
+     "tone": "ok",
+     "word": "稼働（snapshot が新しい）",
+     "en": "running",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "overview",
+     "title": "説明器（explainer）",
+     "tone": "warn",
+     "word": "劣化（条件付き）",
+     "en": "degraded",
+     "mark": "▲",
+     "reason": "chain_broken",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Fabric 状態表示",
+     "tone": "unknown",
+     "word": "未定義の語",
+     "en": "<img src=x onerror=\"window.__azxss=1\"><script>window.__azxss=2</script>",
+     "mark": "？",
+     "reason": "<img src=x onerror=\"window.__azxss=1\"><script>window.__azxss=2</script>",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "継続するもの",
+     "tone": "info",
+     "word": "継続",
+     "en": "continuing",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "Edge 受信（intake）",
+     "tone": "ok",
+     "word": "稼働（snapshot が新しい）",
+     "en": "running",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "incidents",
+     "title": "最近のインシデント（一覧の snapshot）",
+     "tone": "ok",
+     "word": "稼働（snapshot が新しい）",
+     "en": "running",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント <img src=x onerror=\"window.__azxss=1\"><script>window.__azxss=2</script>",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000b2",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "インシデント inc-00000000000000c3",
+     "tone": "info",
+     "word": "",
+     "en": "",
+     "mark": "",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "noc",
+     "title": "NOC 受動観測",
+     "tone": "info",
+     "word": "観測済み（受動観測。正常の意味ではない）",
+     "en": "observed",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite",
+     "tone": "ok",
+     "word": "利用可能",
+     "en": "available",
+     "mark": "●",
+     "reason": "available",
+     "ok_badges_inside": 2
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "ok",
+     "word": "利用可能",
+     "en": "available",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 4
+    },
+    {
+     "panel": "knowledge",
+     "title": "外部 Knowledge peer（AZ-04 Knowledge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "引用元（最近のインシデントの参照根拠）",
+     "tone": "info",
+     "word": "読取済み",
+     "en": "read",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "setup",
+     "title": "セットアップ手順",
+     "tone": "unknown",
+     "word": "未取得",
+     "en": "not_collected",
+     "mark": "？",
+     "reason": "not_in_fixture",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "復旧：インシデントチェーン",
+     "tone": "bad",
+     "word": "失敗",
+     "en": "failed",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：systemd units",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "service_manager_not_queried",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：audit",
+     "tone": "ok",
+     "word": "正常",
+     "en": "ok",
+     "mark": "●",
+     "reason": "",
+     "ok_badges_inside": 1
+    },
+    {
+     "panel": "setup",
+     "title": "サービス（unit ごと）",
+     "tone": "info",
+     "word": "読取済み",
+     "en": "read",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "保存容量（場所ごと）",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    }
+   ],
+   "unlabelled_field_names": [],
+   "banner": "fixture 表示：保存済みの read model を表示しています。このノードの現在の状態ではありません。",
+   "conn": "最終取得：9:19:00",
+   "probe": {
+    "flag": null,
+    "csp_violations_after_load": 0,
+    "images": 0,
+    "scripts": 1,
+    "script_srcs": [
+     "/static/app.js"
+    ],
+    "text_occurrences": 14,
+    "fabric_card": {
+     "tone": "tone-unknown",
+     "word": "未定義の語",
+     "en": "<img src=x onerror=\"window.__azxss=1\"><script>window.__azxss=2</script>"
+    }
+   }
+  }
+ },
+ "checks": {
+  "normal.fresh_snapshots_shown": {
+   "ok": true,
+   "detail": [
+    "Edge 受信（intake）",
+    "説明器（explainer）"
+   ]
+  },
+  "narrow.no_horizontal_scroll": {
+   "ok": true,
+   "detail": [
+    360,
+    360
+   ]
+  },
+  "mismatch.both_cards_say_they_disagree": {
+   "ok": true,
+   "detail": {
+    "AI 経路（M.I.O.）": "経路：この画面のアカウント（azui）が直接読んだ結果 ▲ 直接の読取（不明）と daemon の snapshot（記録あり）が一致しません。直接の読取は情報源が無い・読めない・壊れている場合に、snapshot は daemon が別の状態を見ているか古い場合に食い違います。各カードの理由と時刻を確認してください。",
+    "AI 経路（運用者向け snapshot）": "経路：daemon（mio-entryd）が書いた snapshot。直接の読取とは別の経路 ▲ 直接の読取（不明）と daemon の snapshot（記録あり）が一致しません。直接の読取は情報源が無い・読めない・壊れている場合に、snapshot は daemon が別の状態を見ているか古い場合に食い違います。各カードの理由と時刻を確認してください。",
+    "Knowledge Lite": "経路：この画面のアカウント（azui）が直接読んだ結果 ▲ 直接の読取（利用不可）と daemon の snapshot（利用可能）が一致しません。直接の読取は情報源が無い・読めない・壊れている場合に、snapshot は daemon が別の状態を見ているか古い場合に食い違います。各カードの理由と時刻を確認してください。",
+    "Knowledge Lite（運用者向け snapshot）": "経路：daemon（knowledge-lited）が書いた snapshot。直接の読取とは別の経路 ▲ 直接の読取（利用不可）と daemon の snapshot（利用可能）が一致しません。直接の読取は情報源が無い・読めない・壊れている場合に、snapshot は daemon が別の状態を見ているか古い場合に食い違います。各カードの理由と時刻を確認してください。"
+   }
+  },
+  "degraded.absent.no_green": {
+   "ok": true,
+   "detail": {
+    "通信（NOC）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "AI 経路（運用者向け snapshot）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "Knowledge Lite（運用者向け snapshot）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "サービス": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "Edge 受信（intake）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "説明器（explainer）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ]
+   }
+  },
+  "degraded.broken.no_green": {
+   "ok": true,
+   "detail": {
+    "通信（NOC）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "AI 経路（運用者向け snapshot）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "Knowledge Lite（運用者向け snapshot）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "サービス": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "Edge 受信（intake）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "説明器（explainer）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ]
+   }
+  },
+  "degraded.stale.no_green": {
+   "ok": true,
+   "detail": {
+    "通信（NOC）": [
+     "unknown",
+     "古い（stale）",
+     "stale",
+     "snapshot_expired"
+    ],
+    "AI 経路（運用者向け snapshot）": [
+     "unknown",
+     "古い（stale）",
+     "stale",
+     "snapshot_expired"
+    ],
+    "Knowledge Lite（運用者向け snapshot）": [
+     "unknown",
+     "古い（stale）",
+     "stale",
+     "snapshot_expired"
+    ],
+    "サービス": [
+     "unknown",
+     "古い（stale）",
+     "stale",
+     "snapshot_expired"
+    ],
+    "Edge 受信（intake）": [
+     "unknown",
+     "古い（stale）",
+     "stale",
+     "snapshot_expired"
+    ],
+    "説明器（explainer）": [
+     "unknown",
+     "古い（stale）",
+     "stale",
+     "snapshot_expired"
+    ]
+   }
+  },
+  "degraded.future.no_green": {
+   "ok": true,
+   "detail": {
+    "通信（NOC）": [
+     "unknown",
+     "古い（stale）",
+     "stale",
+     "snapshot_dated_in_future"
+    ],
+    "AI 経路（運用者向け snapshot）": [
+     "unknown",
+     "古い（stale）",
+     "stale",
+     "snapshot_dated_in_future"
+    ],
+    "Knowledge Lite（運用者向け snapshot）": [
+     "unknown",
+     "古い（stale）",
+     "stale",
+     "snapshot_dated_in_future"
+    ],
+    "サービス": [
+     "unknown",
+     "古い（stale）",
+     "stale",
+     "snapshot_dated_in_future"
+    ],
+    "Edge 受信（intake）": [
+     "unknown",
+     "古い（stale）",
+     "stale",
+     "snapshot_dated_in_future"
+    ],
+    "説明器（explainer）": [
+     "unknown",
+     "古い（stale）",
+     "stale",
+     "snapshot_dated_in_future"
+    ]
+   }
+  },
+  "degraded.symlink.no_green": {
+   "ok": true,
+   "detail": {
+    "通信（NOC）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "AI 経路（運用者向け snapshot）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "Knowledge Lite（運用者向け snapshot）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "サービス": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "Edge 受信（intake）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "説明器（explainer）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ]
+   }
+  },
+  "degraded.oversize.no_green": {
+   "ok": true,
+   "detail": {
+    "通信（NOC）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "AI 経路（運用者向け snapshot）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "Knowledge Lite（運用者向け snapshot）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "サービス": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "Edge 受信（intake）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ],
+    "説明器（explainer）": [
+     "unknown",
+     "利用不可",
+     "unavailable",
+     "snapshot_absent_or_refused"
+    ]
+   }
+  },
+  "recovered.same_as_normal": {
+   "ok": true,
+   "detail": {
+    "通信（NOC）": "info",
+    "AI 経路（運用者向け snapshot）": "unknown",
+    "Knowledge Lite（運用者向け snapshot）": "warn",
+    "サービス": "warn",
+    "Edge 受信（intake）": "ok",
+    "説明器（explainer）": "ok"
+   }
+  },
+  "xss.not_executed": {
+   "ok": true,
+   "detail": {
+    "flag": null,
+    "csp_violations_after_load": 0,
+    "images": 0,
+    "scripts": 1,
+    "script_srcs": [
+     "/static/app.js"
+    ],
+    "text_occurrences": 14,
+    "fabric_card": {
+     "tone": "tone-unknown",
+     "word": "未定義の語",
+     "en": "<img src=x onerror=\"window.__azxss=1\"><script>window.__azxss=2</script>"
+    }
+   }
+  },
+  "xss.fabric_status_not_green": {
+   "ok": true,
+   "detail": {
+    "tone": "tone-unknown",
+    "word": "未定義の語",
+    "en": "<img src=x onerror=\"window.__azxss=1\"><script>window.__azxss=2</script>"
+   }
+  },
+  "labels.every_field_name_has_a_japanese_label": {
+   "ok": true,
+   "detail": []
+  },
+  "network.page_requests_all_loopback": {
+   "ok": true,
+   "detail": []
+  },
+  "network.netlog_page_initiated_all_loopback": {
+   "ok": true,
+   "detail": []
+  },
+  "network.netlog_no_external_request_completed": {
+   "ok": true,
+   "detail": []
+  }
+ },
+ "login": {
+  "logged_in": true,
+  "login_form_hidden": true
+ },
+ "fonts_ja_heading": [
+  {
+   "familyName": "DejaVu Sans",
+   "postScriptName": "DejaVuSans-Bold",
+   "isCustomFont": false,
+   "glyphCount": 4
+  },
+  {
+   "familyName": "Noto Sans CJK JP",
+   "postScriptName": "NotoSansCJKjp-Bold",
+   "isCustomFont": false,
+   "glyphCount": 6
+  }
+ ],
+ "page_lang": "ja",
+ "requests_live": [
+  "http://127.0.0.1:8443/",
+  "http://127.0.0.1:8443/static/app.css",
+  "http://127.0.0.1:8443/static/app.js",
+  "http://127.0.0.1:8443/static/labels.json",
+  "http://127.0.0.1:8443/favicon.ico",
+  "http://127.0.0.1:8443/api/session",
+  "http://127.0.0.1:8443/api/login",
+  "http://127.0.0.1:8443/api/view",
+  "http://127.0.0.1:8443/api/view",
+  "http://127.0.0.1:8443/api/view",
+  "http://127.0.0.1:8443/api/view",
+  "http://127.0.0.1:8443/api/view",
+  "http://127.0.0.1:8443/api/view",
+  "http://127.0.0.1:8443/api/view",
+  "http://127.0.0.1:8443/api/view",
+  "http://127.0.0.1:8443/api/view",
+  "http://127.0.0.1:8443/api/view",
+  "http://127.0.0.1:8443/api/view",
+  "http://127.0.0.1:8443/api/view",
+  "http://127.0.0.1:8443/api/view",
+  "http://127.0.0.1:8443/api/view",
+  "http://127.0.0.1:8443/api/view",
+  "http://127.0.0.1:8443/api/view",
+  "http://127.0.0.1:8443/api/view"
+ ],
+ "console_live": [
+  {
+   "kind": "log",
+   "level": "warning",
+   "source": "security",
+   "text": "Error with Permissions-Policy header: Unrecognized feature: 'bluetooth'."
+  },
+  {
+   "kind": "log",
+   "level": "error",
+   "source": "network",
+   "text": "Failed to load resource: the server responded with a status of 404 (Not Found)"
+  }
+ ],
+ "requests_xss": [
+  "http://127.0.0.1:8444/",
+  "http://127.0.0.1:8444/static/app.css",
+  "http://127.0.0.1:8444/static/app.js",
+  "http://127.0.0.1:8444/static/labels.json",
+  "http://127.0.0.1:8444/api/session",
+  "http://127.0.0.1:8444/favicon.ico",
+  "http://127.0.0.1:8444/api/login",
+  "http://127.0.0.1:8444/api/view"
+ ],
+ "console_xss": [
+  {
+   "kind": "log",
+   "level": "warning",
+   "source": "security",
+   "text": "Error with Permissions-Policy header: Unrecognized feature: 'bluetooth'."
+  },
+  {
+   "kind": "log",
+   "level": "error",
+   "source": "network",
+   "text": "Failed to load resource: the server responded with a status of 404 (Not Found)"
+  }
+ ],
+ "page_requests_total": 32,
+ "page_requests_external": [],
+ "netlog": {
+  "events": 3772,
+  "requests": 36,
+  "page_initiated": [
+   {
+    "url": "http://127.0.0.1:8443/static/app.css",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/static/app.js",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/static/labels.json",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/favicon.ico",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/session",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/login",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "POST",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/view",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/view",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/view",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/view",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/view",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/view",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/view",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/view",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/view",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/view",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/view",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/view",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/view",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/view",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/view",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/view",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/view",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8444/static/app.css",
+    "initiator": "http://127.0.0.1:8444",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8444/static/app.js",
+    "initiator": "http://127.0.0.1:8444",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8444/static/labels.json",
+    "initiator": "http://127.0.0.1:8444",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8444/api/session",
+    "initiator": "http://127.0.0.1:8444",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8444/favicon.ico",
+    "initiator": "http://127.0.0.1:8444",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8444/api/login",
+    "initiator": "http://127.0.0.1:8444",
+    "method": "POST",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8444/api/view",
+    "initiator": "http://127.0.0.1:8444",
+    "method": "GET",
+    "net_error": null
+   }
+  ],
+  "page_initiated_external": [],
+  "browser_initiated": [
+   {
+    "url": "https://update.googleapis.com/service/update2/json",
+    "initiator": "not an origin",
+    "method": "POST",
+    "net_error": -106
+   },
+   {
+    "url": "http://127.0.0.1:8443/",
+    "initiator": "not an origin",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://update.googleapis.com/service/update2/json",
+    "initiator": "not an origin",
+    "method": "POST",
+    "net_error": -106
+   },
+   {
+    "url": "https://update.googleapis.com/service/update2/json",
+    "initiator": "not an origin",
+    "method": "POST",
+    "net_error": -106
+   },
+   {
+    "url": "http://update.googleapis.com/service/update2/json",
+    "initiator": "not an origin",
+    "method": "POST",
+    "net_error": -106
+   },
+   {
+    "url": "http://127.0.0.1:8444/",
+    "initiator": "not an origin",
+    "method": "GET",
+    "net_error": null
+   }
+  ],
+  "browser_initiated_completed": [],
+  "external_completed": []
+ },
+ "failures": []
+}

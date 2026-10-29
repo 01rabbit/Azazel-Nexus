@@ -1,12 +1,18 @@
 # Read-only operator UI (`az-ui`)
 
-Status: **implemented (first stage, read-only), not verified on a systemd host
-or in a browser.** In-process and real-process tests cover the server, the
-browser boundary and the unit files (`tests/unit/test_ui_serve.py`,
-`tests/unit/test_ui_model_and_login.py`). What systemd enforces for the unit
-(`PrivateNetwork=`, `RestrictAddressFamilies=`, the socket's IP filter) and
-how a browser renders the page are checked in a later step (U6) and are
-**not** claimed here.
+Status: **implemented (first stage, read-only); checked in a browser and under
+systemd in containers only, not on a VM or hardware.** In-process and
+real-process tests cover the server, the browser boundary and the unit files
+(`tests/unit/test_ui_serve.py`, `tests/unit/test_ui_model_and_login.py`).
+Headless Chromium 156 in a container without a network (aarch64, and one
+state on x86_64 under Rosetta) logged in with a real code and rendered the
+five screens in the normal, degraded (absent, broken, stale, future-dated,
+symlinked, oversized snapshot), recovered, 360 px and XSS-fixture states;
+a container whose PID 1 is systemd ran the unit by socket activation as
+`azui` and showed unreadable sections as permission denied, and stopping the
+UI stopped nothing else. The record, its screenshots and what it does **not**
+show (no VM, no hardware, no hands-on Chrome session on a Mac) are in
+[ui-browser-2026-10-29.md](evidence/ui-browser-2026-10-29.md).
 
 The UI is a local web page that shows what `azazel-nexus status --json`
 (schema `azazel-nexus/status-view/1`) and `azazel-nexus setup --json` show,
@@ -142,6 +148,20 @@ or `collection` goes through the label table and every `reason_code`,
 `reason` and `conditions` entry through the reason table (`app.js`
 `WORD_KEYS`/`REASON_KEYS`, kept equal to the tests).
 Each card shows when it was observed and how long ago.
+Field names in a card's table are shown in Japanese with the field name
+beside them (`labels.json` `keys`); fixed English sentences (the M.I.O.
+notice, the setup notice, the handoff notice, what Knowledge Lite's
+"functional" means and does not mean, the external modules' reasons) are
+shown in Japanese with the original in small type (`texts`); any other
+English sentence is shown as the original, labelled so. A field name or a
+fixed sentence without a label fails the tests. Storage and the units list
+are tables, one row per location or unit, sizes in readable units.
+
+Knowledge Lite and the M.I.O. route are each shown twice: as read directly
+by `azui`, and as the owning daemon's snapshot. Each card says which path it
+is; a direct read `azui` may not make says so and points at the snapshot;
+and when the two disagree, both cards say they disagree rather than leaving
+one of them to look wrong.
 
 | Screen | Shows | Source |
 | --- | --- | --- |

@@ -1,0 +1,802 @@
+{
+ "chromium": {
+  "protocolVersion": "1.3",
+  "product": "Chrome/156.0.8078.47",
+  "revision": "@1d17a2e2ee147bb7d6ae2ab6abdb3a2510c17775",
+  "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+  "jsVersion": "15.6.75.19"
+ },
+ "states": {
+  "systemd": {
+   "label": "systemd",
+   "screens": {
+    "overview": {
+     "png": "systemd-overview.png",
+     "bytes": 162710,
+     "raw_bytes": 564877,
+     "width": 1280,
+     "height": 2511,
+     "page_height": 2511
+    },
+    "incidents": {
+     "png": "systemd-incidents.png",
+     "bytes": 36092,
+     "raw_bytes": 135651,
+     "width": 1280,
+     "height": 1000,
+     "page_height": 1000
+    },
+    "noc": {
+     "png": "systemd-noc.png",
+     "bytes": 57615,
+     "raw_bytes": 185329,
+     "width": 1280,
+     "height": 1441,
+     "page_height": 1441
+    },
+    "knowledge": {
+     "png": "systemd-knowledge.png",
+     "bytes": 104641,
+     "raw_bytes": 362020,
+     "width": 1280,
+     "height": 1898,
+     "page_height": 1898
+    },
+    "setup": {
+     "png": "systemd-setup.png",
+     "bytes": 133579,
+     "raw_bytes": 463438,
+     "width": 1280,
+     "height": 2600,
+     "page_height": 3832
+    }
+   },
+   "cards": [
+    {
+     "panel": "overview",
+     "title": "防御状態（Edge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "checks_not_all_passed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "実行モード",
+     "tone": "info",
+     "word": "observe-only（実行結果を受理しない構成）",
+     "en": "observe-only-fixed",
+     "mark": "◆",
+     "reason": "nexus_accepts_observe_only",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "通信（NOC）",
+     "tone": "unknown",
+     "word": "権限なし",
+     "en": "permission_denied",
+     "mark": "？",
+     "reason": "access_permission_denied",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（M.I.O.）",
+     "tone": "unknown",
+     "word": "権限なし",
+     "en": "permission_denied",
+     "mark": "？",
+     "reason": "access_permission_denied",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "AI 経路（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "権限なし",
+     "en": "permission_denied",
+     "mark": "？",
+     "reason": "access_permission_denied",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "権限なし",
+     "en": "permission_denied",
+     "mark": "？",
+     "reason": "access_permission_denied",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "権限なし",
+     "en": "permission_denied",
+     "mark": "？",
+     "reason": "access_permission_denied",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "サービス",
+     "tone": "unknown",
+     "word": "権限なし",
+     "en": "permission_denied",
+     "mark": "？",
+     "reason": "access_permission_denied",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "保存容量",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Edge 受信（intake）",
+     "tone": "unknown",
+     "word": "権限なし",
+     "en": "permission_denied",
+     "mark": "？",
+     "reason": "access_permission_denied",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "説明器（explainer）",
+     "tone": "unknown",
+     "word": "権限なし",
+     "en": "permission_denied",
+     "mark": "？",
+     "reason": "access_permission_denied",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "Fabric 状態表示",
+     "tone": "unknown",
+     "word": "未導入",
+     "en": "not_installed",
+     "mark": "？",
+     "reason": "fabric_extra_not_installed",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "overview",
+     "title": "継続するもの",
+     "tone": "info",
+     "word": "継続",
+     "en": "continuing",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "Edge 受信（intake）",
+     "tone": "unknown",
+     "word": "権限なし",
+     "en": "permission_denied",
+     "mark": "？",
+     "reason": "access_permission_denied",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "incidents",
+     "title": "最近のインシデント（一覧の snapshot）",
+     "tone": "unknown",
+     "word": "権限なし",
+     "en": "permission_denied",
+     "mark": "？",
+     "reason": "access_permission_denied",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "noc",
+     "title": "NOC 受動観測",
+     "tone": "unknown",
+     "word": "権限なし",
+     "en": "permission_denied",
+     "mark": "？",
+     "reason": "access_permission_denied",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite",
+     "tone": "unknown",
+     "word": "権限なし",
+     "en": "permission_denied",
+     "mark": "？",
+     "reason": "access_permission_denied",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "Knowledge Lite（運用者向け snapshot）",
+     "tone": "unknown",
+     "word": "権限なし",
+     "en": "permission_denied",
+     "mark": "？",
+     "reason": "access_permission_denied",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "外部 Knowledge peer（AZ-04 Knowledge）",
+     "tone": "unknown",
+     "word": "なし（未構成）",
+     "en": "absent",
+     "mark": "？",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "knowledge",
+     "title": "引用元（最近のインシデントの参照根拠）",
+     "tone": "info",
+     "word": "なし",
+     "en": "none",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "installed-files",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "host-preflight",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commissioning",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "commission-review",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-deployment",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "bootstrap-selection",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-store",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "knowledge-trust",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mission-pack",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "fetch-commissioning",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "model-import-fetched",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider-admission",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "activation-units",
+     "tone": "warn",
+     "word": "要対応",
+     "en": "needed",
+     "mark": "▲",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "integration-broker",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "mio-configuration",
+     "tone": "info",
+     "word": "対象外",
+     "en": "not-applicable",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "provider admission（提供元の承認）",
+     "tone": "bad",
+     "word": "阻止中",
+     "en": "blocked",
+     "mark": "■",
+     "reason": "",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：systemd units",
+     "tone": "unknown",
+     "word": "不明",
+     "en": "unknown",
+     "mark": "？",
+     "reason": "service_manager_not_queried",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "health：audit",
+     "tone": "unknown",
+     "word": "権限なし",
+     "en": "permission_denied",
+     "mark": "？",
+     "reason": "access_permission_denied",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "サービス（unit ごと）",
+     "tone": "unknown",
+     "word": "権限なし",
+     "en": "permission_denied",
+     "mark": "？",
+     "reason": "access_permission_denied",
+     "ok_badges_inside": 0
+    },
+    {
+     "panel": "setup",
+     "title": "保存容量（場所ごと）",
+     "tone": "info",
+     "word": "測定済み",
+     "en": "measured",
+     "mark": "◆",
+     "reason": "",
+     "ok_badges_inside": 0
+    }
+   ],
+   "unlabelled_field_names": [],
+   "banner": "出所：このノードの read model（azazel-nexus status --json、アカウント azui で読取）",
+   "conn": "最終取得：9:19:39",
+   "access_words": [
+    [
+     "panel-overview",
+     "防御状態（Edge）",
+     "absent",
+     "checks_not_all_passed"
+    ],
+    [
+     "panel-overview",
+     "実行モード",
+     "observe-only-fixed",
+     "nexus_accepts_observe_only"
+    ],
+    [
+     "panel-overview",
+     "通信（NOC）",
+     "permission_denied",
+     "access_permission_denied"
+    ],
+    [
+     "panel-overview",
+     "AI 経路（M.I.O.）",
+     "permission_denied",
+     "access_permission_denied"
+    ],
+    [
+     "panel-overview",
+     "AI 経路（運用者向け snapshot）",
+     "permission_denied",
+     "access_permission_denied"
+    ],
+    [
+     "panel-overview",
+     "Knowledge Lite",
+     "permission_denied",
+     "access_permission_denied"
+    ],
+    [
+     "panel-overview",
+     "Knowledge Lite（運用者向け snapshot）",
+     "permission_denied",
+     "access_permission_denied"
+    ],
+    [
+     "panel-overview",
+     "サービス",
+     "permission_denied",
+     "access_permission_denied"
+    ],
+    [
+     "panel-overview",
+     "保存容量",
+     "measured",
+     null
+    ],
+    [
+     "panel-overview",
+     "Edge 受信（intake）",
+     "permission_denied",
+     "access_permission_denied"
+    ],
+    [
+     "panel-overview",
+     "説明器（explainer）",
+     "permission_denied",
+     "access_permission_denied"
+    ],
+    [
+     "panel-overview",
+     "Fabric 状態表示",
+     "not_installed",
+     "fabric_extra_not_installed"
+    ],
+    [
+     "panel-overview",
+     "継続するもの",
+     "continuing",
+     null
+    ],
+    [
+     "panel-incidents",
+     "Edge 受信（intake）",
+     "permission_denied",
+     "access_permission_denied"
+    ],
+    [
+     "panel-incidents",
+     "最近のインシデント（一覧の snapshot）",
+     "permission_denied",
+     "access_permission_denied"
+    ],
+    [
+     "panel-noc",
+     "NOC 受動観測",
+     "permission_denied",
+     "access_permission_denied"
+    ],
+    [
+     "panel-knowledge",
+     "Knowledge Lite",
+     "permission_denied",
+     "access_permission_denied"
+    ],
+    [
+     "panel-knowledge",
+     "Knowledge Lite（運用者向け snapshot）",
+     "permission_denied",
+     "access_permission_denied"
+    ],
+    [
+     "panel-knowledge",
+     "外部 Knowledge peer（AZ-04 Knowledge）",
+     "absent",
+     null
+    ],
+    [
+     "panel-knowledge",
+     "引用元（最近のインシデントの参照根拠）",
+     "none",
+     null
+    ],
+    [
+     "panel-setup",
+     "installed-files",
+     "needed",
+     null
+    ],
+    [
+     "panel-setup",
+     "host-preflight",
+     "needed",
+     null
+    ],
+    [
+     "panel-setup",
+     "commissioning",
+     "blocked",
+     null
+    ],
+    [
+     "panel-setup",
+     "commission-review",
+     "needed",
+     null
+    ],
+    [
+     "panel-setup",
+     "bootstrap-deployment",
+     "blocked",
+     null
+    ],
+    [
+     "panel-setup",
+     "bootstrap-selection",
+     "blocked",
+     null
+    ],
+    [
+     "panel-setup",
+     "knowledge-store",
+     "blocked",
+     null
+    ],
+    [
+     "panel-setup",
+     "knowledge-trust",
+     "blocked",
+     null
+    ],
+    [
+     "panel-setup",
+     "mission-pack",
+     "blocked",
+     null
+    ],
+    [
+     "panel-setup",
+     "fetch-commissioning",
+     "blocked",
+     null
+    ],
+    [
+     "panel-setup",
+     "model-import-fetched",
+     "blocked",
+     null
+    ],
+    [
+     "panel-setup",
+     "provider-admission",
+     "blocked",
+     null
+    ],
+    [
+     "panel-setup",
+     "activation-units",
+     "needed",
+     null
+    ],
+    [
+     "panel-setup",
+     "integration-broker",
+     "not-applicable",
+     null
+    ],
+    [
+     "panel-setup",
+     "mio-configuration",
+     "not-applicable",
+     null
+    ],
+    [
+     "panel-setup",
+     "provider admission（提供元の承認）",
+     "blocked",
+     null
+    ],
+    [
+     "panel-setup",
+     "health：systemd units",
+     "unknown",
+     "service_manager_not_queried"
+    ],
+    [
+     "panel-setup",
+     "health：audit",
+     "permission_denied",
+     "access_permission_denied"
+    ],
+    [
+     "panel-setup",
+     "サービス（unit ごと）",
+     "permission_denied",
+     "access_permission_denied"
+    ],
+    [
+     "panel-setup",
+     "保存容量（場所ごと）",
+     "measured",
+     null
+    ]
+   ]
+  }
+ },
+ "login": {
+  "logged_in": true,
+  "login_form_hidden": true
+ },
+ "requests": [
+  "http://127.0.0.1:8443/",
+  "http://127.0.0.1:8443/static/app.css",
+  "http://127.0.0.1:8443/static/app.js",
+  "http://127.0.0.1:8443/static/labels.json",
+  "http://127.0.0.1:8443/api/session",
+  "http://127.0.0.1:8443/favicon.ico",
+  "http://127.0.0.1:8443/api/login",
+  "http://127.0.0.1:8443/api/view"
+ ],
+ "console": [
+  {
+   "kind": "log",
+   "level": "warning",
+   "source": "security",
+   "text": "Error with Permissions-Policy header: Unrecognized feature: 'bluetooth'."
+  },
+  {
+   "kind": "log",
+   "level": "error",
+   "source": "network",
+   "text": "Failed to load resource: the server responded with a status of 404 (Not Found)"
+  }
+ ],
+ "netlog": {
+  "events": 1135,
+  "requests": 10,
+  "page_initiated": [
+   {
+    "url": "http://127.0.0.1:8443/static/app.css",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/static/app.js",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/static/labels.json",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/session",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/favicon.ico",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/login",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "POST",
+    "net_error": null
+   },
+   {
+    "url": "http://127.0.0.1:8443/api/view",
+    "initiator": "http://127.0.0.1:8443",
+    "method": "GET",
+    "net_error": null
+   }
+  ],
+  "page_initiated_external": [],
+  "browser_initiated": [
+   {
+    "url": "https://update.googleapis.com/service/update2/json",
+    "initiator": "not an origin",
+    "method": "POST",
+    "net_error": -106
+   },
+   {
+    "url": "http://update.googleapis.com/service/update2/json",
+    "initiator": "not an origin",
+    "method": "POST",
+    "net_error": -106
+   },
+   {
+    "url": "http://127.0.0.1:8443/",
+    "initiator": "not an origin",
+    "method": "GET",
+    "net_error": null
+   }
+  ],
+  "browser_initiated_completed": [],
+  "external_completed": []
+ }
+}

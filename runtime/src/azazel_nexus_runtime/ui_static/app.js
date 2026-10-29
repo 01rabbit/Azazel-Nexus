@@ -77,6 +77,40 @@
     return node;
   }
 
+  /* A field name: its Japanese label with the name itself in small type. */
+  function keyLabel(key) {
+    var table = state.labels && state.labels.keys ? state.labels.keys : {};
+    var known = Object.prototype.hasOwnProperty.call(table, key);
+    var node = el("span", "key");
+    add(node, el("span", null, known ? table[key] : "（未登録の項目名）"), el("span", "en", key));
+    return node;
+  }
+
+  function knownText(value) {
+    var table = state.labels && state.labels.texts ? state.labels.texts : {};
+    return typeof value === "string" && Object.prototype.hasOwnProperty.call(table, value) ? table[value] : null;
+  }
+
+  /* A sentence from the node. A fixed one is shown in Japanese with the
+     original in small type; any other is shown as the original, labelled so. */
+  function prose(value) {
+    if (value === null || value === undefined || value === "") { return null; }
+    var original = String(value);
+    var ja = knownText(original);
+    var node = el("div", "prose");
+    if (ja !== null) { add(node, el("p", null, ja), el("p", "small orig", "原文：" + original)); }
+    else { node.appendChild(el("p", "small orig", "詳細（英語の原文）：" + original)); }
+    return node;
+  }
+
+  function humanBytes(n) {
+    if (typeof n !== "number" || !isFinite(n) || n < 0) { return null; }
+    var units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    var i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? String(n) : n.toFixed(n < 10 ? 2 : 1)) + " " + units[i];
+  }
+
   function toEpoch(value) {
     if (typeof value === "number" && isFinite(value)) { return value * 1000; }
     if (typeof value === "string") { var t = Date.parse(value); return isNaN(t) ? null : t; }
@@ -116,7 +150,9 @@
       if (!row) { return; }
       var dd = el("dd");
       if (row[1] instanceof Node) { dd.appendChild(row[1]); } else { dd.textContent = text(row[1]); }
-      add(dl, el("dt", null, row[0]), dd);
+      var dt = el("dt");
+      if (row[0] instanceof Node) { dt.appendChild(row[0]); } else { dt.textContent = text(row[0]); }
+      add(dl, dt, dd);
     });
     return dl;
   }
@@ -134,7 +170,7 @@
     opts = opts || {};
     var w = word(value);
     var tone = opts.tone || w.tone;
-    var node = el("article", "card tone-" + tone);
+    var node = el("article", "card tone-" + tone + (opts.wide ? " wide" : ""));
     add(node, el("h3", null, title), badge(value, opts.tone), reasonLine(opts.reason));
     if (opts.time) { node.appendChild(opts.time); }
     (opts.children || []).forEach(function (child) { if (child) { node.appendChild(child); } });
@@ -200,11 +236,13 @@
     var rows = [];
     Object.keys(value).sort().forEach(function (key) {
       var v = value[key];
-      if (WORD_KEYS[key] && typeof v === "string") { rows.push([key, badge(v)]); }
-      else if (REASON_KEYS[key] && typeof v === "string") { rows.push([key, reasonLine(v)]); }
-      else if (key === "conditions" && Array.isArray(v) && v.length) { rows.push([key, list(v.map(reasonLine))]); }
-      else if (v !== null && typeof v === "object") { rows.push([key, tree(v, depth + 1)]); }
-      else { rows.push([key, v]); }
+      if (WORD_KEYS[key] && typeof v === "string") { rows.push([keyLabel(key), badge(v)]); }
+      else if (REASON_KEYS[key] && typeof v === "string") { rows.push([keyLabel(key), reasonLine(v)]); }
+      else if (key === "conditions" && Array.isArray(v) && v.length) { rows.push([keyLabel(key), list(v.map(reasonLine))]); }
+      else if (/_at$/.test(key) && typeof v === "number") { rows.push([keyLabel(key), when("時刻", v)]); }
+      else if (knownText(v) !== null) { rows.push([keyLabel(key), prose(v)]); }
+      else if (v !== null && typeof v === "object") { rows.push([keyLabel(key), tree(v, depth + 1)]); }
+      else { rows.push([keyLabel(key), v]); }
     });
     return kv(rows);
   }
@@ -227,7 +265,91 @@
     var source = sec.source || {};
     return card(title, s.status, { reason: s.reason,
       time: when("観測時刻", source.written_at || source.observed_at, source.reason_code),
-      children: [tree(rows, 0)] });
+      children: (opts.notes || []).concat([tree(rows, 0)]) });
+  }
+
+  /* Storage: one row per location -- where, its word, available / total in
+     readable units. A null value is left out, never shown as "なし". */
+  function storageCard(title, sec) {
+    var source = sec.source || {};
+    var table = el("table", "loc");
+    var head = el("tr");
+    ["場所", "状態", "空き / 全体"].forEach(function (h) { head.appendChild(el("th", null, h)); });
+    table.appendChild(head);
+    var keys = state.labels && state.labels.keys ? state.labels.keys : {};
+    (sec.locations || []).forEach(function (loc) {
+      var tr = el("tr");
+      var where = el("td");
+      var name = Object.prototype.hasOwnProperty.call(keys, loc.label) ? keys[loc.label] : text(loc.label);
+      add(where, el("span", null, name), el("span", "en", loc.label));
+      if (loc.read_only === true) { where.appendChild(el("span", "note", "読取専用")); }
+      if (loc.same_filesystem_as) {
+        var same = Object.prototype.hasOwnProperty.call(keys, loc.same_filesystem_as) ? keys[loc.same_filesystem_as] : loc.same_filesystem_as;
+        where.appendChild(el("span", "note", "「" + same + "」と同じファイルシステム"));
+      }
+      var st = el("td");
+      add(st, badge(loc.status), loc.reason_code ? reasonLine(loc.reason_code) : null);
+      var size = el("td", "num");
+      var avail = humanBytes(loc.available_bytes);
+      var total = humanBytes(loc.total_bytes);
+      if (avail !== null || total !== null) { size.textContent = (avail !== null ? avail : "") + (total !== null ? " / " + total : ""); }
+      add(tr, where, st, size);
+      table.appendChild(tr);
+    });
+    var s = statusWithAccess(sec.status, sec.reason_code, null);
+    return card(title, s.status, { reason: s.reason, wide: true,
+      time: when("観測時刻", source.observed_at, source.reason_code),
+      children: [table, el("p", "small", "空きは root 以外が使える量（available）。")] });
+  }
+
+  /* Units: one row per unit -- its word, systemd's three states, the reason. */
+  function unitsCard(title, sec) {
+    var s = statusWithAccess(sec.status, sec.reason_code, "units_status");
+    var source = sec.source || {};
+    var units = sec.snapshot && Array.isArray(sec.snapshot.units) ? sec.snapshot.units : [];
+    var children = [];
+    if ((sec.conditions || []).length) { children.push(list(sec.conditions.map(reasonLine))); }
+    if (units.length) {
+      var table = el("table", "loc");
+      var head = el("tr");
+      ["unit", "状態", "systemd（読込・稼働・詳細）"].forEach(function (h) { head.appendChild(el("th", null, h)); });
+      table.appendChild(head);
+      units.forEach(function (u) {
+        var tr = el("tr");
+        var st = el("td");
+        add(st, badge(u.status), u.reason_code ? reasonLine(u.reason_code) : null);
+        var states = [u.load_state, u.active_state, u.sub_state].filter(function (x) { return x !== null && x !== undefined; });
+        add(tr, el("td", "unit", text(u.unit)), st, el("td", null, states.join(" / ")));
+        table.appendChild(tr);
+      });
+      children.push(table);
+    }
+    return card(title, s.status, { reason: s.reason, wide: true,
+      time: when("観測時刻", source.written_at, source.reason_code), children: children });
+  }
+
+  function positive(status) {
+    var tone = word(status).tone;
+    return tone === "ok" || tone === "info";
+  }
+
+  /* The same thing read two ways: directly by this page's account, and from
+     the snapshot its daemon writes. Each card says which path it is; a direct
+     read this account may not make says so; and when the two disagree, both
+     cards say they disagree instead of leaving one to look wrong. */
+  function pairNotes(direct, snapSec, snapAccess, daemon) {
+    var snap = snapSec ? statusWithAccess(snapSec.status, snapSec.reason_code, snapAccess) : null;
+    var forDirect = [el("p", "small path", "経路：この画面のアカウント（azui）が直接読んだ結果")];
+    var forSnap = [el("p", "small path", "経路：daemon（" + daemon + "）が書いた snapshot。直接の読取とは別の経路")];
+    if (direct.status === "permission_denied") {
+      forDirect.push(el("p", "note", "このアカウントでは直接読めません。daemon の snapshot（「運用者向け snapshot」のカード）を参照してください。"));
+    } else if (snap && snap.status !== "permission_denied" && positive(direct.status) !== positive(snap.status)) {
+      var said = "▲ 直接の読取（" + word(direct.status).ja + "）と daemon の snapshot（" + word(snap.status).ja +
+        "）が一致しません。直接の読取は情報源が無い・読めない・壊れている場合に、snapshot は daemon が別の状態を見ているか古い場合に食い違います。各カードの理由と時刻を確認してください。";
+      forDirect.push(el("p", "note warn", said));
+      forSnap.push(el("p", "note warn", said));
+    }
+    return { direct: forDirect, snap: forSnap };
   }
 
   // -- screens ---------------------------------------------------------------
@@ -242,8 +364,8 @@
         ? when("probe 観測時刻", edge.probe.observed_at) : evaluatedAt(),
       children: [kv([
         ["Edge 準備完了", edge.ready],
-        ["enforcement ready", enf.enforcement_ready],
-        ["edge-baseline-ready", enf.edge_baseline_ready],
+        ["執行の準備（enforcement ready）", enf.enforcement_ready],
+        ["Edge 基準の準備（edge-baseline-ready）", enf.edge_baseline_ready],
         ["commissioning 記録", enf.commissioning_record],
         ["probe 結果", edge.probe ? edge.probe.result : null],
         ["セキュリティ上の指摘", (edge.findings || []).filter(function (f) { return f.security; }).length + " 件"]
@@ -262,25 +384,27 @@
     // stale comes only from the writer's liveness evidence (#358 option 1).
     var live = mio.liveness || {};
     var evidence = { operator_snapshot: "運用者向け snapshot", route_ledger_record: "route ledger の記録" };
+    var mioSnap = section("mio_status");
+    var mioNotes = pairNotes(mioStatus, mioSnap, "mio_status", "mio-entryd");
     add(grid, card("AI 経路（M.I.O.）", mioStatus.status, { reason: mioStatus.reason,
       time: when("記録時刻", reading.observed_at, mio.reason_code),
-      children: [kv([["上限（記録）", reading.ceiling], ["状態", reading.state],
+      children: mioNotes.direct.concat([kv([["上限（記録）", reading.ceiling], ["状態", reading.state],
         ["変化していない期間（情報）", duration(mio.age_s)],
         ["書き手（entryd）の生存", badge(live.status)],
         ["生存の証拠", Object.prototype.hasOwnProperty.call(evidence, live.evidence) ? evidence[live.evidence] : "なし"],
         live.reason_code ? ["生存の判定理由", reasonLine(live.reason_code)] : null]),
-        el("p", "small", reading.notice || "")] }));
-    var mioSnap = section("mio_status");
-    add(grid, mioSnap ? genericCard("AI 経路（運用者向け snapshot）", mioSnap, { compact: true, access: "mio_status" })
-      : pendingCard("AI 経路（運用者向け snapshot）", "mio_status"));
+        prose(reading.notice)]) }));
+    add(grid, mioSnap ? genericCard("AI 経路（運用者向け snapshot）", mioSnap, { compact: true, access: "mio_status",
+      notes: mioNotes.snap }) : pendingCard("AI 経路（運用者向け snapshot）", "mio_status"));
     var kl = section("knowledge_lite") || {};
     var klStatus = statusWithAccess(kl.status, kl.reason_code, "knowledge_lite");
-    add(grid, card("Knowledge Lite", klStatus.status, { reason: klStatus.reason,
-      time: evaluatedAt(), children: [kv([["鮮度", kl.freshness ? badge(kl.freshness) : null],
-        ["世代", kl.generation]])] }));
     var ks = section("knowledge_status");
-    add(grid, ks ? genericCard("Knowledge Lite（運用者向け snapshot）", ks, { compact: true, access: "knowledge_status" })
-      : pendingCard("Knowledge Lite（運用者向け snapshot）", "knowledge_status"));
+    var klNotes = pairNotes(klStatus, ks, "knowledge_status", "knowledge-lited");
+    add(grid, card("Knowledge Lite", klStatus.status, { reason: klStatus.reason,
+      time: evaluatedAt(), children: klNotes.direct.concat([kv([["鮮度", kl.freshness ? badge(kl.freshness) : null],
+        ["世代", kl.generation]])]) }));
+    add(grid, ks ? genericCard("Knowledge Lite（運用者向け snapshot）", ks, { compact: true, access: "knowledge_status",
+      notes: klNotes.snap }) : pendingCard("Knowledge Lite（運用者向け snapshot）", "knowledge_status"));
     var services = section("services");
     var units = (section("health") || []).filter(function (h) { return h.subject === "systemd units"; })[0];
     add(grid, services ? genericCard("サービス", services, { compact: true, access: "units_status" }) : card("サービス", "not_collected", {
@@ -288,7 +412,7 @@
       children: units ? [reasonLine(units.reason_code)] : [] }));
     var storage = section("storage");
     var audit = (section("health") || []).filter(function (h) { return h.subject === "audit"; })[0];
-    if (storage) { add(grid, genericCard("保存容量", storage)); } else {
+    if (storage) { add(grid, storageCard("保存容量", storage)); } else {
       var auditStatus = audit ? statusWithAccess(audit.status, audit.reason_code, "audit_status") : { status: null, reason: null };
       add(grid, card("保存容量", "not_collected", { reason: state.model.pending.storage, time: evaluatedAt(),
         children: [block("監査の容量（auditd の snapshot）"), audit ? badge(auditStatus.status) : null,
@@ -309,7 +433,8 @@
       children: [kv([["版", fabric.version]])] }));
     var integ = section("integration") || {};
     add(grid, card("継続するもの", "continuing", { tone: "info", time: evaluatedAt(),
-      children: [el("p", null, "どの状態でも継続：" + text(integ.continues || []))] }));
+      children: [el("p", null, "どの状態でも継続：" + text((integ.continues || []).map(function (c) {
+        var ja = knownText(c); return ja === null ? c : ja + "（" + c + "）"; })))] }));
     panel.appendChild(grid);
   }
 
@@ -356,7 +481,7 @@
     add(advice, badge(ex.content_kind), kv([["状態", badge(ex.state)], ["経路", ex.route], ["結果", ex.outcome],
       ["失敗コード", ex.failure_codes]]));
     if (ex.summary) { add(advice, el("p", "small", "要約（表示用テキスト。指示として扱わない）："), el("p", "summary", ex.summary)); }
-    if (ex.notice) { add(advice, el("p", "summary", ex.notice)); }
+    if (ex.notice) { add(advice, prose(ex.notice)); }
     var refs = block("参照根拠");
     var items = (ex.knowledge_refs || []).map(citation);
     add(refs, items.length ? list(items) : el("p", null, "参照根拠なし"));
@@ -435,21 +560,22 @@
     var s = statusWithAccess(kl.status, kl.reason_code, "knowledge_lite");
     var readiness = kl.readiness || {};
     var crypto = kl.cryptographic_implementation || {};
-    add(grid, card("Knowledge Lite", s.status, { reason: s.reason, time: evaluatedAt(), children: [
+    var ks = section("knowledge_status");
+    var notes = pairNotes(s, ks, "knowledge_status", "knowledge-lited");
+    add(grid, card("Knowledge Lite", s.status, { reason: s.reason, time: evaluatedAt(), children: notes.direct.concat([
       kv([["鮮度", kl.freshness ? badge(kl.freshness) : null], ["世代", kl.generation],
         ["機能としての成立", readiness.word], ["暗号実装", crypto.status ? badge(crypto.status) : null]]),
       block("bundle（信頼済みのときだけ）"), bundleFacts(kl),
-      reasonLine(crypto.reason_code), block("意味すること"), el("p", null, readiness.means || ""),
-      block("意味しないこと"), list(readiness.does_not_mean || [])] }));
-    var ks = section("knowledge_status");
-    add(grid, ks ? genericCard("Knowledge Lite（運用者向け snapshot）", ks, { access: "knowledge_status" })
+      reasonLine(crypto.reason_code), block("意味すること"), prose(readiness.means),
+      block("意味しないこと"), list((readiness.does_not_mean || []).map(prose))]) }));
+    add(grid, ks ? genericCard("Knowledge Lite（運用者向け snapshot）", ks, { access: "knowledge_status", notes: notes.snap })
       : pendingCard("Knowledge Lite（運用者向け snapshot）", "knowledge_status"));
     var modules = section("external_modules") || [];
     modules.forEach(function (m) {
       if (String(m.name).indexOf("Knowledge") === -1) { return; }
       add(grid, card("外部 Knowledge peer（" + text(m.name) + "）", m.state, { time: evaluatedAt(), children: [
         el("p", null, m.state === "absent" ? "未設定：peer は commission されていません（無いのが設計どおりの状態）。" : ""),
-        el("p", "small", m.reason)] }));
+        prose(m.reason)] }));
     });
     var refs = [];
     var loop = section("edge_loop") || {};
@@ -479,12 +605,12 @@
     } else {
       (guide.steps || []).forEach(function (step) {
         grid.appendChild(card(text(step.name), step.status, { time: evaluatedAt(), children: [
-          el("p", null, step.reason || ""), step.next_command ? el("span", "small", "次のコマンド（表示のみ）") : null,
+          prose(step.reason), step.next_command ? el("span", "small", "次のコマンド（表示のみ）") : null,
           step.next_command ? el("code", "cmd", step.next_command) : null] }));
       });
-      grid.appendChild(card("provider admission", guide.provider_admission, { time: evaluatedAt(),
-        children: [kv([["HG-05", guide.hg05], ["enforcement readiness", guide.enforcement_readiness]]),
-          el("p", "small", guide.notice || "")] }));
+      grid.appendChild(card("provider admission（提供元の承認）", guide.provider_admission, { time: evaluatedAt(),
+        children: [kv([["HG-05（Core 予約の測定）", guide.hg05], ["執行の準備（enforcement readiness）", guide.enforcement_readiness]]),
+          prose(guide.notice)] }));
     }
     var loop = section("edge_loop") || {};
     var explainer = loop.explainer && loop.explainer.snapshot ? loop.explainer.snapshot : null;
@@ -498,13 +624,13 @@
       grid.appendChild(card("health：" + text(h.subject), s.status === "ok" ? "ok" : s.status, {
         reason: s.reason, time: h.source && h.source.written_at !== undefined
           ? when("観測時刻", h.source.written_at, h.source.reason_code) : evaluatedAt(),
-        children: [h.detail ? el("p", "small", h.detail) : null] }));
+        children: [prose(h.detail)] }));
     });
     var services = section("services");
-    add(grid, services ? genericCard("サービス（unit ごと）", services, { access: "units_status" })
+    add(grid, services ? unitsCard("サービス（unit ごと）", services)
       : pendingCard("サービス（unit ごと）", "services"));
     var storage = section("storage");
-    add(grid, storage ? genericCard("保存容量（場所ごと）", storage) : pendingCard("保存容量（場所ごと）", "storage"));
+    add(grid, storage ? storageCard("保存容量（場所ごと）", storage) : pendingCard("保存容量（場所ごと）", "storage"));
     var actions = section("next_actions") || [];
     var acts = el("div", "card tone-info");
     acts.appendChild(el("h3", null, "次の操作（status の next）"));
@@ -514,7 +640,7 @@
       if (a.lab_host_unavailable_step) {
         item.appendChild(el("p", null, a.lab_host_unavailable_step + "：ラボホストでは利用不可（本番配備が必要）"));
       } else {
-        add(item, el("p", null, a.summary === null ? "（端末でのみ表示する内容）" : a.summary),
+        add(item, a.summary === null ? el("p", null, "（端末でのみ表示する内容）") : prose(a.summary),
           a.command ? el("code", "cmd", a.command) : null);
       }
       acts.appendChild(item);

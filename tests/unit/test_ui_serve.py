@@ -713,6 +713,19 @@ def test_the_page_has_no_inline_code_style_or_outside_resource():
     assert "url(" not in css and "@import" not in css and "http" not in css
 
 
+def test_nested_tables_stack_and_times_are_shown_as_times():
+    """U6 (headless Chromium): a deep NOC tree squeezed values into a column a
+    few characters wide and out of its card, and `*_at` epoch seconds were
+    shown as raw numbers. The browser record is the evidence; this pins the fix."""
+    css = (STATIC / "app.css").read_text(encoding="utf-8")
+    assert ".grid > * { min-width: 0; }" in css
+    assert "dl.kv dl.kv { grid-template-columns: minmax(0, 1fr);" in css
+    assert re.search(r"dl\.kv \{[^}]*minmax\(9em, 1fr\)", css)
+    assert "#panel-noc .grid { grid-template-columns: minmax(0, 1fr); }" in css
+    script = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert '/_at$/.test(key) && typeof v === "number"' in script
+
+
 # -- labels: one table, unknown never healthy ---------------------------------------------------
 
 
@@ -1010,6 +1023,88 @@ def test_every_word_and_code_of_the_operator_and_noc_sections_has_a_label(tmp_pa
              | set(noc_status.UNKNOWN_REASONS) | set(noc_status.COLLECTION_REASONS))
     assert sorted(every - set(labels["reasons"])) == []
     assert "SECRET" not in json.dumps(built)
+
+
+#: The sections whose fields a card shows as a table of field names
+#: (`genericCard`/`tree` in `app.js`). Their field names go through `keys`.
+TREE_SECTIONS = ("noc", "mio_status", "knowledge_status", "services", "storage")
+
+
+def _field_names(value, names):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            names.add(key)
+            _field_names(item, names)
+    elif isinstance(value, list):
+        for item in value:
+            _field_names(item, names)
+
+
+def test_every_field_name_a_card_shows_has_a_japanese_label(tmp_path, monkeypatch):
+    """U6 follow-up: `conditions`, `freshness`, `notice`, ... were shown in English.
+    Every field name the tree cards can show -- reached by the operator and NOC
+    sections in every state, and every field the read model's allowlist admits
+    under them -- has a Japanese label; a name without one fails here."""
+    from test_status_view import ALLOWED
+
+    keys = _labels()["keys"]
+    names = set()
+    for section in _operator_sections(tmp_path, monkeypatch):
+        _field_names(section, names)
+    for path in ALLOWED:
+        parts = path.split(".")
+        if parts[0] == "sections" and len(parts) > 1 and parts[1] in TREE_SECTIONS:
+            names |= {part.removesuffix("[]") for part in parts[2:] if part != "{code}"}
+        # The M.I.O. card's liveness rows (#370) are named through the same table.
+        if parts[:2] == ["sections", "mio"] and len(parts) > 2 and parts[2] in (
+                "age_s", "age_reason", "liveness"):
+            names |= set(parts[2:])
+    names -= {""}
+    assert sorted(names - set(keys)) == []
+    for key, label in keys.items():
+        assert isinstance(label, str) and label and not label.isascii(), key
+    from azazel_nexus.operator_snapshots import STORAGE_LOCATIONS
+    assert sorted({label for label, _ in STORAGE_LOCATIONS} - set(keys)) == []
+    script = _code((STATIC / "app.js").read_text(encoding="utf-8"))
+    assert "rows.push([keyLabel(key)" in script
+
+
+def test_fixed_english_sentences_have_a_japanese_rendering():
+    """The fixed notices the page shows (M.I.O., setup, handoff, Knowledge Lite's
+    meaning, external modules) are shown in Japanese with the original beside
+    it in small type; a dynamic sentence is shown as the original, labelled so."""
+    from azazel_nexus import cli, integration, mio_status, operator_flow
+    from azazel_nexus.functional_readiness import READINESS
+    from azazel_nexus.local_advisory import HANDOFF_NOTICE
+
+    texts = _labels()["texts"]
+    readiness = READINESS["knowledge_lite"]
+    fixed = {mio_status.NOTICE, operator_flow.NOTICE, HANDOFF_NOTICE["en"], readiness.means,
+             *readiness.does_not_mean, *(reason for _, reason in cli.EXTERNAL_MODULES),
+             *integration.NEXUS_ALWAYS, "local-only decoy observation", "Knowledge Lite advice",
+             "local M.I.O. explanations", "Edge deterministic decisions"}
+    assert sorted(fixed - set(texts)) == []
+    assert texts[HANDOFF_NOTICE["en"]] == HANDOFF_NOTICE["ja"]
+    for en, ja in texts.items():
+        assert ja and not ja.isascii(), en
+    script = _code((STATIC / "app.js").read_text(encoding="utf-8"))
+    for call in ("prose(reading.notice)", "prose(guide.notice)", "prose(ex.notice)",
+                 "prose(readiness.means)", "prose(m.reason)", "prose(step.reason)",
+                 "prose(h.detail)"):
+        assert call in script, call
+
+
+def test_storage_is_a_table_and_direct_and_snapshot_cards_say_where_they_read():
+    """U6 follow-up: the storage card is one row per location with readable
+    sizes, and a card read directly by azui and the daemon's snapshot of the
+    same thing say which path they are, and say so when they disagree."""
+    script = _code((STATIC / "app.js").read_text(encoding="utf-8"))
+    assert 'storageCard("保存容量", storage)' in script
+    assert 'storageCard("保存容量（場所ごと）", storage)' in script
+    assert "function humanBytes(" in script
+    assert script.count("pairNotes(") >= 4  # the helper, two pairs on the overview, one on Knowledge
+    reasons = _labels()["reasons"]
+    assert "この情報源" in reasons["access_permission_denied"]
 
 
 def test_citation_and_bundle_display_fields_are_labelled_and_never_healthy():
