@@ -15,23 +15,26 @@ ADR-0003 D6 のとおり、amd64 側は「エミュレーション」であっ�
 | --- | --- | --- |
 | 実行場所 | docker context `colima`、`--platform linux/arm64` | docker context `colima-rosetta`、`--platform linux/amd64`（Rosetta 2 による変換） |
 | イメージ | 公式 `python:3.11`・`python:3.12`・`python:3.13`（Debian） | 同じタグの linux/amd64 版 |
-| 導入 | checkout を読取り専用で mount して複製し、`pip install -e '.[dev]' -e ./runtime` | 同じ |
+| 導入 | checkout を `--mount type=bind`（読取り専用）で mount して複製。試験の依存は `uv.lock` から `uv export --frozen` → `pip install --require-hashes --no-deps`（uv 0.9.5）、本体は `pip install --no-deps -e .`、runtime は `pip install -e ./runtime` | 同じ |
 | 実行ユーザー | uid 1001（`su ci -c "umask 022; ..."`） | 同じ |
-| commit | `2330436`（worktree clean） | 同じ |
-| 実行時刻 | 2026-10-28T23:46Z〜23:48Z（UTC。日本時間 10-29） | 同じ |
+| commit | `1173852`（worktree clean。#371 のレビュー指摘への対応後に再実行） | 同じ |
+| 実行時刻 | 2026-10-29T00:24Z〜00:25Z（UTC） | 同じ |
 
 ## 結果
 
-| Python | aarch64 | amd64 | 12 ベクトルの CPU 間一致 | 固定値との一致 |
+| Python | aarch64 | amd64 | 13 ベクトルの CPU 間一致 | 固定値との一致 |
 | --- | --- | --- | --- | --- |
-| 3.11 | 3.11.18（`cpython-311-aarch64-linux-gnu`） | 3.11.18（`cpython-311-x86_64-linux-gnu`） | 12/12 | 12/12 |
-| 3.12 | 3.12.16（`cpython-312-aarch64-linux-gnu`） | 3.12.16（`cpython-312-x86_64-linux-gnu`） | 12/12 | 12/12 |
-| 3.13 | 3.13.17（`cpython-313-aarch64-linux-gnu`） | 3.13.18（`cpython-313-x86_64-linux-gnu`） | 12/12 | 12/12 |
+| 3.11 | 3.11.18（`cpython-311-aarch64-linux-gnu`） | 3.11.18（`cpython-311-x86_64-linux-gnu`） | 13/13 | 13/13 |
+| 3.12 | 3.12.16（`cpython-312-aarch64-linux-gnu`） | 3.12.16（`cpython-312-x86_64-linux-gnu`） | 13/13 | 13/13 |
+| 3.13 | 3.13.17（`cpython-313-aarch64-linux-gnu`） | 3.13.18（`cpython-313-x86_64-linux-gnu`） | 13/13 | 13/13 |
 
-- 12 ベクトル（`edge.intake`、`edge.incident`、`edge.explain`、`knowledge_lite.verify`、
-  `knowledge_lite.lookup`、`revocation`、`signature.ed25519`、`audit.chain`、
+- 13 ベクトル（`edge.intake`、`edge.incident`、`edge.explain`、`knowledge_lite.verify`、
+  `knowledge_lite.refusals`、`knowledge_lite.lookup`、`revocation`、`signature.ed25519`、`audit.chain`、
   `status.read_model`、`platform_profile.selection`、`mio.route`、`mio.consent`）の
   digest は、6 通りの組合せ（2 CPU × 3 版）ですべて同じだった。不一致は無い。
+- 片方の CPU の実行が失敗した組合せは無い（`failed_runs` は 3 件とも空）。
+- 最初の実行（commit `2330436`、12 ベクトル）でも全件一致していた。この記録はレビュー指摘
+  への対応（`knowledge_lite.refusals` の追加と `audit.chain` の拡張）後の再実行で上書きした。
 - 3.13 は、取得したイメージの patch 版が CPU で違った（3.13.17 と 3.13.18）。digest は同じ。
 - 実行ユーザーによる差：開発中に root（uid 0）でも実行し、同じ digest になった
   （この記録の JSON は uid 1001 の実行だけ）。
