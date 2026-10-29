@@ -31,6 +31,23 @@ mask/enable intent. The plan is data only: the shell remains the executor,
 the installer does not start a service, and the profile does not bypass the
 existing account, file-layout, or unit-declaration checks. Unknown or
 ambiguous OS profiles refuse before file/account/service-manager changes.
+
+The CPU is evaluated next, also before anything is written
+([ADR-0003](adr/0003-arm-software-verification-profile.md) R6):
+`runtime/src/azazel_nexus_runtime/platform_observation.py` reads `uname`, the
+C `long` size (LP64), the byte order and the architecture of the installed
+`dpkg` package (through the existing `debian_packages` observer), and
+`install_platform.evaluate_install_architecture` matches them, with the OS
+just selected, against `platform_profile.REVIEWED_PROFILES`. A CPU no profile
+names (`riscv64`, `armv7l`, `i686`, ...), a dpkg that cannot be read
+(`DPKG_UNOBSERVED`), a dpkg userland of another
+architecture (armhf on an arm64 kernel, i386 on amd64), a non-LP64 libc or a
+big-endian interpreter is refused with its reason code. The installer prints
+`platform: <architecture> (<purpose>)`. amd64 is the `deployment-baseline`;
+arm64 is identified as `lab-software-verification` and installs exactly as it
+did before, for the VM software rehearsals, with a note that the install is
+VM software-integration evidence only. The installer's interpreter ABI is not
+part of this decision (a staging run accepts any Python from 3.11).
 Preflight tool checks follow the selected mode: account-management tools are
 required only when account creation is enabled, and `systemctl` only when the
 service-manager stage is enabled. The always-required file/runtime tools remain

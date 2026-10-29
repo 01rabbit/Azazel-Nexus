@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT / "runtime" / "src"))
 
 from azazel_nexus_runtime.install_platform import (  # noqa: E402
     build_install_plan,
+    evaluate_install_architecture,
     parse_os_release,
     parse_preset_declarations,
     select_install_profile,
@@ -33,6 +34,10 @@ _FIELDS = (
     "required_tools",
     "mask_units",
     "enable_units",
+    # The observed CPU, evaluated against the reviewed platform profiles
+    # (ADR-0003 R6). Refused with a reason code when no profile has it.
+    # One line, "<architecture> <purpose>", so the host is observed once.
+    "platform",
 )
 
 
@@ -42,11 +47,21 @@ def resolve(
     os_release_path: Path = Path("/etc/os-release"),
     with_accounts: bool = True,
     with_service_manager: bool = True,
+    observe_platform=None,
 ) -> str:
     if field not in _FIELDS:
         raise ValueError("unknown install profile field")
     values = parse_os_release(os_release_path.read_text(encoding="utf-8"))
     profile = select_install_profile(values)
+    if field == "platform":
+        if observe_platform is None:
+            from azazel_nexus_runtime.platform_observation import observe
+
+            def observe_platform():
+                return observe(os_release_path=os_release_path)
+
+        selected = evaluate_install_architecture(profile, observe_platform())
+        return f"{selected.architecture} {selected.purpose}"
     preset = (ROOT / "packaging" / "azazel-nexus.preset").read_text(encoding="utf-8")
     plan = build_install_plan(
         profile,
