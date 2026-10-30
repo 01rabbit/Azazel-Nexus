@@ -1524,7 +1524,10 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "/var/lib/azazel/state/audit",
             "/var/lib/azazel/state/auditd",
         ),
-        optional_read_write_paths=("/var/lib/azazel/run/audit-status",),
+        # The same optional leaves as the helper, the UI copy (#389) among
+        # them: the same daemon writes both in either lifetime.
+        optional_read_write_paths=("/var/lib/azazel/run/audit-status",
+                                   "/var/lib/azazel/run/ui-read/audit"),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         conditions=_grant_condition("azazel-auditd-loop.service"),
