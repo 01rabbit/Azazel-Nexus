@@ -52,6 +52,7 @@ from azazel_nexus.store_dirs import store_directory
 
 from .principal import peer_credentials
 from .refusal_log import REFUSAL_EVENT, BoundedRefusalLog
+from .status_snapshot import UiCopy
 from .transport import bind_socket
 
 MAX_CONNECTIONS = 64
@@ -643,8 +644,11 @@ class IntakeServer:
         decoy_per_minute=DECOY_PER_MINUTE,
         monotonic=time.monotonic,
         reorder_wait=REORDER_WAIT_S,
+        ui_status_path: Path | None = None,
     ):
         self.path, self.state, self.status_path = path, state, status_path
+        # The read-only UI's byte-identical copy (ADR-0007); optional.
+        self.ui_status = UiCopy(ui_status_path, name="az-edge-intaked")
         self.reorder_wait = reorder_wait
         # The decoy socket is opened only with both its path and the decoy
         # account; a node without either runs the Edge intake as before.
@@ -738,15 +742,18 @@ class IntakeServer:
                 if self.decoy_listening else {})
 
     def _status(self):
+        body = canonical(self.snapshot()) + b"\n"
         fd, name = tempfile.mkstemp(dir=self.status_path.parent, prefix=".status-")
         try:
             with os.fdopen(fd, "wb") as stream:
-                stream.write(canonical(self.snapshot()) + b"\n")
+                stream.write(body)
                 os.fchmod(stream.fileno(), 0o644)
             os.replace(name, self.status_path)
         finally:
             if os.path.exists(name):
                 os.unlink(name)
+        # After the operator snapshot, the same bytes; never raises.
+        self.ui_status.write(body)
 
     def _open_storage(self):
         store = EvidenceStore(self.state)
@@ -1222,6 +1229,7 @@ def main(argv=None):
         incident_segments_dir,
         edge_intake_status_path,
         socket_path,
+        ui_copy_path,
     )
     from .systemd_notify import runtime_ready_callback
 
@@ -1247,6 +1255,7 @@ def main(argv=None):
         state=edge_intake_state_dir(),
         incident_root=incident_segments_dir(),
         status_path=edge_intake_status_path(),
+        ui_status_path=ui_copy_path("edge_intake_status"),
         edge_uid=uid,
         expected_gid=gid,
         decoy_path=socket_path("decoy-intake") if decoy_uid is not None else None,

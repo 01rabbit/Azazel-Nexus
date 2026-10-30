@@ -53,6 +53,25 @@ A screen that changes something when looked at is a screen an operator stops
 looking at, and this one is the screen they are meant to consult before every
 irreversible step.
 
+## A fact this account could not read is said so
+
+The status read model builds this screen as whichever account runs
+`status` -- the read-only UI's `azui` reads none of the model store, the
+remote consent or the commissioning proposal (ADR-0007). A fact the caller
+could not read is passed as `None` (or `catalog_access` other than `read`),
+and the row says *not read* with a code: never `absent`, `empty`, `refused`
+or zero, which would each be an answer to a question nobody could ask.
+
+## The provider row follows the admission gates
+
+`ProviderState` is derived from the gates that actually decide admission on
+this node (`AdmissionFacts`): the build switch
+(`model_admission.LOCAL_MODEL_ADMISSION_ENABLED`, off until the hardware
+gates close), the measured Core reserve (HG-05), and what the M.I.O. entry
+service last recorded for the local and remote routes. Every gate that
+refuses is listed by code (`reason_codes`); none is inferred from a profile
+or from an installed artifact.
+
 ## The sentence does not move
 
 `STATUS_SENTENCE` is what this build says about M.I.O., on every path through
@@ -87,6 +106,8 @@ __all__ = [
     "Operation",
     "OperatorView",
     "Possibility",
+    "AdmissionFacts",
+    "PROVIDER_REASON_CODES",
     "ProviderState",
     "STATUS_SENTENCE",
     "Section",
@@ -118,7 +139,7 @@ class ProviderState(str, Enum):
     an answer to the other's question.
     """
 
-    #: No provider integration exists in this build.
+    #: No provider integration is installed on this node.
     UNAVAILABLE = "unavailable"
     #: An admission gate refuses. Which one is a separate fact.
     NOT_ADMITTED = "not admitted"
@@ -247,6 +268,31 @@ class Section:
         return {"key": self.key, "title": self.title, "rows": [dict(r) for r in self.rows]}
 
 
+#: Why a provider is not admitted, one code per gate that refuses.
+PROVIDER_REASON_CODES = frozenset({
+    "admission_switched_off_in_build",   # LOCAL_MODEL_ADMISSION_ENABLED is False
+    "core_reserve_unmeasured",           # HG-05: no measured reserve record
+    "core_reserve_unread",               # the record could not be read here
+    "local_not_admitted", "local_no_admission_evidence", "local_unavailable",
+    "local_observation_invalid",         # entryd's recorded local route
+    "admission_record_unread",           # entryd's record could not be read here
+})
+
+
+@dataclass(frozen=True)
+class AdmissionFacts:
+    """The admission gates as read, for the provider row. Display only.
+
+    `build_enabled` is the build switch; `local` is the local route's health
+    reason as the M.I.O. entry service last recorded it (`not_admitted`,
+    `no_admission_evidence`, `unavailable`, `invalid_observation`), or
+    `None` when that record could not be read by this account.
+    """
+
+    build_enabled: bool
+    local: Optional[str]
+
+
 @dataclass(frozen=True)
 class ViewFacts:
     """Everything the screen is built from, read by the caller.
@@ -255,9 +301,12 @@ class ViewFacts:
     anything -- see the module docstring.
     """
 
-    profile: MioProfile
-    opt_in: RemoteOptIn
-    reserve_measured: bool
+    #: `None`: the commissioned ceiling could not be read by this account.
+    profile: Optional[MioProfile]
+    #: `None`: the remote consent record could not be read by this account.
+    opt_in: Optional[RemoteOptIn]
+    #: `None`: the Core reserve record could not be read by this account.
+    reserve_measured: Optional[bool]
     resources: NodeResources
     catalog_state: CatalogState
     #: Per model, what this node holds. Empty when the catalog is absent.
@@ -268,6 +317,12 @@ class ViewFacts:
     installed: Mapping[str, str]
     #: The generation that a rollback would restore, or `None` when none.
     rollback_target: Optional[int]
+    #: `read`, or why the model store was not read (`permission_denied`,
+    #: `refused`). Anything but `read` and the catalog, import and their
+    #: operations say "not read" rather than absent, empty or zero.
+    catalog_access: str = "read"
+    #: The admission gates, when the caller read them (`AdmissionFacts`).
+    admission: Optional[AdmissionFacts] = None
 
 
 @dataclass(frozen=True)
@@ -379,18 +434,34 @@ def build_view(facts: ViewFacts) -> OperatorView:
 def _cognition_section(facts: ViewFacts) -> Section:
     """Profile, consent and admission as three facts, never one word."""
 
-    rows = list(
-        profile_rows(
+    if None in (facts.profile, facts.opt_in, facts.reserve_measured):
+        rows = [
+            {"axis": "mio_profile",
+             "value": facts.profile.value if facts.profile is not None else None,
+             "reason": ("the ceiling on what route selection may consider; it admits "
+                        "nothing by itself") if facts.profile is not None
+             else "the commissioned ceiling was not read by this account",
+             **({} if facts.profile is not None else {"reason_code": "not_read"})},
+            {"axis": "mio_remote_consent",
+             "value": None if facts.opt_in is None else (
+                 "permitted" if facts.opt_in.active()
+                 else ("withdrawn" if facts.opt_in.withdrawn else "not-given")),
+             "reason": "the remote consent record was not read by this account"
+             if facts.opt_in is None else facts.opt_in.reason(),
+             **({"reason_code": "not_read"} if facts.opt_in is None else {})},
+        ]
+    else:
+        rows = [row for row in profile_rows(
             profile=facts.profile,
             opt_in=facts.opt_in,
             reserve_measured=facts.reserve_measured,
-        )
-    )
+        ) if row["axis"] != "mio_provider_admission"]
     rows.append(
         {
             "axis": "provider_state",
             "value": _provider_state(facts).value,
             "reason": _provider_reason(facts),
+            "reason_codes": list(_provider_codes(facts)),
         }
     )
     rows.append({"axis": "mio_summary", "value": STATUS_SENTENCE, "reason": ""})
@@ -413,7 +484,7 @@ def _resources_section(facts: ViewFacts) -> Section:
             "value": profile.value if profile else None,
             "reason": (
                 "the hardware class this node selects. A class is never "
-                "evidence that a capability fits (capability-model.md §2)"
+                "evidence that a capability fits (capability model §2)"
             ),
         },
         {
@@ -434,6 +505,12 @@ def _resources_section(facts: ViewFacts) -> Section:
 def _catalog_section(facts: ViewFacts) -> Section:
     """`absent` / `empty` / `declared` / `present` -- and nothing else."""
 
+    if facts.catalog_access != "read":
+        return Section("catalog", "Catalog", ({
+            "axis": "catalog_state", "value": None,
+            "reason": _unread_store_reason(facts.catalog_access),
+            "reason_code": "catalog_" + facts.catalog_access,
+        },))
     rows = [
         {
             "axis": "catalog_state",
@@ -459,7 +536,21 @@ def _catalog_section(facts: ViewFacts) -> Section:
     return Section("catalog", "Catalog", tuple(rows))
 
 
+def _unread_store_reason(access: str) -> str:
+    if access == "permission_denied":
+        return "the model store was not read by this account"
+    # Refused (unsigned, invalid, unreadable): never "not presented" (R389-06).
+    return ("the catalog was refused; nothing from it is shown, and it is not "
+            "shown as absent")
+
+
 def _import_section(facts: ViewFacts) -> Section:
+    if facts.catalog_access != "read":
+        return Section("import", "Offline import", tuple(
+            {"axis": axis, "value": None,
+             "reason": _unread_store_reason(facts.catalog_access),
+             "reason_code": "catalog_" + facts.catalog_access}
+            for axis in ("inbox", "quarantine", "promoted", "rollback_target")))
     rows = [
         {
             "axis": "inbox",
@@ -528,6 +619,13 @@ def _operations(facts: ViewFacts) -> tuple:
 
 
 def _remote_operation(facts: ViewFacts) -> Operation:
+    if facts.profile is None or facts.opt_in is None:
+        return Operation(
+            confirmation=Confirmation.REMOTE_OPT_IN,
+            available=False,
+            reason=("not shown: the profile or the remote consent was not read by "
+                    "this account. Run azazel-nexus status as root on the terminal"),
+        )
     if facts.profile in (MioProfile.CORE, MioProfile.REMOTE_DISABLED):
         return Operation(
             confirmation=Confirmation.REMOTE_OPT_IN,
@@ -552,6 +650,8 @@ def _remote_operation(facts: ViewFacts) -> Operation:
 
 
 def _license_operation(facts: ViewFacts) -> Operation:
+    if facts.catalog_access != "read":
+        return _unread_store_operation(Confirmation.LICENSE_ACKNOWLEDGEMENT, facts.catalog_access)
     waiting = [
         r.model_id
         for r in facts.readings
@@ -570,7 +670,22 @@ def _license_operation(facts: ViewFacts) -> Operation:
     )
 
 
+def _unread_store_operation(confirmation: Confirmation, access: str) -> Operation:
+    if access != "permission_denied":
+        return Operation(confirmation=confirmation, available=False,
+                         reason=("not available: the catalog was refused. Inspect it on the "
+                                 "terminal before any import"))
+    return Operation(
+        confirmation=confirmation,
+        available=False,
+        reason=("not shown: the model store was not read by this account. Run "
+                "azazel-nexus status as root on the terminal"),
+    )
+
+
 def _import_operation(facts: ViewFacts) -> Operation:
+    if facts.catalog_access != "read":
+        return _unread_store_operation(Confirmation.MODEL_IMPORT, facts.catalog_access)
     if facts.catalog_state is CatalogState.ABSENT:
         return Operation(
             confirmation=Confirmation.MODEL_IMPORT,
@@ -626,24 +741,58 @@ def _admission_operation(facts: ViewFacts) -> Operation:
     )
 
 
+def _provider_codes(facts: ViewFacts) -> tuple:
+    """Every admission gate that refuses, by code. Empty only if none does."""
+
+    codes = []
+    admission = facts.admission
+    if admission is not None and not admission.build_enabled:
+        codes.append("admission_switched_off_in_build")
+    if facts.reserve_measured is None:
+        codes.append("core_reserve_unread")
+    elif not facts.reserve_measured:
+        codes.append("core_reserve_unmeasured")
+    if admission is not None:
+        if admission.local is None:
+            codes.append("admission_record_unread")
+        elif admission.local in ("not_admitted", "no_admission_evidence", "unavailable"):
+            codes.append("local_" + admission.local)
+        else:
+            codes.append("local_observation_invalid")
+    return tuple(codes)
+
+
 def _provider_state(facts: ViewFacts) -> ProviderState:
-    if not facts.reserve_measured:
+    if _provider_codes(facts) or facts.admission is None:
+        # Without the gates read, admission is never claimed: a reserve
+        # alone admits nothing.
         return ProviderState.NOT_ADMITTED
-    return ProviderState.UNAVAILABLE
+    # Every gate read and none refusing: admitted, not started by this screen.
+    return ProviderState.NOT_ACTIVATED
 
 
 def _provider_reason(facts: ViewFacts) -> str:
-    if not facts.reserve_measured:
+    codes = _provider_codes(facts)
+    if "core_reserve_unmeasured" in codes:
         return (
             "the resource gate refuses for want of a measured Core reserve "
             "(HG-05). This holds on every profile: selecting "
             f"{MioProfile.FASTEST_PERMITTED.value} does not admit a provider, "
             "and M.I.O. is not functional"
         )
-    return (
-        "a measured reserve reaches the approval gate, which refuses for "
-        "having no implementation. No provider runs in this build"
-    )
+    if "admission_switched_off_in_build" in codes:
+        return (
+            "local model admission is switched off in this build until the "
+            "hardware gates close; no provider is admitted"
+        )
+    if codes:
+        return "an admission gate refuses or could not be read; no provider is admitted"
+    if facts.admission is None:
+        return (
+            "a measured reserve is not an admission: the admission gates were not "
+            "read, so no provider is shown as admitted"
+        )
+    return "every admission gate read passes; nothing on this screen starts a provider"
 
 
 def _catalog_reason(state: CatalogState) -> str:

@@ -39,7 +39,7 @@ Arm VM での受入（V1〜V3、main `7ef1702`）の結果を反映）。** #355
 | H6 | Edge Core と advisory 側 unit の再起動方針（A7 の F2） | 異常終了すると次の起動まで止まる（`Restart=no`。activation の「付与は起動時の pass だけ」に合わせている） | `Restart=on-failure` にして同じ boot の marker で再起動できるようにする／現状維持 | 【守る設計】3（AI・Knowledge・UI の停止で Edge を止めない）とは別に、Edge 自身のクラッシュからの回復の扱いが決まる。activation の設計と整合させる必要がある | #366 |
 | H7 | 公開 fixture 鍵とラボ印の扱い | **2026-10-30 委任された技術判断で決定（Mission Pack の検証にも印の拒否を足す）。** Knowledge Lite の trust の登録と本番の読取りで、`lab_keys.PUBLIC_FIXTURE_KEYS` の鍵を拒否し、ラボ印（`lab_host` の汚染印）がある場合だけリハーサル用の例外になる点は維持。印のあるホストは activation health・bootstrap overlay・commissioning 承認・model admission に加え、Mission Pack の verify・stage・activate・rollback（と CLI）でも、媒体・保存世代・設定を読む前に `LAB_HOST_MARKER` で拒否する。ラボ側の印の作成と、すべての Mission Pack の公開（state root に依らない）は、ホスト共通の lock（`/run/azazel-lab-host.lock`）を取ってから行い（印の作成は最大 60 秒待って取れなければ印を書かずに拒否、Pack は待たずに拒否、順序は常にホスト共通→state root）、Pack は lock の中で公開の直前にも印を確かめるので、検証後に印が作られて公開まで進む競合も無い。このため印のあるホストでは Pack の `knowledge_lite` が fixture 署名の bundle を指せない | 決定済み。VM のリハーサル（`tools/vm_integration.py`）は Mission Pack を使わないので手順は変わらない。単体試験は、Pack の経路を生成した鍵で署名した Lite で試し、印のある場合の拒否を別に試す | 【守る設計】6 の分離が強まる。印のあるホストでは Mission Pack を一切選べない（印は承認ではなく、外しても何も与えない） | #366、#375（`src/azazel_nexus/lab_keys.py`、`src/azazel_nexus/mission_pack.py`） |
 | H8 | Fabric の release 署名鍵を Nexus の trust anchor にするか | 採用していない。オフライン wheelhouse の Fabric は commit pin と wheel hash だけで固定 | 採用（鍵を Nexus に固定し、builder で digest の署名と wheel 内ファイルの照合を行う）／現状維持 | 供給網の認証が hash の一致から発行元の署名に強まる。pin を動かすたびに鍵の運用が要る | #357、[ADR-0004](adr/0004-fabric-in-offline-wheelhouse.md) |
-| H9 | UI（`azui`）の読取範囲 | 新しい読取グループを作らない。実ノードの UI では、`azui` が読めない多くの節を「権限なし」と表示する（#372 の systemd 予行で 15 枚） | 読取専用グループ（`azstatus-read` 案）を作る／snapshot を 2 つの leaf に書く／`azui` を `azazel-operator` に入れる | 決まるまで、実ノードの UI は概況の多くを表示できない。どの案も UI の読める範囲を広げるので、端末だけに出す項目（M5）と合わせて決める | #363、#365、#372 |
+| H9 | UI（`azui`）の読取範囲 | **[ADR-0007](adr/0007-ui-read-leaves.md)（proposed）で既定を採用**：各 snapshot の書き手が、同じ内容の写しを自分の UI 用 leaf（`run/ui-read/<leaf>`、`2750 <書き手>:azui`）に書く。`azui` はどの group にも入らず、daemon の socket にも届かない。写しを置かないもの（Edge probe の結果、Lite store・route ledger・model store・同意の記録など直接読む情報源）は従来どおり「権限なし」 | 維持／読取専用グループ（`azstatus-read` 案）／`azui` を `azazel-operator` に入れる（オーナー方針で不採用） | 書き手が 1 ファイル余分に書く。`install.sh` を再実行しないノードでは、UI は写しを「無い」と表示する | #363、#365、#372、ADR-0007 |
 | H10 | Knowledge Lite の時計の床の書込み頻度 | 要求が来ている間は 1 秒に最大 1 回、ファイルとディレクトリを fsync する | 案 A：dated 行を返したときか期限の境界を越えたときだけ書く／案 B：同じ boot の中は CLOCK_BOOTTIME で検出し、boot をまたぐ床だけ書く／案 C：1 セクタを O_DSYNC で上書き | SD カード・eMMC の摩耗と遅延。実機での測定（[実機受入手順](hardware-acceptance.md#a5-sd-カードや-emmc-での-fsync-の遅延と書込み量)）の結果を見て決める | #368、#359 |
 
 ## 3. 優先度が中のもの
@@ -84,9 +84,9 @@ Arm VM での受入（V1〜V3、main `7ef1702`）の結果を反映）。** #355
 | --- | --- | --- | --- | --- | --- |
 | M20 | UI の TLS と強い認証（WebAuthn／クライアント証明書）の時期 | 第 1 段階は loopback の HTTP とログインコード。`Secure` Cookie は付けられない | 仕様（HTTPS 8443 と強い認証）に寄せる時期を決める | loopback 以外から使う前に必須 | #365、[操作 UI](operator-ui.md) |
 | M21 | UI を統治対象（activation の管理下）にするか | 非統治。activation 前のセットアップ・復旧画面を出せるようにするため | 現状維持／統治する | 統治すると activation 前に表示できない | #365 |
-| M22 | 端末だけに出す項目の範囲 | interface の記述（bus_path・physical_label）、interface 名、Edge package root のパス、Edge finding の理由文、発行元名・revocation sequence・floor version、`--ledger` 由来の詳細を JSON と UI から外す（inventory-confidentiality の既定） | 一部を UI に出す／現状維持 | 機微情報の露出範囲。H9 と合わせて決める | #358、#365 |
-| M23 | status-view の schema の版の規則 | `azazel-nexus/status-view/1`。節が増えるときの扱いは未決 | 節を足すたびに版を上げる／追加のみ互換とする | UI と外部の読み手の互換性 | #358 |
-| M24 | observer の timer を有効化する経路（unit 状態・NOC） | installer も preset も有効化しない（SPEC 2.3「導入時に起動しない」と preset の現行の決まりに合わせた） | UI 導入時に preset で enable する／運用者の手順とする | 有効化されないと、UI の該当節は観測なしのまま | #363、#364 |
+| M22 | 端末だけに出す項目の範囲 | interface の記述（bus_path・physical_label）、interface 名、Edge package root のパス、Edge finding の理由文、発行元名・revocation sequence・floor version、`--ledger` 由来の詳細を JSON と UI から外す（inventory-confidentiality の既定）。ADR-0007 の UI 用の写しにも入らない（写す snapshot はどれもこれらを持たず、試験で確認） | 一部を UI に出す／現状維持 | 機微情報の露出範囲。外へ出す範囲を広げる判断は委任外 | #358、#365、ADR-0007 |
+| M23 | status-view の schema の版の規則 | **ADR-0007 D6 で既定を採用**：`azazel-nexus/status-view/1` は追加のみ互換（節・欄の追加は互換。読み手は allowlist で写し、無い節は `pending`、未知の語は「未定義の語」）。欄の削除・意味や型の変更・語の意味の変更は `/2` とし、UI は拒否する。独自の schema を持つ節（`operator-view/1`）も同じ規則 | 節を足すたびに版を上げる／追加のみ互換とする | UI と外部の読み手の互換性 | #358、ADR-0007 |
+| M24 | observer の timer を有効化する経路（unit 状態・NOC） | installer も preset も有効化しない（SPEC 2.3 のまま）。**ADR-0007 D8**：`azazel-nexus setup` の手順 `operator-observers` が、有効化のコマンド（`sudo systemctl enable --now azazel-noc-observe.timer azazel-units-observe.timer`）を示し、UI は未有効化を「観測なし（未有効化）」と表示して次の操作に同じコマンドを出す | UI 導入時に preset で enable する／運用者の手順とする（既定） | 有効化されないと、UI の該当節は観測なしのまま | #363、#364、ADR-0007 |
 
 ### 3.5 プラットフォームと HIL の記録
 
@@ -107,8 +107,8 @@ Arm VM での受入（V1〜V3、main `7ef1702`）の結果を反映）。** #355
 | L5 | UI の unit 名 | `azazel-ui.service`（仕様は `azazel-uid.service`） | 仕様を直す／unit 名を変える | 名前の一致 | #365 |
 | L6 | 境界試験の `ADOPTED_LISTENER` | listener の例外を広げず、新しい分類を設けた | 現状維持／別の形 | 試験の構成だけ | #365 |
 | L7 | キオスクの日本語フォント（`fonts-noto-cjk` 等） | 同梱しない（配備側の判断） | 配備手順に入れる／入れない | キオスクでの日本語表示 | #365 |
-| L8 | 非 root の `status` テキスト画面に新しい 4 節を出すか | `status --json` だけに出す（golden を変えないため）。非 root のテキストでは M.I.O. が unknown のまま | テキストにも出す | 文言と golden の変更 | #363 |
-| L9 | `not-loaded` の表示語 | GetUnit の結果をそのまま出す（停止後に unit object が解放された oneshot も `not-loaded`、未導入とは限らない） | UI の語で区別する | 表示の誤読を減らす | #363 |
+| L8 | 非 root の `status` テキスト画面に新しい 4 節を出すか | **ADR-0007 D9**：テキスト画面にも運用者向け snapshot の 4 節・保存容量・operator view を、`--json` と同じ語と理由コードで出す（golden を更新） | テキストにも出す（既定）／`--json` だけ | 文言と golden の変更 | #363、ADR-0007 |
+| L9 | `not-loaded` の表示語 | GetUnit の結果をそのまま snapshot に入れ、UI では「読込なし（停止後に解放された oneshot も含む。未導入とは限らない）」と注記する（ADR-0007 D9） | UI の語で区別する（既定） | 表示の誤読を減らす | #363、ADR-0007 |
 | L10 | M.I.O. の「古すぎ」の判定 | #370 で案 1（書き手の生存の証拠で判定）を既定に採用。主の閾値は `MIO_STALE_S`（300 秒）、補は `MIO_OBSERVATION_STALE_S`（2 日）。snapshot を読めない環境では、要求の無いノードは従来どおり 2 日で stale になり得る | 現状維持／entryd に日次の心拍を書かせる／記録が異なる snapshot の扱いを緩める（緑の経路は作らない） | 誤警報の残り方 | #358、#367、#370 |
 | L11 | LOCAL の除外理由を区別して記録するか | admission の読取失敗も固定文 `LOCAL_REFUSAL` で記録（可用性の区別は `mio.entry.availability.local` に残る） | ledger の語彙を足して分ける | ledger の語彙が増える | #356 |
 | L12 | 撤回理由の語彙 | `operator_request`／`privacy_review`／`provider_change`／`incident_response` の 4 語に固定 | 語を足す／自由文を許す | protocol の変更 | #361 |

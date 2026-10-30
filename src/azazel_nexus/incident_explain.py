@@ -611,6 +611,8 @@ def explanation_summary(record):
                         citation_state="shown" if ref["citation"] else "none")
         try:
             _display_citation(citation["citation"])
+            if citation_names_a_path(citation["citation"]):
+                raise ValueError("citation_names_a_path")
         except ValueError:
             # Producer text with address syntax is not displayed; the rest of
             # the citation still is, and says that one was withheld.
@@ -645,10 +647,43 @@ def _summary_banners():
     return frozenset(private_text(b[:280], 280) for b in REFERENCE_BANNERS)
 
 
+#: Path separators, after NFKC (which folds the full-width `／` and `＼`),
+#: and the look-alike slashes NFKC leaves alone.
+_PATH_SEPARATORS = frozenset("/\\\u2044\u2215\u2216\u29f8\u29f9\ufe68")
+
+
+def citation_names_a_path(text) -> bool:
+    """Whether a citation might name a file or directory (R389-01, R389b-01).
+
+    Deliberately narrow on the public side: a displayed citation is a short
+    name ("MITRE ATT&CK v14.1"), and **any** path separator -- whatever comes
+    before it (`source=/srv/...`, `source:./...`, a full-width colon) --
+    withholds it. A citation that is withheld still says it was withheld.
+    """
+    value = unicodedata.normalize("NFKC", str(text))
+    return any(ch in _PATH_SEPARATORS for ch in value)
+
+
+def _public_refs(row):
+    """`row` with every path-naming citation withheld; rows read earlier
+    (a checkpoint from a previous release) are cleaned the same way."""
+    explanation = row.get("explanation")
+    if not isinstance(explanation, dict) or not isinstance(explanation.get("knowledge_refs"), list):
+        return row
+    refs = []
+    for ref in explanation["knowledge_refs"]:
+        if (isinstance(ref, dict) and isinstance(ref.get("citation"), str)
+                and citation_names_a_path(ref["citation"])):
+            ref = {**ref, "citation": "", "citation_state": "withheld"}
+        refs.append(ref)
+    return {**row, "explanation": {**explanation, "knowledge_refs": refs}}
+
+
 def build_recent_incidents(incidents, written_at):
     value = {"schema": RECENT_SCHEMA, "written_at": written_at,
-             "incidents": sorted(incidents, key=lambda r: (r["last_seen"], r["first_seen"], r["incident_id"]),
-                                 reverse=True)[:20]}
+             "incidents": [_public_refs(r) for r in sorted(
+                 incidents, key=lambda r: (r["last_seen"], r["first_seen"], r["incident_id"]),
+                 reverse=True)[:20]]}
     checked = read_recent_incidents(json.dumps(value, allow_nan=False).encode())
     if checked is None:
         raise ValueError("recent_refused")

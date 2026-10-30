@@ -5,7 +5,8 @@
 # Read-only operator UI.
 # It shows what azazel-nexus status --json and setup --json show and performs no action: no confirmation, approval, start or stop.
 # It accepts on the loopback socket azazel-ui.socket passes and never creates a socket of an internet family: AF_UNIX only and PrivateNetwork=yes.
-# It runs as azui with no supplementary group, so it reaches no daemon socket and reads only what any account may; a snapshot it cannot read is shown as permission denied.
+# It runs as azui with no supplementary group, so it reaches no daemon socket.
+# It reads the snapshot copies each writer puts in its run/ui-read leaf, whose group is azui (ADR-0007), and otherwise only what any account may; a source it cannot read is shown as permission denied.
 # It writes only the login-code leaf, which the operator group reads.
 # Not governed and required by no unit: stopping it stops nothing else.
 

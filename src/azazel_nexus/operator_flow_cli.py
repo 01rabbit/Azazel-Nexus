@@ -30,6 +30,12 @@ from .mio_status import status_summary as mio_status, describe as describe_mio
 
 KNOWLEDGE_ROOT = Path("/var/lib/azazel/knowledge")
 
+#: The operator observers' timers (U2, U3; M24), and where `systemctl enable`
+#: links them (`WantedBy=timers.target`). Read with `lstat` only.
+OBSERVER_TIMERS = ("azazel-noc-observe.timer", "azazel-units-observe.timer")
+TIMER_WANTS = "/etc/systemd/system/timers.target.wants/"
+OBSERVERS_COMMAND = "sudo systemctl enable --now " + " ".join(OBSERVER_TIMERS)
+
 
 def _permission_denied():
     # Root can be denied too (read-only mount, LSM); do not advise what it already is.
@@ -227,6 +233,27 @@ def collect(args, *, now, root=None):
 
     _observation(observations, "model-import-fetched", candidates,
                  "azazel-nexus model-import-fetched --help")
+
+    def observers():
+        installed = [timer for timer in OBSERVER_TIMERS if any(
+            path(base + timer).is_file()
+            for base in ("/lib/systemd/system/", "/usr/lib/systemd/system/"))]
+        if len(installed) != len(OBSERVER_TIMERS):
+            return Observation(State.UNKNOWN, "observer timer unit files not installed: "
+                               + ", ".join(t for t in OBSERVER_TIMERS if t not in installed)
+                               + "; re-run install.sh", "sudo sh packaging/install.sh")
+        disabled = [timer for timer in OBSERVER_TIMERS
+                    if not os.path.lexists(path(TIMER_WANTS + timer))]
+        if disabled:
+            return Observation(
+                State.MISSING, "operator observers not enabled: " + ", ".join(disabled)
+                + "; the UI and status show their sections as not observed (not enabled). "
+                "Each observer only reads and writes its own snapshot",
+                "sudo systemctl enable --now " + " ".join(disabled))
+        return Observation(State.COMPLETE, "operator observer timers enabled (wants links present; "
+                           "running is shown by their snapshots)", OBSERVERS_COMMAND)
+
+    _observation(observations, "operator-observers", observers, OBSERVERS_COMMAND)
 
     units = tuple(dict.fromkeys(("azazel-activated.service", *(unit.name for unit in CORE_UNITS),
                                 "azazel-mio-entryd.service", "azazel-knowledge-lited.service")))

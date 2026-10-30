@@ -2,11 +2,14 @@
 
 What it is
 ----------
-A small HTTP server on Python's standard library that serves five read-only
-screens (overview, incidents, NOC, Knowledge, setup and recovery) from the
-status read model (`azazel-nexus status --json`, schema
+A small HTTP server on Python's standard library that serves six read-only
+screens (the four answers, incidents, NOC, Knowledge, details, setup and
+recovery) from the status read model (`azazel-nexus status --json`, schema
 `azazel-nexus/status-view/1`) and the setup guide (`azazel-nexus setup
---json`). It has **no action**: no button confirms, approves, starts or
+--json`). The status read model is read with `--snapshot-reader ui`: the
+operator snapshots come from the byte-identical copies each writer puts in
+its `run/ui-read` leaf, whose group is `azui` (ADR-0007). `azui` joins no
+group and reaches no daemon socket. It has **no action**: no button confirms, approves, starts or
 stops anything, and no endpoint changes state on this node beyond the UI's
 own in-memory login sessions. Edge decides and enforces; Nexus observes,
 explains and advises; the page says so on every screen.
@@ -420,7 +423,14 @@ def _probe_access(path: Path) -> str:
 
 
 def access_paths() -> dict[str, Path]:
-    """The files `status` reads that this account may or may not open."""
+    """The files `status` reads for this page that this account may or may not open.
+
+    The snapshot copies are the UI's (`run/ui-read/<leaf>`, `2750
+    <writer>:azui`, ADR-0007); the direct reads (the Lite store, the route
+    ledger, the probe result, the model store, the reserve record) are the
+    sources themselves, which `azui` is not meant to open: they are listed so
+    the page says *permission denied* rather than *absent*.
+    """
 
     from azazel_nexus import runtime_paths
     from azazel_nexus.cli import KNOWLEDGE_LITE_ROOT
@@ -432,22 +442,40 @@ def access_paths() -> dict[str, Path]:
     def rooted(path) -> Path:
         return root / str(path).lstrip("/")
 
-    return {
-        "edge_intake_status": runtime_paths.edge_intake_status_path(),
-        "incident_explain_status": runtime_paths.incident_explain_status_path(),
-        "incident_recent": runtime_paths.incident_recent_path(),
-        "audit_status": runtime_paths.audit_status_path(),
+    paths = {name: runtime_paths.snapshot_path(name, reader="ui")
+             for name in runtime_paths.UI_COPIES}
+    paths.update({
         "edge_probe": rooted(PROBE_STATE_PATH),
         "knowledge_lite": rooted(KNOWLEDGE_LITE_ROOT),
         "mio_route_ledger": rooted(ROUTE_SEGMENTS),
-        # The operator snapshots (U2) and the NOC snapshot (U3). Their leaves
-        # are `2750 <writer>:azazel-operator`; this account is in no group,
-        # so on a node they read as permission denied, never as absent.
-        "knowledge_status": runtime_paths.knowledge_status_path(),
-        "mio_status": runtime_paths.mio_status_path(),
-        "units_status": runtime_paths.units_status_path(),
-        "noc_status": runtime_paths.noc_status_path(),
-    }
+        "model_store": rooted("/var/lib/azazel/models"),
+        "core_reserve": rooted("/var/lib/azazel/run/core-reserve.json"),
+    })
+    return paths
+
+
+#: Where `systemctl enable` puts an observer timer's wants link (its unit file
+#: says `WantedBy=timers.target`). Read with `lstat` only: no service manager
+#: call, and a link that exists says enabled, nothing about running.
+WANTS_DIRECTORY = "/etc/systemd/system/timers.target.wants"
+
+
+def observer_states() -> dict[str, str]:
+    """`enabled`, `not_enabled` or `unknown` for each operator observer's timer (M24)."""
+
+    from azazel_nexus.ui_model import OBSERVER_TIMERS
+
+    root = Path(os.environ.get("AZAZEL_ROOT", "/"))
+    states = {}
+    for name, timer in OBSERVER_TIMERS.items():
+        try:
+            os.lstat(root / WANTS_DIRECTORY.lstrip("/") / timer)
+            states[name] = "enabled"
+        except FileNotFoundError:
+            states[name] = "not_enabled"
+        except OSError:
+            states[name] = "unknown"
+    return states
 
 
 class LiveSource:
@@ -470,7 +498,9 @@ class LiveSource:
             return None
 
     def read(self) -> dict:
-        view = self._run(["status", "--json"])
+        # The UI's copies of the operator snapshots (ADR-0007), never the
+        # operator group's leaves: azui is not in that group.
+        view = self._run(["--snapshot-reader", "ui", "status", "--json"])
         setup = self._run(["setup", "--json"])
         return {
             "view": view,
@@ -478,7 +508,8 @@ class LiveSource:
             "setup": setup,
             "setup_reason": None if setup is not None else "setup_read_failed",
             "access": {name: _probe_access(path) for name, path in access_paths().items()},
-            "origin": {"kind": "live", "reader": "azazel-nexus status --json",
+            "observers": observer_states(),
+            "origin": {"kind": "live", "reader": "azazel-nexus status --json (UI copies)",
                        "account": "azui"},
         }
 
@@ -505,7 +536,7 @@ class FixtureSource:
 
     def read(self) -> dict:
         return {"view": self._view, "read_reason": None, "setup": None,
-                "setup_reason": "not_in_fixture", "access": {},
+                "setup_reason": "not_in_fixture", "access": {}, "observers": {},
                 "origin": {"kind": "fixture",
                            "notice": "fixture: a saved read model, not this node's state"}}
 
@@ -537,7 +568,8 @@ class UiApp:
                 document = browser_json(project(
                     read["view"], origin=read["origin"], served_at=_now_iso(now),
                     setup=read["setup"], setup_reason=read["setup_reason"],
-                    access=read["access"], read_reason=read["read_reason"]))
+                    access=read["access"], read_reason=read["read_reason"],
+                    observers=read.get("observers")))
             except Exception:  # noqa: BLE001 - shown as a fixed code
                 document = browser_json(project(
                     None, origin={"kind": self.source.kind}, served_at=_now_iso(now),

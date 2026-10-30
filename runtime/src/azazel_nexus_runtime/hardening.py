@@ -1474,7 +1474,8 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "/var/lib/azazel/state/audit",
             "/var/lib/azazel/state/auditd",
         ),
-        optional_read_write_paths=("/var/lib/azazel/run/audit-status",),
+        optional_read_write_paths=("/var/lib/azazel/run/audit-status",
+                                   "/var/lib/azazel/run/ui-read/audit"),
         after=(ACTIVATION_CONTROLLER_UNIT, "sysinit.target", "basic.target"),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         binds_to=(ACTIVATION_CONTROLLER_UNIT,),
@@ -1583,7 +1584,8 @@ PROFILES: tuple[ServiceProfile, ...] = (
         # The decoy's interaction socket (#196 P2), bound by this daemon in
         # its own leaf. Optional: without it the intake serves Edge alone and
         # counts decoy_listener_unavailable, rather than not starting.
-        optional_read_write_paths=("/var/lib/azazel/run/decoy-intake",),
+        optional_read_write_paths=("/var/lib/azazel/run/decoy-intake",
+                                   "/var/lib/azazel/run/ui-read/edge-intake"),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         conditions=_grant_condition("azazel-edge-intaked.service"),
@@ -1605,6 +1607,9 @@ PROFILES: tuple[ServiceProfile, ...] = (
         runtime_directory="",
         read_write_paths=("/var/lib/azazel/incident-explain",
                           "/var/lib/azazel/run/incident-explain-status"),
+        # The read-only UI's copies (ADR-0007), optional like every snapshot
+        # leaf: a node upgraded without re-running install.sh still starts.
+        optional_read_write_paths=("/var/lib/azazel/run/ui-read/incident-explain",),
         # Each group reaches exactly one thing: the incident chains, and the
         # explainer-only listeners of Knowledge, auditd and M.I.O. entry. Not
         # azazel-operator: that would reach every operator socket (#213 O1).
@@ -1680,7 +1685,8 @@ PROFILES: tuple[ServiceProfile, ...] = (
         ),
         # Its operator-readable capability snapshot (U2): the ledger stays
         # 0700, and a missing leaf (install.sh not re-run) does not stop it.
-        optional_read_write_paths=("/var/lib/azazel/run/mio-status",),
+        optional_read_write_paths=("/var/lib/azazel/run/mio-status",
+                                   "/var/lib/azazel/run/ui-read/mio"),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         conditions=_grant_condition("azazel-mio-entryd.service"),
@@ -1744,7 +1750,8 @@ PROFILES: tuple[ServiceProfile, ...] = (
         ),
         # Its operator-readable status snapshot (U2), optional so that a
         # node upgraded without re-running install.sh still starts it.
-        optional_read_write_paths=("/var/lib/azazel/run/knowledge-status",),
+        optional_read_write_paths=("/var/lib/azazel/run/knowledge-status",
+                                   "/var/lib/azazel/run/ui-read/knowledge"),
         after=(ACTIVATION_CONTROLLER_UNIT,),
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         conditions=_grant_condition("azazel-knowledge-lited.service"),
@@ -2057,7 +2064,8 @@ OBSERVER_PROFILES: tuple[ServiceProfile, ...] = (
         documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/operations.md",
         address_families=("AF_UNIX",),
         read_write_paths=(),
-        optional_read_write_paths=("/var/lib/azazel/run/units-status",),
+        optional_read_write_paths=("/var/lib/azazel/run/units-status",
+                                   "/var/lib/azazel/run/ui-read/units"),
         unit_type="oneshot",
         extra=(("TimeoutStartSec", "30s"),),
         wanted_by=(),
@@ -2084,7 +2092,8 @@ OBSERVER_PROFILES: tuple[ServiceProfile, ...] = (
         # no PrivateNetwork, because the host's links are what it reads.
         address_families=("AF_NETLINK", "AF_UNIX"),
         read_write_paths=(),
-        optional_read_write_paths=("/var/lib/azazel/run/noc-status",),
+        optional_read_write_paths=("/var/lib/azazel/run/noc-status",
+                                   "/var/lib/azazel/run/ui-read/noc"),
         unit_type="oneshot",
         extra=(("TimeoutStartSec", "60s"),),
         wanted_by=(),
@@ -2141,11 +2150,13 @@ UI_PROFILES: tuple[ServiceProfile, ...] = (
             "approval, start or stop. It accepts on the loopback socket "
             "azazel-ui.socket passes and never creates a socket of an internet "
             "family: AF_UNIX only and PrivateNetwork=yes. It runs as azui with "
-            "no supplementary group, so it reaches no daemon socket and reads "
-            "only what any account may; a snapshot it cannot read is shown as "
-            "permission denied. It writes only the login-code leaf, which the "
-            "operator group reads. Not governed and required by no unit: "
-            "stopping it stops nothing else"
+            "no supplementary group, so it reaches no daemon socket. It reads "
+            "the snapshot copies each writer puts in its run/ui-read leaf, "
+            "whose group is azui (ADR-0007), and otherwise only what any "
+            "account may; a source it cannot read is shown as permission "
+            "denied. It writes only the login-code leaf, which the operator "
+            "group reads. Not governed and required by no unit: stopping it "
+            "stops nothing else"
         ),
     ),
 )

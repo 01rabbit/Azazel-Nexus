@@ -14,9 +14,16 @@ UI stopped nothing else. The record, its screenshots and what it does **not**
 show (no VM, no hardware, no hands-on Chrome session on a Mac) are in
 [ui-browser-2026-10-29.md](evidence/ui-browser-2026-10-29.md).
 
+Since [ADR-0007](adr/0007-ui-read-leaves.md) (S-03, S-04) the UI reads the
+operator snapshots from **byte-identical copies** their writers put in
+`azui`-group leaves, so on a node it shows them instead of **権限なし**, and
+its first screen answers four questions (below). The record of that change,
+with the installer's own uids, gids and modes, is
+[ui-read-2026-10-30.md](evidence/ui-read-2026-10-30.md).
+
 The UI is a local web page that shows what `azazel-nexus status --json`
 (schema `azazel-nexus/status-view/1`) and `azazel-nexus setup --json` show,
-on five screens. It has **no action**: no button confirms, approves, starts
+on six screens. It has **no action**: no button confirms, approves, starts
 or stops anything, and it calls no daemon. Edge decides and enforces; Nexus
 observes, explains and advises. Edge's decisions reach this node only as
 `would` (observe-only, not executed), and the page says so on every incident.
@@ -32,9 +39,9 @@ Each of these is a default the owner can change later (see
 | Listening | systemd socket activation: `azazel-ui.socket` has `ListenStream=127.0.0.1:8443` and passes the socket (fd 3) to `azazel-ui.service`, which only accepts on it. |
 | Transport | Loopback HTTP, no TLS. The session cookie therefore cannot carry `Secure`. |
 | Activation | Not governed by the activation controller (no grant marker, never masked or unmasked by a pass, in no lease). The preset says `disable`; an operator enables the socket explicitly. No unit requires, binds to or wants the UI. |
-| Account | `azui`, no shell, no home, **no supplementary group** (not `azazel-operator`, no daemon socket group). No new read group. |
+| Account | `azui`, no shell, no home, **no supplementary group** (not `azazel-operator`, no daemon socket group). No new read group: `azui` is the setgid group of the UI read leaves (`run/ui-read/<leaf>`, `2750 <writer>:azui`, [ADR-0007](adr/0007-ui-read-leaves.md)), which it reads and never writes. |
 | Login | `azazel-nexus ui-login` (read-only, operator group) prints a one-use code valid for 60 seconds. |
-| Screens | Overview, incidents, NOC, Knowledge, setup and recovery. |
+| Screens | Overview (the four answers), incidents, NOC, Knowledge, details, setup and recovery. |
 
 ## How it runs
 
@@ -44,9 +51,11 @@ azazel-ui.socket (systemd, IPv4 loopback only, IPAddressAllow=localhost)
         v
 azazel-ui.service -> /usr/libexec/azazel/az-ui  (azui; AF_UNIX only; PrivateNetwork=yes)
         |  in process, read only
-        +-- azazel-nexus status --json   (the status read model)
+        +-- azazel-nexus --snapshot-reader ui status --json
+        |       (the status read model, its snapshots from run/ui-read/<leaf>)
         +-- azazel-nexus setup --json    (the setup guide)
-        +-- stat() of the snapshot files status reads (permission or absence)
+        +-- stat() of the files status reads (permission or absence)
+        +-- lstat() of the observer timers' wants links (enabled or not)
         |
         +-- writes only /var/lib/azazel/run/ui-login/login-code.json (2750 azui:azazel-operator)
 ```
@@ -75,14 +84,32 @@ azazel-ui.service -> /usr/libexec/azazel/az-ui  (azui; AF_UNIX only; PrivateNetw
 
 ### What the UI account can read
 
-`azui` is in no group but its own, so it reads only what any account may.
-Today the snapshots `status` reads are `2750 <daemon>:azazel-operator`, so on
-a real node most sections are unreadable to `azui`. The page shows such a
-section as **権限なし (`permission_denied`)** with the reason
+`azui` is in no group but its own. The operator snapshots are
+`2750 <daemon>:azazel-operator`, which `azui` cannot open; since
+[ADR-0007](adr/0007-ui-read-leaves.md) each of their writers also puts a
+byte-identical copy into its own `run/ui-read/<leaf>` (`2750 <writer>:azui`),
+and `az-ui` runs `status` with `--snapshot-reader ui`, which reads those
+copies with the same strict readers and the same freshness:
+
+| Copy | Writer | UI leaf |
+| --- | --- | --- |
+| `audit-status/v1` | `az-auditd` | `run/ui-read/audit` |
+| `edge-intake-status/v1` | `az-edge-intaked` | `run/ui-read/edge-intake` |
+| `incident-explain-status/v1`, recent incidents | `az-incident-explaind` | `run/ui-read/incident-explain` |
+| `knowledge-status/v1` | `az-knowledge-lited` | `run/ui-read/knowledge` |
+| `mio-status/v1` | `az-mio-entryd` | `run/ui-read/mio` |
+| `units-status/v1` | `az-units-observe` | `run/ui-read/units` |
+| `noc-status/v1` | `az-noc-observe` | `run/ui-read/noc` |
+
+What has no copy -- the Edge probe result (it carries the package digest and
+free-text reasons), the Knowledge Lite store, the route ledger, the model
+store, the Core reserve record, the remote consent -- is still read directly
+and shown as **権限なし (`permission_denied`)** with the reason
 `access_permission_denied`, never as absent and never as healthy: the server
-`stat()`s each snapshot path and sends what it found (`access`). Widening
-what `azui` may read (a read-only group such as `azstatus-read`) is an owner
-decision and is not part of this change.
+`stat()`s each path and sends what it found (`access`). A copy that is not
+there yet (a node upgraded without re-running `install.sh`, or a writer that
+has not run) is **absent**; one whose observer timer is not enabled is
+**観測なし（未有効化）**.
 
 ## Browser boundary
 
@@ -165,7 +192,8 @@ one of them to look wrong.
 
 | Screen | Shows | Source |
 | --- | --- | --- |
-| 概況 (overview) | Edge's state and readiness, the fixed observe-only mode (there is no "running/enforcing" box), communication (NOC), AI route (M.I.O., and its operator snapshot), Knowledge Lite (and its operator snapshot), services, storage, the Edge loop and what continues regardless. | `edge_core`, `enforcement`, `mio`, `mio_status`, `knowledge_lite`, `knowledge_status`, `noc`, `services`, `storage`, `edge_loop`, `health`, `fabric`, `integration` |
+| 概況 (overview, the four answers) | **Is communication being kept?** What the passive NOC observation saw of the default route and its link (IPv4, IPv6), the Edge unit's state, and that reachability is not measured: the best word is `path_observed` (information), never "正常". **What is happening?** The number of open incidents as the intake (which owns the incident ledger) reports it, the explainer's list beside it (at most twenty rows; a disagreement, a broken chain, a storage failure or a lag is said), the most severe (a smaller number is more severe) and how many carry an AI explanation (inference, shown apart); "none open" only when the intake is fresh, running and reports zero and the list shows none open. **What is handled automatically?** Edge's decisions as *would, not executed*, by action, and the execution result `none` (Nexus accepts observe-only decisions only). **What does the person on duty do next?** An ordered list: check the uplink, review the incidents and hand off to an expert, check failed units, enable the observers (the command), check unreadable or stale sources, continue setup, or keep monitoring. Each answer separates observed facts, AI inference, Edge's decision and the execution result, and says unknown, stale, absent, not enabled or permission denied as such. | `summary` (`ui_model.summarize`, from the sections below) |
+| 詳細 (details) | Edge's state and readiness, the fixed observe-only mode (there is no "running/enforcing" box), communication (NOC), AI route (M.I.O., and its operator snapshot), Knowledge Lite (and its operator snapshot), services, storage, the Edge loop and what continues regardless. | `edge_core`, `enforcement`, `mio`, `mio_status`, `knowledge_lite`, `knowledge_status`, `noc`, `services`, `storage`, `edge_loop`, `health`, `fabric`, `integration`, `operator_view` (the admission gates by code, what was read, the catalog, import stages and confirmations; a store `azui` cannot open says *not read*) |
 | インシデント (incidents) | Per incident, in separate blocks: observed facts; Edge's decision as *would, not executed*; the actual execution result, fixed as "none (Nexus accepts observe-only decisions only)"; the advice and its kind (AI, deterministic reference, deterministic notice); the citations, each with its bundle (shortened digest), generation, freshness, lookup time and source (`citation_state` `shown` / `none` / `withheld`; a row written before #362 says those were not recorded) and the count of citations recorded but not shown. Edge's own forwarding counts and Nexus's own decoy observation are kept apart. | `edge_loop.intake`, `edge_loop.recent` |
 | NOC | The passive observation as the read model carries it: its word (`observed`, or `unknown` with the collection's reason), freshness, each item's state and reason (an active check is `not_measured` / `active_check_not_performed`, never "down"), counts by ifindex. No interface name or address. | `noc` |
 | Knowledge | Knowledge Lite state, freshness, generation, what "functional" does and does not mean, the verified bundle's facts (shortened digest, signing key ids, static and dated claim counts, nearest expiry; a withheld fact says so), the cryptographic implementation status, the operator snapshot of `knowledge.status`, the external peer (absent by design) and the citations of recent incidents. | `knowledge_lite`, `knowledge_status`, `external_modules`, `edge_loop.recent` |
@@ -176,12 +204,8 @@ one of them to look wrong.
 `knowledge_status`, `mio_status`, `services` and `noc` are the snapshots the
 owning daemons and observers write into operator-readable leaves (U2, U3,
 [operations.md](operations.md)); `storage` is measured when status runs.
-The UI's account `azui` is in no group, so on a node it cannot open those
-leaves (`2750 <writer>:azazel-operator`): the access probe reports
-`permission_denied` for `knowledge_status`, `mio_status`, `units_status` and
-`noc_status`, and the page shows **権限なし** rather than "absent" or a
-healthy word. Whether `azui` should join `azazel-operator` is an owner
-decision; this UI does not widen it. A read model that lacks one of these
+The UI reads their copies in `run/ui-read` (ADR-0007); each card's source
+says `leaf: ui`. `azui` does not join `azazel-operator`. A read model that lacks one of these
 sections (an older one, or a fixture saved before them) lists it under
 `pending` with `section_absent_from_read_model`, and the page says
 **未取得**. Any other new section is not passed through until it is listed
@@ -190,11 +214,20 @@ in `ui_model.UI_SECTIONS`.
 ## Enabling it on a node
 
 ```sh
+sudo sh packaging/install.sh                   # creates run/ui-read/<leaf> (re-run after an upgrade)
+sudo systemctl enable --now azazel-noc-observe.timer azazel-units-observe.timer
+                                               # the observers (M24): not enabled by the installer
 sudo systemctl enable --now azazel-ui.socket   # listens on 127.0.0.1:8443
 systemctl is-active azazel-ui.socket           # must say "active" before a code is typed
 azazel-nexus ui-login                          # as a member of azazel-operator
 # open http://127.0.0.1:8443/ on this host and type the code
 ```
+
+`azazel-nexus setup` shows the observer step (`operator-observers`) as
+`needed` with the same command until both timers are enabled, and the UI
+shows their sections as **観測なし（未有効化）** with the command among its next
+steps. The daemons that write the other copies start with the activation
+controller as before; until they run, the UI says absent for their copies.
 
 `systemctl disable --now azazel-ui.socket azazel-ui.service` stops it. Nothing
 else depends on it.
@@ -246,9 +279,9 @@ note that the UI then sees the host as `127.0.0.1:8443` in `Host`.
 * TLS and stronger authentication (WebAuthn or client certificates, as the
   specification describes for 8443) for a later stage; loopback HTTP is the
   first stage, and `Secure` cookies are therefore not possible.
-* Whether `azui` should read snapshots through a dedicated read-only group
-  (for example `azstatus-read`), and how existing operators are then
-  handled. Until then most sections show `permission_denied` on a real node.
+* ~~Whether `azui` should read snapshots through a dedicated read-only group~~:
+  decided by default in [ADR-0007](adr/0007-ui-read-leaves.md) (proposed):
+  per-writer copies in `azui`-group leaves, no new group.
 * Whether to keep the UI ungoverned (the default here, so the setup and
   recovery screen works before activation) or to govern it.
 * The unit name (`azazel-ui.service`; the specification says

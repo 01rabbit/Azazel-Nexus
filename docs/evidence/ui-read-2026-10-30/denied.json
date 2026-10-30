@@ -1,0 +1,480 @@
+{
+ "label": "denied",
+ "chromium": "Chrome/156.0.8078.73",
+ "screens": {
+  "overview": {
+   "png": "denied-overview.png",
+   "bytes": 108760,
+   "raw_bytes": 368600,
+   "width": 1280,
+   "height": 2217,
+   "page_height": 2217
+  },
+  "detail": {
+   "png": "denied-detail.png",
+   "bytes": 182231,
+   "raw_bytes": 585688,
+   "width": 1280,
+   "height": 2600,
+   "page_height": 4905
+  }
+ },
+ "login": {
+  "logged_in": true,
+  "login_form_hidden": true
+ },
+ "cards": [
+  {
+   "panel": "overview",
+   "title": "通信は維持されているか",
+   "word": "permission_denied",
+   "tone": "tone-unknown",
+   "reason": "access_permission_denied"
+  },
+  {
+   "panel": "overview",
+   "title": "何が起きているか",
+   "word": "open_incidents",
+   "tone": "tone-warn",
+   "reason": "incident_list_incomplete"
+  },
+  {
+   "panel": "overview",
+   "title": "何を自動対処しているか",
+   "word": "observe_only_no_execution",
+   "tone": "tone-info",
+   "reason": "nexus_accepts_observe_only"
+  },
+  {
+   "panel": "overview",
+   "title": "担当者が次にすること",
+   "word": "action_needed",
+   "tone": "tone-warn",
+   "reason": ""
+  },
+  {
+   "panel": "incidents",
+   "title": "Edge 受信（intake）",
+   "word": "running",
+   "tone": "tone-ok",
+   "reason": ""
+  },
+  {
+   "panel": "incidents",
+   "title": "最近のインシデント（一覧の snapshot）",
+   "word": "permission_denied",
+   "tone": "tone-unknown",
+   "reason": "access_permission_denied"
+  },
+  {
+   "panel": "noc",
+   "title": "NOC 受動観測",
+   "word": "permission_denied",
+   "tone": "tone-unknown",
+   "reason": "access_permission_denied"
+  },
+  {
+   "panel": "knowledge",
+   "title": "Knowledge Lite",
+   "word": "permission_denied",
+   "tone": "tone-unknown",
+   "reason": "access_permission_denied"
+  },
+  {
+   "panel": "knowledge",
+   "title": "Knowledge Lite（運用者向け snapshot）",
+   "word": "degraded",
+   "tone": "tone-warn",
+   "reason": "trust_unreadable"
+  },
+  {
+   "panel": "knowledge",
+   "title": "外部 Knowledge peer（AZ-04 Knowledge）",
+   "word": "absent",
+   "tone": "tone-unknown",
+   "reason": ""
+  },
+  {
+   "panel": "knowledge",
+   "title": "引用元（最近のインシデントの参照根拠）",
+   "word": "none",
+   "tone": "tone-info",
+   "reason": ""
+  },
+  {
+   "panel": "detail",
+   "title": "モデル・提供元の承認（operator view）",
+   "word": "partial",
+   "tone": "tone-unknown",
+   "reason": "inputs_not_all_read"
+  },
+  {
+   "panel": "detail",
+   "title": "防御状態（Edge）",
+   "word": "absent",
+   "tone": "tone-unknown",
+   "reason": "checks_not_all_passed"
+  },
+  {
+   "panel": "detail",
+   "title": "実行モード",
+   "word": "observe-only-fixed",
+   "tone": "tone-info",
+   "reason": "nexus_accepts_observe_only"
+  },
+  {
+   "panel": "detail",
+   "title": "通信（NOC）",
+   "word": "permission_denied",
+   "tone": "tone-unknown",
+   "reason": "access_permission_denied"
+  },
+  {
+   "panel": "detail",
+   "title": "AI 経路（M.I.O.）",
+   "word": "permission_denied",
+   "tone": "tone-unknown",
+   "reason": "access_permission_denied"
+  },
+  {
+   "panel": "detail",
+   "title": "AI 経路（運用者向け snapshot）",
+   "word": "recorded",
+   "tone": "tone-info",
+   "reason": ""
+  },
+  {
+   "panel": "detail",
+   "title": "Knowledge Lite",
+   "word": "permission_denied",
+   "tone": "tone-unknown",
+   "reason": "access_permission_denied"
+  },
+  {
+   "panel": "detail",
+   "title": "Knowledge Lite（運用者向け snapshot）",
+   "word": "degraded",
+   "tone": "tone-warn",
+   "reason": "trust_unreadable"
+  },
+  {
+   "panel": "detail",
+   "title": "サービス",
+   "word": "read",
+   "tone": "tone-info",
+   "reason": ""
+  },
+  {
+   "panel": "detail",
+   "title": "保存容量",
+   "word": "measured",
+   "tone": "tone-info",
+   "reason": ""
+  },
+  {
+   "panel": "detail",
+   "title": "Edge 受信（intake）",
+   "word": "running",
+   "tone": "tone-ok",
+   "reason": ""
+  },
+  {
+   "panel": "detail",
+   "title": "説明器（explainer）",
+   "word": "permission_denied",
+   "tone": "tone-unknown",
+   "reason": "access_permission_denied"
+  },
+  {
+   "panel": "detail",
+   "title": "Fabric 状態表示",
+   "word": "not_installed",
+   "tone": "tone-unknown",
+   "reason": "fabric_extra_not_installed"
+  },
+  {
+   "panel": "detail",
+   "title": "継続するもの",
+   "word": "continuing",
+   "tone": "tone-info",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "installed-files",
+   "word": "needed",
+   "tone": "tone-warn",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "host-preflight",
+   "word": "needed",
+   "tone": "tone-warn",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "commissioning",
+   "word": "blocked",
+   "tone": "tone-bad",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "commission-review",
+   "word": "needed",
+   "tone": "tone-warn",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "bootstrap-deployment",
+   "word": "blocked",
+   "tone": "tone-bad",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "bootstrap-selection",
+   "word": "blocked",
+   "tone": "tone-bad",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "knowledge-store",
+   "word": "blocked",
+   "tone": "tone-bad",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "knowledge-trust",
+   "word": "blocked",
+   "tone": "tone-bad",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "mission-pack",
+   "word": "blocked",
+   "tone": "tone-bad",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "fetch-commissioning",
+   "word": "blocked",
+   "tone": "tone-bad",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "model-import-fetched",
+   "word": "blocked",
+   "tone": "tone-bad",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "operator-observers",
+   "word": "done",
+   "tone": "tone-ok",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "provider-admission",
+   "word": "blocked",
+   "tone": "tone-bad",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "activation-units",
+   "word": "needed",
+   "tone": "tone-warn",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "integration-broker",
+   "word": "not-applicable",
+   "tone": "tone-info",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "mio-configuration",
+   "word": "not-applicable",
+   "tone": "tone-info",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "provider admission（提供元の承認）",
+   "word": "blocked",
+   "tone": "tone-bad",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "health：systemd units",
+   "word": "unknown",
+   "tone": "tone-unknown",
+   "reason": "service_manager_not_queried"
+  },
+  {
+   "panel": "setup",
+   "title": "health：audit",
+   "word": "ok",
+   "tone": "tone-ok",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "サービス（unit ごと）",
+   "word": "read",
+   "tone": "tone-info",
+   "reason": ""
+  },
+  {
+   "panel": "setup",
+   "title": "保存容量（場所ごと）",
+   "word": "measured",
+   "tone": "tone-info",
+   "reason": ""
+  }
+ ],
+ "summary": {
+  "summary": {
+   "communication": {
+    "basis": [
+     {
+      "active_state": "inactive",
+      "code": "edge_unit_state",
+      "kind": "observed",
+      "status": "read"
+     },
+     {
+      "code": "reachability_not_measured",
+      "kind": "observed"
+     }
+    ],
+    "reason_code": "access_permission_denied",
+    "status": "permission_denied"
+   },
+   "events": {
+    "basis": [
+     {
+      "code": "open_incidents_total",
+      "count": 2,
+      "kind": "observed",
+      "source": "intake"
+     },
+     {
+      "code": "open_incidents_listed",
+      "count": 0,
+      "kind": "observed",
+      "latest": null,
+      "most_severe": null,
+      "reason_code": "access_permission_denied",
+      "shown": 0
+     },
+     {
+      "code": "explainer_not_usable",
+      "kind": "observed",
+      "reason_code": "access_permission_denied"
+     },
+     {
+      "code": "list_differs_from_intake",
+      "count": 2,
+      "kind": "observed",
+      "listed": 0
+     }
+    ],
+    "count": 2,
+    "reason_code": "incident_list_incomplete",
+    "status": "open_incidents"
+   },
+   "next": {
+    "basis": [],
+    "items": [
+     {
+      "code": "review_incidents_and_hand_off",
+      "screen": "incidents"
+     },
+     {
+      "code": "check_unreadable_sources",
+      "command": "azazel-nexus status",
+      "sources": [
+       "noc",
+       "explainer",
+       "recent"
+      ]
+     },
+     {
+      "code": "continue_setup",
+      "command": "azazel-nexus installed-files-candidate --help",
+      "screen": "setup",
+      "step": "installed-files"
+     }
+    ],
+    "reason_code": null,
+    "status": "action_needed"
+   },
+   "response": {
+    "basis": [
+     {
+      "code": "would_not_read",
+      "kind": "edge_decision",
+      "reason_code": "access_permission_denied"
+     },
+     {
+      "code": "none_accepted",
+      "kind": "execution_result",
+      "reason_code": "nexus_accepts_observe_only"
+     }
+    ],
+    "reason_code": "nexus_accepts_observe_only",
+    "status": "observe_only_no_execution"
+   }
+  },
+  "access": {
+   "audit_status": "readable",
+   "core_reserve": "absent",
+   "edge_intake_status": "readable",
+   "edge_probe": "permission_denied",
+   "incident_explain_status": "permission_denied",
+   "incident_recent": "permission_denied",
+   "knowledge_lite": "permission_denied",
+   "knowledge_status": "readable",
+   "mio_route_ledger": "permission_denied",
+   "mio_status": "readable",
+   "model_store": "permission_denied",
+   "noc_status": "permission_denied",
+   "units_status": "readable"
+  },
+  "observers": {
+   "noc": "enabled",
+   "units": "enabled"
+  },
+  "snapshot_reader": "ui"
+ },
+ "scroll_width": [
+  1280,
+  1280
+ ],
+ "requests": [
+  "http://127.0.0.1:8443/",
+  "http://127.0.0.1:8443/api/login",
+  "http://127.0.0.1:8443/api/session",
+  "http://127.0.0.1:8443/api/view",
+  "http://127.0.0.1:8443/favicon.ico",
+  "http://127.0.0.1:8443/static/app.css",
+  "http://127.0.0.1:8443/static/app.js",
+  "http://127.0.0.1:8443/static/labels.json"
+ ],
+ "green_on_unknownish": 0
+}

@@ -86,7 +86,7 @@ integer beyond JavaScript's exact range is reported as `too_large`. On a LAB HOS
 stderr so the JSON stays parseable. Like the text, it is a display: it grants,
 admits and activates nothing.
 
-The read model also carries five sections the text screen does not show
+The read model also carries five sections the text screen shows as one line each
 (U2 `src/azazel_nexus/operator_snapshots.py`, U3 `src/azazel_nexus/noc_status.py`),
 so that an account that is not root reads what root would:
 
@@ -112,6 +112,17 @@ shows the section as unavailable. The observer and its timer are installed
 but neither enabled nor masked: enable the timers with `systemctl enable --now
 azazel-units-observe.timer azazel-noc-observe.timer`. No unit requires or binds to the observer, so
 stopping it (or the UI that reads these sections) stops nothing else.
+`azazel-nexus setup` lists this as the step `operator-observers` (`needed`
+with that command until both wants links exist).
+Each writer also puts a byte-identical copy of its snapshot (these four, and
+the Edge loop's and auditd's) into its own `run/ui-read/<leaf>`, `2750
+<writer>:azui`, for the read-only UI's account, which joins no group
+([ADR-0007](adr/0007-ui-read-leaves.md)); `status --snapshot-reader ui`
+reads those copies. A copy that cannot be written is logged once and never
+fails the daemon. Re-run `install.sh` after an upgrade to create the leaves.
+The text screen prints one line per operator snapshot and the operator view
+(the admission gates, the catalog, what was not read), the same words and
+codes as `--json` (L8).
 The same read model is what the read-only operator UI shows
 ([operator-ui.md](operator-ui.md)): `azazel-ui.socket` listens on
 `127.0.0.1:8443` once an operator enables it, and `azazel-nexus ui-login`

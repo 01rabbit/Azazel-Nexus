@@ -52,6 +52,7 @@ __all__ = [
     "socket_path",
     "state_dir",
     "units_status_path",
+    "ui_copy_path",
     "watchdog_state_dir",
 ]
 
@@ -317,3 +318,8 @@ def units_status_path() -> Path:
 def noc_status_path() -> Path:
     """The passive NOC observer's snapshot (U3)."""
     return observation_paths.noc_status_path(ROOT)
+
+
+def ui_copy_path(name: str) -> Path:
+    """Where a snapshot's writer puts the read-only UI's copy (ADR-0007)."""
+    return observation_paths.ui_copy_path(name, ROOT)

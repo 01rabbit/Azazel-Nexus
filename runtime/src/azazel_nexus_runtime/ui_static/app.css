@@ -99,3 +99,9 @@ table.loc td.num { white-space: nowrap; font-variant-numeric: tabular-nums; }
 table.loc .en { display: block; margin-left: 0; }
 .card.wide { grid-column: 1 / -1; }
 table.loc td.unit { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .8rem; overflow-wrap: anywhere; }
+/* The four answers (summary): the next steps as a numbered list, each step
+   readable on a narrow screen; operator view rows one per line. */
+ol.steps { margin: 6px 0 0; padding-left: 1.4em; }
+ol.steps li { margin: 6px 0; overflow-wrap: anywhere; }
+ol.steps p { margin: 2px 0; }
+.row { margin: 4px 0; overflow-wrap: anywhere; }

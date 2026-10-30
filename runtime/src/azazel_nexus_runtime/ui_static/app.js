@@ -319,7 +319,13 @@
         var st = el("td");
         add(st, badge(u.status), u.reason_code ? reasonLine(u.reason_code) : null);
         var states = [u.load_state, u.active_state, u.sub_state].filter(function (x) { return x !== null && x !== undefined; });
-        add(tr, el("td", "unit", text(u.unit)), st, el("td", null, states.join(" / ")));
+        var sd = el("td", null, states.join(" / "));
+        // `not-loaded` is GetUnit's word: a oneshot whose unit object was
+        // released after it stopped says it too, so it is not "not installed".
+        if (u.load_state && state.labels.summary && state.labels.summary.load_state[u.load_state]) {
+          sd.appendChild(el("span", "note", state.labels.summary.load_state[u.load_state]));
+        }
+        add(tr, el("td", "unit", text(u.unit)), st, sd);
         table.appendChild(tr);
       });
       children.push(table);
@@ -340,7 +346,8 @@
   function pairNotes(direct, snapSec, snapAccess, daemon) {
     var snap = snapSec ? statusWithAccess(snapSec.status, snapSec.reason_code, snapAccess) : null;
     var forDirect = [el("p", "small path", "経路：この画面のアカウント（azui）が直接読んだ結果")];
-    var forSnap = [el("p", "small path", "経路：daemon（" + daemon + "）が書いた snapshot。直接の読取とは別の経路")];
+    var copy = state.model && state.model.snapshot_reader === "ui" ? "の UI 用コピー（run/ui-read、azui が読める）" : "";
+    var forSnap = [el("p", "small path", "経路：daemon（" + daemon + "）が書いた snapshot" + copy + "。直接の読取とは別の経路")];
     if (direct.status === "permission_denied") {
       forDirect.push(el("p", "note", "このアカウントでは直接読めません。daemon の snapshot（「運用者向け snapshot」のカード）を参照してください。"));
     } else if (snap && snap.status !== "permission_denied" && positive(direct.status) !== positive(snap.status)) {
@@ -354,8 +361,142 @@
 
   // -- screens ---------------------------------------------------------------
 
+  /* The four answers of the normal screen (`ui_model.summarize`): is
+     communication kept, what is happening, what is handled automatically,
+     what the person on duty does next. Observed facts, AI inference, Edge's
+     decision and the execution result are separate blocks, never merged. */
+  var BASIS_TITLES = { observed: "観測事実", ai_inference: "AI の推測", edge_decision: "Edge の判断（would・未実行）",
+    execution_result: "実際の執行結果" };
+
+  function basisLine(b) {
+    var text_ = label("basis", b.code);
+    var node = el("li");
+    node.appendChild(el("span", null, text_));
+    if (b.code === "default_route" && b.families) {
+      node.appendChild(el("span", "note", "IPv4：" + label("path", b.families.ipv4) + "、IPv6：" + label("path", b.families.ipv6)));
+      if (b.observed_at !== undefined) { node.appendChild(when("観測時刻", b.observed_at)); }
+    } else if (b.code === "edge_unit_state") {
+      node.appendChild(el("span", "note", "azazel-edge-core.service：" + text(b.active_state)));
+    } else if (b.code === "open_incidents_total") {
+      node.appendChild(el("span", "note", typeof b.count === "number" ? "未解決 " + b.count + " 件（受信側の台帳の件数）"
+        : "受信側の件数を確認できない"));
+    } else if (b.code === "open_incidents_listed") {
+      node.appendChild(el("span", "note", "一覧の未解決 " + b.count + " 件（一覧は最新 " + b.shown + " 件まで）" +
+        (typeof b.most_severe === "number" ? "、最も重大な重大度 " + b.most_severe + "（数値が小さいほど重大）" : "")));
+      if (b.latest !== null && b.latest !== undefined) { node.appendChild(when("最後の観測", b.latest)); }
+      if (b.reason_code) { node.appendChild(reasonLine(b.reason_code)); }
+    } else if (b.code === "list_differs_from_intake") {
+      node.appendChild(el("span", "note warn", "受信側は " + b.count + " 件、一覧は " + b.listed + " 件。" +
+        (b.listed < b.count ? "一覧に載っていない未解決があり得る（一覧は最新 20 件まで、説明器の遅れ・失敗で欠ける）"
+          : "一覧に未解決が残っているが受信側の件数は少ない（終了の反映遅れの可能性）")));
+    } else if (b.code === "explainer_behind") {
+      node.appendChild(el("span", "note warn", text(b.counter) + "：" + b.count));
+    } else if (b.code === "ai_explanations") {
+      node.appendChild(el("span", "note", b.count + " 件に AI の説明あり（推測。事実ではない）"));
+    } else if (b.code === "would_not_executed") {
+      var acts = Object.keys(b.actions || {});
+      node.appendChild(el("span", "note", acts.length ? acts.map(function (a) {
+        return word(a).ja + "（" + a + "）" + b.actions[a] + " 件"; }).join("、") : "未解決のインシデントに Edge の判断はありません"));
+    } else if (b.reason_code) {
+      node.appendChild(reasonLine(b.reason_code));
+    }
+    node.appendChild(el("span", "en", b.code));
+    return node;
+  }
+
+  function label(kind, value) {
+    var table = state.labels && state.labels.summary && state.labels.summary[kind] ? state.labels.summary[kind] : {};
+    if (value === null || value === undefined) { return "未観測"; }
+    return Object.prototype.hasOwnProperty.call(table, value) ? table[value] : "（未登録：" + value + "）";
+  }
+
+  function answerCard(title, a) {
+    a = a || { status: null, basis: [] };
+    var children = [];
+    BASIS_KINDS.forEach(function (kind) {
+      var items = (a.basis || []).filter(function (b) { return b.kind === kind; });
+      if (!items.length) { return; }
+      var b = block(BASIS_TITLES[kind]);
+      b.appendChild(list(items.map(basisLine)));
+      children.push(b);
+    });
+    if (a.intake) { children.push(el("p", "small", "受信（intake）の状態：" + reasonText(a.intake))); }
+    return card(title, a.status, { reason: a.reason_code, wide: true, time: evaluatedAt(), children: children });
+  }
+
+  var BASIS_KINDS = ["observed", "ai_inference", "edge_decision", "execution_result"];
+
+  function nextCard(a) {
+    a = a || { status: null, items: [] };
+    var ol = el("ol", "steps");
+    (a.items || []).forEach(function (item) {
+      var li = el("li");
+      add(li, el("p", null, label("next", item.code)), el("span", "en", item.code));
+      if (item.sources) { li.appendChild(el("p", "small", "対象：" + item.sources.map(function (s) {
+        return label("source", s); }).join("、"))); }
+      if (item.step) { li.appendChild(el("p", "small", "手順：" + text(item.step))); }
+      if (item.screen) { li.appendChild(el("p", "small", "画面：" + text(state.labels.sections[item.screen] || item.screen))); }
+      if (item.command) { add(li, el("span", "small", "端末のコマンド（表示のみ。この画面は実行しない）"), el("code", "cmd", item.command)); }
+      ol.appendChild(li);
+    });
+    return card("担当者が次にすること", a.status, { reason: a.reason_code, wide: true, time: evaluatedAt(), children: [ol] });
+  }
+
   function overview(panel) {
+    var s = state.model.summary || {};
+    add(panel, el("p", "banner", "この画面は 4 つの問いに答えます。観測事実・AI の推測・Edge の判断・実際の執行結果を分けて示し、未知・古い・権限がない情報は「正常」と表示しません。専門的な情報は「詳細」画面にあります。"));
     var grid = el("div", "grid");
+    add(grid, answerCard("通信は維持されているか", s.communication),
+      answerCard("何が起きているか", s.events),
+      answerCard("何を自動対処しているか", s.response),
+      nextCard(s.next));
+    panel.appendChild(grid);
+  }
+
+  /* The operator_view section (S-04): admission gates, catalog, import and
+     the confirmations an operator may be asked for. Each row's value and
+     reason as the read adapter gave them; an unread input says so. */
+  function operatorViewCard(ov) {
+    if (!ov) { return pendingCard("モデル・提供元の承認（operator view）", "operator_view"); }
+    var children = [];
+    var provider = ov.provider || {};
+    children.push(block("提供元（provider）の状態"), kv([["状態", provider.state],
+      ["承認の切替（ビルド）", ov.admission_build_switch]]));
+    if ((provider.reason_codes || []).length) { children.push(list(provider.reason_codes.map(reasonLine))); }
+    var inputs = ov.inputs || {};
+    children.push(block("読んだ情報源"), kv(Object.keys(inputs).sort().map(function (k) {
+      return [keyLabel(k), badge(inputs[k])]; })));
+    (ov.sections || []).forEach(function (sec) {
+      var b = block(label("ov_section", sec.key));
+      b.appendChild(list((sec.rows || []).map(function (r) {
+        var li = el("div", "row");
+        if (r.axis === undefined && r.nominal_gib !== undefined) {
+          add(li, keyLabel("possibility"), el("span", null, " " + r.nominal_gib + " GiB → " + text(r.profile) +
+            (r.is_this_node ? "（このノード）" : "")));
+          return li;
+        }
+        add(li, keyLabel(r.axis), el("span", null, " " + text(r.value)),
+          r.reason_code ? reasonLine(r.reason_code) : null, prose(r.reason));
+        return li;
+      })));
+      children.push(b);
+    });
+    var ops = block("運用者が行う確認（この画面からは実行できない）");
+    ops.appendChild(list((ov.operations || []).map(function (o) {
+      var li = el("div", "row");
+      add(li, el("span", null, label("confirmation", o.confirmation) + "：" + (o.available ? "可能" : "不可")),
+        el("span", "en", o.confirmation), prose(o.reason));
+      return li;
+    })));
+    children.push(ops, prose(ov.status_sentence));
+    return card("モデル・提供元の承認（operator view）", ov.status, { reason: ov.reason_code, wide: true,
+      time: evaluatedAt(), children: children });
+  }
+
+  function detail(panel) {
+    var grid = el("div", "grid");
+    // First: which admission gates refuse, and what this account could read.
+    add(grid, operatorViewCard(section("operator_view")));
     var edge = section("edge_core") || {};
     var enf = section("enforcement") || {};
     var edgeStatus = statusWithAccess(edge.status, edge.reason_code, null);
@@ -654,7 +795,8 @@
     panel.appendChild(grid);
   }
 
-  var SCREENS = { overview: overview, incidents: incidents, noc: noc, knowledge: knowledge, setup: setup };
+  var SCREENS = { overview: overview, incidents: incidents, noc: noc, knowledge: knowledge, detail: detail,
+    setup: setup };
 
   function originBanner() {
     var box = $("origin");
@@ -674,16 +816,12 @@
   }
 
   function summary() {
+    var s = (state.model && state.model.summary) || {};
     var parts = [];
-    var edge = section("edge_core");
-    if (edge) { parts.push("Edge " + word(edge.status).ja); }
-    var kl = section("knowledge_lite");
-    if (kl) { parts.push("Knowledge " + word(kl.status).ja); }
-    var mio = section("mio");
-    if (mio) { parts.push("AI 経路 " + word(mio.status).ja); }
-    var loop = section("edge_loop");
-    var rows = loop && loop.recent && loop.recent.snapshot ? loop.recent.snapshot.incidents || [] : [];
-    parts.push("インシデント " + rows.length + " 件");
+    [["通信", "communication"], ["出来事", "events"], ["自動対処", "response"], ["次の操作", "next"]].forEach(function (p) {
+      var a = s[p[1]];
+      parts.push(p[0] + " " + word(a ? a.status : null).ja);
+    });
     return "概況：" + parts.join("、");
   }
 

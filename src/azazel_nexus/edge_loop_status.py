@@ -47,15 +47,21 @@ def _guarded(out, fallback, render):
     out.write(buffer.getvalue())
 
 
-def read_edge_loop():
-    """The three loop snapshots, each through its strict reader (or `None`)."""
+def read_edge_loop(reader="operator"):
+    """The three loop snapshots, each through its strict reader (or `None`).
+
+    `reader` picks the operator group's leaves or the read-only UI's
+    byte-identical copies (`runtime_paths`, ADR-0007).
+    """
     from .runtime_paths import (
         edge_intake_status_path, incident_explain_status_path, incident_recent_path,
     )
     return {
-        "intake": read_snapshot(edge_intake_status_path(), read_intake_status, 8192),
-        "explainer": read_snapshot(incident_explain_status_path(), read_explainer_status, 8192),
-        "recent": read_snapshot(incident_recent_path(), read_recent_incidents, RECENT_BYTES),
+        "intake": read_snapshot(edge_intake_status_path(reader=reader), read_intake_status, 8192),
+        "explainer": read_snapshot(incident_explain_status_path(reader=reader),
+                                   read_explainer_status, 8192),
+        "recent": read_snapshot(incident_recent_path(reader=reader), read_recent_incidents,
+                                RECENT_BYTES),
     }
 
 

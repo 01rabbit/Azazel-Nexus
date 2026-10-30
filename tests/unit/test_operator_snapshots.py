@@ -799,7 +799,9 @@ def test_the_observer_unit_and_timer_are_narrow():
     assert "RestrictAddressFamilies=AF_UNIX\n" in service
     assert "IPAddressDeny=any" in service and "CapabilityBoundingSet=\n" in service
     assert "ReadWritePaths=-/var/lib/azazel/run/units-status\n" in service
-    assert service.count("ReadWritePaths=") == 1
+    # And the read-only UI's copy of the same snapshot (ADR-0007), nothing else.
+    assert "ReadWritePaths=-/var/lib/azazel/run/ui-read/units\n" in service
+    assert service.count("ReadWritePaths=") == 2
     assert "\n[Install]" not in service and "ConditionPathExists" not in service
     timer = files["azazel-units-observe.timer"]
     assert "Unit=azazel-units-observe.service" in timer

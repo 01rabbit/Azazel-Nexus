@@ -58,11 +58,11 @@ def test_a_section_an_older_read_model_lacks_is_pending_not_healthy():
     """A read model from before U2/U3 (or a fixture saved then) has no
     snapshot or NOC sections: each is pending with a fixed code."""
     view = _demo()
-    for name in ("knowledge_status", "mio_status", "services", "storage", "noc"):
+    for name in ("knowledge_status", "mio_status", "services", "storage", "noc", "operator_view"):
         del view["sections"][name]
     model = ui_model.project(view, origin={"kind": "fixture"}, served_at="t")
     assert model["pending"] == {name: "section_absent_from_read_model" for name in (
-        "knowledge_status", "mio_status", "services", "storage", "noc")}
+        "knowledge_status", "mio_status", "services", "storage", "noc", "operator_view")}
     assert not set(model["pending"]) & set(model["sections"])
 
 

@@ -334,7 +334,9 @@ def test_the_noc_unit_is_passive_unprivileged_and_required_by_nothing():
     assert "IPAddressDeny=any" in service and "IPAddressAllow" not in service
     assert "PrivateNetwork" not in service and "CapabilityBoundingSet=\n" in service
     assert "ReadWritePaths=-/var/lib/azazel/run/noc-status\n" in service
-    assert service.count("ReadWritePaths=") == 1 and "SupplementaryGroups" not in service
+    # And the read-only UI's copy of the same snapshot (ADR-0007), nothing else.
+    assert "ReadWritePaths=-/var/lib/azazel/run/ui-read/noc\n" in service
+    assert service.count("ReadWritePaths=") == 2 and "SupplementaryGroups" not in service
     assert "\n[Install]" not in service
     timer = files["azazel-noc-observe.timer"]
     assert "Unit=azazel-noc-observe.service" in timer and "OnUnitActiveSec=60s" in timer
@@ -389,4 +391,9 @@ def test_status_json_carries_the_noc_section(root, host, monkeypatch):
         assert secret not in out.getvalue()
     text = io.StringIO()
     assert main(["--as-of", as_of, "status"], out=text) == 0
-    assert "noc" not in text.getvalue().lower()
+    # L8: the text screen names the section's word and code, and nothing of
+    # the snapshot below it (no counts, no ifindex, no interface identity).
+    lines = [line for line in text.getvalue().splitlines() if "noc" in line.lower()]
+    assert lines == ["    passive NOC (noc-observe): observed; written 3 s before as-of"]
+    for secret in SECRET_STRINGS:
+        assert secret not in text.getvalue()

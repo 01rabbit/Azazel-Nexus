@@ -120,6 +120,7 @@ from .protocol import (
     VerbRegistry,
 )
 from .units import UNIT_NAMES
+from .status_snapshot import UiCopy
 from .watchdog import DETAIL_MAX_LENGTH, FenceReason
 
 __all__ = [
@@ -613,10 +614,13 @@ class AuditService:
                  monotonic: Callable[[], float] = time.monotonic,
                  warn: Callable[[str], None] = lambda line: print(line, file=sys.stderr, flush=True),
                  status_path: Optional[Path] = None,
+                 ui_status_path: Optional[Path] = None,
                  ) -> None:
         self.ledger = ledger
         #: Where the operator-readable snapshot goes; `None` writes none.
         self.status_path = status_path
+        #: The read-only UI's byte-identical copy (ADR-0007); `None` writes none.
+        self.ui_status = UiCopy(ui_status_path, name="azazel-auditd", warn=warn)
         self._status_written = float("-inf")
         self._status_failing = False
         self._status_swept = False
@@ -883,6 +887,8 @@ class AuditService:
             os.replace(name, self.status_path)
             name = None
             self._status_failing = False
+            # The same bytes for the UI; never raises, never fails this write.
+            self.ui_status.write(body)
         except Exception as exc:  # noqa: BLE001 - the snapshot is optional
             if not self._status_failing:
                 self._status_failing = True
@@ -1091,11 +1097,13 @@ def main(
     from .principal import PrincipalPolicy, SERVICE_ACCOUNTS
     from .runtime_paths import (
         audit_sink, audit_status_path, dedicated_listener, ledger_dir, socket_path,
+        ui_copy_path,
     )
     from .serve import serve_forever
     from .systemd_notify import runtime_ready_callback
 
-    service = AuditService(SegmentedLedger(ledger_dir()), status_path=audit_status_path())
+    service = AuditService(SegmentedLedger(ledger_dir()), status_path=audit_status_path(),
+                           ui_status_path=ui_copy_path("audit_status"))
     service.start()
     # Before serving, so status reflects this start (and a broken chain) at
     # once. Never raises: a missing leaf is logged and serving continues.

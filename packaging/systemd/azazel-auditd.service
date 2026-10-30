@@ -39,6 +39,7 @@ ReadWritePaths=/var/lib/azazel/run/audit-submit
 ReadWritePaths=/var/lib/azazel/state/audit
 ReadWritePaths=/var/lib/azazel/state/auditd
 ReadWritePaths=-/var/lib/azazel/run/audit-status
+ReadWritePaths=-/var/lib/azazel/run/ui-read/audit
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
