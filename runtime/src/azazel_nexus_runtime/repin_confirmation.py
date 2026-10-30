@@ -62,6 +62,10 @@ class _Challenge:
     expires: float
 
 
+class _AuditUnavailable(Exception):
+    """az-auditd did not take the request record; nothing was changed."""
+
+
 def _refuse() -> None:
     # Never return an exception, file content, reason, path or library outcome
     # as a refusal detail: the shared transport may record that detail.
@@ -93,10 +97,16 @@ class RepinConfirmation:
         repin: Callable[[RepinRequestLike, ConfirmationLike], OutcomeLike] = production_repin,
         clock: Callable[[], float] = time.monotonic,
         now: Callable[[], str] = lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        append: Callable[[dict], None] | None = None,
     ) -> None:
+        if append is None:
+            from .lite_audit import append_event as append
         self.commissioning_dir = commissioning_dir
         self.snapshot_dir = snapshot_dir
         self.repin = repin
+        #: az-auditd's append (ADR-0008, R390-03): both entries -- root's CLI
+        #: and commissiond's socket -- record here before any change.
+        self.append = append
         self.clock = clock
         self.now = now
         # Not thread-safe: relies on single-threaded serve_forever dispatch.
@@ -147,6 +157,60 @@ class RepinConfirmation:
         except (OSError, ValueError):
             _refuse()
 
+    def _record(self, event: dict) -> bool:
+        try:
+            self.append(event)
+            return True
+        except Exception:  # noqa: BLE001 - the outcome stands; the reply says so
+            return False
+
+    def _promote(self, snapshot: Path, pending: _Challenge, nonce: str, at: str) -> dict:
+        """Run the repin and record what the pointer reads afterwards.
+
+        A failure before the commit point is a refusal (recorded, then
+        raised). One at or after it is `lite_trust.RepinUncertain`: the
+        pointer is read back, and the reply and the record say `promoted`
+        with its state, or that the outcome is unknown -- never "refused"
+        (R390-02).
+        """
+        from azazel_nexus.lite_trust import RepinUncertain
+
+        anchor = pending.digest
+        try:
+            outcome = self.repin(
+                RepinRequestLike(snapshot, pending.reason, "root"),
+                ConfirmationLike(nonce, self.now()),
+            )
+        except RepinUncertain as uncertain:
+            if uncertain.state == "unknown":
+                complete = self._record({"event_type": "knowledge.lite.trust_repin_unconfirmed",
+                                         "anchor_digest": anchor, "occurred_at": at})
+                return {"promoted": None, "generation": None, "state": "unknown",
+                        "audit_complete": complete}
+            if type(uncertain.generation) is not int or uncertain.generation < 0:
+                _refuse()
+            complete = self._record({"event_type": "knowledge.lite.trust_repin_promoted",
+                                     "anchor_digest": anchor,
+                                     "generation": uncertain.generation,
+                                     "state": uncertain.state, "occurred_at": at})
+            return {"promoted": True, "generation": uncertain.generation,
+                    "state": uncertain.state, "audit_complete": complete}
+        except Exception:
+            self._record({"event_type": "knowledge.lite.trust_repin_refused",
+                          "anchor_digest": anchor, "occurred_at": at})
+            raise
+        # Only typed outcome values cross this boundary.
+        if (type(outcome.promoted) is not bool or outcome.promoted is not True
+                or type(outcome.generation) is not int or outcome.generation < 0):
+            self._record({"event_type": "knowledge.lite.trust_repin_refused",
+                          "anchor_digest": anchor, "occurred_at": at})
+            _refuse()
+        complete = self._record({"event_type": "knowledge.lite.trust_repin_promoted",
+                                 "anchor_digest": anchor, "generation": outcome.generation,
+                                 "state": "complete", "occurred_at": at})
+        return {"promoted": True, "generation": outcome.generation, "state": "complete",
+                "audit_complete": complete}
+
     def confirm(self, principal: Principal, nonce: str, echo: str) -> dict:
         self._root(principal)
         pending = self._pending.pop(nonce, None)
@@ -180,17 +244,18 @@ class RepinConfirmation:
                 stream.write(content)
                 stream.flush()
                 os.fsync(stream.fileno())
-            outcome = self.repin(
-                RepinRequestLike(snapshot, pending.reason, "root"),
-                ConfirmationLike(nonce, self.now()),
-            )
-            # Library reason strings, fingerprints and exception text are not
-            # response fields. Only typed outcome values cross this boundary;
-            # cleanup below may add a fixed boolean.
-            if (type(outcome.promoted) is not bool or type(outcome.generation) is not int
-                    or outcome.generation < 0):
-                _refuse()
-            result = {"promoted": outcome.promoted, "generation": outcome.generation}
+            at = self.now()
+            # The request is recorded in az-auditd before anything changes; a
+            # refused append changes nothing (ADR-0008 D3, R390-03).
+            try:
+                self.append({"event_type": "knowledge.lite.trust_repin_requested",
+                             "anchor_digest": pending.digest, "reason": pending.reason,
+                             "occurred_at": at})
+            except Exception:  # noqa: BLE001 - no record, no change
+                raise _AuditUnavailable() from None
+            result = self._promote(snapshot, pending, nonce, at)
+        except _AuditUnavailable:
+            raise RequestRefused(Refusal.ARGUMENT_RANGE, "audit_unavailable") from None
         except Exception as error:
             # Library refusals can include file contents or key parser text.
             # Keep them out of replies, refusal sinks and journal tracebacks.

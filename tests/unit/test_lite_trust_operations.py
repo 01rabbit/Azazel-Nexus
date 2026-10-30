@@ -728,3 +728,244 @@ def test_an_accepted_list_record_reaches_auditd(tmp_path, auditd, monkeypatch):
     assert result == {"accepted": True, "code": None, "sequence": 3, "audit_complete": True}
     kinds = [entry.event["event_type"] for entry in auditd.ledger]
     assert kinds == ["knowledge.lite.revocation_requested", "knowledge.lite.revocation_accepted"]
+
+
+# -- review R390-01: a kept anchor counts what the verifier counts --------------
+
+
+def test_a_kept_anchor_whose_required_role_no_pinned_key_holds_is_refused(node):
+    """A holds the required role, B does not; repinning to B alone keeps an
+    anchor nothing can meet, so it is refused before the pointer moves."""
+    a, b = node.keys.bundle, node.keys.next_bundle
+    document = _request([a, b], [node.keys.revoker], threshold=1,
+                        key_roles={"site-bundle": "bundle-signer", "site-bundle-1": "other"},
+                        required_signer_role="bundle-signer")
+    assert _enroll(node, _place_request(node, document))["enrolled"] is True
+    result = _import(node, _bundle(a, version=5, key_id="site-bundle"))
+    assert result["outcome"] == "admitted" and _status(node) == "available"
+    refused = _repin(node, {"keys": [_public(b)]})
+    assert (refused["promoted"], refused["code"]) == (False, "refused")
+    assert TrustStore(node.trust).current_generation() == 0
+    assert not (node.trust / "trust-current").exists()
+    assert _status(node) == "available"
+    # The role holder alone is fine.
+    assert _repin(node, {"keys": [_public(a)]})["promoted"] is True
+
+
+def test_a_kept_anchor_whose_only_pinned_key_it_revokes_is_refused(tmp_path):
+    from azazel_nexus.audit import AuditLedger
+    from azazel_nexus.lite_trust import RepinConfirmation as Confirmation
+    from azazel_nexus.lite_trust import RepinRequest, TrustRefused
+
+    root = tmp_path / "lite-trust"
+    (root / "trust").mkdir(parents=True)
+    a, b = _key(), _key()
+    (root / "trust/anchors.toml").write_text(
+        f'threshold = 1\nrevoked = ["a"]\n[keys]\n"a" = "{_public(a)}"\n"b" = "{_public(b)}"\n')
+    TrustStore(root).pin([_public(a), _public(b)], commissioning_digest=BINDING,
+                         pinned_at=NOW, actor="root")
+    anchor = tmp_path / "anchor.json"
+    anchor.write_text(json.dumps({"keys": [_public(a)]}))
+    with pytest.raises(TrustRefused):
+        TrustStore(root).repin(RepinRequest(anchor, "rotation", "root"),
+                               confirmation=Confirmation("n", NOW),
+                               ledger=AuditLedger(tmp_path / "ledger.jsonl"), now=NOW)
+    assert TrustStore(root).current_generation() == 0
+
+
+# -- review R390-02: past the commit point is never "refused" -------------------
+
+
+def test_enrollment_committed_but_unsynced_is_reported_in_force(node, monkeypatch):
+    from azazel_nexus import lite_enrollment
+
+    real = lite_enrollment._write
+
+    def unsynced(path, data):
+        real(path, data)
+        if path.name == "trust.json":
+            raise OSError("directory sync failed after the rename")
+    monkeypatch.setattr(lite_enrollment, "_write", unsynced)
+    digest = _place_request(node, _request([node.keys.bundle], [node.keys.revoker]))
+    result = _enroll(node, digest)
+    assert (result["enrolled"], result["durability"], result["code"]) == (True, "unsynced", None)
+    assert node.events[-1]["event_type"] == "knowledge.lite.trust_enrolled"
+    assert node.events[-1]["durability"] == "unsynced"
+    assert _status(node) == "no_bundle"
+
+
+def test_enrollment_whose_commit_cannot_be_read_back_is_unknown(node, monkeypatch):
+    from azazel_nexus import lite_enrollment
+
+    real = lite_enrollment._write
+
+    def foreign(path, data):
+        if path.name == "trust.json":
+            real(path, b'{"keys": []}\n')
+            raise OSError("rename landed something else")
+        real(path, data)
+    monkeypatch.setattr(lite_enrollment, "_write", foreign)
+    digest = _place_request(node, _request([node.keys.bundle], [node.keys.revoker]))
+    result = _enroll(node, digest)
+    assert (result["enrolled"], result["durability"]) == (None, "unknown")
+    assert [e["event_type"] for e in node.events][-1] == "knowledge.lite.trust_enroll_unconfirmed"
+    assert "knowledge.lite.trust_enroll_refused" not in [e["event_type"] for e in node.events]
+
+
+@pytest.mark.parametrize("fault, expected", [
+    ("before_pointer", (False, None, None, "knowledge.lite.trust_repin_refused")),
+    ("after_pointer", (True, 1, "pointer_unsynced", "knowledge.lite.trust_repin_promoted")),
+    ("promotion_ledger", (True, 1, "ledger_incomplete", "knowledge.lite.trust_repin_promoted")),
+    ("pointer_unreadable", (None, None, "unknown", "knowledge.lite.trust_repin_unconfirmed")),
+])
+def test_a_repin_fault_is_reported_as_the_pointer_reads(node, monkeypatch, fault, expected):
+    from azazel_nexus import audit, lite_trust
+
+    digest = _place_request(node, _request([node.keys.bundle], [node.keys.revoker]))
+    assert _enroll(node, digest)["enrolled"] is True
+    real_write, real_append = lite_trust._atomic_write, audit.AuditLedger.append
+
+    def write(path, data, **kwargs):
+        if path.name == "trust-current" and fault == "before_pointer":
+            raise OSError("no space before the rename")
+        real_write(path, data, **kwargs)
+        if path.name == "trust-current" and fault == "after_pointer":
+            raise OSError("directory sync failed after the rename")
+        if path.name == "trust-current" and fault == "pointer_unreadable":
+            path.write_text("not a number")
+            raise OSError("pointer damaged")
+
+    def append(self, event):
+        if event["event_type"] == "trust.repin.promoted" and fault == "promotion_ledger":
+            raise audit.AuditUnavailable("ledger full")
+        return real_append(self, event)
+    monkeypatch.setattr(lite_trust, "_atomic_write", write)
+    monkeypatch.setattr(audit.AuditLedger, "append", append)
+    result = _repin(node, {"keys": [_public(node.keys.bundle)],
+                           "anchors": {"keys": {"site-bundle": _public(node.keys.bundle)},
+                                       "threshold": 1, "minimum_security_epoch": 1}})
+    promoted, generation, state, record = expected
+    assert (result["promoted"], result["generation"], result["state"]) == (
+        promoted, generation, state)
+    assert node.events[-1]["event_type"] == record
+    if state in ("pointer_unsynced", "ledger_incomplete"):
+        assert node.events[-1]["state"] == state and node.events[-1]["generation"] == 1
+        assert TrustStore(node.trust).current_generation() == 1
+    if fault == "before_pointer":
+        assert TrustStore(node.trust).current_generation() == 0
+    kinds = [e["event_type"] for e in node.events]
+    assert kinds.count("knowledge.lite.trust_repin_requested") == 1
+    if promoted is not False:
+        assert "knowledge.lite.trust_repin_refused" not in kinds
+
+
+@pytest.mark.parametrize("state, code", [("pointer_unsynced", 1), ("ledger_incomplete", 1),
+                                         ("unknown", 1), ("complete", 0)])
+def test_the_cli_never_reports_an_uncertain_repin_as_unchanged(monkeypatch, capsys, state, code):
+    monkeypatch.setattr(lite_trust_ops, "_is_root", lambda: True)
+    promoted = None if state == "unknown" else True
+    reply = {"promoted": promoted, "code": None, "generation": None if promoted is None else 3,
+             "state": state, "audit_complete": True}
+    assert lite_trust_ops.run_repin("rotation", runner=lambda work: reply,
+                                    ask=lambda c: None) == code
+    text = capsys.readouterr()
+    assert "unchanged" not in text.err
+    if state == "unknown":
+        assert "UNKNOWN" in text.err
+    elif state != "complete":
+        assert "in force but not fully recorded" in text.err
+
+
+# -- review R390-03: commissiond's repin records in auditd too ------------------
+
+
+def _daemon(node, append):
+    from azazel_nexus_runtime import commissiond
+
+    return commissiond.CommissionService(read_links_fn=lambda: [], append=append,
+                                         now=lambda: NOW)
+
+
+def _daemon_repin(service):
+    from azazel_nexus_runtime import commissiond
+
+    def call(verb, arguments):
+        bound = commissiond.REGISTRY.resolve(verb, ROOT)
+        return service.handle(Request(verb=bound, arguments=bound.bind(arguments),
+                                      principal=ROOT, payload={}))
+    challenge = call("trust.repin.challenge",
+                     {"reason": "rotation", "new_anchor_file": ANCHOR_FILENAME})
+    return call("trust.repin.confirm",
+                {"nonce": challenge["nonce"], "echo": challenge["confirmation_words"]})
+
+
+def test_the_daemon_repin_needs_auditds_receipt_first(node):
+    digest = _place_request(node, _request([node.keys.bundle], [node.keys.revoker]))
+    assert _enroll(node, digest)["enrolled"] is True
+    (node.commissioning / ANCHOR_FILENAME).write_text(json.dumps(
+        {"keys": [_public(node.keys.bundle)],
+         "anchors": {"keys": {"site-bundle": _public(node.keys.bundle)}, "threshold": 1,
+                     "minimum_security_epoch": 2}}))
+
+    def unavailable(event):
+        raise ConnectionRefusedError("auditd is not running")
+    with pytest.raises(RequestRefused) as refused:
+        _daemon_repin(_daemon(node, unavailable))
+    assert refused.value.detail == "audit_unavailable"
+    assert TrustStore(node.trust).current_generation() == 0
+    assert not (node.trust / "trust-reserved").exists()
+
+
+def test_the_daemon_repin_and_the_commission_ledger_agree_on_the_generation(node):
+    from azazel_nexus.audit import AuditLedger
+
+    digest = _place_request(node, _request([node.keys.bundle], [node.keys.revoker]))
+    assert _enroll(node, digest)["enrolled"] is True
+    (node.commissioning / ANCHOR_FILENAME).write_text(json.dumps(
+        {"keys": [_public(node.keys.bundle)],
+         "anchors": {"keys": {"site-bundle": _public(node.keys.bundle)}, "threshold": 1,
+                     "minimum_security_epoch": 2}}))
+    reply = _daemon_repin(_daemon(node, node.events.append))
+    assert reply == {"promoted": True, "generation": 1, "state": "complete",
+                     "audit_complete": True}
+    kinds = [e["event_type"] for e in node.events]
+    assert kinds[-2:] == ["knowledge.lite.trust_repin_requested",
+                          "knowledge.lite.trust_repin_promoted"]
+    ledger = [e.event for e in AuditLedger(runtime_paths.commission_ledger_path())]
+    assert [e["generation"] for e in ledger if e["event_type"] == "trust.repin.promoted"] == [
+        node.events[-1]["generation"]]
+
+
+# -- review §3: the narrowed child inherits nothing it does not need ------------
+
+
+def test_the_child_sheds_inherited_descriptors_and_environment(tmp_path, monkeypatch):
+    stray = os.open(tmp_path / "secret", os.O_CREAT | os.O_RDWR, 0o600)
+    os.set_inheritable(stray, True)
+    monkeypatch.setenv("AZN_TEST_SECRET", "x")
+    reader, writer = os.pipe()
+    # One below the kept pipe end and one above it.
+    above = os.open(tmp_path / "secret", os.O_RDONLY)
+    assert stray < writer < above
+    pid = os.fork()
+    if pid == 0:  # pragma: no cover - the child
+        try:
+            lite_trust_ops._shed_inherited(writer)
+            still_open = []
+            for fd in (stray, above):
+                try:
+                    os.fstat(fd)
+                    still_open.append(fd)
+                except OSError:
+                    pass
+            os.write(writer, json.dumps({"open": bool(still_open),
+                                         "env": dict(os.environ)}).encode())
+        finally:
+            os._exit(0)
+    os.close(writer)
+    seen = json.loads(os.read(reader, 65536))
+    os.close(reader)
+    os.waitpid(pid, 0)
+    os.close(stray)
+    os.close(above)
+    assert seen == {"open": False, "env": lite_trust_ops.CHILD_ENVIRONMENT}

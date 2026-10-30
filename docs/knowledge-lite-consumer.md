@@ -416,8 +416,9 @@ root) records `knowledge.lite.trust_enroll_requested` in az-auditd, writes
 `0640`, the directory `2750`, owner `azcommission`, group `azknowledge`), and
 records `knowledge.lite.trust_enrolled`. It prints one JSON object of fixed
 words and numbers (`enrolled`, `code`, `bundle_keys`, `threshold`,
-`revocation_keys`, `trust_fingerprint`, `audit_complete`) and exits 0 only
-for an enrollment whose records both reached auditd.
+`revocation_keys`, `trust_fingerprint`, `durability`, `audit_complete`) and
+exits 0 only for an enrollment that is durable (`durability: synced`) and
+whose records both reached auditd.
 
 - If auditd does not take the first record, nothing is written
   (`audit_unavailable`).
@@ -431,6 +432,15 @@ for an enrollment whose records both reached auditd.
   replaces exactly what the interrupted run left and completes. Anything
   else in the root refuses the request (`trust_root_not_empty`) and needs
   inspection.
+- **A failure at the commit point is read back, never reported as a
+  refusal.** If writing `trust.json` fails, the command reads it back. Absent:
+  nothing is trusted (`write_failed`, refused). Present with this request's
+  record: the enrollment **is in force**, `enrolled: true` with
+  `durability: unsynced` (its rename was not confirmed durable; the record
+  says the same) -- do not repeat it, check the root after the next reboot.
+  Unreadable or someone else's: `enrolled: null`, `durability: unknown`,
+  recorded as `knowledge.lite.trust_enroll_unconfirmed` -- inspect the root
+  before running anything else.
 
 Status now reports `no_bundle`.
 

@@ -100,6 +100,7 @@ __all__ = [
     "SIGNATURE_MEMBER",
     "SUPPORTED_FORMATS",
     "TrustAnchors",
+    "meetable_keys",
     "parse_anchors",
     "read_anchors",
     "verify_bundle",
@@ -661,6 +662,25 @@ def _check_signatures(
             "signature(s) verified",
         )
     return verified
+
+
+def meetable_keys(anchors: TrustAnchors, pinned) -> int:
+    """How many keys of `anchors` a bundle signature can count, under `pinned`.
+
+    The same rules the verifier applies: the key's material must be pinned
+    (`CommissionedTrust` intersects the anchor with the pin), its id not in
+    `revoked`, and -- when the anchor names `required_signer_role` -- it must
+    hold that role. An anchor whose `threshold` exceeds this can verify no
+    bundle at all (ADR-0008, R390-01).
+    """
+
+    pinned = {bytes(key) for key in pinned}
+    return sum(
+        1 for key_id, material in anchors.keys.items()
+        if material in pinned and key_id not in anchors.revoked
+        and (anchors.required_signer_role is None
+             or anchors.key_roles.get(key_id) == anchors.required_signer_role)
+    )
 
 
 def _check_signer_role(signers: set[str], anchors: TrustAnchors) -> None:

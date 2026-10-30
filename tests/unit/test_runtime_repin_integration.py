@@ -39,7 +39,7 @@ def node(tmp_path, monkeypatch):
     confirmation = RepinConfirmation(
         commissioning_dir=directory,
         snapshot_dir=runtime_paths.state_dir() / "commission",
-        now=lambda: NOW,
+        now=lambda: NOW, append=lambda event: None,
     )
     return store, old, new, confirmation
 
@@ -67,7 +67,8 @@ def test_real_production_promotion_audit_and_new_bundle_key(node):
     store, old, new, confirmation = node
     verify(store, old)
     before = store.path.read_bytes()
-    assert confirm(confirmation) == {"promoted": True, "generation": 1}
+    assert confirm(confirmation) == {"promoted": True, "generation": 1, "state": "complete",
+                                     "audit_complete": True}
     assert (store.root / "trust.json").read_bytes() == before
     assert store.keys(commissioning_digest=DIGEST) == (bytes(new.verify_key),)
     assert verify(store, new).signers == ("signer",)

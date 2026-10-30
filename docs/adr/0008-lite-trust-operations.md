@@ -162,6 +162,26 @@ field was named `sequence`, which auditd assigns itself and refuses in a
 payload, so every accepted list had gone unrecorded (found by the real
 process run of this change).
 
+**D6a. Past the commit point is never "refused" (review R390-02).** The
+enrollment reads `trust.json` back when its write fails: absent is a refusal;
+present with the request's record is an enrollment in force with
+`durability: unsynced`; anything else is `unknown`. A repin failing at or
+after the pointer move raises `lite_trust.RepinUncertain` with the pointer
+read back (`pointer_unsynced`, `ledger_incomplete`, `unknown`). Replies and
+auditd records carry that state (`trust_enrolled.durability`,
+`trust_repin_promoted.state`, `trust_enroll_unconfirmed`,
+`trust_repin_unconfirmed`).
+
+**D6b. Both repin entries record the same way (R390-03).** The auditd records
+of a repin are `RepinConfirmation.confirm`'s, so commissiond's socket entry
+also needs auditd's receipt before any change. A kept anchor is checked with
+the verifier's own count (`lite_bundle.meetable_keys`: pinned, not revoked,
+holding the required role; R390-01).
+
+**D6c. The narrowed child inherits nothing but its terminal and result pipe**
+(R390 §3): every other descriptor is closed and the environment replaced by
+a fixed `PATH`/`LANG` before it changes identity.
+
 **D7. Fail-closed, and nothing new to approve.** A stopped auditd refuses an
 import, an enrollment, a repin and a revocation before any change. No
 approval boolean, environment variable, unit operation or flag is added; the

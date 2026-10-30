@@ -74,6 +74,7 @@ from azazel_nexus.lite_enrollment import (
     ENROLLMENT_FILENAME,
     MAX_ENROLLMENT_BYTES,
     EnrollmentRefused,
+    EnrollmentUncertain,
     decode_enrollment,
     enroll,
 )
@@ -192,13 +193,34 @@ def become_commissioner() -> None:
     raise PermissionError("root was still reachable")
 
 
+#: The child's whole environment. Paths were resolved at import
+#: (`runtime_paths.ROOT` is read once), so nothing else is needed.
+CHILD_ENVIRONMENT = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
+
+
+def _shed_inherited(keep: int) -> None:
+    """Close every descriptor but 0-2 and `keep`; replace the environment."""
+
+    limit = os.sysconf("SC_OPEN_MAX") if hasattr(os, "sysconf") else 65536
+    if not 0 < limit <= 1 << 20:
+        limit = 65536
+    os.closerange(3, keep)
+    os.closerange(keep + 1, limit)
+    os.environ.clear()
+    os.environ.update(CHILD_ENVIRONMENT)
+
+
 def run_as_commissioner(work: Callable[[], Mapping]) -> dict:
     """Run `work` in a child that has become `azcommission`; return its result.
 
-    The child inherits the terminal (repin asks there) and returns one bounded
-    JSON object of fixed fields through a pipe. Anything else -- an exception,
-    an identity that could not be established, a signal -- returns nothing
-    and the caller reports a refusal; no exception text crosses back.
+    The child keeps only the terminal (repin asks there, descriptors 0-2) and
+    its result pipe: every other inherited descriptor is closed and the
+    environment replaced by a fixed minimal one before it narrows, so nothing
+    root opened or set reaches the commissioning account (R390 §3). It
+    returns one bounded JSON object of fixed fields through the pipe.
+    Anything else -- an exception, an identity that could not be established,
+    a signal -- returns nothing and the caller reports a refusal; no
+    exception text crosses back.
     """
 
     reader, writer = os.pipe()
@@ -209,6 +231,7 @@ def run_as_commissioner(work: Callable[[], Mapping]) -> dict:
         status = 1
         try:
             os.close(reader)
+            _shed_inherited(writer)
             become_commissioner()
             result = json.dumps(dict(work()), sort_keys=True).encode("utf-8")
             if len(result) <= _RESULT_LIMIT:
@@ -295,7 +318,8 @@ def enroll_transaction(*, confirmed_digest: str, commissioning_digest: Optional[
     """
 
     result = {"enrolled": False, "code": None, "bundle_keys": None, "threshold": None,
-              "revocation_keys": None, "trust_fingerprint": None, "audit_complete": True}
+              "revocation_keys": None, "trust_fingerprint": None, "durability": None,
+              "audit_complete": True}
     at = now()
     try:
         append({"event_type": "knowledge.lite.trust_enroll_requested",
@@ -328,20 +352,32 @@ def enroll_transaction(*, confirmed_digest: str, commissioning_digest: Optional[
                                  enrolled_at=at, actor=actor)
             except EnrollmentRefused as refusal:
                 return refused(refusal.code)
+            except EnrollmentUncertain:
+                # Past the commit point, unreadable: never "refused" (R390-02).
+                try:
+                    append({"event_type": "knowledge.lite.trust_enroll_unconfirmed",
+                            "request_digest": confirmed_digest, "occurred_at": at})
+                    complete = True
+                except Exception:  # noqa: BLE001
+                    complete = False
+                return {**result, "enrolled": None, "durability": "unknown",
+                        "audit_complete": complete}
     except TrustBusy:
         return refused("busy")
     except OSError:
         return refused("write_failed")
     result = {**result, "enrolled": True, "bundle_keys": outcome.bundle_keys,
               "threshold": outcome.threshold, "revocation_keys": outcome.revocation_keys,
-              "trust_fingerprint": outcome.trust_fingerprint}
+              "trust_fingerprint": outcome.trust_fingerprint,
+              "durability": outcome.durability}
     try:
         append({"event_type": "knowledge.lite.trust_enrolled",
                 "request_digest": confirmed_digest,
                 "trust_fingerprint": outcome.trust_fingerprint,
                 "revocation_policy_fingerprint": outcome.revocation_policy_fingerprint,
                 "bundle_keys": outcome.bundle_keys, "threshold": outcome.threshold,
-                "revocation_keys": outcome.revocation_keys, "occurred_at": at})
+                "revocation_keys": outcome.revocation_keys,
+                "durability": outcome.durability, "occurred_at": at})
     except Exception:  # noqa: BLE001 - the enrollment stands; the reply says so
         result["audit_complete"] = False
     return result
@@ -452,8 +488,9 @@ def run_enroll(*, evidence: Optional[Callable[[], Optional[str]]] = None,
             commissioning_dir=directory, trust_root=trust_root, lock_dir=lock_dir,
             append=append))
         if (set(result) != {"enrolled", "code", "bundle_keys", "threshold", "revocation_keys",
-                            "trust_fingerprint", "audit_complete"}
-                or type(result["enrolled"]) is not bool
+                            "trust_fingerprint", "durability", "audit_complete"}
+                or result["enrolled"] not in (True, False, None)
+                or result["durability"] not in (None, "synced", "unsynced", "unknown")
                 or type(result["audit_complete"]) is not bool
                 or not (result["code"] is None or (type(result["code"]) is str
                                                    and _WORD.fullmatch(result["code"])))
@@ -468,7 +505,16 @@ def run_enroll(*, evidence: Optional[Callable[[], Optional[str]]] = None,
               file=sys.stderr)
         return 1
     print(json.dumps(result, sort_keys=True))
-    return 0 if result["enrolled"] and result["audit_complete"] else 1
+    if result["enrolled"] is None:
+        print("Trust enrollment outcome UNKNOWN: trust.json could not be read back. "
+              "Inspect /var/lib/azazel/lite-trust before running anything else.",
+              file=sys.stderr)
+    elif result["enrolled"] and result["durability"] != "synced":
+        print("Trust enrollment is in force, but its commit was not confirmed durable; "
+              "do not repeat it. Check the trust root after the next reboot.",
+              file=sys.stderr)
+    return 0 if (result["enrolled"] is True and result["durability"] == "synced"
+                 and result["audit_complete"]) else 1
 
 
 # -- repin -------------------------------------------------------------------
@@ -481,9 +527,11 @@ def repin_transaction(reason: str, *, principal: Principal, commissioning_dir: P
     """The commissioning account's half of `trust-repin`. Fixed fields out.
 
     The confirmation words are asked here, inside the narrowed child, because
-    the challenge lives in this process only. Once the human typed them, the
-    request is recorded first; without that record the challenge is dropped
-    and nothing is promoted.
+    the challenge lives in this process only. Recording is
+    `RepinConfirmation`'s own, the same for this entry and commissiond's
+    socket (R390-03): the request before any change, then the outcome as the
+    pointer reads it afterwards (`state`: `complete`, `ledger_incomplete`,
+    `pointer_unsynced`, or `unknown` with `promoted: null`; R390-02).
     """
 
     from .protocol import RequestRefused
@@ -491,8 +539,10 @@ def repin_transaction(reason: str, *, principal: Principal, commissioning_dir: P
 
     options = {} if repin is None else {"repin": repin}
     confirmation = RepinConfirmation(commissioning_dir=commissioning_dir,
-                                     snapshot_dir=snapshot_dir, **options)
-    result = {"promoted": False, "code": None, "generation": None, "audit_complete": True}
+                                     snapshot_dir=snapshot_dir, append=append, now=now,
+                                     **options)
+    result = {"promoted": False, "code": None, "generation": None, "state": None,
+              "audit_complete": True}
     try:
         with trust_lock(snapshot_dir):
             try:
@@ -502,31 +552,15 @@ def repin_transaction(reason: str, *, principal: Principal, commissioning_dir: P
             echo = ask(challenge)
             if echo is None:
                 return {**result, "code": "unconfirmed"}
-            at = now()
-            anchor = challenge["new_fingerprint"]
-            try:
-                append({"event_type": "knowledge.lite.trust_repin_requested",
-                        "anchor_digest": anchor, "reason": reason, "occurred_at": at})
-            except Exception:  # noqa: BLE001 - no record, no change
-                return {**result, "code": "audit_unavailable", "audit_complete": False}
             try:
                 outcome = confirmation.confirm(principal, challenge["nonce"], echo)
-            except RequestRefused:
-                try:
-                    append({"event_type": "knowledge.lite.trust_repin_refused",
-                            "anchor_digest": anchor, "occurred_at": at})
-                except Exception:  # noqa: BLE001 - nothing promoted either way
-                    result["audit_complete"] = False
+            except RequestRefused as refused:
+                if refused.detail == "audit_unavailable":
+                    return {**result, "code": "audit_unavailable", "audit_complete": False}
                 return {**result, "code": "refused"}
-            result = {**result, "promoted": outcome["promoted"],
-                      "generation": outcome["generation"]}
-            try:
-                append({"event_type": "knowledge.lite.trust_repin_promoted",
-                        "anchor_digest": anchor, "generation": outcome["generation"],
-                        "occurred_at": at})
-            except Exception:  # noqa: BLE001 - the promotion stands; the reply says so
-                result["audit_complete"] = False
-            return result
+            return {**result, "promoted": outcome["promoted"],
+                    "generation": outcome["generation"], "state": outcome["state"],
+                    "audit_complete": outcome["audit_complete"]}
     except TrustBusy:
         return {**result, "code": "busy"}
 
@@ -577,9 +611,11 @@ def run_repin(reason: str, *,
         result = runner(lambda: repin_transaction(
             reason, principal=principal, commissioning_dir=directory,
             snapshot_dir=snapshot_dir, ask=ask, append=append, repin=repin))
-        if (set(result) != {"promoted", "code", "generation", "audit_complete"}
-                or type(result["promoted"]) is not bool
+        if (set(result) != {"promoted", "code", "generation", "state", "audit_complete"}
+                or result["promoted"] not in (True, False, None)
                 or type(result["audit_complete"]) is not bool
+                or result["state"] not in (None, "complete", "ledger_incomplete",
+                                           "pointer_unsynced", "unknown")
                 or not (result["code"] is None or (type(result["code"]) is str
                                                    and _WORD.fullmatch(result["code"])))
                 or not (result["generation"] is None
@@ -588,16 +624,26 @@ def run_repin(reason: str, *,
     except Exception:  # noqa: BLE001 - fixed words only
         print("Trust replacement refused or interrupted.", file=sys.stderr)
         return 1
+    if result["state"] == "unknown":
+        print("Trust replacement outcome UNKNOWN: the trust pointer could not be read "
+              "back. Inspect /var/lib/azazel/lite-trust/trust-current and the "
+              "commissioning ledger before anything else.", file=sys.stderr)
+        print(json.dumps(result, sort_keys=True))
+        return 1
     if result["promoted"] is not True:
-        print("Trust replacement refused or interrupted.", file=sys.stderr)
+        print("Trust replacement refused or interrupted; the active trust root is "
+              "unchanged.", file=sys.stderr)
         print(json.dumps(result, sort_keys=True))
         return 1
     print(f"Trust anchors replaced; generation {result['generation']}.")
+    if result["state"] != "complete":
+        print(f"The replacement is in force but not fully recorded ({result['state']}): "
+              "pointer_unsynced means its rename was not confirmed durable; "
+              "ledger_incomplete means the commissioning ledger lacks "
+              "trust.repin.promoted. Do not repeat the repin.", file=sys.stderr)
     if not result["audit_complete"]:
-        print("The promotion record did not reach az-auditd; the commissioning ledger "
-              "holds it.", file=sys.stderr)
-        return 1
-    return 0
+        print("The outcome record did not reach az-auditd.", file=sys.stderr)
+    return 0 if result["state"] == "complete" and result["audit_complete"] else 1
 
 
 # -- revocation --------------------------------------------------------------

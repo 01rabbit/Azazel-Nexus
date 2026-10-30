@@ -655,10 +655,16 @@ path, key or flag.
   hold the commissioning lock, so a second one at the same time is refused
   (`busy`), never queued.
 - Each prints one JSON object (or, for a repin, `Trust anchors replaced;
-  generation N.`) and exits 0 only when the change was made **and** its
-  records reached auditd. `audit_complete: false` with a change made means
-  the outcome record is missing: the change stands; the request record is in
-  the chain, and repin's commissioning ledger holds its promotion.
+  generation N.`) and exits 0 only when the change was made, is durable,
+  **and** its records reached auditd. `audit_complete: false` with a change
+  made means the outcome record is missing: the change stands; the request
+  record is in the chain.
+- **In force but not fully recorded.** A failure after the commit point is
+  read back and reported as such, never as a refusal: enrollment
+  `durability: unsynced`, repin `state: pointer_unsynced` or
+  `ledger_incomplete` -- the change is in force; **do not repeat it**.
+  `enrolled: null` / `state: unknown` means the trust root could not be read
+  back: inspect it before anything else. These cases exit 1.
 
 **When auditd is not running.** `knowledge-import` prints `outcome: refused`,
 `refused: audit_unavailable`; `trust-enroll` and `knowledge-revocation-accept`

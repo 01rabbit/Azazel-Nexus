@@ -20,6 +20,23 @@ commissioning ledger below still records `trust.repin.authorized` and
 `trust.repin.promoted`; the two are matched by generation. The daemon keeps
 its two ROOT-only verbs for a bootstrap boot, under the same lock; a root
 process can complete challenge and confirm there without the CLI or a TTY.
+The auditd records are `RepinConfirmation`'s own, so the daemon's confirm
+needs the same receipt before any change and records the same outcome
+(R390-03).
+
+**A failure at or after the commit point is not a refusal (R390-02).**
+`TrustStore.repin` raises `RepinUncertain` once the pointer may have moved,
+with what it reads back: `pointer_unsynced` (the pointer names the new
+generation but its rename was not confirmed durable, and the ledger has no
+`trust.repin.promoted`), `ledger_incomplete` (durable; only the ledger's
+promotion record is missing) or `unknown` (the pointer cannot be read). The
+reply is then `promoted: true` with that `state` and generation, or
+`promoted: null` with `state: unknown`; auditd records
+`knowledge.lite.trust_repin_promoted` with the state, or
+`knowledge.lite.trust_repin_unconfirmed`. The CLI says the replacement is in
+force but not fully recorded, or that the outcome is unknown, and exits 1;
+do not repeat the repin in either case. A failure before the pointer moved
+stays a refusal with the old root in force (`trust_repin_refused`).
 
 After a completed replacement, snapshot cleanup failure adds the fixed boolean
 `cleanup_failed: true` to the outcome. The reported promotion and generation
@@ -197,6 +214,9 @@ move then switches pin and anchor together, and every reader takes the
 anchor that goes with the record it read (`TrustStore.anchors_path_for`).
 Without `anchors`, the current anchor is kept; a key change that the kept
 anchor could not meet is refused rather than promoted into a root that
-verifies nothing. To roll a key over without a gap, repin first to both keys
+verifies nothing. "Meet" counts what the verifier counts
+(`lite_bundle.meetable_keys`): the anchor's keys whose material stays pinned,
+whose id is not in its `revoked`, and that hold `required_signer_role` when
+the anchor names one (R390-01). To roll a key over without a gap, repin first to both keys
 with an anchor naming both, import a bundle signed by the new key, then repin
 to the new key alone.

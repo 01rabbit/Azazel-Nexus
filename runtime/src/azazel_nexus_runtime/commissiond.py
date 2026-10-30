@@ -214,6 +214,7 @@ class CommissionService:
         clock: Callable[[], float] | None = None,
         now: Callable[[], str] | None = None,
         revocation: RevocationAcceptance | None = None,
+        append: Callable[[dict], None] | None = None,
     ) -> None:
         self.sysfs = sysfs
         self.read_links_fn = read_links_fn
@@ -224,6 +225,10 @@ class CommissionService:
             options["clock"] = clock
         if now is not None:
             options["now"] = now
+        if append is not None:
+            # az-auditd's append (R390-03): the repin records its request and
+            # outcome there, exactly as root's CLI transaction does.
+            options["append"] = append
         self.repin_confirmation = RepinConfirmation(
             commissioning_dir=(commissioning_dir if commissioning_dir is not None
                                else ROOT / "etc/azazel/commissioning"),

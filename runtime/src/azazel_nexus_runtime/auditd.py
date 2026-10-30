@@ -352,6 +352,14 @@ EVENT_SCHEMAS.update({
         Argument("bundle_keys", ArgumentKind.ORDINAL, maximum=64),
         Argument("threshold", ArgumentKind.ORDINAL, maximum=64),
         Argument("revocation_keys", ArgumentKind.ORDINAL, maximum=64),
+        # `unsynced`: in force (read back) but its rename not confirmed durable.
+        Argument("durability", ArgumentKind.ENUM, choices=("synced", "unsynced")),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
+    # The commit step failed and trust.json could not be read back as this
+    # enrollment's: which trust is in force is unknown (R390-02).
+    "knowledge.lite.trust_enroll_unconfirmed": (
+        Argument("request_digest", ArgumentKind.DIGEST),
         Argument("occurred_at", ArgumentKind.TIMESTAMP),
     ),
     "knowledge.lite.trust_repin_requested": (
@@ -366,6 +374,15 @@ EVENT_SCHEMAS.update({
     "knowledge.lite.trust_repin_promoted": (
         Argument("anchor_digest", ArgumentKind.DIGEST),
         Argument("generation", ArgumentKind.ORDINAL, maximum=_COUNT),
+        # As read back after the pointer move (`lite_trust.RepinUncertain`).
+        Argument("state", ArgumentKind.ENUM,
+                 choices=("complete", "ledger_incomplete", "pointer_unsynced")),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
+    # The pointer could not be read back after a failure at or past the
+    # commit point: which root is in force is unknown (R390-02).
+    "knowledge.lite.trust_repin_unconfirmed": (
+        Argument("anchor_digest", ArgumentKind.DIGEST),
         Argument("occurred_at", ArgumentKind.TIMESTAMP),
     ),
 })

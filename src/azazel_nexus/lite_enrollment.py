@@ -74,6 +74,7 @@ __all__ = [
     "EnrollmentOutcome",
     "EnrollmentRefused",
     "EnrollmentRequest",
+    "EnrollmentUncertain",
     "decode_anchor_spec",
     "decode_enrollment",
     "enroll",
@@ -189,6 +190,16 @@ class EnrollmentOutcome:
     bundle_keys: int
     threshold: int
     revocation_keys: int
+    #: `synced`, or `unsynced` when `trust.json` is in place (read back) but
+    #: its rename was not confirmed durable: the enrollment is in force now
+    #: and might not survive a power loss (R390-02).
+    durability: str = "synced"
+
+
+class EnrollmentUncertain(Exception):
+    """The commit step failed and `trust.json` could not be read back as this
+    enrollment's: it is unknown which trust, if any, is in force. Never a
+    "nothing written" refusal (R390-02)."""
 
 
 def _unique(pairs):
@@ -471,16 +482,31 @@ def enroll(root: Path, request: EnrollmentRequest, *, commissioning_digest: Opti
             root, request.revocation, commissioning_digest=request.commissioning_digest,
             anchors_key_roles=dict(anchors.key_roles), anchors_keys=dict(anchors.keys))
         _write(root / POLICY_FILENAME, json.dumps(record, sort_keys=True).encode("utf-8"))
-        # The commit point: until this rename no reader treats the root as trusted.
-        _write(root / _TRUST, _trust_record(request, enrolled_at=enrolled_at, actor=actor))
+        trust_bytes = _trust_record(request, enrolled_at=enrolled_at, actor=actor)
     except EnrollmentRefused:
         raise
     except (OSError, ValueError, TypeError, KeyError, BundleRefused, RevocationPolicyRefused):
         raise EnrollmentRefused("write_failed") from None
+    # The commit point: until this rename no reader treats the root as trusted.
+    # A failure here is read back, never assumed to have changed nothing.
+    durability = "synced"
+    try:
+        _write(root / _TRUST, trust_bytes)
+    except OSError:
+        try:
+            present = (root / _TRUST).read_bytes()
+        except FileNotFoundError:
+            raise EnrollmentRefused("write_failed") from None
+        except OSError:
+            raise EnrollmentUncertain("trust.json cannot be read back") from None
+        if present != trust_bytes:
+            raise EnrollmentUncertain("trust.json is not this enrollment's") from None
+        durability = "unsynced"
     keys = tuple(sorted(key.hex() for key in request.keys.values()))
     return EnrollmentOutcome(
         trust_fingerprint=_fingerprint(keys),
         revocation_policy_fingerprint=_policy_fingerprint(record),
         bundle_keys=len(keys), threshold=request.threshold,
         revocation_keys=len(request.revocation.revocation_keys),
+        durability=durability,
     )

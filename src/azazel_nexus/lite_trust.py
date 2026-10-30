@@ -36,7 +36,7 @@ from typing import Optional, Sequence
 
 from .audit import AuditChainBroken, AuditLedger, AuditUnavailable
 from .lab_keys import refuse_public_fixture_keys
-from .lite_bundle import BundleRefused, parse_anchors, read_anchors
+from .lite_bundle import BundleRefused, meetable_keys, parse_anchors, read_anchors
 from .revocation import RevocationList, RevocationRefused
 from .revocation_policy import (
     BUNDLE_SIGNING,
@@ -53,6 +53,7 @@ __all__ = [
     "RepinConfirmation",
     "RepinOutcome",
     "RepinRequest",
+    "RepinUncertain",
     "TrustRefused",
     "TrustStore",
 ]
@@ -64,6 +65,27 @@ _FINGERPRINT_DOMAIN = b"azazel-nexus/trust-root/v1\x00"
 
 class TrustRefused(Exception):
     """The trust store was not written, or may not be read as asked."""
+
+
+class RepinUncertain(TrustRefused):
+    """A repin failed **after** its commit point, or it cannot be told whether
+    it passed it (R390-02). Never a "nothing changed" refusal.
+
+    `state` is read back from the pointer, not assumed:
+
+    * `pointer_unsynced`: `trust-current` names the new generation, but the
+      rename was not confirmed durable (its directory sync failed) and the
+      commissioning ledger has no `trust.repin.promoted`;
+    * `ledger_incomplete`: the pointer move is durable; only the ledger's
+      `trust.repin.promoted` is missing;
+    * `unknown`: the pointer cannot be read, so it is unknown which root is
+      in force.
+    """
+
+    def __init__(self, state: str, generation):
+        super().__init__(f"repin {state}; inspect the active trust pointer")
+        self.state = state
+        self.generation = generation
 
 
 @dataclass(frozen=True)
@@ -244,10 +266,13 @@ class TrustStore:
                     raise TrustRefused("the proposed anchor must name exactly the proposed keys")
                 new_anchors_bytes = spec.render()
                 new_anchors = parse_anchors(new_anchors_bytes)
+                if meetable_keys(new_anchors, (bytes.fromhex(key) for key in proposed)) < (
+                        new_anchors.threshold):
+                    raise TrustRefused("the proposed anchor cannot be met by the proposed keys")
             elif current_anchors_path.exists():
                 new_anchors = read_anchors(current_anchors_path)
-                usable = [key for key in new_anchors.keys.values() if key.hex() in proposed]
-                if len(usable) < new_anchors.threshold:
+                usable = meetable_keys(new_anchors, (bytes.fromhex(key) for key in proposed))
+                if usable < new_anchors.threshold:
                     # The kept anchor would name no key set this pin can meet:
                     # every bundle would then fail. Change keys and anchor together.
                     raise TrustRefused("the kept anchor cannot be met by the proposed keys")
@@ -362,9 +387,18 @@ class TrustStore:
         ):
             # Do not interpolate file names, parser diagnostics or exception
             # chains: an untrusted input can put key bytes in any of them.
-            state = ("inspect the active trust pointer" if stage in ("pointer", "promotion audit")
-                     else "the active trust root is unchanged")
-            raise TrustRefused(f"repin {stage} refused; {state}") from None
+            if stage in ("pointer", "promotion audit"):
+                # Past (or possibly past) the commit point: say what the
+                # pointer reads now, never "unchanged" (R390-02).
+                try:
+                    current = self.current_generation()
+                except TrustRefused:
+                    raise RepinUncertain("unknown", None) from None
+                if current == number:
+                    raise RepinUncertain(
+                        "pointer_unsynced" if stage == "pointer" else "ledger_incomplete",
+                        number) from None
+            raise TrustRefused(f"repin {stage} refused; the active trust root is unchanged") from None
         finally:
             if staged is not None:
                 try:
