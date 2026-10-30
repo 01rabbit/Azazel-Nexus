@@ -17,6 +17,7 @@ The tests that need Fabric skip without it; the 4th CI configuration
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -644,3 +645,95 @@ def test_a_refused_checkpoint_is_not_rewritten(tmp_path):
         daemon.checkpoint_for_previous_release(path)
     assert path.read_bytes() == b'{"cursor": "broken"}'
     assert not path.with_name("cursor.json.pre-rollback").exists()
+
+
+def test_the_rollback_decision_matches_the_stopped_checkpoint(tmp_path):
+    """R392b-01: status read `pending: 0`, then work was queued and the
+    explainer stopped within the status rewrite throttle (5 s)."""
+    _, (opened, updated) = _incident(0.0, 100.0)
+    clock = [0.0]
+    e = daemon.Explainer(
+        incidents=tmp_path / "incidents", state=tmp_path / "state",
+        status_path=tmp_path / "status.json", clock=lambda: 200.0,
+        monotonic=lambda: clock[0], knowledge=lambda _: (), audit=lambda _: None,
+        mio=lambda _: {"route": "deterministic handoff", "outcome": "answered",
+                       "reason": "no admitted model", "ledger_seq": 1,
+                       "reference_status": "unavailable"})
+    (tmp_path / "incidents").mkdir()
+    polls = []
+    poll = e.poll
+
+    def counted():
+        if polls:  # the second poll: two arrivals, no rate budget left
+            _append(e, opened)
+            _append(e, updated)
+            e.selection.attempts.extend([clock[0]] * 6)
+            clock[0] = 2.0
+        poll()
+        polls.append(json.loads(e.status_path.read_bytes())["pending"])
+
+    e.poll = counted
+    assert e.serve(stop=lambda: len(polls) >= 2) == 0
+    assert polls == [0, 0]  # what an operator read just before the stop
+    cursor = e.state / "cursor.json"
+    final = json.loads(e.status_path.read_bytes())["pending"]
+    assert daemon.pending_pointers(cursor) == final == 2
+    assert daemon.checkpoint_for_previous_release(cursor) == 2
+    assert daemon.pending_pointers(cursor) == 0
+
+
+def test_a_second_conversion_never_replaces_the_first_original(tmp_path):
+    """R392b-02."""
+    _, (opened, updated) = _incident(0.0, 100.0)
+    e = _explainer(tmp_path, lambda: 200.0)
+    _append(e, opened)
+    _append(e, updated)
+    e.selection.attempts.extend([0] * 6)
+    e.poll()
+    path = e.state / "cursor.json"
+    backup = path.with_name("cursor.json.pre-rollback")
+    original = path.read_bytes()
+    assert daemon.checkpoint_for_previous_release(path) == 2
+    converted = path.read_bytes()
+    with pytest.raises(ValueError, match="rollback_backup_exists"):
+        daemon.checkpoint_for_previous_release(path)
+    assert backup.read_bytes() == original and path.read_bytes() == converted
+
+
+def test_a_conversion_interrupted_after_its_backup_goes_on(tmp_path):
+    _, (opened,) = _incident()
+    e = _explainer(tmp_path, lambda: 200.0)
+    _append(e, opened)
+    e.selection.attempts.extend([0] * 6)
+    e.poll()
+    path = e.state / "cursor.json"
+    original = path.read_bytes()
+    backup = path.with_name("cursor.json.pre-rollback")
+    backup.write_bytes(original)  # saved, then the run stopped
+    assert daemon.checkpoint_for_previous_release(path) == 1
+    assert backup.read_bytes() == original and daemon.pending_pointers(path) == 0
+
+
+def test_a_backup_that_appears_during_the_conversion_is_not_replaced(tmp_path, monkeypatch):
+    """The backup is linked into place, never replaced, even after the check."""
+    _, (opened,) = _incident()
+    e = _explainer(tmp_path, lambda: 200.0)
+    _append(e, opened)
+    e.selection.attempts.extend([0] * 6)
+    e.poll()
+    path = e.state / "cursor.json"
+    original = path.read_bytes()
+    backup = path.with_name("cursor.json.pre-rollback")
+    backup.write_bytes(b"another run's original")
+    read = daemon.read_file
+
+    def unseen(target, limit):
+        if Path(target) == backup:
+            raise FileNotFoundError(target)  # as if it appeared just after
+        return read(target, limit)
+
+    monkeypatch.setattr(daemon, "read_file", unseen)
+    with pytest.raises(ValueError, match="rollback_backup_exists"):
+        daemon.checkpoint_for_previous_release(path)
+    assert backup.read_bytes() == b"another run's original"
+    assert path.read_bytes() == original

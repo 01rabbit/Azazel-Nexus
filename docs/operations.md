@@ -776,14 +776,24 @@ explanation. Instead, with the new release still installed:
 
 1. Drain. While status (`/var/lib/azazel/run/incident-explain-status/status.json`)
    shows `pending` above 0, let the explainer run (it takes at most six entries
-   a minute). Stop `azazel-incident-explaind.service` once it shows `0`, then
-   read status again: it is rewritten at shutdown, after the last checkpoint.
-   With `pending: 0` the checkpoint holds no pointers and the earlier release
-   reads it unchanged.
+   a minute). Once it shows `0`, stop `azazel-incident-explaind.service` and
+   decide on the stopped checkpoint itself, not on status (new incidents can
+   be queued between the status you read and the stop):
+
+   ```sh
+   sudo systemctl stop azazel-incident-explaind.service
+   sudo /opt/azazel-nexus/venv/bin/python -I -c 'from azazel_nexus_runtime.incident_explaind import pending_pointers as n; print(n("/var/lib/azazel/incident-explain/cursor.json"))'
+   ```
+
+   It prints how many pending entries still carry pointers, and changes
+   nothing. `0`: the earlier release reads the checkpoint unchanged. (Status
+   is also rewritten at shutdown after the last checkpoint, but the
+   checkpoint is what the earlier release reads.) Otherwise start the service
+   again and repeat, or convert (step 2).
 2. If it does not drain (new incidents keep arriving, or `storage_failed`),
-   stop the service and convert the checkpoint. This keeps every queued entry
-   and removes only its pointers, keeps the original as `cursor.json.pre-rollback`
-   with the same owner and mode, and writes nothing if the checkpoint is refused:
+   convert the stopped checkpoint. This keeps every queued entry and removes
+   only its pointers, keeps the original as `cursor.json.pre-rollback` with the
+   same owner and mode, and writes nothing if the checkpoint is refused:
 
    ```sh
    sudo systemctl stop azazel-incident-explaind.service
@@ -791,7 +801,11 @@ explanation. Instead, with the new release still installed:
    ```
 
    It prints how many entries lost their pointers. Those incidents are then
-   explained by the earlier release without evidence references.
+   explained by the earlier release without evidence references. It never
+   replaces an existing `cursor.json.pre-rollback`: a run interrupted after
+   saving the backup goes on (the backup holds this very checkpoint), and any
+   other backup refuses the run with `rollback_backup_exists`. Move an old
+   backup aside yourself, after checking it, before converting again.
 3. Install the earlier release and start the explainer. Explanation records
    written by the new release stay in the ledger. The earlier release's
    explainer only appends to it, but its handoff package skips each such

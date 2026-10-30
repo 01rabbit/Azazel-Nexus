@@ -653,6 +653,9 @@ class Explainer:
         except Exception:  # noqa: BLE001 - fixed storage diagnosis at shutdown
             self.storage_failed = True
             self.refuse("storage_failed")
+        # The last status follows the last checkpoint, whatever the rewrite
+        # throttle: a reader after shutdown sees the final pending count.
+        self._status_at = float("-inf")
         self.status()
         return 1 if self.storage_failed else 0
 
@@ -708,6 +711,17 @@ def decode_checkpoint(raw):
     return v
 
 
+def pending_pointers(path):
+    """How many pending entries of a stopped explainer's checkpoint carry pointers.
+
+    Read-only, and what decides a rollback past #392 (docs/operations.md):
+    0 means the release before it reads this checkpoint unchanged. It reads
+    the checkpoint itself, not status, which may lag the last checkpoint.
+    """
+    value = decode_checkpoint(read_file(Path(path), CHECKPOINT_BYTES))
+    return sum(EVIDENCE_FIELD in row[0] for row in value["pending"])
+
+
 def checkpoint_for_previous_release(path):
     """Rewrite a stopped explainer's checkpoint in the form before #392.
 
@@ -717,12 +731,14 @@ def checkpoint_for_previous_release(path):
     records it writes then carry no pointers, as that release's always did.
     The checkpoint is validated first and nothing is written if it is
     refused. The original is kept beside it as `cursor.json.pre-rollback`,
-    and both keep the checkpoint's owner and mode. Run it as root with the
+    and both keep the checkpoint's owner and mode. An existing backup is
+    never replaced: if it holds exactly this checkpoint (an interrupted run)
+    the conversion goes on; any other backup refuses the run
+    (`rollback_backup_exists`), so a second run cannot overwrite the first
+    original with an already converted checkpoint. Run it as root with the
     explainer stopped (docs/operations.md). Returns how many entries lost
     their pointers.
     """
-    import json
-
     path = Path(path)
     raw = read_file(path, CHECKPOINT_BYTES)
     value = decode_checkpoint(raw)
@@ -735,9 +751,19 @@ def checkpoint_for_previous_release(path):
     if any(set(row[0]) != PENDING_FIELDS for row in value["pending"]):
         raise ValueError("cursor_refused")
     decode_checkpoint(canonical(value))
+    backup = path.with_name(path.name + ".pre-rollback")
+    try:
+        kept = read_file(backup, CHECKPOINT_BYTES)
+    except FileNotFoundError:
+        kept = None
+    except (OSError, ValueError):
+        raise ValueError("rollback_backup_exists") from None
+    if kept is not None and kept != raw:
+        raise ValueError("rollback_backup_exists")
     info = os.stat(path, follow_symlinks=False)
-    for target, data in ((path.with_name(path.name + ".pre-rollback"), raw),
-                         (path, canonical(value) + b"\n")):
+    writes = [(backup, raw, os.link)] if kept is None else []
+    writes.append((path, canonical(value) + b"\n", os.replace))
+    for target, data, place in writes:
         fd, name = tempfile.mkstemp(dir=path.parent, prefix=".rollback-")
         try:
             with os.fdopen(fd, "wb") as stream:
@@ -747,7 +773,12 @@ def checkpoint_for_previous_release(path):
                     os.fchown(stream.fileno(), info.st_uid, info.st_gid)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(name, target)
+            # The backup is linked, which fails if one appeared meanwhile;
+            # only the checkpoint itself is replaced.
+            try:
+                place(name, target)
+            except FileExistsError:
+                raise ValueError("rollback_backup_exists") from None
         finally:
             if os.path.exists(name):
                 os.unlink(name)
