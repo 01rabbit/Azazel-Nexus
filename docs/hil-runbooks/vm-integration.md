@@ -174,10 +174,15 @@ then the same package installation as §3.1.
 Build it with Azazel-Edge's `packaging/nexus-core/nexus_core_package.py` as in
 [integration loop rehearsal §2](integration-loop-rehearsal.md#2-build-the-edge-package-separate-x86_64-host),
 on a host of the **node's** CPU, and check the three contract files against
-`contract/azazel-edge-core/`. The packager labels every package `x86_64`; on
-an aarch64 node the run records the binary's real architecture as a deviation.
-The run verifies the archive and the binary against the manifest before
-anything executes it and refuses on a mismatch.
+`contract/azazel-edge-core/`, with `--architecture` set to the node's CPU
+(Azazel-Edge#522: the packager reads the binary's ELF header and names the
+package for that CPU). `--edge-package` must hold exactly one CPU's
+manifest and archive. On the node the run checks that the node's CPU, the
+manifest's `architecture` and the binary's ELF header agree, and that the
+archive and the binary match the manifest, before anything executes it, and
+stops on a mismatch. The aarch64 binary under the `x86_64` name that the
+2026-10-29 Arm VM record carries as its deviation D1 is now refused here
+(ADR-0003 R4); that record is unchanged.
 
 ## 5. Running it
 

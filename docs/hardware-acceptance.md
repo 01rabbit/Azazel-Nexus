@@ -222,8 +222,9 @@ V3 は VMware の 1 基盤だけ観測した。まとめは
 
 - **手順**：[VM 統合 runbook](hil-runbooks/vm-integration.md) の §3.3（VM の準備）と
   §5。`--target ssh:<NODE>` で実行し、Edge package があれば `--edge-package` を渡す。
-  arm64 の Edge Core の pin が無い（[オーナー判断 H5](owner-decisions.md#2-優先度の高いもの)）
-  ため、Edge Core を含む検査は記録上の逸脱として残る。
+  Edge package は `--architecture aarch64` で包装した aarch64 の package を渡す
+  （ADR-0003 R4、2026-10-30）。aarch64 のバイナリを x86_64 名で渡すと道具が止めるので、
+  2026-10-29 の記録の逸脱 D1 は再実行では生じない。
 - **合格条件**：[§6 の検査](hil-runbooks/vm-integration.md#6-the-checks-and-what-they-expect)
   がすべて pass（skip は理由付き）。コンテナでは行えなかった kernel の再起動
   （`systemctl reboot`、新しい boot）を経た `after-restart` の検査が pass であること。
@@ -241,8 +242,9 @@ V3 は VMware の 1 基盤だけ観測した。まとめは
 - **合格条件**：導入が systemd 段まで成功し、unit が masked であること。導入した
   runtime が host を `debian-13-arm64-cp313-lab` と観測し、本番の用途（core reserve・
   ハードウェアゲートの記録・preflight・model admission・product admission）を
-  `LAB_PROFILE_NOT_FOR_PRODUCTION` で拒否すること。Edge slot を含む bundle が拒否される
-  こと（[ADR-0005](adr/0005-arm-lab-offline-target.md)）。
+  `LAB_PROFILE_NOT_FOR_PRODUCTION` で拒否すること。Edge slot は aarch64 の package だけを
+  lab 専用の pin で受け、x86_64 の package や名前だけ変えた package を含む bundle が拒否される
+  こと（[ADR-0005 の改訂](adr/0005-arm-lab-offline-target.md)）。
 - **記録**：[aarch64 lab のコンテナの記録](evidence/offline-install-aarch64-lab-container-2026-10-29.json)
   と同じ形（`azazel-nexus/prototype-offline-install-evidence/v1`）で、`scope` に VM で
   あることを書く。

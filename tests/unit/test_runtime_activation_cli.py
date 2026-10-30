@@ -37,7 +37,7 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 from tools import operator_sign  # noqa: E402
-from _edge_package_fixture import archive, write_package  # noqa: E402
+from _edge_package_fixture import archive, elf_stub, write_package  # noqa: E402
 
 LOOP = ("azazel-edge-intaked.service", "azazel-edge-probed.service",
         "azazel-incident-explaind.service", "azazel-knowledge-lited.service",
@@ -1275,7 +1275,7 @@ def test_publish_request_with_edge_core_sign_install_then_one_pass_grants_it(nod
     binary.write_bytes(original)
 
     # A different package installed after the signature refuses the lease.
-    node.package(binary=b"a-different-edge-core")
+    node.package(binary=elf_stub() + b"a-different-edge-core")
     outcome = activated._run_once(manager=manager, root=node.root, now=NOW,
                                   actor="azazel-activated", producers=producers)
     assert outcome.granted == ()

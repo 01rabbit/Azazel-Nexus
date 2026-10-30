@@ -124,7 +124,7 @@ admission refuses a non-`x86_64` host first.
 | R1 | The `cpu_hypervisor` virtualization sensor relies on an x86-only cpuinfo flag; on aarch64 it read `clear`, so the negative virtualization finding was weaker for `core_reserve_probe` and `hil_capture`. | **Done** (2026-10-30 委任された技術判断で決定): without an x86 `flags` line the sensor reads `unobservable`, never `clear`. `virtualization_not_observed` is read for the observed CPU: on arm64 it accepts only `unobservable` there and refuses `clear`; `dmi_vendor`, `dmi_product` and `init_cgroup` must read `clear` on every CPU, so a host where they cannot be observed (an Arm board without DMI) is refused. The VMware Fusion V3 observation is not generalized to other platforms. Both tools refuse a non-baseline profile before acquiring (`hil_capture` now as `core_reserve_probe` did); `hil_records` and `core_reserve` read a capture's / v4 record's filter for its CPU. No schema version changed: the new value fails closed in older readers. Further Arm signals (device tree, ACPI) wait for measurements on those platforms. |
 | R2 | A core-reserve record carries no architecture. | **Done**: `core-reserve/4` records the observed `architecture` and `platform_profile_id`; the reader checks they agree and that the profile is the deployment baseline. v1-v3 records still parse and are refused as `ARCHITECTURE_UNKNOWN`; both HIL campaigns require v4; the probe refuses to sample on a non-baseline profile. |
 | R3 | A HIL record's `platform` is a declared string, not an observation. | **Done** for the records that carry an observation: `hil_capture` (schema `/2`) records `platform_profile_id` and `uname_machine`; HG-01/HG-04 records must embed it, and the declared platform must name the observed deployment-baseline profile. Campaign runs are compared through their v4 measurement. HG-02/06/07, behaviour and drill records have no capture tool and still carry only the declared string. |
-| R4 | The Edge package check compares the manifest with the pin, not with the host CPU. | Pin per CPU and add an architecture-mismatch finding (with Edge). |
+| R4 | The Edge package check compares the manifest with the pin, not with the host CPU. | **Done** (2026-10-30, with [Azazel-Edge#522](https://github.com/01rabbit/Azazel-Edge/pull/522)): Edge builds one package per CPU and names it for the CPU its binary's ELF header shows; Nexus keeps one pin per CPU (`edge_package.PINS`) and every entry point refuses unless the host's CPU, the manifest's architecture and the archived binary's ELF header agree. See the amendment below. |
 | R5 | `mission_pack_cli` builds `HostFacts.architecture` from configuration. | **Done**: the kernel's `uname` machine is used; a configured value that differs is refused, and a CPU outside the table is refused by name. |
 | R6 | `install.sh` does not evaluate the CPU. | **Done** (host observation): `install.sh` refuses an unreviewed CPU, an unreadable dpkg, a foreign dpkg userland, a non-LP64 libc or another byte order with a reason code, and identifies arm64 as `lab-software-verification` without refusing it. |
 | R7 | `principal._GENERIC_SOCKET_MACHINES` lists CPUs beyond the reviewed two. | None needed: an unlisted CPU loses supplementary groups, which narrows access. |
@@ -170,6 +170,49 @@ not turned into deployment evidence by a declared string or a copied
 configuration. Proof that a record came from the target hardware remains the
 operator attestation and the hardware gates, which observation does not
 replace, partially satisfy or weaken.
+
+## Amendment (2026-10-30): R4, the Edge package per CPU
+
+Owner direction 【5】C (S-11, H5) asks Edge to define a package, manifest
+and pin per CPU and Nexus to refuse a CPU mismatch. Decided and implemented:
+
+- **Edge** ([Azazel-Edge#522](https://github.com/01rabbit/Azazel-Edge/pull/522)):
+  the packager takes `--architecture` (`x86_64` or `aarch64`), reads the ELF
+  header of the binary it is about to package (class, byte order,
+  `e_machine`) before running it, and refuses a mismatch. The manifest records
+  `architecture` and `elf`; the artifact and manifest are named for the CPU.
+  The contract becomes `azazel-edge-core/nexus-pin/v2`, one entry per CPU, and
+  still carries no digest. CI builds and packages natively on an x86_64 and an
+  arm64 runner.
+- **Nexus** (`edge_package`): `PINS` holds one pin per CPU, keyed by the
+  kernel name; `PIN` is the pin of the CPU the process runs on, and the x86_64
+  entry keeps the exact record the single pin had (`observe_baseline` binds
+  it). The host CPU is read once, through `platform_profile.from_machine`. The
+  verification (`inspect`, `installed_package_digest`,
+  `installed_package_components`, `installed_issuer_verification`), the probe
+  (`az-edge-probed`, which also reads the ELF header of the unpacked binary
+  before running it) and the offline bundle's Edge slot (for the bundle
+  target's CPU; install then requires the host to be that CPU) refuse unless
+  three facts agree: the host's CPU, the manifest's `architecture` (and its
+  `elf` record, if any) and the `e_machine`/class/byte order of the archived
+  binary, read by Nexus. A binary for the other CPU under this CPU's name is a
+  **security** finding (the package misdescribes itself); the other CPU's
+  package installed on this host is refused by name rather than reported
+  absent; a host CPU with no pin checks nothing (`not-checked`) and grants
+  nothing.
+- **What stays the same.** Accepting an aarch64 package on an aarch64 host is
+  integrity, not admission: the Arm profile is `lab-software-verification`
+  (D3), and every production use (model admission, product admission, HIL
+  preflight, HG and core-reserve records) still refuses it. The five Edge
+  checks are still five; the CPU check is part of `package_present`.
+
+This removes the deviation the Arm VM acceptance record of 2026-10-29 had to
+carry ([D1](../evidence/vm-integration-vm-arm64-2026-10-29.md): an aarch64
+binary under the packager's fixed `x86_64` name). That record is not
+rewritten; it stays the record of what ran then. A rerun with an aarch64
+package from the new packager uses the aarch64 names, and
+`tools/vm_integration.py` now refuses a package whose binary is not for the
+node's CPU instead of recording the mismatch.
 
 ## Alternatives considered
 

@@ -345,7 +345,18 @@ SCENARIOS = {
 
 
 def run_scenario(name, tmp_path, monkeypatch, *, json_flag=False):
-    """`(exit code, stdout, stderr)` of `status` in the named scenario."""
+    """`(exit code, stdout, stderr)` of `status` in the named scenario.
+
+    Every scene is a deployment-baseline (x86_64) node, whatever CPU runs the
+    test: the Edge package is looked for, written and checked as the x86_64
+    one, so the golden text and the cross-CPU vector (`status.read_model`)
+    name the same files on both CPUs. The per-CPU checks themselves are
+    tested in `test_edge_package.py` on the real host CPU.
+    """
+    from azazel_nexus import edge_package
+
+    monkeypatch.setattr(edge_package, "host_architecture", lambda: "x86_64")
+    monkeypatch.setattr(edge_package, "PIN", edge_package.PINS["x86_64"])
     options = SCENARIOS[name](tmp_path, monkeypatch)
     out, err = io.StringIO(), io.StringIO()
     code = main(_argv(tmp_path, *options.get("extra", ()), edge_root=options.get("edge_root"),

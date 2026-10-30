@@ -16,7 +16,8 @@ reports `not-checked` when there is none.
 | what | where it comes from |
 | --- | --- |
 | the package directory | `edge_package.EDGE_PACKAGE_ROOT` |
-| the pinned version and digest | `edge_package.PIN` and the manifest beside the package |
+| the pinned version and names | `edge_package.host_pin()`, the pin of the CPU this host observes itself to be |
+| the digest | the manifest beside the package |
 | the health command | `edge_package.HEALTH_ARGV` |
 | the unit whose state is read | `edge_package.EDGE_UNIT` |
 | where the result is written | `edge_package.PROBE_STATE_PATH` |
@@ -62,6 +63,12 @@ digest must re-derive, **and the unpacked binary about to be executed must
 match the digest the manifest records for it**. The last one is the point: an
 intact archive says nothing about the file next to it that is actually going
 to run.
+
+**And it must be for this CPU** (S-11): the host's CPU, the manifest's
+`architecture` and the ELF header of the unpacked binary about to be executed
+must name the same CPU, or nothing is run. A host CPU no pin covers runs
+nothing either. Running a binary for another CPU would be running something
+nobody pinned for this host, and under an emulator it might even answer.
 
 ## The result is bounded, atomic, and cannot promote anything
 
@@ -127,6 +134,9 @@ from azazel_nexus.edge_package import (
     HEALTH_ARGV,
     HEALTHY_STATUS,
     PIN,
+    elf_architecture,
+    host_architecture,
+    host_pin,
     PROBE_CONTRACT,
     PROBE_STATE_PATH,
     EdgePackageRefused,
@@ -249,8 +259,7 @@ def probe(
 
     run = runner if runner is not None else _run
     observed_at = clock()
-    manifest_path = root / PIN.manifest_name
-    artifact_path = root / PIN.artifact_name
+    pin = host_pin()
     binary = root / HEALTH_ARGV[0]
 
     unusable = lambda reason: ProbeOutcome(  # noqa: E731 - one shape, four call sites
@@ -265,6 +274,13 @@ def probe(
         boot_id=boot_id,
     )
 
+    if pin is None:
+        return unusable(
+            f"this host's CPU has no Edge pin ({host_architecture() or 'unreviewed'}), "
+            "so nothing was run"
+        )
+    manifest_path = root / pin.manifest_name
+    artifact_path = root / pin.artifact_name
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -276,6 +292,11 @@ def probe(
         return unusable(
             f"the Edge manifest does not declare the pinned version "
             f"{PIN.version}, so nothing was run"
+        )
+    if manifest.get("architecture") != pin.architecture:
+        return unusable(
+            f"the Edge manifest declares architecture {manifest.get('architecture')!r} "
+            f"and this host is {pin.architecture}, so nothing was run"
         )
     try:
         artifact_digest = _digest(artifact_path.read_bytes())
@@ -306,7 +327,8 @@ def probe(
 
     component = _component_digest(manifest, HEALTH_ARGV[0])
     try:
-        binary_digest = _digest(binary.read_bytes())
+        binary_bytes = binary.read_bytes()
+        binary_digest = _digest(binary_bytes)
     except OSError as exc:
         return _bound(
             observed_at,
@@ -334,6 +356,23 @@ def probe(
             ),
             running=_running_finding(unit_reader),
             health_security=False,
+        )
+    try:
+        binary_cpu = elf_architecture(binary_bytes[:64])
+    except EdgePackageRefused as exc:
+        binary_cpu = f"unreadable ({exc})"
+    if binary_cpu != pin.architecture:
+        return _bound(
+            observed_at,
+            artifact_digest,
+            ttl_seconds,
+            boot_id=boot_id,
+            health=Evidence.NOT_CHECKED,
+            health_reason=(
+                f"{binary} is for {binary_cpu} by its ELF header and this host and "
+                f"the manifest are {pin.architecture}; nothing was run"
+            ),
+            running=_running_finding(unit_reader),
         )
 
     health, health_reason, health_security = _health_finding(run, root)

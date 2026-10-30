@@ -42,7 +42,7 @@ edge core (local): verified-ready  [<TMP>/edge-verified]
     version_matches: passed
         the manifest declares 0.1.0, which is the pinned version
     digest_matches: passed
-        re-derived sha256:95e639c496e6e356b0365871cf517df2727283439d6c62c3d49298e9d7877629 from azazel-edge-core-0.1.0-x86_64.tar.gz and it matches the manifest. Integrity against accidental change, which is not authenticity; whether the manifest's issuer is authenticated is a separate fact, reported separately
+        re-derived sha256:9df9c24b47ea8d5a8a145b2d45a0553b0959ed9561def84e5c24660a9343a1f7 from azazel-edge-core-0.1.0-x86_64.tar.gz and it matches the manifest. Integrity against accidental change, which is not authenticity; whether the manifest's issuer is authenticated is a separate fact, reported separately
     health_endpoint_healthy: passed
         az-edge-probed at 2026-09-21T04:00:00Z: all four conditions held
     running: passed

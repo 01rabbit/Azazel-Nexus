@@ -95,11 +95,15 @@ The package is produced by Azazel-Edge's
 not build it ([Edge package verification](../edge-package-verification.md#6-where-the-contract-comes-from)).
 Build on a separate **x86_64** Linux host or container, for example a
 `debian:trixie` amd64 container, so that the binary matches the VM's
-architecture and C library. The packager labels every package `x86_64` and
-does not check the build host, so a build on another architecture produces a
-mislabelled package that the VM cannot run. For an aarch64 VM, build on an
-aarch64 host instead; the package then carries an aarch64 binary under the
-packager's fixed `x86_64` name, which the run record must state.
+architecture and C library, and package it with `--architecture x86_64`.
+Since Azazel-Edge#522 the packager reads the binary's ELF header and refuses
+a CPU other than the one named, and names the package for that CPU; Nexus
+refuses a package whose binary is not for the host's CPU (ADR-0003 R4). For
+an aarch64 VM, build on an aarch64 host and package with
+`--architecture aarch64`; the files are then named `...-aarch64.*` (the
+commands below show the x86_64 names). Before Azazel-Edge#522 the packager
+labelled every package `x86_64`, which is the deviation earlier aarch64 run
+records state.
 
 Revision: use an Azazel-Edge revision that includes Azazel-Edge#428 (rule
 technique ids in normalized events; merge commit `2e9aab8`), otherwise every

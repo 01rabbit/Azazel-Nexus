@@ -63,6 +63,34 @@ version fails `version_matches`; a revoked digest, or a revocation state that
 exists and cannot be established, fails `digest_matches`. Each such failure is
 a security finding. Nothing here passes a check that would otherwise fail.
 
+## One pin per CPU, and three CPU facts that must agree (S-11, ADR-0003 R4)
+
+Edge builds one package per CPU (`azazel-edge-core/nexus-pin/v2`), so this
+node keeps one pin per CPU (`PINS`, keyed by the Linux `uname -m` name) and
+uses the one for **the CPU it observes itself running on**
+(`host_architecture`, read through `platform_profile.from_machine`). `PIN` is
+that pin, fixed at import. Every entry point -- `inspect`, the installed
+digest and components the activation pass and generation-publish use, the
+probe (`az-edge-probed`) and the offline bundle's Edge slot -- refuses unless
+three facts name the same CPU:
+
+* the host's CPU (for the offline bundle, the bundle target's CPU, which
+  install then requires the host to be);
+* the manifest's `architecture` (and its `elf` record, when it has one);
+* the `e_machine`, class and byte order in the ELF header of the binary the
+  archive carries, read here (`elf_architecture`) rather than taken from the
+  manifest.
+
+A package whose name and manifest were rewritten to the other CPU is refused by
+the third; one whose binary was swapped is refused by the third too, as a
+security finding, because the package then misdescribes itself. A package for
+the other CPU installed on this host is refused by name, not reported as
+absent. An unreviewed host CPU has no pin, and nothing is checked.
+
+Accepting an aarch64 package on an aarch64 host is integrity, never
+admission: an Arm host is a `lab-software-verification` profile
+(ADR-0003, ADR-0005), and production uses refuse it elsewhere.
+
 ## What this module never does
 
 It does not install, extract, configure a network, or start anything.
@@ -122,7 +150,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
+from types import MappingProxyType
+
 from . import boot_id as _boot_id
+from . import platform_profile as _platform_profile
 from .activation import EDGE_CHECKS, EdgeBaselineState
 from .edge_issuer import (
     IssuerRefused,
@@ -158,6 +189,11 @@ __all__ = [
     "Finding",
     "HealthAnswer",
     "PIN",
+    "PINS",
+    "ELF_IDENTITIES",
+    "elf_architecture",
+    "host_architecture",
+    "host_pin",
     "UNSIGNED_CAVEAT",
     "NOT_AUTHENTICATED_CAVEAT",
     "AUTHENTICATED_CAVEAT",
@@ -296,17 +332,142 @@ class EdgePin:
         return f"{self.package}-{self.version}-{self.architecture}.tar.gz"
 
 
-#: The pinned Edge Core. Every field is asserted against the vendored
-#: `pin.json` by `tests/unit/test_edge_package.py`, so a version bump in Edge
-#: that is copied here without updating this constant fails the suite.
-PIN = EdgePin(
-    package="azazel-edge-core",
-    version="0.1.0",
-    architecture="x86_64",
-    manifest_contract="azazel-edge-core/package-manifest/v1",
-    health_contract="azazel-edge-core/health/v1",
-    signed=False,
-)
+#: The pinned Edge Core, one entry per CPU, by the Linux `uname -m` name the
+#: artifact and the manifest use. Every field is asserted against the vendored
+#: `pin.json` (`architectures`) by `tests/unit/test_edge_package.py`, so a
+#: version bump in Edge that is copied here without updating these fails the
+#: suite. The fields of the x86_64 entry are the ones the single pin had.
+PINS = MappingProxyType({
+    architecture: EdgePin(
+        package="azazel-edge-core",
+        version="0.1.0",
+        architecture=architecture,
+        manifest_contract="azazel-edge-core/package-manifest/v1",
+        health_contract="azazel-edge-core/health/v1",
+        signed=False,
+    )
+    for architecture in ("aarch64", "x86_64")
+})
+
+#: The ELF identity a binary for each pinned CPU carries, as the vendored
+#: `pin.json` names it, and the header values behind each name. Both reviewed
+#: CPUs run 64-bit little-endian Linux.
+ELF_IDENTITIES = MappingProxyType({
+    "aarch64": MappingProxyType({"class": "ELFCLASS64", "data": "ELFDATA2LSB", "machine": "EM_AARCH64"}),
+    "x86_64": MappingProxyType({"class": "ELFCLASS64", "data": "ELFDATA2LSB", "machine": "EM_X86_64"}),
+})
+_ELF_CLASSES = {1: "ELFCLASS32", 2: "ELFCLASS64"}
+_ELF_DATA = {1: "ELFDATA2LSB", 2: "ELFDATA2MSB"}
+#: System V ABI `e_machine` values; an unlisted value is reported by number.
+_ELF_MACHINES = {3: "EM_386", 40: "EM_ARM", 62: "EM_X86_64", 183: "EM_AARCH64", 243: "EM_RISCV"}
+#: An executable or a position-independent executable.
+_ELF_EXECUTABLE_TYPES = (2, 3)
+#: The archive member whose ELF header names the package's CPU.
+_ELF_MEMBER = "bin/azazel-edge-core"
+
+
+def host_architecture() -> Optional[str]:
+    """This host's CPU as the pin names it (`x86_64`, `aarch64`), or None.
+
+    Read from the kernel (`os.uname().machine`) through
+    `platform_profile.from_machine`, the one reader of machine names. A CPU
+    that table does not list has no pin, and None is what says so.
+    """
+
+    try:
+        return _platform_profile.kernel_name(_platform_profile.from_machine(os.uname().machine))
+    except _platform_profile.PlatformRefused:
+        return None
+
+
+def host_pin() -> Optional[EdgePin]:
+    """The pin for this host's CPU, or None when there is none."""
+
+    architecture = host_architecture()
+    return PINS.get(architecture) if architecture is not None else None
+
+
+#: The pin for the CPU this process runs on, fixed at import: the names a
+#: package of this host is looked for under, and the pin record
+#: `observe_baseline` binds. On a CPU no pin covers it is the x86_64 entry
+#: (the deployment baseline), and every entry point still refuses, because
+#: each one checks the host it observes at call time, not this constant.
+PIN = PINS.get(host_architecture() or "", PINS["x86_64"])
+
+
+def elf_architecture(header: bytes) -> str:
+    """The pinned CPU an ELF header is for, or `EdgePackageRefused`.
+
+    Reads the header only and runs nothing: magic, class, byte order,
+    `EI_VERSION`, `e_type` (an executable or a PIE), `e_machine` and
+    `e_version`. Anything that is not exactly the identity of one pinned CPU
+    is refused, with what was found.
+    """
+
+    if len(header) < 24 or header[:4] != b"\x7fELF":
+        raise EdgePackageRefused("the Edge binary is not an ELF file")
+    elf_class = _ELF_CLASSES.get(header[4], f"class={header[4]}")
+    data = _ELF_DATA.get(header[5], f"data={header[5]}")
+    if header[6] != 1 or data not in _ELF_DATA.values():
+        raise EdgePackageRefused(
+            f"the Edge binary's ELF header cannot be read ({elf_class}, {data}, EI_VERSION {header[6]})"
+        )
+    order = "little" if data == "ELFDATA2LSB" else "big"
+    e_type = int.from_bytes(header[16:18], order)
+    e_machine = int.from_bytes(header[18:20], order)
+    e_version = int.from_bytes(header[20:24], order)
+    if e_type not in _ELF_EXECUTABLE_TYPES or e_version != 1:
+        raise EdgePackageRefused(
+            f"the Edge binary is not an ELF executable (e_type {e_type}, e_version {e_version})"
+        )
+    identity = {"class": elf_class, "data": data,
+                "machine": _ELF_MACHINES.get(e_machine, f"e_machine={e_machine}")}
+    for architecture, expected in ELF_IDENTITIES.items():
+        if identity == dict(expected):
+            return architecture
+    raise EdgePackageRefused(
+        f"the Edge binary is {identity['class']}/{identity['data']}/{identity['machine']}, "
+        f"which is none of the pinned CPUs ({sorted(ELF_IDENTITIES)})"
+    )
+
+
+def _archive_elf_header(artifact_path: Path) -> bytes:
+    """The first 64 bytes of `bin/azazel-edge-core` in the archive, read bounded.
+
+    Never extracted: the member is located in the gzip'd tar with the same
+    ceilings `_archive_components` uses, and only its header is read.
+    """
+
+    import io
+    import tarfile
+
+    try:
+        fd = os.open(artifact_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        with os.fdopen(fd, "rb") as stream:
+            data = stream.read(_ARCHIVE_MAX_BYTES + 1)
+    except OSError as exc:
+        raise EdgePackageRefused(f"{artifact_path.name} could not be read ({exc})") from exc
+    if len(data) > _ARCHIVE_MAX_BYTES:
+        raise EdgePackageRefused(f"{artifact_path.name} is larger than an Edge archive may be")
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
+            for count, member in enumerate(archive):
+                if count >= _ARCHIVE_MAX_MEMBERS:
+                    break
+                name = member.name[2:] if member.name.startswith("./") else member.name
+                if name != _ELF_MEMBER:
+                    continue
+                if not member.isreg():
+                    raise EdgePackageRefused(f"{_ELF_MEMBER} in the archive is not a regular file")
+                stream = archive.extractfile(member)
+                if stream is None:
+                    raise EdgePackageRefused(f"{_ELF_MEMBER} in the archive is unreadable")
+                return stream.read(64)
+    except EdgePackageRefused:
+        raise
+    except Exception as exc:  # noqa: BLE001 - a malformed archive names no CPU
+        raise EdgePackageRefused(f"{artifact_path.name} is not a readable Edge archive") from exc
+    raise EdgePackageRefused(f"{artifact_path.name} carries no {_ELF_MEMBER}")
 
 #: The manifest fields this node reads. A subset of the vendored schema, and a
 #: test asserts it is a subset -- reading a field the producer does not
@@ -943,7 +1104,7 @@ def _archive_components(data: bytes) -> dict[str, str]:
 
 
 def installed_package_components(
-    *, package_root: Path = EDGE_PACKAGE_ROOT, pin: EdgePin = PIN, owner_uid: int = 0,
+    *, package_root: Path = EDGE_PACKAGE_ROOT, pin: Optional[EdgePin] = None, owner_uid: int = 0,
     trust: Optional[IssuerTrust] = None,
 ) -> tuple[str, dict[str, str]]:
     """The archive digest and the bound components, only when all three agree.
@@ -958,6 +1119,7 @@ def installed_package_components(
     signature over the generation is what binds the values afterwards.
     """
 
+    pin, _ = _host_pin_or_refuse(pin)
     digest = installed_package_digest(package_root=package_root, pin=pin, trust=trust)
     manifest_path = package_root / pin.manifest_name
     try:
@@ -981,7 +1143,7 @@ def installed_package_components(
 
 
 def installed_package_digest(
-    *, package_root: Path = EDGE_PACKAGE_ROOT, pin: EdgePin = PIN,
+    *, package_root: Path = EDGE_PACKAGE_ROOT, pin: Optional[EdgePin] = None,
     trust: Optional[IssuerTrust] = None,
 ) -> str:
     """The installed archive digest, only when the on-disk package checks pass.
@@ -1001,9 +1163,10 @@ def installed_package_digest(
     required, because requiring it is an owner decision not yet made.
     """
 
+    pin, host = _host_pin_or_refuse(pin)
     manifest_path = package_root / pin.manifest_name
     artifact_path = package_root / pin.artifact_name
-    _, package, manifest = _read_package(package_root, manifest_path, artifact_path, pin)
+    _, package, manifest = _read_package(package_root, manifest_path, artifact_path, pin, host)
     if not package.held or manifest is None:
         raise EdgePackageRefused("the installed Edge package check did not pass")
     version, digest_finding, _ = _issuer_gate(
@@ -1017,6 +1180,23 @@ def installed_package_digest(
     if type(digest) is not str or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
         raise EdgePackageRefused("the installed Edge package digest is malformed")
     return digest
+
+
+def _host_pin_or_refuse(pin: Optional[EdgePin]) -> tuple[EdgePin, str]:
+    """This host's CPU and the pin to use; `pin` must be that CPU's, when given."""
+
+    host = host_architecture()
+    if host is None:
+        raise EdgePackageRefused(
+            f"this host's CPU ({os.uname().machine!r}) has no Edge pin; nothing is verified"
+        )
+    if pin is None:
+        pin = PINS[host]
+    if pin.architecture != host:
+        raise EdgePackageRefused(
+            f"the pin is for {pin.architecture} and this host is {host}"
+        )
+    return pin, host
 
 
 # -- probes, whose defaults refuse ----------------------------------------
@@ -1045,7 +1225,8 @@ def no_running_probe() -> Optional[bool]:
 def inspect(
     root: Optional[Path],
     *,
-    pin: EdgePin = PIN,
+    pin: Optional[EdgePin] = None,
+    cpu: Optional[str] = None,
     probe: Optional[ProbeResult] = None,
     now: str = "",
     boot_id: Optional[str] = None,
@@ -1068,6 +1249,14 @@ def inspect(
 
     `trust` is the issuer anchor, revocation list and rollback floor;
     `None` reads the fixed host locations (`edge_issuer.load_issuer_trust`).
+
+    `cpu` is the CPU the package must be for. `None`, which every reader of
+    an installed package uses, is this host's CPU, observed now
+    (`host_architecture`). Only the offline bundle names one: the target's
+    CPU, which install then requires the host to be. `pin` defaults to the
+    pin of that CPU; a pin for another CPU is refused. The package is accepted
+    only when that CPU, the manifest's `architecture` and the ELF header of
+    the binary in the archive agree.
     """
 
     if probe is not None:
@@ -1105,9 +1294,34 @@ def inspect(
             issuer=_unexamined(trust, "not_inspected"),
         )
 
+    expected = host_architecture() if cpu is None else cpu
+    if pin is None:
+        pin = PINS.get(expected) if expected is not None else None
+    if pin is None:
+        return EdgeInspection(
+            findings=tuple(
+                Finding(
+                    check=check,
+                    evidence=Evidence.NOT_CHECKED,
+                    reason=(
+                        f"no Edge pin covers this CPU ({expected or os.uname().machine!r}); "
+                        f"pins exist for {sorted(PINS)}. Nothing was looked for, "
+                        "which is not the same fact as looked for and missing"
+                    ),
+                )
+                for check in CHECKS
+            ),
+            presence=EdgePresence.UNKNOWN,
+            caveats=caveats,
+            root=str(root),
+            issuer=_unexamined(trust, "not_inspected"),
+        )
+
     manifest_path = root / pin.manifest_name
     artifact_path = root / pin.artifact_name
-    presence, package, manifest = _read_package(root, manifest_path, artifact_path, pin)
+    presence, package, manifest = _read_package(
+        root, manifest_path, artifact_path, pin, expected
+    )
     findings = [package]
 
     if not package.held:
@@ -1161,7 +1375,7 @@ def inspect(
 
 
 def installed_issuer_verification(
-    *, package_root: Path = EDGE_PACKAGE_ROOT, pin: EdgePin = PIN,
+    *, package_root: Path = EDGE_PACKAGE_ROOT, pin: Optional[EdgePin] = None,
     trust: Optional[IssuerTrust] = None,
 ) -> IssuerVerification:
     """The two separate facts for the installed package, from the fixed paths.
@@ -1501,9 +1715,15 @@ def presence_of(findings: Sequence[Finding]) -> EdgePresence:
 
 
 def _read_package(
-    root: Path, manifest_path: Path, artifact_path: Path, pin: EdgePin
+    root: Path, manifest_path: Path, artifact_path: Path, pin: EdgePin,
+    expected: Optional[str],
 ) -> tuple[EdgePresence, Finding, Optional[dict]]:
-    """Present, absent, or present and unusable -- which are three answers."""
+    """Present, absent, or present and unusable -- which are three answers.
+
+    `expected` is the CPU the package must be for (the host's, or a bundle
+    target's). It, the manifest's architecture and the archive's ELF header
+    must agree.
+    """
 
     def refuse(presence: EdgePresence, reason: str, security: bool = False):
         return (
@@ -1517,7 +1737,27 @@ def _read_package(
             None,
         )
 
+    if expected is None or pin.architecture != expected:
+        return refuse(
+            EdgePresence.CORRUPT,
+            f"this node is {expected or 'an unpinned CPU'} and was asked to verify "
+            f"against the {pin.architecture} pin. A package is verified only against "
+            "the pin of the CPU it will run on",
+        )
     if not manifest_path.exists() and not artifact_path.exists():
+        foreign = [
+            other for other in PINS.values()
+            if other.architecture != pin.architecture
+            and ((root / other.manifest_name).exists() or (root / other.artifact_name).exists())
+        ]
+        if foreign:
+            return refuse(
+                EdgePresence.CORRUPT,
+                f"the Edge package at {root} is the {foreign[0].architecture} one "
+                f"({foreign[0].artifact_name}) and this node is {pin.architecture}, "
+                f"so it looks for {pin.artifact_name}. A package for another CPU is "
+                "not this node's package; install the build for this CPU",
+            )
         return refuse(
             EdgePresence.ABSENT,
             f"no Edge package is installed at {root}: neither "
@@ -1599,6 +1839,50 @@ def _read_package(
             "node accepts no enforcing Edge package",
             security=True,
         )
+    if "artifact" in manifest and manifest["artifact"] != pin.artifact_name:
+        return refuse(
+            EdgePresence.CORRUPT,
+            f"{manifest_path.name} names the artifact {manifest['artifact']!r} and "
+            f"this node looks for {pin.artifact_name!r}; a manifest renamed onto "
+            "another package describes that package, not this one",
+        )
+    expected_elf = dict(ELF_IDENTITIES[pin.architecture])
+    if "elf" in manifest and manifest["elf"] != expected_elf:
+        return refuse(
+            EdgePresence.CORRUPT,
+            f"{manifest_path.name} declares architecture {pin.architecture} and records "
+            f"the ELF identity {manifest['elf']!r}, which is not {expected_elf!r}",
+        )
+    # The binary decides, not the manifest. Read from an archive whose bytes
+    # are the ones its manifest describes; one that is not is the digest
+    # check's finding, a security one, and is left to it.
+    try:
+        archive_bytes_match = (
+            "sha256:" + hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+            == manifest["digest"]
+        )
+    except OSError:
+        archive_bytes_match = False
+    if archive_bytes_match:
+        try:
+            found = elf_architecture(_archive_elf_header(artifact_path))
+        except EdgePackageRefused as exc:
+            return refuse(
+                EdgePresence.CORRUPT,
+                f"{artifact_path.name} matches its manifest's digest and its "
+                f"{_ELF_MEMBER} does not show it is for {pin.architecture}: {exc}. "
+                "The package misdescribes itself",
+                security=True,
+            )
+        if found != pin.architecture:
+            return refuse(
+                EdgePresence.CORRUPT,
+                f"{manifest_path.name} and the file names say {pin.architecture} and "
+                f"the ELF header of {_ELF_MEMBER} in {artifact_path.name} says "
+                f"{found}. A binary for another CPU under this CPU's name is refused, "
+                "whatever its digest: the package misdescribes itself",
+                security=True,
+            )
     return (
         EdgePresence.VERIFIED_READY,
         Finding(

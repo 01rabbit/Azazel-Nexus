@@ -501,6 +501,38 @@ def _lite_matrix(harness: Harness) -> str:
     )
 
 
+
+def _synthetic_elf(architecture: str) -> bytes:
+    """A 64-bit little-endian ELF executable header for `architecture`, not runnable.
+
+    The Edge package checks read the CPU from the archived binary's ELF header
+    (S-11); a stage that wrote any other payload would be refused before the
+    check it means to exercise. `e_machine` from the System V ABI.
+    """
+
+    machine = {"x86_64": 62, "aarch64": 183}[architecture]
+    return (b"\x7fELF\x02\x01\x01\x00" + bytes(8) + (3).to_bytes(2, "little")
+            + machine.to_bytes(2, "little") + (1).to_bytes(4, "little") + bytes(40)
+            + b"synthetic azazel-edge-core\n")
+
+
+def _synthetic_edge_archive(binary: bytes) -> bytes:
+    """The package archive as Edge's packager lays it out, around `binary`."""
+
+    import gzip
+    import io
+    import tarfile
+
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        for name, data in (("bin/azazel-edge-core", binary),
+                           ("config/redirect_policy.yaml", b"redirect: none\n")):
+            info = tarfile.TarInfo(name)
+            info.size, info.mode = len(data), 0o755 if name.startswith("bin/") else 0o644
+            tar.addfile(info, io.BytesIO(data))
+    return gzip.compress(raw.getvalue(), mtime=0)
+
+
 def _edge_package(harness: Harness) -> str:
     """The five checks, each failed on its own, on packages written here (#44).
 
@@ -516,7 +548,7 @@ def _edge_package(harness: Harness) -> str:
     from azazel_nexus.integration import EdgePresence
 
     root = harness.root / "edge-packages"
-    payload = b"edge-core-payload"
+    payload = _synthetic_edge_archive(_synthetic_elf(PIN.architecture))
     good_digest = "sha256:" + hashlib.sha256(payload).hexdigest()
 
     def manifest(**overrides):
@@ -733,8 +765,8 @@ def _edge_probe(harness: Harness) -> str:
 
     root = harness.root / "edge-core"
     (root / "bin").mkdir(parents=True, exist_ok=True)
-    payload = b"edge-core-payload"
-    binary = b"#!/bin/sh\nexit 0\n"
+    binary = _synthetic_elf(PIN.architecture)
+    payload = _synthetic_edge_archive(binary)
     (root / PIN.artifact_name).write_bytes(payload)
     (root / "bin/azazel-edge-core").write_bytes(binary)
     manifest = {

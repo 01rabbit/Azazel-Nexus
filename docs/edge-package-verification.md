@@ -20,7 +20,7 @@ Five checks, and nothing else:
 
 | check | what establishes it |
 | --- | --- |
-| `package_present` | the manifest and the artifact are both at the fixed location, and the manifest declares the pinned contract, package, architecture and an observe-only posture |
+| `package_present` | the manifest and the artifact are both at the fixed location, and the manifest declares the pinned contract, package, architecture and an observe-only posture; and the CPU agrees three ways: this host's CPU (`uname -m`, through `platform_profile`), the manifest's `architecture` (and its `elf` record, when present) and the ELF header (class, byte order, `e_machine`) of `bin/azazel-edge-core` in the archive, read here. One pin per CPU (`edge_package.PINS`, contract `nexus-pin/v2`); a binary for the other CPU under this CPU's name is a security finding, the other CPU's package is refused by name, and a host CPU with no pin checks nothing ([ADR-0003 R4](adr/0003-arm-software-verification-profile.md#amendment-2026-10-30-r4-the-edge-package-per-cpu)) |
 | `version_matches` | the manifest's version is the pinned one |
 | `digest_matches` | the artifact re-derives to the digest the manifest declares |
 | `health_endpoint_healthy` | the Edge health contract answered, and all four of its conditions held |

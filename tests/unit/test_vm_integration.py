@@ -255,3 +255,32 @@ def test_capacity_copies_survive_the_next_runs_work_directory_reset():
     assert not str(vmit.CAPACITY_KEEP).startswith(vmit.NODE_WORK)
     prepare = SOURCE[SOURCE.index("def node_prepare"):SOURCE.index("def knowledge_reason")]
     assert "CAPACITY_KEEP" in prepare  # an interrupted run's copies make the next run refuse
+
+
+# -- the Edge package of the node's CPU (S-11) -------------------------------
+
+
+def test_the_edge_package_names_are_the_pinned_ones_per_cpu():
+    from azazel_nexus.edge_package import PINS
+
+    assert set(vmit.EDGE_PACKAGES) == set(PINS)
+    for machine, (manifest, archive) in vmit.EDGE_PACKAGES.items():
+        assert (manifest, archive) == (PINS[machine].manifest_name, PINS[machine].artifact_name)
+
+
+def test_a_packager_directory_must_hold_exactly_one_cpus_package(tmp_path):
+    for name in vmit.EDGE_PACKAGES["aarch64"]:
+        (tmp_path / name).write_text("x")
+    assert vmit.edge_package_names(tmp_path) == vmit.EDGE_PACKAGES["aarch64"]
+    for name in vmit.EDGE_PACKAGES["x86_64"]:
+        (tmp_path / name).write_text("x")
+    with pytest.raises(SystemExit):
+        vmit.edge_package_names(tmp_path)
+    with pytest.raises(SystemExit):
+        vmit.edge_package_names(tmp_path / "empty")
+
+
+def test_the_node_refuses_a_binary_that_is_not_for_its_cpu():
+    install = SOURCE[SOURCE.index("def edge_install"):SOURCE.index("# --- The rehearsal-only start")]
+    assert "if arch != machine:" in install and "raise RuntimeError" in install
+    assert "fixed x86_64 name" not in SOURCE

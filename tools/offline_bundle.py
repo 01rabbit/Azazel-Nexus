@@ -108,8 +108,10 @@ TARGETS = {
         "lock": Path("packaging/offline/requirements-x86_64-cp313.lock"),
         "platform_profile_id": "debian-13-amd64-cp313",
         "purpose": "deployment-baseline",
-        # The reviewed Edge pin (edge_package.PIN) is an x86_64 artifact.
+        # edge_package.PINS["x86_64"]. The artifact digest this target accepts
+        # is an owner-reviewed pin, and none is shipped (reviewed_edge_digest).
         "edge_slot": True,
+        "edge_artifact_pin": Path("packaging/offline/edge-artifact.sha256"),
     },
     "debian-13-aarch64-cp313": {
         "os": "debian-13",
@@ -121,9 +123,12 @@ TARGETS = {
         "lock": Path("packaging/offline/requirements-aarch64-cp313.lock"),
         "platform_profile_id": "debian-13-arm64-cp313-lab",
         "purpose": "lab-software-verification",
-        # No arm64 Edge pin exists (ADR-0003 R4): an Edge slot here could only
-        # carry the x86_64 artifact, so it is refused at build and at verify.
-        "edge_slot": False,
+        # edge_package.PINS["aarch64"] (ADR-0003 R4, ADR-0005 amendment of
+        # 2026-10-30). Its own digest pin, separate from the baseline's: a lab
+        # bundle carries the aarch64 artifact a reproducible build produced,
+        # and every report of it stays lab evidence (LAB_TARGET_NOTE).
+        "edge_slot": True,
+        "edge_artifact_pin": Path("packaging/offline/edge-artifact-aarch64-lab.sha256"),
     },
 }
 #: The deployment-baseline target, and the default wherever a caller names none.
@@ -145,7 +150,12 @@ def target_lock(target: str) -> Path:
 
 
 def refuse_edge_slot_unless_allowed(target: str) -> None:
-    """Refuse a filled Edge slot for a target that has no Edge pin of its CPU."""
+    """Refuse a filled Edge slot for a target that has no Edge pin of its CPU.
+
+    Both declared targets have one (edge_package.PINS); the check stays so
+    that a target added without one is refused rather than handed the other
+    CPU's package.
+    """
 
     if not TARGETS[target]["edge_slot"]:
         raise BundleRefused(
@@ -1206,29 +1216,51 @@ def _edge_package_module():
     return edge_package
 
 
-EDGE_ARTIFACT_PIN = Path("packaging/offline/edge-artifact.sha256")
+def target_edge_artifact_pin(target: str) -> Path:
+    """The reviewed-checkout path of ``target``'s Edge artifact pin."""
+
+    if type(target) is not str or target not in TARGETS:
+        raise BundleRefused(f"target {target!r} is not a declared target")
+    return TARGETS[target]["edge_artifact_pin"]
 
 
-def reviewed_edge_digest(root: Path = REVIEWED_ROOT) -> Optional[tuple[str, str]]:
-    """``(sha256, artifact name)`` from the reviewed checkout's Edge artifact pin, if any.
+#: The deployment baseline's Edge artifact pin (not shipped; see below).
+EDGE_ARTIFACT_PIN = target_edge_artifact_pin(BASELINE_TARGET)
 
-    The file holds one ``<sha256>  <artifact name>`` line. This repository
-    ships none: pinning a released Edge artifact is an owner decision, and
-    until one is pinned an Edge slot is refused rather than parsed.
+
+def reviewed_edge_digest(
+    root: Path = REVIEWED_ROOT, target: str = BASELINE_TARGET,
+) -> Optional[tuple[str, str]]:
+    """``(sha256, artifact name)`` from the reviewed checkout's Edge artifact pin of ``target``.
+
+    Each target reads its own file, which holds one ``<sha256>  <artifact
+    name>`` line; the name must be the artifact of the target's CPU
+    (``verify_edge_slot``). The deployment baseline's
+    (``packaging/offline/edge-artifact.sha256``) is not shipped: pinning a
+    released x86_64 Edge artifact for the baseline is an owner decision, and
+    until one is pinned an Edge slot is refused rather than parsed. The Arm
+    lab target's pin is shipped (ADR-0005, amendment of 2026-10-30).
     """
 
-    path = root / EDGE_ARTIFACT_PIN
+    path = root / target_edge_artifact_pin(target)
     if not path.is_file():
         return None
     lines = [line for line in path.read_text(encoding="ascii").splitlines() if line.strip()]
     match = re.fullmatch(r"([0-9a-f]{64})  ([A-Za-z0-9._+-]+)", lines[0]) if len(lines) == 1 else None
     if not match:
-        raise BundleRefused(f"{EDGE_ARTIFACT_PIN} is not one '<sha256>  <name>' line")
+        raise BundleRefused(f"{target_edge_artifact_pin(target)} is not one '<sha256>  <name>' line")
     return match.group(1), match.group(2)
 
 
-def verify_edge_slot(directory: Path) -> dict[str, Any]:
+def verify_edge_slot(directory: Path, target: str = BASELINE_TARGET) -> dict[str, Any]:
     """Run the existing Edge package checks over a carried Edge package.
+
+    The package must be the one for ``target``'s CPU: that CPU's pin
+    (``edge_package.PINS``) names the files, the target's own reviewed
+    artifact pin names the bytes, and ``edge_package.inspect`` runs for that
+    CPU, so the target's CPU, the manifest's architecture and the ELF header
+    of the archived binary must agree. The host building or verifying the
+    medium need not be that CPU; install requires it to be (``_install_verified``).
 
     Requires ``package_present``, ``version_matches`` and ``digest_matches`` to
     pass and the manifest's bound-component digests to match the archive.
@@ -1237,51 +1269,61 @@ def verify_edge_slot(directory: Path) -> dict[str, Any]:
     """
 
     edge = _edge_package_module()
+    refuse_edge_slot_unless_allowed(target)
+    architecture = TARGETS[target]["architecture"]
+    pin = edge.PINS.get(architecture)
+    if pin is None:
+        raise BundleRefused(f"no Edge pin covers {architecture}")
     names = sorted(p.name for p in directory.iterdir()) if directory.is_dir() else []
-    expected = sorted((edge.PIN.manifest_name, edge.PIN.artifact_name))
+    expected = sorted((pin.manifest_name, pin.artifact_name))
     if names != expected:
-        raise BundleRefused(f"the Edge slot holds {names}; it must hold exactly {expected}")
+        raise BundleRefused(
+            f"the Edge slot holds {names}; a {target} bundle must hold exactly {expected}"
+        )
     # Before any tar parsing: the artifact must be the one the reviewed
-    # checkout pins. Only then are its bytes reviewed rather than attacker
-    # data, and only then may edge_package read them with tarfile.
-    pinned = reviewed_edge_digest()
+    # checkout pins for this target. Only then are its bytes reviewed rather
+    # than attacker data, and only then may edge_package read them with tarfile.
+    pinned = reviewed_edge_digest(target=target)
     if pinned is None:
         raise BundleRefused(
-            f"the reviewed checkout pins no Edge artifact ({EDGE_ARTIFACT_PIN}); an Edge slot is "
-            "refused before it is parsed"
+            f"the reviewed checkout pins no Edge artifact ({target_edge_artifact_pin(target)}); "
+            "an Edge slot is refused before it is parsed"
         )
-    if pinned[1] != edge.PIN.artifact_name:
-        raise BundleRefused(f"the reviewed pin names {pinned[1]}, not {edge.PIN.artifact_name}")
+    if pinned[1] != pin.artifact_name:
+        raise BundleRefused(f"the reviewed pin names {pinned[1]}, not {pin.artifact_name}")
     digest = hashlib.sha256()
-    with open(directory / edge.PIN.artifact_name, "rb") as stream:
+    with open(directory / pin.artifact_name, "rb") as stream:
         while chunk := stream.read(1 << 20):
             digest.update(chunk)
     if digest.hexdigest() != pinned[0]:
         raise BundleRefused("the Edge artifact is not the one the reviewed checkout pins; not parsed")
-    inspection = edge.inspect(directory)
-    findings = {f.check: f for f in inspection.findings}
-    for check in ("package_present", "version_matches", "digest_matches"):
-        finding = findings[check]
-        if finding.evidence is not edge.Evidence.PASSED:
-            raise BundleRefused(f"Edge {check} is {finding.evidence.value}: {finding.reason}")
     try:
-        with open(directory / edge.PIN.artifact_name, "rb") as raw:
-            # Defence in depth on bytes already matched to the reviewed pin.
+        with open(directory / pin.artifact_name, "rb") as raw:
+            # Defence in depth on bytes already matched to the reviewed pin,
+            # and before edge_package reads the archive with tarfile (its
+            # CPU check reads the binary's ELF header).
             scan_nested_tar(_Gunzip(raw, EDGE_ARCHIVE_MAX_UNPACKED))
     except BundleRefused as exc:
         raise BundleRefused(f"the Edge archive is refused: {exc}") from exc
     except (OSError, EOFError, ValueError, zlib.error) as exc:
         raise BundleRefused(f"the Edge archive could not be read ({type(exc).__name__}: {exc})") from exc
-    manifest = json.loads((directory / edge.PIN.manifest_name).read_text(encoding="utf-8"))
+    inspection = edge.inspect(directory, pin=pin, cpu=architecture)
+    findings = {f.check: f for f in inspection.findings}
+    for check in ("package_present", "version_matches", "digest_matches"):
+        finding = findings[check]
+        if finding.evidence is not edge.Evidence.PASSED:
+            raise BundleRefused(f"Edge {check} is {finding.evidence.value}: {finding.reason}")
+    manifest = json.loads((directory / pin.manifest_name).read_text(encoding="utf-8"))
     try:
         declared = edge._manifest_components(manifest)
-        archived = edge._archive_components((directory / edge.PIN.artifact_name).read_bytes())
+        archived = edge._archive_components((directory / pin.artifact_name).read_bytes())
     except edge.EdgePackageRefused as exc:
         raise BundleRefused(f"Edge components: {exc}") from exc
     if declared != archived:
         raise BundleRefused("the Edge archive's bound components do not match its manifest")
     return {
         "state": "verified-integrity",
+        "architecture": architecture,
         "checks": {check: findings[check].evidence.value for check in edge.CHECKS},
         "caveat": edge.UNSIGNED_CAVEAT,
         "admitted": False,
@@ -1391,7 +1433,7 @@ def verify_extracted(
     slots: dict[str, Any] = {}
     if document["slots"]["edge-package"] == "filled":
         refuse_edge_slot_unless_allowed(document["target"])
-        slots["edge-package"] = verify_edge_slot(root / "edge")
+        slots["edge-package"] = verify_edge_slot(root / "edge", document["target"])
     else:
         slots["edge-package"] = {"state": "empty"}
     if document["slots"]["deb"] == "filled":

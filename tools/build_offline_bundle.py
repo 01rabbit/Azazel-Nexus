@@ -358,7 +358,7 @@ def build_install_bundle(
         offline_bundle.refuse_edge_slot_unless_allowed(target)
         if not edge_source:
             raise ValueError("--edge-package needs --edge-source naming where it came from")
-        offline_bundle.verify_edge_slot(edge_package)
+        offline_bundle.verify_edge_slot(edge_package, target)
         for path in _slot_files(edge_package):
             entries.append(_entry(path, "edge/" + path.name, "edge-package", edge_source))
         slots["edge-package"] = "filled"

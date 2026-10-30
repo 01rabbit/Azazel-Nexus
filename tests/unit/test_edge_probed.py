@@ -31,6 +31,8 @@ from azazel_nexus.edge_package import (
     parse_probe_result,
 )
 from azazel_nexus_runtime import edge_probed
+
+from _edge_package_fixture import elf_stub
 from azazel_nexus_runtime.systemd_bus import (
     EdgeUnitStateReader,
     SystemdBusSession,
@@ -58,9 +60,15 @@ def _clock(first="2026-09-21T03:00:00Z"):
     return lambda: first
 
 
-def _package(tmp_path, *, payload=b"edge-core-payload", binary=b"#!/bin/sh\n", **overrides):
-    """A package on disk: manifest, archive, and the unpacked binary."""
+def _package(tmp_path, *, payload=b"edge-core-payload", binary=None, **overrides):
+    """A package on disk: manifest, archive, and the unpacked binary.
 
+    The unpacked binary is an ELF header of this host's CPU by default: the
+    probe reads it before running anything. The runner seam stands in for the
+    run itself.
+    """
+
+    binary = elf_stub() if binary is None else binary
     root = tmp_path / "edge"
     (root / "bin").mkdir(parents=True, exist_ok=True)
     (root / PIN.artifact_name).write_bytes(payload)
@@ -104,6 +112,60 @@ def _units(active="active", sub="running", load="loaded", log=None):
         return {"ActiveState": active, "SubState": sub, "LoadState": load}
 
     return read
+
+
+# -- the CPU: nothing for another CPU is run (S-11) ------------------------
+
+OTHER = {"x86_64": "aarch64", "aarch64": "x86_64"}[PIN.architecture]
+
+
+class _Uname:
+    def __init__(self, machine):
+        self.machine = machine
+
+
+def test_an_unpacked_binary_for_another_cpu_is_not_run(tmp_path):
+    log = []
+    root = _package(tmp_path, binary=elf_stub(OTHER))
+    outcome = edge_probed.probe(root, clock=_clock(), runner=_runner(log=log), unit_reader=_units())
+    assert log == []
+    assert outcome.health is Evidence.NOT_CHECKED
+    assert f"is for {OTHER}" in outcome.health_reason and "nothing was run" in outcome.health_reason
+
+
+def test_an_unpacked_binary_that_is_not_elf_is_not_run(tmp_path):
+    log = []
+    root = _package(tmp_path, binary=b"#!/bin/sh\nexit 0\n")
+    outcome = edge_probed.probe(root, clock=_clock(), runner=_runner(log=log), unit_reader=_units())
+    assert log == [] and outcome.health is Evidence.NOT_CHECKED
+
+
+def test_a_manifest_for_another_cpu_runs_nothing(tmp_path):
+    log = []
+    root = _package(tmp_path, architecture=OTHER)
+    outcome = edge_probed.probe(root, clock=_clock(), runner=_runner(log=log), unit_reader=_units())
+    assert log == []
+    assert outcome.health is Evidence.NOT_CHECKED and outcome.running is Evidence.NOT_CHECKED
+    assert f"{OTHER!r}" in outcome.health_reason
+
+
+@pytest.mark.parametrize("machine", ["riscv64", "armv7l", ""])
+def test_a_host_cpu_with_no_pin_runs_nothing(tmp_path, monkeypatch, machine):
+    import azazel_nexus.edge_package as edge_package
+
+    log = []
+    root = _package(tmp_path)
+    monkeypatch.setattr(edge_package.os, "uname", lambda: _Uname(machine))
+    outcome = edge_probed.probe(root, clock=_clock(), runner=_runner(log=log), unit_reader=_units())
+    assert log == [] and outcome.health is Evidence.NOT_CHECKED
+    assert "no Edge pin" in outcome.health_reason
+
+
+def test_the_host_cpus_own_binary_is_run(tmp_path):
+    log = []
+    root = _package(tmp_path, binary=elf_stub(PIN.architecture))
+    outcome = edge_probed.probe(root, clock=_clock(), runner=_runner(log=log), unit_reader=_units())
+    assert len(log) == 1 and outcome.health is Evidence.PASSED
 
 
 # -- what it runs, and what it will not take from anyone -------------------

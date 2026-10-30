@@ -2,18 +2,24 @@
 
 Copied verbatim from `packaging/nexus-core/contract/` in
 [01rabbit/Azazel-Edge](https://github.com/01rabbit/Azazel-Edge), at commit
-`ae9557d15e5e8347609e2fe2251b03c0a48a86b6` (Azazel-Edge main after
-[Azazel-Edge#465](https://github.com/01rabbit/Azazel-Edge/pull/465) and
-[Azazel-Edge#468](https://github.com/01rabbit/Azazel-Edge/pull/468)).
+`79ffbe3` on the branch of
+[Azazel-Edge#522](https://github.com/01rabbit/Azazel-Edge/pull/522)
+(per-CPU package, manifest and pin). Regenerated there from a release build on
+aarch64 and on x86_64 (`nexus_core_package.py --emit-contract`); the two
+regenerations are byte-identical. That PR changes `pin.json` to
+`azazel-edge-core/nexus-pin/v2` (one entry per CPU under `architectures`, each
+with its artifact, manifest and ELF identity) and adds `elf` to the manifest
+schema. **Until Azazel-Edge#522 is merged, this copy is ahead of Edge main**;
+when it merges, the commit named here is replaced by its main commit, and the
+files do not change (`health-schema.json` is unchanged).
 
-The files were first copied at `f44a66835eb55aa9c0196f0ec6964e6361606eab`,
-a commit on the branch of
-[Azazel-Edge#426](https://github.com/01rabbit/Azazel-Edge/pull/426); on
-Edge main that PR is `2a3e42d653f6be148fd010bc18e2afc77aaa78d7`. At
-`ae9557d` they were regenerated from a release build
-(`nexus_core_package.py --emit-contract`) and are byte-identical to that
-copy: the contract has not changed between the two commits, so only this
-note moved.
+Before that, the files were copied at `ae9557d15e5e8347609e2fe2251b03c0a48a86b6`
+(Azazel-Edge main after
+[Azazel-Edge#465](https://github.com/01rabbit/Azazel-Edge/pull/465) and
+[Azazel-Edge#468](https://github.com/01rabbit/Azazel-Edge/pull/468)), and
+first at `f44a66835eb55aa9c0196f0ec6964e6361606eab`, a commit on the branch of
+[Azazel-Edge#426](https://github.com/01rabbit/Azazel-Edge/pull/426) (on Edge
+main `2a3e42d653f6be148fd010bc18e2afc77aaa78d7`).
 
 **They are copied, never edited here.** A consumer that edits the contract it
 is verifying against is a consumer that verifies its own opinion. If one of
@@ -57,3 +63,5 @@ rather than restating it:
   mismatch, an unhealthy report and a not-running payload as **six separate
   findings**
 - not claim `edge-baseline-ready` from accepting this package
+- select the entry for the host's CPU and refuse a package whose name,
+  manifest architecture or binary ELF header names another CPU (v2)
