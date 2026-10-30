@@ -1051,6 +1051,7 @@ def _text_of(value, fixed, hide) -> tuple[Optional[str], str]:
 
 
 def _ai(explanations, explanation_code, row, mio, labels, hide) -> dict:
+    from .explanation_claims import PROVENANCE_FIELD
     from .incident_explain import content_kind
 
     fixed = _fixed_texts()
@@ -1062,11 +1063,17 @@ def _ai(explanations, explanation_code, row, mio, labels, hide) -> dict:
                       "recorded": value["recorded"], "state": value["state"],
                       "ceiling": value["ceiling"], "observed_at": value["observed_at"],
                       "record_uncertain": value["record_uncertain"]}
+    recorded = [r["mio"][PROVENANCE_FIELD] for r in explanations if PROVENANCE_FIELD in r["mio"]]
     base = {"authority": "advisory_only_not_fact", "route_capability_now": capability,
             "label_basis": "the explainer's content_kind: every answered local-route reply is "
-                           "labelled AI advice; the fixed banner it carries says whether a model, "
-                           "embedding matching or keyword matching produced it",
-            "model_identity": _unavailable("model_identity_not_recorded_in_explanation_ledger"),
+                           "labelled AI advice; the generation method is the one the explainer "
+                           "recorded with the answer or, for a record from before that, the one "
+                           "the fixed banner names",
+            # The ledger now names the model; the package does not carry it
+            # yet (a model id is free text to this package's leak scan).
+            "model_identity": _unavailable(
+                "model_identity_not_included_in_package" if recorded
+                else "model_identity_not_recorded_in_explanation_ledger"),
             "remote_route": "not_used_by_incident_explainer"}
     if explanations:
         items = []
@@ -1075,13 +1082,19 @@ def _ai(explanations, explanation_code, row, mio, labels, hide) -> dict:
             kind = content_kind(m)
             text, method = _text_of(m["text"], fixed, hide)
             notice, _ = _text_of(m.get("notice"), fixed, hide)
+            provenance = m.get(PROVENANCE_FIELD)
+            if provenance is not None:
+                generated, basis = provenance["method"], "recorded"
+            else:
+                generated, basis = (method, "fixed_banner") if text else ("not_recorded", "none")
             items.append({
                 "explained_at": _iso(record["explained_at"]), "transition": record["transition"],
                 "route": m["route"], "outcome": m["outcome"],
                 "local_route_answered": m["route"] == "local" and m["outcome"] == "answered",
                 "content_kind": kind, "content_label": labels.get(kind, kind),
                 "labelled_ai_output": kind == "ai_advice",
-                "generation_method": method if text else "not_recorded",
+                "generation_method": generated,
+                "generation_method_basis": basis,
                 "text": text, "text_state": "shown" if text else (
                     method if method in ("withheld", "ambiguous_summary") else "none"),
                 "notice": notice,
@@ -1102,6 +1115,7 @@ def _ai(explanations, explanation_code, row, mio, labels, hide) -> dict:
                     "content_kind": kind, "content_label": labels.get(kind, "unlabelled"),
                     "labelled_ai_output": e["state"] == "explained",
                     "generation_method": method if text else "not_recorded",
+                    "generation_method_basis": "fixed_banner" if text else "none",
                     "text": text, "text_state": "shown" if text else (
                         method if method in ("withheld", "ambiguous_summary") else "none"),
                     "text_is_summary": True, "notice": notice,
@@ -1534,14 +1548,16 @@ def render_markdown(p: dict) -> str:
         + (f" 記録された能力 `{cap.get('state')}`" if "state" in cap else ""))
     add("- 外部（リモート）AI: インシデント説明では使っていない")
     add("- 注意: 説明器はローカル経路の回答をすべて「AI の助言」と区分する。"
-        "生成方式は本文の固定文（banner）から判定し、判定できない本文は伏せる。")
+        "生成方式は説明器が記録したもの（`recorded`）を使い、記録の無い旧い記録だけ"
+        "本文の固定文（banner）から判定する（`fixed_banner`）。判定できない本文は伏せる。")
     for x in ai.get("explanations", []):
         add("")
         label = ("説明器の区分では AI の助言" if x["labelled_ai_output"]
                  else "AI の出力ではない")
         add(f"### {_md(x['explained_at'] or '時刻不明')} — 経路 `{x['route']}`（{label}: {_md(x['content_label'])}）")
         add("")
-        add(f"生成方式: `{x['generation_method']}`、本文: `{x['text_state']}`")
+        add(f"生成方式: `{x['generation_method']}`（根拠 `{x['generation_method_basis']}`）"
+            + f"、本文: `{x['text_state']}`")
         if x.get("text"):
             add("")
             add("> " + _md(x["text"]))

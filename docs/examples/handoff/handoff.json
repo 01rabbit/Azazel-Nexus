@@ -8,6 +8,7 @@
         "explained_at": "2026-10-29T03:14:30Z",
         "failure_codes": [],
         "generation_method": "deterministic_keyword_matching",
+        "generation_method_basis": "recorded",
         "labelled_ai_output": true,
         "local_route_answered": true,
         "notice": null,
@@ -23,6 +24,7 @@
         "explained_at": "2026-10-29T03:16:00Z",
         "failure_codes": [],
         "generation_method": "deterministic_keyword_matching",
+        "generation_method_basis": "recorded",
         "labelled_ai_output": true,
         "local_route_answered": true,
         "notice": null,
@@ -39,9 +41,9 @@
       "shown": 2,
       "total": 2
     },
-    "label_basis": "the explainer's content_kind: every answered local-route reply is labelled AI advice; the fixed banner it carries says whether a model, embedding matching or keyword matching produced it",
+    "label_basis": "the explainer's content_kind: every answered local-route reply is labelled AI advice; the generation method is the one the explainer recorded with the answer or, for a record from before that, the one the fixed banner names",
     "model_identity": {
-      "reason_code": "model_identity_not_recorded_in_explanation_ledger",
+      "reason_code": "model_identity_not_included_in_package",
       "status": "unavailable"
     },
     "reason_code": null,

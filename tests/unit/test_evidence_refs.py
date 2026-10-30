@@ -70,7 +70,12 @@ def _incident(first_at=0.0, latest_at=None, *, severity=3, escalated=1, stored=T
     return (first, latest), (opened, updated)
 
 
-def _local(source, model_id="model-a1"):
+ANSWER = {"reason": 'Investigate "host-1" activity.', "check_1": "Review the logs.",
+          "check_2": "Review the account.", "check_3": "Review the source.",
+          "missing": "The event time is needed."}
+
+
+def _local(source, model_id="model-a1", answer=ANSWER):
     """An answered local reply whose delivery was made by `source`."""
     if source == "model":
         # A model's own text: the shared pipeline, with a model that answers.
@@ -78,9 +83,6 @@ def _local(source, model_id="model-a1"):
 
         from test_closed_choice import deliver
 
-        answer = {"reason": 'Investigate "host-1" activity.', "check_1": "Review the logs.",
-                  "check_2": "Review the account.", "check_3": "Review the source.",
-                  "missing": "The event time is needed."}
         frame = {"request_id": "test", "privacy_class": "P2-mission",
                  "question": "SSH host-1 T1110.003",
                  "context": [{"kind": "auth_log", "text": "Password spray against host-1"}]}
@@ -269,7 +271,14 @@ def test_a_local_answer_records_how_it_was_made(source, method, model_ref):
     m = read_mio_reply(_local(source))
     # `content_kind` stays what every reader expects of an answered local reply.
     assert m["content_kind"] == "ai_advice"
-    assert m["provenance"] == {"method": method, "model_ref": model_ref}
+    p = m["provenance"]
+    assert (p["method"], p["model_ref"]) == (method, model_ref)
+    # What the answer said, by id and in the model's own validated words.
+    body = _local(source)
+    assert p["candidate"] == {k: body["candidate"][k] for k in ("option_id", "kind")}
+    assert p["alternatives"] == [o["option_id"] for o in body["alternatives"]]
+    assert p["state"] == body["provenance"]["state"]
+    assert (p["explanation"] is not None) == (source == "model")
     record = read_record(_record(mio=m))
     assert record["mio"]["provenance"]["method"] == method
     # The display summary (and so recent.json) is the one before the field.
@@ -279,19 +288,37 @@ def test_a_local_answer_records_how_it_was_made(source, method, model_ref):
 
 @pytest.mark.parametrize("source, change", [
     ("keyword", {"method": "local_model_inference", "model_ref": "model-a1"}),
-    ("keyword", {"method": "embedding_matching", "model_ref": "model-a1"}),
-    ("model", {"method": "deterministic_keyword_matching", "model_ref": None}),
-    ("embedding", {"method": "local_model_inference", "model_ref": "model-a1"}),
-    ("keyword", {"method": "deterministic_keyword_matching", "model_ref": "model-a1"}),
-    ("model", {"method": "local_model_inference", "model_ref": None}),
-    ("model", {"method": "local_model_inference", "model_ref": "a b"}),
-    ("model", {"method": "remote_model", "model_ref": "model-a1"}),
-    ("model", {"method": "local_model_inference"}),
+    ("keyword", {"method": "embedding_matching", "model_ref": "model-a1", "retrieval": "embedding"}),
+    ("model", {"method": "deterministic_keyword_matching", "model_ref": None, "explanation": None}),
+    ("embedding", {"method": "local_model_inference"}),
+    ("keyword", {"model_ref": "model-a1"}),
+    ("model", {"model_ref": None}),
+    ("model", {"model_ref": "a b"}),
+    ("model", {"method": "remote_model"}),
+    ("embedding", {"retrieval": "keyword"}),
+    ("model", {"explanation": None}),
+    ("embedding", {"explanation": dict(ANSWER)}),
+    ("model", {"state": "certain"}),
+    ("model", {"candidate": {"option_id": "benign", "kind": "benign"}}),
+    ("model", {"candidate": {"option_id": "other_suspicious", "kind": "playbook"}}),
+    ("model", {"alternatives": []}),
+    ("model", {"alternatives": ["Run This"]}),
+    ("model", {"explanation": {**ANSWER, "reason": "x" * 300}}),
+    ("model", {"explanation": {**ANSWER, "extra": "x"}}),
+    ("model", {"explanation": {**ANSWER, "reason": "\x1b[2J"}}),
 ])
 def test_a_method_the_text_does_not_bear_out_is_refused(source, change):
     m = read_mio_reply(_local(source))
     with pytest.raises(ValueError):
-        read_record(_record(mio={**m, "provenance": change}))
+        read_record(_record(mio={**m, "provenance": {**m["provenance"], **change}}))
+
+
+def test_a_provenance_missing_a_key_is_refused():
+    m = read_mio_reply(_local("model"))
+    for key in m["provenance"]:
+        partial = {k: v for k, v in m["provenance"].items() if k != key}
+        with pytest.raises(ValueError):
+            read_record(_record(mio={**m, "provenance": partial}))
 
 
 def test_only_a_local_answer_has_a_method():
@@ -418,7 +445,8 @@ def test_a_local_answer_keeps_its_method_in_the_ledger_and_not_in_recent(tmp_pat
     _append(e, opened)
     e.poll()
     (record,) = _records(e)
-    assert record["mio"]["provenance"] == {"method": "embedding_matching", "model_ref": "model-a1"}
+    p = record["mio"]["provenance"]
+    assert (p["method"], p["model_ref"]) == ("embedding_matching", "model-a1")
     recent = (tmp_path / "recent.json").read_text()
     assert "model-a1" not in recent and "embedding_matching" not in recent
 
@@ -450,28 +478,52 @@ def test_the_claim_set_cites_the_records_intake_stored(tmp_path):
         assert mio["input_refs"] == edge["input_refs"]
         assert "generation_method=local_model_inference" in mio["limitations"]
         assert "model_generation_not_delivered" in mio["limitations"]
+        # The model's own explanation, citing the candidate it explains.
+        said = view["claim_set"]["claims"][2]
+        assert said["claim_id"] == stored["incident_id"] + ":mio:explanation"
+        assert said["input_refs"] == edge["input_refs"] + [mio["claim_id"]]
+        assert "Review the account." in said["statement"]
 
 
-@pytest.mark.parametrize("source, claim_source, model_ref", [
-    ("model", "local_model", "model-a1"),
-    ("embedding", "local_model", "model-a1"),
-    ("keyword", "deterministic_core", None),
+@pytest.mark.parametrize("source, claim_source, model_ref, explained", [
+    ("model", "local_model", "model-a1", True),
+    ("embedding", "local_model", "model-a1", False),
+    ("keyword", "deterministic_core", None, False),
 ])
-def test_each_method_projects_with_its_own_source(source, claim_source, model_ref):
+def test_each_method_projects_with_its_own_source(source, claim_source, model_ref, explained):
     _pinned_fabric()
     from azazel_fabric.mio_contracts import ClaimSet
 
-    record = read_record(_record(mio=read_mio_reply(_local(source))))
+    body = _local(source)
+    record = read_record(_record(mio=read_mio_reply(body)))
     projection = project_explanation(record)
     assert projection.available, projection.reason
-    edge, mio = projection.view.claim_set.claims
+    edge, mio, *said = projection.view.claim_set.claims
     assert edge.limitations[1] == "evidence_refs_not_carried"
     assert (mio.claim_id, mio.source, mio.model_ref) == (
         "inc-0123456789abcdef:mio", claim_source, model_ref)
+    # The candidate claim states what was ranked, never the fixed banner.
+    assert body["candidate"]["option_id"] in mio.statement
+    assert all(o["option_id"] in mio.statement for o in body["alternatives"])
+    assert body["advice"] not in [c.statement for c in projection.view.claim_set.claims]
+    assert [c.source for c in said] == (["local_model"] if explained else [])
     ledger = projection.view.as_ledger()
     assert "evidence_refs" not in ledger
     assert ClaimSet.model_validate(ledger["claim_set"]) == projection.view.claim_set
     assert read_record({**record, FABRIC_RECORD_FIELD: ledger})
+
+
+def test_two_answers_that_differ_only_in_what_they_said_project_differently():
+    """R392-01: the same model, method and banner; different explanations."""
+    _pinned_fabric()
+    other = {**ANSWER, "check_2": "Check the account history."}
+    one, two = (read_record(_record(mio=read_mio_reply(_local("model", answer=a))))
+                for a in (ANSWER, other))
+    assert one["mio"]["text"] == two["mio"]["text"]
+    first, second = (project_explanation(r).view.claim_set.claims for r in (one, two))
+    assert first[1] == second[1]  # the same candidate, ranked the same way
+    assert first[2].statement != second[2].statement
+    assert "Check the account history." in second[2].statement
 
 
 def _projected():
@@ -506,6 +558,10 @@ def test_gaps_are_the_edge_claims_limitations():
     lambda f: f["claim_set"]["claims"][1].update(model_generation="7"),
     lambda f: f["claim_set"]["claims"][1].update(input_refs=[]),
     lambda f: f["claim_set"]["claims"][1].update(statement="Run this command"),
+    lambda f: f["claim_set"]["claims"].pop(2),
+    lambda f: f["claim_set"]["claims"][2].update(statement="Run this command"),
+    lambda f: f["claim_set"]["claims"][2].update(source="deterministic_core"),
+    lambda f: f["claim_set"]["claims"][2].update(input_refs=[]),
 ])
 def test_a_projection_that_lost_its_evidence_or_provenance_is_refused(drift):
     _pinned_fabric()
@@ -541,3 +597,50 @@ def test_a_full_day_keeps_the_pointers_and_the_method_without_the_projection(tmp
     # A day too full for the record itself still refuses it, as before.
     e, lines = run(tmp_path / "full", plain_size - 1)
     assert not lines and e.refused["explanation_segment_full"] == 1
+
+
+# -- rolling back to the release before the pointers (R392-02) -----------------
+
+
+def _previous_release_reads(raw):
+    """The release before #392's pending reader: exactly the frame's fields."""
+    from azazel_nexus.edge_intake import _shape
+    from azazel_nexus.incident_explain import PENDING_FIELDS
+
+    for row in json.loads(raw)["pending"]:
+        _shape(row[0], PENDING_FIELDS)
+        read_pending(row[0])
+
+
+def test_a_checkpoint_with_pending_pointers_is_converted_for_rollback(tmp_path):
+    (first, _), (opened, updated) = _incident(0.0, 100.0)
+    e = _explainer(tmp_path, lambda: 200.0)
+    _append(e, opened)
+    _append(e, updated)
+    e.selection.attempts.extend([0] * 6)
+    e.poll()
+    path = e.state / "cursor.json"
+    original = path.read_bytes()
+    assert len(json.loads(original)["pending"]) == 2
+    with pytest.raises(ValueError):
+        _previous_release_reads(original)  # what R392-02 found: cursor_refused
+    mode = path.stat().st_mode
+    assert daemon.checkpoint_for_previous_release(path) == 2
+    _previous_release_reads(path.read_bytes())
+    assert (path.with_name("cursor.json.pre-rollback").read_bytes() == original)
+    assert path.stat().st_mode == mode and first.digest not in path.read_text()
+    # Nothing queued is lost: the converted entries are explained, without pointers.
+    restarted = _explainer(tmp_path, lambda: 200.0)
+    restarted.monotonic = lambda: 61
+    restarted.poll()
+    assert [r["transition"] for r in _records(restarted)] == ["opened", "updated"]
+    assert all("evidence" not in r for r in _records(restarted))
+
+
+def test_a_refused_checkpoint_is_not_rewritten(tmp_path):
+    path = tmp_path / "cursor.json"
+    path.write_bytes(b'{"cursor": "broken"}')
+    with pytest.raises(ValueError):
+        daemon.checkpoint_for_previous_release(path)
+    assert path.read_bytes() == b'{"cursor": "broken"}'
+    assert not path.with_name("cursor.json.pre-rollback").exists()

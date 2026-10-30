@@ -1196,12 +1196,16 @@ def project_explanation(record) -> Projection:
       limitations say why a pointer may not lead to a stored record
       (`evidence_not_stored`, `evidence_retention_elapsed`). A record from
       before the pointers says `evidence_refs_not_carried` instead;
-    - the M.I.O. answer, when the record names its generation method: a
-      model's text or ranking as `local_model` with the admitted model's id as
-      `model_ref`, keyword matching as `deterministic_core` with none. The
-      delivery names no model generation, so `model_generation` stays None
-      and the claim says `model_generation_not_delivered`. A record without
-      the method (from before it, or with no local answer) has no such claim.
+    - the M.I.O. answer, when the record names its generation method
+      (`explanation_claims.mio_claims`): the candidate it ranked and the
+      alternatives -- `local_model` with the admitted model's id as
+      `model_ref` when embedding matching ranked them, `deterministic_core`
+      for keyword matching -- and a model's own validated explanation as a
+      second `local_model` claim. The fixed delivery banner is not a claim.
+      The delivery names no model generation, so `model_generation` stays
+      None and a model's claims say `model_generation_not_delivered`. A
+      record without the method (from before it, or with no local answer)
+      has no such claims.
     """
     fabric, failure = _import_fabric()
     if fabric is None:
@@ -1219,9 +1223,8 @@ def project_explanation(record) -> Projection:
         # explanation plane into everything that imports the Fabric boundary.
         # The words both state live in `explanation_claims`.
         from azazel_nexus.explanation_claims import (
-            EVIDENCE_FIELD, EVIDENCE_SOURCE, METHOD_CLAIM_SOURCES, MIO_CLAIM_SUFFIX,
-            PROVENANCE_FIELD, edge_claim_limitations, evidence_observed_at,
-            mio_claim_limitations,
+            EVIDENCE_FIELD, EVIDENCE_SOURCE, PROVENANCE_FIELD, edge_claim_limitations,
+            evidence_observed_at, mio_claims,
         )
 
         r = record
@@ -1242,14 +1245,9 @@ def project_explanation(record) -> Projection:
         claims = [edge]
         provenance = r["mio"].get(PROVENANCE_FIELD)
         if provenance is not None:
-            claims.append(Claim(
-                claim_id=r["incident_id"] + MIO_CLAIM_SUFFIX,
-                statement=r["mio"]["text"],
-                source=METHOD_CLAIM_SOURCES[provenance["method"]],
-                model_ref=provenance["model_ref"],
-                input_refs=pointers,
-                limitations=tuple(mio_claim_limitations(provenance)),
-            ))
+            claims += [Claim(**{**c, "input_refs": tuple(c["input_refs"]),
+                                "limitations": tuple(c["limitations"])})
+                       for c in mio_claims(r["incident_id"], provenance, pointers)]
         for ref in cited:
             statement = ref["name"] + (f": {ref['summary']}" if ref["summary"] else "")
             limitations = (f"source_kind={ref['source_kind']}", f"generation={ref['generation']}",

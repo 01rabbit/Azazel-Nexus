@@ -708,6 +708,53 @@ def decode_checkpoint(raw):
     return v
 
 
+def checkpoint_for_previous_release(path):
+    """Rewrite a stopped explainer's checkpoint in the form before #392.
+
+    The release before #392 refuses a pending entry with evidence pointers
+    (`cursor_refused`). This keeps every pending entry and drops only its
+    pointers, so a rolled-back explainer still explains the queued work; the
+    records it writes then carry no pointers, as that release's always did.
+    The checkpoint is validated first and nothing is written if it is
+    refused. The original is kept beside it as `cursor.json.pre-rollback`,
+    and both keep the checkpoint's owner and mode. Run it as root with the
+    explainer stopped (docs/operations.md). Returns how many entries lost
+    their pointers.
+    """
+    import json
+
+    path = Path(path)
+    raw = read_file(path, CHECKPOINT_BYTES)
+    value = decode_checkpoint(raw)
+    stripped = 0
+    for row in value["pending"]:
+        if EVIDENCE_FIELD in row[0]:
+            del row[0][EVIDENCE_FIELD]
+            stripped += 1
+    from azazel_nexus.incident_explain import PENDING_FIELDS
+    if any(set(row[0]) != PENDING_FIELDS for row in value["pending"]):
+        raise ValueError("cursor_refused")
+    decode_checkpoint(canonical(value))
+    info = os.stat(path, follow_symlinks=False)
+    for target, data in ((path.with_name(path.name + ".pre-rollback"), raw),
+                         (path, canonical(value) + b"\n")):
+        fd, name = tempfile.mkstemp(dir=path.parent, prefix=".rollback-")
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                os.fchmod(stream.fileno(), stat.S_IMODE(info.st_mode))
+                if os.geteuid() == 0:
+                    os.fchown(stream.fileno(), info.st_uid, info.st_gid)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(name, target)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
+    fsync_directory(path.parent)
+    return stripped
+
+
 def main(argv=None):
     from .runtime_paths import (
         incident_explain_state_dir, incident_explain_status_path, incident_segments_dir,

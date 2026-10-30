@@ -12,12 +12,11 @@ from .explanation_claims import (
     EVIDENCE_FIELD,
     EVIDENCE_NOT_CARRIED,
     EVIDENCE_SOURCE,
-    METHOD_CLAIM_SOURCES,
-    MIO_CLAIM_SUFFIX,
+    EXPLANATION_KEYS,
     PROVENANCE_FIELD,
     edge_claim_limitations,
     evidence_observed_at,
-    mio_claim_limitations,
+    mio_claims,
 )
 from .edge_intake import ACTIONS, SEVERE_SEVERITY, _object, _shape, _text, _int, _number
 from .lite_import import AS_OF, TECHNIQUE_ID, as_of_text, read_knowledge_refs, short_digest
@@ -435,7 +434,7 @@ def read_mio_reply(reply):
             raise ValueError("mio_reply_refused")
         body = read_delivered({k: v for k, v in reply.items() if k in body_keys})
         advice = body["advice"]
-        provenance = generation_provenance(body["provenance"])
+        provenance = generation_provenance(body)
     else:
         if "handoff" in reply:
             return _read_handoff(reply, base)
@@ -465,29 +464,69 @@ GENERATION_METHODS = {"model": "local_model_inference", "embedding": "embedding_
 _MODEL_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", re.ASCII)
 
 
-def generation_provenance(provenance):
-    """The method and model of a delivery `read_delivered` already checked.
+def generation_provenance(body):
+    """How a delivery `read_delivered` already checked was made, and what it said.
 
-    `model_ref` is the admitted model's id when a model produced the text or
-    ranked the candidates (embedding matching), and None for keyword
-    matching, which uses no model. The delivery names no model generation
-    (the admission ledger's generation and the model digest are not in it),
-    so none is recorded, and a projection says so.
+    Kept bounded, and only what the delivery's validated machine fields state:
+    the method and retrieval, the admitted model's id when a model produced
+    the text or ranked the candidates (None for keyword matching, which uses
+    no model), the ranking's state, the candidate and the alternatives by id,
+    and a model's own explanation fields when a model wrote them (each
+    checked by `read_explanation` before delivery). No situation quotes, no
+    playbook guidance, no frame. The delivery names no model generation (the
+    admission ledger's generation and the model digest are not in it), so
+    none is recorded, and a projection says so.
     """
-    source = provenance["source"]
-    return {"method": GENERATION_METHODS[source],
-            "model_ref": None if source == "keyword" else provenance["model_id"]}
+    p = body["provenance"]
+    source = p["source"]
+    explanation = None
+    if source == "model":
+        explanation = {k: body["fields"]["model_" + k] for k in EXPLANATION_KEYS}
+    return {"method": GENERATION_METHODS[source], "retrieval": p["retrieval"],
+            "model_ref": None if source == "keyword" else p["model_id"],
+            "state": p["state"],
+            "candidate": {k: body["candidate"][k] for k in ("option_id", "kind")},
+            "alternatives": [o["option_id"] for o in body["alternatives"]],
+            "explanation": explanation}
+
+
+_OPTION_ID = re.compile(r"[a-z0-9][a-z0-9_-]{2,63}", re.ASCII)
+#: The longest explanation field a delivery carries: a label and a 160
+#: character field (`local_advisory._FIELD_CAP`), with room for the label.
+EXPLANATION_FIELD_CHARS = 256
 
 
 def _read_provenance(m):
     p = m[PROVENANCE_FIELD]
-    _shape(p, ("method", "model_ref"))
+    _shape(p, ("method", "retrieval", "model_ref", "state", "candidate", "alternatives",
+               "explanation"))
     source = next((k for k, v in GENERATION_METHODS.items() if v == p["method"]), None)
     if (source is None or content_kind(m) != "ai_advice" or m["text"] not in DELIVERY_TEXTS[source]
+            or p["retrieval"] not in ({"embedding", "keyword"} if source == "model" else {source})
             or (p["model_ref"] is None) != (source == "keyword")
             or p["model_ref"] is not None and (type(p["model_ref"]) is not str
-                                               or not _MODEL_REF.fullmatch(p["model_ref"]))):
+                                               or not _MODEL_REF.fullmatch(p["model_ref"]))
+            or p["state"] not in {"clear", "split", "none"}):
         raise ValueError("record_refused")
+    candidate, alternatives = p["candidate"], p["alternatives"]
+    _shape(candidate, ("option_id", "kind"))
+    if (candidate["kind"] not in {"playbook", "other_suspicious"}
+            or type(candidate["option_id"]) is not str or not _OPTION_ID.fullmatch(candidate["option_id"])
+            or candidate["kind"] != "playbook" and candidate["option_id"] != candidate["kind"]
+            or (candidate["kind"] == "other_suspicious") != (p["state"] == "none")
+            or type(alternatives) is not list or not 1 <= len(alternatives) <= 5
+            or any(type(a) is not str or not _OPTION_ID.fullmatch(a) for a in alternatives)
+            or len(set(alternatives)) != len(alternatives) or candidate["option_id"] in alternatives):
+        raise ValueError("record_refused")
+    explanation = p["explanation"]
+    if (explanation is None) != (source != "model"):
+        raise ValueError("record_refused")
+    if explanation is not None:
+        _shape(explanation, EXPLANATION_KEYS)
+        for value in explanation.values():
+            if (type(value) is not str or not value or len(value) > EXPLANATION_FIELD_CHARS
+                    or not all(c.isprintable() or c in "\n\t" for c in value)):
+                raise ValueError("record_refused")
 
 
 _REASON_WORD = re.compile(r"[a-z][a-z0-9_]{0,63}")
@@ -690,9 +729,10 @@ def _read_fabric_projection(f, record):
       statement made from the record's `edge_would` and `policy_reason`, the
       pointers' digests as its input references, and the limitations that say
       why a pointer may not lead to a stored record (or that none was carried);
-    - when the record names a generation method, the M.I.O. answer follows:
-      its id, the method's source, the recorded text, `model_ref`, the
-      pointers' digests, and the method among its limitations;
+    - when the record names a generation method, the M.I.O. answer's claims
+      follow, exactly as `explanation_claims.mio_claims` makes them from the
+      recorded provenance (candidate, then a model's explanation), with no
+      model generation;
     - the rest are the record's cited references, each claim id once (first
       occurrence kept), in order: the id, `knowledge_advisory`, the statement
       from the reference's name and summary, the bundle digest as the only
@@ -736,16 +776,12 @@ def _read_fabric_projection(f, record):
         raise ValueError("record_refused")
     m = record["mio"]
     if PROVENANCE_FIELD in m:
-        p = m[PROVENANCE_FIELD]
-        if not cited:
-            raise ValueError("record_refused")
-        mio, cited = cited[0], cited[1:]
-        if (mio.get("claim_id") != record["incident_id"] + MIO_CLAIM_SUFFIX
-                or mio.get("source") != METHOD_CLAIM_SOURCES[p["method"]]
-                or mio.get("statement") != m["text"] or mio.get("model_ref") != p["model_ref"]
-                or mio.get("model_generation") is not None
-                or mio.get("input_refs") != pointers
-                or mio.get("limitations") != mio_claim_limitations(p)):
+        expected = mio_claims(record["incident_id"], m[PROVENANCE_FIELD], pointers)
+        stated, cited = cited[:len(expected)], cited[len(expected):]
+        if len(stated) != len(expected) or any(
+                c.get("model_generation") is not None
+                or any(c.get(k) != v for k, v in e.items())
+                for c, e in zip(stated, expected)):
             raise ValueError("record_refused")
     if len(cited) != len(refs) or any(
             c.get("claim_id") != KNOWLEDGE_CLAIM_PREFIX + r["claim_id"] or c.get("source") != "knowledge_advisory"

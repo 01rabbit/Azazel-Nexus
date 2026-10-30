@@ -80,7 +80,7 @@
 
 **このインシデントに対する担当者の確認・承認の記録はない。** Nexus にその記録種別がないため `operator_actions.incident_scoped` は `unavailable`（`no_operator_action_record_type_for_incidents`）。並ぶのは期間内のノード操作で、このインシデントへの操作ではない。
 
-**AI の区分について。** 説明器は、ローカル経路が答えた記録をすべて `ai_advice` と区分する。本文が製品の固定文（banner）なら、その banner から生成方式（`local_model_inference`／`embedding_matching`／`deterministic_keyword_matching`）が分かるので書く。固定文でない本文は伏せ、生成方式は `not_recorded`。recent snapshot の要約（ASCII に縮めた 280 字）は、日本語の banner がどれも同じ語になるなど複数の固定文で一致するものがあり、そのときは生成方式を決めず本文も出さない（`text_state: ambiguous_summary`）。モデルの識別は記録されていない（`model_identity_not_recorded_in_explanation_ledger`）。
+**AI の区分について。** 説明器は、ローカル経路が答えた記録をすべて `ai_advice` と区分する。生成方式（`local_model_inference`／`embedding_matching`／`deterministic_keyword_matching`）は、説明器が回答とともに記録したもの（説明 ledger の `mio.provenance`、#392）を書き、`generation_method_basis: recorded` とする。その記録が無い旧い記録だけ、本文が製品の固定文（banner）ならその banner から判定して `fixed_banner` とする。固定文でない本文は伏せ、生成方式は `not_recorded`。recent snapshot の要約（ASCII に縮めた 280 字）は、日本語の banner がどれも同じ語になるなど複数の固定文で一致するものがあり、そのときは生成方式を決めず本文も出さない（`text_state: ambiguous_summary`）。モデルの識別は、説明 ledger には記録されるようになったがパッケージには載せない（`model_identity_not_included_in_package`。モデル id は自由な文字列で、パッケージの漏えい検査にかかりうるため）。生成方式の記録が無い旧い ledger では `model_identity_not_recorded_in_explanation_ledger`。
 
 **表示の上限。** 上限は表示だけにかかる。最終状態・集計・最新の判断は、読んだ全記録から計算する。表示しなかった記録は `*_display` に全件数・省略件数・省略した範囲（古い側）として書き、Markdown にも出す。
 
