@@ -58,6 +58,41 @@ def test_every_divergence_says_which_side_and_why():
         assert side in {"nexus", "knowledge", "both refuse"} and reason.strip()
 
 
+def test_nexus_accepts_nothing_knowledge_refuses_without_an_open_owner_decision():
+    # A divergence is not a pass by being recorded: every case where the
+    # producer's verifier refuses and Nexus accepts names the owner-decisions
+    # row that keeps it open, and one without a row fails here.
+    looser = {name for name, (k, n) in diff.EXPECTED.items() if n == diff.ACCEPTED != k}
+    assert looser == set(diff.NEXUS_LOOSER)
+    decisions = (diff.REPO / "docs" / "owner-decisions.md").read_text(encoding="utf-8")
+    for row in diff.NEXUS_LOOSER.values():
+        assert f"| {row} |" in decisions
+
+
+def _role_holders(anchor: str) -> tuple[int, int]:
+    doc = tomllib.loads(anchor)
+    active = set(doc["keys"]) - set(doc["revoked"])
+    holders = {k for k in active if doc["key_roles"].get(k) == doc["required_signer_role"]}
+    return len(holders), doc["threshold"]
+
+
+@pytest.mark.parametrize("name", ["signer_revoked", "threshold2_one_signature",
+                                  "threshold2_one_holds_role"])
+def test_the_gate_cases_use_an_anchor_the_producer_would_load(cases, name):
+    # Since Azazel-Knowledge#110 an anchor with fewer non-revoked role holders
+    # than its threshold is refused at load; these cases exist to reach the
+    # revoked-signer, threshold and role gates, so their anchors must not be one.
+    holders, threshold = _role_holders(next(c for c in cases if c.name == name).anchors)
+    assert holders >= threshold
+
+
+@pytest.mark.parametrize("name", ["anchor_revoked_leaves_no_role_holder",
+                                  "anchor_role_holders_below_threshold"])
+def test_the_unsatisfiable_anchor_cases_are_unsatisfiable(cases, name):
+    holders, threshold = _role_holders(next(c for c in cases if c.name == name).anchors)
+    assert holders < threshold
+
+
 def test_the_record_has_cases_both_sides_accept_and_refuse():
     # A table that only ever agreed on refusals would not show the valid
     # production-anchored bundle passes on both sides.

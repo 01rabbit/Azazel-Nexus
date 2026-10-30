@@ -23,7 +23,7 @@ bundle と、それを変えた bundle を両方の検証器で判定する。
 
 ## 2. 手順
 
-1. 試験の実行ごとにラボ鍵（Ed25519、5 本）を生成する。seed は権限 0700 の一時ディレクトリ
+1. 試験の実行ごとにラボ鍵（Ed25519、6 本）を生成する。seed は権限 0700 の一時ディレクトリ
    の中で権限 0600 のファイルにだけ書き、`build-lite` に `--sign-key` として渡す。終了時に
    上書きしてから削除する。表示もしない。**公開 fixture 鍵は使わない**。
 2. Knowledge 自身の `tools/lite_fixture.py` の行生成（`_write_source_db`）で元 DB を作る。
@@ -34,7 +34,13 @@ bundle と、それを変えた bundle を両方の検証器で判定する。
    署名より後の gate を試すケースは、manifest を変えてからラボ鍵で署名し直す
    （Knowledge と同じ正準形の bytes に署名する）。
 4. 両方の判定を `EXPECTED`（記録値）と比べる。記録と違う判定、または両方が受理した
-   bundle で取り出した member が食い違えば、終了コードは 1。
+   bundle で取り出した member が食い違えば、終了コードは 1。記録値を測った Knowledge の
+   commit は `KNOWLEDGE_REVISION`（現在 `09d234c`）。別の commit で実行すると、その旨を
+   標準エラーに出す（拒否はしない。新しい Knowledge で何が変わるかを見るのが目的のため）。
+5. 「記録どおり」は合格条件の半分でしかない。Knowledge が拒否して Nexus が受理するケースは、
+   `NEXUS_LOOSER` に owner-decisions の行番号を書いたものだけを許す
+   （`test_nexus_accepts_nothing_knowledge_refuses_without_an_open_owner_decision`）。
+   新しくそういう差が出たら、Nexus を直すか判断の行を作るまで CI が落ちる。
 
 実行例（Knowledge の clone は読取専用でよい。Knowledge の中核依存
 PyYAML・idna・PyNaCl が要る）。子プロセスはすべて `python -I -B` で動かすので、
@@ -68,71 +74,114 @@ pin する経路ができるからである（守る設計 6：ラボの鍵を�
 （新しい gate、コードの変更）は CI では検出できない。Knowledge の pin を上げるとき、
 または `lite_bundle.py` を変えるときに、ローカルで道具を実行して記録値を更新する。
 
-## 4. 結果（Azazel-Knowledge 2445c1b）
+## 4. 結果（Azazel-Knowledge 09d234c、#110 のマージ）
 
-実行環境：colima 上の Linux コンテナ（python:3.12）。aarch64（既定 context）と
-x86_64（colima-rosetta、`--platform linux/amd64`）の両方で実行し、表はバイト単位で
-同じだった。実機・VM の結果ではない。
+実行環境：colima 上の Linux コンテナ（python:3.12、uid 1001）。aarch64（colima-rosetta
+context の `--platform linux/arm64`、ネイティブ）と x86_64（同 context の
+`--platform linux/amd64`、Rosetta による変換）の両方で実行し、表は同じだった。
+実機・VM の結果ではない。
 
-44 件のうち、**一致 28 件・不一致 16 件**。全件が記録値どおり。両方が受理した 5 件
-（valid、expired、rollback_advances、threshold2_both_hold_role、
-member_eight_components）は、取り出した member の digest も一致した。
+52 件のうち、**一致 41 件・不一致 11 件**。全件が記録値どおり（`not_as_recorded=0`）。
+両方が受理した 5 件（valid、expired、rollback_advances、threshold2_both_hold_role、
+member_eight_components）は、取り出した member の digest も一致した。不一致 11 件のうち
+4 件は両方とも拒否してコードだけが違うもの、6 件は Nexus だけが拒否するもの、1 件
+（`manifest_pretty_signed_raw`）が Knowledge だけが拒否するもの。
+
+### 4.0 Knowledge #110 で何が変わったか
+
+この試験の道具を、変更前の Nexus（main `2322468`）のまま Knowledge `09d234c` に向けると
+`not_as_recorded=8` になる（`2445c1b` では 0）。8 件の内訳と処置：
+
+| ケース | 2445c1b での Knowledge | 09d234c での Knowledge | 原因 | 処置 |
+|---|---|---|---|---|
+| `threshold0_bad_signature` | **受理** | `BUNDLE_ANCHORS_THRESHOLD_INVALID` | K8：threshold は 1 以上の整数（bool 不可） | 記録値を更新。両方拒否、コードだけが違う |
+| `version_string`、`version_boolean` | 受理 | `BUNDLE_VERSION_INVALID` | K9：`bundle_version` は 1 以上の整数 | 記録値を更新。一致 |
+| `member_component_296_bytes` | `BUNDLE_ARCHIVE_UNREADABLE` | `BUNDLE_MEMBER_COMPONENT_TOO_LONG` | K10：1 成分 255 UTF-8 バイトまで | Nexus にも同じ上限と同じコードを入れた（§4.2）。一致 |
+| `manifest_shadows_key_roles` | 受理 | `BUNDLE_SHADOWS_TRUST_ANCHOR` | K11：禁止欄に Nexus の 4 欄を足した | 記録値を更新。一致 |
+| `signer_revoked`、`threshold2_one_signature`、`threshold2_one_holds_role` | 本来の gate で拒否 | `BUNDLE_ANCHORS_THRESHOLD_INVALID` | Knowledge は読込み時に「失効していない、必要な役割を持つ鍵の数 < threshold」の anchor を拒否するようになった。道具の anchor はちょうどその形だった（役割を持つのは A だけ） | 道具の anchor に、役割を持ち何にも署名しない予備の鍵 F を足し、3 件とも本来の gate（失効署名者・署名数不足・役割不足）で拒否されることを両側で確かめた。元の形の anchor は `anchor_revoked_leaves_no_role_holder`・`anchor_role_holders_below_threshold` として残した（§4.3） |
+
+あわせて足したケース：`version_zero`、`base_version_string`（K9 の版の規則）、
+`member_component_276_utf8_bytes`（96 文字で Nexus の 200 文字上限には収まるが成分は
+276 バイト）、`signature_not_second`、`manifest_shadows_rollback_state`、
+`manifest_local_tier_file_only`（`tables` には書かず member の path だけでローカル層の表を
+名乗る）。
 
 ### 4.1 一致したもの
 
 本番相当の anchor での通常受理（`valid`）、期限切れの指標を含む bundle の受理
 （`expired`。期限は読取側の判断で、gate ではない）、署名者の役割違い・役割なし・
-未知の鍵・失効した鍵、threshold 2、security epoch（低い・欠落・bool）、export policy
-（不受理・欠落）、anti-rollback、format、署名の改ざん、中身の改ざん、切り詰め、member の
-欠落・未宣言・重複・symlink・`..`・9 階層。
+未知の鍵・失効した鍵、threshold 2（署名 1 本、役割を持つ署名者 1 本、両方が役割を持つ）、
+security epoch（低い・欠落・bool）、export policy（不受理・欠落）、anti-rollback、format、
+`bundle_version`（文字列・bool・0）と `base_version`（文字列）、署名の改ざん、中身の改ざん、
+切り詰め、member の欠落・未宣言・重複・symlink・`..`・9 階層・成分長（ASCII 296 バイト、
+UTF-8 276 バイト）、展開率、member の順序（manifest が先頭でない、署名が 2 番目でない）、
+禁止欄（`trust`・`key_roles`・`last_import_at`）、ローカル層の表名（`tables` と member の
+path の両方）。
 
-### 4.2 この PR で Nexus を直したもの（Nexus が緩かった）
+### 4.2 この PR で Nexus を Knowledge に揃えたもの（委任された技術判断）
 
-| ケース | 修正前の Nexus | Knowledge | 根拠と修正 |
+いずれも「Knowledge の検証器が拒否し、Nexus が受理していた」か「同じものをコードを
+変えて拒否していた」差である。Knowledge が形式の持ち主であり（Nexus は形式を発明
+しない）、Knowledge の builder が出す bundle はすべてこれらを満たすので、揃えて失う
+互換性は無い。
+
+| 規則 | 変更前の Nexus | 変更後（Knowledge と同じ） | 安全性・互換性の判断 |
 |---|---|---|---|
-| `threshold2_one_holds_role`（threshold 2、署名 2 本のうち必要な役割を持つのは 1 本） | 受理 | `BUNDLE_SIGNER_ROLE_NOT_PERMITTED` | Knowledge は「役割を持つ署名者の数 ≥ threshold」を求める（`verify.py` `_check_signer_role`）。ADR-0015 D5b は、別の目的の鍵の署名は threshold を満たしても拒否するとしている。Nexus は役割を持つ署名者が 1 人いれば通しており、別の目的の鍵で threshold を埋められた。Nexus を Knowledge と同じ数え方に直した |
-| `member_nine_components`（`tables/a/b/c/d/e/f/g/x.jsonl`） | 受理 | `BUNDLE_MEMBER_PATH_TOO_DEEP` | 両者とも上限は 8。Knowledge は成分の数を数え、Nexus は区切りの数を数えていたため、Nexus は 1 階層深くまで通していた。成分の数に直した（8 成分は両方とも受理） |
-| `ratio_over_100`（4 MiB のゼロ） | 受理 | `BUNDLE_DECOMPRESSION_BOMB` | **署名の検証より前**に、全 member を 1 つ 256 MiB・合計 1 GiB まで読み込んでいた。未署名の約 1 MB の bundle（256 MiB のゼロの member を 4 つ）で、最大 RSS が 1.3 GiB になった（独立レビューで再現）。gzip の展開を Nexus 自身が行い、「中身が圧縮後の 100 倍」（Knowledge の `DEFAULT_MAX_RATIO`）に manifest と署名の上限と tar の枠を足した量を超えた時点で、展開しながら打ち切るようにした。宣言された中身の合計にも、Knowledge と同じ 100:1 の規則を掛ける。同じ bundle での最大 RSS は約 156 MiB。合計の上限 `MAX_TOTAL_BYTES` も、最大の Lite profile（`knowledge-lite-32g`、中身 512 MiB）に manifest と署名の分を足した値に下げた（以前は 1 GiB） |
+| 禁止欄 | `threshold`・`keys`・`revoked`・`key_roles`・`required_signer_role`・`minimum_security_epoch`・`accepted_export_policy_digests`・`last_imported_version` | 和集合。`anchors`・`trust`・`last_import_at`・`last_bundle_sha256`・`needs_full_rebaseline` を足した | 信頼と取込み状態は anchor とノードの状態だけが決める。Nexus はこれらの欄を読まないので受理しても害は無かったが、名乗ろうとした bundle は報告に値する（既存の方針）。Knowledge #110 も Nexus の 4 欄を足して和集合になった |
+| `bundle_version` | 整数（bool 不可）。0 以下は巻戻しとして `BUNDLE_VERSION_REGRESSION` | 1 以上の整数。0 以下も `BUNDLE_VERSION_INVALID` | 拒否は変わらず、理由が正しくなる（版が壊れているのであって古いのではない） |
+| `base_version` | 読まない（Lite は full のみ） | null か 1 以上の整数。それ以外は `BUNDLE_BASE_VERSION_INVALID` | Nexus は今後も適用しない。Knowledge が壊れた manifest として拒否するものを受理しない |
+| path 成分の長さ | 名前全体 200 文字だけ。多バイト文字なら 1 成分 255 バイト超も通った | 1 成分 255 UTF-8 バイトまで、`BUNDLE_MEMBER_COMPONENT_TOO_LONG`。名前全体より先に検査する | Nexus は disk に展開しないので NAME_MAX に当たる害は無いが、Knowledge が拒否する名前を受理しない。先に検査するのでコードも一致する |
+| member の順序 | 順序を見ない | `manifest.json`・`manifest.sig` が先頭 2 つでなければ `BUNDLE_MANIFEST_MISSING` | Nexus は全 member を読んでから判定するので順序は安全性に関わらない。形式を一つにするため（M14） |
+| ローカル層の表名 | 見ない | `tables` か `tables/<t>.jsonl`・`deltas/<t>.jsonl` がローカル層の表（Knowledge の `LOCAL_TIER_TABLES` の 14 表）を名乗れば `BUNDLE_TOUCHES_LOCAL_TIER` | Nexus にローカル層は無く読む表しか使わないので害は無いが、誤って作られた bundle を見逃さない（M14）。表の一覧は Knowledge の写しで、ずれはこの道具で検出する |
 
-### 4.3 残る差（直していない）
+変更前の Nexus でこれらのケースがどう判定されたかは、§4.0 とこの PR の本文に記録した。
 
-「厳しい側」は拒否した側。どちらが正しいかの判断と、提案を書く。
+以前の PR（#379）で直したもの：`threshold2_one_holds_role`（役割を持つ署名者の数を
+threshold と比べる）、`member_nine_components`（成分の数で数える）、`ratio_over_100`
+（署名の検証より前に展開しながら打ち切る）、`manifest_bom_signed_raw`（BOM を拒否）。
+
+### 4.3 残る差と判断
+
+「厳しい側」は拒否した側。「判断」はどちらが正しいかと、どちらかを変えるか。
 
 | ケース | Knowledge | Nexus | 厳しい側 | 判断 |
 |---|---|---|---|---|
-| `threshold0_bad_signature`（anchor が threshold = 0、署名は壊れている） | **受理** | `ANCHORS_INVALID` | Nexus | Nexus が正しい。Knowledge は `int(doc.get("threshold", 1))` をそのまま使うため、threshold 0 の anchor では有効な署名が無くても受理する（役割の gate も「0 ≥ 0」で通る）。Knowledge 側の修正候補（K8） |
-| `kind_differential` | 受理 | `BUNDLE_KIND_UNSUPPORTED` | Nexus | 設計上の差。Lite は full のみ（ADR-0017）。Knowledge の検証器は full ノード用の差分 bundle も扱う |
-| `version_string`（`"2"`）、`version_boolean`（`true`） | 受理 | `BUNDLE_VERSION_INVALID` | Nexus | Nexus が正しい。Knowledge は `int()` で変換する。Knowledge の builder は整数を出し、Knowledge 自身の epoch の gate は整数以外を拒否している。Knowledge 側の修正候補（K9） |
-| `member_name_214_bytes` | 受理 | `BUNDLE_MEMBER_NAME_TOO_LONG` | Nexus | 上限の違い（Nexus 200 文字、Knowledge 1024 バイト）。builder が出す名前は 30 バイト前後で、どちらにも届かない。実害なし |
-| `member_component_296_bytes`（1 成分が 255 バイト超） | `BUNDLE_ARCHIVE_UNREADABLE` | `BUNDLE_MEMBER_NAME_TOO_LONG` | 両方拒否 | コードだけが違う。Knowledge の 1024 バイトの上限は 1 成分の長さを抑えないので、staging への書込みでファイルシステムの NAME_MAX に当たり、その OSError が `BUNDLE_ARCHIVE_UNREADABLE` として出る。Knowledge の docstring が目指す「自分の語彙で拒否する」に反する（K10） |
-| `members_over_64` | 受理 | `BUNDLE_TOO_MANY_MEMBERS` | Nexus | 上限の違い（Nexus 64、Knowledge 256）。builder が出すのは最大 14。Knowledge のスキーマが 60 表を超えるまでは実害なし |
-| `manifest_not_first` | `BUNDLE_MANIFEST_MISSING` | 受理 | Knowledge | 形式の定義は Knowledge にあり、manifest.json と manifest.sig を先頭 2 つに置く。Nexus は全 member を読んでから判定するので順序に依存しないが、形式に合わない bundle を通している。Nexus 側で拒否するかはオーナー判断 |
-| `manifest_pretty_signed_canonical`（manifest は整形、署名は正準形に対して） | 受理 | `BUNDLE_SIGNATURE_THRESHOLD_NOT_MET` | Nexus | 署名の対象の定義が違う。Knowledge は `canonical(json.loads(raw))` を検証し、Nexus は raw の bytes を検証する |
-| `manifest_pretty_signed_raw`（manifest は整形、署名も整形した bytes に対して） | `BUNDLE_SIGNATURE_THRESHOLD_NOT_MET` | **受理** | Knowledge | 上と同じ差の逆向き。Knowledge が決して出さない bundle を Nexus が受理する。**オーナー判断（下記）** |
-| `manifest_bom_signed_raw`（manifest の先頭に UTF-8 の BOM、署名は BOM 付きの bytes に対して） | `BUNDLE_SIGNATURE_THRESHOLD_NOT_MET` | `BUNDLE_MANIFEST_INVALID` | 両方拒否 | コードだけが違う。修正前の Nexus は受理していた（`json.loads(bytes)` が BOM を読み飛ばすため）。この PR で、manifest を BOM なしの厳密な UTF-8 として読むようにした（UTF-16・UTF-32 も拒否） |
-| `manifest_bom_signed_canonical`（BOM 付き、署名は正準形に対して） | 受理 | `BUNDLE_MANIFEST_INVALID` | Nexus | Knowledge は読み直した正準形で署名を確かめるので通す。Knowledge の builder は BOM を書かない |
-| `manifest_shadows_trust`（manifest に `trust`） | `BUNDLE_SHADOWS_TRUST_ANCHOR` | 受理 | Knowledge | 禁止する manifest の欄の一覧が違う。Knowledge は `anchors`・`trust` と rollback 状態の欄（`last_import_at` ほか）も禁止する |
-| `manifest_shadows_key_roles`（manifest に `key_roles`） | 受理 | `BUNDLE_SHADOWS_TRUST_ANCHOR` | Nexus | 上の逆。Nexus は `key_roles`・`required_signer_role`・`minimum_security_epoch`・`accepted_export_policy_digests` も禁止する。両方の和集合にするのが自然（K11 と Nexus の両方） |
-| `manifest_local_tier_table`（`tables/reaction.jsonl`） | `BUNDLE_TOUCHES_LOCAL_TIER` | 受理 | Knowledge | Knowledge のローカル層の表（ノード自身の記録）を名乗る bundle。Nexus にはローカル層が無く、読む表だけを使うので害は無いが、誤って作られた bundle を見逃す |
-| `signature_33_lines` | 受理 | `BUNDLE_SIGNATURE_MALFORMED` | Nexus | Nexus は manifest.sig を 32 行に制限する |
+| `anchor_revoked_leaves_no_role_holder`（threshold 1、唯一の役割保持者 A を失効） | `BUNDLE_ANCHORS_THRESHOLD_INVALID` | `BUNDLE_REVOKED_SIGNER` | 両方拒否 | どちらも安全（どの bundle も受理されない）。Knowledge は anchor を読込み時に拒否し、`azctl keys` がそもそも書かせない。Nexus は anchor を読めるままにして bundle ごとに拒否する。**Nexus は揃えない**：Nexus では失効受理や repin が既存の anchor を読んで置き換えるので、満たせない anchor を読込みで拒否すると、復旧の入口（repin）まで塞ぐおそれがある。満たせない anchor を作らせない検査は、書く側（trust-enroll・repin、#390 の範囲）に置くのが筋で、そこで扱う |
+| `anchor_role_holders_below_threshold`（threshold 2、役割保持者は A だけ） | `BUNDLE_ANCHORS_THRESHOLD_INVALID` | `BUNDLE_SIGNER_ROLE_NOT_PERMITTED` | 両方拒否 | 上と同じ。Nexus の役割の gate は役割保持者の数を threshold と比べるので、別の目的の鍵で threshold を埋めることはできない |
+| `threshold0_bad_signature` | `BUNDLE_ANCHORS_THRESHOLD_INVALID` | `ANCHORS_INVALID` | 両方拒否 | K8 で Knowledge が Nexus と同じ判断になった。コードだけが違う。Nexus の `ANCHORS_INVALID` は anchor の不正すべてに使う既存のコードで、運用手順と監査の語彙なので変えない |
+| `kind_differential` | 受理 | `BUNDLE_KIND_UNSUPPORTED` | Nexus | 設計上の差。Lite は full のみ（ADR-0017）。Knowledge の検証器は full ノード用の差分 bundle も扱う。どちらも正しい |
+| `member_name_214_bytes` | 受理 | `BUNDLE_MEMBER_NAME_TOO_LONG` | Nexus | 資源の上限の違い（Nexus 200 文字、Knowledge 1024 バイト）。builder が出す名前は 30 バイト前後で、どちらにも届かない。小さな機器で動く読取側が厳しいのは妥当で、互換性の害は無い。変えない |
+| `members_over_64` | 受理 | `BUNDLE_TOO_MANY_MEMBERS` | Nexus | 同じく上限の違い（Nexus 64、Knowledge 256）。builder が出すのは最大 14。Knowledge のスキーマが 60 表を超えたら Nexus の上限を見直す（この道具で検出できる） |
+| `signature_33_lines` | 受理 | `BUNDLE_SIGNATURE_MALFORMED` | Nexus | 同じく上限（Nexus は manifest.sig を 32 行まで）。Knowledge の anchor が 32 本を超える鍵を持つことは想定されていない。変えない |
+| `manifest_pretty_signed_canonical`（manifest は整形、署名は正準形に対して） | 受理 | `BUNDLE_SIGNATURE_THRESHOLD_NOT_MET` | Nexus | 署名の対象の定義が違う（M13）。Knowledge は `canonical(json.loads(raw))` を検証し、Nexus は raw の bytes を検証する。Knowledge の builder は正準形の bytes をそのまま書くので、実際の bundle では差は出ない |
+| `manifest_pretty_signed_raw`（manifest は整形、署名も整形した bytes に対して） | `BUNDLE_SIGNATURE_THRESHOLD_NOT_MET` | **受理** | Knowledge | 上と同じ差の逆向き。**安全性**：Nexus は自分が解析した bytes そのものへの署名を確かめるので、署名されていない内容を読むことはない（真正性の穴ではない）。受理するのは、正しい鍵で署名されているが Knowledge の builder が決して書かない形の manifest だけ。**互換性**：Knowledge の検証器はこれを拒否するので、Nexus が受理する集合のほうが広い。揃えるなら Nexus が「raw の bytes が正準形と一致する」ことを求める側で、Nexus の試験と共通試験ベクトル（`indent=2` の manifest に署名している）を作り直す別の PR になる。**M13 として開いたまま**（`NEXUS_LOOSER`） |
+| `manifest_bom_signed_raw` | `BUNDLE_SIGNATURE_THRESHOLD_NOT_MET` | `BUNDLE_MANIFEST_INVALID` | 両方拒否 | コードだけが違う。Nexus は manifest を BOM なしの厳密な UTF-8 として読む |
+| `manifest_bom_signed_canonical` | 受理 | `BUNDLE_MANIFEST_INVALID` | Nexus | Knowledge は読み直した正準形で署名を確かめるので通す。Knowledge の builder は BOM を書かない。M13 で正準形を要求すれば、両側とも同じ理由で拒否する形になる |
 
-### 4.4 オーナー判断
+### 4.4 委任された技術判断と残る論点
 
-1. **署名の対象（正準形）**：Nexus の検証器も「raw の bytes が Knowledge の正準形と一致する
-   こと」を求めるべきか。求めれば `manifest_pretty_signed_raw` を拒否し、両方向とも
-   厳しい側にそろう。ただし Nexus の既存試験（`test_lite_bundle.py`、共通試験ベクトル
-   `knowledge_lite.refusals` など）は `indent=2` の manifest に署名しており、Knowledge の
-   検証器ではすべて拒否される形である。直すと試験とベクトルの digest を大きく作り直す
-   ことになるため、この PR では直していない。
-2. **形式の順序**（`manifest_not_first`）、**禁止欄の和集合**、**ローカル層の表名**を
-   Nexus でも拒否するか。BOM は §4.3 のとおりこの PR で拒否した。それ以外の正準形の
-   要求は 1 に含める。
-3. Knowledge 側への修正提案：K8（threshold 0 の anchor を拒否）、K9（`bundle_version` を
-   整数に限る）、K10（1 成分の長さの上限）、K11（禁止欄に Nexus の 4 欄を足す）。
-   調査 c の K1〜K7 に続く番号。Knowledge リポジトリはこの作業では変更していない。
+[owner-decisions](owner-decisions.md) の M13〜M15 は、2026-10-30 に委任された技術判断として
+次のとおり扱った（区分 T。オーナーの追加判断は要らない）。
+
+1. **M14（順序・展開率・禁止欄の和集合・ローカル層の表名）**：すべて Nexus でも拒否する
+   ようにした（§4.2。展開率は #379 で対応済み）。
+2. **M15（Knowledge への修正提案 K8〜K11）**：Knowledge #110（`09d234c`）で 4 件とも
+   実装された。この PR で記録値をそれに合わせ、K10 の成分長は Nexus にも入れた。
+3. **M13（署名の対象を正準形に限るか）**：残る唯一の「Nexus が緩い」差。真正性の穴では
+   ないので急がないが、方向は「Nexus が raw の bytes が正準形と一致することを求める」に
+   決める（形式の持ち主は Knowledge で、受理する集合を一つにするため）。試験と共通試験
+   ベクトルの作り直しを伴うので、別の PR で行う。それまでは `NEXUS_LOOSER` に残す。
+4. 満たせない anchor（§4.3 の上 2 行）の検査は、読込み側ではなく書く側（trust-enroll・
+   repin）で行う。#390 の範囲なので、この PR では足していない。
 
 ## 5. 記録の更新
 
-`lite_bundle.py` を変えたとき、または Knowledge の pin を上げたときは、ローカルで道具を
-実行し、`EXPECTED` と `DIVERGENCES` と §4 を同じ PR で更新する。不一致の各行には、
-どちらが厳しいかと根拠を書く（`test_every_divergence_says_which_side_and_why`）。
+`lite_bundle.py` を変えたとき、または Knowledge の新しい commit に合わせるときは、ローカルで
+道具を実行し、`EXPECTED`・`DIVERGENCES`・`NEXUS_LOOSER`・`KNOWLEDGE_REVISION` と §4 を
+同じ PR で更新する。不一致の各行には、どちらが厳しいかと根拠を書く
+（`test_every_divergence_says_which_side_and_why`）。Knowledge が拒否して Nexus が受理する
+差は、owner-decisions の行が無ければ CI が通らない。
+
+公開 fixture（`contract/azazel-knowledge-lite/`）の source revision は `2445c1b` のまま。
+Knowledge #110 は builder の引数の検査を厳しくしただけで、fixture の生成器
+（`tools/lite_fixture.py`）とその出力は変わっていない。

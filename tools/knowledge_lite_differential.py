@@ -75,8 +75,13 @@ BUILD_PROFILE = "knowledge-lite-16g"
 ALIAS_SCOPE = "nexus-differential"
 
 #: Lab key labels. A signs Lite; B holds another role; C holds none; D is not
-#: in any anchor; E is a second Lite signer for the two-signature anchor.
-KEY_LABELS = ("A", "B", "C", "D", "E")
+#: in any anchor; E is a second Lite signer for the two-signature anchor; F
+#: holds the Lite role and signs nothing. F is the spare that keeps an anchor
+#: satisfiable: since Azazel-Knowledge#110 the producer refuses at load an
+#: anchor whose non-revoked keys holding the required role number fewer than
+#: its threshold (`BUNDLE_ANCHORS_THRESHOLD_INVALID`), so without F the revoked-
+#: signer and threshold-2 cases would test that rule instead of their own gate.
+KEY_LABELS = ("A", "B", "C", "D", "E", "F")
 
 ACCEPTED = "accepted"
 
@@ -234,6 +239,11 @@ def build_cases(bases: Mapping[str, bytes], keys: LabKeys) -> list[Case]:
     version = m["bundle_version"]
     prod = anchors_toml(keys, policy_digest=digest, epoch=epoch)
 
+    def spare(**kwargs) -> str:
+        # The production anchor plus F, a role holder that signs nothing.
+        return anchors_toml(keys, policy_digest=digest, epoch=epoch, labels=("A", "B", "C", "F"),
+                            roles={"A": ROLE, "B": OTHER_ROLE, "F": ROLE}, **kwargs)
+
     def declared(extra, tables=None) -> bytes:
         manifest, content = base.with_files(extra, tables=tables)
         return base.signed(manifest, content=content)
@@ -256,6 +266,8 @@ def build_cases(bases: Mapping[str, bytes], keys: LabKeys) -> list[Case]:
     deep_ok = "tables/a/b/c/d/e/f/x.jsonl"  # eight
     long_name = "tables/" + "n" * 100 + "/" + "m" * 100 + ".jsonl"  # 214 bytes
     long_component = "tables/" + "n" * 290 + ".jsonl"  # one component over NAME_MAX
+    # 96 characters, so under Nexus's 200-character name cap, but 276 bytes.
+    wide_component = "tables/" + "\u3042" * 90 + ".jsonl"
     many = {f"tables/extra{i:02d}.jsonl": b"{}\n" for i in range(62)}
 
     cases = [
@@ -266,11 +278,13 @@ def build_cases(bases: Mapping[str, bytes], keys: LabKeys) -> list[Case]:
         Case("signer_other_role", bases["signed_B"], prod),
         Case("signer_no_role", bases["signed_C"], prod),
         Case("signer_unknown", bases["signed_D"], prod),
-        Case("signer_revoked", bases["valid"],
+        Case("signer_revoked", bases["valid"], spare(revoked=("A",))),
+        Case("threshold2_one_signature", bases["valid"], spare(threshold=2)),
+        Case("threshold2_one_holds_role", bases["signed_AB"], spare(threshold=2)),
+        # The same two shapes without the spare: an anchor no bundle can satisfy.
+        Case("anchor_revoked_leaves_no_role_holder", bases["valid"],
              anchors_toml(keys, policy_digest=digest, epoch=epoch, revoked=("A",))),
-        Case("threshold2_one_signature", bases["valid"],
-             anchors_toml(keys, policy_digest=digest, epoch=epoch, threshold=2)),
-        Case("threshold2_one_holds_role", bases["signed_AB"],
+        Case("anchor_role_holders_below_threshold", bases["signed_AB"],
              anchors_toml(keys, policy_digest=digest, epoch=epoch, threshold=2)),
         Case("threshold2_both_hold_role", bases["signed_AE"],
              anchors_toml(keys, policy_digest=digest, epoch=epoch, threshold=2,
@@ -288,6 +302,8 @@ def build_cases(bases: Mapping[str, bytes], keys: LabKeys) -> list[Case]:
              prod, version - 1),
         Case("version_string", base.signed(edit(bundle_version=str(version))), prod),
         Case("version_boolean", base.signed(edit(bundle_version=True)), prod),
+        Case("version_zero", base.signed(edit(bundle_version=0)), prod),
+        Case("base_version_string", base.signed(edit(base_version=str(version - 1))), prod),
         Case("corrupt_signature", _flip_signature(bases["valid"]), prod),
         Case("corrupt_payload", base.signed(content=[(first_table[0], first_table[1] + b" ")]
                                             + base.content[1:]), prod),
@@ -302,10 +318,12 @@ def build_cases(bases: Mapping[str, bytes], keys: LabKeys) -> list[Case]:
         Case("member_eight_components", declared({deep_ok: b"{}\n"}), prod),
         Case("member_name_214_bytes", declared({long_name: b"{}\n"}), prod),
         Case("member_component_296_bytes", declared({long_component: b"{}\n"}), prod),
+        Case("member_component_276_utf8_bytes", declared({wide_component: b"{}\n"}), prod),
         Case("members_over_64", declared(many), prod),
         Case("ratio_over_100", declared({"tables/zeros.jsonl": b"\0" * (4 << 20)}),
              prod),
         Case("manifest_not_first", base.signed(order=lambda ms: [*ms[2:], *ms[:2]]), prod),
+        Case("signature_not_second", base.signed(order=lambda ms: [ms[0], *ms[2:], ms[1]]), prod),
         Case("manifest_pretty_signed_canonical",
              base.signed(manifest_bytes=pretty, signed_bytes=canonical(m)), prod),
         Case("manifest_pretty_signed_raw", base.signed(manifest_bytes=pretty), prod),
@@ -314,8 +332,12 @@ def build_cases(bases: Mapping[str, bytes], keys: LabKeys) -> list[Case]:
              base.signed(manifest_bytes=bom, signed_bytes=canonical(m)), prod),
         Case("manifest_shadows_trust", base.signed(edit(trust={})), prod),
         Case("manifest_shadows_key_roles", base.signed(edit(key_roles={})), prod),
+        Case("manifest_shadows_rollback_state",
+             base.signed(edit(last_import_at="2026-09-19T00:00:00Z")), prod),
         Case("manifest_local_tier_table", declared(
             {"tables/reaction.jsonl": b"{}\n"}, tables=("reaction",)), prod),
+        Case("manifest_local_tier_file_only", declared({"tables/observation.jsonl": b"{}\n"}),
+             prod),
         Case("signature_33_lines", base.signed(extra_lines=[f"{i:08x}:00" for i in range(32)]), prod),
     ]
     names = [c.name for c in cases]
@@ -353,8 +375,21 @@ def _truncate(raw: bytes) -> bytes:
 _T = "BUNDLE_SIGNATURE_THRESHOLD_NOT_MET"
 _ROLE = "BUNDLE_SIGNER_ROLE_NOT_PERMITTED"
 
+#: The Knowledge revision `EXPECTED` was last measured against with this tool
+#: (Azazel-Knowledge#110 merged). The run prints the revision it used; a
+#: different one is reported, not refused, since the point of a local run is
+#: to see what a newer producer says.
+KNOWLEDGE_REVISION = "09d234c"
+
+_AT = "BUNDLE_ANCHORS_THRESHOLD_INVALID"
+_COMP = "BUNDLE_MEMBER_COMPONENT_TOO_LONG"
+_SHADOW = "BUNDLE_SHADOWS_TRUST_ANCHOR"
+_ORDER = "BUNDLE_MANIFEST_MISSING"
+_LOCAL = "BUNDLE_TOUCHES_LOCAL_TIER"
+_VER = "BUNDLE_VERSION_INVALID"
+
 #: case -> (Knowledge's verdict, Nexus's verdict). Measured against
-#: Azazel-Knowledge 2445c1b; see docs/knowledge-lite-differential.md.
+#: Azazel-Knowledge `KNOWLEDGE_REVISION`; see docs/knowledge-lite-differential.md.
 EXPECTED: dict[str, tuple[str, str]] = {
     "valid": (ACCEPTED, ACCEPTED),
     "expired": (ACCEPTED, ACCEPTED),
@@ -366,8 +401,10 @@ EXPECTED: dict[str, tuple[str, str]] = {
     "signer_revoked": ("BUNDLE_REVOKED_SIGNER", "BUNDLE_REVOKED_SIGNER"),
     "threshold2_one_signature": (_T, _T),
     "threshold2_one_holds_role": (_ROLE, _ROLE),
+    "anchor_revoked_leaves_no_role_holder": (_AT, "BUNDLE_REVOKED_SIGNER"),
+    "anchor_role_holders_below_threshold": (_AT, _ROLE),
     "threshold2_both_hold_role": (ACCEPTED, ACCEPTED),
-    "threshold0_bad_signature": (ACCEPTED, "ANCHORS_INVALID"),
+    "threshold0_bad_signature": (_AT, "ANCHORS_INVALID"),
     "epoch_below_minimum": ("BUNDLE_SECURITY_EPOCH_TOO_LOW", "BUNDLE_SECURITY_EPOCH_TOO_LOW"),
     "epoch_missing": ("BUNDLE_SECURITY_EPOCH_MISSING", "BUNDLE_SECURITY_EPOCH_MISSING"),
     "epoch_boolean": ("BUNDLE_SECURITY_EPOCH_INVALID", "BUNDLE_SECURITY_EPOCH_INVALID"),
@@ -375,8 +412,10 @@ EXPECTED: dict[str, tuple[str, str]] = {
     "policy_missing": ("BUNDLE_EXPORT_POLICY_MISSING", "BUNDLE_EXPORT_POLICY_MISSING"),
     "format_unsupported": ("BUNDLE_FORMAT_UNSUPPORTED", "BUNDLE_FORMAT_UNSUPPORTED"),
     "kind_differential": (ACCEPTED, "BUNDLE_KIND_UNSUPPORTED"),
-    "version_string": (ACCEPTED, "BUNDLE_VERSION_INVALID"),
-    "version_boolean": (ACCEPTED, "BUNDLE_VERSION_INVALID"),
+    "version_string": (_VER, _VER),
+    "version_boolean": (_VER, _VER),
+    "version_zero": (_VER, _VER),
+    "base_version_string": ("BUNDLE_BASE_VERSION_INVALID", "BUNDLE_BASE_VERSION_INVALID"),
     "corrupt_signature": (_T, _T),
     "corrupt_payload": ("BUNDLE_FILE_HASH_MISMATCH", "BUNDLE_FILE_HASH_MISMATCH"),
     "truncated": ("BUNDLE_ARCHIVE_UNREADABLE", "BUNDLE_ARCHIVE_UNREADABLE"),
@@ -388,50 +427,50 @@ EXPECTED: dict[str, tuple[str, str]] = {
     "member_nine_components": ("BUNDLE_MEMBER_PATH_TOO_DEEP", "BUNDLE_MEMBER_PATH_TOO_DEEP"),
     "member_eight_components": (ACCEPTED, ACCEPTED),
     "member_name_214_bytes": (ACCEPTED, "BUNDLE_MEMBER_NAME_TOO_LONG"),
-    "member_component_296_bytes": ("BUNDLE_ARCHIVE_UNREADABLE", "BUNDLE_MEMBER_NAME_TOO_LONG"),
+    "member_component_296_bytes": (_COMP, _COMP),
+    "member_component_276_utf8_bytes": (_COMP, _COMP),
     "members_over_64": (ACCEPTED, "BUNDLE_TOO_MANY_MEMBERS"),
     "ratio_over_100": ("BUNDLE_DECOMPRESSION_BOMB", "BUNDLE_DECOMPRESSION_BOMB"),
-    "manifest_not_first": ("BUNDLE_MANIFEST_MISSING", ACCEPTED),
+    "manifest_not_first": (_ORDER, _ORDER),
+    "signature_not_second": (_ORDER, _ORDER),
     "manifest_pretty_signed_canonical": (ACCEPTED, _T),
     "manifest_pretty_signed_raw": (_T, ACCEPTED),
     "manifest_bom_signed_raw": (_T, "BUNDLE_MANIFEST_INVALID"),
     "manifest_bom_signed_canonical": (ACCEPTED, "BUNDLE_MANIFEST_INVALID"),
-    "manifest_shadows_trust": ("BUNDLE_SHADOWS_TRUST_ANCHOR", ACCEPTED),
-    "manifest_shadows_key_roles": (ACCEPTED, "BUNDLE_SHADOWS_TRUST_ANCHOR"),
-    "manifest_local_tier_table": ("BUNDLE_TOUCHES_LOCAL_TIER", ACCEPTED),
+    "manifest_shadows_trust": (_SHADOW, _SHADOW),
+    "manifest_shadows_key_roles": (_SHADOW, _SHADOW),
+    "manifest_shadows_rollback_state": (_SHADOW, _SHADOW),
+    "manifest_local_tier_table": (_LOCAL, _LOCAL),
+    "manifest_local_tier_file_only": (_LOCAL, _LOCAL),
     "signature_33_lines": (ACCEPTED, "BUNDLE_SIGNATURE_MALFORMED"),
 }
 
 #: Every case the two verifiers disagree on: which side is stricter, and
 #: which side the evidence says is right. `docs/knowledge-lite-differential.md`
-#: carries the same list with its owner decisions.
+#: §4.3 carries the same list with the safety and compatibility judgement of
+#: each, and what (if anything) is to be changed on which side.
 DIVERGENCES: dict[str, tuple[str, str]] = {
-    "threshold0_bad_signature": ("nexus", "Knowledge accepts a bundle with no valid signature "
-                                 "when anchors.toml says threshold = 0. Nexus refuses the anchor"),
+    "anchor_revoked_leaves_no_role_holder": (
+        "both refuse", "Knowledge refuses the anchor at load: once A is revoked no non-revoked "
+        "key holds the required role. Nexus reads the anchor and refuses the bundle at the "
+        "revoked-signer gate; the anchor still loads so that a repin can replace it"),
+    "anchor_role_holders_below_threshold": (
+        "both refuse", "Knowledge refuses at load an anchor with threshold 2 and one role "
+        "holder; Nexus refuses each bundle at the signer-role gate, which counts role holders "
+        "against the threshold in the same way"),
+    "threshold0_bad_signature": ("both refuse", "both refuse the anchor before any signature is "
+                                 "checked; Knowledge names it BUNDLE_ANCHORS_THRESHOLD_INVALID "
+                                 "(Azazel-Knowledge#110, K8), Nexus ANCHORS_INVALID"),
     "kind_differential": ("nexus", "Lite is full-only by Nexus design (ADR-0017); Knowledge's "
                           "verifier also serves full-node differential bundles"),
-    "version_string": ("nexus", "Knowledge coerces bundle_version with int(); its builder emits "
-                       "an integer and its own epoch gate refuses non-integers"),
-    "version_boolean": ("nexus", "int(True) == 1 in Knowledge; Nexus refuses a non-integer"),
-    "member_name_214_bytes": ("nexus", "Nexus caps member names at 200, Knowledge at 1024 bytes; "
-                              "no builder emits a name near either"),
-    "member_component_296_bytes": ("both refuse", "Knowledge's 1024-byte cap does not bound one "
-                                   "component, so staging hits the filesystem's NAME_MAX and the "
-                                   "OSError surfaces as BUNDLE_ARCHIVE_UNREADABLE: a refusal "
-                                   "under the wrong code"),
+    "member_name_214_bytes": ("nexus", "Nexus caps member names at 200 characters, Knowledge "
+                              "at 1024 bytes; no builder emits a name near either"),
     "members_over_64": ("nexus", "Nexus caps members at 64, Knowledge at 256; builders emit at most 14"),
-    "manifest_not_first": ("knowledge", "Knowledge requires manifest.json, manifest.sig as the "
-                           "first two members; Nexus reads all members first and ignores order"),
     "manifest_pretty_signed_canonical": ("nexus", "Knowledge signs canonical bytes and verifies "
                                          "canonical(json.loads(raw)); Nexus verifies the raw bytes"),
     "manifest_pretty_signed_raw": ("knowledge", "the same difference the other way: Nexus accepts "
-                                   "a signature over non-canonical bytes Knowledge never emits"),
-    "manifest_shadows_trust": ("knowledge", "Knowledge's forbidden manifest fields include "
-                               "anchors/trust and its rollback state fields; Nexus's list does not"),
-    "manifest_shadows_key_roles": ("nexus", "Nexus also forbids key_roles, required_signer_role, "
-                                   "minimum_security_epoch and accepted_export_policy_digests"),
-    "manifest_local_tier_table": ("knowledge", "Knowledge refuses a bundle naming a local-tier "
-                                  "table; Nexus has no local tier and serves only tables it reads"),
+                                   "a signature over non-canonical bytes Knowledge never emits "
+                                   "(owner-decisions M13)"),
     "signature_33_lines": ("nexus", "Nexus caps manifest.sig at 32 lines"),
     "manifest_bom_signed_raw": ("both refuse", "Nexus reads the manifest as strict UTF-8 with no "
                                 "byte-order mark; Knowledge's json.loads(bytes) accepts the BOM "
@@ -439,6 +478,14 @@ DIVERGENCES: dict[str, tuple[str, str]] = {
     "manifest_bom_signed_canonical": ("nexus", "Knowledge strips the BOM by re-encoding and the "
                                       "signature over canonical bytes verifies; Nexus refuses a "
                                       "manifest Knowledge's builder never writes"),
+}
+
+#: Cases Knowledge refuses and Nexus accepts, each with the owner-decisions row
+#: that keeps it open. A new one fails CI until it is either fixed in Nexus or
+#: given a row: "an expected divergence" is not by itself a reason to accept
+#: what the producer's own verifier refuses.
+NEXUS_LOOSER: dict[str, str] = {
+    "manifest_pretty_signed_raw": "M13",
 }
 
 
@@ -720,6 +767,9 @@ def main(argv=None) -> int:
     else:
         rows, rev = (differential(args.knowledge.resolve(), signer, args.work_dir),
                      _rev(args.knowledge))
+        if not KNOWLEDGE_REVISION.startswith(rev) and not rev.startswith(KNOWLEDGE_REVISION):
+            print(f"note: EXPECTED was measured against Knowledge {KNOWLEDGE_REVISION}; "
+                  f"this run used {rev}", file=sys.stderr)
     print(render(rows, knowledge_rev=rev))
     if args.json:
         args.json.write_text(json.dumps([r.__dict__ | {"agree": r.agree, "as_recorded": r.as_recorded}

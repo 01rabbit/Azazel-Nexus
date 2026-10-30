@@ -32,7 +32,7 @@ Rosetta 変換によるコンテナ）で同じ digest になることを確認�
 | `edge.incident` | golden 観測 2 巡を `IncidentTracker` に通した遷移（opened・updated・idle の closed）、incident_id、件数、most_severe | 判断 |
 | `edge.explain` | 上の遷移から作る説明要求 frame（`explanation_input`・`build_frame`）と recent incident の行 | 判断の説明 |
 | `knowledge_lite.verify` | Knowledge の公開 fixture（valid と negative 5 件）への `verify_bundle` の受理・拒否（gate と code）、member の digest、2 時点の `read_claims` と reading | 認可（署名・完全性）・期限 |
-| `knowledge_lite.refusals` | 公開 fixture の無い `verify_bundle` の拒否経路を試験用の signer で組み立てたもの（`BUNDLE_SHADOWS_TRUST_ANCHOR` を信頼欄ごとに、manifest・形式・署名・signer の役割・security epoch・export policy・巻戻し・内容・member 名・archive の各 gate）と、受理後の行の読取り（UTF-8 でない、JSONL でない、行が長すぎる、期限が読めない・naive・時差付き・境界ちょうど）。Knowledge が出すものの証拠ではなく、どの gate とコードで拒否するかの固定 | 認可（完全性・信頼の分離） |
+| `knowledge_lite.refusals` | 公開 fixture の無い `verify_bundle` の拒否経路を試験用の signer で組み立てたもの（`BUNDLE_SHADOWS_TRUST_ANCHOR` を信頼欄ごとに、manifest・形式・署名・signer の役割・security epoch・export policy・巻戻し・内容・member 名・archive の各 gate。Knowledge #110 に揃えた版・成分長・member 順序・ローカル層の表名を含む）と、受理後の行の読取り（UTF-8 でない、JSONL でない、行が長すぎる、期限が読めない・naive・時差付き・境界ちょうど）。Knowledge が出すものの証拠ではなく、どの gate とコードで拒否するかの固定 | 認可（完全性・信頼の分離） |
 | `knowledge_lite.lookup` | producer の anchor を pin した node での import 結果と `lookup_context_reading`（valid・expired・corrupt-signature × 技術 ID 5 通り × 2 時点） | 根拠の提供 |
 | `revocation` | [`tests/fixtures/revocation/`](../tests/fixtures/revocation/generate.py) の 3 件（ドメイン分離、`RevocationStore.accept`、`verify_bundle`）と、署名済み失効リストの受理・再送拒否・再有効化拒否・`reason_for` | 認可（失効） |
 | `signature.ed25519` | RFC 8032 §7.1 の 4 ベクトル。検証が通ること、試験用 signer が RFC と同じ署名を作ること、改変 4 種（署名の 1 bit、メッセージの 1 bit、`s + L`、切詰め）が通らないこと、不正な公開鍵の拒否 | 認可（暗号） |

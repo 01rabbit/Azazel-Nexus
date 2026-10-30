@@ -65,9 +65,9 @@ Arm VM での受入（V1〜V3、main `7ef1702`）の結果を反映）。** #355
 | M10 | Lite の import が daemon 稼働を前提にすること | 2026-10-30 に委任された技術判断で対応（[ADR-0008](adr/0008-lite-trust-operations.md)）：監査付きの daemon import を基本とし、通常経路に監査の書き手 `azazel-auditd-loop.service` を足した。監査が書けなければ変更前に拒否。監査を省く入口は作らない | 現状維持（daemon import のみ） | activation policy に新 unit を含めないと import は従来どおり拒否される | #375、ADR-0008 |
 | M11 | trust root の変更の監査先 | 2026-10-30 に委任された技術判断で対応（ADR-0008 D6）：enroll・repin・失効受理を auditd に記録し、repin は commission ledger にも残す。両者は世代番号で照合する（台帳は統合しない） | 現状維持／台帳を統合する | 監査の照合手順（[trust repin](trust-repin.md)） | #375、ADR-0008 |
 | M12 | 初回 pin の出荷入口と、Knowledge の `anchors.revoked` と Nexus の失効形式の対応（K7） | 出荷入口は 2026-10-30 に対応（ADR-0008 D4：`az-nexus-commission trust-enroll`、commissioning の束縛・threshold・fixture 鍵を検査）。K7 は未対応（producer/consumer の契約合意が要る）。`azazel-nexus pack` とライブラリ `LiteImport` は store-local の anchor を読む（[§11 step 8](knowledge-lite-consumer.md#11-first-enrollment-from-a-fresh-install-to-available) で写す） | K7：Knowledge 側と形式を合わせる | Knowledge 側の失効の受け渡し | #375、ADR-0008 |
-| M13 | 署名の対象を Knowledge の正準形に限るか | Nexus は整形した manifest への署名も受理する（Knowledge の検証器は拒否する） | raw の manifest が正準形と一致することを求める／現状維持 | 求めると、Nexus の試験と共通試験ベクトル（`knowledge_lite.refusals` など）を作り直す必要がある | #379、[差分試験](knowledge-lite-differential.md) |
-| M14 | manifest の順序・展開率・禁止欄の和集合・ローカル層の表名を Nexus でも拒否するか | Nexus の検証器はこれらを拒否しない（差分試験で差として記録） | Nexus でも拒否する／現状維持 | Knowledge の検証器との差が縮む | #379 |
-| M15 | Knowledge への修正提案（K8 threshold 0 を拒否、K9 `bundle_version` を整数に限る、K10 1 成分の長さ上限、K11 禁止欄に Nexus の 4 欄を足す） | 提案のみ。Knowledge には出していない | Knowledge に提案する／見送る | Knowledge リポジトリの変更と統合順序 | #379 |
+| M13 | 署名の対象を Knowledge の正準形に限るか | 2026-10-30 に委任された技術判断で方向を決定：Nexus も「raw の manifest が Knowledge の正準形と一致する」ことを求める側に揃える。実装は試験と共通試験ベクトルの作り直しを伴うため別 PR。それまで Nexus は整形した manifest への署名も受理する（真正性の穴ではない：解析した bytes そのものへの署名を確かめる）。差分試験で Knowledge が拒否し Nexus が受理する唯一の差で、`NEXUS_LOOSER` に載せている | 現状維持 | Nexus の試験と共通試験ベクトル（`knowledge_lite.refusals` など）を作り直す | #379、[差分試験 §4.4](knowledge-lite-differential.md#44-委任された技術判断と残る論点) |
+| M14 | manifest の順序・展開率・禁止欄の和集合・ローカル層の表名を Nexus でも拒否するか | 2026-10-30 に委任された技術判断で対応：すべて Nexus でも拒否する（展開率は #379、残りは Knowledge #110 に合わせた PR）。禁止欄は和集合、member の順序は `BUNDLE_MANIFEST_MISSING`、ローカル層の表名は `BUNDLE_TOUCHES_LOCAL_TIER`、あわせて成分長・`bundle_version`・`base_version` も Knowledge と同じ規則にした | — | 差分試験の不一致が 16 件から 11 件に減り、残りは上限の違い・設計上の差・コードだけの差・M13 | #379、[差分試験 §4.2](knowledge-lite-differential.md#42-この-pr-で-nexus-を-knowledge-に揃えたもの委任された技術判断) |
+| M15 | Knowledge への修正提案（K8 threshold 0 を拒否、K9 `bundle_version` を整数に限る、K10 1 成分の長さ上限、K11 禁止欄に Nexus の 4 欄を足す） | 2026-10-30 に対応済み：Knowledge #110（`09d234c`）で 4 件とも実装された（委任された技術判断）。Nexus の差分試験の記録値をそれに合わせ、K10 は Nexus にも入れた。Knowledge は読込み時に満たせない anchor も拒否するようになったが、Nexus は repin が既存の anchor を読むため読込み側では揃えず、書く側（trust-enroll・repin）で扱う | — | — | #379、Knowledge #110、[差分試験 §4.0](knowledge-lite-differential.md#40-knowledge-110-で何が変わったか) |
 | M16 | `knowledge-status` の版上げ | `knowledge-status/v1`。署名鍵 ID・digest 短縮形・期限などは snapshot に無い | 書き手と読取器に同時に足して `knowledge-status/v2` にする | UI の Knowledge 画面に出せる項目が増える | #363 |
 
 ### 3.3 Fabric との契約
@@ -154,7 +154,7 @@ fixture 鍵、#363 と #365 の UI の読取範囲）は 1 行にまとめた。
 
 - [操作 UI：Open questions for the owner](operator-ui.md#open-questions-for-the-owner)（M20〜M22・H9・L5・L7 と同じ論点）
 - [NOC 観測 §8](noc-observation.md#8-owner-decisions)
-- [Knowledge Lite 差分試験 §4.4](knowledge-lite-differential.md#44-オーナー判断)（M13〜M15 と同じ論点）
+- [Knowledge Lite 差分試験 §4.4](knowledge-lite-differential.md#44-委任された技術判断と残る論点)（M13〜M15 の扱い）
 - [Edge package 検証 §3c](edge-package-verification.md#3c-what-still-needs-the-owner)
 - [起動時の commissioning 保存 §5](commissioning-storage-at-boot.md#5-owner-decisions)
 - [activation の observe baseline §6](activation-observe-baseline.md#6-owner-decisions)
