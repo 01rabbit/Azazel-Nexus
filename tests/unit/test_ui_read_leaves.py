@@ -68,7 +68,11 @@ def test_every_ui_copy_has_its_writers_own_azui_leaf_and_nothing_else_does():
         # Only its writer may write there, and only as an optional path.
         holders = [p.unit for p in ALL_PROFILES
                    if str(path.parent) in p.read_write_paths + p.optional_read_write_paths]
-        assert holders == [unit], name
+        # The audit ledger daemon writes in either of its two lifetimes, the
+        # bootstrap helper and the loop's writer, never both (ADR-0008).
+        expected = ([unit, "azazel-auditd-loop.service"] if unit == "azazel-auditd.service"
+                    else [unit])
+        assert sorted(holders) == sorted(expected), name
         assert str(path.parent) in next(p for p in ALL_PROFILES
                                         if p.unit == unit).optional_read_write_paths
     # The UI's own unit writes none of them and joins no group.

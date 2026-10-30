@@ -39,11 +39,12 @@ def setup(tmp_path):
         return SimpleNamespace(promoted=True, generation=2, reason_code=SENTINEL,
                                new_fingerprint=SENTINEL, old_fingerprint=SENTINEL)
 
+    audit = []
     service = CommissionService(commissioning_dir=tmp_path, snapshot_dir=snapshots,
                                 repin=repin, clock=lambda: tick[0],
-                                now=lambda: "2026-10-17T01:00:00Z")
+                                now=lambda: "2026-10-17T01:00:00Z", append=audit.append)
     return SimpleNamespace(service=service, anchor=anchor, snapshots=snapshots,
-                           calls=calls, tick=tick, content=content, key=key)
+                           calls=calls, tick=tick, content=content, key=key, audit=audit)
 
 
 def challenge(env, principal=ROOT, reason="rotation"):
@@ -62,7 +63,7 @@ def test_success_binds_reason_principal_digest_and_immutable_snapshot(setup):
     assert result["new_fingerprint"] == "sha256:" + hashlib.sha256(setup.content).hexdigest()
     assert result["reason"] == "rotation"
     assert result["expires_in"] == 60
-    assert confirm(setup, result) == {"promoted": True, "generation": 2}
+    assert confirm(setup, result) == {"promoted": True, "generation": 2, "state": "complete", "audit_complete": True}
     req, confirmation, data = setup.calls[0]
     assert req.reason == "rotation" and req.principal == "root"
     assert req.new_anchor_path != setup.anchor and data == setup.content
@@ -214,7 +215,9 @@ def test_key_material_never_reaches_reply_refusal_sink_or_journal(setup, monkeyp
     recorded = repr(events) + repr([conn.sent for conn in connections]) + output.out + output.err
     assert SENTINEL not in recorded and setup.key not in recorded
     assert len(events) == 2
-    assert not list(setup.snapshots.iterdir())
+    # The commissioning lock (`lite_trust_ops.trust_lock`) is the one file
+    # left there; no snapshot of the anchor is.
+    assert [path.name for path in setup.snapshots.iterdir()] in ([], ["trust.lock"])
 
 
 @pytest.mark.parametrize("error", [OSError("unreadable"), AttributeError("SO_PEERCRED")])
@@ -287,7 +290,7 @@ def test_real_unix_peer_policy_and_root_round_trip(setup, tmp_path):
             result = response["result"]
             answer = exchange("confirm", {"nonce": result["nonce"],
                                           "echo": result["confirmation_words"]})
-            assert answer == {"ok": True, "result": {"promoted": True, "generation": 2}}
+            assert answer == {"ok": True, "result": {"promoted": True, "generation": 2, "state": "complete", "audit_complete": True}}
             assert len(setup.calls) == 1
     finally:
         listener.close()
@@ -318,7 +321,7 @@ def test_root_socket_caller_can_confirm_without_cli_or_tty(setup, monkeypatch):
     assert response["ok"] is True
     result = response["result"]
     assert exchange("confirm", {"nonce": result["nonce"], "echo": result["confirmation_words"]}) == {
-        "ok": True, "result": {"promoted": True, "generation": 2},
+        "ok": True, "result": {"promoted": True, "generation": 2, "state": "complete", "audit_complete": True},
     }
     assert len(setup.calls) == 1
 
@@ -333,7 +336,7 @@ def test_cleanup_failure_preserves_committed_promotion(setup, monkeypatch):
 
     monkeypatch.setattr(Path, "unlink", fail_unlink)
     assert confirm(setup, result) == {
-        "promoted": True, "generation": 2, "cleanup_failed": True,
+        "promoted": True, "generation": 2, "state": "complete", "audit_complete": True, "cleanup_failed": True,
     }
     assert len(setup.calls) == 1
     assert setup.calls[0][0].new_anchor_path.exists()

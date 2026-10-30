@@ -270,6 +270,10 @@ REQUIRED_STAGES = (
     "Core reserve input path",
     "Integration broker",
     "integrated defensive loop",
+    # ADR-0008: the Knowledge Lite trust transactions with real accounts and
+    # processes, on a root of their own (tools/e2e_lite_trust.py).
+    "Knowledge Lite trust enrollment",
+    "Knowledge Lite import, repin, revocation and audit stop",
 )
 
 
@@ -591,8 +595,9 @@ def test_the_refusal_happens_before_the_harness_writes_anything():
     assert not target.exists(), "the harness wrote to a root it refused"
 
 
-@pytest.mark.parametrize("root,expected", [(True, (21, 1)), (False, (16, 6))])
+@pytest.mark.parametrize("root,expected", [(True, (23, 1)), (False, (16, 8))])
 def test_stage_privilege_accounting(short_root, monkeypatch, root, expected):
+    from tools import e2e_lite_trust
     from tools import e2e_stages as stages
 
     def accounts(harness):
@@ -609,11 +614,13 @@ def test_stage_privilege_accounting(short_root, monkeypatch, root, expected):
                  "_lite_import", "_core_reserve_path", "_mio_entry", "_knowledge_status",
                  "_operator_setup", "_integration_broker", "_integrated_loop"):
         monkeypatch.setattr(stages, name, lambda h: "executed")
+    for name in ("enrollment", "operations"):
+        monkeypatch.setattr(e2e_lite_trust, name, lambda h: "executed")
     harness = Harness(short_root)
     stages.run_all(harness)
     passed, skipped = expected
     assert harness.report.summary() == {
-        "passed": passed, "not_executed": skipped, "failed": 0, "total": 22}
+        "passed": passed, "not_executed": skipped, "failed": 0, "total": 24}
 
 
 def test_offline_import_prepares_the_same_store_and_trust_as_setup(short_root):

@@ -5,8 +5,10 @@ confirmation consumes its challenge even when it fails. The operation receives
 an immutable copy of the bytes whose fingerprint the operator confirmed.
 
 Interactive confirmation guards human intent against accidental/non-root use,
-not against a malicious root process. A ROOT socket caller receives both the
-nonce and confirmation words and can confirm without the CLI or a TTY.
+not against a malicious root process. A ROOT caller receives both the nonce
+and confirmation words and can confirm without the CLI or a TTY. The shipped
+CLI (`lite_trust_ops.run_repin`) drives this class in its own narrowed
+process; `az-commissiond` serves the same two verbs on its socket.
 """
 
 from __future__ import annotations
@@ -60,6 +62,10 @@ class _Challenge:
     expires: float
 
 
+class _AuditUnavailable(Exception):
+    """az-auditd did not take the request record; nothing was changed."""
+
+
 def _refuse() -> None:
     # Never return an exception, file content, reason, path or library outcome
     # as a refusal detail: the shared transport may record that detail.
@@ -91,10 +97,16 @@ class RepinConfirmation:
         repin: Callable[[RepinRequestLike, ConfirmationLike], OutcomeLike] = production_repin,
         clock: Callable[[], float] = time.monotonic,
         now: Callable[[], str] = lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        append: Callable[[dict], None] | None = None,
     ) -> None:
+        if append is None:
+            from .lite_audit import append_event as append
         self.commissioning_dir = commissioning_dir
         self.snapshot_dir = snapshot_dir
         self.repin = repin
+        #: az-auditd's append (ADR-0008, R390-03): both entries -- root's CLI
+        #: and commissiond's socket -- record here before any change.
+        self.append = append
         self.clock = clock
         self.now = now
         # Not thread-safe: relies on single-threaded serve_forever dispatch.
@@ -145,6 +157,60 @@ class RepinConfirmation:
         except (OSError, ValueError):
             _refuse()
 
+    def _record(self, event: dict) -> bool:
+        try:
+            self.append(event)
+            return True
+        except Exception:  # noqa: BLE001 - the outcome stands; the reply says so
+            return False
+
+    def _promote(self, snapshot: Path, pending: _Challenge, nonce: str, at: str) -> dict:
+        """Run the repin and record what the pointer reads afterwards.
+
+        A failure before the commit point is a refusal (recorded, then
+        raised). One at or after it is `lite_trust.RepinUncertain`: the
+        pointer is read back, and the reply and the record say `promoted`
+        with its state, or that the outcome is unknown -- never "refused"
+        (R390-02).
+        """
+        from azazel_nexus.lite_trust import RepinUncertain
+
+        anchor = pending.digest
+        try:
+            outcome = self.repin(
+                RepinRequestLike(snapshot, pending.reason, "root"),
+                ConfirmationLike(nonce, self.now()),
+            )
+        except RepinUncertain as uncertain:
+            if uncertain.state == "unknown":
+                complete = self._record({"event_type": "knowledge.lite.trust_repin_unconfirmed",
+                                         "anchor_digest": anchor, "occurred_at": at})
+                return {"promoted": None, "generation": None, "state": "unknown",
+                        "audit_complete": complete}
+            if type(uncertain.generation) is not int or uncertain.generation < 0:
+                _refuse()
+            complete = self._record({"event_type": "knowledge.lite.trust_repin_promoted",
+                                     "anchor_digest": anchor,
+                                     "generation": uncertain.generation,
+                                     "state": uncertain.state, "occurred_at": at})
+            return {"promoted": True, "generation": uncertain.generation,
+                    "state": uncertain.state, "audit_complete": complete}
+        except Exception:
+            self._record({"event_type": "knowledge.lite.trust_repin_refused",
+                          "anchor_digest": anchor, "occurred_at": at})
+            raise
+        # Only typed outcome values cross this boundary.
+        if (type(outcome.promoted) is not bool or outcome.promoted is not True
+                or type(outcome.generation) is not int or outcome.generation < 0):
+            self._record({"event_type": "knowledge.lite.trust_repin_refused",
+                          "anchor_digest": anchor, "occurred_at": at})
+            _refuse()
+        complete = self._record({"event_type": "knowledge.lite.trust_repin_promoted",
+                                 "anchor_digest": anchor, "generation": outcome.generation,
+                                 "state": "complete", "occurred_at": at})
+        return {"promoted": True, "generation": outcome.generation, "state": "complete",
+                "audit_complete": complete}
+
     def confirm(self, principal: Principal, nonce: str, echo: str) -> dict:
         self._root(principal)
         pending = self._pending.pop(nonce, None)
@@ -178,17 +244,18 @@ class RepinConfirmation:
                 stream.write(content)
                 stream.flush()
                 os.fsync(stream.fileno())
-            outcome = self.repin(
-                RepinRequestLike(snapshot, pending.reason, "root"),
-                ConfirmationLike(nonce, self.now()),
-            )
-            # Library reason strings, fingerprints and exception text are not
-            # response fields. Only typed outcome values cross this boundary;
-            # cleanup below may add a fixed boolean.
-            if (type(outcome.promoted) is not bool or type(outcome.generation) is not int
-                    or outcome.generation < 0):
-                _refuse()
-            result = {"promoted": outcome.promoted, "generation": outcome.generation}
+            at = self.now()
+            # The request is recorded in az-auditd before anything changes; a
+            # refused append changes nothing (ADR-0008 D3, R390-03).
+            try:
+                self.append({"event_type": "knowledge.lite.trust_repin_requested",
+                             "anchor_digest": pending.digest, "reason": pending.reason,
+                             "occurred_at": at})
+            except Exception:  # noqa: BLE001 - no record, no change
+                raise _AuditUnavailable() from None
+            result = self._promote(snapshot, pending, nonce, at)
+        except _AuditUnavailable:
+            raise RequestRefused(Refusal.ARGUMENT_RANGE, "audit_unavailable") from None
         except Exception as error:
             # Library refusals can include file contents or key parser text.
             # Keep them out of replies, refusal sinks and journal tracebacks.
@@ -204,82 +271,3 @@ class RepinConfirmation:
                     if result is not None:
                         result["cleanup_failed"] = True
         return result
-
-
-def _exchange(verb: str, arguments: dict) -> dict:
-    """One fixed local socket, authenticating the installed daemon account."""
-    import grp
-    import json
-    import pwd
-    import socket
-
-    from .principal import peer_credentials, verify_socket
-    from .runtime_paths import socket_path
-    from .transport import read_frame, send_frame
-
-    path = socket_path("commission")
-    uid = pwd.getpwnam("azcommission").pw_uid
-    gid = grp.getgrnam("azazel-operator").gr_gid
-    verify_socket(path, expected_uid=uid, expected_gid=gid)
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-        connection.settimeout(5.0)
-        connection.connect(str(path))
-        pid, peer_uid, _peer_gid = peer_credentials(connection)
-        if peer_uid != uid or pid <= 0:
-            _refuse()
-        send_frame(connection, {"verb": verb, "arguments": arguments})
-        connection.shutdown(socket.SHUT_WR)
-        response = json.loads(read_frame(connection))
-    if (type(response) is not dict or response.get("ok") is not True
-            or type(response.get("result")) is not dict):
-        _refuse()
-    return response["result"]
-
-
-def run_interactive(reason: str) -> int:
-    """Guard human intent with fresh words on a TTY, not against malicious root.
-
-    A ROOT process can echo the socket challenge directly without this CLI.
-    """
-    import re
-    import sys
-
-    if reason not in REASONS:
-        print("Choose rotation, recovery or compromise.", file=sys.stderr)
-        return 2
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        print("Trust replacement requires a local interactive terminal.", file=sys.stderr)
-        return 1
-    try:
-        result = _exchange("trust.repin.challenge",
-                           {"reason": reason, "new_anchor_file": ANCHOR_FILENAME})
-        nonce = result.get("nonce")
-        words = result.get("confirmation_words")
-        digest = result.get("new_fingerprint")
-        # Validate every displayed daemon field; never render arbitrary text
-        # from a response, including exception or key parser output.
-        if (result.get("reason") != reason
-                or not isinstance(nonce, str)
-                or re.fullmatch(r"sha256:[0-9a-f]{64}", nonce) is None
-                or not isinstance(digest, str)
-                or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
-                or not isinstance(words, str)
-                or re.fullmatch(r"REPIN-TRUST-[0-9a-f]{16}", words) is None):
-            _refuse()
-        print(f"Reason: {reason}\nNew anchor file fingerprint: {digest}")
-        print(f"Type {words} to replace the pinned trust anchors.")
-        echo = input("Confirmation: ")
-        if (not (sys.stdin.isatty() and sys.stdout.isatty())
-                or not hmac.compare_digest(echo, words)):
-            _refuse()
-        outcome = _exchange("trust.repin.confirm", {"nonce": nonce, "echo": echo})
-        if (outcome.get("promoted") is not True
-                or type(outcome.get("generation")) is not int
-                or outcome["generation"] < 0):
-            _refuse()
-        print(f"Trust anchors replaced; generation {outcome['generation']}.")
-        return 0
-    except (OSError, ValueError, TypeError, LookupError, RuntimeError,
-            RequestRefused, EOFError, KeyboardInterrupt, AttributeError):
-        print("Trust replacement refused or interrupted.", file=sys.stderr)
-        return 1

@@ -461,6 +461,36 @@ it keeps working without references (the handoff then reports
 `reference_service_unavailable`). If the owner declines, the allowlist and grantable
 set revert and the service stays installed, masked and unused.
 
+**Change to decisions 2 and 8, 2026-10-30 変更（委任された技術判断）.**
+Recorded by [ADR-0008](adr/0008-lite-trust-operations.md) under the owner's
+2026-10-30 direction, which delegates technical decisions and asks for the
+Knowledge Lite operating entry to be completed.
+
+- *Decision 2 (scope)* adds `azazel-auditd-loop.service`, the integrated
+  loop's audit writer, to `ACTIVATION_UNIT_ALLOWLIST`,
+  `activation_markers.GRANTABLE_UNITS` and `CORE_UNITS` (SUPPORTING). The
+  bootstrap helpers auditd and commissiond, watchdog, fetchd, locald and
+  remoted stay excluded; a policy naming either helper is still refused.
+- *Decision 8* changes from "auditd stays bootstrap-only" to "the bootstrap
+  helper `azazel-auditd.service` stays bootstrap-only, and the loop has its
+  own writer of the same chain". The helper unit is unchanged: the
+  bootstrap's loaded-unit policy pins its `BindsTo=` to the controller, which
+  exits right after READY on the ordinary path, so the helper could never
+  serve the loop. The new unit runs the same program, account, chain and
+  sockets with a loop unit's lifetime (marker, `Requires=`/`After=`, no
+  `BindsTo=`), and az-auditd's one-writer lock keeps the two from ever
+  writing at once.
+- **Reason.** On the ordinary path no Knowledge Lite import could start
+  (its start record is required) and no trust change could be recorded; the
+  decision's own condition ("confirm sink behaviour before P4") is answered
+  by that need. Trust changes do not bring commissiond back: they run as
+  root's narrowed transaction (ADR-0008 D3).
+- **Impact.** Nothing changes for a policy that does not name the unit. A
+  policy that names it gets the chain on the ordinary path: the explainer's
+  records are kept rather than dropped, the next bootstrap is signed against
+  the head as it is then, and if the writer stops it is back only at the next
+  boot (a same-boot `systemctl start` re-runs the pass, §10.2 M-5).
+
 ## 7. P2 readers (inert)
 
 Phase P2 adds the readers of §3 without wiring them; `az-activated` imports
@@ -640,8 +670,9 @@ controller loads no reader (`tests/unit/test_activation_p4_wiring.py`).
    barrier then fails, the pass is withdrawn as above and exits 1. The
    selected bootstrap path keeps its own READY protocol unchanged.
 
-**What READY releases.** Twelve units `Requires=` the controller: the ten
-that carry the marker condition and auditd and commissiond. READY would
+**What READY releases.** Every governed unit `Requires=` the controller:
+those that carry the marker condition (`hardening.GRANT_MARKER_UNITS`, the
+loop's audit writer among them since ADR-0008) and auditd and commissiond. READY would
 release a start job queued at boot for any of them still enabled (a manual
 unmask, an older build), and §5 showed that masking at the pass cannot stop
 such a job. So every governed unit except the bootstrap pair carries the

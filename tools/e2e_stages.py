@@ -64,6 +64,15 @@ def run_all(harness: Harness) -> None:
     harness.stage("Integration broker", lambda: _integration_broker(harness))
     harness.stage("integrated defensive loop", lambda: _integrated_loop(harness),
                   requires=("Knowledge Lite offline import", "install accounts"))
+    # ADR 0008: the trust maintenance transactions with real accounts and
+    # processes, on a root of their own (tools/e2e_lite_trust.py).
+    from tools import e2e_lite_trust
+
+    harness.stage("Knowledge Lite trust enrollment", lambda: e2e_lite_trust.enrollment(harness),
+                  requires=("install accounts",))
+    harness.stage("Knowledge Lite import, repin, revocation and audit stop",
+                  lambda: e2e_lite_trust.operations(harness),
+                  requires=("Knowledge Lite trust enrollment",))
 
 
 def _install_files(harness: Harness) -> str:

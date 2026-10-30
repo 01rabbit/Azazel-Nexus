@@ -252,6 +252,23 @@ class CommissionedLite:
         return _read_watermark(self.state_path)
 
 
+@dataclass(frozen=True)
+class _RecordAnchors(CommissionedLite):
+    """The commissioned trust root's anchor for one trust record (ADR 0008).
+
+    `trust/anchors.toml`, or the `trust-generations/N.anchors.toml` a repin
+    wrote with its generation; `TrustStore.anchors_path_for` chooses, from the
+    record already read. Read by `CommissionedLite.anchors`, so the fixture
+    refusal and the one reader stay one.
+    """
+
+    path: Path = Path()
+
+    @property
+    def anchors_path(self) -> Path:
+        return self.path
+
+
 class _StateUntrusted(ValueError):
     """Fixed codes keep filesystem details out of audit and replies."""
 
@@ -760,7 +777,8 @@ class CommissionedTrust:
             trust = TrustStore(self.root)
             trust_path = trust.path
             trust_bytes = bounded_read(trust_path, 65536)
-            digest = json.loads(trust_bytes)["commissioning_digest"]
+            record = json.loads(trust_bytes)
+            digest = record["commissioning_digest"]
             if not isinstance(digest, str) or not digest.strip():
                 raise ValueError("commissioning binding required")
             keys = trust.keys(commissioning_digest=digest)
@@ -768,7 +786,9 @@ class CommissionedTrust:
             # (lab_keys); the anchors below refuse one the same way.
             if holds_public_fixture_key(keys) and not is_lab_host():
                 raise ValueError("public fixture key")
-            anchors = CommissionedLite(self.root).anchors()
+            # The anchor that goes with the record read above: a repin may
+            # have replaced both together (ADR 0008).
+            anchors = _RecordAnchors(self.root, trust.anchors_path_for(trust_path, record)).anchors()
             anchors = replace(anchors, keys={name: key for name, key in anchors.keys.items()
                                              if key in keys})
         except (OSError, ValueError, KeyError, TypeError, TrustRefused, BundleRefused,

@@ -282,6 +282,17 @@ CORE_UNITS = (
         "hash-chain ledger; refuses chain discontinuity",
     ),
     UnitDefinition(
+        # The integrated loop's audit writer (ADR 0008): the same ledger
+        # daemon and account as the bootstrap helper above, granted by the
+        # ordinary pass so Knowledge Lite imports and trust maintenance can be
+        # recorded while the loop runs. It observes and records, like the
+        # helper, and grants nothing.
+        "azazel-auditd-loop.service",
+        UnitTier.SUPPORTING,
+        "azaudit",
+        "hash-chain ledger for the integrated loop; one writer by lock",
+    ),
+    UnitDefinition(
         "azazel-watchdog.service",
         UnitTier.SUPPORTING,
         "azwatch",

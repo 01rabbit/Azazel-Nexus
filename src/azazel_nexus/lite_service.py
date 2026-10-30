@@ -181,7 +181,10 @@ class KnowledgeLite:
                 raise RevocationPolicyRefused(
                     "pinned bundle key material has the revocation-signing role"
                 )
-            anchors_path = self.root / "trust" / "anchors.toml"
+            try:
+                anchors_path = self.trust.anchors_path
+            except TrustRefused:
+                anchors_path = self.root / "trust" / "anchors.toml"
             if anchors_path.exists():
                 from .lite_bundle import BundleRefused, read_anchors
 

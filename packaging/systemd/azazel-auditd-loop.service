@@ -1,0 +1,47 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# Appends to the same hash chain as the bootstrap helper, for the integrated loop: Knowledge Lite imports, trust maintenance and incident records.
+# No capability, no network, single writer by lock.
+# Granted by the pass and not bound to the controller, so it outlives the controller's exit.
+
+[Unit]
+Description=Azazel-Nexus audit ledger for the integrated loop
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/adr/0008-lite-trust-operations.md
+After=azazel-activated.service
+ConditionPathExists=/run/azazel-activation/granted/azazel-auditd-loop.service
+Requires=azazel-activated.service
+
+[Service]
+Type=notify
+User=azaudit
+ExecStart=/usr/libexec/azazel/az-auditd-loop
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/azazel/run/audit
+ReadWritePaths=/var/lib/azazel/run/audit-submit
+ReadWritePaths=/var/lib/azazel/state/audit
+ReadWritePaths=/var/lib/azazel/state/auditd
+ReadWritePaths=-/var/lib/azazel/run/audit-status
+ReadWritePaths=-/var/lib/azazel/run/ui-read/audit
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

@@ -328,7 +328,11 @@ def test_explainer_reaches_only_its_own_listeners_not_operator_sockets():
         assert holders == ({profile.unit, "azazel-commissiond.service",
                             "azazel-knowledge-lited.service"}
                            if name == "audit-submit" else {profile.unit})
-        assert [p.unit for p in PROFILES if spec.path in p.read_write_paths] == [unit]
+        # The ledger daemon writes its leaf in either lifetime (ADR 0008):
+        # the bootstrap helper or the loop's writer, never both at once.
+        writers = sorted(p.unit for p in PROFILES if spec.path in p.read_write_paths)
+        assert writers == (["azazel-auditd-loop.service", unit]
+                           if name == "audit-submit" else [unit])
     assert auditd.SUBMIT_REGISTRY.names() == ("audit.append",)
     assert mio_entryd.ADVISE_REGISTRY.names() == ("mio.advise",)
 

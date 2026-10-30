@@ -29,8 +29,6 @@ def test_all_repin_wire_references_are_local_commissioning():
         "runtime/src/azazel_nexus_runtime/commissiond.py": [
             "trust.repin.challenge", "trust.repin.challenge",
             "trust.repin.confirm", "trust.repin.confirm"],
-        "runtime/src/azazel_nexus_runtime/repin_confirmation.py": [
-            "trust.repin.challenge", "trust.repin.confirm"],
         "src/azazel_nexus/lite_trust.py": [
             "trust.repin.authorized", "trust.repin.promoted"],
     }
@@ -142,6 +140,8 @@ def test_network_and_status_import_graph_never_reaches_repin():
 REPIN_FILES = {
     "runtime/src/azazel_nexus_runtime/commissiond.py",
     "runtime/src/azazel_nexus_runtime/commission_cli.py",
+    # Root's narrowed maintenance transaction (ADR 0008), the CLI's repin.
+    "runtime/src/azazel_nexus_runtime/lite_trust_ops.py",
     "runtime/src/azazel_nexus_runtime/repin_confirmation.py",
     "src/azazel_nexus/lite_trust.py",
 }
@@ -180,7 +180,7 @@ def _check_importers(sources):
     importers = {_module(path) for path, source in sources.items()
                  if target in _imports(path, source)}
     assert importers == {"azazel_nexus_runtime.commissiond",
-                         "azazel_nexus_runtime.commission_cli"}
+                         "azazel_nexus_runtime.lite_trust_ops"}
 
 
 def test_repin_names_and_calls_have_an_exact_file_allowlist():
@@ -219,9 +219,13 @@ def test_only_commission_cli_calls_interactive_client():
     for path in RUNTIME.glob("*.py"):
         tree = ast.parse(path.read_text())
         if any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-               and node.func.id == "run_interactive" for node in ast.walk(tree)):
+               and node.func.id in {"run_repin", "run_enroll", "run_revocation_accept"}
+               for node in ast.walk(tree)):
             callers.append(path.name)
     assert callers == ["commission_cli.py"]
+    # The socket client the CLI used before ADR 0008 is gone, not kept unused.
+    assert not hasattr(__import__("azazel_nexus_runtime.repin_confirmation",
+                                  fromlist=["x"]), "run_interactive")
 
 
 @pytest.mark.parametrize("change", ["helper", "import"])

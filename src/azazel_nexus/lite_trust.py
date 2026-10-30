@@ -36,7 +36,7 @@ from typing import Optional, Sequence
 
 from .audit import AuditChainBroken, AuditLedger, AuditUnavailable
 from .lab_keys import refuse_public_fixture_keys
-from .lite_bundle import BundleRefused, read_anchors
+from .lite_bundle import BundleRefused, meetable_keys, parse_anchors, read_anchors
 from .revocation import RevocationList, RevocationRefused
 from .revocation_policy import (
     BUNDLE_SIGNING,
@@ -53,6 +53,7 @@ __all__ = [
     "RepinConfirmation",
     "RepinOutcome",
     "RepinRequest",
+    "RepinUncertain",
     "TrustRefused",
     "TrustStore",
 ]
@@ -64,6 +65,27 @@ _FINGERPRINT_DOMAIN = b"azazel-nexus/trust-root/v1\x00"
 
 class TrustRefused(Exception):
     """The trust store was not written, or may not be read as asked."""
+
+
+class RepinUncertain(TrustRefused):
+    """A repin failed **after** its commit point, or it cannot be told whether
+    it passed it (R390-02). Never a "nothing changed" refusal.
+
+    `state` is read back from the pointer, not assumed:
+
+    * `pointer_unsynced`: `trust-current` names the new generation, but the
+      rename was not confirmed durable (its directory sync failed) and the
+      commissioning ledger has no `trust.repin.promoted`;
+    * `ledger_incomplete`: the pointer move is durable; only the ledger's
+      `trust.repin.promoted` is missing;
+    * `unknown`: the pointer cannot be read, so it is unknown which root is
+      in force.
+    """
+
+    def __init__(self, state: str, generation):
+        super().__init__(f"repin {state}; inspect the active trust pointer")
+        self.state = state
+        self.generation = generation
 
 
 @dataclass(frozen=True)
@@ -117,6 +139,26 @@ class TrustStore:
         if len(value) > 20 or not value.isascii() or not value.isdecimal() or int(value) < 1:
             raise TrustRefused("the trust generation pointer is invalid")
         return int(value)
+
+    def anchors_path_for(self, trust_path: Path, record: dict) -> Path:
+        """The anchors.toml that goes with one trust record (ADR 0008).
+
+        A repin that replaced the anchor with the keys wrote it beside its
+        generation record (`trust-generations/N.anchors.toml`) and marked the
+        record `"anchors": true`; the pointer move then switches keys and
+        anchor together. Every other record -- the enrollment's `trust.json`
+        and a repin that kept the anchor -- uses `trust/anchors.toml`.
+        """
+        if (trust_path.parent == self.root / "trust-generations"
+                and record.get("anchors") is True):
+            return trust_path.with_suffix(".anchors.toml")
+        return self.root / "trust" / "anchors.toml"
+
+    @property
+    def anchors_path(self) -> Path:
+        """The anchors.toml in force with the current trust record."""
+        path = self.path
+        return self.anchors_path_for(path, self._read())
 
     def is_pinned(self) -> bool:
         return (self.root / TRUST_FILENAME).is_file() or (self.root / "trust-current").exists()
@@ -208,6 +250,38 @@ class TrustStore:
             proposed = _validated_keys(document)
             # A published test key is never a production anchor (lab_keys).
             refuse_public_fixture_keys((bytes.fromhex(key) for key in proposed), TrustRefused)
+            # The anchor in force now, and the one the new generation carries:
+            # the document's own `anchors` (key ids, roles, threshold, epoch,
+            # export policies; ADR 0008), or the current one unchanged.
+            current_anchors_path = self.anchors_path_for(self.path, old)
+            new_anchors_bytes = None
+            if "anchors" in document:
+                from .lite_enrollment import EnrollmentRefused, decode_anchor_spec
+
+                try:
+                    spec = decode_anchor_spec(document["anchors"])
+                except EnrollmentRefused:
+                    raise TrustRefused("the proposed anchor is refused") from None
+                if sorted(key.hex() for key in spec.keys.values()) != list(proposed):
+                    raise TrustRefused("the proposed anchor must name exactly the proposed keys")
+                new_anchors_bytes = spec.render()
+                new_anchors = parse_anchors(new_anchors_bytes)
+                if meetable_keys(new_anchors, (bytes.fromhex(key) for key in proposed)) < (
+                        new_anchors.threshold):
+                    raise TrustRefused("the proposed anchor cannot be met by the proposed keys")
+            elif current_anchors_path.exists():
+                new_anchors = read_anchors(current_anchors_path)
+                usable = meetable_keys(new_anchors, (bytes.fromhex(key) for key in proposed))
+                if usable < new_anchors.threshold:
+                    # The kept anchor would name no key set this pin can meet:
+                    # every bundle would then fail. Change keys and anchor together.
+                    raise TrustRefused("the kept anchor cannot be met by the proposed keys")
+                if current_anchors_path != self.root / "trust" / "anchors.toml":
+                    # Kept means the anchor in force, which an earlier repin put
+                    # beside its generation: it goes with the new one too.
+                    new_anchors_bytes = current_anchors_path.read_bytes()
+            else:
+                new_anchors = None
             old_policy = None
             if old.get("revocation_policy") is True or policy_path(self.root).exists():
                 old_policy = read_policy_record(self.root, old["commissioning_digest"])
@@ -222,10 +296,8 @@ class TrustStore:
             if new_policy is not None:
                 authority = RevocationPolicy.from_record(new_policy["policy"])
                 refuse_public_fixture_keys(authority.revocation_keys, TrustRefused)
-                anchors_path = self.root / "trust" / "anchors.toml"
-                if anchors_path.exists():
-                    anchors = read_anchors(anchors_path)
-                    authority.check_anchors(anchors.key_roles, anchors.keys)
+                if new_anchors is not None:
+                    authority.check_anchors(new_anchors.key_roles, new_anchors.keys)
                 if authority.revocation_keys.intersection(bytes.fromhex(key) for key in proposed):
                     raise TrustRefused("the same key cannot hold both roles")
                 floor = RevocationList.parse(new_policy["floor"].encode("utf-8"))
@@ -235,7 +307,10 @@ class TrustStore:
             new_policy_fingerprint = _policy_fingerprint(new_policy)
             new_fingerprint = _fingerprint(proposed)
             if (new_fingerprint == old_fingerprint
-                    and new_policy_fingerprint == old_policy_fingerprint):
+                    and new_policy_fingerprint == old_policy_fingerprint
+                    and (new_anchors_bytes is None
+                         or (current_anchors_path.exists()
+                             and current_anchors_path.read_bytes() == new_anchors_bytes))):
                 raise TrustRefused("the proposed trust root is unchanged")
             # Human-entered provenance must not become a key-material side
             # channel to the ledger. The nonce and its timestamp are not read.
@@ -276,6 +351,8 @@ class TrustStore:
             record["generation"] = number
             if new_policy is not None:
                 record["revocation_policy"] = True
+            if new_anchors_bytes is not None:
+                record["anchors"] = True
             # Persist the high-water mark before authorization. Even removal
             # of an orphaned generation must never make its number reusable.
             _atomic_write(reservation, str(number).encode("ascii"), metadata=metadata)
@@ -283,6 +360,9 @@ class TrustStore:
             if new_policy is not None:
                 _atomic_write(destination.with_suffix(".revocation.json"),
                               _document_bytes(new_policy), metadata=metadata)
+            if new_anchors_bytes is not None:
+                _atomic_write(destination.with_suffix(".anchors.toml"), new_anchors_bytes,
+                              metadata=metadata)
             _atomic_write(destination, _document_bytes(record), metadata=metadata)
             stage = "audit"
             event = {
@@ -307,9 +387,18 @@ class TrustStore:
         ):
             # Do not interpolate file names, parser diagnostics or exception
             # chains: an untrusted input can put key bytes in any of them.
-            state = ("inspect the active trust pointer" if stage in ("pointer", "promotion audit")
-                     else "the active trust root is unchanged")
-            raise TrustRefused(f"repin {stage} refused; {state}") from None
+            if stage in ("pointer", "promotion audit"):
+                # Past (or possibly past) the commit point: say what the
+                # pointer reads now, never "unchanged" (R390-02).
+                try:
+                    current = self.current_generation()
+                except TrustRefused:
+                    raise RepinUncertain("unknown", None) from None
+                if current == number:
+                    raise RepinUncertain(
+                        "pointer_unsynced" if stage == "pointer" else "ledger_incomplete",
+                        number) from None
+            raise TrustRefused(f"repin {stage} refused; the active trust root is unchanged") from None
         finally:
             if staged is not None:
                 try:

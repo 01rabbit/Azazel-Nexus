@@ -7,8 +7,9 @@ root this daemon serves from (pin, anchors, cumulative revocations; never the
 store-local anchors), and appends each transition to `az-auditd` through its
 append-only listener -- the start before anything is touched, so an import
 without a record does not begin. This daemon runs as the store owner
-`azknowledge`, which the import requires. It never repins, accepts
-revocations or promotes trust: those stay with `az-commissiond`.
+`azknowledge`, which the import requires. It never enrolls, repins, accepts
+revocations or promotes trust: those are the commissioning account's
+(`lite_trust_ops`, and `az-commissiond` in a bootstrap boot).
 """
 
 from __future__ import annotations

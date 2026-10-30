@@ -2,16 +2,47 @@
 
 The commissioning CLI requires a local interactive TTY and fresh confirmation
 words for trust replacement. This guards human intent against accidental or
-non-root use, not against a malicious root process. The daemon admits only ROOT
-callers, but its challenge reply includes both the nonce and confirmation words.
-A root process can complete challenge and confirm directly on the commissioning
-socket without the CLI or a TTY. Single-use, short-lived challenges bind the
-principal and proposed anchor bytes; they do not attest human presence.
+non-root use, not against a malicious root process. Single-use, short-lived
+challenges bind the principal and proposed anchor bytes; they do not attest
+human presence.
+
+**Where it runs (ADR-0008, 2026-10-30).** `az-nexus-commission trust-repin
+--reason R` no longer asks `az-commissiond`, which is masked on the ordinary
+path. It runs the same `RepinConfirmation` in its own process, after
+narrowing to the commissioning account (`lite_trust_ops`: a forked child as
+`azcommission` with groups `azknowledge` and `azaudit-submit`, umask `0027`,
+`no_new_privs`, root unreachable), under the commissioning lock
+(`/var/lib/azazel/state/commission/trust.lock`). After the words are typed it
+appends `knowledge.lite.trust_repin_requested` (anchor file digest and reason)
+to az-auditd and **refuses before any change** if that append fails; the
+outcome follows (`..._promoted` with the generation, or `..._refused`). The
+commissioning ledger below still records `trust.repin.authorized` and
+`trust.repin.promoted`; the two are matched by generation. The daemon keeps
+its two ROOT-only verbs for a bootstrap boot, under the same lock; a root
+process can complete challenge and confirm there without the CLI or a TTY.
+The auditd records are `RepinConfirmation`'s own, so the daemon's confirm
+needs the same receipt before any change and records the same outcome
+(R390-03).
+
+**A failure at or after the commit point is not a refusal (R390-02).**
+`TrustStore.repin` raises `RepinUncertain` once the pointer may have moved,
+with what it reads back: `pointer_unsynced` (the pointer names the new
+generation but its rename was not confirmed durable, and the ledger has no
+`trust.repin.promoted`), `ledger_incomplete` (durable; only the ledger's
+promotion record is missing) or `unknown` (the pointer cannot be read). The
+reply is then `promoted: true` with that `state` and generation, or
+`promoted: null` with `state: unknown`; auditd records
+`knowledge.lite.trust_repin_promoted` with the state, or
+`knowledge.lite.trust_repin_unconfirmed`. The CLI says the replacement is in
+force but not fully recorded, or that the outcome is unknown, and exits 1;
+do not repeat the repin in either case. A failure before the pointer moved
+stays a refusal with the old root in force (`trust_repin_refused`).
 
 After a completed replacement, snapshot cleanup failure adds the fixed boolean
 `cleanup_failed: true` to the outcome. The reported promotion and generation
 remain valid; a cleanup error does not turn a committed promotion into a refusal.
-The pending challenge map relies on single-threaded daemon dispatch.
+The pending challenge map relies on single-threaded daemon dispatch, or on
+the CLI's own single process.
 
 `production_repin` adapts the immutable runtime request and confirmation to
 `lite_trust.RepinRequest` and `lite_trust.RepinConfirmation`, then invokes the
@@ -31,15 +62,13 @@ account as well as `azcommission`. The consumer group has read/search access,
 with no directory or file write access. No bundle, content cache or operational
 generation directory belongs in this trust-only leaf.
 
-Initial commissioning uses `TrustStore.pin` once. No shipped command calls it:
-the provisioning root operator runs that library call by hand, then assigns the
-resulting `trust.json` to `azcommission:azknowledge` mode `0640` before repin
-is used. `pin` writes it as root with mode `0600`. Repin runs as
-`azcommission` and copies that file's owner to every file it writes, which a
-non-root process can do only when the owner is its own. Pin's API and
-behavior are unchanged. The first revocation policy is then introduced by a
-repin whose anchor document keeps the pinned keys and adds `revocation_policy`
-(below). The installer creates directories, never a trust root or keys. For an existing
+Initial commissioning is the enrollment, `az-nexus-commission trust-enroll`
+([ADR-0008](adr/0008-lite-trust-operations.md)): one audited transaction, as
+`azcommission`, that writes the anchor, the revocation policy and
+`trust.json` (`azcommission:azknowledge` mode `0640`) from one checked
+request. Repin runs as `azcommission` and copies that file's owner to every
+file it writes. `TrustStore.pin` remains a library call with no shipped
+caller. The installer creates directories, never a trust root or keys. For an existing
 caller-selected store, root must provision its public trust records into this
 leaf with that ownership and mode before starting the daemon; there is no
 automatic discovery or migration. Consumers must open `TrustStore` at the same
@@ -125,9 +154,10 @@ The fixed anchor JSON may also include `revocation_policy`, using the explicit
 }
 ```
 
-This is also how a policy is first introduced on a store that `pin` created
-without one: keep the pinned `keys` and add the section. Unchanged bundle keys
-with a changed policy are a change, so the repin is accepted.
+This is also how a policy is introduced on a store that `TrustStore.pin`
+created without one (a root enrolled by hand before ADR-0008): keep the pinned
+`keys` and add the section. Unchanged bundle keys with a changed policy are a
+change, so the repin is accepted.
 
 The threshold has no default. Policy generations must increase on replacement;
 they are independent of the trust-store generation reservation. Omitting the
@@ -156,3 +186,37 @@ The [production integration tests](../tests/unit/test_runtime_repin_integration.
 exercise introduction, recovery, invalid policy refusal, floor continuity,
 new-key verification, old-key `unverified` refusal and failures between staging
 parts, authorization audit and pointer promotion.
+
+
+## Replacing the anchor with the keys
+
+A key rotation changes the key material the anchor names, so the anchor
+(key ids, roles, threshold, epoch, export policies) has to change with the
+pin. The repin document may carry `anchors`, with exactly the fields and
+checks of the enrollment request's anchor half
+([knowledge-lite-consumer §11 step 3](knowledge-lite-consumer.md#step-3-the-enrollment-request)):
+
+```json
+{
+  "keys": ["<next bundle public key hex>"],
+  "anchors": {
+    "keys": {"site-bundle-2": "<next bundle public key hex>"},
+    "threshold": 1
+  }
+}
+```
+
+Its keys must be exactly the proposed `keys`; its threshold must be an
+integer from 1 to the keys that can meet it. The repin writes
+`trust-generations/N.anchors.toml` beside `N.json` (the trust record's owner,
+group and mode) and marks the record `"anchors": true`; the single pointer
+move then switches pin and anchor together, and every reader takes the
+anchor that goes with the record it read (`TrustStore.anchors_path_for`).
+Without `anchors`, the current anchor is kept; a key change that the kept
+anchor could not meet is refused rather than promoted into a root that
+verifies nothing. "Meet" counts what the verifier counts
+(`lite_bundle.meetable_keys`): the anchor's keys whose material stays pinned,
+whose id is not in its `revoked`, and that hold `required_signer_role` when
+the anchor names one (R390-01). To roll a key over without a gap, repin first to both keys
+with an anchor naming both, import a bundle signed by the new key, then repin
+to the new key alone.

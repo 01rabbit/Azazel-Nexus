@@ -2,9 +2,9 @@
 
 No service is started, no interface is configured, and no role is inferred.
 The library retains all commissioning, protected storage and signature rules.
-Trust-repin interactive confirmation guards human intent against accidental or
-non-root use, not against a malicious root process: a ROOT socket caller can
-read and echo the challenge without this CLI or a TTY.
+Trust enrollment and repin confirmation (`lite_trust_ops`) guard human
+intent against accidental or non-root use, not against a malicious root
+process, which needs neither this CLI nor a TTY.
 """
 
 import io
@@ -48,16 +48,24 @@ class _PermanentAddresses:
 def main(argv=None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args in (["--help"], ["-h"]):
-        print("az-nexus-commission {hardware-assess|resources|inventory|commission|commission-review|proposal-export|proposal-review|trust-repin|knowledge-import|knowledge-revocation-accept} [command options]")
+        print("az-nexus-commission {hardware-assess|resources|inventory|commission|commission-review|proposal-export|proposal-review|trust-enroll|trust-repin|knowledge-import|knowledge-revocation-accept} [command options]")
         print("Uses the existing wizard with read-only kernel permanent-address evidence; never activates.")
         return 0
+    if args == ["trust-enroll"]:
+        from .lite_trust_ops import run_enroll
+
+        return run_enroll()
+    if args and args[0] == "trust-enroll":
+        print("Use trust-enroll with no options; the request is read from "
+              "/etc/azazel/commissioning/lite-enrollment.json.", file=sys.stderr)
+        return 2
     if args and args[0] == "trust-repin":
         if len(args) != 3 or args[1] != "--reason":
             print("Use trust-repin --reason {rotation|recovery|compromise}; no path overrides are accepted.", file=sys.stderr)
             return 2
-        from .repin_confirmation import run_interactive
+        from .lite_trust_ops import run_repin
 
-        return run_interactive(args[2])
+        return run_repin(args[2])
     if args and args[0] == "knowledge-import":
         if len(args) != 3 or args[1] != "--entry":
             print("Use knowledge-import --entry ENTRY_ID (the inbox artifact's SHA-256 hex); no path is accepted.", file=sys.stderr)
@@ -66,7 +74,7 @@ def main(argv=None) -> int:
 
         return run_import(args[2])
     if args == ["knowledge-revocation-accept"]:
-        from .lite_operator_cli import run_revocation_accept
+        from .lite_trust_ops import run_revocation_accept
 
         return run_revocation_accept()
     if args and args[0] == "knowledge-revocation-accept":

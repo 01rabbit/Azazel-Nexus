@@ -214,6 +214,7 @@ class CommissionService:
         clock: Callable[[], float] | None = None,
         now: Callable[[], str] | None = None,
         revocation: RevocationAcceptance | None = None,
+        append: Callable[[dict], None] | None = None,
     ) -> None:
         self.sysfs = sysfs
         self.read_links_fn = read_links_fn
@@ -224,6 +225,10 @@ class CommissionService:
             options["clock"] = clock
         if now is not None:
             options["now"] = now
+        if append is not None:
+            # az-auditd's append (R390-03): the repin records its request and
+            # outcome there, exactly as root's CLI transaction does.
+            options["append"] = append
         self.repin_confirmation = RepinConfirmation(
             commissioning_dir=(commissioning_dir if commissioning_dir is not None
                                else ROOT / "etc/azazel/commissioning"),
@@ -243,13 +248,25 @@ class CommissionService:
             # and not retried here.
             raise RequestRefused(Refusal.ARGUMENT_RANGE, "netlink") from exc
 
+    def _locked(self, change: Callable[[], dict]) -> dict:
+        """A trust change under the commissioning lock root's CLI also takes."""
+        from .lite_trust_ops import TrustBusy, trust_lock
+
+        try:
+            with trust_lock(self.repin_confirmation.snapshot_dir):
+                return change()
+        except TrustBusy:
+            raise RequestRefused(Refusal.ARGUMENT_RANGE, "busy") from None
+
     def handle(self, request) -> dict:
         if request.verb.name == "trust.repin.challenge":
             return self.repin_confirmation.challenge(request.principal, **request.arguments)
         if request.verb.name == "trust.repin.confirm":
-            return self.repin_confirmation.confirm(request.principal, **request.arguments)
+            return self._locked(lambda: self.repin_confirmation.confirm(
+                request.principal, **request.arguments))
         if request.verb.name == "trust.revocation.accept":
-            return self.revocation.accept(request.principal, **request.arguments)
+            return self._locked(lambda: self.revocation.accept(
+                request.principal, **request.arguments))
         if request.verb.name == "commission.inventory":
             snapshot = self.snapshot()
             return {"snapshot": snapshot.digest, "interfaces": snapshot.describe()}

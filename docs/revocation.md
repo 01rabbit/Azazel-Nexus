@@ -52,7 +52,9 @@ payloads. A changed separator byte is also refused.
 `prepare_policy_record(root, new_policy, commissioning_digest=..., anchors_key_roles=...,
 anchors_keys=...)` performs the continuity checks below without publishing.
 `TrustStore.repin` calls it under the local authorization, confirmation and
-audit ceremony, and that is the only production caller. `commission_policy`
+audit ceremony, and the first enrollment (`lite_enrollment.enroll`,
+[ADR-0008](adr/0008-lite-trust-operations.md)) calls it to build the initial
+record; those are the only production callers. `commission_policy`
 takes the same arguments and also writes the record. No production code calls
 it: the lab provisioning and the end-to-end fixture use it to provision test
 roots. Neither function authenticates a principal or exposes a remote
@@ -109,23 +111,30 @@ adds old/new revocation-policy fingerprints to the original six provenance
 fields; absent policy is `null`. See [trust repin](trust-repin.md) for the exact
 fingerprint encoding and failure semantics. The low-level `commission_policy`
 helper remains a trusted provisioning primitive for test roots, with no runtime
-exposure; production introduction and recovery use repin exclusively. On a
-fresh node the initial `TrustStore.pin` writes no policy, so the first repin
-introduces it (keeping the pinned bundle keys is allowed). The full order is
+exposure. The production introduction is the enrollment
+(`az-nexus-commission trust-enroll`), which registers the bundle keys and the
+revocation authority together; later changes and recovery use repin. The full
+order is
 [Knowledge Lite consumer §11](knowledge-lite-consumer.md#11-first-enrollment-from-a-fresh-install-to-available).
 
 ## Accepting a list on a node
 
-`az-commissiond` is the only writer of the Knowledge Lite trust root
-(`/var/lib/azazel/lite-trust`), so it accepts signed lists there, with a
-second ROOT-only verb beside `trust.repin.*` (assess-c P4):
+The Knowledge Lite trust root (`/var/lib/azazel/lite-trust`) is written only
+by the commissioning account `azcommission`. Since
+[ADR-0008](adr/0008-lite-trust-operations.md) root's
+`az-nexus-commission knowledge-revocation-accept` accepts a list itself, on
+the ordinary path, in a child that has become that account (its groups,
+umask `0027`, `no_new_privs`) and holds the commissioning lock; it needs
+`az-auditd` (`azazel-auditd-loop.service` on the ordinary path) and no
+`az-commissiond`. The daemon's ROOT-only verb `trust.revocation.accept`
+(assess-c P4) does the same for a bootstrap boot and takes the same lock:
 
 ```sh
 sudo install -m 0640 -o root -g azcommission revocations.signed /etc/azazel/commissioning/lite-revocations.signed
 sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus_runtime.commission_cli knowledge-revocation-accept
 ```
 
-`trust.revocation.accept` takes only the fixed leaf name
+Both take only the fixed leaf name
 `lite-revocations.signed` in the commissioning directory, read without
 following links and bounded to 256 KiB. The signed statement is the
 authority: `RevocationStore.accept` verifies it under the commissioned
@@ -137,8 +146,10 @@ nothing here can widen trust: a list only withdraws.
 `knowledge.lite.revocation_requested` is appended to `az-auditd` (through its
 append-only `audit-submit` listener, as `azcommission`) before the store is
 touched; if that fails nothing is written and the reply says
-`audit_unavailable`. Then `knowledge.lite.revocation_accepted` (sequence,
-generation and counts) or `knowledge.lite.revocation_refused` with one of
+`audit_unavailable`. Then `knowledge.lite.revocation_accepted` (the list's
+`list_sequence`, generation and counts; until 2026-10-30 the field was named
+`sequence`, which auditd assigns itself and refuses in a payload, so every
+accepted record was refused and the reply said `audit_complete: false`) or `knowledge.lite.revocation_refused` with one of
 `malformed`, `trust_unreadable`, `unverified`, `replay` or `re_enable`. An
 accepted list whose outcome record fails stays accepted (more revocation only
 closes) and the reply says `audit_complete: false`.

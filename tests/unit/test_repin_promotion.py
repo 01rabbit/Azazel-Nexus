@@ -512,7 +512,11 @@ def test_promoted_audit_failure_does_not_claim_root_unchanged(node, monkeypatch)
         return append(event)
 
     monkeypatch.setattr(ledger, "append", fail_promoted)
-    with pytest.raises(TrustRefused, match="promotion audit refused; inspect"):
+    # Past the commit point: typed as uncertain with what the pointer reads,
+    # never as an unchanged refusal (R390-02).
+    from azazel_nexus.lite_trust import RepinUncertain
+    with pytest.raises(RepinUncertain) as uncertain:
         promote(node)
+    assert (uncertain.value.state, uncertain.value.generation) == ("ledger_incomplete", 1)
     assert trust.current_generation() == 1
     assert [entry.event["event_type"] for entry in ledger] == ["trust.repin.authorized"]

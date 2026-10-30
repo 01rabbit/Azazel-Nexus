@@ -281,6 +281,7 @@ UNITS_STALE_S = 120
 #: `hardening.ALL_PROFILES`. The observer asks for these and nothing else.
 OBSERVED_UNITS = (
     "azazel-activated.service",
+    "azazel-auditd-loop.service",
     "azazel-auditd.service",
     "azazel-commissiond.service",
     "azazel-decoy-netd.service",

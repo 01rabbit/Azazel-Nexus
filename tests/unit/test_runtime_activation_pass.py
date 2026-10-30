@@ -67,6 +67,8 @@ SCOPE = (
     "azazel-mio-entryd.service",
 )
 EDGE = "azazel-edge-core.service"
+#: The integrated loop's audit writer (ADR 0008).
+AUDIT_LOOP = "azazel-auditd-loop.service"
 EDGE_SCOPE = tuple(sorted(SCOPE + (EDGE,)))
 #: The Deception Lite exposure units (#196 P1, (a)): grantable for the #253
 #: checks, never nameable by a policy, always withheld by the library.
@@ -156,7 +158,8 @@ class World:
         self.policy = make_policy(units=self.units)
         self.high_water = HighWater(security_epoch=2, approval_seq=5, generation=1,
                                     time_floor="2026-10-20T00:00:00Z")
-        self.unit_files = {unit: f"[Unit]\nDescription={unit}\n".encode() for unit in SCOPE}
+        self.unit_files = {unit: f"[Unit]\nDescription={unit}\n".encode()
+                           for unit in SCOPE + (AUDIT_LOOP,)}
         self.unit_files[EDGE] = EDGE_UNIT_FILE
         self.healthy = True
         self.systemd = FakeManagerReader()
@@ -340,6 +343,29 @@ def test_complete_inputs_grant_only_the_scoped_units_and_only_they_get_markers(w
     assert reasons["azazel-auditd.service"] == "outside_lease_scope"
     text = world.ledger_path.read_text()
     assert NODE not in text and EVIDENCE_PAYLOAD.decode() not in text
+
+
+def test_the_loops_audit_writer_is_granted_and_marked_like_a_loop_unit(tmp_path, monkeypatch):
+    """ADR 0008: a policy naming `azazel-auditd-loop.service` gets it from the
+    ordinary pass, with its own marker; the bootstrap helper stays masked."""
+    monkeypatch.setattr(activation_markers, "_OWNER", os.getuid())
+    monkeypatch.setattr(activated, "_collect_input_status", lambda _root: {})
+    _owned_by_the_test(monkeypatch)
+    world = World(tmp_path, units=tuple(sorted(SCOPE + (AUDIT_LOOP,))))
+    outcome = world.run()
+    assert AUDIT_LOOP in outcome.granted
+    assert world.markers() == sorted(SCOPE + (AUDIT_LOOP,))
+    assert world.manager.state(AUDIT_LOOP) is UnitState.ENABLED
+    for helper in ("azazel-auditd.service", "azazel-commissiond.service"):
+        assert world.manager.state(helper) is UnitState.MASKED
+        reasons = {v.unit: v.reason.split(":", 1)[0] for v in outcome.verdicts}
+        assert reasons[helper] == "outside_lease_scope"
+
+
+def test_a_policy_cannot_name_the_bootstrap_helpers():
+    for helper in ("azazel-auditd.service", "azazel-commissiond.service"):
+        with pytest.raises(ApprovalRefused):
+            make_policy(units=SCOPE + (helper,))
 
 
 def test_a_narrower_approval_grants_and_marks_only_its_units(world):
@@ -837,7 +863,8 @@ def test_raising_the_high_water_is_recorded_as_a_floor_event(world):
 def test_the_pass_scope_and_tripwire_share_one_unit_set():
     from azazel_nexus_runtime.activation_markers import GRANTABLE_UNITS
     assert activation_pass.UNIT_SCOPE is GRANTABLE_UNITS
-    assert GRANTABLE_UNITS == frozenset(EDGE_SCOPE + DECOY_UNITS) | {"azazel-mio-referenced.service"}
+    assert GRANTABLE_UNITS == frozenset(EDGE_SCOPE + DECOY_UNITS) | {
+        "azazel-mio-referenced.service", "azazel-auditd-loop.service"}
     assert not hasattr(activation_pass, "P4_UNIT_SCOPE")
     import ast
     source = Path(activated.__file__).read_text()

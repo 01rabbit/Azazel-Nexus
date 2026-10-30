@@ -57,11 +57,15 @@ __all__ = [
 ACTIVATION_POLICY_SCHEMA = "azazel-nexus/activation-policy/v1"
 
 #: The integrated loop's units (§2). The SUPPORTING five, edge-core for
-#: phase P5, and the model-free reference service (proposed 2026-10-28,
-#: `docs/activation-observe-baseline.md` §6.2; it runs no model). auditd,
-#: commissiond, watchdog, fetchd, locald and remoted are excluded by the
-#: owner's decision (§6.2) and cannot be named by a policy.
+#: phase P5, the model-free reference service (proposed 2026-10-28,
+#: `docs/activation-observe-baseline.md` §6.2; it runs no model) and the
+#: loop's audit writer `azazel-auditd-loop.service` (2026-10-30, ADR 0008:
+#: without it no Knowledge Lite import or trust change can be recorded on
+#: the ordinary path). The bootstrap helpers auditd and commissiond, watchdog,
+#: fetchd, locald and remoted stay excluded (§6.2) and cannot be named by a
+#: policy.
 ACTIVATION_UNIT_ALLOWLIST = (
+    "azazel-auditd-loop.service",
     "azazel-edge-core.service",
     "azazel-edge-intaked.service",
     "azazel-edge-probed.service",

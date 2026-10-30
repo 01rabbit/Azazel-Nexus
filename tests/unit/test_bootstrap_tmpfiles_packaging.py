@@ -15,7 +15,7 @@ PACKAGING = REPO_ROOT / "packaging"
 TMPFILES_RULE = PACKAGING / "tmpfiles.d" / "azazel-nexus-bootstrap.conf"
 EXPECTED_RULE = b"d /run/systemd/system.control :0755 :root :root - -\n"
 _ENTRYPOINTS = (
-    "az-activated", "az-commissiond", "az-auditd", "az-watchdog",
+    "az-activated", "az-commissiond", "az-auditd", "az-auditd-loop", "az-watchdog",
     "az-edge-probed", "az-edge-intaked", "az-incident-explaind", "az-model-fetchd", "az-mio-locald", "az-mio-remoted",
     "az-mio-entryd", "az-mio-referenced", "az-knowledge-lited", "az-mio-identity",
     "az-decoy-netd", "az-decoyd", "az-units-observe", "az-noc-observe", "az-ui",
