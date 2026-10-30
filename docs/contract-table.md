@@ -95,7 +95,7 @@ Nexus のローカルか）を決める文書で、この表はそれと重な�
 | 失敗時 | 判定は passed・failed・not-checked の 3 値で、not-checked は何も許可しない。digest の不一致は SECURITY FINDING として報告し、修復しない。anchor が不正なら `trust_refused`、無ければ判定に影響しない（`not_configured`）。floor と失効は狭める方向にだけ働く |
 | 実装 | `src/azazel_nexus/edge_package.py`、`src/azazel_nexus/edge_issuer.py`、`runtime/src/azazel_nexus_runtime/edge_probed.py`、`runtime/src/azazel_nexus_runtime/edge_issuer_floor.py` |
 | 試験 | `tests/unit/test_edge_package.py`（Edge の schema の写しとの一致も確かめる）、`tests/unit/test_edge_issuer.py`、`tests/unit/test_runtime_edge_issuer_floor.py`、`tests/unit/test_edge_probed.py` |
-| CPU 間 | 専用の family は無い。暗号は `signature.ed25519`、表示は `status.read_model` の Edge の場面。Edge Core の binary は CPU ごとに固定し比較しない（[共通試験ベクトル §6](cross-arch-vectors.md#6-既知の差の扱い)）。arm64 の pin は無い（[オーナー判断 H5](owner-decisions.md#2-優先度の高いもの)） |
+| CPU 間 | 専用の family は無い。暗号は `signature.ed25519`、表示は `status.read_model` の Edge の場面。Edge Core の binary は CPU ごとに固定し比較しない（[共通試験ベクトル §6](cross-arch-vectors.md#6-既知の差の扱い)）。Edge package は CPU ごとの pin（`azazel-edge-core/nexus-pin/v2`、`edge_package.PINS`）で、host の CPU・manifest の architecture・同梱バイナリの ELF ヘッダが一致しなければ拒否（[ADR-0003 R4](adr/0003-arm-software-verification-profile.md#amendment-2026-10-30-r4-the-edge-package-per-cpu)、Azazel-Edge#522） |
 
 ### F1〜F6 Fabric
 

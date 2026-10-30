@@ -16,7 +16,8 @@ reports `not-checked` when there is none.
 | what | where it comes from |
 | --- | --- |
 | the package directory | `edge_package.EDGE_PACKAGE_ROOT` |
-| the pinned version and digest | `edge_package.PIN` and the manifest beside the package |
+| the pinned version and names | `edge_package.host_pin()`, the pin of the CPU this host observes itself to be |
+| the digest | the manifest beside the package |
 | the health command | `edge_package.HEALTH_ARGV` |
 | the unit whose state is read | `edge_package.EDGE_UNIT` |
 | where the result is written | `edge_package.PROBE_STATE_PATH` |
@@ -63,6 +64,22 @@ match the digest the manifest records for it**. The last one is the point: an
 intact archive says nothing about the file next to it that is actually going
 to run.
 
+**And it is read the safe way, and run as read** (R391-03): the binary is
+read through `edge_package.read_extracted_component` -- no link followed at
+any level, the package root, `bin/` and the file owned by root
+(`PACKAGE_OWNER_UID`) and not group or other writable, one link -- and its
+digest and ELF header are checked from those bytes. A sealed executable memfd
+holds those same bytes for the health run: replacing and restoring the package
+pathname cannot change what executes. If that immutable snapshot cannot be
+created, nothing is run. A further protected read after the run detects an
+installed binary that changed and stays changed; it is supplementary.
+
+**And it must be for this CPU** (S-11): the host's CPU, the manifest's
+`architecture` and the ELF header of the unpacked binary about to be executed
+must name the same CPU, or nothing is run. A host CPU no pin covers runs
+nothing either. Running a binary for another CPU would be running something
+nobody pinned for this host, and under an emulator it might even answer.
+
 ## The result is bounded, atomic, and cannot promote anything
 
 It carries the version and digest observed, so a reader can tell whether it is
@@ -108,6 +125,7 @@ because edge-core has not started), and once as the governed
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -127,6 +145,10 @@ from azazel_nexus.edge_package import (
     HEALTH_ARGV,
     HEALTHY_STATUS,
     PIN,
+    elf_architecture,
+    host_architecture,
+    host_pin,
+    read_extracted_component,
     PROBE_CONTRACT,
     PROBE_STATE_PATH,
     EdgePackageRefused,
@@ -227,6 +249,11 @@ def no_unit_reader(method: str, unit: str):
     return None
 
 
+#: Who must own the package root, `bin/` and the binary the probe runs.
+#: Root in production; a test substitutes its own uid.
+PACKAGE_OWNER_UID = 0
+
+
 def probe(
     root: Path = EDGE_PACKAGE_ROOT,
     *,
@@ -247,10 +274,8 @@ def probe(
     outcome without a canonical one, and `main` reads it before probing.
     """
 
-    run = runner if runner is not None else _run
     observed_at = clock()
-    manifest_path = root / PIN.manifest_name
-    artifact_path = root / PIN.artifact_name
+    pin = host_pin()
     binary = root / HEALTH_ARGV[0]
 
     unusable = lambda reason: ProbeOutcome(  # noqa: E731 - one shape, four call sites
@@ -265,6 +290,13 @@ def probe(
         boot_id=boot_id,
     )
 
+    if pin is None:
+        return unusable(
+            f"this host's CPU has no Edge pin ({host_architecture() or 'unreviewed'}), "
+            "so nothing was run"
+        )
+    manifest_path = root / pin.manifest_name
+    artifact_path = root / pin.artifact_name
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -276,6 +308,11 @@ def probe(
         return unusable(
             f"the Edge manifest does not declare the pinned version "
             f"{PIN.version}, so nothing was run"
+        )
+    if manifest.get("architecture") != pin.architecture:
+        return unusable(
+            f"the Edge manifest declares architecture {manifest.get('architecture')!r} "
+            f"and this host is {pin.architecture}, so nothing was run"
         )
     try:
         artifact_digest = _digest(artifact_path.read_bytes())
@@ -306,8 +343,10 @@ def probe(
 
     component = _component_digest(manifest, HEALTH_ARGV[0])
     try:
-        binary_digest = _digest(binary.read_bytes())
-    except OSError as exc:
+        binary_bytes = read_extracted_component(
+            HEALTH_ARGV[0], package_root=root, owner_uid=PACKAGE_OWNER_UID)
+        binary_digest = _digest(binary_bytes)
+    except EdgePackageRefused as exc:
         return _bound(
             observed_at,
             artifact_digest,
@@ -315,8 +354,8 @@ def probe(
             boot_id=boot_id,
             health=Evidence.NOT_CHECKED,
             health_reason=(
-                f"{binary} could not be read ({exc}); the package is present "
-                "and its payload is not unpacked, so nothing was run"
+                f"{binary} could not be read safely ({exc}); the package is present "
+                "and its payload is not unpacked, or not protected, so nothing was run"
             ),
             running=_running_finding(unit_reader),
         )
@@ -335,8 +374,36 @@ def probe(
             running=_running_finding(unit_reader),
             health_security=False,
         )
+    try:
+        binary_cpu = elf_architecture(binary_bytes[:64])
+    except EdgePackageRefused as exc:
+        binary_cpu = f"unreadable ({exc})"
+    if binary_cpu != pin.architecture:
+        return _bound(
+            observed_at,
+            artifact_digest,
+            ttl_seconds,
+            boot_id=boot_id,
+            health=Evidence.NOT_CHECKED,
+            health_reason=(
+                f"{binary} is for {binary_cpu} by its ELF header and this host and "
+                f"the manifest are {pin.architecture}; nothing was run"
+            ),
+            running=_running_finding(unit_reader),
+        )
 
-    health, health_reason, health_security = _health_finding(run, root)
+    health, health_reason, health_security = _health_finding(runner, root, binary_bytes)
+    try:
+        after = _digest(read_extracted_component(
+            HEALTH_ARGV[0], package_root=root, owner_uid=PACKAGE_OWNER_UID))
+    except EdgePackageRefused as exc:
+        after = f"unreadable ({exc})"
+    if after != binary_digest:
+        health, health_security = Evidence.NOT_CHECKED, False
+        health_reason = (
+            f"{binary} changed while it was being probed; the answer is about a "
+            "binary nobody checked, so it is not used"
+        )
     running, running_reason = _running_finding(unit_reader)
     return ProbeOutcome(
         observed_at=observed_at,
@@ -386,17 +453,49 @@ def _component_digest(manifest: dict, path: str) -> Optional[str]:
     return None
 
 
-def _health_finding(run, root: Path) -> tuple[Evidence, str, bool]:
+def _sealed_binary(data: bytes) -> int:
+    """An executable, immutable snapshot, or an error; no pathname fallback.
+
+    MFD_EXEC (Linux 6.3+) is explicit even on kernels whose default memfd is
+    non-executable. A policy that forbids executable memfds is respected by
+    failing closed. No file is created in the probe's writable result leaf.
+    """
+
+    fd = os.memfd_create("azazel-edge-health", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING | 0x0010)
+    try:
+        remaining = memoryview(data)
+        while remaining:
+            written = os.write(fd, remaining)
+            if written <= 0:
+                raise OSError("the health snapshot could not be written")
+            remaining = remaining[written:]
+        os.fchmod(fd, 0o500)
+        seals = fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
+        fcntl.fcntl(fd, fcntl.F_ADD_SEALS, seals)
+        os.lseek(fd, 0, os.SEEK_SET)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _health_finding(run, root: Path, checked_bytes: bytes) -> tuple[Evidence, str, bool]:
     """Run the fixed command and apply the four conditions, plus version."""
 
+    fd = None
     try:
-        completed = run([str(root / HEALTH_ARGV[0]), *HEALTH_ARGV[1:]], root)
-    except (OSError, subprocess.SubprocessError) as exc:
+        fd = _sealed_binary(checked_bytes)
+        argv = [f"/proc/self/fd/{fd}", *HEALTH_ARGV[1:]]
+        completed = (_run(argv, root, pass_fds=(fd,)) if run is None else run(argv, root))
+    except (AttributeError, OSError, subprocess.SubprocessError) as exc:
         return (
             Evidence.NOT_CHECKED,
             f"the health contract could not be run ({exc}); nobody looked",
             False,
         )
+    finally:
+        if fd is not None:
+            os.close(fd)
     stdout = (completed.stdout or "")[:MAX_HEALTH_BYTES]
     if completed.returncode != 0:
         return Evidence.FAILED, f"the health contract exited {completed.returncode}", False
@@ -493,12 +592,12 @@ def _running_finding(read) -> tuple[Evidence, str]:
     return Evidence.FAILED, f"{EDGE_UNIT} is {active}/{sub}, which is not running"
 
 
-def _run(argv: Sequence[str], cwd: Optional[Path]):
+def _run(argv: Sequence[str], cwd: Optional[Path], *, pass_fds: tuple[int, ...] = ()):
     """The one place in this distribution that starts a process.
 
     Contained the way `fabric_boundary.py` contains the Fabric import: one
-    call, no shell, a fixed environment, a deadline, and an argv whose every
-    element comes from a module constant or from the fixed package root.
+    call, no shell, a fixed environment, a deadline, and an argv made from
+    the sealed descriptor holding the checked binary and fixed arguments.
     `tests/unit/test_edge_probed.py` asserts each of those against the source,
     and `test_runtime_activated.py` asserts that no other module in the
     distribution can execute anything at all.
@@ -511,6 +610,7 @@ def _run(argv: Sequence[str], cwd: Optional[Path]):
         timeout=PROBE_TIMEOUT_SECONDS,
         cwd=None if cwd is None else str(cwd),
         env=dict(PROBE_ENV),
+        pass_fds=pass_fds,
     )
 
 

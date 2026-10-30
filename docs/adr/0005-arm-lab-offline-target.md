@@ -42,7 +42,8 @@ profile in `platform_profile`, and to what the `install.sh` platform
 evaluation (ADR-0003 R6) selects for the same host. A target is still
 defined in code and never read from a manifest. The aarch64 target refuses a
 filled Edge slot at build and at verify, because the only reviewed Edge pin
-is an x86_64 artifact.
+is an x86_64 artifact. *(Superseded for the Edge slot by the amendment of
+2026-10-30 below.)*
 
 **D3. The lock is per target.** `packaging/offline/requirements-aarch64-cp313.lock`
 pins the same names and versions as the x86_64 lock (tested against the
@@ -113,13 +114,62 @@ target. The owner may prefer the suffix on the target as well (see below).
 ## Open for the owner
 
 - Whether the target identifier should also end in `-lab`.
-- An arm64 Edge Core pin (ADR-0003 R4). Until it exists, a filled Edge slot
-  on the aarch64 target is refused by `build_offline_bundle.py` and by
-  `verify` / `recheck` / `install` (`TARGETS[...]["edge_slot"]` is false), so
-  the x86_64 Edge artifact cannot ride in an Arm bundle.
+- ~~An arm64 Edge Core pin (ADR-0003 R4).~~ Done on 2026-10-30; the lab
+  target's Edge slot is decided in the amendment below.
 - Repeating the offline install on a real Arm VM with systemd, which would
   make it VM software-integration evidence (ADR-0003 D5) — still not a
   hardware gate.
+
+## Amendment (2026-10-30): the lab target carries the aarch64 Edge package
+
+With an aarch64 Edge pin in place (ADR-0003 R4, amendment of the same day),
+the lab target **may carry a filled Edge slot**, and only the aarch64 one:
+
+- `TARGETS["debian-13-aarch64-cp313"]["edge_slot"]` is true, and each target
+  names **its own** artifact pin (`edge_artifact_pin`). The slot must hold
+  exactly the pair `edge_package.PINS[<target CPU>]` names; the artifact must
+  equal the target's pin before any tar parsing; then `edge_package.inspect`
+  runs for the **target's** CPU, so the target, the manifest and the archived
+  binary's ELF header must agree. An x86_64 package in an Arm bundle, an
+  aarch64 binary under the x86_64 name, or the reverse, is refused at build,
+  `verify`, `recheck` and `install`. The host that builds the medium need not
+  be the target's CPU; `install` already requires the host's interpreter and
+  platform profile to be the target's.
+- **The lab pin is shipped**:
+  `packaging/offline/edge-artifact-aarch64-lab.sha256` names the
+  `azazel-edge-core-0.1.0-aarch64.tar.gz` built natively on aarch64 from the
+  Azazel-Edge#522 branch (the core source and `config/redirect_policy.yaml`
+  are those of Edge main `cc769e0`) in `rust:1.99.1-trixie` (rustc 1.99.1)
+  with `cargo build --release --locked`, and packaged by that branch's
+  packager with `--architecture aarch64`. Three builds in fresh containers
+  produced the identical binary, so the pin names something anyone can
+  rebuild from public inputs; it is not a released artifact.
+  **Checked against a fresh build (2026-10-30)**: at Azazel-Edge `5fb43e9`,
+  in `rust@sha256:09027f873d45b8ecd1dc86f1fa13b7a62b875c961f017a0e331267b350430137`
+  (the image index `rust:1.99.1-trixie` resolved to; native aarch64 on the
+  colima VM), a new container built the core and the packager wrote the
+  aarch64 archive; its sha256 equals the shipped pin. To repeat it: build and
+  package as above in that image, then
+  `sha256sum azazel-edge-core-0.1.0-aarch64.tar.gz` and compare with the
+  pin's first field (or carry the package in a lab bundle: `verify_edge_slot`
+  compares it before parsing anything). Any change to the core, the policy, `Cargo.lock` or the image
+  changes the digest, and the slot is then refused until the pin is renewed
+  (Azazel-Edge#521, for example, changes both the core and the policy).
+- **The baseline's pin is not shipped** and stays an owner decision:
+  `packaging/offline/edge-artifact.sha256` would let a deployment-baseline
+  medium carry an Edge artifact, which is closer to a production deployment
+  than this delegation reaches. A lab pin never satisfies it: each target
+  reads only its own file, and the file's name must be the artifact of the
+  target's CPU.
+
+**Why this does not weaken the lab boundary.** A lab bundle's report still
+carries `purpose: lab-software-verification` and `LAB_TARGET_NOTE`; the slot
+report says `admitted: false` with health and running `not-checked`; nothing
+installs the Edge package from the medium; and every production use refuses
+the Arm profile (`LAB_PROFILE_NOT_FOR_PRODUCTION`, `ADMITTED_ARCHITECTURE`).
+Carrying the right CPU's Edge package is what the lab needs to stop
+substituting a mislabelled one (the D1 deviation of the 2026-10-29 Arm VM
+record); it does not make the lab evidence for anything it was not before.
 
 ## What this ADR does not establish
 

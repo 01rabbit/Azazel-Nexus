@@ -180,7 +180,7 @@ def test_noc_runbook_states_the_command_and_its_fixed_output():
 
 def test_issuer_runbook_states_paths_schemas_and_words():
     from azazel_nexus import edge_issuer
-    from azazel_nexus.edge_package import PIN
+    from azazel_nexus.edge_package import PINS
 
     raw = _text("edge-issuer.md")
     text = _flat(raw)
@@ -190,7 +190,7 @@ def test_issuer_runbook_states_paths_schemas_and_words():
     assert edge_issuer.ANCHOR_SCHEMA in text and edge_issuer.REVOCATION_SCHEMA in text
     domain = edge_issuer.REVOCATION_DOMAIN.decode().replace("\0", "\\000")
     assert f"printf '{domain}'" in raw
-    assert f"/opt/azazel/edge-core/{PIN.manifest_name}" in text
+    assert f"/opt/azazel/edge-core/{PINS['x86_64'].manifest_name}" in text
     for word in ("not_configured", "authenticated", "signature_invalid", "trust_refused"):
         assert word in edge_issuer.ISSUER_REASONS and word in text
     words = _literals(Path(edge_issuer.__file__)) | _literals(REPO / "src" / "azazel_nexus" / "edge_package.py")
@@ -246,16 +246,17 @@ def test_issuer_runbook_states_the_status_lines_and_the_floor_writer():
 
 
 def test_offline_runbook_states_the_refusals(tmp_path, monkeypatch):
-    from azazel_nexus.edge_package import PIN
+    from azazel_nexus.edge_package import PINS
     from tools import offline_bundle
 
     text = _flat(_text("offline-install.md"))
     root = next(value for value in _literals(REPO / "tools" / "offline_bundle.py")
                 if value.startswith("install runs as root"))
     assert f'"{root}"' in text
+    PIN = PINS["x86_64"]  # the runbook installs the deployment baseline
     for name in (PIN.manifest_name, PIN.artifact_name):
         (tmp_path / name).write_bytes(b"")
-    monkeypatch.setattr(offline_bundle, "reviewed_edge_digest", lambda: None)
+    monkeypatch.setattr(offline_bundle, "reviewed_edge_digest", lambda root=None, target=None: None)
     with pytest.raises(offline_bundle.BundleRefused) as refused:
         offline_bundle.verify_edge_slot(tmp_path)
     assert f'"{refused.value}"' in text
@@ -370,10 +371,10 @@ def test_issuer_runbook_states_the_floor_modes_the_writer_sets():
 
 def test_issuer_runbook_names_the_manifest_and_signature_by_variable():
     from azazel_nexus.edge_issuer import SIGNATURE_SUFFIX
-    from azazel_nexus.edge_package import EDGE_PACKAGE_ROOT, PIN
+    from azazel_nexus.edge_package import EDGE_PACKAGE_ROOT, PINS
 
-    raw = _text("edge-issuer.md")
-    assert f"MANIFEST={EDGE_PACKAGE_ROOT / PIN.manifest_name}\n" in raw
+    raw = _text("edge-issuer.md")  # a deployment-baseline (x86_64) runbook
+    assert f"MANIFEST={EDGE_PACKAGE_ROOT / PINS['x86_64'].manifest_name}\n" in raw
     assert f'SIG="$MANIFEST{SIGNATURE_SUFFIX}"' in raw
     assert "MANIFEST.sig" not in raw.replace('"$MANIFEST.sig"', "")
     assert 'sudo rm "$SIG"' in raw and '"$SIG"`' in raw

@@ -18,7 +18,28 @@ from pathlib import Path
 
 from azazel_nexus.edge_package import PIN
 
-BINARY = b"\x7fELF synthetic azazel-edge-core\n"
+#: System V ABI `e_machine` numbers, written here rather than read from
+#: `edge_package` so a fixture does not agree with the code by construction.
+E_MACHINE = {"x86_64": 62, "aarch64": 183}
+
+
+def elf_stub(architecture: str = PIN.architecture, *, machine: int | None = None,
+             elf_class: int = 2, data: int = 1, e_type: int = 3) -> bytes:
+    """A 64-byte ELF header for `architecture`, then a marker. Not executable.
+
+    Synthetic, for the packaging checks only: `edge_package` reads the header
+    of the archived binary and nothing else of it.
+    """
+
+    number = E_MACHINE[architecture] if machine is None else machine
+    order = "little" if data == 1 else "big"
+    header = (b"\x7fELF" + bytes([elf_class, data, 1, 0]) + bytes(8)
+              + e_type.to_bytes(2, order) + number.to_bytes(2, order)
+              + (1).to_bytes(4, order) + bytes(40))
+    return header + b"synthetic azazel-edge-core\n"
+
+
+BINARY = elf_stub()
 POLICY = b"redirect: none\n"
 
 
@@ -37,13 +58,19 @@ def archive(members: dict[str, bytes]) -> bytes:
 
 
 def write_package(root: Path, *, binary: bytes = BINARY, policy: bytes = POLICY,
-                  manifest_overrides: dict | None = None) -> tuple[str, dict[str, str]]:
-    """Write the package; return the archive digest and the component digests."""
+                  manifest_overrides: dict | None = None,
+                  pin=PIN) -> tuple[str, dict[str, str]]:
+    """Write the package; return the archive digest and the component digests.
+
+    `pin` names the files and the manifest's architecture (this host's by
+    default); `binary` is what the archive carries, an ELF stub of this host's
+    CPU by default.
+    """
     members = {"bin/azazel-edge-core": binary, "config/redirect_policy.yaml": policy}
     data = archive(members)
     root.mkdir(parents=True, exist_ok=True)
     root.chmod(0o755)
-    (root / PIN.artifact_name).write_bytes(data)
+    (root / pin.artifact_name).write_bytes(data)
     components = {name: _sha(content) for name, content in members.items()}
     for name, content in members.items():
         path = root / name
@@ -54,15 +81,15 @@ def write_package(root: Path, *, binary: bytes = BINARY, policy: bytes = POLICY,
         path.write_bytes(content)
         path.chmod(0o755 if name.startswith("bin/") else 0o644)
     manifest = {
-        "contract": PIN.manifest_contract, "package": PIN.package,
-        "version": PIN.version, "architecture": PIN.architecture,
-        "artifact": PIN.artifact_name, "digest": _sha(data), "signed": False,
-        "health": {"contract": PIN.health_contract,
+        "contract": pin.manifest_contract, "package": pin.package,
+        "version": pin.version, "architecture": pin.architecture,
+        "artifact": pin.artifact_name, "digest": _sha(data), "signed": False,
+        "health": {"contract": pin.health_contract,
                    "command": ["bin/azazel-edge-core", "--health"]},
         "posture": {"observe_only": True, "enforcement": False},
         "components": [{"path": name, "digest": digest, "size": len(members[name])}
                        for name, digest in components.items()],
     }
     manifest.update(manifest_overrides or {})
-    (root / PIN.manifest_name).write_text(json.dumps(manifest))
+    (root / pin.manifest_name).write_text(json.dumps(manifest))
     return _sha(data), dict(sorted(components.items()))

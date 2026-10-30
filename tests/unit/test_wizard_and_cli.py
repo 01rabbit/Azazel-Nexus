@@ -691,9 +691,12 @@ def _verified_package(tmp_path):
 
     from azazel_nexus.edge_package import PIN
 
+    from _edge_package_fixture import POLICY, archive, elf_stub
+
     root = tmp_path / "edge-verified"
     root.mkdir()
-    payload = b"edge-core-payload"
+    payload = archive({"bin/azazel-edge-core": elf_stub(PIN.architecture),
+                       "config/redirect_policy.yaml": POLICY})
     (root / PIN.artifact_name).write_bytes(payload)
     (root / PIN.manifest_name).write_text(
         json.dumps(

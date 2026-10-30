@@ -102,12 +102,18 @@ def _wheelhouse(directory: Path, commit: str, third_party: tuple[tuple[str, str]
     return directory
 
 
-def _edge_package(directory: Path, *, observe_only: bool = True) -> Path:
-    from azazel_nexus.edge_package import PIN
+def _edge_package(directory: Path, *, observe_only: bool = True, cpu: str = "x86_64",
+                  binary_cpu: str | None = None) -> Path:
+    """An Edge package named and described for ``cpu`` (the baseline's by default),
+    whose binary is an ELF header of ``binary_cpu`` (``cpu`` unless given)."""
 
+    from azazel_nexus.edge_package import PINS
+    from _edge_package_fixture import elf_stub
+
+    PIN = PINS[cpu]
     directory.mkdir()
     components = {
-        "bin/azazel-edge-core": b"#!/bin/sh\necho edge\n",
+        "bin/azazel-edge-core": elf_stub(binary_cpu or cpu),
         "config/redirect_policy.yaml": b"redirect: []\n",
     }
     buffer = io.BytesIO()
@@ -137,12 +143,13 @@ def _edge_package(directory: Path, *, observe_only: bool = True) -> Path:
     return directory
 
 
-def _pin_edge(monkeypatch, edge: Path) -> None:
+def _pin_edge(monkeypatch, edge: Path, cpu: str = "x86_64") -> None:
     """Stand in for an owner-reviewed pin of whatever artifact is in ``edge`` when checked."""
 
-    from azazel_nexus.edge_package import PIN
+    from azazel_nexus.edge_package import PINS
 
-    monkeypatch.setattr(offline_bundle, "reviewed_edge_digest", lambda root=None: (
+    PIN = PINS[cpu]
+    monkeypatch.setattr(offline_bundle, "reviewed_edge_digest", lambda root=None, target=None: (
         hashlib.sha256((edge / PIN.artifact_name).read_bytes()).hexdigest(), PIN.artifact_name))
 
 
@@ -555,10 +562,17 @@ def test_an_enforcing_edge_package_is_refused(tmp_path, monkeypatch):
 
 
 def test_an_edge_artifact_that_does_not_match_its_manifest_is_refused(tmp_path, monkeypatch):
-    from azazel_nexus.edge_package import PIN
+    from azazel_nexus.edge_package import PINS
 
+    PIN = PINS["x86_64"]
     edge = _edge_package(tmp_path / "edge")
-    (edge / PIN.artifact_name).write_bytes(b"replaced")
+    other = _edge_package(tmp_path / "other", binary_cpu="x86_64", observe_only=True)
+    # A well-formed archive of the same CPU, just not the one the manifest describes.
+    data = bytearray((other / PIN.artifact_name).read_bytes())
+    import gzip as _gzip
+    raw = bytearray(_gzip.decompress(bytes(data)))
+    raw[raw.index(b"synthetic")] ^= 0x20
+    (edge / PIN.artifact_name).write_bytes(_gzip.compress(bytes(raw), mtime=0))
     _pin_edge(monkeypatch, edge)
     with pytest.raises(BundleRefused, match="digest_matches"):
         offline_bundle.verify_edge_slot(edge)
@@ -1084,8 +1098,9 @@ def test_a_path_that_does_not_fit_ustar_is_a_build_error(tmp_path):
 
 
 def test_a_nested_edge_archive_with_a_sparse_pax_key_is_refused(tmp_path, monkeypatch):
-    from azazel_nexus.edge_package import PIN
+    from azazel_nexus.edge_package import PINS
 
+    PIN = PINS["x86_64"]
     edge = _edge_package(tmp_path / "edge")
     pax = _pax({"GNU.sparse.major": "1", "GNU.sparse.minor": "0"})
     (edge / PIN.artifact_name).write_bytes(gzip.compress(
@@ -1421,8 +1436,9 @@ def test_a_gnu_header_using_its_extension_area_is_refused():
 
 def test_an_edge_archive_off_the_reviewed_pin_is_refused_before_any_parsing(tmp_path, monkeypatch):
     from azazel_nexus import edge_package
-    from azazel_nexus.edge_package import PIN
+    from azazel_nexus.edge_package import PINS
 
+    PIN = PINS["x86_64"]
     edge = _edge_package(tmp_path / "edge")
 
     def must_not_parse(*args, **kwargs):
@@ -1430,13 +1446,14 @@ def test_an_edge_archive_off_the_reviewed_pin_is_refused_before_any_parsing(tmp_
 
     monkeypatch.setattr(offline_bundle, "scan_nested_tar", must_not_parse)
     monkeypatch.setattr(edge_package, "_archive_components", must_not_parse)
-    monkeypatch.setattr(offline_bundle, "reviewed_edge_digest", lambda root=None: ("0" * 64, PIN.artifact_name))
+    monkeypatch.setattr(offline_bundle, "reviewed_edge_digest",
+                        lambda root=None, target=None: ("0" * 64, PIN.artifact_name))
     with pytest.raises(BundleRefused, match="not the one the reviewed checkout pins"):
         offline_bundle.verify_edge_slot(edge)
 
 
 def test_an_edge_slot_without_a_reviewed_pin_is_refused(tmp_path):
-    assert offline_bundle.reviewed_edge_digest() is None, "this repository ships no Edge pin"
+    assert offline_bundle.reviewed_edge_digest() is None, "this repository ships no baseline Edge pin"
     with pytest.raises(BundleRefused, match="pins no Edge artifact"):
         offline_bundle.verify_edge_slot(_edge_package(tmp_path / "edge"))
 
@@ -1727,3 +1744,76 @@ def test_install_refuses_a_bundle_without_the_locked_fabric_before_any_venv(buil
     assert not (tmp_path / "v").exists()
     assert not (tmp_path / "venv").exists()
     assert not (tmp_path / "out").exists(), "a refused install left its extracted tree"
+
+
+# -- the Edge slot is per target CPU (S-11, ADR-0005 amendment of 2026-10-30) --
+
+
+def _pin_named(monkeypatch, edge: Path, name: str) -> None:
+    """A reviewed pin of the artifact file ``name`` in ``edge``, for any target."""
+
+    monkeypatch.setattr(offline_bundle, "reviewed_edge_digest", lambda root=None, target=None: (
+        hashlib.sha256((edge / name).read_bytes()).hexdigest(), name))
+
+
+@pytest.mark.parametrize("target,cpu", [("debian-13-x86_64-cp313", "x86_64"),
+                                        ("debian-13-aarch64-cp313", "aarch64")])
+def test_each_target_accepts_its_own_cpus_edge_package(tmp_path, monkeypatch, target, cpu):
+    """On any build host: the CPU checked is the target's, not this machine's."""
+
+    edge = _edge_package(tmp_path / "edge", cpu=cpu)
+    _pin_edge(monkeypatch, edge, cpu)
+    report = offline_bundle.verify_edge_slot(edge, target)
+    assert report["architecture"] == cpu and report["admitted"] is False
+    assert report["checks"]["package_present"] == "passed"
+
+
+@pytest.mark.parametrize("target,other", [("debian-13-x86_64-cp313", "aarch64"),
+                                          ("debian-13-aarch64-cp313", "x86_64")])
+def test_a_target_refuses_the_other_cpus_edge_package(tmp_path, monkeypatch, target, other):
+    from azazel_nexus.edge_package import PINS
+
+    edge = _edge_package(tmp_path / "edge", cpu=other)
+    _pin_named(monkeypatch, edge, PINS[other].artifact_name)
+    with pytest.raises(BundleRefused, match="must hold exactly"):
+        offline_bundle.verify_edge_slot(edge, target)
+
+
+@pytest.mark.parametrize("target,cpu,other", [("debian-13-x86_64-cp313", "x86_64", "aarch64"),
+                                              ("debian-13-aarch64-cp313", "aarch64", "x86_64")])
+def test_a_target_refuses_the_other_cpus_binary_under_its_name(tmp_path, monkeypatch, target, cpu, other):
+    """Named and described for the target, carrying the other CPU's binary."""
+
+    edge = _edge_package(tmp_path / "edge", cpu=cpu, binary_cpu=other)
+    _pin_edge(monkeypatch, edge, cpu)
+    with pytest.raises(BundleRefused, match=f"package_present is failed.*says {other}"):
+        offline_bundle.verify_edge_slot(edge, target)
+
+
+def test_each_target_reads_only_its_own_edge_artifact_pin(tmp_path):
+    lab, base = "debian-13-aarch64-cp313", "debian-13-x86_64-cp313"
+    assert offline_bundle.target_edge_artifact_pin(base) == offline_bundle.EDGE_ARTIFACT_PIN
+    assert offline_bundle.target_edge_artifact_pin(lab) != offline_bundle.EDGE_ARTIFACT_PIN
+    pin = tmp_path / offline_bundle.target_edge_artifact_pin(lab)
+    pin.parent.mkdir(parents=True)
+    pin.write_text("b" * 64 + "  azazel-edge-core-0.1.0-aarch64.tar.gz\n")
+    assert offline_bundle.reviewed_edge_digest(tmp_path, lab) == ("b" * 64, "azazel-edge-core-0.1.0-aarch64.tar.gz")
+    assert offline_bundle.reviewed_edge_digest(tmp_path, base) is None
+    with pytest.raises(BundleRefused, match="not a declared target"):
+        offline_bundle.reviewed_edge_digest(tmp_path, "debian-13-riscv64-cp313")
+
+
+def test_the_shipped_lab_pin_names_the_aarch64_artifact_and_no_baseline_pin_ships():
+    from azazel_nexus.edge_package import PINS
+
+    lab = offline_bundle.reviewed_edge_digest(target="debian-13-aarch64-cp313")
+    assert lab is not None and lab[1] == PINS["aarch64"].artifact_name
+    assert offline_bundle.reviewed_edge_digest(target="debian-13-x86_64-cp313") is None
+
+
+def test_a_lab_pin_never_admits_an_x86_64_package_on_the_baseline(tmp_path, monkeypatch):
+    """The lab pin's file is the lab target's; the baseline still has none."""
+
+    edge = _edge_package(tmp_path / "edge", cpu="x86_64")
+    with pytest.raises(BundleRefused, match="pins no Edge artifact"):
+        offline_bundle.verify_edge_slot(edge, "debian-13-x86_64-cp313")

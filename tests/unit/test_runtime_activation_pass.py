@@ -55,7 +55,7 @@ from azazel_nexus_runtime.activation_pass import (
 )
 from azazel_nexus_runtime.node_config import DeclaredNode
 from azazel_nexus_runtime.units import RecordingUnitManager
-from _edge_package_fixture import write_package
+from _edge_package_fixture import elf_stub, write_package
 
 NOW = "2026-10-21T00:00:00Z"
 DIGEST = "sha256:" + "d" * 64
@@ -1083,7 +1083,7 @@ def test_a_package_digest_unreadable_by_the_pass_withholds_edge_core_only(edge_w
 
 def test_an_installed_package_other_than_the_signed_one_refuses_the_lease(edge_world):
     """The operator's signature binds the package: another one is another baseline."""
-    edge_world.package_digest, _ = edge_world.package(binary=b"another edge-core")
+    edge_world.package_digest, _ = edge_world.package(binary=elf_stub() + b"another edge-core")
     edge_world.probe()  # even a fresh, healthy probe of the new package
     _assert_refused(edge_world, edge_world.run(), ["operational_generation_publisher"])
 

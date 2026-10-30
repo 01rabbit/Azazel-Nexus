@@ -416,22 +416,54 @@ def test_the_installed_platform_probe_refuses_a_failed_run_even_with_two_words(t
         offline_bundle._observe_installed_platform(fake)
 
 
-def test_the_lab_target_declares_no_edge_slot_and_the_baseline_does():
+def test_both_targets_declare_an_edge_slot_each_with_its_own_pin():
     assert offline_bundle.TARGETS[BASELINE]["edge_slot"] is True
-    assert offline_bundle.TARGETS[LAB]["edge_slot"] is False
+    assert offline_bundle.TARGETS[LAB]["edge_slot"] is True
+    assert (offline_bundle.TARGETS[BASELINE]["edge_artifact_pin"]
+            != offline_bundle.TARGETS[LAB]["edge_artifact_pin"])
+    assert "lab" in offline_bundle.TARGETS[LAB]["edge_artifact_pin"].name
 
 
-def test_a_lab_bundle_with_an_edge_package_is_refused_at_build(tmp_path, monkeypatch):
+def test_a_lab_bundle_carries_the_aarch64_edge_package_and_stays_lab(tmp_path, monkeypatch):
+    from tests.unit.test_offline_install_bundle import _edge_package, _pin_edge
+
+    root = _lab_repo(tmp_path / "repo")
+    wheelhouse = _lab_wheelhouse(tmp_path, repository_identity(root)["commit"])
+    edge = _edge_package(tmp_path / "edge", cpu="aarch64")
+    _pin_edge(monkeypatch, edge, "aarch64")
+    document = build_install_bundle(root, tmp_path / "b.tar.gz", wheelhouse=wheelhouse, target=LAB,
+                                    edge_package=edge, edge_source="test")
+    assert document["slots"]["edge-package"] == "filled"
+    assert document["target"] == LAB
+
+
+def test_a_lab_bundle_with_the_x86_64_edge_package_is_refused_at_build(tmp_path, monkeypatch):
     from tests.unit.test_offline_install_bundle import _edge_package, _pin_edge
 
     root = _lab_repo(tmp_path / "repo")
     wheelhouse = _lab_wheelhouse(tmp_path, repository_identity(root)["commit"])
     edge = _edge_package(tmp_path / "edge")
     _pin_edge(monkeypatch, edge)
-    with pytest.raises(BundleRefused, match="carries no Edge package"):
+    with pytest.raises(BundleRefused, match="must hold exactly"):
         build_install_bundle(root, tmp_path / "b.tar.gz", wheelhouse=wheelhouse, target=LAB,
                              edge_package=edge, edge_source="test")
     assert not (tmp_path / "b.tar.gz").exists()
+
+
+def test_a_lab_bundle_with_an_aarch64_binary_under_the_x86_64_name_is_refused(tmp_path, monkeypatch):
+    """The 2026-10-29 deviation (D1), as a lab medium would carry it."""
+
+    from tests.unit.test_offline_install_bundle import _edge_package, _pin_edge
+
+    root = _lab_repo(tmp_path / "repo")
+    wheelhouse = _lab_wheelhouse(tmp_path, repository_identity(root)["commit"])
+    edge = _edge_package(tmp_path / "edge", cpu="x86_64", binary_cpu="aarch64")
+    _pin_edge(monkeypatch, edge)
+    with pytest.raises(BundleRefused):
+        build_install_bundle(root, tmp_path / "b.tar.gz", wheelhouse=wheelhouse, target=LAB,
+                             edge_package=edge, edge_source="test")
+    with pytest.raises(BundleRefused, match="package_present is failed"):
+        offline_bundle.verify_edge_slot(edge, BASELINE)
 
 
 def _with_edge_slot(document: dict) -> dict:
@@ -445,16 +477,26 @@ def _with_edge_slot(document: dict) -> dict:
     return document
 
 
-def test_a_lab_manifest_with_a_filled_edge_slot_is_refused_at_verify(lab_bundle, tmp_path):
+def test_a_lab_manifest_with_the_x86_64_edge_package_is_refused_at_verify(lab_bundle, tmp_path):
+    from tests.unit.test_offline_install_bundle import _edge_package
+
     document = _with_edge_slot(lab_bundle[0])
-    with pytest.raises(BundleRefused, match="carries no Edge package"):
-        offline_bundle.validate_manifest(document)
-    baseline = dict(document, target=BASELINE)
-    assert offline_bundle.validate_manifest(baseline) is baseline
+    assert offline_bundle.validate_manifest(document) is document
+    _edge_package(tmp_path / "edge", cpu="x86_64")
     extracted = offline_bundle.Extracted(root=tmp_path, manifest=document, manifest_bytes=b"{}",
                                          signature=None)
-    with pytest.raises(BundleRefused, match="carries no Edge package"):
+    with pytest.raises(BundleRefused, match="must hold exactly"):
         offline_bundle.verify_extracted(extracted, pins=(
             {e["requirement"]: [e["sha256"]] for e in document["artifacts"]
              if e["kind"] == "wheel" and not e["requirement"].startswith("azazel-")},
             build_wheelhouse.own_versions(ROOT)))
+
+
+def test_a_target_without_an_edge_pin_still_refuses_a_filled_slot(lab_bundle, monkeypatch):
+    """The guard stays for a target added without a pin of its CPU."""
+
+    monkeypatch.setitem(offline_bundle.TARGETS, LAB, {**offline_bundle.TARGETS[LAB], "edge_slot": False})
+    with pytest.raises(BundleRefused, match="carries no Edge package"):
+        offline_bundle.validate_manifest(_with_edge_slot(lab_bundle[0]))
+    with pytest.raises(BundleRefused, match="carries no Edge package"):
+        offline_bundle.verify_edge_slot(Path("/nonexistent"), LAB)

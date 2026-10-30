@@ -35,7 +35,12 @@ from azazel_nexus.edge_package import (
     load_probe_result,
     parse_probe_result,
     HEALTHY_STATUS,
+    ELF_IDENTITIES,
     PIN,
+    PINS,
+    elf_architecture,
+    host_architecture,
+    host_pin,
     REQUIRED_HEALTH_KEYS,
     REQUIRED_MANIFEST_KEYS,
     UNSIGNED_CAVEAT,
@@ -45,11 +50,15 @@ from azazel_nexus.edge_package import (
     Finding,
     HealthAnswer,
     inspect,
+    installed_package_digest,
     no_health_probe,
     no_running_probe,
     presence_of,
 )
 from azazel_nexus.integration import EdgePresence
+
+from _edge_package_fixture import POLICY, archive, elf_stub, write_package
+from azazel_nexus import edge_package
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = ROOT / "contract" / "azazel-edge-core"
@@ -66,18 +75,46 @@ def test_every_pinned_field_is_what_the_vendored_pin_says():
     """A pin that drifted from the producer's contract would verify a fiction."""
 
     pin = _contract("pin.json")
-    assert PIN.package == pin["package"]
-    assert PIN.version == pin["version"]
-    assert PIN.architecture == pin["architecture"]
-    assert PIN.manifest_contract == pin["manifest_contract"]
-    assert PIN.health_contract == pin["health_contract"]
-    assert PIN.signed is pin["signed"] is False
+    assert pin["contract"] == "azazel-edge-core/nexus-pin/v2"
+    assert sorted(PINS) == sorted(pin["architectures"]) == ["aarch64", "x86_64"]
+    for architecture, entry in PINS.items():
+        assert entry.architecture == architecture
+        assert entry.package == pin["package"]
+        assert entry.version == pin["version"]
+        assert entry.manifest_contract == pin["manifest_contract"]
+        assert entry.health_contract == pin["health_contract"]
+        assert entry.signed is pin["signed"] is False
 
 
 def test_the_filenames_this_node_looks_for_are_the_ones_edge_writes():
     pin = _contract("pin.json")
-    assert PIN.manifest_name == pin["manifest"]
-    assert PIN.artifact_name == pin["artifact"]
+    for architecture, entry in PINS.items():
+        assert entry.manifest_name == pin["architectures"][architecture]["manifest"]
+        assert entry.artifact_name == pin["architectures"][architecture]["artifact"]
+
+
+def test_the_elf_identity_of_each_cpu_is_the_one_edge_lists():
+    pin = _contract("pin.json")
+    for architecture, identity in ELF_IDENTITIES.items():
+        assert dict(identity) == pin["architectures"][architecture]["elf"]
+
+
+def test_the_x86_64_pin_record_changes_only_by_the_manifest_contract():
+    """`observe_baseline` binds `asdict(PIN)`; only the contract moved (v1 -> v2)."""
+
+    from dataclasses import asdict
+
+    assert asdict(PINS["x86_64"]) == {
+        "package": "azazel-edge-core", "version": "0.1.0", "architecture": "x86_64",
+        "manifest_contract": "azazel-edge-core/package-manifest/v2",
+        "health_contract": "azazel-edge-core/health/v1", "signed": False,
+    }
+
+
+def test_pin_is_the_pin_of_the_cpu_this_test_runs_on():
+    machine = {"x86_64": "x86_64", "aarch64": "aarch64"}[os.uname().machine]
+    assert host_architecture() == machine
+    assert PIN is PINS[machine] and host_pin() is PINS[machine]
 
 
 def test_every_manifest_field_read_here_is_one_edge_promises():
@@ -188,10 +225,15 @@ def _manifest(**overrides) -> dict:
     return manifest
 
 
+#: A real package archive: a gzip'd tar carrying an ELF header of this host's
+#: CPU, as Edge's packager lays it out. The CPU checks read that header.
+GOOD_ARCHIVE = archive({"bin/azazel-edge-core": elf_stub(), "config/redirect_policy.yaml": POLICY})
+
+
 def _package(
     tmp_path: Path,
     *,
-    payload: bytes = b"edge-core-payload",
+    payload: bytes = GOOD_ARCHIVE,
     digest: str | None = None,
     manifest: dict | None = None,
     write_manifest: bool = True,
@@ -399,11 +441,327 @@ def test_a_manifest_in_another_contract_is_corrupt(tmp_path):
 
 @pytest.mark.parametrize(
     "field,value",
-    [("package", "azazel-edge-lite"), ("architecture", "aarch64")],
+    [("package", "azazel-edge-lite"), ("architecture", "<other>")],
 )
 def test_a_manifest_for_another_package_or_architecture_is_corrupt(tmp_path, field, value):
+    value = OTHER if value == "<other>" else value
     root = _package(tmp_path, manifest=_manifest(**{field: value}))
     assert inspect(root).presence is EdgePresence.CORRUPT
+
+
+# -- the CPU: this host, the manifest and the binary's ELF header (S-11) ---
+
+#: The other reviewed CPU, from the one this test runs on.
+OTHER = {"x86_64": "aarch64", "aarch64": "x86_64"}[PIN.architecture]
+
+
+class _Uname:
+    def __init__(self, machine: str) -> None:
+        self.machine = machine
+
+
+def _as_host(monkeypatch, machine: str) -> None:
+    """Make the kernel report `machine`, so the whole host reading is exercised."""
+
+    monkeypatch.setattr(edge_package.os, "uname", lambda: _Uname(machine))
+
+
+def _cpu_package(root: Path, *, names: str, manifest_cpu: str, binary_cpu: str,
+                 binary: bytes | None = None) -> Path:
+    """A package named for `names`, whose manifest says `manifest_cpu` and whose
+    archived binary is an ELF header of `binary_cpu`; the digests always agree."""
+
+    write_package(
+        root, binary=elf_stub(binary_cpu) if binary is None else binary, pin=PINS[names],
+        manifest_overrides={"architecture": manifest_cpu,
+                            "artifact": PINS[names].artifact_name},
+    )
+    return root
+
+
+@pytest.mark.parametrize("cpu", ["x86_64", "aarch64"])
+def test_each_cpus_own_package_passes_on_that_cpu(tmp_path, monkeypatch, cpu):
+    _as_host(monkeypatch, cpu)
+    root = _cpu_package(tmp_path / "edge", names=cpu, manifest_cpu=cpu, binary_cpu=cpu)
+    inspection = inspect(root)
+    for check in ("package_present", "version_matches", "digest_matches"):
+        assert inspection.finding(check).evidence is Evidence.PASSED, inspection.finding(check)
+    assert inspection.presence is not EdgePresence.CORRUPT
+
+
+@pytest.mark.parametrize("cpu", ["x86_64", "aarch64"])
+def test_a_package_renamed_to_this_cpu_is_refused_by_its_elf_header(tmp_path, monkeypatch, cpu):
+    """The 2026-10-29 deviation: the other CPU's binary, named and described as this one."""
+
+    other = {"x86_64": "aarch64", "aarch64": "x86_64"}[cpu]
+    _as_host(monkeypatch, cpu)
+    root = _cpu_package(tmp_path / "edge", names=cpu, manifest_cpu=cpu, binary_cpu=other)
+    finding = inspect(root).finding("package_present")
+    assert finding.evidence is Evidence.FAILED and finding.security
+    assert f"says {other}" in finding.reason
+    assert inspect(root).presence is EdgePresence.CORRUPT
+    with pytest.raises(EdgePackageRefused):
+        installed_package_digest(package_root=root)
+
+
+def test_files_renamed_without_the_manifest_are_refused_by_the_manifest(tmp_path, monkeypatch):
+    _as_host(monkeypatch, PIN.architecture)
+    root = _cpu_package(tmp_path / "edge", names=PIN.architecture, manifest_cpu=OTHER,
+                        binary_cpu=OTHER)
+    finding = inspect(root).finding("package_present")
+    assert finding.evidence is Evidence.FAILED
+    assert f"{OTHER}" in finding.reason and inspect(root).presence is EdgePresence.CORRUPT
+
+
+def test_another_cpus_package_is_refused_by_name_not_reported_absent(tmp_path, monkeypatch):
+    _as_host(monkeypatch, PIN.architecture)
+    root = _cpu_package(tmp_path / "edge", names=OTHER, manifest_cpu=OTHER, binary_cpu=OTHER)
+    inspection = inspect(root)
+    assert inspection.presence is EdgePresence.CORRUPT
+    reason = inspection.finding("package_present").reason
+    assert f"is the {OTHER} one" in reason and PINS[PIN.architecture].artifact_name in reason
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        pytest.param({"elf_class": 1}, id="32-bit"),
+        pytest.param({"data": 2}, id="big-endian"),
+        pytest.param({"machine": 243}, id="riscv"),
+        pytest.param({"e_type": 1}, id="relocatable"),
+    ],
+)
+def test_a_binary_that_is_no_pinned_cpus_is_refused(tmp_path, monkeypatch, header):
+    _as_host(monkeypatch, PIN.architecture)
+    root = _cpu_package(tmp_path / "edge", names=PIN.architecture, manifest_cpu=PIN.architecture,
+                        binary_cpu=PIN.architecture,
+                        binary=elf_stub(PIN.architecture, **header))
+    finding = inspect(root).finding("package_present")
+    assert finding.evidence is Evidence.FAILED and finding.security
+
+
+def test_a_binary_that_is_not_elf_is_refused(tmp_path, monkeypatch):
+    _as_host(monkeypatch, PIN.architecture)
+    root = _cpu_package(tmp_path / "edge", names=PIN.architecture, manifest_cpu=PIN.architecture,
+                        binary_cpu=PIN.architecture, binary=b"#!/bin/sh\nexit 0\n")
+    finding = inspect(root).finding("package_present")
+    assert finding.evidence is Evidence.FAILED and finding.security
+    assert "not an ELF file" in finding.reason
+
+
+def test_a_manifest_whose_elf_record_names_another_cpu_is_refused(tmp_path, monkeypatch):
+    _as_host(monkeypatch, PIN.architecture)
+    root = tmp_path / "edge"
+    write_package(root, manifest_overrides={"elf": dict(ELF_IDENTITIES[OTHER])})
+    assert inspect(root).finding("package_present").evidence is Evidence.FAILED
+
+
+def test_a_manifest_naming_another_artifact_is_refused(tmp_path, monkeypatch):
+    _as_host(monkeypatch, PIN.architecture)
+    root = tmp_path / "edge"
+    write_package(root, manifest_overrides={"artifact": PINS[OTHER].artifact_name})
+    assert inspect(root).finding("package_present").evidence is Evidence.FAILED
+
+
+def test_a_pin_for_another_cpu_than_the_host_is_refused(tmp_path, monkeypatch):
+    _as_host(monkeypatch, PIN.architecture)
+    root = _cpu_package(tmp_path / "edge", names=OTHER, manifest_cpu=OTHER, binary_cpu=OTHER)
+    finding = inspect(root, pin=PINS[OTHER]).finding("package_present")
+    assert finding.evidence is Evidence.FAILED
+    with pytest.raises(EdgePackageRefused):
+        installed_package_digest(package_root=root, pin=PINS[OTHER])
+
+
+def test_a_named_cpu_verifies_that_cpus_package_on_any_host(tmp_path, monkeypatch):
+    """The offline bundle's case: the medium is built where it is built."""
+
+    _as_host(monkeypatch, PIN.architecture)
+    root = _cpu_package(tmp_path / "edge", names=OTHER, manifest_cpu=OTHER, binary_cpu=OTHER)
+    assert inspect(root, cpu=OTHER).finding("package_present").evidence is Evidence.PASSED
+    swapped = _cpu_package(tmp_path / "swapped", names=OTHER, manifest_cpu=OTHER,
+                           binary_cpu=PIN.architecture)
+    assert inspect(swapped, cpu=OTHER).finding("package_present").security
+
+
+@pytest.mark.parametrize("machine", ["riscv64", "armv7l", "i686", "amd64", ""])
+def test_an_unpinned_host_cpu_checks_nothing_and_grants_nothing(tmp_path, monkeypatch, machine):
+    _as_host(monkeypatch, machine)
+    root = _cpu_package(tmp_path / "edge", names="x86_64", manifest_cpu="x86_64",
+                        binary_cpu="x86_64")
+    inspection = inspect(root)
+    assert inspection.presence is EdgePresence.UNKNOWN
+    assert all(f.evidence is Evidence.NOT_CHECKED for f in inspection.findings)
+    with pytest.raises(EdgePackageRefused):
+        installed_package_digest(package_root=root)
+
+
+def test_a_v1_manifest_is_still_read_and_its_cpu_still_comes_from_the_binary(tmp_path, monkeypatch):
+    """Nexus before Edge: an installed v1 package keeps working, if its binary is right."""
+
+    _as_host(monkeypatch, PIN.architecture)
+    good = tmp_path / "good"
+    write_package(good, manifest_overrides={"contract": "azazel-edge-core/package-manifest/v1"})
+    assert inspect(good).finding("package_present").evidence is Evidence.PASSED
+    # The D1 deviation as v1 packages carried it: the other CPU's binary.
+    bad = tmp_path / "bad"
+    write_package(bad, binary=elf_stub(OTHER),
+                  manifest_overrides={"contract": "azazel-edge-core/package-manifest/v1"})
+    assert inspect(bad).finding("package_present").security
+    other = tmp_path / "other"
+    write_package(other, manifest_overrides={"contract": "azazel-edge-core/package-manifest/v3"})
+    assert inspect(other).finding("package_present").evidence is Evidence.FAILED
+
+
+def _tar(members) -> bytes:
+    import gzip
+    import io
+    import tarfile
+
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as tar:
+        for name, data, kind in members:
+            info = tarfile.TarInfo(name)
+            if kind == "file":
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+            else:
+                info.type = {"symlink": tarfile.SYMTYPE, "hardlink": tarfile.LNKTYPE,
+                             "directory": tarfile.DIRTYPE, "fifo": tarfile.FIFOTYPE}[kind]
+                info.linkname = data
+                tar.addfile(info)
+    return gzip.compress(raw.getvalue(), mtime=0)
+
+
+def _raw_package(root: Path, artifact: bytes) -> Path:
+    """`artifact` as the host CPU's package, with a manifest whose digest matches it."""
+
+    root.mkdir(parents=True)
+    (root / PIN.artifact_name).write_bytes(artifact)
+    manifest = _manifest(digest="sha256:" + hashlib.sha256(artifact).hexdigest())
+    (root / PIN.manifest_name).write_text(json.dumps(manifest), encoding="utf-8")
+    return root
+
+
+@pytest.mark.parametrize("members", [
+    pytest.param([("bin/azazel-edge-core", "<host>", "file"), ("bin/azazel-edge-core", "<other>", "file")],
+                 id="same-name-twice"),
+    pytest.param([("bin/azazel-edge-core", "<host>", "file"), ("./bin/azazel-edge-core", "<other>", "file")],
+                 id="dot-slash-duplicate"),
+    pytest.param([("bin/azazel-edge-core", "<host>", "file"), ("bin//azazel-edge-core", "<other>", "file")],
+                 id="double-slash-duplicate"),
+    pytest.param([("bin/azazel-edge-core", "<host>", "file"), ("bin/azazel-edge-core", "/usr/bin/true", "symlink")],
+                 id="later-symlink"),
+    pytest.param([("bin/azazel-edge-core", "<host>", "file"), ("bin/azazel-edge-core", "config/x", "hardlink")],
+                 id="later-hardlink"),
+    pytest.param([("bin", "/usr/bin", "symlink"), ("bin/azazel-edge-core", "<host>", "file")],
+                 id="bin-is-a-link"),
+    pytest.param([("bin/azazel-edge-core", "<other>", "file"), ("bin/azazel-edge-core", "<host>", "file")],
+                 id="other-then-host"),
+    pytest.param([("bin/azazel-edge-core", "<host>", "file"), ("alias", "bin", "symlink"),
+                  ("alias/azazel-edge-core", "<other>", "file")], id="symlink-alias-overwrite"),
+    pytest.param([("bin/azazel-edge-core", "<host>", "file"),
+                  ("alias", "bin/azazel-edge-core", "hardlink")], id="unrelated-hardlink"),
+    pytest.param([("bin/azazel-edge-core", "<host>", "file"),
+                  ("unexpected", "<other>", "file")], id="unlisted-file"),
+    pytest.param([("/bin/azazel-edge-core", "<host>", "file")], id="absolute-path"),
+    pytest.param([("x/../bin/azazel-edge-core", "<host>", "file")], id="parent-segment"),
+    pytest.param([("bin/azazel-edge-core", "<host>", "file"),
+                  (PIN.manifest_name, "<host>", "file")], id="manifest-overwrite"),
+    pytest.param([("bin/azazel-edge-core", "<host>", "file"),
+                  ("bin", "", "directory"), ("./bin/", "", "directory")], id="duplicate-directory"),
+    pytest.param([("bin/azazel-edge-core", "<host>", "file"),
+                  ("unexpected", "", "fifo")], id="special-file"),
+])
+def test_an_archive_whose_binary_is_not_one_regular_member_is_refused(tmp_path, monkeypatch, members):
+    """R391-02: the header read must be the file extraction leaves behind."""
+
+    _as_host(monkeypatch, PIN.architecture)
+    stubs = {"<host>": elf_stub(PIN.architecture), "<other>": elf_stub(OTHER)}
+    archive_bytes = _tar([(name, stubs.get(data, data) if kind == "file" else data, kind)
+                          for name, data, kind in members]
+                         + [("config/redirect_policy.yaml", POLICY, "file")])
+    root = _raw_package(tmp_path / "edge", archive_bytes)
+    finding = inspect(root).finding("package_present")
+    assert finding.evidence is Evidence.FAILED and finding.security
+    with pytest.raises(EdgePackageRefused):
+        installed_package_digest(package_root=root)
+    with pytest.raises(EdgePackageRefused):
+        edge_package._archive_components(archive_bytes)
+
+
+def test_normalised_payload_paths_and_optional_parent_directories_are_accepted(tmp_path):
+    artifact = _tar([("./bin/", "", "directory"), ("config", "", "directory"),
+                     ("./bin//azazel-edge-core", elf_stub(), "file"),
+                     ("config/./redirect_policy.yaml", POLICY, "file")])
+    root = _raw_package(tmp_path / "edge", artifact)
+    assert inspect(root).finding("package_present").held
+    assert installed_package_digest(package_root=root) == "sha256:" + hashlib.sha256(artifact).hexdigest()
+    assert edge_package._archive_components(artifact) == {
+        "bin/azazel-edge-core": "sha256:" + hashlib.sha256(elf_stub()).hexdigest(),
+        "config/redirect_policy.yaml": "sha256:" + hashlib.sha256(POLICY).hexdigest(),
+    }
+
+
+def test_the_digest_and_the_elf_are_judged_on_one_read(tmp_path, monkeypatch):
+    """R391-01: a read that saw a half-written archive is not made good by a later one.
+
+    The archive on disk is complete and carries the other CPU's binary; the
+    first read returns it truncated. Before, the ELF check was skipped on the
+    mismatch and the digest re-read the finished file and passed.
+    """
+
+    _as_host(monkeypatch, PIN.architecture)
+    root = tmp_path / "edge"
+    write_package(root, binary=elf_stub(OTHER))
+    real = edge_package.os.fdopen
+    reads = []
+
+    def half_written(fd, *args, **kwargs):
+        stream = real(fd, *args, **kwargs)
+        if not reads:
+            reads.append(1)
+            data = stream.read()
+            stream.close()
+            import io
+
+            return io.BytesIO(data[: len(data) // 2])
+        return stream
+
+    monkeypatch.setattr(edge_package.os, "fdopen", half_written)
+    inspection = inspect(root)
+    assert inspection.finding("digest_matches").evidence is not Evidence.PASSED
+    assert not inspection.ready
+    assert inspect(root).finding("package_present").security  # read whole: the binary is refused
+
+
+def test_an_unreadable_first_read_is_not_made_good_by_a_later_one(tmp_path, monkeypatch):
+    _as_host(monkeypatch, PIN.architecture)
+    root = tmp_path / "edge"
+    write_package(root, binary=elf_stub(OTHER))
+    real = edge_package.os.open
+    state = {"failed": False}
+
+    def fail_once(path, flags, *args, **kwargs):
+        if not state["failed"] and str(path).endswith(PIN.artifact_name):
+            state["failed"] = True
+            raise PermissionError("not yet")
+        return real(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(edge_package.os, "open", fail_once)
+    inspection = inspect(root)
+    assert inspection.finding("digest_matches").evidence is Evidence.NOT_CHECKED
+    assert not inspection.ready
+
+
+def test_the_elf_reader_names_each_pinned_cpu_and_nothing_else():
+    assert elf_architecture(elf_stub("x86_64")) == "x86_64"
+    assert elf_architecture(elf_stub("aarch64")) == "aarch64"
+    assert elf_architecture(elf_stub("x86_64", e_type=2)) == "x86_64"
+    for bad in (elf_stub("x86_64", machine=3), elf_stub("aarch64", data=2), elf_stub("x86_64", elf_class=1),
+                elf_stub("x86_64")[:23], b"\x7fELF" + bytes(60), b"MZ" + bytes(62),
+                elf_stub("x86_64")[:6] + b"\x00" + elf_stub("x86_64")[7:]):
+        with pytest.raises(EdgePackageRefused):
+            elf_architecture(bad)
 
 
 def test_a_manifest_declaring_another_health_contract_is_corrupt(tmp_path):
@@ -718,7 +1076,8 @@ def test_the_verifier_runs_no_process():
     """The boundary in `test_boundary_static.py`, asserted where it matters.
 
     File descriptor operations protect probe reads and (#206 P5) the no-follow
-    reads of the extracted components; none may execute a process.
+    reads of the extracted components; `uname` reads the kernel's machine name
+    for the host's CPU (S-11). None may execute a process.
     """
 
     module = ROOT / "src" / "azazel_nexus" / "edge_package.py"
@@ -735,7 +1094,7 @@ def test_the_verifier_runs_no_process():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
         and isinstance(node.func.value, ast.Name) and node.func.value.id == "os"
     }
-    assert os_calls <= {"open", "fdopen", "fstat", "read", "close"}
+    assert os_calls <= {"open", "fdopen", "fstat", "read", "close", "uname"}
 
 
 def test_nothing_reads_the_startup_block_of_an_edge_manifest():
@@ -810,7 +1169,7 @@ def _result(**overrides) -> ProbeResult:
     return ProbeResult(**fields)
 
 
-def _digest_of(tmp_path, payload=b"edge-core-payload") -> str:
+def _digest_of(tmp_path, payload=GOOD_ARCHIVE) -> str:
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
@@ -1323,7 +1682,7 @@ def test_installed_package_digest_only_when_the_disk_checks_pass(tmp_path):
     from azazel_nexus.edge_package import installed_package_digest
 
     root = _package(tmp_path)
-    expected = "sha256:" + hashlib.sha256(b"edge-core-payload").hexdigest()
+    expected = "sha256:" + hashlib.sha256(GOOD_ARCHIVE).hexdigest()
     assert installed_package_digest(package_root=root) == expected
     (root / PIN.artifact_name).write_bytes(b"tampered")
     with pytest.raises(EdgePackageRefused):

@@ -51,7 +51,7 @@ from azazel_nexus.edge_package import (
     installed_package_digest,
 )
 
-from _edge_package_fixture import write_package
+from _edge_package_fixture import elf_stub, write_package
 from signing_oracle import public_key_for, sign_detached
 
 
@@ -582,9 +582,9 @@ def test_an_old_signed_manifest_replayed_at_the_floor_version_is_refused(tmp_pat
     # The issuer signed build A of 0.1.0; build B of 0.1.0 was activated and
     # holds the floor. Putting the old, validly signed build A back is a replay.
     old = tmp_path / "old"
-    write_package(old, binary=b"\x7fELF build A\n")
+    write_package(old, binary=elf_stub() + b"build A\n")
     _sign_manifest(old, seed)
-    current_digest, _ = write_package(tmp_path / "current", binary=b"\x7fELF build B\n")
+    current_digest, _ = write_package(tmp_path / "current", binary=elf_stub() + b"build B\n")
     trust = _trust(tmp_path, anchor=_anchor(seed), floor=_floor(PIN.version, current_digest))
     found = inspect(old, trust=trust)
     assert found.issuer.issuer_authenticated is True  # the signature is genuine

@@ -575,8 +575,12 @@ python3 tools/build_offline_bundle.py --target debian-13-aarch64-cp313 \
 
 A lab wheelhouse is refused by the baseline bundle builder and the other way
 round; a bundle is checked against the lock of its manifest's target only.
-The lab target carries no Edge package: a filled Edge slot is refused at
-build and at verify, since the only Edge pin is for x86_64.
+The lab target may carry only the aarch64 Edge package, checked against
+its own lab pin `packaging/offline/edge-artifact-aarch64-lab.sha256` and
+inspected for aarch64 (target, manifest and the archived binary's ELF header
+must agree); an x86_64 package, or one binary's CPU under the other's name, is
+refused at build and at verify ([ADR-0005 amendment of
+2026-10-30](adr/0005-arm-lab-offline-target.md#amendment-2026-10-30-the-lab-target-carries-the-aarch64-edge-package)).
 `wheelhouse.json` and every report carry `platform_profile_id`
 (`debian-13-arm64-cp313-lab`), `purpose` (`lab-software-verification`) and a
 `purpose_note`, and `install` refuses unless the installed runtime observes
@@ -696,11 +700,15 @@ vouch for that bundle.
 
 Nothing from the bundle reaches Python's `tarfile` unless its bytes equal a
 digest the reviewed checkout pins. The Edge artifact is stream-hashed and
-compared with `packaging/offline/edge-artifact.sha256` (one `<sha256>
-<artifact name>` line) **before** any tar parsing; only a match is handed to
-the existing `edge_package` checks, which read it with `tarfile`. This
-repository ships no such pin: pinning a released Edge artifact is an owner
-decision, and until it is made a filled Edge slot is refused. `.deb` control
+compared with the target's own pin (one `<sha256>  <artifact name>` line:
+`packaging/offline/edge-artifact.sha256` for the baseline,
+`packaging/offline/edge-artifact-aarch64-lab.sha256` for the Arm lab target)
+**before** any tar parsing; only a match is handed to the existing
+`edge_package` checks, run for the target's CPU, which read it with
+`tarfile`. The baseline's pin is not shipped: pinning a released x86_64 Edge
+artifact for the deployment baseline is an owner decision, and until it is
+made a filled baseline Edge slot is refused. The lab pin is shipped
+(ADR-0005, amendment of 2026-10-30). `.deb` control
 archives have no reviewed pin and are read only by this module's own parser.
 That parser reads numeric fields exactly as `tarfile` does (cut at the first
 NUL, nothing but NUL or space after it, octal digits only) and refuses what
@@ -723,11 +731,11 @@ but never installed by this tool.
 | --- | --- | --- |
 | Hash-pinned wheelhouse build (backend, `dbus-next`, `PyYAML`, both Nexus wheels incl. native `_bootstrap_deadline`) | implemented; container-rehearsed | [container evidence](evidence/offline-install-container-2026-10-28.json); x86_64 under Rosetta emulation, not hardware |
 | Pinned Fabric and pydantic in the wheelhouse ([ADR-0004](adr/0004-fabric-in-offline-wheelhouse.md)) | implemented; container-rehearsed (build, `--network none` install, Fabric hardware projection) | x86_64 under Rosetta emulation; the Fabric wheel hash reproduced on x86_64 and aarch64 containers; Fabric's release signature not verified by Nexus |
-| Arm lab target `debian-13-aarch64-cp313` ([ADR-0005](adr/0005-arm-lab-offline-target.md)) | implemented; container-rehearsed (native aarch64 build, `--network none` install, `install.sh --without-service-manager`) | [aarch64 container record](evidence/offline-install-aarch64-lab-container-2026-10-29.json); lab-software-verification only, not the baseline; not Arm hardware, no Arm VM/systemd run, no arm64 Edge pin |
+| Arm lab target `debian-13-aarch64-cp313` ([ADR-0005](adr/0005-arm-lab-offline-target.md)) | implemented; container-rehearsed (native aarch64 build, `--network none` install, `install.sh --without-service-manager`) | [aarch64 container record](evidence/offline-install-aarch64-lab-container-2026-10-29.json); lab-software-verification only, not the baseline; not Arm hardware, no Arm VM/systemd run; the aarch64 Edge slot (lab pin, 2026-10-30) is unit-tested, not container-rehearsed |
 | Single bundle manifest (source, wheels, slots; sha256/size/kind/source) | implemented | `tests/unit/test_offline_install_bundle.py` |
 | Safe atomic extraction and refusal cases | implemented | same tests; one tampered bundle refused in the container |
 | Offline install with `--no-index --find-links --require-hashes` | implemented; container-rehearsed | `--network none` container at the commit the evidence names; lock check, `pip check`, imports, `recheck` and `install.sh --without-service-manager` passed. The e2e harness needs PyNaCl for its fixtures; with a separate harness-only PyNaCl set (not in the bundle or the lock) 21 of 22 stages passed, the systemd stage not run |
-| Edge package slot | implemented; container-rehearsed with an Edge packager build and a rehearsal-only pin | needs an owner-reviewed artifact pin in `packaging/offline/edge-artifact.sha256` (none shipped); then the `edge_package` checks; health/running stay `not-checked`; not admitted |
+| Edge package slot | implemented; container-rehearsed with an Edge packager build and a rehearsal-only pin | per target CPU (ADR-0003 R4): baseline needs an owner-reviewed artifact pin in `packaging/offline/edge-artifact.sha256` (none shipped); the Arm lab target has a shipped lab pin; then the `edge_package` checks for the target's CPU; health/running stay `not-checked`; not admitted |
 | Debian `.deb` slot | implemented (slot and control-field check only) | no pinned package set or source exists; no `.deb` was carried |
 | Model / Knowledge slots | implemented (carry and hash only) | not admitted; admission paths unchanged |
 | Bundle signing | **not implemented** — hook only | needs the issuer/operator signing work and a key |
