@@ -611,6 +611,8 @@ def explanation_summary(record):
                         citation_state="shown" if ref["citation"] else "none")
         try:
             _display_citation(citation["citation"])
+            if _CITATION_PATH.search(unicodedata.normalize("NFKC", citation["citation"])):
+                raise ValueError("citation_names_a_path")
         except ValueError:
             # Producer text with address syntax is not displayed; the rest of
             # the citation still is, and says that one was withheld.
@@ -645,10 +647,34 @@ def _summary_banners():
     return frozenset(private_text(b[:280], 280) for b in REFERENCE_BANNERS)
 
 
+#: A citation that names a file or directory (absolute or relative path).
+#: The same shape `status_view` withholds from its read model; it is
+#: withheld here, in the builder, so that neither file the explainer writes
+#: -- the operator snapshot nor the read-only UI's byte-identical copy
+#: (ADR-0007) -- holds it (R389-01).
+_CITATION_PATH = re.compile(r"(?:^|[\s(\[`'\"])(?:/|[\w.-]+/)[\w./-]*")
+
+
+def _public_refs(row):
+    """`row` with every path-naming citation withheld; rows read earlier
+    (a checkpoint from a previous release) are cleaned the same way."""
+    explanation = row.get("explanation")
+    if not isinstance(explanation, dict) or not isinstance(explanation.get("knowledge_refs"), list):
+        return row
+    refs = []
+    for ref in explanation["knowledge_refs"]:
+        if (isinstance(ref, dict) and isinstance(ref.get("citation"), str)
+                and _CITATION_PATH.search(unicodedata.normalize("NFKC", ref["citation"]))):
+            ref = {**ref, "citation": "", "citation_state": "withheld"}
+        refs.append(ref)
+    return {**row, "explanation": {**explanation, "knowledge_refs": refs}}
+
+
 def build_recent_incidents(incidents, written_at):
     value = {"schema": RECENT_SCHEMA, "written_at": written_at,
-             "incidents": sorted(incidents, key=lambda r: (r["last_seen"], r["first_seen"], r["incident_id"]),
-                                 reverse=True)[:20]}
+             "incidents": [_public_refs(r) for r in sorted(
+                 incidents, key=lambda r: (r["last_seen"], r["first_seen"], r["incident_id"]),
+                 reverse=True)[:20]]}
     checked = read_recent_incidents(json.dumps(value, allow_nan=False).encode())
     if checked is None:
         raise ValueError("recent_refused")

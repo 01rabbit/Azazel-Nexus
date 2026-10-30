@@ -75,7 +75,15 @@ an unprivileged reader (`operator_snapshots`, `noc_status`, `edge_intake`,
 no key, no digest of a secret, no exception text. A byte-identical copy lets
 the UI use the **same strict readers** and the **same freshness** (`written_at`
 of the same write); a second, narrower shape would be a second reader to keep
-in step. Snapshots that are *not* in this shape get no copy: the Edge probe
+in step. Because the copy is the same bytes, whatever the UI must not see is
+removed **in the shared builder, before either file is written**, never only
+in the read model: the explainer's recent list withholds a Knowledge citation
+that names a file or directory (absolute or relative) in
+`incident_explain.build_recent_incidents` and `explanation_summary`, rows
+restored from an older checkpoint included (Codex review R389-01). A test
+writes a citation with such a path through the explainer and reads the
+**raw** UI file. The remaining free text in the copied shapes is the AI
+summary and the fixed notices, which the UI shows as such anyway. Snapshots that are *not* in this shape get no copy: the Edge probe
 result (it carries the package digest and free-text reasons, M22) and every
 store `status` reads directly (the Knowledge Lite store, the route ledger,
 the commissioning record, the model store, the remote consent). The UI shows
@@ -103,7 +111,14 @@ result as the section `operator_view` with its own schema
 `azazel-nexus/status-view/operator-view/1`. A source the reading account
 cannot open is passed as *not read* and every row built from it says so with
 a code (`catalog_permission_denied`, `not_read`): never `absent`, `empty` or
-zero. The provider row now follows the gates that decide admission -- the
+zero. A catalog that is refused keeps its fixed code (`catalog_unsigned`,
+`catalog_invalid`, `catalog_unreadable`, `catalog_permission_denied`) and is
+never turned into "not presented" (R389-06). The adapter **never opens or
+hashes an artifact** (R389-04): an installed model is described from the
+signed catalog and the current generation record as "installed; its digest
+was checked when it was promoted; not re-verified here", and never as
+`present`, which would claim a verification this screen did not make.
+Re-verifying integrity stays an explicit operation. The provider row now follows the gates that decide admission -- the
 build switch `LOCAL_MODEL_ADMISSION_ENABLED`, the measured Core reserve
 (HG-05), and the local route's admission reason as entryd recorded it --
 listing each gate that refuses (`reason_codes`). No combination this build can
@@ -119,7 +134,9 @@ as **未定義の語** in the unknown tone. Removing a field, changing a field's
 meaning or type, or changing what a word means is a new major version
 (`status-view/2`), which `ui_model` refuses (`read_model_refused`) rather than
 misreads. A section with a schema of its own (`operator-view/1`) follows the
-same rule on its own. A snapshot copy carries its snapshot's schema
+same rule on its own: `ui_model` checks that schema and copies only the
+fields of the version it knows, one by one; any other version of the section
+is `pending` with `section_version_unsupported` and is not shown (R389-05). A snapshot copy carries its snapshot's schema
 (`.../v1`); a snapshot that changes shape bumps its own schema and its reader
 lists exactly the versions it accepts (`operator_snapshots`, unchanged).
 
@@ -156,6 +173,15 @@ labels GetUnit's `not-loaded` as "読込なし（未導入とは限らない）"
   its reach (tested with the installer's uid/gid and modes).
 * A node upgraded without re-running `install.sh` keeps working; the UI says
   absent for each copy until the leaves exist.
+* A copy whose rewrite fails is removed when possible, so the UI says absent at
+  once; when even that fails, the old copy carries the `written_at` of the
+  write that produced it and is stale past its snapshot's limit (30 s for the
+  Edge loop, 120-300 s for the observers). Within that window the UI shows the
+  last good copy with its time, as it would after a daemon stopped.
+* "No open incident" is said only when the intake (which owns the incident
+  ledger) is fresh, running and reports zero, and the explainer's list shows
+  none open: the list holds twenty rows and can lag, fail to store or break,
+  and a disagreement with the intake's count is said (R389-02).
 * The operator view on the UI shows the admission gates it can read and says
   *not read* for the model store and the consent, which `azui` cannot read.
   Publishing those to the UI would need a writer that owns them; none runs in

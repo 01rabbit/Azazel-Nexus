@@ -12,7 +12,11 @@ What it reads, each read-only and each through an existing reader:
 
 * the model store (`/var/lib/azazel/models`, `0750 root:azmio`): its trust
   descriptor, its signed catalog, the inbox listing, the installed
-  generation -- through `ModelImport`'s read verbs only (`gather_facts`);
+  generation record -- through `gather_facts` over `_RecordedState`, whose
+  `reading_for` never opens or hashes an artifact (an installed model is
+  "recorded at promotion, not re-verified here", never `present`). A
+  catalog that is refused (unsigned, invalid, unreadable) keeps its fixed
+  code and is never shown as not presented;
 * the Core reserve record (`core_reserve.load_reserve`, HG-05);
 * the M.I.O. entry service's operator snapshot, already read for the status
   view (its recorded ceiling and the local route's admission reason);
@@ -55,7 +59,7 @@ MAX_MODELS = 16
 
 #: What reading each input came to.
 ACCESS_WORDS = frozenset({"readable", "absent", "permission_denied", "refused", "not_read",
-                          "stale", "not_recorded"})
+                          "stale", "not_recorded", "unsigned", "invalid", "unreadable"})
 
 #: The inputs whose state decides what the section can say. The remote
 #: consent is the entry service's own state, which this adapter never reads;
@@ -134,14 +138,16 @@ def _catalog(models: Path) -> dict:
             result["access"] = word
             return result
     try:
-        entries = commissioned.catalog().entries
+        catalog = commissioned.catalog()
+        entries = catalog.entries
     except CatalogRefused as refused:
-        if _access_of(refused) == "permission_denied":
-            result["access"] = "permission_denied"
+        word = _catalog_refusal(refused)
+        if word != "not_presented":
+            # A refused catalog is never shown as absent (R389-06): the fixed
+            # code says why, and nothing else is listed from it.
+            result["access"] = word
             return result
-        # Refused or not presented: `reading_for` says absent with the
-        # refusal for every model, and so does this screen.
-        entries = None
+        catalog, entries = None, None
     except Exception as exc:  # noqa: BLE001
         result["access"] = _access_of(exc)
         return result
@@ -152,10 +158,85 @@ def _catalog(models: Path) -> dict:
     except OSError:
         result["access"] = "refused"
         return result
-    result.update(service=ModelImport(commissioned), model_ids=tuple(ids[:MAX_MODELS]),
+    result.update(service=_RecordedState(ModelImport(commissioned), catalog),
+                  model_ids=tuple(ids[:MAX_MODELS]),
                   omitted=max(0, len(ids) - MAX_MODELS), quarantined=quarantined,
                   empty=entries is not None and not entries)
     return result
+
+
+def _catalog_refusal(refused) -> str:
+    """A fixed word for why the catalog was refused (R389-06)."""
+
+    from .model_catalog import Refusal
+
+    text = str(refused)
+    if isinstance(refused.__cause__, PermissionError):
+        return "permission_denied"
+    if text.startswith(Refusal.CATALOG_ABSENT.value):
+        return "not_presented"
+    if isinstance(refused.__cause__, OSError):
+        return "unreadable"
+    if text.startswith(Refusal.CATALOG_UNSIGNED.value):
+        return "unsigned"
+    return "invalid"
+
+
+class _RecordedState:
+    """`ModelImport`'s read verbs, with `reading_for` from records only (R389-04).
+
+    `ModelImport.reading_for` re-hashes the installed artifact, which can be
+    gigabytes; a status screen must not do that on every refresh. Here a model
+    is described from the signed catalog and the current generation record:
+    installed, with the digest that was checked when it was promoted. It is
+    never called `present` (verified now): integrity is re-verified only by
+    an explicit operation, and the row says so. No artifact is opened.
+    """
+
+    def __init__(self, service, catalog):
+        self._service = service
+        self._catalog = catalog
+
+    def current_generation(self):
+        return self._service.current_generation()
+
+    def list_inbox(self):
+        return self._service.list_inbox()
+
+    def reading_for(self, model_id):
+        from .model_catalog import CatalogState, ModelReading, Refusal, absent_reading
+
+        if self._catalog is None:
+            return absent_reading()
+        entry = self._catalog.entry(model_id)
+        if entry is None:
+            return ModelReading(model_id=model_id, state=CatalogState.EMPTY,
+                                refused_by=Refusal.UNKNOWN_MODEL,
+                                reason=f"{Refusal.UNKNOWN_MODEL.value}: the catalog does not name it")
+        generation = self._service.current_generation()
+        installed = generation.installed.get(model_id) if generation is not None else None
+        if installed is None:
+            return ModelReading(model_id=model_id, state=CatalogState.DECLARED,
+                                refused_by=Refusal.ARTIFACT_ABSENT,
+                                reason=(f"{Refusal.ARTIFACT_ABSENT.value}. The catalog offers it; "
+                                        "no generation installs it"))
+        if installed != entry.digest:
+            return ModelReading(model_id=model_id, state=CatalogState.DECLARED,
+                                refused_by=Refusal.DIGEST_MISMATCH,
+                                reason=("the generation record names a digest other than the "
+                                        "catalog's; not shown as present"))
+        if entry.license_acknowledgement_required:
+            return ModelReading(model_id=model_id, state=CatalogState.DECLARED,
+                                refused_by=Refusal.LICENSE_NOT_ACKNOWLEDGED,
+                                reason=Refusal.LICENSE_NOT_ACKNOWLEDGED.value)
+        return ModelReading(model_id=model_id, state=CatalogState.DECLARED, refused_by=None,
+                            reason=INSTALLED_NOT_REVERIFIED.format(number=generation.number))
+
+
+#: What an installed model's row says: recorded, not re-verified here.
+INSTALLED_NOT_REVERIFIED = (
+    "installed in generation {number}; its digest was checked when it was promoted. "
+    "This screen does not re-hash it, so integrity is not re-verified here")
 
 
 def _reserve(path: Path):

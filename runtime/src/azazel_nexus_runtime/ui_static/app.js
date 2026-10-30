@@ -377,10 +377,18 @@
       if (b.observed_at !== undefined) { node.appendChild(when("観測時刻", b.observed_at)); }
     } else if (b.code === "edge_unit_state") {
       node.appendChild(el("span", "note", "azazel-edge-core.service：" + text(b.active_state)));
-    } else if (b.code === "open_incidents") {
-      node.appendChild(el("span", "note", "未解決 " + b.count + " 件（一覧に " + b.shown + " 件）" +
-        (typeof b.most_severe === "number" ? "、最大の重大度 " + b.most_severe : "")));
+    } else if (b.code === "open_incidents_total") {
+      node.appendChild(el("span", "note", typeof b.count === "number" ? "未解決 " + b.count + " 件（受信側の台帳の件数）"
+        : "受信側の件数を確認できない"));
+    } else if (b.code === "open_incidents_listed") {
+      node.appendChild(el("span", "note", "一覧の未解決 " + b.count + " 件（一覧は最新 " + b.shown + " 件まで）" +
+        (typeof b.most_severe === "number" ? "、最も重大な重大度 " + b.most_severe + "（数値が小さいほど重大）" : "")));
       if (b.latest !== null && b.latest !== undefined) { node.appendChild(when("最後の観測", b.latest)); }
+      if (b.reason_code) { node.appendChild(reasonLine(b.reason_code)); }
+    } else if (b.code === "list_differs_from_intake") {
+      node.appendChild(el("span", "note warn", "受信側は " + b.count + " 件、一覧は " + b.listed + " 件。一覧に載っていない未解決があり得る"));
+    } else if (b.code === "explainer_behind") {
+      node.appendChild(el("span", "note warn", text(b.counter) + "：" + b.count));
     } else if (b.code === "ai_explanations") {
       node.appendChild(el("span", "note", b.count + " 件に AI の説明あり（推測。事実ではない）"));
     } else if (b.code === "would_not_executed") {

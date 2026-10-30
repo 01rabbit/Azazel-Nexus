@@ -451,6 +451,14 @@
     "ui": [
       "UI 用コピー",
       "info"
+    ],
+    "unsigned": [
+      "署名を検証できない",
+      "bad"
+    ],
+    "invalid": [
+      "壊れている",
+      "bad"
     ]
   },
   "reasons": {
@@ -559,7 +567,15 @@
     "local_no_admission_evidence": "M.I.O. の記録：ローカル経路の承認の証拠がない",
     "local_unavailable": "M.I.O. の記録：ローカル経路は利用できない",
     "local_observation_invalid": "M.I.O. の記録：ローカル経路の観測値が不正",
-    "admission_record_unread": "M.I.O. の承認の記録を読めない（snapshot が無い・古い・不確か）"
+    "admission_record_unread": "M.I.O. の承認の記録を読めない（snapshot が無い・古い・不確か）",
+    "incident_list_incomplete": "受信側の総数より一覧の件数が少ない（一覧は最新 20 件・説明器の遅れや失敗で欠ける）",
+    "incident_count_not_evidenced": "受信側の件数を確かめられない（受信の保存失敗など）ため、「なし」とは言えない",
+    "incident_list_unusable": "インシデント一覧を使えないため、「なし」とは言えない",
+    "catalog_unsigned": "catalog の署名を検証できない（改ざん・鍵の不一致の可能性）",
+    "catalog_invalid": "catalog が壊れている・形が正しくない",
+    "catalog_unreadable": "catalog を読めない（入出力の失敗）",
+    "section_version_unsupported": "この画面が対応していない版の節（誤読を避けて表示しない）",
+    "integrity_not_reverified": "導入時に digest を確認した記録はあるが、この画面では再検証していない"
   },
   "sections": {
     "overview": "概況（4 つの問い）",
@@ -745,18 +761,26 @@
     "local model admission is switched off in this build until the hardware gates close; no provider is admitted": "このビルドでは、ハードウェアの検証ゲートが閉じるまでローカルモデルの承認が切られている。提供元は承認されていない",
     "an admission gate refuses or could not be read; no provider is admitted": "承認の門のどれかが拒否しているか読めない。提供元は承認されていない",
     "not shown: the model store was not read by this account. Run azazel-nexus status as root on the terminal": "表示しない：このアカウントではモデルの保存場所を読んでいない。端末で root として azazel-nexus status を実行する",
-    "not shown: the profile or the remote consent was not read by this account. Run azazel-nexus status as root on the terminal": "表示しない：このアカウントでは上限またはリモート利用の同意を読んでいない。端末で root として azazel-nexus status を実行する"
+    "not shown: the profile or the remote consent was not read by this account. Run azazel-nexus status as root on the terminal": "表示しない：このアカウントでは上限またはリモート利用の同意を読んでいない。端末で root として azazel-nexus status を実行する",
+    "the catalog was refused; nothing from it is shown, and it is not shown as absent": "catalog は拒否された。中身は表示せず、「提示されていない」とも表示しない",
+    "not available: the catalog was refused. Inspect it on the terminal before any import": "利用できない：catalog が拒否された。導入の前に端末で確認する"
   },
   "summary": {
     "basis": {
       "default_route": "既定経路と出口の link（受動観測）",
       "edge_unit_state": "Edge の unit の状態（unit 観測）",
       "reachability_not_measured": "到達性は能動確認していない（受動観測のみ）",
-      "open_incidents": "未解決のインシデント（説明器の一覧）",
       "ai_explanations": "AI による説明",
       "would_not_executed": "Edge の判断は would（未実行）として受け取る",
       "would_not_read": "Edge の判断を読めない",
-      "none_accepted": "実行結果は受理していない（なし）"
+      "none_accepted": "実行結果は受理していない（なし）",
+      "open_incidents_total": "未解決のインシデントの総数（受信側の台帳）",
+      "open_incidents_listed": "説明器の一覧に載っている未解決",
+      "list_differs_from_intake": "総数と一覧の件数が一致しない",
+      "explainer_chain_broken": "説明器のチェーンが壊れている（一覧が欠ける）",
+      "explainer_storage_failed": "説明器の保存に失敗している（一覧が欠ける）",
+      "explainer_behind": "説明器の処理が遅れている（一覧が遅れる）",
+      "explainer_not_usable": "説明器の状態を読めない"
     },
     "path": {
       "usable": "経路あり",

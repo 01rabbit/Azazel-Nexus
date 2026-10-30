@@ -171,12 +171,76 @@ def project(view, *, origin: dict, served_at: str, setup=None,
     model["snapshot_reader"] = view.get("snapshot_reader") if view.get(
         "snapshot_reader") in ("operator", "ui") else None
     for name in UI_SECTIONS:
-        if name in sections:
-            model["sections"][name] = _copy(sections[name])
-        else:
+        if name not in sections:
             model["pending"][name] = "section_absent_from_read_model"
+        elif name == "operator_view":
+            # A section with its own schema (M23, R389-05): only the version
+            # this page knows, field by field; any other is not shown.
+            copied = _operator_view(sections[name])
+            if copied is None:
+                model["pending"][name] = "section_version_unsupported"
+            else:
+                model["sections"][name] = copied
+        else:
+            model["sections"][name] = _copy(sections[name])
     model["summary"] = summarize(model)
     return model
+
+
+# -- the operator view section (M23) --------------------------------------------
+
+OPERATOR_VIEW_SCHEMA = "azazel-nexus/status-view/operator-view/1"
+_OV_SCALARS = ("status", "reason_code", "admission_build_switch", "models_omitted",
+               "status_sentence")
+_OV_INPUTS = ("model_store", "core_reserve", "mio_entry_record", "remote_consent")
+_OV_ROW = ("axis", "value", "reason", "reason_code", "model_id", "refused_by", "admitted",
+           "nominal_gib", "profile", "is_this_node", "note")
+_OV_ROW_LISTS = ("reason_codes", "entries")
+_OV_OPERATION = ("confirmation", "available", "reason", "transition")
+
+
+def _scalar(value) -> bool:
+    return value is None or type(value) in (str, int, bool) or (
+        type(value) is float and value == value)
+
+
+def _strings(value) -> list:
+    return [item for item in value if type(item) is str] if isinstance(value, list) else []
+
+
+def _operator_view(section) -> Optional[dict]:
+    """`operator-view/1`, copied field by field; `None` for any other version."""
+
+    if not isinstance(section, dict) or section.get("schema") != OPERATOR_VIEW_SCHEMA:
+        return None
+    copied = {"schema": OPERATOR_VIEW_SCHEMA}
+    for key in _OV_SCALARS:
+        if key in section and _scalar(section[key]):
+            copied[key] = section[key]
+    inputs = _dict(section.get("inputs"))
+    copied["inputs"] = {k: inputs[k] for k in _OV_INPUTS if type(inputs.get(k)) is str}
+    copied["unread_inputs"] = _strings(section.get("unread_inputs"))
+    provider = _dict(section.get("provider"))
+    copied["provider"] = {"state": provider.get("state") if type(provider.get("state")) is str
+                          else None, "reason_codes": _strings(provider.get("reason_codes"))}
+    sections = []
+    for part in section.get("sections") if isinstance(section.get("sections"), list) else ():
+        part = _dict(part)
+        rows = []
+        for row in part.get("rows") if isinstance(part.get("rows"), list) else ():
+            row = _dict(row)
+            kept = {k: row[k] for k in _OV_ROW if k in row and _scalar(row[k])}
+            kept.update({k: _strings(row[k]) for k in _OV_ROW_LISTS if k in row})
+            rows.append(kept)
+        sections.append({"key": part.get("key") if type(part.get("key")) is str else None,
+                         "title": part.get("title") if type(part.get("title")) is str else None,
+                         "rows": rows})
+    copied["sections"] = sections
+    copied["operations"] = [
+        {k: op[k] for k in _OV_OPERATION if k in op and _scalar(op[k])}
+        for op in (_dict(o) for o in (section.get("operations")
+                                      if isinstance(section.get("operations"), list) else ()))]
+    return copied
 
 
 # -- the four answers ---------------------------------------------------------
@@ -276,31 +340,81 @@ def _loop_part(model, name, access_name):
     return part, _unusable(part, model["access"].get(access_name))
 
 
-def _events(model) -> dict:
-    recent, bad = _loop_part(model, "recent", "incident_recent")
+def _explainer_notes(model) -> list:
+    """What makes the explainer's list incomplete or late, as basis entries."""
+
+    explainer, bad = _loop_part(model, "explainer", "incident_explain_status")
     if bad:
-        return _answer(*bad, [])
+        return [{"kind": "observed", "code": "explainer_not_usable", "reason_code": bad[1]}]
+    snapshot = _dict(explainer.get("snapshot"))
+    notes = []
+    for flag in ("chain_broken", "storage_failed"):
+        if snapshot.get(flag) is True:
+            notes.append({"kind": "observed", "code": "explainer_" + flag})
+    for counter in ("pending", "cursor_lag"):
+        if type(snapshot.get(counter)) is int and snapshot[counter] > 0:
+            notes.append({"kind": "observed", "code": "explainer_behind",
+                          "counter": counter, "count": snapshot[counter]})
+    return notes
+
+
+def _events(model) -> dict:
+    """Open incidents: the intake's count is the total; the list is a view.
+
+    The intake owns the incident ledger and reports `open_incidents`; the
+    explainer's recent list holds at most twenty rows and can lag, fail to
+    store or break. So the total comes from the intake, the list's rows are
+    counted separately, a disagreement is said, and "none" is said only when
+    the intake is fresh, running (not degraded) and reports zero, and the list
+    shows none open either (R389-02).
+    """
+
     intake, intake_bad = _loop_part(model, "intake", "edge_intake_status")
-    rows = [row for row in _dict(recent.get("snapshot")).get("incidents") or ()
-            if isinstance(row, dict)]
+    recent, recent_bad = _loop_part(model, "recent", "incident_recent")
+    rows = [] if recent_bad else [
+        row for row in _dict(recent.get("snapshot")).get("incidents") or ()
+        if isinstance(row, dict)]
     open_rows = [row for row in rows if row.get("state") == "open"]
     ai = sum(1 for row in open_rows
              if _dict(row.get("explanation")).get("content_kind") == "ai_advice")
     latest = max((row.get("last_seen") for row in open_rows
                   if isinstance(row.get("last_seen"), (int, float))), default=None)
-    basis = [{"kind": "observed", "code": "open_incidents", "count": len(open_rows),
+    # Severity: a smaller number is more severe (`incident_explain`,
+    # Edge's `decide_defense`), so the most severe is the minimum (R389-03).
+    severities = [row.get("most_severe") for row in open_rows
+                  if type(row.get("most_severe")) is int]
+    total = None
+    if not intake_bad and intake.get("status") in ("running", "degraded"):
+        count = _dict(intake.get("snapshot")).get("open_incidents")
+        total = count if type(count) is int and count >= 0 else None
+    basis = [{"kind": "observed", "code": "open_incidents_total", "count": total,
+              "source": "intake"},
+             {"kind": "observed", "code": "open_incidents_listed", "count": len(open_rows),
               "shown": len(rows), "latest": latest,
-              "most_severe": max((row.get("most_severe") for row in open_rows
-                                  if type(row.get("most_severe")) is int), default=None)}]
+              "most_severe": min(severities) if severities else None,
+              "reason_code": recent_bad[1] if recent_bad else None}]
+    basis.extend(_explainer_notes(model))
     if ai:
         basis.append({"kind": "ai_inference", "code": "ai_explanations", "count": ai})
-    if open_rows:
-        return _answer("open_incidents", None, basis, count=len(open_rows))
-    # None open is news only while the intake that feeds the list is running.
-    if intake_bad or intake.get("status") not in ("running", "degraded"):
-        word, reason = intake_bad or ("unknown", intake.get("reason_code"))
-        return _answer("unknown" if word not in ("permission_denied", "stale") else word,
-                       "intake_not_evidenced_running", basis, intake=reason)
+    if total is not None and len(open_rows) != total:
+        basis.append({"kind": "observed", "code": "list_differs_from_intake",
+                      "count": total, "listed": len(open_rows)})
+    if (total or 0) > 0 or open_rows:
+        count = max(total or 0, len(open_rows))
+        reason = (None if total is not None and total == len(open_rows)
+                  else "intake_not_evidenced_running" if total is None
+                  else "incident_list_incomplete")
+        return _answer("open_incidents", reason, basis, count=count)
+    if intake_bad:
+        word, reason = intake_bad
+        return _answer(word if word in ("permission_denied", "stale", "not_collected")
+                       else "unknown", "intake_not_evidenced_running", basis, intake=reason)
+    if intake.get("status") != "running" or total is None:
+        # Degraded (storage failed) or no usable count: completeness unknown.
+        return _answer("unknown", "incident_count_not_evidenced", basis,
+                       intake=intake.get("reason_code"))
+    if recent_bad:
+        return _answer("unknown", "incident_list_unusable", basis)
     return _answer("no_open_incidents", None, basis, count=0)
 
 

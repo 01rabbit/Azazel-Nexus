@@ -17,9 +17,11 @@ bytes into the read-only UI's leaf (`run/ui-read/<leaf>`, `2750
 <daemon>:azui`), right after the operator snapshot, by the same temp file and
 rename. The copy is byte-identical, so the UI reads it with the same strict
 reader and judges its freshness from the same `written_at`. A copy that
-cannot be written (an older install without the leaf) is logged once and
-never fails the daemon or the operator snapshot; the UI then shows that
-snapshot as absent, never as healthy.
+cannot be written (an older install without the leaf, a full disk) is logged
+once and never fails the daemon or the operator snapshot. The previous copy is
+removed when that is possible, so the UI says absent rather than showing the
+last good copy; otherwise that copy ages out on its own `written_at` (the one
+the operator snapshot had then) and is never shown fresh past its limit.
 """
 
 from __future__ import annotations
@@ -99,6 +101,14 @@ class UiCopy:
             self._failing = False
             return True
         except Exception as exc:  # noqa: BLE001 - the UI's copy is optional
+            # The copy left by the last good write would still look fresh
+            # until its own stale limit while the operator snapshot moves on
+            # (R389 §3): remove it, so the UI says absent at once. Best effort;
+            # where even that fails the copy ages out on its `written_at`.
+            try:
+                os.unlink(self.path)
+            except OSError:
+                pass
             if not self._failing:
                 self._failing = True
                 try:

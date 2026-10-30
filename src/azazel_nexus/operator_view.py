@@ -508,7 +508,7 @@ def _catalog_section(facts: ViewFacts) -> Section:
     if facts.catalog_access != "read":
         return Section("catalog", "Catalog", ({
             "axis": "catalog_state", "value": None,
-            "reason": "the model store was not read by this account",
+            "reason": _unread_store_reason(facts.catalog_access),
             "reason_code": "catalog_" + facts.catalog_access,
         },))
     rows = [
@@ -536,11 +536,19 @@ def _catalog_section(facts: ViewFacts) -> Section:
     return Section("catalog", "Catalog", tuple(rows))
 
 
+def _unread_store_reason(access: str) -> str:
+    if access == "permission_denied":
+        return "the model store was not read by this account"
+    # Refused (unsigned, invalid, unreadable): never "not presented" (R389-06).
+    return ("the catalog was refused; nothing from it is shown, and it is not "
+            "shown as absent")
+
+
 def _import_section(facts: ViewFacts) -> Section:
     if facts.catalog_access != "read":
         return Section("import", "Offline import", tuple(
             {"axis": axis, "value": None,
-             "reason": "the model store was not read by this account",
+             "reason": _unread_store_reason(facts.catalog_access),
              "reason_code": "catalog_" + facts.catalog_access}
             for axis in ("inbox", "quarantine", "promoted", "rollback_target")))
     rows = [
@@ -643,7 +651,7 @@ def _remote_operation(facts: ViewFacts) -> Operation:
 
 def _license_operation(facts: ViewFacts) -> Operation:
     if facts.catalog_access != "read":
-        return _unread_store_operation(Confirmation.LICENSE_ACKNOWLEDGEMENT)
+        return _unread_store_operation(Confirmation.LICENSE_ACKNOWLEDGEMENT, facts.catalog_access)
     waiting = [
         r.model_id
         for r in facts.readings
@@ -662,7 +670,11 @@ def _license_operation(facts: ViewFacts) -> Operation:
     )
 
 
-def _unread_store_operation(confirmation: Confirmation) -> Operation:
+def _unread_store_operation(confirmation: Confirmation, access: str) -> Operation:
+    if access != "permission_denied":
+        return Operation(confirmation=confirmation, available=False,
+                         reason=("not available: the catalog was refused. Inspect it on the "
+                                 "terminal before any import"))
     return Operation(
         confirmation=confirmation,
         available=False,
@@ -673,7 +685,7 @@ def _unread_store_operation(confirmation: Confirmation) -> Operation:
 
 def _import_operation(facts: ViewFacts) -> Operation:
     if facts.catalog_access != "read":
-        return _unread_store_operation(Confirmation.MODEL_IMPORT)
+        return _unread_store_operation(Confirmation.MODEL_IMPORT, facts.catalog_access)
     if facts.catalog_state is CatalogState.ABSENT:
         return Operation(
             confirmation=Confirmation.MODEL_IMPORT,

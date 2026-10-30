@@ -110,7 +110,7 @@ REASON_CODES = frozenset({
     "collection_failed", "active_check_not_performed", "role_evidence_not_provided",
     # The operator_view section (S-04, `operator_view_source`).
     "inputs_not_all_read", "not_read", "catalog_permission_denied", "catalog_refused",
-    "catalog_absent",
+    "catalog_absent", "catalog_unsigned", "catalog_invalid", "catalog_unreadable",
 })
 #: Knowledge Lite's closed status shape (`lite_import.status_summary`).
 KNOWLEDGE_STATES = frozenset({"available", "stale", "unavailable", "quarantined"})

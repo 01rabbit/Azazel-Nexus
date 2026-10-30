@@ -363,19 +363,21 @@ def test_an_unusable_noc_source_is_said_as_such(noc, access, observers, word, re
     assert (answer["status"], answer["reason_code"]) == (word, reason)
 
 
-def _loop(rows, *, intake="running", recent_fresh=True):
+def _loop(rows, *, intake="running", recent_fresh=True, open_total=None, explainer=None):
     def part(status, snapshot, fresh=True):
         return {"status": status, "reason_code": None, "snapshot": snapshot,
                 "source": {"freshness": "fresh" if fresh else "stale",
                            "reason_code": None if fresh else "snapshot_expired"}}
-    return {"status": "read", "intake": part(intake, {"accepted": 1}),
-            "explainer": part("running", {}), "recent": part("read", {"incidents": rows},
-                                                            fresh=recent_fresh)}
+    if open_total is None:
+        open_total = sum(1 for row in rows if row.get("state") == "open")
+    return {"status": "read", "intake": part(intake, {"accepted": 1, "open_incidents": open_total}),
+            "explainer": part("running", explainer or {}),
+            "recent": part("read", {"incidents": rows}, fresh=recent_fresh)}
 
 
-def _row(state="open", action="throttle", kind="ai_advice"):
+def _row(state="open", action="throttle", kind="ai_advice", severity=3):
     return {"incident_id": "inc-0000000000000001", "state": state, "last_seen": 5.0,
-            "most_severe": 3, "explanation": {"content_kind": kind},
+            "most_severe": severity, "explanation": {"content_kind": kind},
             "edge_decision": {"kind": "would", "action": action, "executed": False}}
 
 
@@ -384,8 +386,9 @@ def test_events_and_response_keep_facts_inference_decision_and_result_apart():
                                         _row(state="closed")])})
     events, response = model["summary"]["events"], model["summary"]["response"]
     assert events["status"] == "open_incidents" and events["count"] == 2
-    kinds = {b["kind"]: b for b in events["basis"]}
-    assert kinds["observed"]["count"] == 2 and kinds["ai_inference"]["count"] == 1
+    codes = {b["code"]: b for b in events["basis"]}
+    assert codes["open_incidents_total"]["count"] == 2 and codes["open_incidents_listed"]["count"] == 2
+    assert codes["ai_explanations"]["kind"] == "ai_inference" and codes["ai_explanations"]["count"] == 1
     assert response["status"] == "observe_only_no_execution"
     decision = [b for b in response["basis"] if b["kind"] == "edge_decision"][0]
     assert decision == {"kind": "edge_decision", "code": "would_not_executed",
@@ -528,3 +531,221 @@ def test_the_adapter_reads_the_admission_record_from_entryds_snapshot():
             **section, "snapshot": {**section["snapshot"], "reasons": reasons}})
         expected = "local_observation_invalid" if word == "invalid_observation" else "local_" + word
         assert expected in view["provider"]["reason_codes"], word
+
+
+# -- Codex review R389 ------------------------------------------------------------
+
+
+def test_r389_01_a_citation_naming_a_path_never_reaches_either_raw_file(tmp_path):
+    """The builder withholds it, so the operator snapshot and the UI's
+    byte-identical copy both lack it -- the raw UI file is read here."""
+    from azazel_nexus.incident_explain import build_recent_incidents
+    from test_incident_explaind import make
+    from test_status_view import DISPLAY_REF, NOW, _recent
+
+    rows = _recent(NOW)["incidents"]
+    for citation in ("see /srv/private/source", "docs/private/source.md", "(./relative/source)"):
+        rows[0]["explanation"]["knowledge_refs"].append({**DISPLAY_REF, "citation": citation})
+    built = json.dumps(build_recent_incidents(rows, NOW))
+    for secret in ("/srv/private", "docs/private", "relative/source"):
+        assert secret not in built, secret
+    withheld = [r for r in build_recent_incidents(rows, NOW)["incidents"][0]["explanation"]
+                ["knowledge_refs"] if r.get("citation_state") == "withheld"]
+    assert len(withheld) == 3
+    ui = tmp_path / "ui"
+    ui.mkdir()
+    e = make(tmp_path, ui_status_path=ui / "status.json", ui_recent_path=ui / "recent.json")
+    e.recent = rows
+    e.monotonic = lambda: 100
+    e.recent_status()
+    raw = (ui / "recent.json").read_text("utf-8")
+    assert raw == (tmp_path / "recent.json").read_text("utf-8")
+    for secret in ("/srv/private", "docs/private", "relative/source"):
+        assert secret not in raw, secret
+    import re
+    from azazel_nexus.status_view import _PATHISH
+    citations = [r.get("citation", "") for row in json.loads(raw)["incidents"]
+                 for r in row["explanation"]["knowledge_refs"]]
+    assert not any(_PATHISH.search(c) for c in citations), citations
+    assert re  # noqa: B018
+
+
+def test_r389_02_the_intakes_count_is_the_total_and_none_is_never_guessed():
+    # The intake reports one open incident; the list shows none open.
+    lagging = _model({"edge_loop": _loop([_row(state="closed")], open_total=1)})
+    answer = lagging["summary"]["events"]
+    assert (answer["status"], answer["count"], answer["reason_code"]) == (
+        "open_incidents", 1, "incident_list_incomplete")
+    assert "list_differs_from_intake" in [b["code"] for b in answer["basis"]]
+    assert lagging["summary"]["next"]["items"][0]["code"] == "review_incidents_and_hand_off"
+    # An old open incident pushed out of the twenty newest closed rows.
+    crowded = _model({"edge_loop": _loop([_row(state="closed")] * 20, open_total=1)})
+    assert crowded["summary"]["events"]["status"] == "open_incidents"
+    # The explainer's own trouble is said beside the count.
+    for flags, code in (({"chain_broken": True}, "explainer_chain_broken"),
+                        ({"storage_failed": True}, "explainer_storage_failed"),
+                        ({"cursor_lag": 4}, "explainer_behind")):
+        model = _model({"edge_loop": _loop([], open_total=2, explainer=flags)})
+        assert model["summary"]["events"]["status"] == "open_incidents"
+        assert code in [b["code"] for b in model["summary"]["events"]["basis"]], code
+    # A degraded intake (storage failed) with zero: completeness unknown.
+    degraded = _model({"edge_loop": _loop([], intake="degraded", open_total=0)})
+    assert degraded["summary"]["events"]["status"] == "unknown"
+    # A count that is not a number: not "none".
+    loop = _loop([])
+    loop["intake"]["snapshot"]["open_incidents"] = "x"
+    assert _model({"edge_loop": loop})["summary"]["events"]["status"] == "unknown"
+    # Only a running intake reporting zero, and a list with none open, is "none".
+    assert _model({"edge_loop": _loop([])})["summary"]["events"]["status"] == "no_open_incidents"
+
+
+def test_r389_03_the_most_severe_is_the_smallest_number():
+    rows = [_row(severity=3), _row(severity=1), _row(severity=4)]
+    listed = [b for b in _model({"edge_loop": _loop(rows)})["summary"]["events"]["basis"]
+              if b["code"] == "open_incidents_listed"][0]
+    assert listed["most_severe"] == 1
+    script = (REPO / "runtime/src/azazel_nexus_runtime/ui_static/app.js").read_text("utf-8")
+    assert "数値が小さいほど重大" in script
+
+
+def test_r389_05_only_the_operator_view_version_this_page_knows_is_shown():
+    from azazel_nexus.operator_view_source import SCHEMA
+
+    good = {"schema": SCHEMA, "status": "read", "reason_code": None, "inputs": {
+        "model_store": "readable", "smuggled": "x"}, "unread_inputs": [], "provider": {
+        "state": "not admitted", "reason_codes": ["core_reserve_unmeasured"], "extra": 1},
+        "sections": [{"key": "catalog", "title": "Catalog", "rows": [
+            {"axis": "catalog_state", "value": "absent", "reason": "r", "secret": "SECRET"}]}],
+        "operations": [{"confirmation": "profile", "available": True, "reason": "r",
+                        "transition": "t", "secret": "SECRET"}], "unknown_field": "SECRET"}
+    model = _model({"operator_view": good})
+    shown = model["sections"]["operator_view"]
+    assert "SECRET" not in json.dumps(shown) and "smuggled" not in json.dumps(shown)
+    assert shown["sections"][0]["rows"][0] == {"axis": "catalog_state", "value": "absent",
+                                               "reason": "r"}
+    for other in ({**good, "schema": "azazel-nexus/status-view/operator-view/2"},
+                  {k: v for k, v in good.items() if k != "schema"}, "not a section"):
+        model = _model({"operator_view": other})
+        assert "operator_view" not in model["sections"]
+        assert model["pending"]["operator_view"] == "section_version_unsupported"
+
+
+def test_r389_section_3_a_failed_ui_copy_is_removed_not_left_fresh(tmp_path, monkeypatch):
+    from azazel_nexus_runtime import status_snapshot
+    from azazel_nexus_runtime.status_snapshot import UiCopy
+
+    path = tmp_path / "status.json"
+    copy = UiCopy(path, name="t", warn=lambda _: None)
+    assert copy.write(b'{"written_at": 1}\n') and path.exists()
+
+    def full(*args):
+        raise OSError(28, "no space")
+    monkeypatch.setattr(status_snapshot, "_replace", full)
+    assert copy.write(b'{"written_at": 2}\n') is False
+    assert not path.exists()
+
+
+# -- R389-04, R389-06: the operator view's model store ------------------------------
+
+
+def _store(tmp_path, *, catalog="valid", entries=None, installed=None, mode=None):
+    """A model store at `<root>/var/lib/azazel/models` in one of the states."""
+    import test_operator_view as tov
+    from azazel_nexus.model_catalog import CATALOG_DOMAIN, CATALOG_FILENAME, catalog_payload
+
+    models = tmp_path / "var/lib/azazel/models"
+    (models / "inbox").mkdir(parents=True)
+    if catalog == "unset":
+        return models
+    (models / "trust").mkdir()
+    (models / "trust/trust.json").write_text(json.dumps({
+        "commissioning_digest": tov.COMMISSIONING,
+        "catalog_keys": {"catalog-key": bytes(tov._key().verify_key).hex()}}), "utf-8")
+    entries = [tov.an_entry()] if entries is None else entries
+    body = catalog_payload(version=1, commissioning_digest=tov.COMMISSIONING, entries=entries)
+    if catalog == "corrupt":
+        body = b"{not json"
+    signature = bytes(tov._key().sign(CATALOG_DOMAIN + body).signature)
+    if catalog == "unsigned":
+        signature = bytes(64)
+    (models / "trust" / CATALOG_FILENAME).write_bytes(signature + body)
+    if installed is not None:
+        from azazel_nexus.model_import import MANIFEST_SCHEMA
+        (models / "state/generations").mkdir(parents=True)
+        (models / "state/generations/1.json").write_text(json.dumps(
+            {"schema": MANIFEST_SCHEMA, "generation_id": "g1", "installed": installed}), "utf-8")
+        (models / "state/current").write_text("1", "utf-8")
+        (models / "store").mkdir()
+        artifact = models / "store" / "small-advisor.gguf"
+        artifact.write_bytes(tov.WEIGHTS)
+        artifact.chmod(0o000)
+    if mode is not None:
+        models.chmod(mode)
+    return models
+
+
+def _catalog_row(section):
+    rows = {sec["key"]: sec["rows"] for sec in section["sections"]}
+    return rows["catalog"][0]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads every file; the uid-1001 run checks it")
+@pytest.mark.parametrize("state, value, code", [
+    ("unset", "absent", None),
+    ("unsigned", None, "catalog_unsigned"),
+    ("corrupt", None, "catalog_invalid"),
+    ("denied", None, "catalog_permission_denied"),
+    ("empty", "empty", None),
+])
+def test_r389_06_five_catalog_states_stay_five(tmp_path, state, value, code):
+    from azazel_nexus.operator_view_source import read_section
+
+    models = _store(tmp_path, catalog={"denied": "valid", "empty": "valid"}.get(state, state),
+                    entries=[] if state == "empty" else None,
+                    mode=0o000 if state == "denied" else None)
+    try:
+        section = read_section(usable_mib=8000, root=tmp_path)
+    finally:
+        models.chmod(0o755)
+    row = _catalog_row(section)
+    assert row["value"] == value, state
+    assert row.get("reason_code") == code, state
+    if code is not None:
+        assert "model_store" in section["unread_inputs"]
+        assert "not presented" not in row["reason"] and "told nothing" not in row["reason"]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads every file; the uid-1001 run checks it")
+def test_r389_04_status_never_opens_or_hashes_an_installed_artifact(tmp_path, monkeypatch):
+    """The artifact is unreadable (0000) and `ModelImport.reading_for` (which
+    re-hashes) raises: the screen still describes the installed model -- as
+    recorded at promotion, not re-verified, never `present`."""
+    import test_operator_view as tov
+    from azazel_nexus import model_catalog
+    from azazel_nexus.model_import import ModelImport
+    from azazel_nexus.operator_view_source import read_section
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("an artifact was opened or hashed")
+    monkeypatch.setattr(ModelImport, "reading_for", forbidden)
+    monkeypatch.setattr(model_catalog, "verify_artifact", forbidden)
+    models = _store(tmp_path, installed={"small-advisor": tov.an_entry().digest})
+    try:
+        section = read_section(usable_mib=8000, root=tmp_path)
+    finally:
+        (models / "store/small-advisor.gguf").chmod(0o644)
+    rows = {sec["key"]: sec["rows"] for sec in section["sections"]}
+    model = [r for r in rows["catalog"] if r["axis"] == "model"][0]
+    assert model["value"] == "declared" and model["refused_by"] is None
+    assert "not re-verified" in model["reason"]
+    assert "present" not in json.dumps(rows["catalog"]).replace("presented", "")
+    # A generation record that names another digest is not passed off either.
+    other = tmp_path / "other"
+    _store(other, installed={"small-advisor": "sha256:" + "0" * 64})
+    try:
+        mismatch = read_section(usable_mib=8000, root=other)
+    finally:
+        (other / "var/lib/azazel/models/store/small-advisor.gguf").chmod(0o644)
+    row = [r for r in {s["key"]: s["rows"] for s in mismatch["sections"]}["catalog"]
+           if r["axis"] == "model"][0]
+    assert row["refused_by"] == model_catalog.Refusal.DIGEST_MISMATCH.value
