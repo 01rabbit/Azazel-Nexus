@@ -93,6 +93,7 @@ from .lite_bundle import (
     absent_reading,
     iter_served,
     iter_served_with_member,
+    parse_anchors,
     read_anchors,
     read_claims,
     reading_for,
@@ -242,31 +243,18 @@ class CommissionedLite:
         return self.root / "state" / "watermark"
 
     def anchors(self) -> TrustAnchors:
-        anchors = read_anchors(self.anchors_path)
-        # A published test key is never a commissioned anchor (lab_keys).
-        if holds_public_fixture_key(anchors.keys.values()) and not is_lab_host():
-            raise BundleRefused(Gate.ANCHORS, "ANCHOR_PUBLIC_FIXTURE_KEY", PUBLIC_FIXTURE_REFUSED)
-        return anchors
+        return _checked_anchor_keys(read_anchors(self.anchors_path))
 
     def watermark(self) -> Optional[int]:
         return _read_watermark(self.state_path)
 
 
-@dataclass(frozen=True)
-class _RecordAnchors(CommissionedLite):
-    """The commissioned trust root's anchor for one trust record (ADR 0008).
-
-    `trust/anchors.toml`, or the `trust-generations/N.anchors.toml` a repin
-    wrote with its generation; `TrustStore.anchors_path_for` chooses, from the
-    record already read. Read by `CommissionedLite.anchors`, so the fixture
-    refusal and the one reader stay one.
-    """
-
-    path: Path = Path()
-
-    @property
-    def anchors_path(self) -> Path:
-        return self.path
+def _checked_anchor_keys(anchors: TrustAnchors) -> TrustAnchors:
+    # A published test key is never a commissioned anchor (lab_keys), even
+    # when it would later be filtered out by the pin.
+    if holds_public_fixture_key(anchors.keys.values()) and not is_lab_host():
+        raise BundleRefused(Gate.ANCHORS, "ANCHOR_PUBLIC_FIXTURE_KEY", PUBLIC_FIXTURE_REFUSED)
+    return anchors
 
 
 class _StateUntrusted(ValueError):
@@ -704,16 +692,18 @@ class TrustSnapshot:
     keys: tuple[bytes, ...]
     anchors: TrustAnchors
     revocations: object  # revocation.RevocationList; imported lazily
+    anchors_path: Path
+    anchors_bytes: bytes
     #: SHA-256 of the signed revocation list as read before it was verified,
     #: or None when there was none.
     revocations_digest: Optional[str] = None
 
     def unchanged(self) -> bool:
-        """Whether the trust record and revocation list read here are still in force.
+        """Whether the trust record, anchor and revocation list are still in force.
 
-        A repin, or a revocation list accepted by the commissioning daemon
-        while a bundle was being verified, makes this False: the caller
-        verifies again rather than admit under what was superseded.
+        A repin, an anchors-only update (including sealing), or a revocation
+        accepted during verification makes this False. This detects changes
+        before this check, not an atomic transaction with a root file editor.
         """
         from .lite_trust import TrustRefused, TrustStore
         from .model_paths import bounded_read
@@ -721,6 +711,7 @@ class TrustSnapshot:
         try:
             return (TrustStore(self.root).path == self.trust_path
                     and bounded_read(self.trust_path, 65536) == self.trust_bytes
+                    and bounded_read(self.anchors_path, 65536) == self.anchors_bytes
                     and _revocations_digest(self.root) == self.revocations_digest)
         except (OSError, ValueError, TrustRefused):
             return False
@@ -788,7 +779,9 @@ class CommissionedTrust:
                 raise ValueError("public fixture key")
             # The anchor that goes with the record read above: a repin may
             # have replaced both together (ADR 0008).
-            anchors = _RecordAnchors(self.root, trust.anchors_path_for(trust_path, record)).anchors()
+            anchors_path = trust.anchors_path_for(trust_path, record)
+            anchors_bytes = bounded_read(anchors_path, 65536)
+            anchors = _checked_anchor_keys(parse_anchors(anchors_bytes))
             anchors = replace(anchors, keys={name: key for name, key in anchors.keys.items()
                                              if key in keys})
         except (OSError, ValueError, KeyError, TypeError, TrustRefused, BundleRefused,
@@ -802,7 +795,7 @@ class CommissionedTrust:
         except (RevocationRefused, OSError, ValueError):
             raise TrustUnusable("unverified") from None
         return TrustSnapshot(self.root, trust_path, trust_bytes, keys, anchors, revocations,
-                             revocations_digest)
+                             anchors_path, anchors_bytes, revocations_digest)
 
     def accept_revocation(self, blob: bytes):
         """Accept one signed cumulative revocation list into this root.

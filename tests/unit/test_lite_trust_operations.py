@@ -41,6 +41,7 @@ from test_knowledge_lite_operator_entry import _bundle, _statement
 
 from azazel_nexus import lab_keys
 from azazel_nexus.layout import create_layout
+from azazel_nexus.lite_bundle import read_anchors
 from azazel_nexus.lite_enrollment import (
     ENROLLMENT_FILENAME,
     ENROLLMENT_REFUSAL_CODES,
@@ -172,6 +173,8 @@ def test_the_fixture_key_is_accepted_only_on_a_marked_lab_host(lab_host):
 @pytest.mark.parametrize("mutate", [
     lambda d: d.update(schema="azazel-nexus/lite-enrollment/v2"),
     lambda d: d.update(extra=True),
+    lambda d: d.update(sealed=True),
+    lambda d: d.update(sealed=False),
     lambda d: d.pop("revocation_policy"),
     lambda d: d.update(commissioning_digest="sha256:short"),
     lambda d: d.update(keys={}),
@@ -545,6 +548,96 @@ def test_a_later_repin_without_an_anchor_keeps_the_one_in_force(node):
     assert (node.trust / "trust-generations/2.anchors.toml").read_bytes() == (
         node.trust / "trust-generations/1.anchors.toml").read_bytes()
     assert _status(node) == "available"
+
+
+@pytest.mark.parametrize("generation_anchor", [False, True])
+@pytest.mark.parametrize("seal_field", [{}, {"sealed": True}])
+def test_a_repin_replacement_preserves_sealing_until_explicit_audited_unseal(
+        node, generation_anchor, seal_field):
+    digest = _place_request(node, _request([node.keys.bundle], [node.keys.revoker]))
+    assert _enroll(node, digest)["enrolled"] is True
+    if generation_anchor:
+        public = _public(node.keys.next_bundle)
+        assert _repin(node, {"keys": [public], "anchors": {
+            "keys": {"next": public}, "threshold": 1}})["promoted"] is True
+    trust = TrustStore(node.trust)
+    old_path = trust.anchors_path
+    old_path.write_bytes(b"sealed = true\n" + old_path.read_bytes())
+    # A rotated key and replacement anchor cannot implicitly clear the seal,
+    # whether the current anchor is initial or generation-bound (R393B-02).
+    replacement = _key()
+    public = _public(replacement)
+    anchor = {"keys": {"replacement": public}, "threshold": 1}
+    result = _repin(node, {"keys": [public], "anchors": {**anchor, **seal_field}})
+    assert result["promoted"] is True
+    sealed_path = trust.anchors_path
+    assert sealed_path != old_path
+    assert read_anchors(sealed_path).sealed is True
+    refused = _import(node, _bundle(replacement, version=6, key_id="replacement"))
+    assert (refused["outcome"], refused["code"]) == (
+        "quarantined", "BUNDLE_ANCHORS_SEALED")
+    assert _status(node) != "available"
+    # A policy-only repin keeps that active generation's seal as well.
+    revoker = _key()
+    assert _repin(node, {"keys": [public], "revocation_policy": {
+        "keys": {"new-revoker": _public(revoker)},
+        "key_roles": {"new-revoker": "revocation-signing"},
+        "threshold": 1, "generation": 2}})["promoted"] is True
+    assert trust.anchors_path.read_bytes() == sealed_path.read_bytes()
+    # Existing confirmation and both ledgers still authorize the explicit
+    # recovery; no separate permission boolean is introduced.
+    result = _repin(node, {"keys": [public], "anchors": {**anchor, "sealed": False}})
+    assert result["promoted"] is True
+    assert read_anchors(trust.anchors_path).sealed is False
+    assert _import(node, _bundle(replacement, version=7, key_id="replacement"))[
+        "outcome"] == "admitted"
+    assert _status(node) == "available"
+    from azazel_nexus.audit import AuditLedger
+    ledger = AuditLedger(runtime_paths.commission_ledger_path())
+    assert any(entry.event["event_type"] == "trust.repin.promoted"
+               and entry.event["generation"] == result["generation"] for entry in ledger)
+    assert any(event["event_type"] == "knowledge.lite.trust_repin_promoted"
+               and event["generation"] == result["generation"] for event in node.events)
+
+
+@pytest.mark.parametrize("field", [
+    {"sealed": None}, {"sealed": 0}, {"sealed": 1}, {"sealed": "true"},
+    {"sealed": []}, {"revoked": []}, {"seal": True}, {"extra": True},
+])
+def test_a_repin_refuses_invalid_or_unsupported_anchor_policy_without_unsealing(node, field):
+    digest = _place_request(node, _request([node.keys.bundle], [node.keys.revoker]))
+    assert _enroll(node, digest)["enrolled"] is True
+    trust = TrustStore(node.trust)
+    path = trust.anchors_path
+    path.write_bytes(b"sealed = true\n" + path.read_bytes())
+    before = path.read_bytes()
+    public = _public(node.keys.bundle)
+    result = _repin(node, {"keys": [public], "anchors": {
+        "keys": {"site-bundle": public}, "threshold": 1, **field}})
+    assert (result["promoted"], result["code"]) == (False, "refused")
+    assert trust.current_generation() == 0
+    assert path.read_bytes() == before
+    assert read_anchors(path).sealed is True
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_explicit_unseal_can_recover_an_unreadable_anchor_but_omission_cannot(node, missing):
+    digest = _place_request(node, _request([node.keys.bundle], [node.keys.revoker]))
+    assert _enroll(node, digest)["enrolled"] is True
+    trust = TrustStore(node.trust)
+    if missing:
+        trust.anchors_path.unlink()
+    else:
+        trust.anchors_path.write_text("sealed = 'invalid'\n")
+    public = _public(node.keys.bundle)
+    anchor = {"keys": {"site-bundle": public}, "threshold": 1}
+    assert _repin(node, {"keys": [public], "anchors": anchor})["promoted"] is False
+    assert trust.current_generation() == 0
+    result = _repin(node, {"keys": [public], "anchors": {**anchor, "sealed": False}})
+    assert result["promoted"] is True
+    assert read_anchors(trust.anchors_path).sealed is False
+    assert _import(node, _bundle(node.keys.bundle, key_id="site-bundle"))[
+        "outcome"] == "admitted"
 
 
 def test_a_key_change_that_keeps_an_anchor_it_cannot_meet_is_refused(node):
