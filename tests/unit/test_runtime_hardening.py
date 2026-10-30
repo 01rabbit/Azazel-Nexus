@@ -89,7 +89,7 @@ def test_the_table_covers_every_unit_the_controller_governs():
 # -- accounts -------------------------------------------------------------
 
 
-#: The one pair of units that share an account (ADR 0007): the same ledger
+#: The one pair of units that share an account (ADR 0008): the same ledger
 #: daemon in its two lifetimes, the bootstrap helper and the integrated
 #: loop's writer. They run one program on one chain and never together
 #: (az-auditd's one-writer lock), so neither reaches anything the other
@@ -111,7 +111,7 @@ def test_each_daemon_has_its_own_account():
 
 
 def test_the_audit_pair_differs_only_in_lifetime():
-    """Same program, account, groups, families and writable leaves (ADR 0007)."""
+    """Same program, account, groups, families and writable leaves (ADR 0008)."""
     loop, helper = (next(p for p in PROFILES if p.unit == unit) for unit in AUDIT_PAIR)
     from azazel_nexus_runtime import hardening
 
@@ -515,7 +515,7 @@ def test_overlay_write_scope_and_boot_provisioning_order_are_controller_only():
 
 #: Every governed unit except the bootstrap pair: the loop units (§2 of
 #: docs/activation-observe-baseline.md, with the loop's audit writer since
-#: ADR 0007) and the four other controller dependents (watchdog, fetch,
+#: ADR 0008) and the four other controller dependents (watchdog, fetch,
 #: local and remote model hosts).
 GRANT_LOOP_UNITS = frozenset({
     "azazel-auditd-loop.service",

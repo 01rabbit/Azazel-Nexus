@@ -2,7 +2,7 @@
 
 docs/knowledge-lite-consumer.md §11 gives the order a fresh node takes to reach
 Knowledge Lite `available` through the shipped entries: the enrollment request
-(ADR-0007), `az-nexus-commission trust-enroll`, the inbox and
+(ADR-0008), `az-nexus-commission trust-enroll`, the inbox and
 `knowledge.import`. These tests take the request document, the commands and
 the paths from the document itself and run them, in order, on a temporary
 root through the production code; only the commissioning evidence, the
@@ -224,7 +224,7 @@ PRODUCTION = ("src", "runtime/src")
 
 
 def test_the_shipped_enrollment_and_import_are_the_only_callers() -> None:
-    """The procedure runs no library call by hand any more (ADR-0007)."""
+    """The procedure runs no library call by hand any more (ADR-0008)."""
 
     # TrustStore.pin keeps no shipped caller: the enrollment writes the same
     # record through its own one-commit writer.

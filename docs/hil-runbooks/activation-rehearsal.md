@@ -235,7 +235,7 @@ the same module, `runtime/pyproject.toml`); `az-nexus-commission` is
      and `azazel-edge-probe-preflight.service` ended with `Result=success` on
      the last boot. Needed for §8 N5.
    - Either variant may also name `azazel-auditd-loop.service`, the loop's
-     audit writer ([ADR-0007](../adr/0007-lite-trust-operations.md)); without
+     audit writer ([ADR-0008](../adr/0008-lite-trust-operations.md)); without
      it Knowledge Lite imports and trust changes are refused
      (`audit_unavailable`), as they were before.
 10. **Approval window.** The whole run (two positive boots, the negative boots

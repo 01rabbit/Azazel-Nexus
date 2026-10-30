@@ -347,7 +347,7 @@ revocation reader here, not this module's content-generation storage format.
 See [daemon status and root reconciliation](knowledge-lite-consumer.md#milestone-1-daemon-status)
 for the anchor/pin intersection, commissioning binding, reply vocabulary and
 read-only boundary. Enrollment, import, repin and revocation acceptance are
-shipped commands ([ADR-0007](adr/0007-lite-trust-operations.md)): the import
+shipped commands ([ADR-0008](adr/0008-lite-trust-operations.md)): the import
 is the daemon's ROOT-only verb; enrollment, repin and revocation acceptance
 are root's `az-nexus-commission` transactions, each narrowed to the
 commissioning account and recorded in az-auditd before any change. A repin

@@ -1,6 +1,6 @@
 """The repin CLI never takes a key or path argument and confirms on a terminal.
 
-Since ADR 0007 `az-nexus-commission trust-repin` runs the repin itself, in a
+Since ADR 0008 `az-nexus-commission trust-repin` runs the repin itself, in a
 child that becomes the commissioning account (`lite_trust_ops`), instead of
 asking `az-commissiond` over its socket. Here the child is replaced by an
 in-process call (the narrowing is the root e2e stage's), and the root check

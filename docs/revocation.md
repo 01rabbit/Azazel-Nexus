@@ -53,7 +53,7 @@ payloads. A changed separator byte is also refused.
 anchors_keys=...)` performs the continuity checks below without publishing.
 `TrustStore.repin` calls it under the local authorization, confirmation and
 audit ceremony, and the first enrollment (`lite_enrollment.enroll`,
-[ADR-0007](adr/0007-lite-trust-operations.md)) calls it to build the initial
+[ADR-0008](adr/0008-lite-trust-operations.md)) calls it to build the initial
 record; those are the only production callers. `commission_policy`
 takes the same arguments and also writes the record. No production code calls
 it: the lab provisioning and the end-to-end fixture use it to provision test
@@ -121,7 +121,7 @@ order is
 
 The Knowledge Lite trust root (`/var/lib/azazel/lite-trust`) is written only
 by the commissioning account `azcommission`. Since
-[ADR-0007](adr/0007-lite-trust-operations.md) root's
+[ADR-0008](adr/0008-lite-trust-operations.md) root's
 `az-nexus-commission knowledge-revocation-accept` accepts a list itself, on
 the ordinary path, in a child that has become that account (its groups,
 umask `0027`, `no_new_privs`) and holds the commissioning lock; it needs

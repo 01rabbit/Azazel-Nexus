@@ -1,4 +1,4 @@
-# ADR-0007 — Knowledge Lite trust operations on the ordinary path: a loop audit writer and root's narrowed maintenance transaction
+# ADR-0008 — Knowledge Lite trust operations on the ordinary path: a loop audit writer and root's narrowed maintenance transaction
 
 Status: **proposed (2026-10-30), a technical decision delegated by the owner's
 2026-10-30 direction** ("complete the Lite operating entry"; technical

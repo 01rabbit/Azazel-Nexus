@@ -1,4 +1,4 @@
-"""Knowledge Lite trust maintenance on the ordinary path (ADR 0007, S-02, S-14).
+"""Knowledge Lite trust maintenance on the ordinary path (ADR 0008, S-02, S-14).
 
 * `lite_enrollment`: the first registration as one checked request -- keys,
   roles, threshold, epoch, export policies and the revocation authority --

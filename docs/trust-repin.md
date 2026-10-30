@@ -6,7 +6,7 @@ non-root use, not against a malicious root process. Single-use, short-lived
 challenges bind the principal and proposed anchor bytes; they do not attest
 human presence.
 
-**Where it runs (ADR-0007, 2026-10-30).** `az-nexus-commission trust-repin
+**Where it runs (ADR-0008, 2026-10-30).** `az-nexus-commission trust-repin
 --reason R` no longer asks `az-commissiond`, which is masked on the ordinary
 path. It runs the same `RepinConfirmation` in its own process, after
 narrowing to the commissioning account (`lite_trust_ops`: a forked child as
@@ -46,7 +46,7 @@ with no directory or file write access. No bundle, content cache or operational
 generation directory belongs in this trust-only leaf.
 
 Initial commissioning is the enrollment, `az-nexus-commission trust-enroll`
-([ADR-0007](adr/0007-lite-trust-operations.md)): one audited transaction, as
+([ADR-0008](adr/0008-lite-trust-operations.md)): one audited transaction, as
 `azcommission`, that writes the anchor, the revocation policy and
 `trust.json` (`azcommission:azknowledge` mode `0640`) from one checked
 request. Repin runs as `azcommission` and copies that file's owner to every
@@ -138,7 +138,7 @@ The fixed anchor JSON may also include `revocation_policy`, using the explicit
 ```
 
 This is also how a policy is introduced on a store that `TrustStore.pin`
-created without one (a root enrolled by hand before ADR-0007): keep the pinned
+created without one (a root enrolled by hand before ADR-0008): keep the pinned
 `keys` and add the section. Unchanged bundle keys with a changed policy are a
 change, so the repin is accepted.
 

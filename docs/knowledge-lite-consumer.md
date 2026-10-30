@@ -302,7 +302,7 @@ gate.
 ## 11. First enrollment: from a fresh install to `available`
 
 The order a fresh node takes to reach `state: available`, with the shipped
-entries only (#93; [ADR-0007](adr/0007-lite-trust-operations.md) since
+entries only (#93; [ADR-0008](adr/0008-lite-trust-operations.md) since
 2026-10-30). The trust root is registered by one audited transaction,
 `az-nexus-commission trust-enroll`, and the bundle is imported by
 `az-knowledge-lited`'s ROOT-only `knowledge.import`. No step below adds a
@@ -340,7 +340,7 @@ unit.
 Both the enrollment and the import record themselves in az-auditd before
 they change anything, and are refused without it. On the ordinary path the
 writer is `azazel-auditd-loop.service`
-([ADR-0007](adr/0007-lite-trust-operations.md) D1); it runs only under an
+([ADR-0008](adr/0008-lite-trust-operations.md) D1); it runs only under an
 activation grant, like `azazel-knowledge-lited.service`. Name both in the
 activation policy, publish the generation and sign the approval
 ([activation rehearsal](hil-runbooks/activation-rehearsal.md)); the next
@@ -514,7 +514,7 @@ After a repin that replaces the anchor
 
 ### What was rehearsed
 
-On 2026-10-30 (ADR-0007) steps 3 to 7 ran with the real accounts and daemons
+On 2026-10-30 (ADR-0008) steps 3 to 7 ran with the real accounts and daemons
 in a disposable Debian 13 container as root (`tools/e2e.py`, stages
 "Knowledge Lite trust enrollment" and "Knowledge Lite import, repin,
 revocation and audit stop"): az-auditd as `azaudit`, az-knowledge-lited as
@@ -550,7 +550,7 @@ daemon imports only through its ROOT-only `knowledge.import` (§11 step 6),
 never on its own. It never enrolls, repins, accepts revocations, promotes
 trust or repairs files: those are the commissioning account's, through root's
 `az-nexus-commission` transactions
-([ADR-0007](adr/0007-lite-trust-operations.md),
+([ADR-0008](adr/0008-lite-trust-operations.md),
 [revocation](revocation.md#accepting-a-list-on-a-node)). A successful status
 request writes neither store nor trust nor a read event.
 

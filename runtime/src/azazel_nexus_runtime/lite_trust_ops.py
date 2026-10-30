@@ -1,4 +1,4 @@
-"""Knowledge Lite trust maintenance while the integrated loop runs (ADR 0007).
+"""Knowledge Lite trust maintenance while the integrated loop runs (ADR 0008).
 
 Three fixed root operations of `az-nexus-commission`, each one audited
 transaction with no path, key, policy or override argument:

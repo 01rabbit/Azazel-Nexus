@@ -1225,7 +1225,7 @@ def test_the_runtime_uses_only_the_librarys_public_names():
 EXPECTED_SCRIPTS = (
     "az-activated",
     "az-auditd",
-    # The integrated loop's audit writer: the same callable (ADR 0007).
+    # The integrated loop's audit writer: the same callable (ADR 0008).
     "az-auditd-loop",
     "az-commissiond",
     "az-edge-probed", "az-edge-intaked", "az-incident-explaind",

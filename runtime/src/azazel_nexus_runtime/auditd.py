@@ -330,7 +330,7 @@ EVENT_SCHEMAS.update({
     ),
 })
 
-#: The Knowledge Lite trust maintenance transactions (ADR 0007): the first
+#: The Knowledge Lite trust maintenance transactions (ADR 0008): the first
 #: enrollment and a repin, run by root's `az-nexus-commission` as the
 #: commissioning account. The request is recorded before anything is written
 #: (`..._requested`); the outcome follows. Digests, counts and fixed codes only.
@@ -1139,7 +1139,7 @@ def hold_instance_lock(directory: Path) -> int:
     """Take the one-writer lock on the chain directory itself, or refuse.
 
     The bootstrap helper `azazel-auditd.service` and the ordinary path's
-    `azazel-auditd-loop.service` (ADR 0007) run this same program on the same
+    `azazel-auditd-loop.service` (ADR 0008) run this same program on the same
     chain and sockets and are never meant to run together. Two would fork the
     chain (the module docstring), so the second refuses before it reads,
     binds or appends anything. The lock is an exclusive `flock` on the ledger

@@ -1,4 +1,4 @@
-"""Knowledge Lite trust operations with real accounts and processes (ADR 0007).
+"""Knowledge Lite trust operations with real accounts and processes (ADR 0008).
 
 Two stages of `tools/e2e.py`, root only, on a root of their own (a second,
 fresh `install.sh --without-service-manager`, because the earlier Lite
@@ -28,7 +28,7 @@ generated here and never written to disk; only public keys are.
 This is a container rehearsal of real processes, not of systemd: the units'
 sandbox and the activation grant of `azazel-auditd-loop.service` are covered
 by `tests/unit/test_runtime_activation_pass.py` and the systemd checks in
-ADR 0007's verification record, not here.
+ADR 0008's verification record, not here.
 """
 
 from __future__ import annotations

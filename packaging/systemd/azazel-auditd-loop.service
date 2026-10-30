@@ -8,7 +8,7 @@
 
 [Unit]
 Description=Azazel-Nexus audit ledger for the integrated loop
-Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/adr/0007-lite-trust-operations.md
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/adr/0008-lite-trust-operations.md
 After=azazel-activated.service
 ConditionPathExists=/run/azazel-activation/granted/azazel-auditd-loop.service
 Requires=azazel-activated.service

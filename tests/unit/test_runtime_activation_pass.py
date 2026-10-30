@@ -67,7 +67,7 @@ SCOPE = (
     "azazel-mio-entryd.service",
 )
 EDGE = "azazel-edge-core.service"
-#: The integrated loop's audit writer (ADR 0007).
+#: The integrated loop's audit writer (ADR 0008).
 AUDIT_LOOP = "azazel-auditd-loop.service"
 EDGE_SCOPE = tuple(sorted(SCOPE + (EDGE,)))
 #: The Deception Lite exposure units (#196 P1, (a)): grantable for the #253
@@ -346,7 +346,7 @@ def test_complete_inputs_grant_only_the_scoped_units_and_only_they_get_markers(w
 
 
 def test_the_loops_audit_writer_is_granted_and_marked_like_a_loop_unit(tmp_path, monkeypatch):
-    """ADR 0007: a policy naming `azazel-auditd-loop.service` gets it from the
+    """ADR 0008: a policy naming `azazel-auditd-loop.service` gets it from the
     ordinary pass, with its own marker; the bootstrap helper stays masked."""
     monkeypatch.setattr(activation_markers, "_OWNER", os.getuid())
     monkeypatch.setattr(activated, "_collect_input_status", lambda _root: {})

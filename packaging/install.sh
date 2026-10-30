@@ -446,7 +446,7 @@ install -d -m 0755 "$UNIT_DIR" "$PRESET_DIR"
 install -m 0644 "$HERE"/systemd/azazel-activated.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-commissiond.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-auditd.service "$UNIT_DIR"
-# The integrated loop's audit writer (ADR 0007): az-auditd again, granted by
+# The integrated loop's audit writer (ADR 0008): az-auditd again, granted by
 # the ordinary pass. Masked below like every governed unit.
 install -m 0644 "$HERE"/systemd/azazel-auditd-loop.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-watchdog.service "$UNIT_DIR"

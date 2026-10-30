@@ -1499,7 +1499,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         ),
     ),
     ServiceProfile(
-        # The ordinary path's audit writer (ADR 0007, 2026-10-30): the same
+        # The ordinary path's audit writer (ADR 0008, 2026-10-30): the same
         # program, account, chain, sockets and writable leaves as the
         # bootstrap helper above, with the lifetime of a loop unit instead of
         # the controller's. Granted by a pass like the other loop units (its
@@ -1516,7 +1516,7 @@ PROFILES: tuple[ServiceProfile, ...] = (
         executable="/usr/libexec/azazel/az-auditd-loop",
         account="azaudit",
         description="Azazel-Nexus audit ledger for the integrated loop",
-        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/adr/0007-lite-trust-operations.md",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/adr/0008-lite-trust-operations.md",
         address_families=("AF_UNIX",),
         read_write_paths=(
             "/var/lib/azazel/run/audit",

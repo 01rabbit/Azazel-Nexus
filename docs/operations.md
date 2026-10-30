@@ -467,7 +467,7 @@ and counted in `audit_forward_dropped` (the incident ledger keeps them), and
    azazel-nexus status
    ```
 
-**On the ordinary path (ADR-0007).** When the integrated loop runs, the
+**On the ordinary path (ADR-0008).** When the integrated loop runs, the
 chain's writer is `azazel-auditd-loop.service`, not the bootstrap helper
 named above. Stop that unit in step 1 instead (commissiond is not running).
 It is not started again in the same boot -- a `systemctl start` re-runs the
@@ -528,7 +528,7 @@ The UI groups information by mission state rather than by internal service. Ever
 The boot-time `az-activated` pass can grant the five SUPPORTING loop units
 (`azazel-edge-intaked`, `azazel-incident-explaind`, `azazel-edge-probed`,
 `azazel-mio-entryd`, `azazel-knowledge-lited`), the loop's audit writer
-`azazel-auditd-loop` (2026-10-30, [ADR-0007](adr/0007-lite-trust-operations.md);
+`azazel-auditd-loop` (2026-10-30, [ADR-0008](adr/0008-lite-trust-operations.md);
 needed for any Knowledge Lite import or trust change, see below) and, when the
 policy, generation and approval name it, the model-free playbook reference
 service `azazel-mio-referenced` (proposed 2026-10-28,
@@ -619,11 +619,11 @@ launchable.
   [integrated loop rehearsal](hil-runbooks/integration-loop-rehearsal.md)
   still uses its rehearsal-only start.
 
-### Knowledge Lite trust operations while the loop runs (ADR-0007)
+### Knowledge Lite trust operations while the loop runs (ADR-0008)
 
 Every Knowledge Lite change is recorded in az-auditd **before** it happens,
 and is refused when it cannot be. On the ordinary path the writer is
-`azazel-auditd-loop.service` ([ADR-0007](adr/0007-lite-trust-operations.md)),
+`azazel-auditd-loop.service` ([ADR-0008](adr/0008-lite-trust-operations.md)),
 a loop unit like the others: to use any of the commands below, name it,
 with `azazel-knowledge-lited.service`, in `policy.json`, publish the
 generation, request and install the signed approval; the next boot's pass
@@ -713,7 +713,7 @@ longer holds `azazel-operator`. auditd and M.I.O. entry each bind a second
 listener for it, in the `run/audit-submit` (`azaudit-submit`) and
 `run/mio-advise` (`azmio-advise`) leaves. `azazel-knowledge-lited` and
 `azazel-commissiond` also carry `azaudit-submit` (as do root's trust
-transactions, narrowed to `azcommission`, ADR-0007), and auditd lets each
+transactions, narrowed to `azcommission`, ADR-0008), and auditd lets each
 record only its own Knowledge Lite import, revocation or trust events (P4; see
 [integration loop I2](integration-loop.md#i2--explanation-explain--implemented)). The installer creates the groups,
 the leaves and the units' new `ReadWritePaths`. An upgraded runtime on a node

@@ -53,7 +53,7 @@ __all__ = [
 
 #: The only units a pass may grant and mark: the SUPPORTING loop units
 #: (§6.2, phase P4; the loop's audit writer `azazel-auditd-loop.service`
-#: since ADR 0007), `azazel-edge-core.service` (EDGE_BASELINE, phase P5),
+#: since ADR 0008), `azazel-edge-core.service` (EDGE_BASELINE, phase P5),
 #: which the library still grants only on launchable, boot-bound Edge
 #: evidence, and the three Deception Lite exposure units (DECEPTION_EXPOSURE,
 #: #196). The single source for the pass's scope check, its tripwire, this

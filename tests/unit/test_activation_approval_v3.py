@@ -150,7 +150,7 @@ def test_the_v3_unit_set_is_pinned_and_excludes_enforcement():
         "azazel-mio-entryd.service", "azazel-mio-locald.service",
         "azazel-mio-remoted.service", "azazel-model-fetchd.service",
         "azazel-watchdog.service", "azazel-mio-referenced.service",
-        # The integrated loop's audit writer (ADR 0007, 2026-10-30).
+        # The integrated loop's audit writer (ADR 0008, 2026-10-30).
         "azazel-auditd-loop.service",
     }
     v2 = supporting | {"azazel-edge-core.service"}
@@ -562,7 +562,7 @@ def test_no_scope_was_widened():
 
     edge = "azazel-edge-core.service"
     # The two additions are the model-free reference service (§6.2, proposed
-    # 2026-10-28) and the loop's audit writer (§6, 2026-10-30, ADR 0007). No
+    # 2026-10-28) and the loop's audit writer (§6, 2026-10-30, ADR 0008). No
     # model host, enforcement, commissioning or exposure unit is added.
     reference = "azazel-mio-referenced.service"
     audit = "azazel-auditd-loop.service"

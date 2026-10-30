@@ -270,7 +270,7 @@ REQUIRED_STAGES = (
     "Core reserve input path",
     "Integration broker",
     "integrated defensive loop",
-    # ADR-0007: the Knowledge Lite trust transactions with real accounts and
+    # ADR-0008: the Knowledge Lite trust transactions with real accounts and
     # processes, on a root of their own (tools/e2e_lite_trust.py).
     "Knowledge Lite trust enrollment",
     "Knowledge Lite import, repin, revocation and audit stop",

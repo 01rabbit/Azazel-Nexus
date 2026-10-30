@@ -462,7 +462,7 @@ it keeps working without references (the handoff then reports
 set revert and the service stays installed, masked and unused.
 
 **Change to decisions 2 and 8, 2026-10-30 変更（委任された技術判断）.**
-Recorded by [ADR-0007](adr/0007-lite-trust-operations.md) under the owner's
+Recorded by [ADR-0008](adr/0008-lite-trust-operations.md) under the owner's
 2026-10-30 direction, which delegates technical decisions and asks for the
 Knowledge Lite operating entry to be completed.
 
@@ -484,7 +484,7 @@ Knowledge Lite operating entry to be completed.
   (its start record is required) and no trust change could be recorded; the
   decision's own condition ("confirm sink behaviour before P4") is answered
   by that need. Trust changes do not bring commissiond back: they run as
-  root's narrowed transaction (ADR-0007 D3).
+  root's narrowed transaction (ADR-0008 D3).
 - **Impact.** Nothing changes for a policy that does not name the unit. A
   policy that names it gets the chain on the ordinary path: the explainer's
   records are kept rather than dropped, the next bootstrap is signed against
@@ -672,7 +672,7 @@ controller loads no reader (`tests/unit/test_activation_p4_wiring.py`).
 
 **What READY releases.** Every governed unit `Requires=` the controller:
 those that carry the marker condition (`hardening.GRANT_MARKER_UNITS`, the
-loop's audit writer among them since ADR-0007) and auditd and commissiond. READY would
+loop's audit writer among them since ADR-0008) and auditd and commissiond. READY would
 release a start job queued at boot for any of them still enabled (a manual
 unmask, an older build), and §5 showed that masking at the pass cannot stop
 such a job. So every governed unit except the bootstrap pair carries the

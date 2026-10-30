@@ -254,7 +254,7 @@ class CommissionedLite:
 
 @dataclass(frozen=True)
 class _RecordAnchors(CommissionedLite):
-    """The commissioned trust root's anchor for one trust record (ADR 0007).
+    """The commissioned trust root's anchor for one trust record (ADR 0008).
 
     `trust/anchors.toml`, or the `trust-generations/N.anchors.toml` a repin
     wrote with its generation; `TrustStore.anchors_path_for` chooses, from the
@@ -787,7 +787,7 @@ class CommissionedTrust:
             if holds_public_fixture_key(keys) and not is_lab_host():
                 raise ValueError("public fixture key")
             # The anchor that goes with the record read above: a repin may
-            # have replaced both together (ADR 0007).
+            # have replaced both together (ADR 0008).
             anchors = _RecordAnchors(self.root, trust.anchors_path_for(trust_path, record)).anchors()
             anchors = replace(anchors, keys={name: key for name, key in anchors.keys.items()
                                              if key in keys})

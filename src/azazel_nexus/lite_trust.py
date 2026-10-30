@@ -119,7 +119,7 @@ class TrustStore:
         return int(value)
 
     def anchors_path_for(self, trust_path: Path, record: dict) -> Path:
-        """The anchors.toml that goes with one trust record (ADR 0007).
+        """The anchors.toml that goes with one trust record (ADR 0008).
 
         A repin that replaced the anchor with the keys wrote it beside its
         generation record (`trust-generations/N.anchors.toml`) and marked the
@@ -230,7 +230,7 @@ class TrustStore:
             refuse_public_fixture_keys((bytes.fromhex(key) for key in proposed), TrustRefused)
             # The anchor in force now, and the one the new generation carries:
             # the document's own `anchors` (key ids, roles, threshold, epoch,
-            # export policies; ADR 0007), or the current one unchanged.
+            # export policies; ADR 0008), or the current one unchanged.
             current_anchors_path = self.anchors_path_for(self.path, old)
             new_anchors_bytes = None
             if "anchors" in document:
