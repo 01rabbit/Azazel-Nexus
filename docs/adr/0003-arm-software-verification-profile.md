@@ -185,9 +185,10 @@ and pin per CPU and Nexus to refuse a CPU mismatch. Decided and implemented:
   still carries no digest. CI builds and packages natively on an x86_64 and an
   arm64 runner.
 - **Nexus** (`edge_package`): `PINS` holds one pin per CPU, keyed by the
-  kernel name; `PIN` is the pin of the CPU the process runs on, and the x86_64
-  entry keeps the exact record the single pin had (`observe_baseline` binds
-  it). The host CPU is read once, through `platform_profile.from_machine`. The
+  kernel name; `PIN` is the pin of the CPU the process runs on. The x86_64
+  entry differs from the single pin only by the manifest contract, now
+  `package-manifest/v2` (`observe_baseline` binds the record, so a baseline
+  built against the v1 pin is a different baseline). The host CPU is read once, through `platform_profile.from_machine`. The
   verification (`inspect`, `installed_package_digest`,
   `installed_package_components`, `installed_issuer_verification`), the probe
   (`az-edge-probed`, which also reads the ELF header of the unpacked binary
@@ -200,6 +201,31 @@ and pin per CPU and Nexus to refuse a CPU mismatch. Decided and implemented:
   package installed on this host is refused by name rather than reported
   absent; a host CPU with no pin checks nothing (`not-checked`) and grants
   nothing.
+- **Review fixes (2026-10-30, Codex R391-01..05 / Re522-01..04).** The
+  artifact is read **once**, bounded, and both the digest finding and the ELF
+  check use those bytes, so a read that saw a half-written file is never made
+  good by a later read. The ELF header is taken from the archive only when
+  `bin/azazel-edge-core` is exactly one regular member after name
+  normalisation (`./`, `//`), and `bin` is a directory; a second member, a
+  link of that name or a linked `bin` is a security finding (extraction would
+  let a later member replace the one read). The probe reads the unpacked
+  binary through `read_extracted_component` (no link followed, root-owned,
+  not group or other writable, one link), checks digest and ELF from those
+  bytes, and after the run reads it again: a binary changed during the probe
+  makes the answer `not-checked`. Edge reads each payload file once and runs
+  a private copy of the checked bytes. `tools/vm_integration.py` reads the
+  archived binary's CPU before installing and ends the start phase on a
+  refusal, before any marker, unmask or start.
+- **Roll-out order: this Nexus first, then Edge.** Edge moved the manifest
+  contract to `package-manifest/v2`: a Nexus older than these checks compares
+  a fixed x86_64 name and would accept a correct x86_64 package on an aarch64
+  host, so it must refuse the new packages by their contract. This reader
+  reads v2 and still reads v1 (`LEGACY_MANIFEST_CONTRACTS`), safely, because
+  it takes the CPU from the binary; a node that takes this Nexus first keeps
+  its installed v1 package if that package's binary is for its CPU. In the
+  other order the old Nexus refuses the v2 packages: Edge is not ready until
+  Nexus is updated, which is a gap and not a wrong acceptance. Old Nexus with
+  old packages is unchanged by either repository.
 - **What stays the same.** Accepting an aarch64 package on an aarch64 host is
   integrity, not admission: the Arm profile is `lab-software-verification`
   (D3), and every production use (model admission, product admission, HIL
@@ -212,7 +238,8 @@ binary under the packager's fixed `x86_64` name). That record is not
 rewritten; it stays the record of what ran then. A rerun with an aarch64
 package from the new packager uses the aarch64 names, and
 `tools/vm_integration.py` now refuses a package whose binary is not for the
-node's CPU instead of recording the mismatch.
+node's CPU, before installing it and before anything is started, instead of
+recording the mismatch.
 
 ## Alternatives considered
 

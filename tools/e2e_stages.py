@@ -812,13 +812,19 @@ def _edge_probe(harness: Harness) -> str:
     # harness's boot, another for the previous one.
     boot = "0f0e0d0c-0b0a-4908-8706-050403020100"
     previous_boot = "11111111-2222-4333-8444-555555555555"
-    outcome = edge_probed.probe(
-        root,
-        clock=lambda: "2026-09-21T04:00:00Z",
-        runner=runner,
-        unit_reader=units,
-        boot_id=boot,
-    )
+    # The harness owns the package it wrote; on a node root owns it.
+    owner = edge_probed.PACKAGE_OWNER_UID
+    edge_probed.PACKAGE_OWNER_UID = os.geteuid()
+    try:
+        outcome = edge_probed.probe(
+            root,
+            clock=lambda: "2026-09-21T04:00:00Z",
+            runner=runner,
+            unit_reader=units,
+            boot_id=boot,
+        )
+    finally:
+        edge_probed.PACKAGE_OWNER_UID = owner
     if ran != [[str(root / "bin/azazel-edge-core"), "--health"]]:
         raise RuntimeError(f"the probe ran {ran}, not the command fixed in code")
 

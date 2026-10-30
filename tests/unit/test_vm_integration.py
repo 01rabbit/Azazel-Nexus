@@ -280,7 +280,110 @@ def test_a_packager_directory_must_hold_exactly_one_cpus_package(tmp_path):
         vmit.edge_package_names(tmp_path / "empty")
 
 
-def test_the_node_refuses_a_binary_that_is_not_for_its_cpu():
-    install = SOURCE[SOURCE.index("def edge_install"):SOURCE.index("# --- The rehearsal-only start")]
-    assert "if arch != machine:" in install and "raise RuntimeError" in install
-    assert "fixed x86_64 name" not in SOURCE
+def _archive(members):
+    import gzip
+    import io
+    import tarfile
+
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w") as tar:
+        for name, data, kind in members:
+            info = tarfile.TarInfo(name)
+            if kind == "file":
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+            else:
+                info.type, info.linkname = tarfile.SYMTYPE, data
+                tar.addfile(info)
+    return gzip.compress(raw.getvalue(), mtime=0)
+
+
+def test_the_archived_binarys_cpu_is_read_from_one_regular_member():
+    from _edge_package_fixture import elf_stub
+
+    good = _archive([("bin/azazel-edge-core", elf_stub("aarch64"), "file")])
+    assert vmit.archive_binary_architecture(good) == "aarch64"
+    other = _archive([("bin/azazel-edge-core", elf_stub("x86_64"), "file")])
+    assert vmit.archive_binary_architecture(other) == "x86_64"
+    for bad in (
+        [("bin/azazel-edge-core", elf_stub("aarch64"), "file"),
+         ("./bin/azazel-edge-core", elf_stub("x86_64"), "file")],
+        [("bin/azazel-edge-core", elf_stub("aarch64"), "file"),
+         ("bin/azazel-edge-core", "/usr/bin/true", "link")],
+        [("bin", "/usr", "link"), ("bin/azazel-edge-core", elf_stub("aarch64"), "file")],
+        [("config/redirect_policy.yaml", b"x", "file")],
+    ):
+        with pytest.raises(RuntimeError):
+            vmit.archive_binary_architecture(_archive(bad))
+
+
+def test_a_refused_edge_package_stops_the_start_before_any_marker_or_start(tmp_path, monkeypatch):
+    """R391-04: the refusal ends the phase; nothing is marked, unmasked or started."""
+
+    calls = []
+    monkeypatch.setattr(vmit, "unit_show", lambda *a, **k: {})
+    monkeypatch.setattr(vmit, "knowledge_enroll", lambda *a, **k: None)
+
+    def refuse(checks):
+        raise RuntimeError("the archived binary is x86_64 by its ELF header and this node is aarch64: stop")
+
+    monkeypatch.setattr(vmit, "edge_install", refuse)
+    monkeypatch.setattr(vmit, "GRANTED_DIR", tmp_path / "granted")
+    for name in ("systemctl", "start_unit", "audit_copy", "sh", "edge_probe_result"):
+        monkeypatch.setattr(vmit, name, lambda *a, _n=name, **k: calls.append(_n))
+    result = vmit.node_start({"edge": True})
+    assert calls == []
+    assert not (tmp_path / "granted").exists()
+    edge = [c for c in result["checks"] if c["id"] == "start.edge-package"]
+    assert edge and edge[0]["status"] == "fail" and edge[0].get("blocking") is True
+
+
+def test_a_package_that_installs_continues_to_the_start(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(vmit, "unit_show", lambda *a, **k: {})
+    monkeypatch.setattr(vmit, "knowledge_enroll", lambda *a, **k: None)
+    monkeypatch.setattr(vmit, "edge_install", lambda checks: True)
+    monkeypatch.setattr(vmit, "GRANTED_DIR", tmp_path / "granted")
+
+    class _Done:
+        returncode, stderr = 0, b""
+
+    monkeypatch.setattr(vmit, "sh", lambda *a, **k: _Done())
+    monkeypatch.setattr(vmit, "out", lambda *a, **k: "")
+    for name in ("systemctl", "audit_copy"):
+        monkeypatch.setattr(vmit, name, lambda *a, _n=name, **k: calls.append(_n))
+    monkeypatch.setattr(vmit, "start_unit", lambda unit: calls.append(unit) or True)
+    monkeypatch.setattr(vmit, "edge_probe_result", lambda: {})
+    vmit.node_start({"edge": True})
+    assert vmit.EDGE_CORE in calls
+    assert (tmp_path / "granted" / vmit.EDGE_CORE).exists()
+
+
+def test_the_node_refuses_a_mismatched_binary_before_installing_anything(tmp_path, monkeypatch):
+    """Named, described and digested for aarch64; the binary is x86_64."""
+
+    import hashlib
+    import json
+
+    from _edge_package_fixture import elf_stub
+
+    manifest_name, archive_name = vmit.EDGE_PACKAGES["aarch64"]
+    edge = tmp_path / "work" / "edge"
+    edge.mkdir(parents=True)
+    archive = _archive([("bin/azazel-edge-core", elf_stub("x86_64"), "file")])
+    (edge / archive_name).write_bytes(archive)
+    (edge / manifest_name).write_text(json.dumps({
+        "architecture": "aarch64", "digest": "sha256:" + hashlib.sha256(archive).hexdigest(),
+        "components": []}))
+    calls = []
+    monkeypatch.setattr(vmit, "NODE_WORK", str(tmp_path / "work"))
+    monkeypatch.setattr(vmit, "EDGE_PACKAGE_ROOT", str(tmp_path / "opt" / "edge-core"))
+    monkeypatch.setattr(vmit, "sh", lambda *a, **k: calls.append(a))
+
+    class _U:
+        machine = "aarch64"
+
+    monkeypatch.setattr(vmit.os, "uname", lambda: _U())
+    with pytest.raises(RuntimeError, match="archived binary is x86_64"):
+        vmit.edge_install(vmit.Checks("start"))
+    assert calls == [] and not (tmp_path / "opt").exists()

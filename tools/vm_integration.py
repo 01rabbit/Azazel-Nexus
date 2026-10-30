@@ -107,6 +107,8 @@ def edge_package_names(package: Path) -> tuple[str, str]:
                          f"{sorted(EDGE_PACKAGES)}; found {len(found)}")
     return found[0]
 EVE = "/var/log/suricata/eve.json"
+#: Where the rehearsal-only grant markers are made (activation's granted dir).
+GRANTED_DIR = Path("/run/azazel-activation/granted")
 
 #: Words a record must never carry (inventory confidentiality): addresses
 #: (IPv4, IPv6), MACs (colon or hyphen), 64/32-hex digests and ids, UUIDs,
@@ -800,7 +802,35 @@ def import_bundle(entry: str) -> dict:
 # --- Edge package (integration-loop-rehearsal §3, §4 "Without Suricata") ----
 
 
-def edge_install(checks: Checks) -> None:
+def archive_binary_architecture(archive_bytes: bytes) -> str:
+    """The CPU of the one `bin/azazel-edge-core` in a package archive, by its ELF header.
+
+    A second member of that name, a non-regular one, or a `bin` that is not a
+    directory is refused: extraction would let it replace the one read.
+    """
+
+    import io
+    import posixpath
+
+    found = None
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as archive:
+        for member in archive:
+            name = posixpath.normpath(member.name.lstrip("/"))
+            if name == "bin" and not member.isdir():
+                raise RuntimeError("bin in the Edge archive is not a directory: stop")
+            if name != "bin/azazel-edge-core":
+                continue
+            if found is not None or not member.isreg():
+                raise RuntimeError("the Edge archive's binary is not one regular member: stop")
+            found = archive.extractfile(member).read(20)
+    if found is None:
+        raise RuntimeError("the Edge archive carries no bin/azazel-edge-core: stop")
+    if found[:4] != b"\x7fELF" or found[4:6] != b"\x02\x01":
+        return "unknown"
+    return EDGE_ELF_MACHINE.get(found[18:20], "unknown")
+
+
+def edge_install(checks: Checks) -> bool:
     import grp
 
     root = Path(EDGE_PACKAGE_ROOT)
@@ -817,6 +847,12 @@ def edge_install(checks: Checks) -> None:
     if manifest.get("architecture") != machine:
         raise RuntimeError(f"the manifest is for {manifest.get('architecture')!r} and this node is "
                            f"{machine}: stop")
+    # Before anything is installed or unpacked: the binary the archive would
+    # unpack must be one regular member, for this node's CPU.
+    member_arch = archive_binary_architecture(archive_bytes)
+    if member_arch != machine:
+        raise RuntimeError(f"the archived binary is {member_arch} by its ELF header and this node is "
+                           f"{machine}: stop (a finding, not a step; a package names the CPU of its binary)")
     root.parent.mkdir(mode=0o755, exist_ok=True)
     root.mkdir(mode=0o755, exist_ok=True)
     for name in (edge_manifest, edge_archive):
@@ -827,9 +863,9 @@ def edge_install(checks: Checks) -> None:
     digest_ok = component.get("bin/azazel-edge-core") == "sha256:" + hashlib.sha256(binary.read_bytes()).hexdigest()
     elf = binary.read_bytes()[:20]
     arch = EDGE_ELF_MACHINE.get(elf[18:20], "unknown") if elf[4:6] == b"\x02\x01" else "unknown"
-    if arch != machine:
-        raise RuntimeError(f"the packaged binary is {arch} by its ELF header and this node is {machine}: "
-                           "stop (a finding, not a step; a package names the CPU of its binary)")
+    if arch != machine or not digest_ok:
+        raise RuntimeError(f"the unpacked binary is {arch} by its ELF header (node {machine}) or differs "
+                           "from its manifest: stop (a finding, not a step)")
     azedge_gid = grp.getgrnam("azedge").gr_gid
     eve_dir = Path(EVE).parent
     eve_dir.mkdir(mode=0o2710, exist_ok=True)
@@ -838,7 +874,7 @@ def edge_install(checks: Checks) -> None:
     Path(EVE).touch(mode=0o640)
     os.chown(EVE, 0, azedge_gid)
     Path(EVE).chmod(0o640)
-    checks.expect("edge-package", digest_ok and arch == machine,
+    return checks.expect("edge-package", digest_ok and arch == machine,
                   "Edge package verified against its manifest and installed",
                   f"node {machine}, manifest {manifest.get('architecture')}, binary ELF {arch}"
                   + ("" if arch == machine else " (refused: the binary is not for this node's CPU)")
@@ -907,8 +943,13 @@ def node_start(options: dict) -> dict:
                   "the activation controller is not running (its boot pass is over)", json.dumps(controller))
     checks.guard("knowledge-enroll", "Knowledge Lite enrollment", lambda: knowledge_enroll(checks, options))
     if options.get("edge"):
-        checks.guard("edge-package", "Edge package install", lambda: edge_install(checks))
-    granted = Path("/run/azazel-activation/granted")
+        installed = checks.guard("edge-package", "Edge package install", lambda: edge_install(checks),
+                                 blocking=True)
+        if installed is not True:
+            # Refused or failed: stop the phase before any marker, unmask or
+            # start, so nothing from that package (or anything else) is run.
+            return checks.result()
+    granted = GRANTED_DIR
     granted.mkdir(mode=0o755, parents=True, exist_ok=True)
     markers = list(LOOP_UNITS) + ([EDGE_PROBE, EDGE_CORE] if options.get("edge") else [])
     for unit in markers:

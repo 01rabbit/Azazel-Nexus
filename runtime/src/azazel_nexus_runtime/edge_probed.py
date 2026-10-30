@@ -64,6 +64,15 @@ match the digest the manifest records for it**. The last one is the point: an
 intact archive says nothing about the file next to it that is actually going
 to run.
 
+**And it is read the safe way, and run as read** (R391-03): the binary is
+read through `edge_package.read_extracted_component` -- no link followed at
+any level, the package root, `bin/` and the file owned by root
+(`PACKAGE_OWNER_UID`) and not group or other writable, one link -- and its
+digest and ELF header are checked from those bytes. After the run it is read
+the same way again, and a binary that changed meanwhile makes the answer
+`not-checked`: the answer would be about something nobody checked. Only an
+account that may already change the installed package can swap it.
+
 **And it must be for this CPU** (S-11): the host's CPU, the manifest's
 `architecture` and the ELF header of the unpacked binary about to be executed
 must name the same CPU, or nothing is run. A host CPU no pin covers runs
@@ -137,6 +146,7 @@ from azazel_nexus.edge_package import (
     elf_architecture,
     host_architecture,
     host_pin,
+    read_extracted_component,
     PROBE_CONTRACT,
     PROBE_STATE_PATH,
     EdgePackageRefused,
@@ -237,6 +247,11 @@ def no_unit_reader(method: str, unit: str):
     return None
 
 
+#: Who must own the package root, `bin/` and the binary the probe runs.
+#: Root in production; a test substitutes its own uid.
+PACKAGE_OWNER_UID = 0
+
+
 def probe(
     root: Path = EDGE_PACKAGE_ROOT,
     *,
@@ -327,9 +342,10 @@ def probe(
 
     component = _component_digest(manifest, HEALTH_ARGV[0])
     try:
-        binary_bytes = binary.read_bytes()
+        binary_bytes = read_extracted_component(
+            HEALTH_ARGV[0], package_root=root, owner_uid=PACKAGE_OWNER_UID)
         binary_digest = _digest(binary_bytes)
-    except OSError as exc:
+    except EdgePackageRefused as exc:
         return _bound(
             observed_at,
             artifact_digest,
@@ -337,8 +353,8 @@ def probe(
             boot_id=boot_id,
             health=Evidence.NOT_CHECKED,
             health_reason=(
-                f"{binary} could not be read ({exc}); the package is present "
-                "and its payload is not unpacked, so nothing was run"
+                f"{binary} could not be read safely ({exc}); the package is present "
+                "and its payload is not unpacked, or not protected, so nothing was run"
             ),
             running=_running_finding(unit_reader),
         )
@@ -376,6 +392,17 @@ def probe(
         )
 
     health, health_reason, health_security = _health_finding(run, root)
+    try:
+        after = _digest(read_extracted_component(
+            HEALTH_ARGV[0], package_root=root, owner_uid=PACKAGE_OWNER_UID))
+    except EdgePackageRefused as exc:
+        after = f"unreadable ({exc})"
+    if after != binary_digest:
+        health, health_security = Evidence.NOT_CHECKED, False
+        health_reason = (
+            f"{binary} changed while it was being probed; the answer is about a "
+            "binary nobody checked, so it is not used"
+        )
     running, running_reason = _running_finding(unit_reader)
     return ProbeOutcome(
         observed_at=observed_at,

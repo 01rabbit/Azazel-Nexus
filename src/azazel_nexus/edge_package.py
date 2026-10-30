@@ -342,12 +342,22 @@ PINS = MappingProxyType({
         package="azazel-edge-core",
         version="0.1.0",
         architecture=architecture,
-        manifest_contract="azazel-edge-core/package-manifest/v1",
+        manifest_contract="azazel-edge-core/package-manifest/v2",
         health_contract="azazel-edge-core/health/v1",
         signed=False,
     )
     for architecture in ("aarch64", "x86_64")
 })
+
+#: Manifest contracts read besides the pinned one. v1 is what Edge's packager
+#: wrote before per-CPU packages (always under the x86_64 name, whatever the
+#: binary). It is still read so that a node can take this reader before Edge
+#: moves to v2 without losing an installed package, and it is safe to read
+#: here because the CPU is taken from the binary's ELF header, never from the
+#: manifest. Edge bumped the contract to v2 so that readers older than this
+#: one refuse every per-CPU package instead of accepting an x86_64 package on
+#: an aarch64 host.
+LEGACY_MANIFEST_CONTRACTS = ("azazel-edge-core/package-manifest/v1",)
 
 #: The ELF identity a binary for each pinned CPU carries, as the vendored
 #: `pin.json` names it, and the header values behind each name. Both reviewed
@@ -431,43 +441,56 @@ def elf_architecture(header: bytes) -> str:
     )
 
 
-def _archive_elf_header(artifact_path: Path) -> bytes:
-    """The first 64 bytes of `bin/azazel-edge-core` in the archive, read bounded.
+def _member_name(name: str) -> str:
+    """An archive member's path as extraction would resolve it: `./`, `//` and
+    `.` segments removed. Two names that resolve alike are the same file."""
 
-    Never extracted: the member is located in the gzip'd tar with the same
-    ceilings `_archive_components` uses, and only its header is read.
+    import posixpath
+
+    return posixpath.normpath(name.lstrip("/")) if name else name
+
+
+def _archive_elf_header(data: bytes) -> bytes:
+    """The first 64 bytes of the one `bin/azazel-edge-core` in the archive bytes.
+
+    Never extracted. The **whole** archive is walked, with the ceilings
+    `_archive_components` uses: the binary must be exactly one regular-file
+    member once names are normalised (`./bin/...` and `bin//...` are the
+    same file), and `bin` itself must not be anything but a directory. A
+    second member of that name, a link of that name, or a `bin` that is a
+    link is refused -- extraction would let a later member replace the one
+    whose header was read.
     """
 
     import io
     import tarfile
 
-    try:
-        fd = os.open(artifact_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        with os.fdopen(fd, "rb") as stream:
-            data = stream.read(_ARCHIVE_MAX_BYTES + 1)
-    except OSError as exc:
-        raise EdgePackageRefused(f"{artifact_path.name} could not be read ({exc})") from exc
-    if len(data) > _ARCHIVE_MAX_BYTES:
-        raise EdgePackageRefused(f"{artifact_path.name} is larger than an Edge archive may be")
+    header: Optional[bytes] = None
     try:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
             for count, member in enumerate(archive):
                 if count >= _ARCHIVE_MAX_MEMBERS:
-                    break
-                name = member.name[2:] if member.name.startswith("./") else member.name
+                    raise EdgePackageRefused("the Edge archive has too many members")
+                name = _member_name(member.name)
+                if name == "bin" and not member.isdir():
+                    raise EdgePackageRefused("bin in the Edge archive is not a directory")
                 if name != _ELF_MEMBER:
                     continue
+                if header is not None:
+                    raise EdgePackageRefused(f"the Edge archive carries {_ELF_MEMBER} more than once")
                 if not member.isreg():
                     raise EdgePackageRefused(f"{_ELF_MEMBER} in the archive is not a regular file")
                 stream = archive.extractfile(member)
                 if stream is None:
                     raise EdgePackageRefused(f"{_ELF_MEMBER} in the archive is unreadable")
-                return stream.read(64)
+                header = stream.read(64)
     except EdgePackageRefused:
         raise
     except Exception as exc:  # noqa: BLE001 - a malformed archive names no CPU
-        raise EdgePackageRefused(f"{artifact_path.name} is not a readable Edge archive") from exc
-    raise EdgePackageRefused(f"{artifact_path.name} carries no {_ELF_MEMBER}")
+        raise EdgePackageRefused("the artifact is not a readable Edge archive") from exc
+    if header is None:
+        raise EdgePackageRefused(f"the Edge archive carries no {_ELF_MEMBER}")
+    return header
 
 #: The manifest fields this node reads. A subset of the vendored schema, and a
 #: test asserts it is a subset -- reading a field the producer does not
@@ -1050,6 +1073,47 @@ def measure_extracted_components(
     return result
 
 
+def read_extracted_component(
+    relative: str, *, package_root: Path = EDGE_PACKAGE_ROOT, owner_uid: int = 0,
+) -> bytes:
+    """The bytes of one `BOUND_COMPONENTS` file, under the same protection as
+    `measure_extracted_components`: no link followed at any level, the root,
+    its directory and the file owned by `owner_uid` and not group or other
+    writable, a regular file with one link, at most 256 MiB.
+
+    For the probe (R391-03): it checks the binary from these bytes before it
+    runs it, and only an account that may already change the installed
+    package (`owner_uid`, root in production) can replace it in between.
+    """
+
+    if relative not in BOUND_COMPONENTS:
+        raise EdgePackageRefused(f"{relative!r} is not a bound Edge component")
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+    parent, name = relative.split("/")
+    fds: list[int] = []
+    try:
+        fds.append(os.open(package_root, flags | os.O_DIRECTORY))
+        _protected(fds[-1], owner_uid, directory=True)
+        fds.append(os.open(parent, flags | os.O_DIRECTORY, dir_fd=fds[0]))
+        _protected(fds[-1], owner_uid, directory=True)
+        fds.append(os.open(name, flags | os.O_NONBLOCK, dir_fd=fds[1]))
+        _protected(fds[-1], owner_uid, directory=False)
+        chunks, total = [], 0
+        while chunk := os.read(fds[-1], 1 << 20):
+            total += len(chunk)
+            if total > _COMPONENT_MAX_BYTES:
+                raise EdgePackageRefused("an extracted Edge component is too large")
+            chunks.append(chunk)
+        return b"".join(chunks)
+    except OSError as exc:
+        raise EdgePackageRefused(
+            f"the extracted Edge component {relative} could not be read: {exc}"
+        ) from exc
+    finally:
+        for fd in fds:
+            os.close(fd)
+
+
 def _manifest_components(manifest: dict) -> dict[str, str]:
     declared: dict[str, str] = {}
     components = manifest.get("components")
@@ -1079,7 +1143,9 @@ def _archive_components(data: bytes) -> dict[str, str]:
             for count, member in enumerate(archive):
                 if count >= _ARCHIVE_MAX_MEMBERS:
                     raise EdgePackageRefused("the Edge archive has too many members")
-                name = member.name[2:] if member.name.startswith("./") else member.name
+                name = _member_name(member.name)
+                if name == "bin" and not member.isdir():
+                    raise EdgePackageRefused("bin in the Edge archive is not a directory")
                 if name not in BOUND_COMPONENTS:
                     continue
                 if name in found or not member.isreg() or member.size > _COMPONENT_MAX_BYTES:
@@ -1166,12 +1232,12 @@ def installed_package_digest(
     pin, host = _host_pin_or_refuse(pin)
     manifest_path = package_root / pin.manifest_name
     artifact_path = package_root / pin.artifact_name
-    _, package, manifest = _read_package(package_root, manifest_path, artifact_path, pin, host)
+    _, package, manifest, data = _read_package(package_root, manifest_path, artifact_path, pin, host)
     if not package.held or manifest is None:
         raise EdgePackageRefused("the installed Edge package check did not pass")
     version, digest_finding, _ = _issuer_gate(
         manifest, manifest_path, _version_finding(manifest, pin),
-        _digest_finding(artifact_path, manifest), pin,
+        _digest_finding(artifact_path, manifest, data), pin,
         load_issuer_trust() if trust is None else trust,
     )
     if not version.held or not digest_finding.held:
@@ -1319,7 +1385,7 @@ def inspect(
 
     manifest_path = root / pin.manifest_name
     artifact_path = root / pin.artifact_name
-    presence, package, manifest = _read_package(
+    presence, package, manifest, data = _read_package(
         root, manifest_path, artifact_path, pin, expected
     )
     findings = [package]
@@ -1344,7 +1410,7 @@ def inspect(
     assert manifest is not None  # _read_package holds this when the check passed
     version_finding, digest_finding, issuer = _issuer_gate(
         manifest, manifest_path, _version_finding(manifest, pin),
-        _digest_finding(artifact_path, manifest), pin, trust,
+        _digest_finding(artifact_path, manifest, data), pin, trust,
     )
     caveats = (_caveat_for(issuer),)
     findings.append(version_finding)
@@ -1717,8 +1783,13 @@ def presence_of(findings: Sequence[Finding]) -> EdgePresence:
 def _read_package(
     root: Path, manifest_path: Path, artifact_path: Path, pin: EdgePin,
     expected: Optional[str],
-) -> tuple[EdgePresence, Finding, Optional[dict]]:
+) -> tuple[EdgePresence, Finding, Optional[dict], Optional[bytes]]:
     """Present, absent, or present and unusable -- which are three answers.
+
+    Also returns the artifact's bytes, read **once** and bounded (None when
+    they could not be read): the digest finding and the ELF check are both
+    derived from these bytes, so a file that changes between two reads cannot
+    pass one check as one archive and the other as another.
 
     `expected` is the CPU the package must be for (the host's, or a bundle
     target's). It, the manifest's architecture and the archive's ELF header
@@ -1734,6 +1805,7 @@ def _read_package(
                 reason=reason,
                 security=security,
             ),
+            None,
             None,
         )
 
@@ -1798,7 +1870,7 @@ def _read_package(
             f"{manifest_path.name} is missing {missing}; it does not describe "
             f"a {pin.manifest_contract} package",
         )
-    if manifest["contract"] != pin.manifest_contract:
+    if manifest["contract"] != pin.manifest_contract and manifest["contract"] not in LEGACY_MANIFEST_CONTRACTS:
         return refuse(
             EdgePresence.CORRUPT,
             f"{manifest_path.name} declares contract "
@@ -1853,19 +1925,26 @@ def _read_package(
             f"{manifest_path.name} declares architecture {pin.architecture} and records "
             f"the ELF identity {manifest['elf']!r}, which is not {expected_elf!r}",
         )
-    # The binary decides, not the manifest. Read from an archive whose bytes
-    # are the ones its manifest describes; one that is not is the digest
-    # check's finding, a security one, and is left to it.
+    # The binary decides, not the manifest. One bounded read: the digest check
+    # and the ELF check use the same bytes, and the ELF is read only from
+    # bytes that are the archive the manifest describes. Bytes that are not
+    # are the digest check's finding, a security one; a read that failed is
+    # its not-checked. Neither is ever made good by a later read.
+    data: Optional[bytes] = None
     try:
-        archive_bytes_match = (
-            "sha256:" + hashlib.sha256(artifact_path.read_bytes()).hexdigest()
-            == manifest["digest"]
-        )
+        fd = os.open(artifact_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        with os.fdopen(fd, "rb") as stream:
+            data = stream.read(_ARCHIVE_MAX_BYTES + 1)
     except OSError:
-        archive_bytes_match = False
-    if archive_bytes_match:
+        data = None
+    if data is not None and len(data) > _ARCHIVE_MAX_BYTES:
+        return refuse(
+            EdgePresence.CORRUPT,
+            f"{artifact_path.name} is larger than an Edge archive may be",
+        )
+    if data is not None and "sha256:" + hashlib.sha256(data).hexdigest() == manifest["digest"]:
         try:
-            found = elf_architecture(_archive_elf_header(artifact_path))
+            found = elf_architecture(_archive_elf_header(data))
         except EdgePackageRefused as exc:
             return refuse(
                 EdgePresence.CORRUPT,
@@ -1890,11 +1969,12 @@ def _read_package(
             evidence=Evidence.PASSED,
             reason=(
                 f"{manifest_path.name} and {artifact_path.name} are both at "
-                f"{root}, the manifest declares {pin.manifest_contract}, and "
+                f"{root}, the manifest declares {manifest['contract']}, and "
                 "its posture is observe-only"
             ),
         ),
         manifest,
+        data,
     )
 
 
@@ -1917,16 +1997,17 @@ def _version_finding(manifest: dict, pin: EdgePin) -> Finding:
     )
 
 
-def _digest_finding(artifact_path: Path, manifest: dict) -> Finding:
+def _digest_finding(artifact_path: Path, manifest: dict, data: Optional[bytes]) -> Finding:
+    """From the bytes `_read_package` read, never from a second read (`None`: unreadable)."""
+
     declared = manifest["digest"]
-    try:
-        actual = "sha256:" + hashlib.sha256(artifact_path.read_bytes()).hexdigest()
-    except OSError as exc:
+    if data is None:
         return Finding(
             check="digest_matches",
             evidence=Evidence.NOT_CHECKED,
-            reason=f"{artifact_path.name} could not be read ({exc}), so no digest was derived",
+            reason=f"{artifact_path.name} could not be read, so no digest was derived",
         )
+    actual = "sha256:" + hashlib.sha256(data).hexdigest()
     if actual == declared:
         return Finding(
             check="digest_matches",

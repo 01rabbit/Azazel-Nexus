@@ -114,6 +114,60 @@ def _units(active="active", sub="running", load="loaded", log=None):
     return read
 
 
+@pytest.fixture(autouse=True)
+def _package_owned_by_this_test(monkeypatch):
+    """The package root, `bin/` and the binary belong to root in production;
+    here they belong to the account running the test."""
+
+    import os
+
+    monkeypatch.setattr(edge_probed, "PACKAGE_OWNER_UID", os.geteuid())
+
+
+# -- the binary run is the binary checked (R391-03) -------------------------
+
+
+def test_a_symlinked_binary_is_not_run(tmp_path):
+    log = []
+    root = _package(tmp_path)
+    real = root / "bin" / "real-core"
+    (root / HEALTH_ARGV[0]).rename(real)
+    (root / HEALTH_ARGV[0]).symlink_to(real.name)
+    outcome = edge_probed.probe(root, clock=_clock(), runner=_runner(log=log), unit_reader=_units())
+    assert log == [] and outcome.health is Evidence.NOT_CHECKED
+    assert "could not be read safely" in outcome.health_reason
+
+
+def test_a_group_writable_binary_is_not_run(tmp_path):
+    log = []
+    root = _package(tmp_path)
+    (root / HEALTH_ARGV[0]).chmod(0o775)
+    outcome = edge_probed.probe(root, clock=_clock(), runner=_runner(log=log), unit_reader=_units())
+    assert log == [] and outcome.health is Evidence.NOT_CHECKED
+
+
+def test_a_binary_owned_by_another_account_is_not_run(tmp_path, monkeypatch):
+    import os
+
+    log = []
+    root = _package(tmp_path)
+    monkeypatch.setattr(edge_probed, "PACKAGE_OWNER_UID", os.geteuid() + 1)
+    outcome = edge_probed.probe(root, clock=_clock(), runner=_runner(log=log), unit_reader=_units())
+    assert log == [] and outcome.health is Evidence.NOT_CHECKED
+
+
+def test_a_binary_replaced_while_it_runs_makes_the_answer_unused(tmp_path):
+    root = _package(tmp_path)
+
+    def swap(argv, cwd):
+        (root / HEALTH_ARGV[0]).write_bytes(elf_stub(OTHER))
+        return _Completed(0, HEALTHY)
+
+    outcome = edge_probed.probe(root, clock=_clock(), runner=swap, unit_reader=_units())
+    assert outcome.health is Evidence.NOT_CHECKED
+    assert "changed while it was being probed" in outcome.health_reason
+
+
 # -- the CPU: nothing for another CPU is run (S-11) ------------------------
 
 OTHER = {"x86_64": "aarch64", "aarch64": "x86_64"}[PIN.architecture]

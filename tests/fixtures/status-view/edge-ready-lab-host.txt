@@ -38,7 +38,7 @@ Knowledge Lite: functional
 
 edge core (local): verified-ready  [<TMP>/edge-verified]
     package_present: passed
-        azazel-edge-core-0.1.0-x86_64.manifest.json and azazel-edge-core-0.1.0-x86_64.tar.gz are both at <TMP>/edge-verified, the manifest declares azazel-edge-core/package-manifest/v1, and its posture is observe-only
+        azazel-edge-core-0.1.0-x86_64.manifest.json and azazel-edge-core-0.1.0-x86_64.tar.gz are both at <TMP>/edge-verified, the manifest declares azazel-edge-core/package-manifest/v2, and its posture is observe-only
     version_matches: passed
         the manifest declares 0.1.0, which is the pinned version
     digest_matches: passed

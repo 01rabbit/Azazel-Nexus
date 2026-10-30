@@ -138,13 +138,21 @@ the lab target **may carry a filled Edge slot**, and only the aarch64 one:
 - **The lab pin is shipped**:
   `packaging/offline/edge-artifact-aarch64-lab.sha256` names the
   `azazel-edge-core-0.1.0-aarch64.tar.gz` built natively on aarch64 from the
-  Azazel-Edge#522 branch (`79ffbe3`; the core source and
-  `config/redirect_policy.yaml` are those of Edge main `cc769e0`) in
-  `rust:1.99.1-trixie` (rustc 1.99.1) with `cargo build --release --locked`,
-  and packaged by that branch's packager with `--architecture aarch64`. Three
-  builds in fresh containers produced the identical binary, so the pin names
-  something anyone can rebuild from public inputs; it is not a released
-  artifact. Any change to the core, the policy, `Cargo.lock` or the image
+  Azazel-Edge#522 branch (the core source and `config/redirect_policy.yaml`
+  are those of Edge main `cc769e0`) in `rust:1.99.1-trixie` (rustc 1.99.1)
+  with `cargo build --release --locked`, and packaged by that branch's
+  packager with `--architecture aarch64`. Three builds in fresh containers
+  produced the identical binary, so the pin names something anyone can
+  rebuild from public inputs; it is not a released artifact.
+  **Checked against a fresh build (2026-10-30)**: at Azazel-Edge `5fb43e9`,
+  in `rust@sha256:09027f873d45b8ecd1dc86f1fa13b7a62b875c961f017a0e331267b350430137`
+  (the image index `rust:1.99.1-trixie` resolved to; native aarch64 on the
+  colima VM), a new container built the core and the packager wrote the
+  aarch64 archive; its sha256 equals the shipped pin. To repeat it: build and
+  package as above in that image, then
+  `sha256sum azazel-edge-core-0.1.0-aarch64.tar.gz` and compare with the
+  pin's first field (or carry the package in a lab bundle: `verify_edge_slot`
+  compares it before parsing anything). Any change to the core, the policy, `Cargo.lock` or the image
   changes the digest, and the slot is then refused until the pin is renewed
   (Azazel-Edge#521, for example, changes both the core and the policy).
 - **The baseline's pin is not shipped** and stays an owner decision:

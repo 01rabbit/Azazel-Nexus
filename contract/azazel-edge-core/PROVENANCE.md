@@ -2,14 +2,18 @@
 
 Copied verbatim from `packaging/nexus-core/contract/` in
 [01rabbit/Azazel-Edge](https://github.com/01rabbit/Azazel-Edge), at commit
-`79ffbe3` on the branch of
+`5fb43e9` on the branch of
 [Azazel-Edge#522](https://github.com/01rabbit/Azazel-Edge/pull/522)
-(per-CPU package, manifest and pin). Regenerated there from a release build on
+(per-CPU package, manifest and pin; manifest contract
+`azazel-edge-core/package-manifest/v2`). Regenerated there from a release build on
 aarch64 and on x86_64 (`nexus_core_package.py --emit-contract`); the two
 regenerations are byte-identical. That PR changes `pin.json` to
 `azazel-edge-core/nexus-pin/v2` (one entry per CPU under `architectures`, each
 with its artifact, manifest and ELF identity) and adds `elf` to the manifest
-schema. **Until Azazel-Edge#522 is merged, this copy is ahead of Edge main**;
+schema; the manifest contract moves to `package-manifest/v2` so that a
+reader older than the per-CPU checks refuses every per-CPU package (this
+reader also still reads v1, see `edge_package.LEGACY_MANIFEST_CONTRACTS`).
+**Until Azazel-Edge#522 is merged, this copy is ahead of Edge main**;
 when it merges, the commit named here is replaced by its main commit, and the
 files do not change (`health-schema.json` is unchanged).
 
