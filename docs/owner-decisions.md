@@ -74,7 +74,7 @@ Arm VM での受入（V1〜V3、main `7ef1702`）の結果を反映）。** #355
 
 | # | 事項 | 現在の既定値 | 選択肢 | 影響 | PR・ADR |
 | --- | --- | --- | --- | --- | --- |
-| M17 | EvidenceRef を説明に載せるか | explaind の pending は evidence の digest を持たない。保存される Edge の claim は `evidence_refs_not_carried` | pending の形を変えて evidence digest を運ぶ／現状維持 | 説明 ledger の `ClaimSet` が Edge の証拠を引用できるようになる | #380、[契約の所有 §3.1](contract-ownership.md#31-decision-evidence-and-audit-path) |
+| M17 | EvidenceRef を説明に載せるか | **決定（方針【5】E、S-18）**：pending と説明 ledger が遷移の first／latest の evidence digest と受信時刻を運ぶ（原文は運ばない。M.I.O. の frame は読まない）。`ClaimSet` の Edge の claim が Fabric の `EvidenceRef` として引用し、参照切れは `evidence_not_stored`・`evidence_retention_elapsed` と書く。`evidence_refs_not_carried` は運ぶ前の記録と pending だけ。説明器は private な証拠 store を読めないので、保持の窓の内側でも存在は保証しない | pending の形を変えて evidence digest を運ぶ（採用）／現状維持 | 説明 ledger の `ClaimSet` が Edge の証拠を引用できるようになる | #380、[契約の所有 §3.1](contract-ownership.md#31-decision-evidence-and-audit-path) |
 | M18 | `os_abi` の語彙 | Nexus は `debian-13/linux-6.12`、Fabric の golden は `linux-gnu-x86_64`。対応表は無く、厳密に比較して違いを報告するだけ | Fabric と共通の語彙を決める | Fabric との合意事項 | #382、[ADR-0006](adr/0006-tested-tuple-fabric-and-arm-lab.md) |
 | M19 | Fabric の `CompatibilityManifest` を Nexus が受け取る経路 | 未設計。`check_tested_tuple` に本番の呼出し元は無い | 設計する／Fabric の R1 を待つ | tested tuple の適合が本番の admission に入る | #382 |
 
@@ -121,8 +121,8 @@ Arm VM での受入（V1〜V3、main `7ef1702`）の結果を反映）。** #355
 | L19 | fixture 鍵が pin にあるときの status の理由語 | 既存の `trust_unreadable` を使う | 専用の理由語を足す | UI・CLI の語彙 | #375 |
 | L20 | Nexus の試験用 seed を `PUBLIC_FIXTURE_KEYS` に入れるか | 入れていない（製品に現れないことは別の試験が固定） | 入れる | 拒否の網羅性 | #375 |
 | L21 | Lite import 中に daemon の単一ループが塞がること | 検証中の status・lookup は待たされ、期限を過ぎた lookup は Knowledge unavailable になる（決定論経路は止まらない） | 現状維持／import を別スレッド・別プロセスにする | 説明系の可用性 | #375 |
-| L22 | 説明 ledger の 1 件の大きさ | Fabric があると引用と Edge の判断を Fabric の形でも持つ（上限 1 件 32 KiB）。現在の wheelhouse には Fabric が入っていない | 現状維持／射影を別に保存する | 1 日分の segment に入る件数 | #380 |
-| L23 | M.I.O. の助言を `Claim` に射影するか | 射影しない（ledger に model_ref・generation が無い） | ledger にそれらを持たせて射影する | `ClaimSet` の網羅性 | #380 |
+| L22 | 説明 ledger の 1 件の大きさ | 現状維持。Fabric があると引用と Edge の判断を Fabric の形でも持つ（上限 1 件 32 KiB）。M17 の証拠参照（2 件まで）と L23 の M.I.O. の claim が加わる。日の segment に射影付きが入らないときは射影なしで書く（#380 の挙動のまま、証拠参照と生成方式は記録に残る）。現在の wheelhouse には Fabric が入っていない | 現状維持（採用）／射影を別に保存する | 1 日分の segment に入る件数 | #380 |
+| L23 | M.I.O. の助言を `Claim` に射影するか | **決定**：ローカル回答の生成方式（`local_model_inference`／`embedding_matching`／`deterministic_keyword_matching`）とモデル id、回答の内容（順位の状態、候補と代替の id、モデルが書いたときはその説明文。検証済みの欄だけ）を `mio.provenance` に記録し（`content_kind` は互換のため `ai_advice` のまま）、候補とモデルの説明を `Claim` に射影する（`model_ref` 付き。固定 banner は claim にしない）。応答に世代が無いので `model_generation` は空で、claim に `model_generation_not_delivered` と書く | ledger にそれらを持たせて射影する（採用。世代は M.I.O. の応答に載るまで空） | `ClaimSet` の網羅性 | #380 |
 | L24 | Nexus の tuple の CPU 表記 | カーネル表記（`x86_64`／`aarch64`）を維持 | 正準名（`amd64`／`arm64`）へ移す | mission-pack の設定と `as_record` の版上げが要る | #382 |
 | L25 | `fabric_version` の先頭の `v` | 先頭の `v` を 1 文字だけ外して比べる | 現状維持／どちらかに揃える | 比較規則 | #382 |
 | L26 | `deployment_profile` と Nexus の `profile`（資源 envelope） | 対応づけない（Fabric は tier を共有契約に載せない方針） | 対応づける | Fabric の claim に envelope が載らないまま | #382 |

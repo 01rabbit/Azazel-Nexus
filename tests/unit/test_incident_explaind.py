@@ -556,7 +556,8 @@ def test_stale_replay_is_counted_and_pending_has_no_addresses(tmp_path):
     checkpoint = json.loads((e.state / "cursor.json").read_bytes())
     pending = checkpoint["pending"][0][0]
     from azazel_nexus.incident_explain import PENDING_FIELDS
-    assert set(pending) == PENDING_FIELDS
+    # The frame's fields and the evidence pointers (digests, never content).
+    assert set(pending) == PENDING_FIELDS | {"evidence"}
     assert pending["attack_type"] == "ab cd" and pending["policy_reason"] == "other"
     assert "192.0.2.1" not in json.dumps(checkpoint)
     restarted = make(tmp_path)

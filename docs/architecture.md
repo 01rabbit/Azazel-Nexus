@@ -209,7 +209,7 @@ The user interface and service implementations are replaceable behind stable con
 | Boundary | Contract owner | Implementations may vary |
 | --- | --- | --- |
 | Sensor input | Nexus-local ingest envelope; implemented for Edge Core's `rust_event_engine_v1` events by `azazel_nexus.edge_intake` (closed, bounded parse) | Edge Core over the intake socket; other sensors target |
-| Evidence citation | **Fabric** `schema.evidence` — `EvidenceRef` projection of an Edge evidence record exists (`fabric_boundary.project_edge_evidence`) but nothing calls it in production; the stored record is Nexus-local (content digest, append-only daily segments) | local evidence store under `/var/lib/azazel/edge-intake`; replicated store target |
+| Evidence citation | **Fabric** `schema.evidence` — `EvidenceRef` projection of an Edge evidence record exists (`fabric_boundary.project_edge_evidence`); the explanation ledger cites the same records by digest as `EvidenceRef`s in its internal `ClaimSet` view; the stored record is Nexus-local (content digest, append-only daily segments) | local evidence store under `/var/lib/azazel/edge-intake`; replicated store target |
 | Evaluation | Nexus-local assessment; **Fabric** `schema.decision` for the operator-facing explanation | rules engine, approved analyzers |
 | Enforcement | **Fabric** `schema.action` intent and plans; Nexus owns the receipt and lease state | nftables, tc, route/bridge adapter |
 | Knowledge context | **Fabric** `cti_contracts` — *mapped, not adopted*; today the explainer's `knowledge.lookup` by technique id returns citations checked by Nexus-local `lite_import.read_knowledge_refs` | Knowledge Lite (`azazel-knowledge-lited`); AZ-04 full node target |

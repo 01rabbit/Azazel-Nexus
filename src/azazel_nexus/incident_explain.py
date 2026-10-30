@@ -2,13 +2,26 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import unicodedata
 from collections import deque
 
+from .explanation_claims import (
+    EDGE_CLAIM_LIMITATION,
+    EVIDENCE_FIELD,
+    EVIDENCE_NOT_CARRIED,
+    EVIDENCE_SOURCE,
+    EXPLANATION_KEYS,
+    PROVENANCE_FIELD,
+    edge_claim_limitations,
+    evidence_observed_at,
+    mio_claims,
+)
 from .edge_intake import ACTIONS, SEVERE_SEVERITY, _object, _shape, _text, _int, _number
 from .lite_import import AS_OF, TECHNIQUE_ID, as_of_text, read_knowledge_refs, short_digest
 from .local_advisory import (
+    DELIVERY_TEXTS,
     HANDOFF_NOTICE,
     MACHINE_FIELDS,
     REFERENCE_BANNERS,
@@ -152,7 +165,11 @@ def private_text(text, limit=160):
 
 
 def explanation_input(t):
-    """The only durable pending fields: no addresses, evidence or numeric rule ids."""
+    """The frame's input fields: no addresses, evidence or numeric rule ids.
+
+    A pending entry is these plus the evidence pointers (`pending_entry`):
+    digests and receive instants, which the frame never reads.
+    """
     t = read_transition(t)
     return {**{k: t[k] for k in PENDING_FIELDS - {"attack_type", "category", "protocol", "policy_reason"}},
             "attack_type": private_text(t["attack_type"]),
@@ -161,8 +178,111 @@ def explanation_input(t):
             "policy_reason": t["policy_reason"] if t["policy_reason"] in POLICY_REASONS else "other"}
 
 
+#: The Edge evidence pointers a pending entry and an explanation record carry
+#: (S-18, owner-decisions M17). Digests and receive instants only: the
+#: content stays in intake's private evidence store, which the explainer
+#: cannot read. Optional, so a checkpoint or a ledger written before them
+#: still reads; a record without it projects as `evidence_refs_not_carried`.
+#: The key is `EVIDENCE_FIELD` (`explanation_claims`).
+#:
+#: Which of the incident's evidence records a pointer names. When the
+#: transition's first and latest pointers are the same record, one pointer
+#: says so instead of naming it twice.
+EVIDENCE_ROLES = ("first", "latest", "first_and_latest")
+#: Why a pointer may not lead to a stored record. Never
+#: `evidence_refs_not_carried`, which means no pointer was carried at all:
+#: - `evidence_not_stored`: intake marked the incident (sticky `evidence_stored:
+#:   false`): at least one of its evidence records hit a full day and was not
+#:   stored. Which one is not known, so it is said of the record as a whole.
+#: - `evidence_retention_elapsed`: a pointer's day was past intake's age
+#:   retention when the explanation was written (its `retention` says which).
+EVIDENCE_GAPS = ("evidence_not_stored", "evidence_retention_elapsed")
+#: Intake's evidence age retention, in days (`edge_intaked.RETENTION_DAYS`;
+#: `test_evidence_refs` keeps the two equal). Intake deletes a whole daily
+#: segment once its day is this far behind its newest one, and sooner under
+#: its byte bound. `window_elapsed` therefore means "intake may have retired
+#: it", and `window_open` does not prove that the record is still stored:
+#: the explainer never reads the private store, and says only what the two
+#: instants decide.
+EVIDENCE_RETENTION_DAYS = 14
+EVIDENCE_RETENTION = ("window_open", "window_elapsed")
+_DIGEST = re.compile(r"sha256:[0-9a-f]{64}", re.ASCII)
+
+
+def evidence_pointer(t):
+    """The pending evidence of a validated transition: digests and instants.
+
+    Intake opens an incident at its first record's receive instant and
+    updates `last_seen` with `latest_evidence` from the same record, so each
+    pointer's `observed_at` is that record's `received_at`, as stored.
+    """
+    first = {"evidence_id": t["first_evidence"], "observed_at": t["first_seen"]}
+    latest = {"evidence_id": t["latest_evidence"], "observed_at": t["last_seen"]}
+    refs = ([{**first, "role": "first_and_latest"}] if first == latest else
+            [{**first, "role": "first"}, {**latest, "role": "latest"}])
+    return {"refs": refs, "gaps": ["evidence_not_stored"] if "evidence_stored" in t else []}
+
+
+def pending_entry(t):
+    """A transition as durable pending work: the frame's input plus evidence.
+
+    The frame (`build_frame`) never reads the evidence: it goes to the
+    explanation record, not to M.I.O.
+    """
+    t = read_transition(t)
+    return {**explanation_input(t), EVIDENCE_FIELD: evidence_pointer(t)}
+
+
+def evidence_retention(observed_at, explained_at):
+    """`window_elapsed` when intake's age rule allowed the pointer's day to go."""
+    def day(instant):
+        return math.floor(instant / 86400) * 86400
+    elapsed = day(observed_at) < day(explained_at) - EVIDENCE_RETENTION_DAYS * 86400
+    return "window_elapsed" if elapsed else "window_open"
+
+
+def record_evidence(pending, explained_at):
+    """The record's evidence: each pointer with its retention as of writing."""
+    refs = [{**ref, "retention": evidence_retention(ref["observed_at"], explained_at)}
+            for ref in pending["refs"]]
+    gaps = set(pending["gaps"])
+    if any(ref["retention"] == "window_elapsed" for ref in refs):
+        gaps.add("evidence_retention_elapsed")
+    return {"refs": refs, "gaps": [g for g in EVIDENCE_GAPS if g in gaps]}
+
+
+def _read_evidence(value, explained_at=None):
+    """A pending entry's (no `explained_at`) or a record's evidence."""
+    _shape(value, ("refs", "gaps"))
+    refs, gaps = value["refs"], value["gaps"]
+    keys = ("evidence_id", "role", "observed_at") + (() if explained_at is None else ("retention",))
+    if type(refs) is not list or not 1 <= len(refs) <= 2:
+        raise ValueError("evidence_refused")
+    for ref in refs:
+        _shape(ref, keys)
+        if type(ref["evidence_id"]) is not str or not _DIGEST.fullmatch(ref["evidence_id"]):
+            raise ValueError("evidence_refused")
+        _number(ref["observed_at"])
+        if (explained_at is not None
+                and ref["retention"] != evidence_retention(ref["observed_at"], explained_at)):
+            raise ValueError("evidence_refused")
+    if [r["role"] for r in refs] not in (["first_and_latest"], ["first", "latest"]):
+        raise ValueError("evidence_refused")
+    allowed = EVIDENCE_GAPS if explained_at is not None else ("evidence_not_stored",)
+    if type(gaps) is not list or gaps != [g for g in allowed if g in gaps]:
+        raise ValueError("evidence_refused")
+    if explained_at is not None and ("evidence_retention_elapsed" in gaps) != any(
+            r["retention"] == "window_elapsed" for r in refs):
+        raise ValueError("evidence_refused")
+
+
 def read_pending(t):
-    _shape(t, PENDING_FIELDS)
+    _shape(t, PENDING_FIELDS, (EVIDENCE_FIELD,))
+    if EVIDENCE_FIELD in t:
+        try:
+            _read_evidence(t[EVIDENCE_FIELD])
+        except ValueError:
+            raise ValueError("pending_refused") from None
     if type(t["incident_id"]) is not str or not re.fullmatch(r"inc-[0-9a-f]{16}", t["incident_id"]):
         raise ValueError("pending_refused")
     if t["event_type"] not in {"edge.incident." + kind for kind in ("opened", "updated", "closed")}:
@@ -241,7 +361,7 @@ class Selection:
 
     def enqueue(self, t, sequence):
         self.displaced = None
-        t = explanation_input(t) if "src_ip" in t else read_pending(t)
+        t = pending_entry(t) if "src_ip" in t else read_pending(t)
         baseline = self.explained.get(t["incident_id"])
         for queued, _ in self.pending:
             if queued["incident_id"] == t["incident_id"]:
@@ -314,6 +434,7 @@ def read_mio_reply(reply):
             raise ValueError("mio_reply_refused")
         body = read_delivered({k: v for k, v in reply.items() if k in body_keys})
         advice = body["advice"]
+        provenance = generation_provenance(body)
     else:
         if "handoff" in reply:
             return _read_handoff(reply, base)
@@ -324,8 +445,88 @@ def read_mio_reply(reply):
             raise ValueError("mio_reply_refused")
     reason = "mio_handoff" if reply["route"] == "deterministic handoff" else reply["reason"]
     kind = "ai_advice" if reply["route"] == "local" else "none"
-    return {"route": reply["route"], "outcome": reply["outcome"], "reason": reason, "text": advice,
-            "content_kind": kind}
+    result = {"route": reply["route"], "outcome": reply["outcome"], "reason": reason, "text": advice,
+              "content_kind": kind}
+    if advice is not None:
+        result[PROVENANCE_FIELD] = provenance
+    return result
+
+
+#: How a local-route answer was produced, recorded beside `content_kind`
+#: (which stays `ai_advice` for every answered local reply, as existing
+#: records and readers expect). Keyed by the delivery's `provenance.source`;
+#: only the first is a model's own text, and the two matching methods carry a
+#: fixed product banner (`local_advisory.DELIVERY_TEXTS`).
+GENERATION_METHODS = {"model": "local_model_inference", "embedding": "embedding_matching",
+                      "keyword": "deterministic_keyword_matching"}
+#: The record's `mio` key for it is `PROVENANCE_FIELD`. Optional: records
+#: written before it read, and a reader derives nothing from its absence.
+_MODEL_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", re.ASCII)
+
+
+def generation_provenance(body):
+    """How a delivery `read_delivered` already checked was made, and what it said.
+
+    Kept bounded, and only what the delivery's validated machine fields state:
+    the method and retrieval, the admitted model's id when a model produced
+    the text or ranked the candidates (None for keyword matching, which uses
+    no model), the ranking's state, the candidate and the alternatives by id,
+    and a model's own explanation fields when a model wrote them (each
+    checked by `read_explanation` before delivery). No situation quotes, no
+    playbook guidance, no frame. The delivery names no model generation (the
+    admission ledger's generation and the model digest are not in it), so
+    none is recorded, and a projection says so.
+    """
+    p = body["provenance"]
+    source = p["source"]
+    explanation = None
+    if source == "model":
+        explanation = {k: body["fields"]["model_" + k] for k in EXPLANATION_KEYS}
+    return {"method": GENERATION_METHODS[source], "retrieval": p["retrieval"],
+            "model_ref": None if source == "keyword" else p["model_id"],
+            "state": p["state"],
+            "candidate": {k: body["candidate"][k] for k in ("option_id", "kind")},
+            "alternatives": [o["option_id"] for o in body["alternatives"]],
+            "explanation": explanation}
+
+
+_OPTION_ID = re.compile(r"[a-z0-9][a-z0-9_-]{2,63}", re.ASCII)
+#: The longest explanation field a delivery carries: a label and a 160
+#: character field (`local_advisory._FIELD_CAP`), with room for the label.
+EXPLANATION_FIELD_CHARS = 256
+
+
+def _read_provenance(m):
+    p = m[PROVENANCE_FIELD]
+    _shape(p, ("method", "retrieval", "model_ref", "state", "candidate", "alternatives",
+               "explanation"))
+    source = next((k for k, v in GENERATION_METHODS.items() if v == p["method"]), None)
+    if (source is None or content_kind(m) != "ai_advice" or m["text"] not in DELIVERY_TEXTS[source]
+            or p["retrieval"] not in ({"embedding", "keyword"} if source == "model" else {source})
+            or (p["model_ref"] is None) != (source == "keyword")
+            or p["model_ref"] is not None and (type(p["model_ref"]) is not str
+                                               or not _MODEL_REF.fullmatch(p["model_ref"]))
+            or p["state"] not in {"clear", "split", "none"}):
+        raise ValueError("record_refused")
+    candidate, alternatives = p["candidate"], p["alternatives"]
+    _shape(candidate, ("option_id", "kind"))
+    if (candidate["kind"] not in {"playbook", "other_suspicious"}
+            or type(candidate["option_id"]) is not str or not _OPTION_ID.fullmatch(candidate["option_id"])
+            or candidate["kind"] != "playbook" and candidate["option_id"] != candidate["kind"]
+            or (candidate["kind"] == "other_suspicious") != (p["state"] == "none")
+            or type(alternatives) is not list or not 1 <= len(alternatives) <= 5
+            or any(type(a) is not str or not _OPTION_ID.fullmatch(a) for a in alternatives)
+            or len(set(alternatives)) != len(alternatives) or candidate["option_id"] in alternatives):
+        raise ValueError("record_refused")
+    explanation = p["explanation"]
+    if (explanation is None) != (source != "model"):
+        raise ValueError("record_refused")
+    if explanation is not None:
+        _shape(explanation, EXPLANATION_KEYS)
+        for value in explanation.values():
+            if (type(value) is not str or not value or len(value) > EXPLANATION_FIELD_CHARS
+                    or not all(c.isprintable() or c in "\n\t" for c in value)):
+                raise ValueError("record_refused")
 
 
 _REASON_WORD = re.compile(r"[a-z][a-z0-9_]{0,63}")
@@ -470,7 +671,7 @@ KNOWLEDGE_CLAIM_PREFIX = "knowledge:"
 
 
 def read_record(value):
-    _shape(value, RECORD_FIELDS, (FABRIC_RECORD_FIELD,))
+    _shape(value, RECORD_FIELDS, (FABRIC_RECORD_FIELD, EVIDENCE_FIELD))
     if type(value["incident_id"]) is not str or not re.fullmatch(r"inc-[0-9a-f]{16}", value["incident_id"]):
         raise ValueError("record_refused")
     _number(value["explained_at"])
@@ -493,13 +694,20 @@ def read_record(value):
     if type(codes) is not list or len(codes) > len(CODES) or any(type(c) is not str or c not in CODES for c in codes):
         raise ValueError("record_refused")
     m = value["mio"]
-    _shape(m, ("route", "outcome", "reason", "text"), ("content_kind", "notice"))
+    _shape(m, ("route", "outcome", "reason", "text"), ("content_kind", "notice", PROVENANCE_FIELD))
     if m["route"] not in {"local", "deterministic handoff", "unavailable"} or m["outcome"] not in {o.value for o in RequestOutcome} | {"unavailable"}:
         raise ValueError("record_refused")
     _text(m["reason"], 2048)
     if m["text"] is not None:
         _text(m["text"], 4096)
     _read_content(m)
+    if PROVENANCE_FIELD in m:
+        _read_provenance(m)
+    if EVIDENCE_FIELD in value:
+        try:
+            _read_evidence(value[EVIDENCE_FIELD], value["explained_at"])
+        except ValueError:
+            raise ValueError("record_refused") from None
     if FABRIC_RECORD_FIELD in value:
         _read_fabric_projection(value[FABRIC_RECORD_FIELD], value)
     return json.loads(json.dumps(value, allow_nan=False))
@@ -511,22 +719,38 @@ def _read_fabric_projection(f, record):
     Fabric's own models validated it when it was written; this reader runs
     without Fabric, so it checks what it can state from the record alone:
 
-    - exactly the keys `fabric_version` and `claim_set`, a release-shaped
-      version, and at most `FABRIC_RECORD_BYTES` of claim set;
+    - the keys `fabric_version` and `claim_set`, and `evidence_refs` exactly
+      when the record carries evidence; a release-shaped version, and at most
+      `FABRIC_RECORD_BYTES` of claim set;
     - `authority` is `descriptive_only` and `trace_id` is the incident id;
-    - the first claim is the Edge decision: its id, `deterministic_core`, and
-      the statement made from the record's `edge_would` and `policy_reason`;
+    - each `evidence_refs` item is the record's pointer as a Fabric
+      `EvidenceRef`: its digest, `edge-core`, the incident id, its instant;
+    - the first claim is the Edge decision: its id, `deterministic_core`, the
+      statement made from the record's `edge_would` and `policy_reason`, the
+      pointers' digests as its input references, and the limitations that say
+      why a pointer may not lead to a stored record (or that none was carried);
+    - when the record names a generation method, the M.I.O. answer's claims
+      follow, exactly as `explanation_claims.mio_claims` makes them from the
+      recorded provenance (candidate, then a model's explanation), with no
+      model generation;
     - the rest are the record's cited references, each claim id once (first
       occurrence kept), in order: the id, `knowledge_advisory`, the statement
       from the reference's name and summary, the bundle digest as the only
       input reference, and the freshness.
 
-    Other claim fields (limitations, schema version) are not checked here.
+    Other claim fields (schema version, confidence) are not checked here.
     A projection that drifted from its record is refused with the record.
     """
-    _shape(f, ("fabric_version", "claim_set"))
+    evidence = record.get(EVIDENCE_FIELD)
+    _shape(f, ("fabric_version", "claim_set") + (("evidence_refs",) if evidence else ()))
     if (type(f["fabric_version"]) is not str
             or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:rc[0-9]+)?", f["fabric_version"])):
+        raise ValueError("record_refused")
+    pointers = [ref["evidence_id"] for ref in evidence["refs"]] if evidence else []
+    if evidence and f["evidence_refs"] != [
+            {"evidence_id": ref["evidence_id"], "source": EVIDENCE_SOURCE,
+             "trace_id": record["incident_id"], "observed_at": evidence_observed_at(ref["observed_at"])}
+            for ref in evidence["refs"]]:
         raise ValueError("record_refused")
     cs = f["claim_set"]
     if (type(cs) is not dict or len(json.dumps(cs, allow_nan=False)) > FABRIC_RECORD_BYTES
@@ -536,17 +760,29 @@ def _read_fabric_projection(f, record):
     claims = cs["claims"]
     if any(type(c) is not dict for c in claims):
         raise ValueError("record_refused")
-    edge, cited = claims[0], claims[1:]
-    if (edge.get("claim_id") != record["incident_id"] + EDGE_CLAIM_SUFFIX
-            or edge.get("source") != "deterministic_core"
-            or edge.get("statement") != (f"Edge would {record['edge_would']}; "
-                                         f"policy_reason={record['policy_reason']}")):
-        raise ValueError("record_refused")
     refs, seen = [], set()
     for r in record["knowledge_refs"]:  # each claim id once, first kept
         if r["claim_id"] not in seen:
             seen.add(r["claim_id"])
             refs.append(r)
+    edge, cited = claims[0], claims[1:]
+    if (edge.get("claim_id") != record["incident_id"] + EDGE_CLAIM_SUFFIX
+            or edge.get("source") != "deterministic_core"
+            or edge.get("statement") != (f"Edge would {record['edge_would']}; "
+                                         f"policy_reason={record['policy_reason']}")
+            or edge.get("input_refs") != pointers
+            or edge.get("limitations") != edge_claim_limitations(
+                record, len(refs) != len(record["knowledge_refs"]))):
+        raise ValueError("record_refused")
+    m = record["mio"]
+    if PROVENANCE_FIELD in m:
+        expected = mio_claims(record["incident_id"], m[PROVENANCE_FIELD], pointers)
+        stated, cited = cited[:len(expected)], cited[len(expected):]
+        if len(stated) != len(expected) or any(
+                c.get("model_generation") is not None
+                or any(c.get(k) != v for k, v in e.items())
+                for c, e in zip(stated, expected)):
+            raise ValueError("record_refused")
     if len(cited) != len(refs) or any(
             c.get("claim_id") != KNOWLEDGE_CLAIM_PREFIX + r["claim_id"] or c.get("source") != "knowledge_advisory"
             or c.get("statement") != r["name"] + (f": {r['summary']}" if r["summary"] else "")

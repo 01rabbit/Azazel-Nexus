@@ -59,12 +59,14 @@ maps, reported and never assumed.
 
 `project_edge_evidence` projects an Edge intake evidence record onto
 `schema.evidence.EvidenceRef`. It is tested against the pin and has no
-production caller of its own; `project_explanation` uses it when it is given
-evidence records, and the explainer gives it none (see there).
+production caller of its own: intake never needs Fabric. The explanation path
+names the same records by the pointers it carries (see `project_explanation`).
 
 `project_explanation` projects one explanation-ledger record onto
-`mio_contracts.ClaimSet`: the Edge decision as a `deterministic_core` claim and
-each cited Knowledge reference as a `knowledge_advisory` claim. The explainer
+`mio_contracts.ClaimSet`: the Edge decision as a `deterministic_core` claim
+citing the incident's Edge evidence as `EvidenceRef`s, the M.I.O. answer with
+its recorded generation method and model, and each cited Knowledge reference
+as a `knowledge_advisory` claim. The explainer
 calls it for every record it writes and keeps the result in its own ledger,
 beside the record, when the pinned Fabric is present. That is an internal
 record: nothing sends, displays or serves it, so it attests that the ledger
@@ -1159,12 +1161,19 @@ class ExplanationProjection:
     evidence_refs: tuple = ()
 
     def as_ledger(self) -> dict:
-        """The internal ledger form: Fabric's own JSON dump, never re-shaped."""
-        return {"fabric_version": FABRIC_PIN.lstrip("v"),
-                "claim_set": self.claim_set.model_dump(mode="json")}
+        """The internal ledger form: Fabric's own JSON dumps, never re-shaped.
+
+        A `ClaimSet` has no place for the `EvidenceRef`s its claims cite by
+        id, so they are kept beside it, each as Fabric dumps it.
+        """
+        value = {"fabric_version": FABRIC_PIN.lstrip("v"),
+                 "claim_set": self.claim_set.model_dump(mode="json")}
+        if self.evidence_refs:
+            value["evidence_refs"] = [ref.model_dump(mode="json") for ref in self.evidence_refs]
+        return value
 
 
-def project_explanation(record, evidence=()) -> Projection:
+def project_explanation(record) -> Projection:
     """Project one explanation-ledger record onto Fabric's `ClaimSet`.
 
     `record` must already have been read by `incident_explain.read_record`.
@@ -1177,16 +1186,26 @@ def project_explanation(record, evidence=()) -> Projection:
     - the Edge decision as reported by Edge Core, `source="deterministic_core"`;
     - each cited `KnowledgeRef` as `source="knowledge_advisory"`, with the
       verified bundle digest as its only input reference and the Lite
-      freshness (`static` or `current`) as its freshness.
-
-    `evidence` takes Edge intake `EvidenceRecord`s and projects each through
-    `project_edge_evidence`; their ids become the Edge claim's input
-    references. The explainer passes none: its durable pending queue carries
-    no evidence digests by design (`incident_explain.explanation_input`), so
-    the Edge claim says `evidence_refs_not_carried` rather than pointing at
-    nothing. The M.I.O. advice in the record is not projected: the ledger
-    names its route, not the model and generation a model-sourced `Claim`
-    must carry.
+      freshness (`static` or `current`) as its freshness;
+    - the record's Edge evidence pointers (`incident_explain.EVIDENCE_FIELD`,
+      carried from the incident transition through the durable pending
+      queue) as Fabric `EvidenceRef`s -- the digest intake stored the record
+      under, `edge-core`, the incident id as the trace (the id the audit
+      events carry; Edge's own trace id is producer text and is not carried),
+      and the receive instant -- cited by id from the Edge claim, whose
+      limitations say why a pointer may not lead to a stored record
+      (`evidence_not_stored`, `evidence_retention_elapsed`). A record from
+      before the pointers says `evidence_refs_not_carried` instead;
+    - the M.I.O. answer, when the record names its generation method
+      (`explanation_claims.mio_claims`): the candidate it ranked and the
+      alternatives -- `local_model` with the admitted model's id as
+      `model_ref` when embedding matching ranked them, `deterministic_core`
+      for keyword matching -- and a model's own validated explanation as a
+      second `local_model` claim. The fixed delivery banner is not a claim.
+      The delivery names no model generation, so `model_generation` stays
+      None and a model's claims say `model_generation_not_delivered`. A
+      record without the method (from before it, or with no local answer)
+      has no such claims.
     """
     fabric, failure = _import_fabric()
     if fabric is None:
@@ -1197,29 +1216,38 @@ def project_explanation(record, evidence=()) -> Projection:
         from datetime import UTC, datetime
 
         from azazel_fabric.mio_contracts import Claim, ClaimSet
+        from azazel_fabric.schema.evidence import EvidenceRef
 
         # The record is read by `incident_explain.read_record` before it gets
         # here; importing that module from this one would pull the whole
         # explanation plane into everything that imports the Fabric boundary.
+        # The words both state live in `explanation_claims`.
+        from azazel_nexus.explanation_claims import (
+            EVIDENCE_FIELD, EVIDENCE_SOURCE, PROVENANCE_FIELD, edge_claim_limitations,
+            evidence_observed_at, mio_claims,
+        )
+
         r = record
         cited = unique_citations(r["knowledge_refs"])
-        refs = []
-        for item in evidence:
-            projected = project_edge_evidence(item)
-            if not projected.available:
-                raise ValueError(projected.reason)
-            refs.append(projected.view)
+        refs = tuple(
+            EvidenceRef(evidence_id=ref["evidence_id"], source=EVIDENCE_SOURCE,
+                        trace_id=r["incident_id"],
+                        observed_at=evidence_observed_at(ref["observed_at"]))
+            for ref in (r[EVIDENCE_FIELD]["refs"] if EVIDENCE_FIELD in r else ()))
+        pointers = tuple(ref.evidence_id for ref in refs)
         edge = Claim(
             claim_id=r["incident_id"] + EDGE_CLAIM_SUFFIX,
             statement=f"Edge would {r['edge_would']}; policy_reason={r['policy_reason']}",
             source="deterministic_core",
-            input_refs=tuple(ref.evidence_id for ref in refs),
-            limitations=("reported_by_edge_core_not_executed_by_nexus",)
-            + (() if refs else ("evidence_refs_not_carried",))
-            + (("duplicate_knowledge_refs_merged",)
-               if len(cited) != len(r["knowledge_refs"]) else ()),
+            input_refs=pointers,
+            limitations=tuple(edge_claim_limitations(r, len(cited) != len(r["knowledge_refs"]))),
         )
         claims = [edge]
+        provenance = r["mio"].get(PROVENANCE_FIELD)
+        if provenance is not None:
+            claims += [Claim(**{**c, "input_refs": tuple(c["input_refs"]),
+                                "limitations": tuple(c["limitations"])})
+                       for c in mio_claims(r["incident_id"], provenance, pointers)]
         for ref in cited:
             statement = ref["name"] + (f": {ref['summary']}" if ref["summary"] else "")
             limitations = (f"source_kind={ref['source_kind']}", f"generation={ref['generation']}",
@@ -1244,4 +1272,4 @@ def project_explanation(record, evidence=()) -> Projection:
     except (ImportError, ValueError, TypeError, KeyError, AttributeError, OverflowError):
         return Projection(available=False, reason="explanation claim projection unavailable")
     return Projection(available=True, reason="", fabric_version=fabric.__version__,
-                      view=ExplanationProjection(claim_set=view, evidence_refs=tuple(refs)))
+                      view=ExplanationProjection(claim_set=view, evidence_refs=refs))

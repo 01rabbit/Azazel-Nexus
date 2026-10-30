@@ -23,6 +23,7 @@ from azazel_nexus.incident_explain import (
     FABRIC_RECORD_FIELD,
     explanation_summary,
     read_record,
+    record_evidence,
 )
 from azazel_nexus.lite_import import KnowledgeRef
 from azazel_nexus.sanitizer import NEVER_REMOTE, PrivacyClass
@@ -68,6 +69,8 @@ def _stored(record):
     """The ledger form `as_ledger` writes, built by hand for Fabric-less readers."""
     claims = [{"claim_id": record["incident_id"] + ":edge", "source": "deterministic_core",
                "input_refs": [],
+               "limitations": ["reported_by_edge_core_not_executed_by_nexus",
+                               "evidence_refs_not_carried"],
                "statement": f"Edge would {record['edge_would']}; "
                             f"policy_reason={record['policy_reason']}"}]
     claims += [{"claim_id": "knowledge:" + r["claim_id"], "source": "knowledge_advisory",
@@ -197,13 +200,20 @@ def test_knowledge_refs_become_knowledge_advisory_claims():
 def test_edge_intake_evidence_becomes_evidence_refs_of_the_edge_claim():
     _pinned_fabric()
     evidence = EvidenceRecord.receive(parsed(), lambda: 0)
-    projection = project_explanation(_record(), evidence=[evidence])
+    record = read_record({**_record(), "evidence": record_evidence({"refs": [
+        {"evidence_id": evidence.digest, "role": "first_and_latest",
+         "observed_at": evidence.received_at}], "gaps": []}, _record()["explained_at"])})
+    projection = project_explanation(record)
     assert projection.available, projection.reason
     edge = projection.view.claim_set.claims[0]
     assert edge.input_refs == (evidence.digest,)
     assert "evidence_refs_not_carried" not in edge.limitations
     (ref,) = projection.view.evidence_refs
     assert (ref.evidence_id, ref.source) == (evidence.digest, "edge-core")
+    # The pointer names the record intake stored: its id and receive instant
+    # are the ones Fabric's view of the stored record states.
+    stored = fabric_boundary.project_edge_evidence(evidence).view
+    assert (ref.evidence_id, ref.observed_at) == (stored.evidence_id, stored.observed_at)
 
 
 def test_the_explainer_keeps_the_projection_in_its_ledger_only(tmp_path):

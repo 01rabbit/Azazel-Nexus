@@ -18,7 +18,8 @@ from azazel_nexus.audit import AuditEntry, GENESIS_HASH
 from azazel_nexus.edge_intake import canonical
 from azazel_nexus.fabric_boundary import project_explanation
 from azazel_nexus.incident_explain import (
-    FABRIC_RECORD_FIELD, CODES, MAX_LINE, MAX_PENDING, Selection, build_frame, decode,
+    EVIDENCE_FIELD, FABRIC_RECORD_FIELD, CODES, MAX_LINE, MAX_PENDING, Selection, build_frame, decode,
+    record_evidence,
     build_recent_incident, build_recent_incidents, read_recent_incidents, explanation_summary,
     SHOWN_STATES, closed_pairs, read_control, read_retention_boundary, read_mio_reply, read_record, read_transition, read_pending,
 )
@@ -84,7 +85,8 @@ def with_fabric_claims(value):
 
     Internal only: the view stays in this ledger. Summaries, recent rows,
     status and audit events are built from the record's own fields and never
-    carry it. Any failure leaves the record exactly as it was, because Fabric
+    carry it. The record itself keeps the evidence pointers and the generation
+    method the view is made from, so they survive when the view is dropped. Any failure leaves the record exactly as it was, because Fabric
     is optional (ADR-0001) and a projection must not cost an explanation --
     including a full day: `Explainer.explain` writes the plain record when the
     projected one no longer fits.
@@ -558,6 +560,11 @@ class Explainer:
                   "attack_type": t["attack_type"],
                   "technique_ids": t["technique_ids"], "mio": mio,
                   "knowledge_refs": refs, "knowledge_state": state, "failure_codes": codes}
+        if EVIDENCE_FIELD in t:
+            # The pointers carried since the transition, with their retention
+            # as of this record. A pending entry from before them (a previous
+            # release's checkpoint) has none, and its record says so.
+            record[EVIDENCE_FIELD] = record_evidence(t[EVIDENCE_FIELD], record["explained_at"])
         try:
             value = read_record(record)
         except ValueError:
@@ -646,6 +653,9 @@ class Explainer:
         except Exception:  # noqa: BLE001 - fixed storage diagnosis at shutdown
             self.storage_failed = True
             self.refuse("storage_failed")
+        # The last status follows the last checkpoint, whatever the rewrite
+        # throttle: a reader after shutdown sees the final pending count.
+        self._status_at = float("-inf")
         self.status()
         return 1 if self.storage_failed else 0
 
@@ -699,6 +709,81 @@ def decode_checkpoint(raw):
     if type(counts) is not dict or not set(counts) <= CODES or any(type(n) is not int or not 0 <= n < 2**63 for n in counts.values()):
         raise ValueError
     return v
+
+
+def pending_pointers(path):
+    """How many pending entries of a stopped explainer's checkpoint carry pointers.
+
+    Read-only, and what decides a rollback past #392 (docs/operations.md):
+    0 means the release before it reads this checkpoint unchanged. It reads
+    the checkpoint itself, not status, which may lag the last checkpoint.
+    """
+    value = decode_checkpoint(read_file(Path(path), CHECKPOINT_BYTES))
+    return sum(EVIDENCE_FIELD in row[0] for row in value["pending"])
+
+
+def checkpoint_for_previous_release(path):
+    """Rewrite a stopped explainer's checkpoint in the form before #392.
+
+    The release before #392 refuses a pending entry with evidence pointers
+    (`cursor_refused`). This keeps every pending entry and drops only its
+    pointers, so a rolled-back explainer still explains the queued work; the
+    records it writes then carry no pointers, as that release's always did.
+    The checkpoint is validated first and nothing is written if it is
+    refused. The original is kept beside it as `cursor.json.pre-rollback`,
+    and both keep the checkpoint's owner and mode. An existing backup is
+    never replaced: if it holds exactly this checkpoint (an interrupted run)
+    the conversion goes on; any other backup refuses the run
+    (`rollback_backup_exists`), so a second run cannot overwrite the first
+    original with an already converted checkpoint. Run it as root with the
+    explainer stopped (docs/operations.md). Returns how many entries lost
+    their pointers.
+    """
+    path = Path(path)
+    raw = read_file(path, CHECKPOINT_BYTES)
+    value = decode_checkpoint(raw)
+    stripped = 0
+    for row in value["pending"]:
+        if EVIDENCE_FIELD in row[0]:
+            del row[0][EVIDENCE_FIELD]
+            stripped += 1
+    from azazel_nexus.incident_explain import PENDING_FIELDS
+    if any(set(row[0]) != PENDING_FIELDS for row in value["pending"]):
+        raise ValueError("cursor_refused")
+    decode_checkpoint(canonical(value))
+    backup = path.with_name(path.name + ".pre-rollback")
+    try:
+        kept = read_file(backup, CHECKPOINT_BYTES)
+    except FileNotFoundError:
+        kept = None
+    except (OSError, ValueError):
+        raise ValueError("rollback_backup_exists") from None
+    if kept is not None and kept != raw:
+        raise ValueError("rollback_backup_exists")
+    info = os.stat(path, follow_symlinks=False)
+    writes = [(backup, raw, os.link)] if kept is None else []
+    writes.append((path, canonical(value) + b"\n", os.replace))
+    for target, data, place in writes:
+        fd, name = tempfile.mkstemp(dir=path.parent, prefix=".rollback-")
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                os.fchmod(stream.fileno(), stat.S_IMODE(info.st_mode))
+                if os.geteuid() == 0:
+                    os.fchown(stream.fileno(), info.st_uid, info.st_gid)
+                stream.flush()
+                os.fsync(stream.fileno())
+            # The backup is linked, which fails if one appeared meanwhile;
+            # only the checkpoint itself is replaced.
+            try:
+                place(name, target)
+            except FileExistsError:
+                raise ValueError("rollback_backup_exists") from None
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
+    fsync_directory(path.parent)
+    return stripped
 
 
 def main(argv=None):

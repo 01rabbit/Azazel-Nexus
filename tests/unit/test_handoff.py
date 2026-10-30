@@ -1357,3 +1357,26 @@ def test_the_command_reports_a_close_failure_with_the_path(root, out, monkeypatc
     else:
         assert code == 3 and f"handoff: written {out / name}" in text
         assert "file_close_failed" in text
+
+
+@pytest.mark.parametrize("source, method", [
+    ("model", "local_model_inference"), ("embedding", "embedding_matching"),
+    ("keyword", "deterministic_keyword_matching")])
+def test_the_recorded_generation_method_is_used_not_inferred(root, source, method):
+    """The explainer records how an answer was made (mio.provenance, #392)."""
+    from test_evidence_refs import _local
+
+    from azazel_nexus.incident_explain import read_mio_reply
+
+    mio = read_mio_reply(_local(source))
+    write_record(root, mio)
+    p = package(root)
+    item = p["ai_assessment"]["explanations"][0]
+    assert (item["generation_method"], item["generation_method_basis"]) == (method, "recorded")
+    # The model's id is in the ledger, not in the package.
+    assert p["ai_assessment"]["model_identity"]["reason_code"] == "model_identity_not_included_in_package"
+    assert "model-a1" not in text_of(encode_files(p))
+    # A record from before it: the banner still names the method.
+    write_record(root, {k: v for k, v in mio.items() if k != "provenance"})
+    item = package(root)["ai_assessment"]["explanations"][0]
+    assert (item["generation_method"], item["generation_method_basis"]) == (method, "fixed_banner")

@@ -51,20 +51,20 @@
 ## 5. AI の見解（推測。事実ではない）
 
 状態: あり
-- モデルの識別: なし（`model_identity_not_recorded_in_explanation_ledger`）
+- モデルの識別: なし（`model_identity_not_included_in_package`）
 - 現在の M.I.O. 経路の能力: なし（理由: `snapshot_unavailable`）
 - 外部（リモート）AI: インシデント説明では使っていない
-- 注意: 説明器はローカル経路の回答をすべて「AI の助言」と区分する。生成方式は本文の固定文（banner）から判定し、判定できない本文は伏せる。
+- 注意: 説明器はローカル経路の回答をすべて「AI の助言」と区分する。生成方式は説明器が記録したもの（`recorded`）を使い、記録の無い旧い記録だけ本文の固定文（banner）から判定する（`fixed_banner`）。判定できない本文は伏せる。
 
 ### 2026-10-29T03:14:30Z — 経路 `local`（説明器の区分では AI の助言: AI advice \(local model\)）
 
-生成方式: `deterministic_keyword_matching`、本文: `shown`
+生成方式: `deterministic_keyword_matching`（根拠 `recorded`）、本文: `shown`
 
 > 決定論的な照合による候補の提示です。結論ではありません。重要な判断は担当者が根拠を確認してから行ってください。
 
 ### 2026-10-29T03:16:00Z — 経路 `local`（説明器の区分では AI の助言: AI advice \(local model\)）
 
-生成方式: `deterministic_keyword_matching`、本文: `shown`
+生成方式: `deterministic_keyword_matching`（根拠 `recorded`）、本文: `shown`
 
 > 決定論的な照合による候補の提示です。結論ではありません。重要な判断は担当者が根拠を確認してから行ってください。
 
