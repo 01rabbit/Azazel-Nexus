@@ -141,7 +141,7 @@ authority (keys, threshold, generation) and `commissioning_digest`.
   that residue and completes.
 
 **D5. A repin may replace the anchor with the keys.** The repin document
-may carry `anchors` (the anchor fields of D4, checked by the same code,
+may carry `anchors` (the anchor fields of D4 plus boolean `sealed`, checked by the same code,
 naming exactly the proposed keys). The repin then writes
 `trust-generations/N.anchors.toml` beside its generation record and marks the
 record `"anchors": true`; the pointer move switches keys and anchor
@@ -149,6 +149,11 @@ together, and every reader takes the anchor that goes with the record it
 read (`TrustStore.anchors_path_for`). A key change whose kept anchor no
 proposed key could meet is refused instead of leaving a root that verifies
 nothing.
+
+Replacement anchors preserve an explicit seal; omission inherits the current
+seal (and refuses if it cannot be read). Only explicit `sealed: false` requests
+unsealing through the existing authorised repin. Unknown nested fields are
+refused rather than silently discarded.
 
 **D6. Audit.** auditd binds `knowledge.lite.trust_*` (new: enroll requested,
 enrolled, refused; repin requested, promoted, refused) and

@@ -478,6 +478,150 @@ def test_a_manifest_that_speaks_about_trust_is_refused(field: str) -> None:
     assert field in caught.value.detail
 
 
+# The producer verifier's own rules since Azazel-Knowledge#110 (K8-K11), and
+# the order and local-tier rules it already had (owner-decisions M14). Each is
+# also measured against Knowledge by `tools/knowledge_lite_differential.py`.
+
+#: The producer's `_FORBIDDEN_MANIFEST_FIELDS` at 09d234c, written out rather
+#: than imported: Nexus CI cannot fetch Knowledge, and a list read from the
+#: code under test would agree with it by construction.
+PRODUCER_FORBIDDEN_FIELDS = (
+    "threshold", "keys", "revoked", "anchors", "trust", "key_roles", "required_signer_role",
+    "minimum_security_epoch", "accepted_export_policy_digests",
+    "last_imported_version", "last_import_at", "last_bundle_sha256", "needs_full_rebaseline",
+)
+
+
+@pytest.mark.parametrize("field", PRODUCER_FORBIDDEN_FIELDS)
+def test_every_field_the_producer_forbids_is_refused_here_too(field: str) -> None:
+    raw = _signed(_manifest(**{field: "whatever"}), {"tables/a.jsonl": b"{}\n"})
+    with pytest.raises(BundleRefused) as caught:
+        verify_bundle(raw, anchors=_local_anchors())
+    assert caught.value.code == "BUNDLE_SHADOWS_TRUST_ANCHOR"
+
+
+@pytest.mark.parametrize("version", [0, -1, "7", True, 7.0, None])
+def test_bundle_version_must_be_an_integer_of_at_least_one(version) -> None:
+    raw = _signed(_manifest(bundle_version=version), {"tables/a.jsonl": b"{}\n"})
+    with pytest.raises(BundleRefused) as caught:
+        verify_bundle(raw, anchors=_local_anchors())
+    assert caught.value.code == "BUNDLE_VERSION_INVALID"
+
+
+@pytest.mark.parametrize("base, ok", [(None, True), (6, True), (0, False), ("6", False),
+                                      (True, False)])
+def test_base_version_must_be_null_or_an_integer_of_at_least_one(base, ok) -> None:
+    raw = _signed(_manifest(base_version=base), {"tables/a.jsonl": b"{}\n"})
+    if ok:
+        assert verify_bundle(raw, anchors=_local_anchors())
+    else:
+        with pytest.raises(BundleRefused) as caught:
+            verify_bundle(raw, anchors=_local_anchors())
+        assert caught.value.code == "BUNDLE_BASE_VERSION_INVALID"
+
+
+def test_a_path_component_over_255_utf8_bytes_is_refused_although_the_name_is_short() -> None:
+    # 96 characters, under the 200-character name cap; the component is 276 bytes.
+    wide = "tables/" + "\u3042" * 90 + ".jsonl"
+    with pytest.raises(BundleRefused) as caught:
+        verify_bundle(_signed(_manifest(), {wide: b"{}\n"}), anchors=_local_anchors())
+    assert caught.value.code == "BUNDLE_MEMBER_COMPONENT_TOO_LONG"
+    # 83 three-byte characters and ".jsonl" are 255 bytes: the cap itself passes.
+    edge = "tables/" + "\u3042" * 83 + ".jsonl"
+    assert len(edge.split("/")[1].encode("utf-8")) == 255
+    assert verify_bundle(_signed(_manifest(), {edge: b"{}\n"}), anchors=_local_anchors())
+
+
+def _untar(raw: bytes) -> dict[str, bytes]:
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as archive:
+        return {m.name: archive.extractfile(m).read() for m in archive.getmembers()}
+
+
+@pytest.mark.parametrize("order", [
+    ["tables/a.jsonl", "manifest.json", "manifest.sig"],
+    ["manifest.sig", "manifest.json", "tables/a.jsonl"],
+    ["manifest.json", "tables/a.jsonl", "manifest.sig"],
+])
+def test_manifest_and_signature_must_be_the_first_two_members(order) -> None:
+    members = _untar(_signed(_manifest(), {"tables/a.jsonl": b"{}\n"}))
+    raw = _tar({name: members[name] for name in order})
+    with pytest.raises(BundleRefused) as caught:
+        verify_bundle(raw, anchors=_local_anchors())
+    assert caught.value.code == "BUNDLE_MANIFEST_MISSING"
+
+
+@pytest.mark.parametrize("tables, member", [
+    (["reaction"], "tables/a.jsonl"),        # named in `tables` only
+    ([], "tables/observation.jsonl"),        # named by a member path only
+    ([], "deltas/local_meta.jsonl"),
+])
+def test_a_bundle_naming_a_local_tier_table_is_refused(tables, member) -> None:
+    raw = _signed(_manifest(tables=tables), {member: b"{}\n"})
+    with pytest.raises(BundleRefused) as caught:
+        verify_bundle(raw, anchors=_local_anchors())
+    assert caught.value.code == "BUNDLE_TOUCHES_LOCAL_TIER"
+
+
+#: The producer's `LOCAL_TIER_TABLES` at 09d234c, written out independently of
+#: the product's copy so that dropping a name from the product fails here.
+PRODUCER_LOCAL_TIER_TABLES = (
+    "reaction", "reaction_trust_event", "advisory_log", "observation", "observation_stats",
+    "reputation", "edge_reported_ioc", "pattern", "pattern_index", "rule_draft",
+    "bundle_state", "api_client", "feed_quarantine", "local_meta",
+)
+
+
+@pytest.mark.parametrize("table", PRODUCER_LOCAL_TIER_TABLES)
+def test_every_local_tier_table_the_producer_names_is_refused(table) -> None:
+    for raw in (_signed(_manifest(tables=[table]), {"tables/a.jsonl": b"{}\n"}),
+                _signed(_manifest(), {f"tables/{table}.jsonl": b"{}\n"})):
+        with pytest.raises(BundleRefused) as caught:
+            verify_bundle(raw, anchors=_local_anchors())
+        assert caught.value.code == "BUNDLE_TOUCHES_LOCAL_TIER"
+
+
+@pytest.mark.parametrize("tables, code", [
+    ({"reaction": True}, "BUNDLE_TOUCHES_LOCAL_TIER"),   # an object's keys still name tables
+    ({"a": True}, "BUNDLE_MANIFEST_INVALID"),
+    ("reaction", "BUNDLE_MANIFEST_INVALID"),
+    (None, "BUNDLE_MANIFEST_INVALID"),
+    (["a", 7], "BUNDLE_MANIFEST_INVALID"),
+    (["reaction", 7], "BUNDLE_TOUCHES_LOCAL_TIER"),
+])
+def test_tables_of_any_other_shape_cannot_skip_the_local_tier_check(tables, code) -> None:
+    raw = _signed(_manifest(tables=tables), {"tables/a.jsonl": b"{}\n"})
+    with pytest.raises(BundleRefused) as caught:
+        verify_bundle(raw, anchors=_local_anchors())
+    assert caught.value.code == code
+
+
+def test_a_sealed_anchor_reads_but_accepts_nothing(tmp_path) -> None:
+    raw = _signed(_manifest(), {"tables/a.jsonl": b"{}\n"})
+    body = f'threshold = 1\n[keys]\n"{KEY_ID}" = "{public_key_for(SEED).hex()}"\n'
+    path = tmp_path / "anchors.toml"
+    for seal, outcome in (("", None), ("sealed = false\n", None),
+                          ("sealed = true\n", "BUNDLE_ANCHORS_SEALED")):
+        path.write_text(seal + body, encoding="utf-8")
+        anchors = read_anchors(path)
+        assert anchors.sealed is (outcome is not None)
+        if outcome is None:
+            assert verify_bundle(raw, anchors=anchors)
+        else:
+            with pytest.raises(BundleRefused) as caught:
+                verify_bundle(raw, anchors=anchors)
+            assert (caught.value.gate, caught.value.code) == (Gate.ANCHORS, outcome)
+    for bad in ('"yes"', "1"):
+        path.write_text(f"sealed = {bad}\n" + body, encoding="utf-8")
+        with pytest.raises(BundleRefused) as caught:
+            read_anchors(path)
+        assert caught.value.code == "ANCHORS_INVALID"
+
+
+def test_a_table_merely_resembling_a_local_tier_name_is_served() -> None:
+    raw = _signed(_manifest(tables=["reactions"]), {"tables/reactions.jsonl": b"{}\n"})
+    assert verify_bundle(raw, anchors=_local_anchors())
+
+
 @pytest.mark.parametrize("declared", [0, 2, 99, "1", True])
 def test_a_format_outside_the_supported_range_is_refused(declared) -> None:
     """An incompatible artifact is refused for being incompatible.

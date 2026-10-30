@@ -348,6 +348,31 @@ boot's pass grants them. A node that has run only the supporting-only
 bootstrap has no commissioning evidence yet, and step 4 refuses there
 (`evidence_unavailable`).
 
+### Sealed anchors and explicit recovery
+
+`sealed` is a boolean (default `false`). Knowledge keeps a seal when keys are
+added back, until explicit unsealing. Nexus preserves and honours the value:
+import and the re-verification behind lookup and status refuse a sealed anchor
+with `BUNDLE_ANCHORS_SEALED`, including after a restart. Reading the anchor for
+revocation acceptance or repin remains possible.
+
+After a repin, `trust-current` selects a generation record. When that record
+has `anchors: true`, its `trust-generations/N.anchors.toml` is active;
+otherwise the initial `trust/anchors.toml` is active. Editing only the initial
+files does not change a generation anchor.
+
+Use the existing authorised, audited [repin procedure](trust-repin.md#replacing-the-anchor-with-the-keys)
+for explicit recovery. A replacement with `sealed: true` keeps the seal;
+omitting `sealed` inherits the current seal and refuses if the current anchor
+cannot be read. Only an explicit boolean `sealed: false` requests unsealing.
+Keeping the existing anchor keeps its seal. Unsupported nested anchor fields
+(including `revoked`) are refused. Keep the store-local anchor used by `pack`
+aligned using step 8 below. New keys alone do not authorise unsealing.
+
+Stop the daemon and drain requests before directly editing anchor files as
+root. Snapshot byte checks detect changes before the last check; they do not
+make a transaction atomic with a concurrent root editor after that check.
+
 ### Step 3: the enrollment request
 
 One closed JSON document (schema `azazel-nexus/lite-enrollment/v1`) names

@@ -144,6 +144,7 @@ class AnchorSpec:
     required_signer_role: Optional[str]
     minimum_security_epoch: Optional[int]
     accepted_export_policy_digests: Optional[tuple[str, ...]]
+    sealed: bool = False
 
     @property
     def usable_keys(self) -> int:
@@ -171,6 +172,9 @@ class EnrollmentRequest:
     revocation: RevocationPolicy
     #: SHA-256 of the exact request bytes, which the operator confirmed.
     digest: str
+    # Enrollment's closed schema does not accept a seal. The common renderer
+    # also handles repin's AnchorSpec, which can deliberately carry one.
+    sealed: bool = False
 
     @property
     def usable_keys(self) -> int:
@@ -233,6 +237,7 @@ def _key_table(value) -> dict[str, bytes]:
 
 
 _ANCHOR_REQUIRED = {"keys", "threshold"}
+_ANCHOR_OPTIONAL = _OPTIONAL | {"sealed"}
 
 
 def decode_anchor_spec(document) -> "AnchorSpec":
@@ -240,11 +245,16 @@ def decode_anchor_spec(document) -> "AnchorSpec":
     policies -- checked and rendered once; shared by enrollment and by a
     repin that replaces the anchor with the keys (`TrustStore.repin`).
 
-    `document` may carry other fields; only the anchor fields are read here,
-    and the caller decides which others its own shape allows.
+    This is a closed anchor document. Enrollment extracts its anchor fields
+    after checking its own outer schema; repin supplies its nested document.
+    Unsupported policy fields must never be silently discarded.
     """
 
-    if type(document) is not dict or not _ANCHOR_REQUIRED <= set(document):
+    if (type(document) is not dict or not _ANCHOR_REQUIRED <= set(document)
+            or not set(document) <= _ANCHOR_REQUIRED | _ANCHOR_OPTIONAL):
+        raise EnrollmentRefused("request_invalid")
+    sealed = document.get("sealed", False)
+    if type(sealed) is not bool:
         raise EnrollmentRefused("request_invalid")
     keys = _key_table(document["keys"])
     roles = document.get("key_roles", {})
@@ -275,7 +285,7 @@ def decode_anchor_spec(document) -> "AnchorSpec":
         raise EnrollmentRefused("public_fixture_key")
     spec = AnchorSpec(keys=keys, key_roles=dict(roles), threshold=threshold,
                       required_signer_role=role, minimum_security_epoch=epoch,
-                      accepted_export_policy_digests=policies)
+                      accepted_export_policy_digests=policies, sealed=sealed)
     # The same rule Knowledge applies (`verify._load_anchors`, S-15): an
     # explicit positive threshold no larger than the keys that can meet it.
     if not 1 <= threshold <= spec.usable_keys:
@@ -286,6 +296,7 @@ def decode_anchor_spec(document) -> "AnchorSpec":
             or dict(anchors.key_roles) != dict(roles)
             or anchors.required_signer_role != role
             or anchors.minimum_security_epoch != epoch
+            or anchors.sealed != sealed
             or (anchors.accepted_export_policy_digests
                 != (frozenset(policies) if policies is not None else None))):
         raise EnrollmentRefused("request_invalid")
@@ -327,7 +338,8 @@ def decode_enrollment(raw: bytes) -> EnrollmentRequest:
         raise EnrollmentRefused("request_invalid")
     if not lab_host.is_lab_host() and holds_public_fixture_key(revocation_keys.values()):
         raise EnrollmentRefused("public_fixture_key")
-    spec = decode_anchor_spec(document)
+    spec = decode_anchor_spec({name: value for name, value in document.items()
+                               if name in _ANCHOR_REQUIRED | _OPTIONAL})
     if (set(revocation_keys.values()) & set(spec.keys.values())
             or set(revocation_keys) & set(spec.keys)):
         raise EnrollmentRefused("role_conflict")
@@ -354,6 +366,8 @@ def render_anchors(request) -> bytes:
     """
 
     lines = [f"threshold = {request.threshold}"]
+    if request.sealed:
+        lines.append("sealed = true")
     if request.required_signer_role is not None:
         lines.append(f'required_signer_role = "{request.required_signer_role}"')
     if request.minimum_security_epoch is not None:

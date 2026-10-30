@@ -259,7 +259,15 @@ class TrustStore:
                 from .lite_enrollment import EnrollmentRefused, decode_anchor_spec
 
                 try:
-                    spec = decode_anchor_spec(document["anchors"])
+                    anchor_document = document["anchors"]
+                    if type(anchor_document) is dict and "sealed" not in anchor_document:
+                        # Replacing keys or metadata does not authorize an
+                        # implicit unseal. Only an explicit sealed:false in
+                        # this already-confirmed repin requests recovery.
+                        anchor_document = {
+                            **anchor_document, "sealed": read_anchors(current_anchors_path).sealed,
+                        }
+                    spec = decode_anchor_spec(anchor_document)
                 except EnrollmentRefused:
                     raise TrustRefused("the proposed anchor is refused") from None
                 if sorted(key.hex() for key in spec.keys.values()) != list(proposed):

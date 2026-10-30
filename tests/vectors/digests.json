@@ -89,14 +89,26 @@
       ]
     },
     "knowledge_lite.refusals": {
-      "sha256": "7cb5653f0bf8f324f25d2fd108fc30028a365b3800d3198da76030167c20fd4b",
-      "covers": "公開 fixture の無い verify_bundle の拒否経路を試験用 signer で組み立てたもの（信頼欄ごとの BUNDLE_SHADOWS_TRUST_ANCHOR、manifest・形式・署名・役割・security epoch・export policy・巻戻し・内容・member・archive の各 gate）と、受理後の行の読取り・期限の解釈",
+      "sha256": "221816d8f3efc24d57fb654bd3b1baf594220c8f31b34c76115647b52db786d1",
+      "covers": "公開 fixture の無い verify_bundle の拒否経路を試験用 signer で組み立てたもの（信頼欄ごとの BUNDLE_SHADOWS_TRUST_ANCHOR、manifest・形式・署名・役割・security epoch・export policy・巻戻し・内容・member・archive の各 gate、Knowledge #110 に揃えた版・成分長・member 順序・ローカル層の表名・sealed・tables の型）と、受理後の行の読取り・期限の解釈",
       "history": [
         {
           "date": "2026-10-29",
           "sha256": "7cb5653f0bf8f324f25d2fd108fc30028a365b3800d3198da76030167c20fd4b",
           "commit_note": "#371 レビュー指摘 5：negative.json に無い拒否経路を追加",
           "reason": "新しいベクトルとして初めて固定した。BUNDLE_SHADOWS_TRUST_ANCHOR などを外す変異が既存のベクトルで検出されなかったため。aarch64 と amd64 で同じ値になることを確認してから記録した"
+        },
+        {
+          "date": "2026-10-30",
+          "sha256": "9e86fbfe0aa6aaf4ea7e2fc5347a7e9feb8a8b4bb775966651cc4f8b23b916f6",
+          "commit_note": "Knowledge #110（09d234c）の検証規則に Nexus の検証器を揃えた（M13〜M15、Knowledge Lite 差分試験）",
+          "reason": "製品の判断規則を意図して変えた：禁止欄に Knowledge の 5 欄（anchors・trust・rollback 状態の 3 欄）を足し、bundle_version は 1 以上の整数、base_version は null か 1 以上の整数、path 成分は 255 UTF-8 バイトまで、manifest.json・manifest.sig は先頭 2 member、ローカル層の表名を拒否する。対応する拒否ケースを足した。既存のケースの判定は変わっていない（--show の文書で追加分だけが差であることを確認）"
+        },
+        {
+          "date": "2026-10-30",
+          "sha256": "221816d8f3efc24d57fb654bd3b1baf594220c8f31b34c76115647b52db786d1",
+          "commit_note": "#393 レビュー指摘 R393-01・R393-02：Knowledge の sealed を解釈し、tables の型による抜け道を塞いだ",
+          "reason": "製品の判断規則を意図して変えた：sealed = true の anchor では受理しない（BUNDLE_ANCHORS_SEALED）、tables は文字列の list に限り、object のキーもローカル層の表名として検査する。対応する拒否ケース 3 件を足した。main の文書と比べて追加分だけが差であることを --show で確認"
         }
       ]
     },

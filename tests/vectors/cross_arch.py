@@ -469,6 +469,13 @@ def knowledge_lite_refusals(ctx: Context):
         return _archive([("manifest.json", body), ("manifest.sig", raw_sig),
                          *tables.items(), *extra])
 
+    def reordered(raw, names):
+        import tarfile
+
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as archive:
+            members = {m.name: archive.extractfile(m).read() for m in archive.getmembers()}
+        return _archive([(name, members[name]) for name in names])
+
     anchors = _local_anchors()
     policy = "c" * 64
     cases = [("control", signed(_manifest()), anchors, 0)]
@@ -509,6 +516,24 @@ def knowledge_lite_refusals(ctx: Context):
          signed(_manifest(profile={"selection_inputs": {"export_policy_digest": policy}})),
          _local_anchors(accepted_export_policy_digests=frozenset({policy})), 0),
         ("version_not_integer", signed(_manifest(bundle_version="7")), anchors, 0),
+        # Azazel-Knowledge#110 (K9, K10) and the order and local-tier rules (M14).
+        ("version_zero", signed(_manifest(bundle_version=0)), anchors, 0),
+        ("base_version_not_integer", signed(_manifest(base_version="6")), anchors, 0),
+        ("member_component_too_long",
+         signed(_manifest(), {"tables/" + "\u3042" * 90 + ".jsonl": table}), anchors, 0),
+        ("manifest_not_first",
+         reordered(signed(_manifest()), ["tables/a.jsonl", "manifest.json", "manifest.sig"]),
+         anchors, 0),
+        ("signature_not_second",
+         reordered(signed(_manifest()), ["manifest.json", "tables/a.jsonl", "manifest.sig"]),
+         anchors, 0),
+        ("local_tier_table", signed(_manifest(tables=["reaction"])), anchors, 0),
+        ("local_tier_member", signed(_manifest(), {"tables/observation.jsonl": table}),
+         anchors, 0),
+        # The producer's seal (Azazel-Knowledge#110), and `tables` of another shape.
+        ("anchors_sealed", signed(_manifest()), _local_anchors(sealed=True), 0),
+        ("tables_object_local_tier", signed(_manifest(tables={"reaction": True})), anchors, 0),
+        ("tables_not_a_list", signed(_manifest(tables="a")), anchors, 0),
         ("version_regression_equal", signed(_manifest()), anchors, 7),
         ("version_above_watermark", signed(_manifest()), anchors, 6),
         ("files_not_a_map", signed(_manifest(), files=[]), anchors, 0),

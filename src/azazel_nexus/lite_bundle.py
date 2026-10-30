@@ -139,12 +139,20 @@ TAR_OVERHEAD_BYTES = (MAX_MEMBERS + 2) * 2048 + 20 * 512
 #: How much is inflated per step before the ceiling is checked again.
 INFLATE_STEP_BYTES = 1024 * 1024
 MAX_MEMBER_NAME = 200
+#: UTF-8 bytes per path component: the producer verifier's
+#: `DEFAULT_MAX_MEMBER_COMPONENT_BYTES` (Azazel-Knowledge#110, K10), the
+#: common POSIX NAME_MAX. `MAX_MEMBER_NAME` counts characters, so without this
+#: a component of multi-byte characters could still pass it.
+MAX_MEMBER_COMPONENT_BYTES = 255
 MAX_MEMBER_DEPTH = 8
 MAX_SIGNATURE_LINES = 32
 
-#: Manifest fields that would let a bundle speak about its own trust. A
-#: manifest carrying one is refused rather than having it ignored: something
-#: that tried is worth reporting.
+#: Manifest fields that would let a bundle speak about its own trust or this
+#: node's import state. A manifest carrying one is refused rather than having
+#: it ignored: something that tried is worth reporting. The union of this
+#: reader's list and the producer verifier's `_FORBIDDEN_MANIFEST_FIELDS`
+#: (trust-anchor and rollback-state fields; Azazel-Knowledge#110, K11), so a
+#: bundle one verifier refuses for this the other refuses too.
 TRUST_SHADOWING_FIELDS = (
     "threshold",
     "keys",
@@ -154,6 +162,35 @@ TRUST_SHADOWING_FIELDS = (
     "minimum_security_epoch",
     "accepted_export_policy_digests",
     "last_imported_version",
+    "anchors",
+    "trust",
+    "last_import_at",
+    "last_bundle_sha256",
+    "needs_full_rebaseline",
+)
+
+#: The producer's local-tier tables (`LOCAL_TIER_TABLES` in its verifier): a
+#: node's own records, which no bundle may carry. Nexus has no local tier and
+#: serves only the tables it reads, so a bundle naming one cannot write here;
+#: it is refused anyway because only a mis-built or forged bundle names one,
+#: and the producer refuses it with this code.
+LOCAL_TIER_TABLES = frozenset(
+    {
+        "reaction",
+        "reaction_trust_event",
+        "advisory_log",
+        "observation",
+        "observation_stats",
+        "reputation",
+        "edge_reported_ioc",
+        "pattern",
+        "pattern_index",
+        "rule_draft",
+        "bundle_state",
+        "api_client",
+        "feed_quarantine",
+        "local_meta",
+    }
 )
 
 
@@ -201,6 +238,13 @@ class TrustAnchors:
     required_signer_role: Optional[str] = None
     minimum_security_epoch: Optional[int] = None
     accepted_export_policy_digests: Optional[frozenset[str]] = None
+    #: The producer's `sealed` (Azazel-Knowledge#110): set when the last
+    #: eligible key was removed, and kept when keys are added again until an
+    #: operator explicitly unseals. A sealed anchor still *reads* -- revocation
+    #: acceptance and repin read the current anchor to replace it, and the way
+    #: out of a seal is a repin to an unsealed anchor -- but `verify_bundle`
+    #: accepts nothing under it (`BUNDLE_ANCHORS_SEALED`).
+    sealed: bool = False
 
     def __post_init__(self) -> None:
         if self.threshold < 1:
@@ -340,6 +384,11 @@ def parse_anchors(raw: bytes) -> TrustAnchors:
     threshold = document.get("threshold", 1)
     if not isinstance(threshold, int) or isinstance(threshold, bool):
         raise BundleRefused(Gate.ANCHORS, "ANCHORS_INVALID", "threshold must be an integer")
+    sealed = document.get("sealed", False)
+    if not isinstance(sealed, bool):
+        raise BundleRefused(
+            Gate.ANCHORS, "ANCHORS_INVALID", "sealed must be a boolean when present"
+        )
 
     return TrustAnchors(
         threshold=threshold,
@@ -349,6 +398,7 @@ def parse_anchors(raw: bytes) -> TrustAnchors:
         required_signer_role=role,
         minimum_security_epoch=epoch,
         accepted_export_policy_digests=policies,
+        sealed=sealed,
     )
 
 
@@ -388,6 +438,16 @@ def verify_bundle(
     signature_bytes = members.get(SIGNATURE_MEMBER)
     if signature_bytes is None:
         raise BundleRefused(Gate.SIGNATURE, "BUNDLE_SIGNATURE_MISSING", "no manifest.sig")
+    # The producer's format puts manifest.json and manifest.sig first, in that
+    # order, and its verifier refuses any other order with this code. This
+    # reader holds every member before judging any, so the order is not what
+    # keeps it safe; it is refused so that one format is accepted, not two.
+    if list(members)[:2] != [MANIFEST_MEMBER, SIGNATURE_MEMBER]:
+        raise BundleRefused(
+            Gate.MANIFEST,
+            "BUNDLE_MANIFEST_MISSING",
+            "manifest.json and manifest.sig must be the first two members, in that order",
+        )
     if len(manifest_bytes) > MAX_MANIFEST_BYTES:
         raise BundleRefused(
             Gate.MANIFEST,
@@ -416,8 +476,20 @@ def verify_bundle(
             f"the manifest carries trust or state fields {shadowed}; a bundle "
             "does not get to say what this node will accept",
         )
+    _check_local_tier(manifest)
 
     _check_format(manifest)
+    # Where the producer refuses it: once the anchor is read, before any
+    # signature. Every acceptance -- import, the re-verification behind lookup
+    # and status, and the same after a restart -- comes through here.
+    if anchors.sealed:
+        raise BundleRefused(
+            Gate.ANCHORS,
+            "BUNDLE_ANCHORS_SEALED",
+            "the trust anchor is sealed: its last eligible key was removed and it has "
+            "not been explicitly unsealed since. Nothing is accepted under it until "
+            "the trust root is repinned to an unsealed anchor",
+        )
     signers = _check_signatures(manifest_bytes, signature_bytes, anchors)
     _check_signer_role(signers, anchors)
     _check_security_epoch(manifest, anchors)
@@ -557,7 +629,60 @@ def _inflate(raw: bytes, limit: int) -> bytes:
             return bytes(out)
 
 
+def _table_of_member(name: object) -> Optional[str]:
+    """The table a `tables/<t>.jsonl` or `deltas/<t>.jsonl` member names, as the producer reads it."""
+
+    if not isinstance(name, str):
+        return None
+    for prefix in ("tables/", "deltas/"):
+        if name.startswith(prefix) and name.endswith(".jsonl"):
+            stem = name[len(prefix) : -len(".jsonl")]
+            if stem and "/" not in stem:
+                return stem
+    return None
+
+
+def _check_local_tier(manifest: Mapping) -> None:
+    # Names are collected from whatever shape `tables` has -- an object's keys
+    # included, as the producer's `set(tables)` reads them -- so that a
+    # local-tier name is refused under the producer's code before the shape
+    # is. The shape is then required to be the one the builder writes: a list
+    # of strings, or absent. Ignoring any other shape skipped this check.
+    tables = manifest.get("tables", [])
+    named: set[str] = set()
+    if isinstance(tables, (list, dict)):
+        named = {t for t in tables if isinstance(t, str)}
+    files = manifest.get("files")
+    if isinstance(files, dict):
+        named |= {t for t in map(_table_of_member, files) if t}
+    touched = sorted(LOCAL_TIER_TABLES & named)
+    if touched:
+        raise BundleRefused(
+            Gate.MANIFEST,
+            "BUNDLE_TOUCHES_LOCAL_TIER",
+            f"the bundle names local-tier table(s) {touched}; a node's own records "
+            "are never shipped in a bundle",
+        )
+    if not isinstance(tables, list) or not all(isinstance(t, str) for t in tables):
+        raise BundleRefused(
+            Gate.MANIFEST,
+            "BUNDLE_MANIFEST_INVALID",
+            f"tables must be a list of table names, got {type(tables).__name__}",
+        )
+
+
 def _check_member_name(name: str) -> None:
+    # Per component first, as the producer does, so a long component is
+    # refused under the producer's code whatever the length of the whole name.
+    for component in name.split("/"):
+        size = len(component.encode("utf-8", "surrogateescape"))
+        if size > MAX_MEMBER_COMPONENT_BYTES:
+            raise BundleRefused(
+                Gate.ARCHIVE,
+                "BUNDLE_MEMBER_COMPONENT_TOO_LONG",
+                f"{name[:60]!r}... has a {size}-byte path component; the cap is "
+                f"{MAX_MEMBER_COMPONENT_BYTES}",
+            )
     if len(name) > MAX_MEMBER_NAME:
         raise BundleRefused(
             Gate.ARCHIVE, "BUNDLE_MEMBER_NAME_TOO_LONG", f"{name[:60]!r}... is too long"
@@ -766,12 +891,23 @@ def _check_export_policy(manifest: Mapping, anchors: TrustAnchors) -> None:
 
 
 def _check_rollback(manifest: Mapping, last_imported_version: int) -> None:
+    # The producer's rules (Azazel-Knowledge#110, K9): an integer >= 1, never
+    # a bool or a string, and `base_version` null or such an integer. Lite is
+    # full-only and never applies `base_version`, but a manifest the producer
+    # refuses as malformed is not one this reader accepts.
     declared = manifest.get("bundle_version")
-    if not isinstance(declared, int) or isinstance(declared, bool):
+    if not isinstance(declared, int) or isinstance(declared, bool) or declared < 1:
         raise BundleRefused(
             Gate.ROLLBACK,
             "BUNDLE_VERSION_INVALID",
-            f"bundle_version must be an integer, got {declared!r}",
+            f"bundle_version must be an integer >= 1, got {declared!r}",
+        )
+    base = manifest.get("base_version")
+    if base is not None and (not isinstance(base, int) or isinstance(base, bool) or base < 1):
+        raise BundleRefused(
+            Gate.ROLLBACK,
+            "BUNDLE_BASE_VERSION_INVALID",
+            f"base_version must be null or an integer >= 1, got {base!r}",
         )
     if declared <= last_imported_version:
         raise BundleRefused(

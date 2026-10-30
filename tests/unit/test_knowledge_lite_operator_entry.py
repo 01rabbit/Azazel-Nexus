@@ -183,6 +183,51 @@ def test_the_store_local_anchor_is_not_what_the_daemon_import_trusts(node):
     assert not (node.root / "admitted").exists() or not any((node.root / "admitted").iterdir())
 
 
+def _lookup(node, service=None) -> dict:
+    verb = knowledge_lited.REGISTRY.resolve("knowledge.lookup", SERVICE)
+    return (service or node.service).handle(Request(
+        verb=verb, arguments=verb.bind({"technique_ids": ["T1110"]}),
+        principal=SERVICE, payload={}))
+
+
+def test_a_sealed_anchor_admits_and_serves_nothing_until_it_is_unsealed(node):
+    """Azazel-Knowledge#110's seal, honoured on every path that accepts a bundle.
+
+    Knowledge's `azctl keys` seals the anchor when the last eligible key goes
+    and keeps the seal when keys are added back, until an explicit unseal.
+    Here the seal is set on an anchor whose key is pinned and still valid --
+    the seal-then-add state -- so nothing but the seal stands in the way.
+    """
+    assert _import(node, _place(node, _bundle(node.key, version=5), "v5.tar.gz"))["outcome"] \
+        == "admitted"
+    assert _lookup(node)["refs"]
+    anchors = node.trust / "trust/anchors.toml"
+    unsealed = anchors.read_text()
+    anchors.write_text("sealed = true\n" + unsealed)
+
+    # Still readable, so that revocation acceptance and repin can replace it.
+    assert read_anchors(anchors).sealed is True
+    # Serving stops at once: lookup and status re-verify under the seal.
+    assert _lookup(node)["refs"] == []
+    assert _status(node)["state"] != "available"
+    # Import refuses, and so does a restarted daemon.
+    result = _import(node, _place(node, _bundle(node.key, version=6), "v6.tar.gz"))
+    assert (result["outcome"], result["gate"], result["code"]) == (
+        "quarantined", "anchors", "BUNDLE_ANCHORS_SEALED")
+    restarted = knowledge_lited.KnowledgeLiteService(
+        root=node.root, trust_root=node.trust,
+        clock_floor=ClockFloor(node.tmp / "var/lib/azazel/state/knowledge"), now=lambda: NOW,
+        import_audit=lambda: ImportAudit(append=node.events.append))
+    assert _lookup(node, restarted)["refs"] == []
+
+    # Unsealing is writing the anchor without the seal; nothing else changes.
+    anchors.write_text(unsealed)
+    assert _lookup(node, restarted)["refs"]
+    assert _status(node)["state"] == "available"
+    assert _import(node, _place(node, _bundle(node.key, version=7), "v7.tar.gz"))["outcome"] \
+        == "admitted"
+
+
 @pytest.mark.parametrize("withdrawn", ["digest", "generation", "key"])
 def test_a_revoked_bundle_never_replaces_the_admitted_one(node, withdrawn):
     _import(node, _place(node, _bundle(node.key, version=5), "first.tar.gz"))
@@ -664,3 +709,67 @@ def test_trust_that_changes_during_verification_is_not_admitted_under(node, monk
     assert _store(node) == {}
     assert (node.events[-1]["event_type"], node.events[-1]["code"]) == (
         "knowledge.lite.import_refused", "trust_changed")
+
+
+@pytest.mark.parametrize("operation", ["import", "lookup", "status"])
+@pytest.mark.parametrize("generation_anchor", [False, True])
+def test_anchors_sealed_during_verification_stop_import_and_reads(
+        node, monkeypatch, operation, generation_anchor):
+    import azazel_nexus.lite_import as module
+
+    trust = TrustStore(node.trust)
+    if generation_anchor:
+        public = node.key.verify_key.encode().hex()
+        request = node.tmp / "repin.json"
+        request.write_text(json.dumps({"keys": [public], "anchors": {
+            "keys": {KEY_ID: public}, "threshold": 1,
+            "key_roles": {KEY_ID: "bundle-signer"}}}))
+        trust.repin(RepinRequest(request, "anchor generation", "test"),
+                    confirmation=RepinConfirmation("test", NOW),
+                    ledger=AuditLedger(node.tmp / "commission.jsonl"), now=NOW)
+    if operation != "import":
+        assert _import(node, _place(node, _bundle(node.key)))["outcome"] == "admitted"
+        assert _lookup(node)["refs"]
+    anchor_path = trust.anchors_path
+    assert (anchor_path.parent.name == "trust-generations") is generation_anchor
+    before = _store(node)
+    original = module.verify_bundle
+
+    def verify_then_seal(*args, **kwargs):
+        accepted = original(*args, **kwargs)
+        anchor_path.write_bytes(b"sealed = true\n" + anchor_path.read_bytes())
+        return accepted
+
+    monkeypatch.setattr(module, "verify_bundle", verify_then_seal)
+    if operation == "import":
+        result = _import(node, _place(node, _bundle(node.key)))
+        assert (result["outcome"], result["refused"]) == ("refused", "trust_changed")
+    elif operation == "lookup":
+        assert _lookup(node)["refs"] == []
+    else:
+        assert _status(node)["state"] != "available"
+    assert _store(node) == before
+    monkeypatch.setattr(module, "verify_bundle", original)
+    assert read_anchors(anchor_path).sealed is True
+    assert _lookup(node)["refs"] == []
+    assert _status(node)["state"] != "available"
+
+
+def test_snapshot_binds_the_exact_anchor_bytes_it_parsed(node, monkeypatch):
+    import azazel_nexus.lite_import as module
+
+    path = TrustStore(node.trust).anchors_path
+    original_bytes = path.read_bytes()
+    original = module.parse_anchors
+
+    def parse_then_seal(raw):
+        parsed = original(raw)
+        path.write_bytes(b"sealed = true\n" + original_bytes)
+        return parsed
+
+    monkeypatch.setattr(module, "parse_anchors", parse_then_seal)
+    snapshot = CommissionedTrust(node.trust).snapshot()
+    assert snapshot.anchors_path == path
+    assert snapshot.anchors_bytes == original_bytes
+    assert snapshot.anchors.sealed is False
+    assert snapshot.unchanged() is False

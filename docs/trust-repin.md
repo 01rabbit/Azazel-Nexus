@@ -191,9 +191,9 @@ parts, authorization audit and pointer promotion.
 ## Replacing the anchor with the keys
 
 A key rotation changes the key material the anchor names, so the anchor
-(key ids, roles, threshold, epoch, export policies) has to change with the
-pin. The repin document may carry `anchors`, with exactly the fields and
-checks of the enrollment request's anchor half
+(key ids, roles, threshold, epoch, export policies, seal) has to change with the
+pin. The repin document may carry `anchors`, with the fields and
+checks of the enrollment request's anchor half, plus the boolean `sealed`
 ([knowledge-lite-consumer §11 step 3](knowledge-lite-consumer.md#step-3-the-enrollment-request)):
 
 ```json
@@ -220,3 +220,10 @@ whose id is not in its `revoked`, and that hold `required_signer_role` when
 the anchor names one (R390-01). To roll a key over without a gap, repin first to both keys
 with an anchor naming both, import a bundle signed by the new key, then repin
 to the new key alone.
+
+A replacement with `sealed: true` preserves the seal. If `sealed` is omitted,
+the current active anchor's seal is inherited; an unreadable current anchor
+refuses that request. Explicit `sealed: false` requests unsealing through the
+same authorised and audited repin, and permits recovery from an unreadable
+anchor. Unsupported nested fields, including `revoked`, are refused. A repin
+without a replacement anchor preserves its existing seal.
