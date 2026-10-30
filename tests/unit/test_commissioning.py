@@ -31,7 +31,9 @@ RETIRED_ROLE_WORDS = ("protected", "egress", "decoy", "observe", "capture", "int
 #: Not interface roles. Edge Core's defense actions are recorded verbatim as
 #: Edge's decision (docs/integration-loop.md §1), so its vocabulary is spelled
 #: as Edge spells it.
-EDGE_DECISION_VOCABULARY = {"edge_intake.py": {"observe"}}
+#: `handoff.py` reads the same decisions back to tell a would-be response
+#: from Edge's plain observation (S-19).
+EDGE_DECISION_VOCABULARY = {"edge_intake.py": {"observe"}, "handoff.py": {"observe"}}
 #: Not roles: the intake status key of the Deception Lite decoy socket (#196
 #: P2, #269/#270) and the readers that render it -- `edge_loop_status.py`, and
 #: `status_view.py`, the status read model (#358), which carries the same key

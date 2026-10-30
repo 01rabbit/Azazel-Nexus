@@ -495,6 +495,7 @@ A deployment kit is intentionally serviceable and equipment-neutral:
 5. Enable bounded controls only after an operator acknowledgement where the policy requires it. A high-impact network change additionally requires an independent management path or physical console and a two-stage commit: acknowledge verified reachability within the lease window or the change rolls back automatically.
 6. During operation, use the UI for evidence and decision review; treat M.I.O. as an investigator, not an actuator.
 7. On exit, export or seal evidence according to the mission retention policy, revoke temporary credentials, and record hardware custody.
+8. To hand an incident to an expert, write the offline handoff package with `sudo azazel-nexus handoff export --incident latest --output-dir DIR` and give the expert the directory and the printed manifest digest. Nothing is uploaded; identifiers are suppressed by default. See [handoff package](handoff-package.md).
 
 ## 6. Operator experience
 
