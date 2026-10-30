@@ -31,8 +31,9 @@ _REFUSALS_JA = {
     "output_dir_shared_writable": "出力先がグループ・他者から書込み可能です。専用のディレクトリを指定してください。",
     "output_in_product_state": "出力先が製品の状態ディレクトリの中です。別の場所を指定してください。",
     "output_exists": "同じ名前のパッケージが既にあります。上書きはしません。",
-    "insufficient_space": "空き容量が足りません。何も残していません。",
-    "write_failed": "書込みに失敗しました。何も残していません。",
+    "insufficient_space": "空き容量が足りません。",
+    "write_failed": "書込みに失敗しました。",
+    "suppression_incomplete": "伏せきれない形が残ったため書きませんでした。",
 }
 
 
@@ -61,12 +62,17 @@ def run(args, *, now: str, out, principal=None, root=None) -> int:
         instant = datetime.fromisoformat(now.replace("Z", "+00:00")).timestamp()
         package = build_package(incident, now=instant, principal=principal, root=root)
         files = encode_files(package)
-        path = write_package(args.output_dir, package_name(package), files)
+        result = write_package(args.output_dir, package_name(package), files)
     except HandoffRefused as refused:
         code = refused.code
         base = code.split(":", 1)[0]
-        print(f"handoff: refused ({code}); nothing was written. "
-              + _REFUSALS_JA.get(base, ""), file=out)
+        if refused.remnant is None:
+            print(f"handoff: refused ({code}); nothing was written. "
+                  + _REFUSALS_JA.get(base, ""), file=out)
+        else:
+            print(f"handoff: refused ({code}); an incomplete directory without a verified "
+                  f"manifest was left at {refused.remnant}. It is not a package: check it "
+                  "and remove it. " + _REFUSALS_JA.get(base, ""), file=out)
         return 2 if base == "principal_refused" else 1
     except Exception:  # noqa: BLE001 - never print a value from below
         print("handoff: refused (internal_error); nothing was written.", file=out)
@@ -74,11 +80,16 @@ def run(args, *, now: str, out, principal=None, root=None) -> int:
     import hashlib
 
     manifest = hashlib.sha256(files["manifest.json"]).hexdigest()
-    print(f"handoff: written {path}", file=out)
+    print(f"handoff: written {result.path}", file=out)
     print(f"manifest sha256: {manifest}", file=out)
     print(f"principal: {principal}; suppressed items: "
           f"{package['confidentiality']['suppressed_total']}; uploaded: no", file=out)
     unavailable = [s["source"] for s in package["sources"] if s["status"] != "read"]
     if unavailable:
         print("not read: " + ", ".join(unavailable), file=out)
+    if not result.durable:
+        print("handoff: WARNING durability_unconfirmed: every file was written and synced, "
+              "but syncing the directory failed. The package may be lost on power failure; "
+              "verify the manifest on the media before relying on it.", file=out)
+        return 3
     return 0

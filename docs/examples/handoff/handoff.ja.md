@@ -8,14 +8,15 @@
 - 送信: していない。このパッケージはローカルに保存しただけで、どこにもアップロードしていない。
 - 判断と執行の権限は Edge にある。Nexus は観測・説明・助言のみ。AI の見解は事実ではない。
 
-各欄は「観測事実」「Edge の判断」「実行結果」「AI の推測」を分けて書いている。材料がない欄は正常値で埋めず「なし」と理由を書いている。
+各欄は「観測事実」「Edge の判断」「実行結果」「AI の推測」を分けて書いている。材料がない欄は正常値で埋めず「なし」と理由を書いている。期限を過ぎた状態記録は「最終記録のみ（現在は未確認）」と書いている。
 
 ## 1. 発生時刻と時刻の信頼性
 
 - 発生時刻（初観測）: 2026-10-29T03:14:00Z（出典: `incident_ledger.first_seen`）
 - 最終観測: 2026-10-29T03:15:00Z
-- 時計の状態: `synchronized_this_boot`
-- 起動後の時刻同期の記録: present（同期が一度あったことを示すだけで、今も正しいこと・時刻源の真正性は示さない）
+- 発生時刻の信頼性: `unverified`（`no_synchronization_evidence_at_occurrence`）。発生当時に時計が同期していたことを示す記録はない。
+- 生成時の時計: `synchronized_this_boot`
+- 起動後の時刻同期の記録: present（同期が一度あったことを示すだけで、今も正しいこと・時刻源の真正性・発生より前に同期したことは示さない）
 - Knowledge の時計の床: 2026-10-29T05:00:00Z（読取済）
 
 ## 2. 観測事実（Edge の観測）
@@ -25,7 +26,9 @@
 - 観測期間: 2026-10-29T03:14:00Z 〜 2026-10-29T03:15:00Z
 - 件数: 14、最も高い重大度: 2（1 が最も重い）
 - ATT&CK 技術: T1046
-- 分類: Attempted Information Leak、プロトコル: tcp
+- 分類: Attempted Information Leak、プロトコル: tcp、最新の遷移: updated
+
+遷移の履歴:
 
 | 時刻 | 遷移 | 件数 | 重大度 | 証拠保存 |
 | --- | --- | --- | --- | --- |
@@ -51,13 +54,17 @@
 - モデルの識別: なし（`model_identity_not_recorded_in_explanation_ledger`）
 - 現在の M.I.O. 経路の能力: なし（理由: `snapshot_unavailable`）
 - 外部（リモート）AI: インシデント説明では使っていない
-- 注意: 説明器はローカル経路の回答をすべて「AI の助言」と区分する。モデルが文章を生成したのか、決定論的な照合で答えたのかは記録されていない（`generation_method: not_recorded`）。
+- 注意: 説明器はローカル経路の回答をすべて「AI の助言」と区分する。生成方式は本文の固定文（banner）から判定し、判定できない本文は伏せる。
 
 ### 2026-10-29T03:14:30Z — 経路 `local`（説明器の区分では AI の助言: AI advice \(local model\)）
+
+生成方式: `deterministic_keyword_matching`、本文: `shown`
 
 > 決定論的な照合による候補の提示です。結論ではありません。重要な判断は担当者が根拠を確認してから行ってください。
 
 ### 2026-10-29T03:16:00Z — 経路 `local`（説明器の区分では AI の助言: AI advice \(local model\)）
+
+生成方式: `deterministic_keyword_matching`、本文: `shown`
 
 > 決定論的な照合による候補の提示です。結論ではありません。重要な判断は担当者が根拠を確認してから行ってください。
 
@@ -76,12 +83,12 @@
 ## 8. Knowledge の出典・世代・鮮度
 
 状態: あり
-- 現在の Knowledge Lite: 読取済 世代 8、鮮度 `current`
+- 現在の Knowledge Lite: 読取済（記録 2026-10-29T05:13:40Z、20 秒前、期限 150 秒） 世代 8、鮮度 `current`
 - T1046 Network Service Discovery: 世代 7、参照時の鮮度 `current`、参照時刻 2026-10-29T03:14:30Z、bundle `sha256:abababababababababababababababababababababababababababababababab`、**現在の世代と異なる**
 
 ## 9. 担当者の操作（監査記録）
 
-状態: あり
+状態: あり（chain: `read`、先頭から検証）
 - このインシデントに対する担当者の承認・確認の記録: なし（Nexus にその記録種別がない）
 - 対象期間 2026-10-29T02:14:00Z 〜 2026-10-29T05:14:00Z のノード操作（操作者名は伏字）:
   - 2026-10-29T02:50:00Z `activation.unit_granted`
@@ -93,13 +100,15 @@
 - 業務影響はノードでは評価していない。担当者が直接伝える（`business_impact_not_assessed`）
 - 送信元アドレス・ルール番号・宛先ポートは伏せている（`source_address_withheld`）
 - AI の見解は推測であり検証されていない（`ai_advice_unverified`）
+- 発生当時に時計が同期していた証拠はない（`occurrence_time_unverified`）
 - 一部の証拠は保存されていない（容量上限）（`evidence_not_stored`）
 - 引用した Knowledge の世代は現在の世代と異なる（`knowledge_superseded`）
+- 期限切れの状態記録がある（最終記録であり、現在の状態は未確認）（`stale_snapshot`）
 - インシデントはまだ閉じていない（生成後も続く可能性がある）（`incident_open`）
 
 ## 11. 機密の扱い
 
-既定で抑制している。秘密情報・生 payload・内部識別情報（IP・MAC・インターフェース名・経路・操作者名）は含めない。自由文中の該当形式は `[伏字:種別]` に置換した。
+既定で抑制している。秘密情報・生 payload・内部識別情報（IP・MAC・インターフェース名・ホスト名・パス・経路・操作者名）は含めない。製品の固定文と、単純な英単語だけの語句以外の自由文は伏せた。書く前に全文字列を検査し、識別子・パス・符号化値・秘密らしい形が残っていれば書かない。
 
 抑制した件数（合計 9）:
 - `network_address`: 2
@@ -111,16 +120,16 @@
 
 ## 12. 読んだ情報源
 
-| 情報源 | 状態 | 理由 | 読める権限 |
-| --- | --- | --- | --- |
-| `recent_incidents_snapshot` | read |  | operator |
-| `explainer_status_snapshot` | read |  | operator |
-| `intake_status_snapshot` | read |  | operator |
-| `knowledge_status_snapshot` | read |  | operator |
-| `mio_status_snapshot` | unavailable | absent | operator |
-| `noc_status_snapshot` | unavailable | absent | operator |
-| `incident_ledger` | read |  | root |
-| `explanation_ledger` | read |  | root |
-| `audit_chain` | read |  | root |
-| `timesyncd_marker` | read |  | everyone |
-| `knowledge_clock_floor` | read |  | root |
+| 情報源 | 状態 | 理由 | 鮮度 | 読める権限 |
+| --- | --- | --- | --- | --- |
+| `recent_incidents_snapshot` | read |  | stale | operator |
+| `explainer_status_snapshot` | read |  | fresh | operator |
+| `intake_status_snapshot` | read |  | fresh | operator |
+| `knowledge_status_snapshot` | read |  | fresh | operator |
+| `mio_status_snapshot` | unavailable | absent |  | operator |
+| `noc_status_snapshot` | unavailable | absent |  | operator |
+| `incident_ledger` | read |  |  | root |
+| `explanation_ledger` | read |  |  | root |
+| `audit_chain` | read |  |  | root |
+| `timesyncd_marker` | read |  |  | everyone |
+| `knowledge_clock_floor` | read |  |  | root |

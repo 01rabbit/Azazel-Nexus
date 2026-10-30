@@ -194,7 +194,7 @@ def test_connectivity_is_counted_from_the_noc_snapshot_without_identity(root, ho
     (leaf / "status.json").write_text(json.dumps(snapshot))
     p = package(root)
     seen = p["business_impact"]["connectivity_observed"]
-    assert seen["status"] == "observed" and seen["snapshot_age_s"] == 30
+    assert seen["status"] == "observed" and seen["snapshot"]["age_s"] == 30
     interfaces = [i for i in snapshot["interfaces"]["value"]
                   if not (i["loopback"]["state"] == "observed" and i["loopback"]["value"])]
     assert seen["interfaces"] == len(interfaces)
@@ -273,7 +273,7 @@ def test_an_operator_gets_the_snapshots_and_each_ledger_says_why_not(root):
 
 
 def test_a_synchronized_clock_is_only_said_as_synchronized_this_boot(root):
-    clock = package(root)["time"]["clock"]
+    clock = package(root)["time"]["generation_clock"]
     assert clock["status"] == "synchronized_this_boot" and clock["signals"] == []
     assert "not that it is still synchronized" in clock["synchronized_this_boot"]["means"]
 
@@ -281,19 +281,19 @@ def test_a_synchronized_clock_is_only_said_as_synchronized_this_boot(root):
 def test_no_timesync_marker_is_unverified(root):
     (root / "run/systemd/timesync/synchronized").unlink()
     p = package(root)
-    assert p["time"]["clock"]["status"] == "unverified"
+    assert p["time"]["generation_clock"]["status"] == "unverified"
     assert "clock_unverified" in [u["code"] for u in p["unconfirmed"]]
 
 
 def test_a_writable_timesync_marker_is_not_evidence(root):
     os.chmod(root / "run/systemd/timesync/synchronized", 0o666)
-    assert package(root)["time"]["clock"]["synchronized_this_boot"]["status"] == "refused"
+    assert package(root)["time"]["generation_clock"]["synchronized_this_boot"]["status"] == "refused"
 
 
 def test_a_clock_behind_the_knowledge_floor_is_untrusted(root):
     # The floor says 05:00 was already seen; generate "at" 04:00.
     p = package(root, now=NOW - 4800)
-    clock = p["time"]["clock"]
+    clock = p["time"]["generation_clock"]
     assert clock["status"] == "untrusted"
     assert "wall_clock_behind_knowledge_floor" in clock["signals"]
     assert clock["knowledge_floor"]["now_behind_floor"] is True
@@ -303,7 +303,7 @@ def test_a_clock_behind_the_knowledge_floor_is_untrusted(root):
 def test_records_dated_after_generation_make_the_clock_untrusted(root):
     (root / "var/lib/azazel/state/knowledge/clock-floor.json").unlink()
     p = package(root, now=example.OPENED + 30)  # the escalation is 30 s later
-    clock = p["time"]["clock"]
+    clock = p["time"]["generation_clock"]
     assert clock["status"] == "untrusted"
     assert "records_dated_after_generation" in clock["signals"]
     assert "incident_ledger" in clock["future_dated_sources"]
@@ -312,14 +312,14 @@ def test_records_dated_after_generation_make_the_clock_untrusted(root):
 def test_an_implausible_wall_clock_is_untrusted_even_with_a_marker(root):
     (root / "var/lib/azazel/state/knowledge/clock-floor.json").unlink()
     p = package(root, now=978307200.0)  # 2001-01-01: an RTC reset
-    assert p["time"]["clock"]["status"] == "untrusted"
-    assert "wall_clock_implausible" in p["time"]["clock"]["signals"]
+    assert p["time"]["generation_clock"]["status"] == "untrusted"
+    assert "wall_clock_implausible" in p["time"]["generation_clock"]["signals"]
 
 
 def test_a_tampered_floor_is_unavailable_not_trusted(root):
     floor = root / "var/lib/azazel/state/knowledge/clock-floor.json"
     floor.write_text('{"schema": "azazel-nexus/knowledge-clock-floor/v1", "floor_utc": "2026-10-29T05:00:00Z"}\n')
-    clock = package(root)["time"]["clock"]
+    clock = package(root)["time"]["generation_clock"]
     assert clock["knowledge_floor"] == {"status": "unavailable", "reason_code": "refused",
                                         "floor_utc": None}
 
@@ -330,7 +330,7 @@ def test_the_floor_reader_agrees_with_the_floor_writer(root, tmp_path):
 
     floor = root / "var/lib/azazel/state/knowledge/clock-floor.json"
     floor.write_bytes(runtime.encode_floor(datetime(2026, 10, 29, 6, tzinfo=timezone.utc)))
-    clock = package(root)["time"]["clock"]
+    clock = package(root)["time"]["generation_clock"]
     assert clock["knowledge_floor"]["floor_utc"] == "2026-10-29T06:00:00Z"
     assert clock["status"] == "untrusted"
 
@@ -349,44 +349,139 @@ def test_addresses_ids_ports_signature_text_and_actors_are_not_copied(root):
     assert suppressed["operator_identity"] == 1
 
 
-def test_secrets_and_identifiers_in_free_text_are_replaced_and_counted(root):
-    write_record(root, {
-        "route": "local", "outcome": "answered", "reason": "local", "content_kind": "ai_advice",
-        "text": ("Check 192.0.2.55 and 2001:db8::7 on eth0 (aa:bb:cc:dd:ee:ff), read /etc/shadow, "
-                 "see https://intranet.example/x, password=hunter2xyz "
-                 "-----BEGIN OPENSSH PRIVATE KEY----- AAAAB3NzaC1yc2EAAAADAQABAAABAQC7vbqajDhZ "
-                 "admin@corp.example")},
-        refs=[{"technique_id": "T1046", "name": "Network Service Discovery",
-               "summary": "Seen from 192.0.2.55 via gw.corp.example:8443", "claim_id": "T1046",
-               "bundle_digest": example.BUNDLE, "freshness": "current",
-               "source_kind": "knowledge_lite", "generation": 7, "trust_check": "verified",
-               "as_of": "2026-10-29T03:14:30Z", "citation": "internal wiki at 10.1.2.3"}],
-        state="available")
+#: (text, the token that must not reach the package)
+LEAKY_FORMS = {
+    "network_address": ("Block 192.0.2.55 now", "192.0.2.55"),
+    "network_address_v6": ("Block 2001:db8::7 now", "2001:db8::7"),
+    "mac_address": ("Station aa:bb:cc:dd:ee:ff", "aa:bb:cc:dd:ee:ff"),
+    "url": ("See https://intranet", "https://intranet"),
+    "email": ("Ask admin@corp.example", "admin@corp.example"),
+    "windows_path": ("Open C:\\Users\\ops\\notes", "Users"),
+    "unix_path": ("Read /etc/shadow", "/etc/shadow"),
+    "host_port": ("Try gateway:8443", "gateway:8443"),
+    "host_name": ("Host db01.corp.local is affected", "db01.corp.local"),
+    "interface_name": ("Link eth0 is down", "eth0"),
+    "percent_encoded": ("Value pass%3Dword", "pass%3Dword"),
+    "hex_value": ("Key " + "cd" * 32, "cd" * 32),
+    "base64_value": ("Blob cGFzc3dvcmQ9aHVudGVy", "cGFzc3dvcmQ9aHVudGVy"),
+    "secret_like": ("password=hunter2xyz", "hunter2xyz"),
+}
+
+
+@pytest.mark.parametrize("category", sorted(LEAKY_FORMS))
+def test_unrecognised_free_text_is_withheld_and_counted(root, category):
+    from azazel_nexus.lite_import import read_knowledge_refs
+
+    text, token = LEAKY_FORMS[category]
+    mio = {"route": "local", "outcome": "answered", "reason": "local",
+           "content_kind": "ai_advice", "text": text}
+    ref = {"technique_id": "T1046", "name": "Network Service Discovery", "summary": text,
+           "claim_id": "T1046", "bundle_digest": example.BUNDLE, "freshness": "current",
+           "source_kind": "knowledge_lite", "generation": 7, "trust_check": "verified",
+           "as_of": "2026-10-29T03:14:30Z", "citation": text[:160]}
+    try:
+        read_knowledge_refs([ref])
+        refs = [ref]
+    except ValueError:
+        refs = []  # Knowledge's own reader refuses it before it is ever stored
+    write_record(root, mio, refs=refs, state="available" if refs else "skipped")
     files = encode_files(package(root))
-    text = text_of(files)
-    for form in SECRET_FORMS + ("10.1.2.3", "gw.corp.example:8443", "admin@corp.example"):
-        assert form not in text, form
+    assert token not in text_of(files), category
     p = json.loads(files["handoff.json"])
-    counts = p["confidentiality"]["suppressed"]
-    for category in ("network_address", "mac_address", "path", "url", "secret_like",
-                     "interface_name", "host_port", "email", "citation_text"):
-        assert counts[category] >= 1, category
-    assert p["knowledge"]["citations"][0]["citation_state"] == "withheld"
-    assert "[伏字:network_address]" in p["ai_assessment"]["explanations"][0]["text"]
+    item = p["ai_assessment"]["explanations"][0]
+    assert (item["text"], item["text_state"]) == (None, "withheld")
+    suppressed = p["confidentiality"]["suppressed"]
+    assert suppressed["ai_free_text"] == 1
+    if refs:
+        citation = p["knowledge"]["citations"][0]
+        assert citation["summary"] is None and citation["summary_state"] == "withheld"
+        assert citation["citation"] is None and citation["citation_state"] == "withheld"
+        assert suppressed["knowledge_free_text"] == 2
+    assert "free_text_withheld" in [u["code"] for u in p["unconfirmed"]]
 
 
-def test_the_final_scan_refuses_a_package_whose_suppression_failed(root, monkeypatch):
+def test_fixed_banners_and_plain_phrases_are_shown_with_their_method(root):
+    p = package(root)
+    item = p["ai_assessment"]["explanations"][0]
+    assert item["text_state"] == "shown"
+    assert item["generation_method"] == "deterministic_keyword_matching"
+    citation = p["knowledge"]["citations"][0]
+    assert citation["name"] == "Network Service Discovery"
+    assert citation["summary_state"] == "shown" and citation["citation_state"] == "shown"
+    assert p["confidentiality"]["suppressed"]["ai_free_text"] == 0
+
+
+DETECTED = {
+    "network_address": "Block 192.0.2.55 now",
+    "mac_address": "Station aa:bb:cc:dd:ee:ff",
+    "url": "See https://intranet",
+    "email": "Ask admin@corp.example",
+    "windows_path": "Open C:\\Users\\ops",
+    "unix_path": "Read /etc/shadow",
+    "host_port": "Try gateway:8443",
+    "host_name": "Host db01.corp.local",
+    "interface_name": "Link eth0 down",
+    "percent_encoded": "pass%3Dword",
+    "hex_value": "Key " + "ab" * 32,
+    "base64_value": "Blob cGFzc3dvcmQ9aHVudGVy",
+    "secret_like": "password=hunter2xyz",
+}
+
+
+@pytest.mark.parametrize("category", sorted(DETECTED))
+def test_the_final_scan_refuses_each_form_when_suppression_is_disabled(root, monkeypatch,
+                                                                         category):
+    """The allowlist switched off: the scan alone must still refuse to write."""
+    text = DETECTED[category]
     write_record(root, {"route": "local", "outcome": "answered", "reason": "local",
-                        "content_kind": "ai_advice", "text": "Block 192.0.2.55 now"})
-    monkeypatch.setattr(handoff.Suppressor, "text", lambda self, value, limit=4096: value)
+                        "content_kind": "ai_advice", "text": text})
+    monkeypatch.setattr(handoff, "_text_of", lambda value, fixed, hide: (value, "disabled")
+                        if value else (None, "none"))
     with pytest.raises(HandoffRefused) as refused:
         encode_files(package(root))
-    assert refused.value.code == "suppression_incomplete:network_address"
+    assert refused.value.code.startswith("suppression_incomplete:")
+    assert category in refused.value.code.split(":", 1)[1].split(","), refused.value.code
 
 
-def test_timestamps_and_digests_are_not_mistaken_for_addresses():
-    assert handoff.scan_for_leaks(b'"2026-10-29T03:14:00Z" "sha256:' + b"ab" * 32 + b'"') == []
-    assert handoff.scan_for_leaks(b"fe80::1") == ["network_address"]
+@pytest.mark.parametrize("field", ["name", "summary", "citation"])
+def test_the_final_scan_covers_knowledge_text_when_the_allowlist_is_disabled(root, monkeypatch,
+                                                                             field):
+    ref = {"technique_id": "T1046", "name": "Network Service Discovery", "summary": "",
+           "claim_id": "T1046", "bundle_digest": example.BUNDLE, "freshness": "current",
+           "source_kind": "knowledge_lite", "generation": 7, "trust_check": "verified",
+           "as_of": "2026-10-29T03:14:30Z", "citation": ""}
+    ref[field] = "Host db01.corp.local"
+    write_record(root, {"route": "unavailable", "outcome": "unavailable",
+                        "reason": "mio_unavailable", "text": None}, refs=[ref],
+                 state="available", codes=("mio_unavailable",))
+    monkeypatch.setattr(handoff, "plain_words", lambda text, limit: text)
+    with pytest.raises(HandoffRefused) as refused:
+        encode_files(package(root))
+    assert "host_name" in refused.value.code
+
+
+def test_the_final_scan_covers_audit_values(root, monkeypatch):
+    import re
+
+    chain = root / "var/lib/azazel/state/audit/2026-10-29.jsonl"
+    AuditLedger(chain).append({"event_type": "knowledge.lite.import_refused",
+                               "code": "see /etc/shadow", "occurred_at": "2026-10-29T03:20:00Z"})
+    p = package(root)
+    assert p["operator_actions"]["node_actions"][-1]["code"] == "withheld"
+    assert p["confidentiality"]["suppressed"]["audit_value"] == 1
+    monkeypatch.setattr(handoff, "_AUDIT_WORD", re.compile(r".*", re.DOTALL))
+    with pytest.raises(HandoffRefused) as refused:
+        encode_files(package(root))
+    assert "unix_path" in refused.value.code
+
+
+def test_codes_timestamps_and_digests_are_not_mistaken_for_identifiers(root):
+    assert handoff.scan_package(package(root)) == []
+    assert handoff.scan_package({"digest": "sha256:" + "ab" * 32}) == []
+    assert handoff.scan_package({"note": "sha256:" + "ab" * 32}) == ["hex_value"]
+    assert handoff.scan_package({"note": "abcdef" * 8}) == ["hex_value"]
+    assert handoff.detect("fe80::1") == ["network_address"]
+    assert handoff.detect("12:30:45 and 2026-10-29T03:14:00Z") == []
 
 
 # -- offline ----------------------------------------------------------------------
@@ -398,7 +493,7 @@ def test_generation_and_writing_use_no_network(root, out, monkeypatch):
     monkeypatch.setattr(socket, "socket", refuse)
     monkeypatch.setattr(socket, "create_connection", refuse)
     files = encode_files(package(root))
-    path = write_package(out, handoff.package_name(json.loads(files["handoff.json"])), files)
+    path = write_package(out, handoff.package_name(json.loads(files["handoff.json"])), files).path
     assert sorted(os.listdir(path)) == ["handoff.ja.md", "handoff.json", "manifest.json"]
 
 
@@ -426,8 +521,9 @@ def files_and_name(root):
 
 def test_written_atomically_into_a_new_private_directory(root, out):
     files, name = files_and_name(root)
-    path = write_package(out, name, files)
-    assert path == out / name and os.listdir(out) == [name]
+    result = write_package(out, name, files)
+    path = result.path
+    assert result.durable and path == out / name and os.listdir(out) == [name]
     assert os.stat(path).st_mode & 0o777 == 0o700
     for file_name, raw in files.items():
         assert (path / file_name).read_bytes() == raw
@@ -447,22 +543,104 @@ def test_an_existing_package_is_never_overwritten(root, out):
     assert sorted(os.listdir(out)) == [name]
 
 
-@pytest.mark.parametrize("empty", [False, True])
-def test_a_name_that_appears_while_writing_is_not_replaced(root, out, empty):
+@pytest.mark.parametrize("kind", ["empty_dir", "full_dir", "file", "symlink"])
+def test_a_name_that_appears_just_before_creation_is_kept(root, out, tmp_path, kind):
+    """The race R388-06 names: after the last check, before the directory is made."""
+    files, name = files_and_name(root)
+    target = out / name
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    def racing_mkdir(path, mode, *, dir_fd):
+        if kind == "empty_dir":
+            target.mkdir()
+        elif kind == "full_dir":
+            target.mkdir()
+            (target / "theirs").write_text("kept")
+        elif kind == "file":
+            target.write_text("kept")
+        else:
+            target.symlink_to(elsewhere)
+        return os.mkdir(path, mode, dir_fd=dir_fd)
+
+    with pytest.raises(HandoffRefused) as refused:
+        write_package(out, name, files, mkdir=racing_mkdir)
+    assert refused.value.code == "output_exists" and refused.value.remnant is None
+    assert os.listdir(out) == [name]
+    if kind == "empty_dir":
+        assert os.listdir(target) == []
+    elif kind == "full_dir":
+        assert (target / "theirs").read_text() == "kept"
+    elif kind == "file":
+        assert target.read_text() == "kept"
+    else:
+        assert target.is_symlink() and os.listdir(elsewhere) == []
+
+
+def test_a_file_planted_inside_the_new_directory_is_not_overwritten(root, out):
     files, name = files_and_name(root)
 
     def write(fd, data):
-        if not (out / name).exists():
-            (out / name).mkdir()
-            if not empty:
-                (out / name / "theirs").write_text("kept")
+        planted = out / name / "manifest.json"
+        if not planted.exists():
+            planted.write_text("theirs")
         return os.write(fd, data)
 
     with pytest.raises(HandoffRefused) as refused:
         write_package(out, name, files, write=write)
-    assert refused.value.code == "output_exists"
-    assert sorted(os.listdir(out)) == [name]
-    assert sorted(os.listdir(out / name)) == ([] if empty else ["theirs"])
+    assert refused.value.code == "write_failed"
+    assert (out / name / "manifest.json").read_text() == "theirs"
+    assert os.listdir(out / name) == ["manifest.json"]
+    assert refused.value.remnant == out / name
+
+
+def test_a_file_sync_failure_before_the_manifest_leaves_nothing(root, out):
+    files, name = files_and_name(root)
+    calls = []
+
+    def fsync(fd):
+        calls.append(fd)
+        if len(calls) == 2:
+            raise OSError(errno.EIO, "I/O error")
+        return os.fsync(fd)
+
+    with pytest.raises(HandoffRefused) as refused:
+        write_package(out, name, files, fsync=fsync)
+    assert refused.value.code == "write_failed" and refused.value.remnant is None
+    assert os.listdir(out) == []
+
+
+def test_a_directory_sync_failure_after_publishing_is_reported_not_hidden(root, out):
+    files, name = files_and_name(root)
+    calls = []
+
+    def fsync(fd):
+        calls.append(fd)
+        if len(calls) > len(files):
+            raise OSError(errno.EIO, "I/O error")
+        return os.fsync(fd)
+
+    result = write_package(out, name, files, fsync=fsync)
+    assert result.durable is False and result.path == out / name
+    for file_name, raw in files.items():
+        assert (out / name / file_name).read_bytes() == raw
+
+
+def test_a_failed_cleanup_names_the_directory_left_behind(root, out, monkeypatch):
+    files, name = files_and_name(root)
+
+    def write(fd, data):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    def no_rmdir(*args, **kwargs):
+        raise OSError(errno.EBUSY, "busy")
+
+    monkeypatch.setattr(handoff.os, "rmdir", no_rmdir)
+    with pytest.raises(HandoffRefused) as refused:
+        write_package(out, name, files, write=write)
+    assert refused.value.code == "insufficient_space"
+    assert refused.value.remnant == out / name
+    assert os.listdir(out / name) == []
 
 
 def test_an_existing_symlink_at_the_name_is_refused(root, out, tmp_path):
@@ -600,3 +778,280 @@ def test_the_cli_entry_point_lists_handoff():
         with contextlib.redirect_stdout(stream):
             main(["handoff", "export", "--help"])
     assert "--output-dir" in stream.getvalue()
+
+
+# -- R388-02: every transition counts, only the display is bounded -------------------
+
+
+def test_transitions_beyond_the_display_bound_still_decide_the_state(root):
+    ledger = AuditLedger(root / "var/lib/azazel/edge-incidents/2026-10-29.jsonl")
+    for i in range(300):
+        ledger.append(example.transition(
+            "updated", example.OPENED + 120 + i, 20 + i, 3, "throttle",
+            "severity_elevated_throttle_reversible", example.DIGESTS[0],
+            "sha256:%064x" % (1000 + i)))
+    # After the display bound: severity rises, the decision changes, evidence
+    # is lost, and the incident closes.
+    ledger.append(example.transition(
+        "updated", example.OPENED + 500, 400, 1, "isolate",
+        "severity_critical_contains_immediately", example.DIGESTS[0], example.DIGESTS[2],
+        evidence_stored=False))
+    ledger.append(example.transition(
+        "closed", example.OPENED + 600, 400, 1, "isolate",
+        "severity_critical_contains_immediately", example.DIGESTS[0], example.DIGESTS[2],
+        reason="idle"))
+    p = package(root)
+    observed = p["observed_facts"]
+    assert observed["summary"]["most_severe"] == 1 and observed["summary"]["count"] == 400
+    assert observed["summary"]["latest_transition"] == "closed"
+    assert observed["summary"]["transitions_with_evidence_not_stored"] == 2
+    display = observed["transitions_display"]
+    assert (display["total"], display["shown"], display["omitted"]) == (304, 256, 48)
+    assert display["omitted_range"]["from"] == "2026-10-29T03:14:00Z"
+    assert observed["transitions"][-1]["event_type"] == "closed"
+    assert p["edge_decision"]["latest"]["action"] == "isolate"
+    assert "isolate" in [a["action"] for a in p["execution"]["automatic_actions"]]
+    assert p["incident"]["state"] == "closed"
+    assert p["evidence_refs"]["refs_display"]["omitted"] > 0
+    assert p["evidence_refs"]["transitions_with_evidence_not_stored"] == 2
+    assert "display_truncated" in [u["code"] for u in p["unconfirmed"]]
+    assert "古い 48 件を省略" in handoff.render_markdown(p)
+
+
+# -- R388-03: the chain is anchored ---------------------------------------------------
+
+
+def _segment(root, day="2026-10-29"):
+    return root / "var/lib/azazel/edge-incidents" / f"{day}.jsonl"
+
+
+def test_a_removed_first_line_is_a_broken_chain(root):
+    path = _segment(root)
+    lines = path.read_bytes().splitlines(keepends=True)
+    path.write_bytes(b"".join(lines[1:]))
+    p = package(root)
+    sources = {s["source"]: s for s in p["sources"]}
+    assert sources["incident_ledger"]["reason_code"] == "chain_broken"
+    assert sources["incident_ledger"]["verified"]["anchor"] == "genesis"
+    assert p["observed_facts"]["status"] == "partial"
+
+
+def test_a_removed_first_segment_is_a_broken_chain(root):
+    first = _segment(root)
+    second = _segment(root, "2026-10-30")
+    AuditLedger(second).append(example.transition(
+        "updated", example.OPENED + 86400, 30, 2, "redirect", "severity_high_redirect_to_decoy",
+        example.DIGESTS[0], example.DIGESTS[1]), chain_from=AuditLedger(first).head())
+    assert package(root)["observed_facts"]["status"] == "available"
+    first.unlink()
+    p = package(root)
+    sources = {s["source"]: s for s in p["sources"]}
+    assert sources["incident_ledger"]["reason_code"] == "chain_broken"
+
+
+def _retire_first_day(root):
+    """What `IncidentLedger.before_delete` writes, then the unlink."""
+    first, second = _segment(root), _segment(root, "2026-10-30")
+    sequence, digest = AuditLedger(first).head()
+    AuditLedger(second).append(example.transition(
+        "updated", example.OPENED + 86400, 30, 2, "redirect", "severity_high_redirect_to_decoy",
+        example.DIGESTS[0], example.DIGESTS[1]), chain_from=(sequence, digest))
+    boundary = first.parent / "retained-boundary.json"
+    boundary.write_text(json.dumps({"oldest": second.name, "sequence": sequence, "hash": digest,
+                                    "deleted": first.name}, sort_keys=True,
+                                   separators=(",", ":")) + "\n")
+    return first, boundary
+
+
+def test_a_lawful_retention_is_read_from_its_boundary(root):
+    first, _ = _retire_first_day(root)
+    # The crash window: the boundary is durable, the unlink has not happened.
+    p = package(root)
+    sources = {s["source"]: s for s in p["sources"]}
+    assert sources["incident_ledger"]["status"] == "read"
+    assert sources["incident_ledger"]["verified"]["anchor"] == "retention_boundary"
+    first.unlink()
+    p = package(root)
+    sources = {s["source"]: s for s in p["sources"]}
+    assert sources["incident_ledger"]["status"] == "read"
+    assert [t["event_type"] for t in p["observed_facts"]["transitions"]] == ["updated"]
+
+
+@pytest.mark.parametrize("damage", ["hash", "sequence", "oldest", "shape"])
+def test_a_retention_boundary_that_does_not_match_is_refused(root, damage):
+    first, boundary = _retire_first_day(root)
+    first.unlink()
+    value = json.loads(boundary.read_text())
+    if damage == "hash":
+        value["hash"] = "f" * 64
+    elif damage == "sequence":
+        value["sequence"] += 1
+    elif damage == "oldest":
+        value["oldest"] = "2026-10-31.jsonl"
+    else:
+        value["extra"] = 1
+    boundary.write_text(json.dumps(value))
+    sources = {s["source"]: s for s in package(root)["sources"]}
+    assert sources["incident_ledger"]["status"] == "unavailable"
+    assert sources["incident_ledger"]["reason_code"] in {
+        "chain_broken", "retention_boundary_mismatch", "retention_boundary_refused"}
+
+
+def test_the_reader_accepts_what_the_intake_ledger_retires(tmp_path):
+    """The real writer's retention, not a copy of it, read by this reader."""
+    runtime = pytest.importorskip("azazel_nexus_runtime.edge_intaked")
+    base = tmp_path / "base"
+    base.mkdir()
+    day1 = example.OPENED
+    ledger = runtime.IncidentLedger(base, day1, max_bytes=1, monotonic=lambda: 0)
+    ledger.append(example.transition("opened", day1, 1, 3, "throttle",
+                                     "severity_elevated_throttle_reversible",
+                                     example.DIGESTS[0], example.DIGESTS[0]), day1)
+    ledger.append(example.transition("updated", day1 + 86400, 2, 3, "throttle",
+                                     "severity_elevated_throttle_reversible",
+                                     example.DIGESTS[0], example.DIGESTS[1]), day1 + 86400)
+    directory = base / "incidents"
+    assert (directory / "retained-boundary.json").exists()
+    chain = handoff._read_incident_chain(directory, lambda e: True)
+    assert (chain.status, chain.anchor) == ("read", "retention_boundary")
+
+
+def test_an_audit_range_read_says_it_is_not_anchored(root):
+    older = root / "var/lib/azazel/state/audit/2026-10-01.jsonl"
+    older.write_text("")
+    p = package(root)
+    audit = {s["source"]: s for s in p["sources"]}["audit_chain"]
+    assert audit["status"] == "read" and audit["verified"]["anchored"] is False
+    assert "audit_unanchored" in [u["code"] for u in p["unconfirmed"]]
+    older.unlink()
+    audit = {s["source"]: s for s in package(root)["sources"]}["audit_chain"]
+    assert audit["verified"]["anchored"] is True
+
+
+# -- R388-04: an expired snapshot is the last record, not the current state -----------
+
+
+def _age_snapshot(root, leaf, seconds):
+    path = root / "var/lib/azazel/run" / leaf / "status.json"
+    value = json.loads(path.read_text())
+    value["written_at"] = NOW - seconds
+    path.write_text(json.dumps(value))
+
+
+@pytest.mark.parametrize("age, fresh", [(150, True), (151, False), (-6, False)])
+def test_knowledge_beyond_its_freshness_bound_is_not_current(root, age, fresh):
+    _age_snapshot(root, "knowledge-status", age)
+    p = package(root)
+    now_k = p["knowledge"]["lite_now"]
+    citation = p["knowledge"]["citations"][0]
+    markdown = handoff.render_markdown(p)
+    if fresh:
+        assert now_k["status"] == "read" and citation["superseded"] is True
+    else:
+        assert now_k["status"] == "stale_last_recorded"
+        assert now_k["reason_code"] in {"snapshot_expired", "snapshot_dated_in_future"}
+        assert citation["superseded"] is None and citation["generation_now"] is None
+        assert "最終記録のみ（現在は未確認）" in markdown
+        assert "現在の世代は未確認" in markdown
+        codes = [u["code"] for u in p["unconfirmed"]]
+        assert "stale_snapshot" in codes and "knowledge_current_unknown" in codes
+
+
+def test_an_expired_loop_snapshot_is_marked_in_json_and_markdown(root):
+    _age_snapshot(root, "edge-intake-status", 31)
+    p = package(root)
+    assert p["loop_health"]["intake"]["status"] == "stale_last_recorded"
+    sources = {s["source"]: s for s in p["sources"]}
+    assert sources["intake_status_snapshot"]["freshness"] == "stale"
+    assert "| stale |" in handoff.render_markdown(p)
+
+
+# -- R388-05: the time of the incident, apart from the time of generation -------------
+
+
+def test_an_impossible_occurrence_time_is_untrusted_with_a_good_clock(root):
+    ledger = AuditLedger(_segment(root))
+    ledger.append(example.transition("updated", 946684800.0, 15, 2, "redirect",
+                                     "severity_high_redirect_to_decoy", example.DIGESTS[0],
+                                     example.DIGESTS[1], first_seen=946684800.0))
+    p = package(root)
+    assert p["time"]["generation_clock"]["status"] == "synchronized_this_boot"
+    occurrence = p["time"]["occurrence"]
+    assert occurrence["status"] == "untrusted"
+    assert "occurred_before_plausible_date" in occurrence["signals"]
+    assert "transitions_out_of_order" in occurrence["signals"]
+    assert "occurrence_time_untrusted" in [u["code"] for u in p["unconfirmed"]]
+
+
+def test_last_seen_before_first_seen_is_named(root):
+    AuditLedger(_segment(root)).append(example.transition(
+        "updated", example.OPENED + 90, 15, 2, "redirect", "severity_high_redirect_to_decoy",
+        example.DIGESTS[0], example.DIGESTS[1], last_seen=example.OPENED - 60))
+    assert "last_seen_before_first_seen" in package(root)["time"]["occurrence"]["signals"]
+
+
+def test_a_knowledge_lookup_dated_after_generation_is_named(root):
+    write_record(root, {"route": "unavailable", "outcome": "unavailable",
+                        "reason": "mio_unavailable", "text": None},
+                 refs=[{"technique_id": "T1046", "name": "Network Service Discovery",
+                        "summary": "", "claim_id": "T1046", "bundle_digest": example.BUNDLE,
+                        "freshness": "current", "source_kind": "knowledge_lite",
+                        "generation": 7, "trust_check": "verified",
+                        "as_of": "2026-10-30T00:00:00Z", "citation": ""}],
+                 state="available", codes=("mio_unavailable",))
+    p = package(root)
+    assert "knowledge_citation" in p["time"]["generation_clock"]["future_dated_sources"]
+    assert "records_dated_after_generation" in p["time"]["occurrence"]["signals"]
+
+
+def test_without_a_bad_sign_the_occurrence_is_still_only_unverified(root):
+    occurrence = package(root)["time"]["occurrence"]
+    assert (occurrence["status"], occurrence["signals"]) == ("unverified", [])
+    assert occurrence["reason_code"] == "no_synchronization_evidence_at_occurrence"
+
+
+# -- R388-07: the command tells what is on the media ----------------------------------
+
+
+def test_the_command_reports_an_unconfirmed_sync_with_the_package_path(root, out,
+                                                                      monkeypatch):
+    real = handoff.write_package
+
+    def write(parent, name, files):
+        calls = []
+
+        def fsync(fd):
+            calls.append(fd)
+            if len(calls) > len(files):
+                raise OSError(errno.EIO, "I/O error")
+            return os.fsync(fd)
+        return real(parent, name, files, fsync=fsync)
+
+    from azazel_nexus import handoff_cli
+
+    monkeypatch.setattr(handoff_cli, "write_package", write)
+    code, text = run_cli(["export", "--incident", INCIDENT, "--output-dir", str(out)], root=root)
+    assert code == 3 and "durability_unconfirmed" in text
+    (name,) = os.listdir(out)
+    assert f"handoff: written {out / name}" in text and "nothing was written" not in text
+
+
+def test_the_command_names_a_directory_it_could_not_remove(root, out, monkeypatch):
+    real = handoff.write_package
+
+    def write(parent, name, files):
+        def full(fd, data):
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real(parent, name, files, write=full)
+
+    def no_rmdir(*args, **kwargs):
+        raise OSError(errno.EBUSY, "busy")
+
+    from azazel_nexus import handoff_cli
+
+    monkeypatch.setattr(handoff_cli, "write_package", write)
+    monkeypatch.setattr(handoff.os, "rmdir", no_rmdir)
+    code, text = run_cli(["export", "--incident", INCIDENT, "--output-dir", str(out)], root=root)
+    assert code == 1 and "nothing was written" not in text
+    (name,) = os.listdir(out)
+    assert f"left at {out / name}" in text

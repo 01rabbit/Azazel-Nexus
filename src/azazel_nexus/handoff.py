@@ -1,13 +1,15 @@
 """The expert handoff package (goal 2 F, S-19): one offline, read-only bundle.
 
 `azazel-nexus handoff export` gathers what this node already recorded about
-one incident and writes three files into a directory the operator names:
+one incident and writes three files into a new directory under the one the
+operator names:
 
 * `handoff.json` -- schema `azazel-nexus/handoff-package/1`;
 * `handoff.ja.md` -- the same content for a person, in Japanese;
 * `manifest.json` -- schema `azazel-nexus/handoff-manifest/1`: the SHA-256
-  and size of the two files above. Its own digest is printed on the terminal
-  so that it can be written down beside the media.
+  and size of the two files above, written last. Its own digest is printed
+  on the terminal so that it can be written down beside the media. A
+  directory without a manifest whose digests verify is not a package.
 
 **What it reads, and nothing else.** Every source is an existing file read
 through the reader its writer's tests already hold (`incident_explain`,
@@ -31,18 +33,18 @@ process, or reads Edge's private evidence store (it holds raw payloads).
 **What it never claims.** Edge's decisions reach Nexus observe-only
 (`edge_intake` refuses anything else), so every action is `would` with
 `executed: false`, no lease, no expiry and nothing to release. A section with
-no material is `unavailable` with a reason code, never a healthy default. The
-four kinds of statement are separate sections, each with its `authority`:
-`observed_facts` (Edge's observation), `edge_decision` (Edge's deterministic
-rules), `execution` (results: none), `ai_assessment` (advice, not fact).
+no material is `unavailable` with a reason code, never a healthy default; a
+snapshot past its freshness bound is the last record, not the current state.
+The four kinds of statement are separate sections, each with its `authority`.
 
-**Confidentiality.** Built by allowlist, as `status_view` is. Addresses, rule
-ids, ports, producer free text and operator identities are not copied; free
-text that is copied (AI advice, Knowledge names and citations) has address,
-MAC, path, URL and secret-like forms replaced, and every suppression is
-counted in `confidentiality.suppressed`. A final scan refuses to write any
-package in which such a form is still present. There is no upload: this
-module has no transport and the package is only written to local storage.
+**Confidentiality, by allowlist.** Addresses, rule ids, ports, producer text
+and operator identities are never copied. Text that did not come from this
+code is copied only when it is a fixed text this product ships (an advisory
+banner, a handoff notice) or a short phrase of plain words; anything else is
+withheld and counted. A final scan walks every string of the package and
+refuses to write it if any identifier, path, encoded or secret-like form is
+present outside the fields whose form is fixed (digests, codes, timestamps).
+There is no upload: this module has no transport.
 """
 
 from __future__ import annotations
@@ -52,16 +54,17 @@ import hashlib
 import json
 import os
 import re
-import secrets
 import stat
 import unicodedata
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
 __all__ = [
-    "MANIFEST_SCHEMA", "SCHEMA", "HandoffRefused", "build_package", "encode_files",
-    "find_incident", "principal_class", "render_markdown", "scan_for_leaks", "write_package",
+    "MANIFEST_SCHEMA", "SCHEMA", "HandoffRefused", "WriteResult", "build_package",
+    "encode_files", "find_incident", "principal_class", "render_markdown", "scan_package",
+    "write_package",
 ]
 
 SCHEMA = "azazel-nexus/handoff-package/1"
@@ -71,17 +74,21 @@ MARKDOWN_NAME = "handoff.ja.md"
 MANIFEST_NAME = "manifest.json"
 OPERATOR_GROUP = "azazel-operator"
 
-#: A wall clock earlier than this is not a date this software ran on.
+#: A time earlier than this is not a date this software ran on.
 MIN_PLAUSIBLE_EPOCH = 1767225600  # 2026-01-01T00:00:00Z
 #: A record dated this far after the generating clock is evidence of a clock
 #: that moved backwards (the snapshot readers use the same five seconds).
 FUTURE_SKEW_S = 5
 #: Node-level audit events shown from this long before the incident opened.
 AUDIT_WINDOW_BEFORE_S = 3600
-#: Bounds: one incident is small; a ledger is not read without a ceiling.
-MAX_TRANSITIONS = 256
-MAX_EXPLANATIONS = 16
-MAX_AUDIT_EVENTS = 128
+#: What is *shown*. Every bound below is on display only: totals, the latest
+#: state and the latest decision are computed from every record read, and
+#: what is not shown is counted with its range.
+SHOW_TRANSITIONS = 256
+SHOW_EXPLANATIONS = 16
+SHOW_EVIDENCE_REFS = 64
+SHOW_CITATIONS = 64
+SHOW_AUDIT_EVENTS = 128
 MAX_SEGMENT_BYTES = 64 * 1024 * 1024
 MAX_LEDGER_BYTES = 512 * 1024 * 1024
 #: Room left beyond the package bytes, and per-file allocation slack.
@@ -89,96 +96,185 @@ SPACE_HEADROOM_BYTES = 1024 * 1024
 SPACE_PER_FILE_BYTES = 64 * 1024
 #: The output directory may not be inside product state.
 REFUSED_OUTPUT_PREFIXES = ("/var/lib/azazel", "/etc/azazel", "/run", "/proc", "/sys", "/dev")
+#: The incident loop's snapshots are rewritten every few seconds
+#: (`status_view.LOOP_STALE_S`).
+LOOP_STALE_S = 30
 
+GENESIS_HASH = "0" * 64
 _INCIDENT_ID = re.compile(r"inc-[0-9a-f]{16}")
 _DAY = re.compile(r"\d{4}-\d{2}-\d{2}\.jsonl", re.ASCII)
 
-# -- suppression patterns -----------------------------------------------------
+# -- detection ----------------------------------------------------------------
 
 _OCTET = r"(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
 _IPV4 = re.compile(rf"(?<![0-9A-Za-z.]){_OCTET}(?:\.{_OCTET}){{3}}(?![0-9A-Za-z])")
-#: Full eight-group IPv6, or any compressed form with `::`.
 _HEX4 = r"[0-9A-Fa-f]{1,4}"
+#: Full eight-group IPv6, or a compressed form with `::` and a group.
 _IPV6 = re.compile(
     rf"(?<![0-9A-Za-z:])(?:(?:{_HEX4}:){{7}}{_HEX4}"
     rf"|{_HEX4}(?::{_HEX4}){{0,6}}::(?:{_HEX4}(?::{_HEX4}){{0,6}})?"
     rf"|::{_HEX4}(?::{_HEX4}){{0,6}})"
     r"(?:%[0-9A-Za-z]+)?(?![0-9A-Za-z:])")
-_MAC = re.compile(r"(?<![0-9A-Za-z])(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}(?![0-9A-Za-z])")
-_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+|(?:^|(?<=\s))//\S+")
-_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
-_PATH = re.compile(r"(?:(?<=^)|(?<=[\s(\[`'\"=]))(?:~|\.{1,2})?/[\w.\-]+(?:/[\w.\-]*)*")
-#: A host:port form (`gw.example:8443`).
-_HOST_PORT = re.compile(r"(?<![\w.-])[A-Za-z][\w.-]*\.[A-Za-z]{2,}:\d{1,5}(?!\d)")
-#: Interface names a Linux host gives (eth0, enp3s0, wlan0, wlp2s0, ...).
-_INTERFACE = re.compile(r"(?<![\w-])(?:eth|en[opsx]|wl[opsx]?|wlan|ww[a-z]|br|bond|vlan|veth|tun|tap)"
-                        r"[0-9][\w.-]*(?![\w-])")
-_SECRET = re.compile(
-    r"-----BEGIN [A-Z ]+-----|"
-    r"(?i:\b(?:password|passwd|passphrase|secret|token|api[_-]?key|authorization|bearer)\b"
-    r"\s*[:=]\s*\S+)|"
-    r"(?<![\w:])(?![0-9a-f]{64}\b)[A-Za-z0-9+/_-]{40,}={0,2}(?![\w])")
+_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
 
-#: In order: what each pattern is counted as.
-_FREE_TEXT_RULES = (
-    ("secret_like", _SECRET),
-    ("url", _URL),
-    ("email", _EMAIL),
-    ("mac_address", _MAC),
+#: Every form the final scan refuses, by the category it reports.
+DETECTORS = (
+    ("secret_like", re.compile(
+        r"-----BEGIN [A-Z ]+-----|(?i:\b(?:password|passwd|passphrase|secret|token|api[_-]?key"
+        r"|authorization|bearer|cookie|session)\b\s*[:=]\s*\S+)")),
     ("network_address", _IPV4),
     ("network_address", _IPV6),
-    ("host_port", _HOST_PORT),
-    ("interface_name", _INTERFACE),
-    ("path", _PATH),
+    ("mac_address", re.compile(
+        r"(?<![0-9A-Za-z])(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}(?![0-9A-Za-z])")),
+    ("url", re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://|(?:^|(?<=\s))//\S")),
+    ("email", re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")),
+    ("windows_path", re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]|\\\\[^\\\s]+\\|\\[\w$.-]+\\")),
+    ("unix_path", re.compile(r"(?:^|(?<=[\s(\[`'\"=:,;]))(?:~|\.{1,2})?/[^\s/]+")),
+    ("host_port", re.compile(r"(?<![\w.-])[A-Za-z][\w.-]*:\d{1,5}(?![\d.])")),
+    ("host_name", re.compile(
+        rf"(?<![\w.@/-]){_LABEL}(?:\.{_LABEL})*\.[A-Za-z][A-Za-z0-9-]*[A-Za-z0-9](?![\w-]|\.\w)")),
+    ("interface_name", re.compile(
+        r"(?<![\w-])(?:eth|en[opsx]|wl[opsx]?|wlan|ww[a-z]|br|bond|vlan|veth|tun|tap)"
+        r"[0-9][\w.-]*(?![\w-])")),
+    ("percent_encoded", re.compile(r"%[0-9A-Fa-f]{2}")),
+    ("hex_value", re.compile(r"(?<![0-9A-Za-z])[0-9A-Fa-f]{24,}(?![0-9A-Za-z])")),
+    ("base64_value", re.compile(
+        r"(?<![A-Za-z0-9+/=_-])(?=[A-Za-z0-9+/_-]*[0-9+/_=])(?=[A-Za-z0-9+/_-]*[A-Z])"
+        r"(?=[A-Za-z0-9+/_-]*[a-z])[A-Za-z0-9+/_-]{8,}={0,2}(?![A-Za-z0-9+/=_-])"
+        r"|(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{4,}==?(?![A-Za-z0-9+/=])")),
 )
 
-SUPPRESSION_CATEGORIES = (
-    "network_address", "rule_identifier", "service_port", "producer_free_text",
-    "operator_identity", "mac_address", "interface_name", "url", "email", "path",
-    "host_port", "secret_like", "citation_text",
-)
+_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+#: Keys whose value has one fixed form: checked against it, never scanned.
+_FIXED_FORM = {
+    "digest": _DIGEST, "bundle_digest": _DIGEST,
+    "bundle_digest_short": re.compile(r"sha256:[0-9a-f]{12}"),
+    "sha256": re.compile(r"[0-9a-f]{64}"),
+    "schema": re.compile(r"azazel-nexus/[a-z-]+/[0-9]+"),
+    "package_schema": re.compile(r"azazel-nexus/[a-z-]+/[0-9]+"),
+    "nexus_version": re.compile(r"[0-9]+(?:\.[0-9]+)*(?:\.?(?:dev|rc|a|b)[0-9]+)*"),
+    "name": re.compile(r"handoff\.(?:json|ja\.md)"),
+    "media_type": re.compile(r"application/json|text/markdown; charset=utf-8"),
+}
+#: Forms that are safe wherever they appear: codes, timestamps, ids.
+_SAFE = re.compile(
+    r"[a-z][a-z0-9_]{0,63}(?:[.:][a-z][a-z0-9_]{0,39})*"
+    r"|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
+    r"|inc-[0-9a-f]{16}|T[0-9]{4}(?:\.[0-9]{3})?"
+    r"|[0-9]{4}-[0-9]{2}-[0-9]{2}\.jsonl", re.ASCII)
+
+
+def detect(text: str) -> list[str]:
+    """The categories of identifier, path, encoded or secret form in `text`."""
+    text = unicodedata.normalize("NFKC", text)
+    found = []
+    for category, pattern in DETECTORS:
+        if category not in found and pattern.search(text):
+            found.append(category)
+    return found
+
+
+def _walk(value, key=None):
+    if isinstance(value, dict):
+        for k, v in value.items():
+            yield from _walk(v, k)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _walk(v, key)
+    elif isinstance(value, str):
+        yield key, value
+
+
+def scan_package(value) -> list[str]:
+    """Every category found in any string of a package or manifest value."""
+    found = []
+    for key, text in _walk(value):
+        form = _FIXED_FORM.get(key)
+        if form is not None and form.fullmatch(text):
+            continue
+        # A code-shaped string is still checked for encoded and secret forms.
+        found_here = detect(text)
+        if _SAFE.fullmatch(text):
+            found_here = [c for c in found_here
+                          if c in ("hex_value", "base64_value", "secret_like")]
+        for category in found_here:
+            if category not in found:
+                found.append(category)
+    return found
+
+
+def scan_markdown(text: str) -> list[str]:
+    """The rendered document, with its digests and timestamps taken out."""
+    text = _DIGEST.sub(" ", text)
+    text = re.sub(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", " ", text)
+    return detect(text)
+
+
+# -- the allowlist ------------------------------------------------------------
+
+_PLAIN = re.compile(r"[A-Za-z][A-Za-z '&(),;-]*")
+
+
+def plain_words(text: str, limit: int) -> Optional[str]:
+    """`text` if it is a short phrase of plain words, else None.
+
+    ASCII letters, spaces and ``'&(),;-`` only, and a full stop only at the
+    end of a sentence: no digit, slash, backslash, colon, ``@``, ``%`` or
+    dotted name can pass, and nothing a detector finds. A single plain word
+    (a bare host name) cannot be told from a word; that is the residue.
+    """
+    if type(text) is not str or not 0 < len(text) <= limit:
+        return None
+    normalized = unicodedata.normalize("NFKC", text)
+    if normalized != text or not text.isascii():
+        return None
+    body = re.sub(r"\.(?=\s|$)", "", text)
+    if not _PLAIN.fullmatch(body) or detect(text):
+        return None
+    return text
+
+
+def _fixed_texts() -> dict:
+    """Every fixed text an explanation may carry, and what produced it."""
+    from .incident_explain import private_text
+    from .local_advisory import _DELIVERY_BANNERS, _TEMPLATE_NOTES, HANDOFF_NOTICE
+
+    method = {"model": "local_model_inference", "embedding": "embedding_matching",
+              "keyword": "deterministic_keyword_matching"}
+    texts = {}
+    for source, banners in _DELIVERY_BANNERS.items():
+        for i, banner in enumerate(banners):
+            for note in ("", _TEMPLATE_NOTES[i]):
+                texts[banner + note] = method[source]
+                texts[private_text((banner + note)[:280], 280)] = method[source]
+    for notice in HANDOFF_NOTICE.values():
+        texts[notice] = "fixed_handoff_notice"
+    return texts
 
 
 class HandoffRefused(Exception):
-    """A fixed code; never exception text from below, which can quote a value."""
+    """A fixed code; never exception text from below, which can quote a value.
 
-    def __init__(self, code: str):
+    `remnant` names a directory left behind when cleaning up failed.
+    """
+
+    def __init__(self, code: str, remnant: Optional[Path] = None):
         super().__init__(code)
         self.code = code
+        self.remnant = remnant
 
 
 class Suppressor:
     """Counts what was left out, so that the package can say how much."""
 
+    CATEGORIES = ("network_address", "rule_identifier", "service_port", "producer_free_text",
+                  "operator_identity", "ai_free_text", "knowledge_free_text", "audit_value")
+
     def __init__(self):
-        self.counts = {name: 0 for name in SUPPRESSION_CATEGORIES}
+        self.counts = {name: 0 for name in self.CATEGORIES}
 
     def drop(self, category: str, n: int = 1) -> None:
         self.counts[category] += n
-
-    def text(self, value: str, limit: int = 4096) -> str:
-        """Copy free text with every suppression form replaced by a marker."""
-
-        text = unicodedata.normalize("NFKC", value)[:limit]
-        text = "".join(c if c.isprintable() or c in "\n\t" else " " for c in text)
-        for category, pattern in _FREE_TEXT_RULES:
-            text, n = pattern.subn(f"[伏字:{category}]", text)
-            if n:
-                self.drop(category, n)
-        return text
-
-
-def scan_for_leaks(raw: bytes) -> list[str]:
-    """Categories whose form survived into an encoded package (should be empty)."""
-
-    text = raw.decode("utf-8")
-    found = []
-    for category, pattern in (("network_address", _IPV4), ("network_address", _IPV6),
-                              ("mac_address", _MAC), ("url", _URL), ("email", _EMAIL),
-                              ("secret_like", re.compile(r"-----BEGIN [A-Z ]+-----"))):
-        if pattern.search(text) and category not in found:
-            found.append(category)
-    return found
 
 
 # -- small readers ------------------------------------------------------------
@@ -264,6 +360,15 @@ def _snapshot(path: Path, reader, limit: int):
     return (value, "read") if value is not None else (None, "refused")
 
 
+def _freshness(value, now, stale_after) -> dict:
+    """`operator_snapshots.freshness` of one snapshot, as package fields."""
+    from .operator_snapshots import freshness
+
+    status, code, age = freshness(value["written_at"], now, stale_after)
+    return {"freshness": status, "freshness_reason": code, "age_s": age,
+            "stale_after_s": stale_after, "written_at": _iso(value["written_at"])}
+
+
 # -- principals -----------------------------------------------------------------
 
 
@@ -335,32 +440,94 @@ def _chain_lines(path: Path, budget: list):
         yield sequence, previous, digest, event
 
 
-def _read_chain(directory: Path, keep: Callable[[dict], bool], *, days_from=None):
-    """Walk the daily segments in order; keep the matching events.
+@dataclass
+class Chain:
+    """What a chain walk read: its verdict, the kept events and the range."""
 
-    Returns `(status, reason_code, kept, controls)`. `status` is `read`
-    (continuity verified across what was read), `broken` or an access code.
+    status: str
+    reason_code: Optional[str]
+    kept: list
+    controls: list
+    anchored: bool = False
+    anchor: Optional[str] = None
+    first_segment: Optional[str] = None
+    last_segment: Optional[str] = None
+    entries: int = 0
+
+    def verified(self) -> dict:
+        return {"status": self.status, "reason_code": self.reason_code,
+                "anchored": self.anchored, "anchor": self.anchor,
+                "segments": {"first": self.first_segment, "last": self.last_segment},
+                "entries": self.entries}
+
+
+def _read_chain(directory: Path, keep: Callable[[dict], bool], *, start=None, days=None,
+                anchor=None) -> Chain:
+    """Walk daily segments in order from `start` (`(sequence, hash)`).
+
+    With `start`, the first entry must continue it -- genesis or a verified
+    retention boundary -- so a removed first line or first segment is a
+    break. Without it the first entry is taken as found, and the walk is
+    said to be unanchored.
     """
-    days, code = _list_days(directory)
     if days is None:
-        return code, code, [], []
-    if days_from is not None:
-        days = [d for d in days if d.name[:10] >= days_from]
-    kept, controls, head, budget = [], [], None, [MAX_LEDGER_BYTES]
+        days, code = _list_days(directory)
+        if days is None:
+            return Chain(code, code, [], [])
+    chain = Chain("read", None, [], [], anchored=start is not None, anchor=anchor)
+    if days:
+        chain.first_segment, chain.last_segment = days[0].name, days[-1].name
+    head, budget = start, [MAX_LEDGER_BYTES]
     try:
         for day in days:
             for sequence, previous, digest, event in _chain_lines(day, budget):
                 if head is not None and (sequence != head[0] + 1 or previous != head[1]):
-                    return "broken", "chain_broken", kept, controls
+                    chain.status, chain.reason_code = "broken", "chain_broken"
+                    return chain
                 head = (sequence, digest)
+                chain.entries += 1
                 if keep(event):
-                    kept.append(event)
+                    chain.kept.append(event)
                 elif event.get("event_type") in _CONTROL_TYPES:
-                    controls.append(event)
+                    chain.controls.append(event)
     except HandoffRefused as refused:
-        return ("broken" if refused.code in {"chain_broken", "ledger_tail_incomplete"}
-                else refused.code), refused.code, kept, controls
-    return "read", None, kept, controls
+        chain.status = ("broken" if refused.code in {"chain_broken", "ledger_tail_incomplete"}
+                        else refused.code)
+        chain.reason_code = refused.code
+    return chain
+
+
+def _read_incident_chain(directory: Path, keep) -> Chain:
+    """The incident chain, anchored the way `IncidentLedger` anchors it.
+
+    From genesis, or from `retained-boundary.json`: the boundary's `oldest`
+    must be the first retained segment, and the first entry must continue
+    its `(sequence, hash)`. Segments at or before its `deleted` -- left by a
+    crash between the boundary and the unlink -- are ignored, as the
+    intake and the explainer ignore them.
+    """
+    from .edge_intake import _object
+    from .incident_explain import read_retention_boundary
+
+    days, code = _list_days(directory)
+    if days is None:
+        return Chain(code, code, [], [])
+    raw, code = _open_regular(directory / "retained-boundary.json", 4096)
+    if raw is None and code != "absent":
+        return Chain(code, code, [], [])
+    if raw is None:
+        return _read_chain(directory, keep, start=(0, GENESIS_HASH), days=days,
+                           anchor="genesis")
+    try:
+        boundary = read_retention_boundary(json.loads(raw.decode("utf-8"),
+                                                      object_pairs_hook=_object))
+    except (ValueError, TypeError, KeyError, UnicodeError):
+        return Chain("broken", "retention_boundary_refused", [], [])
+    days = [d for d in days if d.name > boundary["deleted"]]
+    if not days or days[0].name != boundary["oldest"]:
+        return Chain("broken", "retention_boundary_mismatch", [], [])
+    return _read_chain(directory, keep, start=(boundary["sequence"], boundary["hash"]),
+                       days=days, anchor="retention_boundary")
 
 
 _CONTROL_TYPES = frozenset({"edge.incident.retention", "edge.incident.reset",
@@ -379,11 +546,12 @@ def find_incident(selector: str, *, root=None) -> Optional[str]:
     recent, _ = _snapshot(sources.recent, read_recent_incidents, RECENT_BYTES)
     if recent and recent["incidents"]:
         return recent["incidents"][0]["incident_id"]
-    _, _, kept, _ = _read_chain(
+    chain = _read_incident_chain(
         sources.incidents, lambda e: str(e.get("event_type", "")).startswith("edge.incident.")
         and _INCIDENT_ID.fullmatch(str(e.get("incident_id", ""))) is not None)
+    kept = [e for e in chain.kept if type(e.get("last_update")) in (int, float)]
     if kept:
-        return max(kept, key=lambda e: (e.get("last_update", 0), e["incident_id"]))["incident_id"]
+        return max(kept, key=lambda e: (e["last_update"], e["incident_id"]))["incident_id"]
     return None
 
 
@@ -392,6 +560,14 @@ def find_incident(selector: str, *, root=None) -> Optional[str]:
 
 def _unavailable(code, **extra) -> dict:
     return {"status": "unavailable", "reason_code": code, **extra}
+
+
+def _shown(items: list, limit: int, at) -> tuple[list, dict]:
+    """The latest `limit` items, and what was not shown."""
+    omitted = items[:-limit] if len(items) > limit else []
+    return items[-limit:], {
+        "total": len(items), "shown": min(len(items), limit), "omitted": len(omitted),
+        "omitted_range": ({"from": at(omitted[0]), "to": at(omitted[-1])} if omitted else None)}
 
 
 def build_package(incident_id: str, *, now: float, principal: str, root=None,
@@ -408,7 +584,8 @@ def build_package(incident_id: str, *, now: float, principal: str, root=None,
     )
     from .noc_status import NOC_BYTES, read_noc_status
     from .operator_snapshots import (
-        KNOWLEDGE_BYTES, MIO_BYTES, read_knowledge_status, read_mio_status,
+        KNOWLEDGE_BYTES, KNOWLEDGE_STALE_S, MIO_BYTES, MIO_STALE_S, read_knowledge_status,
+        read_mio_status,
     )
 
     if not _INCIDENT_ID.fullmatch(incident_id):
@@ -420,43 +597,49 @@ def build_package(incident_id: str, *, now: float, principal: str, root=None,
     read_log = []
     future = []
 
-    def note(name, code, readable_by):
+    def note(name, code, readable_by, **extra):
         read_log.append({"source": name, "status": "read" if code == "read" else "unavailable",
                          "reason_code": None if code == "read" else code,
-                         "readable_by": readable_by})
+                         "readable_by": readable_by, **extra})
 
     def seen(epoch, what):
         if type(epoch) in (int, float) and epoch > now + FUTURE_SKEW_S:
             future.append(what)
 
-    # Snapshots (operator group).
-    recent, code = _snapshot(sources.recent, read_recent_incidents, RECENT_BYTES)
-    note("recent_incidents_snapshot", code, "operator")
-    explainer, code = _snapshot(sources.explainer_status, read_explainer_status, 8192)
-    note("explainer_status_snapshot", code, "operator")
-    intake, code = _snapshot(sources.intake_status, read_intake_status, 8192)
-    note("intake_status_snapshot", code, "operator")
-    knowledge_now, code = _snapshot(sources.knowledge_status, read_knowledge_status,
-                                    KNOWLEDGE_BYTES)
-    note("knowledge_status_snapshot", code, "operator")
-    mio_now, code = _snapshot(sources.mio_status, read_mio_status, MIO_BYTES)
-    note("mio_status_snapshot", code, "operator")
-    noc, code = _snapshot(sources.noc_status, read_noc_status, NOC_BYTES)
-    note("noc_status_snapshot", code, "operator")
-    for value, what in ((recent, "recent"), (explainer, "explainer"), (intake, "intake"),
-                        (knowledge_now, "knowledge"), (mio_now, "mio"), (noc, "noc")):
+    # Snapshots (operator group), each with its freshness.
+    snaps = {}
+    for name, path, reader, limit, stale in (
+            ("recent_incidents_snapshot", sources.recent, read_recent_incidents, RECENT_BYTES,
+             LOOP_STALE_S),
+            ("explainer_status_snapshot", sources.explainer_status, read_explainer_status, 8192,
+             LOOP_STALE_S),
+            ("intake_status_snapshot", sources.intake_status, read_intake_status, 8192,
+             LOOP_STALE_S),
+            ("knowledge_status_snapshot", sources.knowledge_status, read_knowledge_status,
+             KNOWLEDGE_BYTES, KNOWLEDGE_STALE_S),
+            ("mio_status_snapshot", sources.mio_status, read_mio_status, MIO_BYTES, MIO_STALE_S),
+            ("noc_status_snapshot", sources.noc_status, read_noc_status, NOC_BYTES, None)):
+        from .noc_status import NOC_STALE_S
+
+        value, code = _snapshot(path, reader, limit)
+        fresh = _freshness(value, now, stale or NOC_STALE_S) if value is not None else None
+        snaps[name] = (value, fresh)
+        note(name, code, "operator", **({"freshness": fresh["freshness"]} if fresh else {}))
         if value is not None:
-            seen(value.get("written_at"), what + "_snapshot")
+            seen(value.get("written_at"), name)
+    recent, recent_fresh = snaps["recent_incidents_snapshot"]
+    explainer = snaps["explainer_status_snapshot"][0]
+    intake = snaps["intake_status_snapshot"][0]
     row = None
     if recent is not None:
         row = next((r for r in recent["incidents"] if r["incident_id"] == incident_id), None)
 
-    # Incident ledger (root).
-    def mine(event):
-        return event.get("incident_id") == incident_id
-    ledger_status, ledger_code, events, controls = _read_chain(sources.incidents, mine)
+    # Incident ledger (root), anchored at genesis or the retention boundary.
+    chain = _read_incident_chain(sources.incidents,
+                                 lambda event: event.get("incident_id") == incident_id)
+    ledger_status, ledger_code = chain.status, chain.reason_code
     transitions = []
-    for event in events[:MAX_TRANSITIONS]:
+    for event in chain.kept:
         try:
             transitions.append(read_transition(event))
         except ValueError:
@@ -464,7 +647,8 @@ def build_package(incident_id: str, *, now: float, principal: str, root=None,
     if ledger_status == "read" and not transitions:
         # Read, but this incident is not in what is retained.
         ledger_status, ledger_code = "not_retained", "incident_not_in_ledger"
-    note("incident_ledger", "read" if ledger_status == "read" else ledger_code, "root")
+    note("incident_ledger", "read" if ledger_status == "read" else ledger_code, "root",
+         verified=chain.verified())
     if not transitions and row is None:
         raise HandoffRefused("incident_not_found")
 
@@ -490,11 +674,11 @@ def build_package(incident_id: str, *, now: float, principal: str, root=None,
                 if record["incident_id"] == incident_id:
                     explanations.append(record)
     note("explanation_ledger", explanation_code, "root")
-    explanations = explanations[-MAX_EXPLANATIONS:]
 
-    # Audit chain (root).
-    first_seen = (transitions[0]["first_seen"] if transitions
-                  else row["first_seen"] if row else now)
+    # Audit chain (root): from the day before the window; anchored at
+    # genesis only when no earlier segment exists (auditd retires none).
+    first_seen = (min(t["first_seen"] for t in transitions) if transitions
+                  else row["first_seen"])
     window_from = first_seen - AUDIT_WINDOW_BEFORE_S
     day_from = (_iso(window_from) or "0000-00-00")[:10]
 
@@ -504,44 +688,52 @@ def build_package(incident_id: str, *, now: float, principal: str, root=None,
             return event.get("incident_id") == incident_id
         at = _epoch(event.get("occurred_at"))
         return kind in OPERATOR_EVENT_FIELDS and at is not None and window_from <= at
-    audit_status, audit_code, audit_events, _ = _read_chain(sources.audit, relevant,
-                                                            days_from=day_from)
-    note("audit_chain", "read" if audit_status == "read" else audit_code, "root")
+    audit_days, code = _list_days(sources.audit)
+    if audit_days is None:
+        audit = Chain(code, code, [], [])
+    else:
+        selected = [d for d in audit_days if d.name[:10] >= day_from]
+        if len(selected) == len(audit_days):
+            audit = _read_chain(sources.audit, relevant, start=(0, GENESIS_HASH),
+                                days=selected, anchor="genesis")
+        else:
+            audit = _read_chain(sources.audit, relevant, days=selected)
+    note("audit_chain", "read" if audit.status == "read" else audit.reason_code, "root",
+         verified=audit.verified())
 
-    # Clock.
-    clock = _clock(sources, now, note)
-    for t in transitions:
-        for key in ("first_seen", "last_seen", "last_update"):
-            seen(t[key], "incident_ledger")
-    for record in explanations:
-        seen(record["explained_at"], "explanation_ledger")
-    for event in audit_events:
-        seen(_epoch(event.get("occurred_at")), "audit_chain")
-    if row is not None:
-        seen(row["last_seen"], "recent_snapshot")
+    # Sections.
+    knowledge = _knowledge(explanations, explanation_code, row, snaps, now, hide)
+    for citation in knowledge["citations"]:
+        seen(_epoch(citation.get("looked_up_at")), "knowledge_citation")
+    clock = _generation_clock(sources, now, note)
+    occurrence = _occurrence(transitions, row, explanations, audit.kept, now, seen)
     for snap, name in ((intake, "intake"), (explainer, "explainer")):
         if snap is not None and snap["refused"].get("segment_from_future"):
             clock["signals"].append(name + "_segment_from_future")
     if future:
         clock["signals"].append("records_dated_after_generation")
         clock["future_dated_sources"] = sorted(set(future))
+        occurrence["signals"].append("records_dated_after_generation")
     if clock["signals"]:
         clock["status"] = "untrusted"
         clock["reason_code"] = clock["signals"][0]
+        occurrence["signals"].append("generation_clock_untrusted")
+    if occurrence["signals"]:
+        occurrence["status"] = "untrusted"
+        occurrence["reason_code"] = occurrence["signals"][0]
 
-    # Observed facts, decisions, execution.
-    observed = _observed(transitions, row, ledger_status, ledger_code, controls, hide)
+    observed = _observed(transitions, row, recent_fresh, ledger_status, ledger_code,
+                         chain.controls, hide)
     decision = _decision(transitions, row, POLICY_REASONS)
-    execution = _execution(decision, intake)
+    execution = _execution(transitions, row, intake)
     evidence = _evidence(transitions, ledger_status, ledger_code)
+    ai = _ai(explanations, explanation_code, row, snaps["mio_status_snapshot"], CONTENT_LABELS,
+             hide)
+    operator = _operator(audit, window_from, now, hide)
+    impact = _impact(snaps["noc_status_snapshot"], execution)
+    loop = _loop(snaps)
 
-    ai = _ai(explanations, explanation_code, row, mio_now, now, CONTENT_LABELS, hide)
-    knowledge = _knowledge(explanations, explanation_code, row, knowledge_now, now, hide)
-    operator = _operator(audit_events, audit_status, audit_code, window_from, now,
-                         hide)
-    impact = _impact(noc, now, execution)
-    loop = _loop(intake, explainer, now)
-
+    closed = [t for t in transitions if t["event_type"] == "edge.incident.closed"]
     package = {
         "schema": SCHEMA,
         "provenance": provenance,
@@ -557,16 +749,17 @@ def build_package(incident_id: str, *, now: float, principal: str, root=None,
             "this_package": "record_not_instruction",
         },
         "incident": {"incident_id": incident_id,
-                     "state": ("closed" if any(t["event_type"] == "edge.incident.closed"
-                                               for t in transitions)
-                               else row["state"] if row else "open")},
-        "time": {"occurred_at": _iso(first_seen) if (transitions or row) else None,
+                     "state": ("closed" if closed and transitions[-1] is closed[-1]
+                               else "open" if transitions
+                               else row["state"])},
+        "time": {"occurred_at": _iso(first_seen),
                  "occurred_at_source": ("incident_ledger.first_seen" if transitions
                                         else "recent_snapshot.first_seen"),
                  "last_seen": _iso(max(t["last_seen"] for t in transitions) if transitions
                                    else row["last_seen"]),
                  "basis": "node_wall_clock_at_intake",
-                 "clock": clock},
+                 "occurrence": occurrence,
+                 "generation_clock": clock},
         "observed_facts": observed,
         "edge_decision": decision,
         "execution": execution,
@@ -578,17 +771,18 @@ def build_package(incident_id: str, *, now: float, principal: str, root=None,
         "loop_health": loop,
     }
     package["sources"] = read_log
-    package["unconfirmed"] = _unconfirmed(package)
     package["confidentiality"] = {
         "policy": "allowlist_default_suppressed",
-        "suppressed": {k: v for k, v in hide.counts.items()},
+        "suppressed": dict(hide.counts),
         "suppressed_total": sum(hide.counts.values()),
+        "free_text_rule": "fixed product texts and plain-word phrases only; anything else withheld",
         "not_read": ["edge_evidence_payloads", "decoy_evidence", "commissioning_record",
                      "secrets_directory", "interface_identity", "torn_tail_quarantine"],
         "raw_payload_included": False,
         "upload": "none",
         "external_release": "operator_decision_outside_this_tool",
     }
+    package["unconfirmed"] = _unconfirmed(package)
     return package
 
 
@@ -598,7 +792,8 @@ def _version() -> str:
     return __version__
 
 
-def _clock(sources: Sources, now: float, note) -> dict:
+def _generation_clock(sources: Sources, now: float, note) -> dict:
+    """The clock that generated the package -- not the one at the incident."""
     clock = {"status": "unverified", "reason_code": "no_synchronization_evidence",
              "generated_at": _iso(now), "signals": []}
     if now < MIN_PLAUSIBLE_EPOCH:
@@ -619,8 +814,8 @@ def _clock(sources: Sources, now: float, note) -> dict:
         marker = "refused"
     clock["synchronized_this_boot"] = {
         "status": marker, "source": "timesyncd_marker",
-        "means": "a synchronization happened in this boot; not that it is still synchronized "
-                 "or that the time source was authenticated"}
+        "means": "a synchronization happened in this boot; not that it is still synchronized, "
+                 "that the time source was authenticated, or that it happened before the incident"}
     note("timesyncd_marker", "read" if marker != "refused" else "refused", "everyone")
     raw, code = _open_regular(sources.knowledge_floor, 256)
     floor = {"status": "unavailable", "reason_code": code, "floor_utc": None}
@@ -650,7 +845,42 @@ def _clock(sources: Sources, now: float, note) -> dict:
     return clock
 
 
-def _observed(transitions, row, ledger_status, ledger_code, controls, hide) -> dict:
+def _occurrence(transitions, row, explanations, audit_events, now, seen) -> dict:
+    """How far the recorded incident times can be believed, apart from now.
+
+    No record says whether the clock was synchronized when the incident was
+    observed, so the best this can be is `unverified`; impossible or
+    inconsistent times make it `untrusted`.
+    """
+    signals = []
+    first = (min(t["first_seen"] for t in transitions) if transitions else row["first_seen"])
+    if first < MIN_PLAUSIBLE_EPOCH:
+        signals.append("occurred_before_plausible_date")
+    previous = None
+    for t in transitions:
+        for key in ("first_seen", "last_seen", "last_update"):
+            seen(t[key], "incident_ledger")
+        if t["last_seen"] < t["first_seen"] or t["last_update"] < t["first_seen"]:
+            signals.append("last_seen_before_first_seen")
+        if previous is not None and t["last_update"] < previous:
+            signals.append("transitions_out_of_order")
+        previous = t["last_update"]
+    if row is not None:
+        seen(row["last_seen"], "recent_snapshot")
+        if row["last_seen"] < row["first_seen"]:
+            signals.append("last_seen_before_first_seen")
+    for record in explanations:
+        seen(record["explained_at"], "explanation_ledger")
+        if record["explained_at"] + FUTURE_SKEW_S < first:
+            signals.append("explained_before_occurrence")
+    for event in audit_events:
+        seen(_epoch(event.get("occurred_at")), "audit_chain")
+    return {"status": "unverified", "reason_code": "no_synchronization_evidence_at_occurrence",
+            "signals": sorted(set(signals), key=signals.index)}
+
+
+def _observed(transitions, row, recent_fresh, ledger_status, ledger_code, controls,
+              hide) -> dict:
     from .incident_explain import CATEGORIES
 
     if transitions:
@@ -672,52 +902,65 @@ def _observed(transitions, row, ledger_status, ledger_code, controls, hide) -> d
                 "close_reason": t.get("reason"),
                 "evidence_stored": "evidence_stored" not in t,
             })
-        section = {
+        shown, display = _shown(rows, SHOW_TRANSITIONS, lambda r: r["at"])
+        return {
             "status": "available" if ledger_status == "read" else "partial",
             "reason_code": None if ledger_status == "read" else ledger_code,
             "authority": "edge_observation", "source": "incident_ledger",
-            "summary": {"first_seen": _iso(transitions[0]["first_seen"]),
+            "summary": {"first_seen": _iso(min(t["first_seen"] for t in transitions)),
                         "last_seen": _iso(max(t["last_seen"] for t in transitions)),
                         "count": max(t["count"] for t in transitions),
                         "most_severe": min(t["most_severe"] for t in transitions),
                         "technique_ids": sorted({i for t in transitions for i in t["technique_ids"]}),
                         "category": rows[-1]["category"], "protocol": rows[-1]["protocol"],
+                        "latest_transition": rows[-1]["event_type"],
+                        "transitions_with_evidence_not_stored": sum(
+                            1 for r in rows if not r["evidence_stored"]),
+                        "computed_from": "all_transitions_read",
                         "severity_scale": "1 = most severe (Suricata priority)"},
-            "transitions": rows,
-            "ledger": {"chain": "verified_continuity_of_retained_segments"
-                       if ledger_status == "read" else ledger_status,
+            "transitions": shown,
+            "transitions_display": display,
+            "ledger": {"chain": ledger_status,
                        "gaps": [{"kind": c["event_type"].removeprefix("edge.incident."),
-                                 "at": _iso(c.get("at"))} for c in controls[:32]]},
+                                 "at": _iso(c.get("at"))} for c in controls[-32:]],
+                       "gaps_total": len(controls)},
             "withheld_fields": ["source_address", "rule_id", "destination_port", "signature_text"],
         }
-        return section
     section = _unavailable(ledger_code, authority="edge_observation")
-    if row is not None:
-        section.update(status="partial", source="recent_snapshot", summary={
-            "first_seen": _iso(row["first_seen"]), "last_seen": _iso(row["last_seen"]),
-            "count": row["count"], "most_severe": row["most_severe"],
-            "technique_ids": list(row["technique_ids"]),
-            "severity_scale": "1 = most severe (Suricata priority)"},
-            transitions=[], ledger={"chain": ledger_status, "gaps": []})
+    section.update(status="partial", source="recent_snapshot", snapshot=recent_fresh, summary={
+        "first_seen": _iso(row["first_seen"]), "last_seen": _iso(row["last_seen"]),
+        "count": row["count"], "most_severe": row["most_severe"],
+        "technique_ids": list(row["technique_ids"]),
+        "computed_from": "recent_snapshot_row",
+        "severity_scale": "1 = most severe (Suricata priority)"},
+        transitions=[], ledger={"chain": ledger_status, "gaps": [], "gaps_total": 0})
     return section
 
 
-def _decision(transitions, row, reasons) -> dict:
+def _decisions(transitions, row, reasons=None) -> list:
     decisions = [{"at": _iso(t["last_update"]), "action": t["edge_would"],
-                  "policy_reason": t["policy_reason"] if t["policy_reason"] in reasons else "other",
+                  "policy_reason": (t["policy_reason"] if reasons is None
+                                    or t["policy_reason"] in reasons else "other"),
                   "kind": "would", "executed": False} for t in transitions]
     if not decisions and row is not None:
         decisions = [{"at": _iso(row["last_seen"]), "action": row["edge_would"],
                       "policy_reason": row["policy_reason"], "kind": "would", "executed": False}]
+    return decisions
+
+
+def _decision(transitions, row, reasons) -> dict:
+    decisions = _decisions(transitions, row, reasons)
     if not decisions:
         return _unavailable("no_decision_recorded", authority="edge_deterministic_rules")
+    shown, display = _shown(decisions, SHOW_TRANSITIONS, lambda d: d["at"])
     return {"status": "available", "reason_code": None, "authority": "edge_deterministic_rules",
-            "decided_by": "edge", "latest": decisions[-1], "decisions": decisions[-MAX_TRANSITIONS:]}
+            "decided_by": "edge", "latest": decisions[-1], "decisions": shown,
+            "decisions_display": display}
 
 
-def _execution(decision, intake) -> dict:
+def _execution(transitions, row, intake) -> dict:
     actions = []
-    for d in decision.get("decisions", []):
+    for d in _decisions(transitions, row):
         if d["action"] != "observe" and d["action"] not in [a["action"] for a in actions]:
             actions.append({"action": d["action"], "state": "would", "executed": False,
                             "lease": {"status": "not_applicable", "reason_code": "not_executed"},
@@ -749,50 +992,71 @@ def _evidence(transitions, ledger_status, ledger_code) -> dict:
     if not transitions:
         return _unavailable(ledger_code or "no_transition", refs=[],
                             raw_payload_included=False)
+    shown, display = _shown(refs, SHOW_EVIDENCE_REFS, lambda r: r["cited_at"])
     return {"status": "available" if not missing else "partial",
             "reason_code": None if not missing else "evidence_not_stored",
-            "refs": refs[:64], "transitions_with_evidence_not_stored": missing,
+            "refs": shown, "refs_display": display,
+            "transitions_with_evidence_not_stored": missing,
             "raw_payload_included": False,
             "retention_checked": False,
             "note": "digests only; whether the record is still retained was not checked "
                     "(the store is private)"}
 
 
-def _ai(explanations, explanation_code, row, mio_now, now, labels, hide) -> dict:
+def _text_of(value, fixed, hide) -> tuple[Optional[str], str]:
+    """An explanation's text if it is a fixed product text, else withheld."""
+    if not value:
+        return None, "none"
+    if value in fixed:
+        return value, fixed[value]
+    hide.drop("ai_free_text")
+    return None, "withheld"
+
+
+def _ai(explanations, explanation_code, row, mio, labels, hide) -> dict:
+    from .incident_explain import content_kind
+
+    fixed = _fixed_texts()
+    value, fresh = mio
     capability = _unavailable("snapshot_unavailable")
-    if mio_now is not None:
-        capability = {"status": "read", "recorded": mio_now["recorded"], "state": mio_now["state"],
-                      "ceiling": mio_now["ceiling"], "observed_at": mio_now["observed_at"],
-                      "record_uncertain": mio_now["record_uncertain"],
-                      "snapshot_age_s": max(0, int(now - mio_now["written_at"]))}
+    if value is not None:
+        capability = {"status": "read" if fresh["freshness"] == "fresh" else "stale_last_recorded",
+                      "reason_code": fresh["freshness_reason"], "snapshot": fresh,
+                      "recorded": value["recorded"], "state": value["state"],
+                      "ceiling": value["ceiling"], "observed_at": value["observed_at"],
+                      "record_uncertain": value["record_uncertain"]}
     base = {"authority": "advisory_only_not_fact", "route_capability_now": capability,
             "label_basis": "the explainer's content_kind: every answered local-route reply is "
-                           "labelled AI advice, whether a model generated text or the local "
-                           "route matched deterministically; which one is not recorded",
+                           "labelled AI advice; the fixed banner it carries says whether a model, "
+                           "embedding matching or keyword matching produced it",
             "model_identity": _unavailable("model_identity_not_recorded_in_explanation_ledger"),
             "remote_route": "not_used_by_incident_explainer"}
     if explanations:
         items = []
         for record in explanations:
             m = record["mio"]
-            from .incident_explain import content_kind
-
             kind = content_kind(m)
+            text, method = _text_of(m["text"], fixed, hide)
+            notice, _ = _text_of(m.get("notice"), fixed, hide)
             items.append({
                 "explained_at": _iso(record["explained_at"]), "transition": record["transition"],
                 "route": m["route"], "outcome": m["outcome"],
                 "local_route_answered": m["route"] == "local" and m["outcome"] == "answered",
                 "content_kind": kind, "content_label": labels.get(kind, kind),
                 "labelled_ai_output": kind == "ai_advice",
-                "generation_method": "not_recorded",
-                "text": hide.text(m["text"]) if m["text"] else None,
-                "notice": m.get("notice"),
+                "generation_method": method if text else "not_recorded",
+                "text": text, "text_state": "shown" if text else (
+                    "withheld" if m["text"] else "none"),
+                "notice": notice,
                 "failure_codes": list(record["failure_codes"])})
+        shown, display = _shown(items, SHOW_EXPLANATIONS, lambda x: x["explained_at"])
         return {"status": "available", "reason_code": None, "source": "explanation_ledger",
-                **base, "explanations": items}
+                **base, "explanations": shown, "explanations_display": display}
     if row is not None and row["explanation"]["state"] != "pending":
         e = row["explanation"]
         kind = e.get("content_kind")
+        text, method = _text_of(e["summary"], fixed, hide)
+        notice, _ = _text_of(e.get("notice"), fixed, hide)
         return {"status": "partial", "reason_code": explanation_code,
                 "source": "recent_snapshot", **base, "explanations": [{
                     "explained_at": None, "transition": None, "route": e["route"],
@@ -800,9 +1064,10 @@ def _ai(explanations, explanation_code, row, mio_now, now, labels, hide) -> dict
                     "local_route_answered": e["route"] == "local" and e["outcome"] == "answered",
                     "content_kind": kind, "content_label": labels.get(kind, "unlabelled"),
                     "labelled_ai_output": e["state"] == "explained",
-                    "generation_method": "not_recorded",
-                    "text": hide.text(e["summary"]) if e["summary"] else None,
-                    "text_is_summary": True, "notice": e.get("notice"),
+                    "generation_method": method if text else "not_recorded",
+                    "text": text, "text_state": "shown" if text else (
+                        "withheld" if e["summary"] else "none"),
+                    "text_is_summary": True, "notice": notice,
                     "failure_codes": list(e["failure_codes"])}]}
     code = explanation_code if explanation_code != "read" else (
         "explanation_pending" if row is not None and row["explanation"]["state"] == "pending"
@@ -810,19 +1075,34 @@ def _ai(explanations, explanation_code, row, mio_now, now, labels, hide) -> dict
     return {**_unavailable(code), **base, "explanations": []}
 
 
-def _knowledge(explanations, explanation_code, row, knowledge_now, now, hide) -> dict:
+def _knowledge(explanations, explanation_code, row, snaps, now, hide) -> dict:
+    value, fresh = snaps["knowledge_status_snapshot"]
     current = _unavailable("snapshot_unavailable")
-    if knowledge_now is not None:
-        current = {"status": "read", "state": knowledge_now["state"],
-                   "reason_code": knowledge_now["reason_code"],
-                   "generation": knowledge_now["generation"],
-                   "freshness": knowledge_now["freshness"],
-                   "snapshot_written_at": _iso(knowledge_now["written_at"]),
-                   "snapshot_age_s": max(0, int(now - knowledge_now["written_at"]))}
+    is_fresh = False
+    if value is not None:
+        is_fresh = fresh["freshness"] == "fresh"
+        current = {"status": "read" if is_fresh else "stale_last_recorded",
+                   "reason_code": fresh["freshness_reason"], "snapshot": fresh,
+                   "state": value["state"], "state_reason": value["reason_code"],
+                   "generation": value["generation"], "freshness": value["freshness"]}
 
     def ref_age(as_of):
         at = _epoch(as_of)
         return None if at is None else int(now - at)
+
+    def phrase(text, limit):
+        if not text:
+            return text, "none"
+        kept = plain_words(text, limit)
+        if kept is None:
+            hide.drop("knowledge_free_text")
+            return None, "withheld"
+        return kept, "shown"
+
+    def compare(generation):
+        if not is_fresh or type(current.get("generation")) is not int:
+            return None, "current_generation_not_fresh_or_unknown"
+        return current["generation"] != generation, "fresh_snapshot"
 
     citations, state = [], None
     if explanations:
@@ -834,41 +1114,44 @@ def _knowledge(explanations, explanation_code, row, knowledge_now, now, hide) ->
                 if key in seen:
                     continue
                 seen.add(key)
-                citation = ref["citation"]
-                if citation and (hide.text(citation, 160) != citation):
-                    hide.drop("citation_text")
-                    citation, citation_state = "", "withheld"
-                else:
-                    citation_state = "shown" if citation else "none"
+                name, name_state = phrase(ref["name"], 120)
+                summary, summary_state = phrase(ref["summary"], 240)
+                citation, citation_state = phrase(ref["citation"], 160)
+                superseded, basis = compare(ref["generation"])
                 citations.append({
                     "technique_id": ref["technique_id"], "claim_id": ref["claim_id"],
-                    "name": hide.text(ref["name"], 120), "summary": hide.text(ref["summary"], 240),
+                    "name": name, "name_state": name_state,
+                    "summary": summary, "summary_state": summary_state,
                     "bundle_digest": ref["bundle_digest"], "generation": ref["generation"],
                     "freshness_at_lookup": ref["freshness"], "looked_up_at": ref["as_of"],
                     "age_s_at_generation": ref_age(ref["as_of"]),
                     "trust_check": ref["trust_check"], "source_kind": ref["source_kind"],
                     "citation": citation, "citation_state": citation_state,
-                    "generation_now": current.get("generation"),
-                    "superseded": (type(current.get("generation")) is int
-                                   and current["generation"] != ref["generation"])})
+                    "generation_now": current.get("generation") if is_fresh else None,
+                    "superseded": superseded, "superseded_basis": basis})
         source, status = "explanation_ledger", "available" if citations else "unavailable"
         code = None if citations else ("knowledge_" + (state or "skipped"))
     elif row is not None and row["explanation"]["knowledge_refs"]:
         for ref in row["explanation"]["knowledge_refs"]:
+            name, name_state = phrase(ref["name"], 120)
             citations.append({
                 "technique_id": ref["technique_id"], "claim_id": ref["claim_id"],
-                "name": hide.text(ref["name"], 120),
+                "name": name, "name_state": name_state,
                 "bundle_digest_short": ref.get("bundle_digest_short"),
                 "generation": ref.get("generation"),
                 "freshness_at_lookup": ref.get("freshness"), "looked_up_at": ref.get("as_of"),
                 "age_s_at_generation": ref_age(ref.get("as_of")),
-                "citation_state": ref.get("citation_state", "none")})
+                "citation_state": "withheld" if ref.get("citation") else "none"})
+            if ref.get("citation"):
+                hide.drop("knowledge_free_text")
         source, status, code = "recent_snapshot", "partial", explanation_code
     else:
         source, status = None, "unavailable"
         code = explanation_code if explanation_code != "read" else "no_citation_recorded"
+    shown, display = _shown(citations, SHOW_CITATIONS, lambda c: c.get("looked_up_at"))
     return {"status": status, "reason_code": code, "authority": "knowledge_advisory",
-            "source": source, "citations": citations, "lite_now": current}
+            "source": source, "citations": shown, "citations_display": display,
+            "lite_now": current}
 
 
 #: Node-level audit events an operator or administrator causes, and the
@@ -886,43 +1169,63 @@ OPERATOR_EVENT_FIELDS = {
     "bootstrap.ready": ("unit_key",),
     "bootstrap.stopped": (),
 }
+_AUDIT_WORD = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 
-def _operator(events, status, code, window_from, now, hide) -> dict:
+def _operator(audit: Chain, window_from, now, hide) -> dict:
+    from .edge_intake import ACTIONS
+
+    def value(v):
+        if type(v) is int and 0 <= v < 2**63:
+            return v
+        if type(v) is str and _AUDIT_WORD.fullmatch(v):
+            return v
+        hide.drop("audit_value")
+        return "withheld"
+
+    def at(v):
+        return v if type(v) is str and _epoch(v) is not None else None
+
     incident_audit, node = [], []
-    for event in events:
+    for event in audit.kept:
         kind = event["event_type"]
         if kind.startswith("edge.incident."):
-            incident_audit.append({"event_type": kind, "occurred_at": event.get("occurred_at"),
-                                   "most_severe": event.get("most_severe"),
-                                   "edge_would": event.get("edge_would")})
+            incident_audit.append({
+                "event_type": kind if kind in ("edge.incident.opened", "edge.incident.escalated",
+                                               "edge.incident.closed") else "other",
+                "occurred_at": at(event.get("occurred_at")),
+                "most_severe": event.get("most_severe") if type(event.get("most_severe")) is int
+                and 0 <= event["most_severe"] <= 10 else None,
+                "edge_would": event.get("edge_would") if event.get("edge_would") in ACTIONS
+                else None})
             continue
         if "actor" in event:
             hide.drop("operator_identity")
-        node.append({"event_type": kind, "occurred_at": event.get("occurred_at"),
-                     **{k: event.get(k) for k in OPERATOR_EVENT_FIELDS[kind]},
+        node.append({"event_type": kind, "occurred_at": at(event.get("occurred_at")),
+                     **{k: value(event.get(k)) for k in OPERATOR_EVENT_FIELDS[kind]},
                      "actor": "withheld" if "actor" in event else None})
-    section = {
-        "status": "available" if status == "read" else "unavailable",
-        "reason_code": None if status == "read" else code,
+    node_shown, node_display = _shown(node, SHOW_AUDIT_EVENTS, lambda a: a["occurred_at"])
+    inc_shown, inc_display = _shown(incident_audit, SHOW_AUDIT_EVENTS,
+                                    lambda a: a["occurred_at"])
+    return {
+        "status": "available" if audit.status == "read" else "unavailable",
+        "reason_code": None if audit.status == "read" else audit.reason_code,
         "source": "audit_chain",
-        "chain": "verified_continuity_of_segments_read" if status == "read" else status,
+        "chain": audit.verified(),
         "incident_scoped": _unavailable("no_operator_action_record_type_for_incidents"),
         "window": {"from": _iso(window_from), "to": _iso(now)},
-        "node_actions": node[-MAX_AUDIT_EVENTS:],
-        "node_actions_omitted": max(0, len(node) - MAX_AUDIT_EVENTS),
-        "incident_audit": incident_audit[-MAX_AUDIT_EVENTS:],
+        "node_actions": node_shown, "node_actions_display": node_display,
+        "incident_audit": inc_shown, "incident_audit_display": inc_display,
         "means": "Nexus records no acknowledgement or approval of an incident; listed are "
                  "node-level actions in the window, not actions taken on this incident",
     }
-    return section
 
 
-def _impact(noc, now, execution) -> dict:
+def _impact(noc_snap, execution) -> dict:
+    noc, fresh = noc_snap
     observed = _unavailable("noc_snapshot_unavailable")
     if noc is not None and noc["collection"] == "failed":
-        observed = _unavailable(noc["reason_code"] or "collection_failed",
-                                observed_at=_iso(noc["written_at"]))
+        observed = _unavailable(noc["reason_code"] or "collection_failed", snapshot=fresh)
     elif noc is not None:
         listed = noc["interfaces"]
         listed = listed["value"] if listed["state"] == "observed" else None
@@ -939,9 +1242,9 @@ def _impact(noc, now, execution) -> dict:
                 routes = family["value"]["table_main"]["default_routes"]
         except (KeyError, TypeError):
             routes = None
-        observed = {"status": "observed", "reason_code": noc["reason_code"],
-                    "observation": "passive", "observed_at": _iso(noc["written_at"]),
-                    "snapshot_age_s": max(0, int(now - noc["written_at"])),
+        observed = {"status": "observed" if fresh["freshness"] == "fresh" else "stale_last_recorded",
+                    "reason_code": fresh["freshness_reason"], "snapshot": fresh,
+                    "observation": "passive",
                     "interfaces": None if listed is None else len(interfaces),
                     "interfaces_omitted": noc["interfaces_omitted"],
                     "carrier_up": count("carrier", True),
@@ -957,17 +1260,19 @@ def _impact(noc, now, execution) -> dict:
                      "operator states the impact to the expert directly."}
 
 
-def _loop(intake, explainer, now) -> dict:
-    def snap(value, fields):
+def _loop(snaps) -> dict:
+    def snap(name, fields):
+        value, fresh = snaps[name]
         if value is None:
             return _unavailable("snapshot_unavailable")
-        return {"status": "read", "written_at": _iso(value["written_at"]),
-                "age_s": max(0, int(now - value["written_at"])),
+        return {"status": "read" if fresh["freshness"] == "fresh" else "stale_last_recorded",
+                "reason_code": fresh["freshness_reason"], "snapshot": fresh,
                 **{k: value[k] for k in fields},
                 "refused": {k: v for k, v in sorted(value["refused"].items())}}
-    return {"intake": snap(intake, ("storage_failed",)),
-            "explainer": snap(explainer, ("chain_broken", "storage_failed", "mio_available",
-                                          "knowledge_available"))}
+    return {"intake": snap("intake_status_snapshot", ("storage_failed",)),
+            "explainer": snap("explainer_status_snapshot",
+                              ("chain_broken", "storage_failed", "mio_available",
+                               "knowledge_available"))}
 
 
 _UNCONFIRMED_JA = {
@@ -977,15 +1282,22 @@ _UNCONFIRMED_JA = {
     "source_address_withheld": "送信元アドレス・ルール番号・宛先ポートは伏せている",
     "ai_advice_unverified": "AI の見解は推測であり検証されていない",
     "no_ai_answer": "AI の回答はない（決定論的経路または利用不可）",
-    "clock_untrusted": "時計が信頼できない兆候がある。時刻は前後し得る",
-    "clock_unverified": "時計の同期を示す証拠がない",
-    "incident_ledger_unavailable": "インシデント台帳を読めていない（root で実行すると読める）",
+    "occurrence_time_unverified": "発生当時に時計が同期していた証拠はない",
+    "occurrence_time_untrusted": "記録された発生時刻に矛盾・異常がある",
+    "clock_untrusted": "生成時の時計が信頼できない兆候がある。時刻は前後し得る",
+    "clock_unverified": "生成時の時計の同期を示す証拠がない",
+    "incident_ledger_unavailable": "インシデント台帳を検証付きで読めていない",
     "explanation_ledger_unavailable": "説明台帳を読めていない（root で実行すると読める）",
     "audit_unavailable": "監査記録を読めていない（root で実行すると読める）",
+    "audit_unanchored": "監査記録は読んだ範囲の連続性だけを確かめた（先頭からは検証していない）",
     "ledger_gap": "インシデント台帳に欠落・切詰め・回復の記録がある",
     "evidence_not_stored": "一部の証拠は保存されていない（容量上限）",
     "knowledge_superseded": "引用した Knowledge の世代は現在の世代と異なる",
+    "knowledge_current_unknown": "Knowledge の現在の世代は最新の記録で確認できない",
     "knowledge_unavailable": "Knowledge の引用がない、または読めていない",
+    "stale_snapshot": "期限切れの状態記録がある（最終記録であり、現在の状態は未確認）",
+    "free_text_withheld": "許可した固定文・単純な語句でない自由文は伏せた",
+    "display_truncated": "表示件数を超えた記録は省略した（集計と最新状態は全件から計算）",
     "incident_open": "インシデントはまだ閉じていない（生成後も続く可能性がある）",
 }
 
@@ -994,11 +1306,12 @@ def _unconfirmed(p) -> list:
     items = ["edge_judgement_unreviewed", "evidence_content_not_included",
              "business_impact_not_assessed", "source_address_withheld"]
     explanations = p["ai_assessment"].get("explanations", [])
-    if any(e["labelled_ai_output"] for e in explanations):
-        items.append("ai_advice_unverified")
-    else:
-        items.append("no_ai_answer")
-    clock = p["time"]["clock"]["status"]
+    items.append("ai_advice_unverified" if any(e["labelled_ai_output"] for e in explanations)
+                 else "no_ai_answer")
+    occurrence = p["time"]["occurrence"]["status"]
+    items.append("occurrence_time_untrusted" if occurrence == "untrusted"
+                 else "occurrence_time_unverified")
+    clock = p["time"]["generation_clock"]["status"]
     if clock == "untrusted":
         items.append("clock_untrusted")
     elif clock == "unverified":
@@ -1010,14 +1323,31 @@ def _unconfirmed(p) -> list:
         items.append("explanation_ledger_unavailable")
     if sources["audit_chain"]["status"] != "read":
         items.append("audit_unavailable")
+    elif not sources["audit_chain"]["verified"]["anchored"]:
+        items.append("audit_unanchored")
     if p["observed_facts"].get("ledger", {}).get("gaps"):
         items.append("ledger_gap")
     if p["evidence_refs"].get("transitions_with_evidence_not_stored"):
         items.append("evidence_not_stored")
-    if any(c.get("superseded") for c in p["knowledge"]["citations"]):
+    citations = p["knowledge"]["citations"]
+    if any(c.get("superseded") for c in citations):
         items.append("knowledge_superseded")
+    if any(c.get("superseded") is None and "superseded_basis" in c for c in citations):
+        items.append("knowledge_current_unknown")
     if p["knowledge"]["status"] == "unavailable":
         items.append("knowledge_unavailable")
+    if any(s.get("freshness") not in (None, "fresh") for s in p["sources"]):
+        items.append("stale_snapshot")
+    suppressed = p.get("confidentiality", {}).get("suppressed") or {}
+    if any(suppressed.get(k) for k in ("ai_free_text", "knowledge_free_text", "audit_value")):
+        items.append("free_text_withheld")
+    displays = [p["observed_facts"].get("transitions_display"),
+                p["ai_assessment"].get("explanations_display"),
+                p["evidence_refs"].get("refs_display"),
+                p["knowledge"].get("citations_display"),
+                p["operator_actions"].get("node_actions_display")]
+    if any(d and d["omitted"] for d in displays):
+        items.append("display_truncated")
     if p["incident"]["state"] != "closed":
         items.append("incident_open")
     return [{"code": code, "text_ja": _UNCONFIRMED_JA[code]} for code in items]
@@ -1036,15 +1366,34 @@ def _md(value) -> str:
     return _MD_SPECIAL.sub(r"\\\1", text)
 
 
+_WORDS_JA = {"available": "あり", "partial": "一部のみ", "unavailable": "なし",
+             "read": "読取済", "observed": "観測済", "not_executed": "実行なし",
+             "stale_last_recorded": "最終記録のみ（現在は未確認）"}
+
+
 def _state_ja(section) -> str:
     status = section.get("status")
     code = section.get("reason_code")
-    words = {"available": "あり", "partial": "一部のみ", "unavailable": "なし",
-             "read": "読取済", "observed": "観測済", "not_executed": "実行なし"}
-    word = words.get(status, str(status))
+    word = _WORDS_JA.get(status, str(status))
     if status in ("read", "available", "observed"):
         return word
     return word + (f"（理由: `{code}`）" if code else "")
+
+
+def _age_ja(section) -> str:
+    snap = section.get("snapshot")
+    if not snap:
+        return ""
+    age = "不明" if snap["age_s"] is None else f"{snap['age_s']} 秒前"
+    return f"（記録 {_md(snap['written_at'])}、{age}、期限 {snap['stale_after_s']} 秒）"
+
+
+def _omitted_ja(display) -> str:
+    if not display or not display["omitted"]:
+        return ""
+    r = display["omitted_range"]
+    return (f"（全 {display['total']} 件のうち古い {display['omitted']} 件を省略: "
+            f"{_md(r['from'])} 〜 {_md(r['to'])}）")
 
 
 def render_markdown(p: dict) -> str:
@@ -1063,28 +1412,34 @@ def render_markdown(p: dict) -> str:
     add("- 判断と執行の権限は Edge にある。Nexus は観測・説明・助言のみ。AI の見解は事実ではない。")
     add("")
     add("各欄は「観測事実」「Edge の判断」「実行結果」「AI の推測」を分けて書いている。"
-        "材料がない欄は正常値で埋めず「なし」と理由を書いている。")
+        "材料がない欄は正常値で埋めず「なし」と理由を書いている。"
+        "期限を過ぎた状態記録は「最終記録のみ（現在は未確認）」と書いている。")
     add("")
 
     t = p["time"]
-    c = t["clock"]
+    o_clock = t["occurrence"]
+    c = t["generation_clock"]
     add("## 1. 発生時刻と時刻の信頼性")
     add("")
     add(f"- 発生時刻（初観測）: {_md(t['occurred_at'])}（出典: `{t['occurred_at_source']}`）")
     add(f"- 最終観測: {_md(t['last_seen'])}")
-    add(f"- 時計の状態: `{c['status']}`" + (f"（`{c['reason_code']}`）" if c["reason_code"] else ""))
+    add(f"- 発生時刻の信頼性: `{o_clock['status']}`（`{o_clock['reason_code']}`）。"
+        "発生当時に時計が同期していたことを示す記録はない。")
+    if o_clock["signals"]:
+        add("- 発生時刻の異常: " + "、".join(f"`{s}`" for s in o_clock["signals"]))
+    add(f"- 生成時の時計: `{c['status']}`" + (f"（`{c['reason_code']}`）" if c["reason_code"] else ""))
     add(f"- 起動後の時刻同期の記録: {_md(c['synchronized_this_boot']['status'])}"
-        "（同期が一度あったことを示すだけで、今も正しいこと・時刻源の真正性は示さない）")
+        "（同期が一度あったことを示すだけで、今も正しいこと・時刻源の真正性・発生より前に同期したことは示さない）")
     floor = c["knowledge_floor"]
     add(f"- Knowledge の時計の床: {_md(floor['floor_utc'])}（{_state_ja(floor)}）")
     if c["signals"]:
-        add("- 時計を疑う兆候: " + "、".join(f"`{s}`" for s in c["signals"]))
+        add("- 生成時の時計を疑う兆候: " + "、".join(f"`{s}`" for s in c["signals"]))
     add("")
 
     o = p["observed_facts"]
     add("## 2. 観測事実（Edge の観測）")
     add("")
-    add(f"状態: {_state_ja(o)}")
+    add(f"状態: {_state_ja(o)}{_age_ja(o)}")
     s = o.get("summary")
     if s:
         add("")
@@ -1092,18 +1447,22 @@ def render_markdown(p: dict) -> str:
         add(f"- 件数: {s['count']}、最も高い重大度: {s['most_severe']}（1 が最も重い）")
         add(f"- ATT&CK 技術: {_md(', '.join(s['technique_ids']) or 'なし')}")
         if "category" in s:
-            add(f"- 分類: {_md(s['category'])}、プロトコル: {_md(s['protocol'])}")
+            add(f"- 分類: {_md(s['category'])}、プロトコル: {_md(s['protocol'])}、"
+                f"最新の遷移: {_md(s['latest_transition'])}")
     if o.get("transitions"):
+        add("")
+        add("遷移の履歴" + _omitted_ja(o.get("transitions_display")) + ":")
         add("")
         add("| 時刻 | 遷移 | 件数 | 重大度 | 証拠保存 |")
         add("| --- | --- | --- | --- | --- |")
         for r in o["transitions"]:
             add(f"| {_md(r['at'])} | {_md(r['event_type'])} | {r['count']} | {r['most_severe']} | "
                 f"{'あり' if r['evidence_stored'] else '**なし**'} |")
-    if o.get("ledger", {}).get("gaps"):
+    ledger = o.get("ledger", {})
+    if ledger.get("gaps"):
         add("")
-        add("台帳の欠落・切詰め・回復: " + "、".join(
-            f"{_md(g['kind'])}（{_md(g['at'])}）" for g in o["ledger"]["gaps"]))
+        add(f"台帳の欠落・切詰め・回復（{ledger['gaps_total']} 件）: " + "、".join(
+            f"{_md(g['kind'])}（{_md(g['at'])}）" for g in ledger["gaps"]))
     add("")
     add("伏せた欄: 送信元アドレス、ルール番号、宛先ポート、シグネチャ本文。")
     add("")
@@ -1115,6 +1474,8 @@ def render_markdown(p: dict) -> str:
     if d.get("latest"):
         add(f"- 最新: Edge なら **{_md(d['latest']['action'])}** する"
             f"（規則: `{d['latest']['policy_reason']}`）。**実行されていない**。")
+        if d["decisions_display"]["omitted"]:
+            add("- 判断の履歴" + _omitted_ja(d["decisions_display"]))
     add("")
 
     e = p["execution"]
@@ -1133,18 +1494,20 @@ def render_markdown(p: dict) -> str:
     add(f"状態: {_state_ja(ai)}")
     cap = ai["route_capability_now"]
     add(f"- モデルの識別: なし（`{ai['model_identity']['reason_code']}`）")
-    add(f"- 現在の M.I.O. 経路の能力: {_state_ja(cap)}"
-        + (f" 記録された能力 `{cap.get('state')}`" if cap.get("status") == "read" else ""))
+    add(f"- 現在の M.I.O. 経路の能力: {_state_ja(cap)}{_age_ja(cap)}"
+        + (f" 記録された能力 `{cap.get('state')}`" if "state" in cap else ""))
     add("- 外部（リモート）AI: インシデント説明では使っていない")
-    add("- 注意: 説明器はローカル経路の回答をすべて「AI の助言」と区分する。モデルが文章を生成したのか、"
-        "決定論的な照合で答えたのかは記録されていない（`generation_method: not_recorded`）。")
+    add("- 注意: 説明器はローカル経路の回答をすべて「AI の助言」と区分する。"
+        "生成方式は本文の固定文（banner）から判定し、判定できない本文は伏せる。")
     for x in ai.get("explanations", []):
         add("")
         label = ("説明器の区分では AI の助言" if x["labelled_ai_output"]
                  else "AI の出力ではない")
         add(f"### {_md(x['explained_at'] or '時刻不明')} — 経路 `{x['route']}`（{label}: {_md(x['content_label'])}）")
         add("")
+        add(f"生成方式: `{x['generation_method']}`、本文: `{x['text_state']}`")
         if x.get("text"):
+            add("")
             add("> " + _md(x["text"]))
         if x.get("notice"):
             add("")
@@ -1152,6 +1515,9 @@ def render_markdown(p: dict) -> str:
         if x["failure_codes"]:
             add("")
             add("失敗・制限の記録: " + "、".join(f"`{f}`" for f in x["failure_codes"]))
+    if ai.get("explanations_display", {}).get("omitted"):
+        add("")
+        add("説明の記録" + _omitted_ja(ai["explanations_display"]))
     add("")
 
     b = p["business_impact"]
@@ -1159,9 +1525,9 @@ def render_markdown(p: dict) -> str:
     add("")
     add(f"- 評価: なし（`{b['assessment']['reason_code']}`）。担当者が専門家へ直接伝える。")
     n = b["connectivity_observed"]
-    if n.get("status") == "observed":
-        add(f"- 通信の受動観測（{_md(n['observed_at'])}、{n['snapshot_age_s']} 秒前）: "
-            f"インターフェース {n['interfaces']}、リンクあり {n['carrier_up']}、なし {n['carrier_down']}、"
+    if n.get("status") in ("observed", "stale_last_recorded"):
+        add(f"- 通信の受動観測: {_state_ja(n)}{_age_ja(n)} "
+            f"インターフェース {_md(n['interfaces'])}、リンクあり {n['carrier_up']}、なし {n['carrier_down']}、"
             f"IPv4 既定経路 {_md(n['ipv4_default_routes'])}。到達性は測っていない。")
     else:
         add(f"- 通信の観測: {_state_ja(n)}")
@@ -1171,7 +1537,7 @@ def render_markdown(p: dict) -> str:
     ev = p["evidence_refs"]
     add("## 7. 証拠参照（digest のみ）")
     add("")
-    add(f"状態: {_state_ja(ev)}。生データは含めていない。")
+    add(f"状態: {_state_ja(ev)}。生データは含めていない。" + _omitted_ja(ev.get("refs_display")))
     for r in ev.get("refs", []):
         add(f"- {_md(r['role'])}: `{r['digest']}`（{_md(r['cited_at'])}）")
     add("")
@@ -1179,25 +1545,29 @@ def render_markdown(p: dict) -> str:
     k = p["knowledge"]
     add("## 8. Knowledge の出典・世代・鮮度")
     add("")
-    add(f"状態: {_state_ja(k)}")
+    add(f"状態: {_state_ja(k)}" + _omitted_ja(k.get("citations_display")))
     now_k = k["lite_now"]
-    add(f"- 現在の Knowledge Lite: {_state_ja(now_k)}"
+    add(f"- 現在の Knowledge Lite: {_state_ja(now_k)}{_age_ja(now_k)}"
         + (f" 世代 {now_k.get('generation')}、鮮度 `{now_k.get('freshness')}`"
-           if now_k.get("status") == "read" else ""))
+           if "generation" in now_k else ""))
     for ref in k["citations"]:
         digest = ref.get("bundle_digest") or ref.get("bundle_digest_short")
-        add(f"- {_md(ref['technique_id'])} {_md(ref['name'])}: 世代 {_md(ref.get('generation'))}、"
+        name = ref["name"] if ref["name"] else f"（名前は伏せた: {ref['name_state']}）"
+        superseded = {True: "、**現在の世代と異なる**", False: "、現在の世代と同じ",
+                      None: "、現在の世代は未確認"}[ref.get("superseded")]
+        add(f"- {_md(ref['technique_id'])} {_md(name)}: 世代 {_md(ref.get('generation'))}、"
             f"参照時の鮮度 `{ref.get('freshness_at_lookup')}`、参照時刻 {_md(ref.get('looked_up_at'))}、"
-            f"bundle `{digest}`"
-            + ("、**現在の世代と異なる**" if ref.get("superseded") else ""))
+            f"bundle `{digest}`" + superseded)
     add("")
 
     op = p["operator_actions"]
     add("## 9. 担当者の操作（監査記録）")
     add("")
-    add(f"状態: {_state_ja(op)}")
+    add(f"状態: {_state_ja(op)}（chain: `{op['chain']['status']}`、"
+        f"{'先頭から検証' if op['chain']['anchored'] else '読んだ範囲のみ検証'}）")
     add("- このインシデントに対する担当者の承認・確認の記録: なし（Nexus にその記録種別がない）")
-    add(f"- 対象期間 {_md(op['window']['from'])} 〜 {_md(op['window']['to'])} のノード操作（操作者名は伏字）:")
+    add(f"- 対象期間 {_md(op['window']['from'])} 〜 {_md(op['window']['to'])} のノード操作（操作者名は伏字）"
+        + _omitted_ja(op.get("node_actions_display")) + ":")
     for a in op["node_actions"]:
         add(f"  - {_md(a['occurred_at'])} `{a['event_type']}`")
     if not op["node_actions"]:
@@ -1214,7 +1584,9 @@ def render_markdown(p: dict) -> str:
     add("## 11. 機密の扱い")
     add("")
     add("既定で抑制している。秘密情報・生 payload・内部識別情報（IP・MAC・インターフェース名・"
-        "経路・操作者名）は含めない。自由文中の該当形式は `[伏字:種別]` に置換した。")
+        "ホスト名・パス・経路・操作者名）は含めない。製品の固定文と、単純な英単語だけの語句以外の"
+        "自由文は伏せた。書く前に全文字列を検査し、識別子・パス・符号化値・秘密らしい形が"
+        "残っていれば書かない。")
     add("")
     add(f"抑制した件数（合計 {conf['suppressed_total']}）:")
     for name, value in conf["suppressed"].items():
@@ -1225,10 +1597,11 @@ def render_markdown(p: dict) -> str:
 
     add("## 12. 読んだ情報源")
     add("")
-    add("| 情報源 | 状態 | 理由 | 読める権限 |")
-    add("| --- | --- | --- | --- |")
+    add("| 情報源 | 状態 | 理由 | 鮮度 | 読める権限 |")
+    add("| --- | --- | --- | --- | --- |")
     for src in p["sources"]:
-        add(f"| `{src['source']}` | {src['status']} | {src['reason_code'] or ''} | {src['readable_by']} |")
+        add(f"| `{src['source']}` | {src['status']} | {src['reason_code'] or ''} | "
+            f"{src.get('freshness') or ''} | {src['readable_by']} |")
     add("")
     return "\n".join(lines)
 
@@ -1240,13 +1613,14 @@ def _canonical(value) -> bytes:
 
 def encode_files(package: dict) -> dict:
     """`{name: bytes}` for the three files; the manifest last. Refuses a leak."""
-    body = _canonical(package)
-    markdown = render_markdown(package).encode("utf-8")
-    for raw in (body, markdown):
-        leaks = scan_for_leaks(raw)
-        if leaks:
-            raise HandoffRefused("suppression_incomplete:" + ",".join(leaks))
-    files = {JSON_NAME: body, MARKDOWN_NAME: markdown}
+    leaks = scan_package(package)
+    markdown = render_markdown(package)
+    for category in scan_markdown(markdown):
+        if category not in leaks:
+            leaks.append(category)
+    if leaks:
+        raise HandoffRefused("suppression_incomplete:" + ",".join(sorted(leaks)))
+    files = {JSON_NAME: _canonical(package), MARKDOWN_NAME: markdown.encode("utf-8")}
     manifest = {
         "schema": MANIFEST_SCHEMA, "package_schema": SCHEMA,
         "incident_id": package["incident"]["incident_id"],
@@ -1257,6 +1631,9 @@ def encode_files(package: dict) -> dict:
                    else "text/markdown; charset=utf-8"}
                   for name, raw in files.items()],
     }
+    leaks = scan_package(manifest)
+    if leaks:
+        raise HandoffRefused("suppression_incomplete:" + ",".join(sorted(leaks)))
     files[MANIFEST_NAME] = _canonical(manifest)
     return files
 
@@ -1302,21 +1679,39 @@ def package_name(package: dict) -> str:
     return f"azazel-handoff-{package['incident']['incident_id']}-{stamp}"
 
 
-def write_package(parent: Path, name: str, files: dict, *,
-                  statvfs=os.fstatvfs, write=os.write) -> Path:
-    """Write `files` as directory `parent/name`, atomically, or nothing.
+@dataclass(frozen=True)
+class WriteResult:
+    """Where the package is, and whether its directory entries were synced.
 
-    The files go into a private temporary directory beside it, each created
-    exclusively and synced; the directory is renamed into place only when
-    all are written. Any failure -- including no space -- removes the
-    temporary directory and what it held.
+    `durable` is False when every file was written and synced but syncing
+    the directory or its parent failed: the package exists and its manifest
+    verifies, but a power cut could still lose it.
+    """
+
+    path: Path
+    durable: bool
+
+
+def write_package(parent: Path, name: str, files: dict, *, statvfs=os.fstatvfs,
+                  write=os.write, fsync=os.fsync, mkdir=os.mkdir) -> WriteResult:
+    """Write `files` into a new directory `parent/name`, or nothing.
+
+    No step can replace anything that exists: the directory is made with
+    `mkdir` (which fails on any existing entry: a file, a directory, a link)
+    and each file with `O_CREAT | O_EXCL` inside it. The manifest is written
+    last, so a directory without one is not a package. Any failure before
+    the manifest is synced removes what this call created; a failure to
+    clean up is reported with the directory left behind.
     """
     if not re.fullmatch(r"azazel-handoff-inc-[0-9a-f]{16}-[0-9TZ]{16}", name):
         raise HandoffRefused("package_name_refused")
+    if list(files)[-1] != MANIFEST_NAME:
+        raise HandoffRefused("manifest_not_last")
     parent_fd = _open_output(parent)
-    temporary = None
-    temporary_fd = None
+    directory_fd = None
+    created_directory = None
     created = []
+    published = False
     try:
         try:
             os.lstat(name, dir_fd=parent_fd)
@@ -1328,16 +1723,20 @@ def write_package(parent: Path, name: str, files: dict, *,
         space = statvfs(parent_fd)
         if space.f_bavail * space.f_frsize < need:
             raise HandoffRefused("insufficient_space")
-        temporary = f".{name}.partial-{secrets.token_hex(8)}"
-        os.mkdir(temporary, 0o700, dir_fd=parent_fd)
-        temporary_fd = os.open(temporary, _DIR_FLAGS, dir_fd=parent_fd)
-        info = os.fstat(temporary_fd)
+        try:
+            mkdir(name, 0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            raise HandoffRefused("output_exists") from None
+        directory_fd = os.open(name, _DIR_FLAGS, dir_fd=parent_fd)
+        info = os.fstat(directory_fd)
         if info.st_uid != os.geteuid() or info.st_mode & 0o077:
             raise HandoffRefused("output_path_refused")
+        created_directory = (info.st_dev, info.st_ino)
         for file_name, raw in files.items():
             fd = os.open(file_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-                         | os.O_CLOEXEC, 0o600, dir_fd=temporary_fd)
-            created.append(file_name)
+                         | os.O_CLOEXEC, 0o600, dir_fd=directory_fd)
+            mine = os.fstat(fd)
+            created.append((file_name, mine.st_dev, mine.st_ino))
             try:
                 view = memoryview(raw)
                 while view:
@@ -1345,34 +1744,63 @@ def write_package(parent: Path, name: str, files: dict, *,
                     if n <= 0:
                         raise OSError(errno.EIO, "short write")
                     view = view[n:]
-                os.fsync(fd)
+                fsync(fd)
             finally:
                 os.close(fd)
-        os.fsync(temporary_fd)
-        try:
-            os.lstat(name, dir_fd=parent_fd)
-            raise HandoffRefused("output_exists")
-        except FileNotFoundError:
-            pass
-        os.rename(temporary, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-        temporary = None
-        os.fsync(parent_fd)
-        return Path(parent) / name
+        published = True
     except OSError as exc:
+        _remove(parent_fd, name, directory_fd, created_directory, created)
         raise HandoffRefused("insufficient_space" if exc.errno in (errno.ENOSPC, errno.EDQUOT)
-                             else "write_failed") from None
+                             else "write_failed",
+                             remnant=_left(parent_fd, name, created_directory, parent)) from None
+    except HandoffRefused as refused:
+        if created_directory is not None:
+            _remove(parent_fd, name, directory_fd, created_directory, created)
+            refused.remnant = _left(parent_fd, name, created_directory, parent)
+        raise
     finally:
-        if temporary is not None:
-            if temporary_fd is not None:
-                for file_name in created:
-                    try:
-                        os.unlink(file_name, dir_fd=temporary_fd)
-                    except OSError:
-                        pass
-            try:
-                os.rmdir(temporary, dir_fd=parent_fd)
-            except OSError:
-                pass
-        if temporary_fd is not None:
-            os.close(temporary_fd)
-        os.close(parent_fd)
+        if not published:
+            if directory_fd is not None:
+                os.close(directory_fd)
+            os.close(parent_fd)
+    # Published: every file is complete and synced. What remains is making
+    # the directory entries durable; failing that is reported, not undone.
+    durable = True
+    for fd in (directory_fd, parent_fd):
+        try:
+            fsync(fd)
+        except OSError:
+            durable = False
+    os.close(directory_fd)
+    os.close(parent_fd)
+    return WriteResult(Path(parent) / name, durable)
+
+
+def _remove(parent_fd, name, directory_fd, created_directory, created) -> None:
+    """Remove only what this call created, recognised by device and inode."""
+    if directory_fd is None or created_directory is None:
+        return
+    for file_name, dev, ino in created:
+        try:
+            info = os.lstat(file_name, dir_fd=directory_fd)
+            if (info.st_dev, info.st_ino) == (dev, ino):
+                os.unlink(file_name, dir_fd=directory_fd)
+        except OSError:
+            pass
+    try:
+        info = os.lstat(name, dir_fd=parent_fd)
+        if (info.st_dev, info.st_ino) == created_directory:
+            os.rmdir(name, dir_fd=parent_fd)
+    except OSError:
+        pass
+
+
+def _left(parent_fd, name, created_directory, parent) -> Optional[Path]:
+    """The directory this call created, if it is still there."""
+    if created_directory is None:
+        return None
+    try:
+        info = os.lstat(name, dir_fd=parent_fd)
+    except OSError:
+        return None
+    return Path(parent) / name if (info.st_dev, info.st_ino) == created_directory else None

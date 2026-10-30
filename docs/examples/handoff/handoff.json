@@ -7,13 +7,14 @@
         "content_label": "AI advice (local model)",
         "explained_at": "2026-10-29T03:14:30Z",
         "failure_codes": [],
-        "generation_method": "not_recorded",
+        "generation_method": "deterministic_keyword_matching",
         "labelled_ai_output": true,
         "local_route_answered": true,
         "notice": null,
         "outcome": "answered",
         "route": "local",
         "text": "決定論的な照合による候補の提示です。結論ではありません。重要な判断は担当者が根拠を確認してから行ってください。",
+        "text_state": "shown",
         "transition": "opened"
       },
       {
@@ -21,17 +22,24 @@
         "content_label": "AI advice (local model)",
         "explained_at": "2026-10-29T03:16:00Z",
         "failure_codes": [],
-        "generation_method": "not_recorded",
+        "generation_method": "deterministic_keyword_matching",
         "labelled_ai_output": true,
         "local_route_answered": true,
         "notice": null,
         "outcome": "answered",
         "route": "local",
         "text": "決定論的な照合による候補の提示です。結論ではありません。重要な判断は担当者が根拠を確認してから行ってください。",
+        "text_state": "shown",
         "transition": "updated"
       }
     ],
-    "label_basis": "the explainer's content_kind: every answered local-route reply is labelled AI advice, whether a model generated text or the local route matched deterministically; which one is not recorded",
+    "explanations_display": {
+      "omitted": 0,
+      "omitted_range": null,
+      "shown": 2,
+      "total": 2
+    },
+    "label_basis": "the explainer's content_kind: every answered local-route reply is labelled AI advice; the fixed banner it carries says whether a model, embedding matching or keyword matching produced it",
     "model_identity": {
       "reason_code": "model_identity_not_recorded_in_explanation_ledger",
       "status": "unavailable"
@@ -66,6 +74,7 @@
   },
   "confidentiality": {
     "external_release": "operator_decision_outside_this_tool",
+    "free_text_rule": "fixed product texts and plain-word phrases only; anything else withheld",
     "not_read": [
       "edge_evidence_payloads",
       "decoy_evidence",
@@ -77,19 +86,14 @@
     "policy": "allowlist_default_suppressed",
     "raw_payload_included": false,
     "suppressed": {
-      "citation_text": 0,
-      "email": 0,
-      "host_port": 0,
-      "interface_name": 0,
-      "mac_address": 0,
+      "ai_free_text": 0,
+      "audit_value": 0,
+      "knowledge_free_text": 0,
       "network_address": 2,
       "operator_identity": 1,
-      "path": 0,
       "producer_free_text": 2,
       "rule_identifier": 2,
-      "secret_like": 0,
-      "service_port": 2,
-      "url": 0
+      "service_port": 2
     },
     "suppressed_total": 9,
     "upload": "none"
@@ -113,6 +117,12 @@
         "policy_reason": "severity_high_redirect_to_decoy"
       }
     ],
+    "decisions_display": {
+      "omitted": 0,
+      "omitted_range": null,
+      "shown": 2,
+      "total": 2
+    },
     "latest": {
       "action": "redirect",
       "at": "2026-10-29T03:15:00Z",
@@ -147,6 +157,12 @@
         "source": "edge-core"
       }
     ],
+    "refs_display": {
+      "omitted": 0,
+      "omitted_range": null,
+      "shown": 2,
+      "total": 2
+    },
     "retention_checked": false,
     "status": "partial",
     "transitions_with_evidence_not_stored": 1
@@ -215,20 +231,35 @@
         "generation_now": 8,
         "looked_up_at": "2026-10-29T03:14:30Z",
         "name": "Network Service Discovery",
+        "name_state": "shown",
         "source_kind": "knowledge_lite",
         "summary": "Adversaries may scan for services running on remote hosts.",
+        "summary_state": "shown",
         "superseded": true,
+        "superseded_basis": "fresh_snapshot",
         "technique_id": "T1046",
         "trust_check": "verified"
       }
     ],
+    "citations_display": {
+      "omitted": 0,
+      "omitted_range": null,
+      "shown": 1,
+      "total": 1
+    },
     "lite_now": {
       "freshness": "current",
       "generation": 8,
-      "reason_code": "available",
-      "snapshot_age_s": 20,
-      "snapshot_written_at": "2026-10-29T05:13:40Z",
+      "reason_code": null,
+      "snapshot": {
+        "age_s": 20,
+        "freshness": "fresh",
+        "freshness_reason": null,
+        "stale_after_s": 150,
+        "written_at": "2026-10-29T05:13:40Z"
+      },
       "state": "available",
+      "state_reason": "available",
       "status": "read"
     },
     "reason_code": null,
@@ -237,45 +268,61 @@
   },
   "loop_health": {
     "explainer": {
-      "age_s": 1,
       "chain_broken": false,
       "knowledge_available": true,
       "mio_available": true,
+      "reason_code": null,
       "refused": {},
+      "snapshot": {
+        "age_s": 1,
+        "freshness": "fresh",
+        "freshness_reason": null,
+        "stale_after_s": 30,
+        "written_at": "2026-10-29T05:13:59Z"
+      },
       "status": "read",
-      "storage_failed": false,
-      "written_at": "2026-10-29T05:13:59Z"
+      "storage_failed": false
     },
     "intake": {
-      "age_s": 3,
+      "reason_code": null,
       "refused": {
         "evidence_segment_full": 1
       },
+      "snapshot": {
+        "age_s": 3,
+        "freshness": "fresh",
+        "freshness_reason": null,
+        "stale_after_s": 30,
+        "written_at": "2026-10-29T05:13:57Z"
+      },
       "status": "read",
-      "storage_failed": false,
-      "written_at": "2026-10-29T05:13:57Z"
+      "storage_failed": false
     }
   },
   "observed_facts": {
     "authority": "edge_observation",
     "ledger": {
-      "chain": "verified_continuity_of_retained_segments",
-      "gaps": []
+      "chain": "read",
+      "gaps": [],
+      "gaps_total": 0
     },
     "reason_code": null,
     "source": "incident_ledger",
     "status": "available",
     "summary": {
       "category": "Attempted Information Leak",
+      "computed_from": "all_transitions_read",
       "count": 14,
       "first_seen": "2026-10-29T03:14:00Z",
       "last_seen": "2026-10-29T03:15:00Z",
+      "latest_transition": "updated",
       "most_severe": 2,
       "protocol": "tcp",
       "severity_scale": "1 = most severe (Suricata priority)",
       "technique_ids": [
         "T1046"
-      ]
+      ],
+      "transitions_with_evidence_not_stored": 1
     },
     "transitions": [
       {
@@ -309,6 +356,12 @@
         ]
       }
     ],
+    "transitions_display": {
+      "omitted": 0,
+      "omitted_range": null,
+      "shown": 2,
+      "total": 2
+    },
     "withheld_fields": [
       "source_address",
       "rule_id",
@@ -317,7 +370,17 @@
     ]
   },
   "operator_actions": {
-    "chain": "verified_continuity_of_segments_read",
+    "chain": {
+      "anchor": "genesis",
+      "anchored": true,
+      "entries": 3,
+      "reason_code": null,
+      "segments": {
+        "first": "2026-10-29.jsonl",
+        "last": "2026-10-29.jsonl"
+      },
+      "status": "read"
+    },
     "incident_audit": [
       {
         "edge_would": "throttle",
@@ -332,6 +395,12 @@
         "occurred_at": "2026-10-29T03:15:00Z"
       }
     ],
+    "incident_audit_display": {
+      "omitted": 0,
+      "omitted_range": null,
+      "shown": 2,
+      "total": 2
+    },
     "incident_scoped": {
       "reason_code": "no_operator_action_record_type_for_incidents",
       "status": "unavailable"
@@ -346,7 +415,12 @@
         "unit": "auditd"
       }
     ],
-    "node_actions_omitted": 0,
+    "node_actions_display": {
+      "omitted": 0,
+      "omitted_range": null,
+      "shown": 1,
+      "total": 1
+    },
     "reason_code": null,
     "source": "audit_chain",
     "status": "available",
@@ -359,24 +433,28 @@
   "schema": "azazel-nexus/handoff-package/1",
   "sources": [
     {
+      "freshness": "stale",
       "readable_by": "operator",
       "reason_code": null,
       "source": "recent_incidents_snapshot",
       "status": "read"
     },
     {
+      "freshness": "fresh",
       "readable_by": "operator",
       "reason_code": null,
       "source": "explainer_status_snapshot",
       "status": "read"
     },
     {
+      "freshness": "fresh",
       "readable_by": "operator",
       "reason_code": null,
       "source": "intake_status_snapshot",
       "status": "read"
     },
     {
+      "freshness": "fresh",
       "readable_by": "operator",
       "reason_code": null,
       "source": "knowledge_status_snapshot",
@@ -398,7 +476,18 @@
       "readable_by": "root",
       "reason_code": null,
       "source": "incident_ledger",
-      "status": "read"
+      "status": "read",
+      "verified": {
+        "anchor": "genesis",
+        "anchored": true,
+        "entries": 2,
+        "reason_code": null,
+        "segments": {
+          "first": "2026-10-29.jsonl",
+          "last": "2026-10-29.jsonl"
+        },
+        "status": "read"
+      }
     },
     {
       "readable_by": "root",
@@ -410,7 +499,18 @@
       "readable_by": "root",
       "reason_code": null,
       "source": "audit_chain",
-      "status": "read"
+      "status": "read",
+      "verified": {
+        "anchor": "genesis",
+        "anchored": true,
+        "entries": 3,
+        "reason_code": null,
+        "segments": {
+          "first": "2026-10-29.jsonl",
+          "last": "2026-10-29.jsonl"
+        },
+        "status": "read"
+      }
     },
     {
       "readable_by": "everyone",
@@ -427,7 +527,7 @@
   ],
   "time": {
     "basis": "node_wall_clock_at_intake",
-    "clock": {
+    "generation_clock": {
       "generated_at": "2026-10-29T05:14:00Z",
       "knowledge_floor": {
         "floor_utc": "2026-10-29T05:00:00Z",
@@ -439,14 +539,19 @@
       "signals": [],
       "status": "synchronized_this_boot",
       "synchronized_this_boot": {
-        "means": "a synchronization happened in this boot; not that it is still synchronized or that the time source was authenticated",
+        "means": "a synchronization happened in this boot; not that it is still synchronized, that the time source was authenticated, or that it happened before the incident",
         "source": "timesyncd_marker",
         "status": "present"
       }
     },
     "last_seen": "2026-10-29T03:15:00Z",
     "occurred_at": "2026-10-29T03:14:00Z",
-    "occurred_at_source": "incident_ledger.first_seen"
+    "occurred_at_source": "incident_ledger.first_seen",
+    "occurrence": {
+      "reason_code": "no_synchronization_evidence_at_occurrence",
+      "signals": [],
+      "status": "unverified"
+    }
   },
   "unconfirmed": [
     {
@@ -470,12 +575,20 @@
       "text_ja": "AI の見解は推測であり検証されていない"
     },
     {
+      "code": "occurrence_time_unverified",
+      "text_ja": "発生当時に時計が同期していた証拠はない"
+    },
+    {
       "code": "evidence_not_stored",
       "text_ja": "一部の証拠は保存されていない（容量上限）"
     },
     {
       "code": "knowledge_superseded",
       "text_ja": "引用した Knowledge の世代は現在の世代と異なる"
+    },
+    {
+      "code": "stale_snapshot",
+      "text_ja": "期限切れの状態記録がある（最終記録であり、現在の状態は未確認）"
     },
     {
       "code": "incident_open",
