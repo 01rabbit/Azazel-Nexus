@@ -31,6 +31,8 @@ _REFUSALS_JA = {
     "output_dir_shared_writable": "出力先がグループ・他者から書込み可能です。専用のディレクトリを指定してください。",
     "output_in_product_state": "出力先が製品の状態ディレクトリの中です。別の場所を指定してください。",
     "output_exists": "同じ名前のパッケージが既にあります。上書きはしません。",
+    "output_dir_not_owned": "出力先は実行する利用者の所有にしてください（sudo なら sudo mkdir -m 700 で作る）。",
+    "output_replaced": "作成直後のディレクトリが別のものに入れ替わっていました。",
     "insufficient_space": "空き容量が足りません。",
     "write_failed": "書込みに失敗しました。",
     "suppression_incomplete": "伏せきれない形が残ったため書きませんでした。",
@@ -68,6 +70,10 @@ def run(args, *, now: str, out, principal=None, root=None) -> int:
         base = code.split(":", 1)[0]
         if refused.remnant is None:
             print(f"handoff: refused ({code}); nothing was written. "
+                  + _REFUSALS_JA.get(base, ""), file=out)
+        elif refused.remnant_kind == "unverified":
+            print(f"handoff: refused ({code}); the entry at {refused.remnant} is not the "
+                  "directory this command made, and nothing was written into it. "
                   + _REFUSALS_JA.get(base, ""), file=out)
         else:
             print(f"handoff: refused ({code}); an incomplete directory without a verified "

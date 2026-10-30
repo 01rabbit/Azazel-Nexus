@@ -394,21 +394,55 @@ def test_unrecognised_free_text_is_withheld_and_counted(root, category):
     assert suppressed["ai_free_text"] == 1
     if refs:
         citation = p["knowledge"]["citations"][0]
-        assert citation["summary"] is None and citation["summary_state"] == "withheld"
-        assert citation["citation"] is None and citation["citation_state"] == "withheld"
-        assert suppressed["knowledge_free_text"] == 2
+        for field in ("name", "summary", "citation"):
+            assert citation[field] is None and citation[field + "_state"] == "withheld"
+        assert suppressed["knowledge_free_text"] == 3
     assert "free_text_withheld" in [u["code"] for u in p["unconfirmed"]]
 
 
-def test_fixed_banners_and_plain_phrases_are_shown_with_their_method(root):
+def test_fixed_banners_are_shown_and_knowledge_text_is_withheld(root):
     p = package(root)
     item = p["ai_assessment"]["explanations"][0]
     assert item["text_state"] == "shown"
     assert item["generation_method"] == "deterministic_keyword_matching"
-    citation = p["knowledge"]["citations"][0]
-    assert citation["name"] == "Network Service Discovery"
-    assert citation["summary_state"] == "shown" and citation["citation_state"] == "shown"
     assert p["confidentiality"]["suppressed"]["ai_free_text"] == 0
+    citation = p["knowledge"]["citations"][0]
+    # What an expert can look up stays; Knowledge's own words do not.
+    assert (citation["technique_id"], citation["generation"]) == ("T1046", 7)
+    assert citation["bundle_digest"] == example.BUNDLE
+    for field in ("name", "summary", "citation"):
+        assert citation[field] is None and citation[field + "_state"] == "withheld"
+    assert "Network Service Discovery" not in text_of(encode_files(p))
+
+
+#: Shapes that a character-class rule would let through as "words".
+WORDLIKE = ("YWJjYWJjYWJj", "QUJDREVG", "dGVzdA", "srv-db-core", "corp-vpn-gw", "Bearer",
+            "Network Service Discovery")
+
+
+@pytest.mark.parametrize("text", WORDLIKE)
+@pytest.mark.parametrize("field", ["name", "summary", "citation"])
+def test_letters_only_encodings_and_hyphenated_names_are_withheld(root, text, field):
+    ref = {"technique_id": "T1046", "name": "Network Service Discovery", "summary": "",
+           "claim_id": "T1046", "bundle_digest": example.BUNDLE, "freshness": "current",
+           "source_kind": "knowledge_lite", "generation": 7, "trust_check": "verified",
+           "as_of": "2026-10-29T03:14:30Z", "citation": ""}
+    ref[field] = text
+    write_record(root, {"route": "unavailable", "outcome": "unavailable",
+                        "reason": "mio_unavailable", "text": None}, refs=[ref],
+                 state="available", codes=("mio_unavailable",))
+    files = encode_files(package(root))
+    assert text not in text_of(files)
+    citation = json.loads(files["handoff.json"])["knowledge"]["citations"][0]
+    assert citation[field] is None and citation[field + "_state"] == "withheld"
+
+
+@pytest.mark.parametrize("text", ["YWJjYWJjYWJj", "srv-db-core", "Inspect the host"])
+def test_explanation_text_that_is_not_a_product_text_is_withheld(root, text):
+    write_record(root, {"route": "local", "outcome": "answered", "reason": "local",
+                        "content_kind": "ai_advice", "text": text})
+    files = encode_files(package(root))
+    assert text not in text_of(files)
 
 
 DETECTED = {
@@ -444,7 +478,7 @@ def test_the_final_scan_refuses_each_form_when_suppression_is_disabled(root, mon
 
 
 @pytest.mark.parametrize("field", ["name", "summary", "citation"])
-def test_the_final_scan_covers_knowledge_text_when_the_allowlist_is_disabled(root, monkeypatch,
+def test_the_final_scan_covers_knowledge_text_when_withholding_is_disabled(root, monkeypatch,
                                                                              field):
     ref = {"technique_id": "T1046", "name": "Network Service Discovery", "summary": "",
            "claim_id": "T1046", "bundle_digest": example.BUNDLE, "freshness": "current",
@@ -454,7 +488,8 @@ def test_the_final_scan_covers_knowledge_text_when_the_allowlist_is_disabled(roo
     write_record(root, {"route": "unavailable", "outcome": "unavailable",
                         "reason": "mio_unavailable", "text": None}, refs=[ref],
                  state="available", codes=("mio_unavailable",))
-    monkeypatch.setattr(handoff, "plain_words", lambda text, limit: text)
+    monkeypatch.setattr(handoff, "_knowledge_text", lambda text: (text, "shown")
+                        if text else (None, "none"))
     with pytest.raises(HandoffRefused) as refused:
         encode_files(package(root))
     assert "host_name" in refused.value.code
@@ -590,11 +625,13 @@ def test_a_file_planted_inside_the_new_directory_is_not_overwritten(root, out):
         write_package(out, name, files, write=write)
     assert refused.value.code == "write_failed"
     assert (out / name / "manifest.json").read_text() == "theirs"
-    assert os.listdir(out / name) == ["manifest.json"]
     assert refused.value.remnant == out / name
+    assert refused.value.remnant_kind == "incomplete"
+    # Ours are given back as empty files; nothing is removed by name.
+    assert (out / name / "handoff.json").stat().st_size == 0
 
 
-def test_a_file_sync_failure_before_the_manifest_leaves_nothing(root, out):
+def test_a_file_sync_failure_before_the_manifest_is_reported_with_what_is_left(root, out):
     files, name = files_and_name(root)
     calls = []
 
@@ -606,8 +643,10 @@ def test_a_file_sync_failure_before_the_manifest_leaves_nothing(root, out):
 
     with pytest.raises(HandoffRefused) as refused:
         write_package(out, name, files, fsync=fsync)
-    assert refused.value.code == "write_failed" and refused.value.remnant is None
-    assert os.listdir(out) == []
+    assert refused.value.code == "write_failed"
+    assert (refused.value.remnant, refused.value.remnant_kind) == (out / name, "incomplete")
+    assert "manifest.json" not in os.listdir(out / name)
+    assert all((out / name / f).stat().st_size == 0 for f in os.listdir(out / name))
 
 
 def test_a_directory_sync_failure_after_publishing_is_reported_not_hidden(root, out):
@@ -624,23 +663,6 @@ def test_a_directory_sync_failure_after_publishing_is_reported_not_hidden(root, 
     assert result.durable is False and result.path == out / name
     for file_name, raw in files.items():
         assert (out / name / file_name).read_bytes() == raw
-
-
-def test_a_failed_cleanup_names_the_directory_left_behind(root, out, monkeypatch):
-    files, name = files_and_name(root)
-
-    def write(fd, data):
-        raise OSError(errno.ENOSPC, "No space left on device")
-
-    def no_rmdir(*args, **kwargs):
-        raise OSError(errno.EBUSY, "busy")
-
-    monkeypatch.setattr(handoff.os, "rmdir", no_rmdir)
-    with pytest.raises(HandoffRefused) as refused:
-        write_package(out, name, files, write=write)
-    assert refused.value.code == "insufficient_space"
-    assert refused.value.remnant == out / name
-    assert os.listdir(out / name) == []
 
 
 def test_an_existing_symlink_at_the_name_is_refused(root, out, tmp_path):
@@ -709,7 +731,7 @@ def test_too_little_space_is_refused_before_anything_is_written(root, out):
 
 
 @pytest.mark.parametrize("failing", [1, 2, 3])
-def test_a_disk_that_fills_part_way_leaves_nothing(root, out, failing):
+def test_a_disk_that_fills_part_way_gives_back_its_space_and_says_where(root, out, failing):
     files, name = files_and_name(root)
     calls = []
 
@@ -724,7 +746,82 @@ def test_a_disk_that_fills_part_way_leaves_nothing(root, out, failing):
     with pytest.raises(HandoffRefused) as refused:
         write_package(out, name, files, write=write)
     assert refused.value.code == "insufficient_space"
-    assert os.listdir(out) == [], "a partial package or temporary directory was left"
+    assert (refused.value.remnant, refused.value.remnant_kind) == (out / name, "incomplete")
+    assert os.listdir(out) == [name]
+    left = os.listdir(out / name)
+    assert len(left) == failing and all((out / name / f).stat().st_size == 0 for f in left)
+    # Not a package: no manifest with content.
+    assert not (out / name / "manifest.json").exists() or \
+        (out / name / "manifest.json").stat().st_size == 0
+
+
+def test_a_failure_to_open_the_new_directory_reports_it(root, out, monkeypatch):
+    files, name = files_and_name(root)
+    real = handoff.os.open
+
+    def failing_open(path, flags, *args, **kwargs):
+        if path == name and flags & os.O_DIRECTORY:
+            raise OSError(errno.EMFILE, "Too many open files")
+        return real(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(handoff.os, "open", failing_open)
+    with pytest.raises(HandoffRefused) as refused:
+        write_package(out, name, files)
+    assert refused.value.code == "write_failed"
+    assert (refused.value.remnant, refused.value.remnant_kind) == (out / name, "incomplete")
+    assert (out / name).is_dir()
+
+
+@pytest.mark.parametrize("swap", ["full_dir", "foreign_mode"])
+def test_a_directory_swapped_in_after_creation_is_not_written_into(root, out, tmp_path, swap):
+    files, name = files_and_name(root)
+    aside = tmp_path / "aside"
+
+    def swapping_mkdir(path, mode, *, dir_fd):
+        os.mkdir(path, mode, dir_fd=dir_fd)
+        os.rename(out / name, aside)
+        (out / name).mkdir(mode=0o700)
+        if swap == "full_dir":
+            (out / name / "theirs").write_text("kept")
+        else:
+            os.chmod(out / name, 0o750)
+
+    with pytest.raises(HandoffRefused) as refused:
+        write_package(out, name, files, mkdir=swapping_mkdir)
+    assert refused.value.code == "output_replaced"
+    assert (refused.value.remnant, refused.value.remnant_kind) == (out / name, "unverified")
+    expected = ["theirs"] if swap == "full_dir" else []
+    assert os.listdir(out / name) == expected and os.listdir(aside) == []
+    if swap == "full_dir":
+        assert (out / name / "theirs").read_text() == "kept"
+
+
+def test_a_file_swapped_after_a_failure_is_never_removed(root, out):
+    """Nothing is deleted by name: a swap after the failure keeps the other file."""
+    files, name = files_and_name(root)
+    calls = []
+
+    def write(fd, data):
+        calls.append(fd)
+        if len(calls) == 2:
+            first = out / name / "handoff.json"
+            first.rename(out / "ours-moved")
+            first.write_text("theirs")
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return os.write(fd, data)
+
+    with pytest.raises(HandoffRefused):
+        write_package(out, name, files, write=write)
+    assert (out / name / "handoff.json").read_text() == "theirs"
+
+
+def test_an_output_directory_of_another_user_is_refused(root, out, monkeypatch):
+    files, name = files_and_name(root)
+    monkeypatch.setattr(handoff.os, "geteuid", lambda: os.getuid() + 4242)
+    with pytest.raises(HandoffRefused) as refused:
+        write_package(out, name, files)
+    assert refused.value.code == "output_dir_not_owned"
+    assert os.listdir(out) == []
 
 
 # -- the command ----------------------------------------------------------------------
@@ -1036,7 +1133,7 @@ def test_the_command_reports_an_unconfirmed_sync_with_the_package_path(root, out
     assert f"handoff: written {out / name}" in text and "nothing was written" not in text
 
 
-def test_the_command_names_a_directory_it_could_not_remove(root, out, monkeypatch):
+def test_the_command_names_the_incomplete_directory_left(root, out, monkeypatch):
     real = handoff.write_package
 
     def write(parent, name, files):
@@ -1044,14 +1141,153 @@ def test_the_command_names_a_directory_it_could_not_remove(root, out, monkeypatc
             raise OSError(errno.ENOSPC, "No space left on device")
         return real(parent, name, files, write=full)
 
-    def no_rmdir(*args, **kwargs):
-        raise OSError(errno.EBUSY, "busy")
-
     from azazel_nexus import handoff_cli
 
     monkeypatch.setattr(handoff_cli, "write_package", write)
-    monkeypatch.setattr(handoff.os, "rmdir", no_rmdir)
     code, text = run_cli(["export", "--incident", INCIDENT, "--output-dir", str(out)], root=root)
     assert code == 1 and "nothing was written" not in text
     (name,) = os.listdir(out)
     assert f"left at {out / name}" in text
+
+
+# -- R388b-02: the product's own dotted words are not host names ---------------------
+
+
+def test_lifecycle_audit_events_do_not_refuse_the_package(root, out):
+    chain = root / "var/lib/azazel/state/audit/2026-10-29.jsonl"
+    ledger = AuditLedger(chain)
+    digest = "sha256:" + "4" * 64
+    ledger.append({"event_type": "bootstrap.ready", "approval_digest": digest, "generation": 2,
+                   "occurred_at": "2026-10-29T03:00:00Z", "unit_key": "auditd"})
+    ledger.append({"event_type": "bootstrap.stopped", "approval_digest": digest,
+                   "generation": 2, "occurred_at": "2026-10-29T03:01:00Z"})
+    ledger.append({"event_type": "watchdog.fenced", "unit": "auditd", "reason": "heartbeat_lost",
+                   "detail": "x", "previous_state": "in_service", "previous_reason": None,
+                   "state": "fenced", "occurred_at": "2026-10-29T03:02:00Z"})
+    files = encode_files(package(root))
+    markdown = files["handoff.ja.md"].decode()
+    for kind in ("bootstrap.ready", "bootstrap.stopped", "watchdog.fenced"):
+        assert f"`{kind}`" in markdown
+    code, text = run_cli(["export", "--incident", INCIDENT, "--output-dir", str(out)], root=root)
+    assert code == 0, text
+
+
+def test_a_foreign_dotted_name_is_still_found_in_json_and_markdown():
+    for value in ("db01.corp.local", "fileserver.corp", "bootstrap.ready.evil"):
+        assert "host_name" in handoff.scan_package({"x": value}), value
+        assert "host_name" in handoff.scan_markdown(f"- `{value}`"), value
+    assert handoff.scan_package({"x": "bootstrap.ready"}) == []
+    assert handoff.scan_markdown("- `bootstrap.ready` and `incident_ledger.first_seen`") == []
+
+
+def test_the_fixed_vocabulary_is_auditd_s_own():
+    auditd = pytest.importorskip("azazel_nexus_runtime.auditd")
+    assert set(handoff.OPERATOR_EVENT_FIELDS) <= set(auditd.EVENT_SCHEMAS)
+    assert set(handoff.INCIDENT_AUDIT_TYPES) <= set(auditd.EVENT_SCHEMAS)
+    for kind, fields in handoff.OPERATOR_EVENT_FIELDS.items():
+        declared = {argument.name for argument in auditd.EVENT_SCHEMAS[kind]}
+        assert set(fields) <= declared, kind
+
+
+def test_every_fixed_word_in_the_package_passes_both_scans(root):
+    """Each code-shaped value the package can carry, as JSON and as Markdown."""
+    from azazel_nexus.edge_intake import ACTIONS
+    from azazel_nexus.incident_explain import CODES, CONTENT_KINDS, POLICY_REASONS
+
+    words = (set(ACTIONS) | set(CODES) | set(CONTENT_KINDS) | set(POLICY_REASONS)
+             | handoff.fixed_vocabulary())
+    for word in sorted(words):
+        assert handoff.scan_package({"x": word}) == [], word
+        assert handoff.scan_markdown(f"`{word}`") == [], word
+
+
+# -- R388b-03: a summary two banners share does not name a method ---------------------
+
+
+@pytest.mark.parametrize("provenance", ["model", "embedding", "keyword"])
+def test_a_japanese_banner_summary_does_not_claim_a_method(root, provenance):
+    """The recent row as the explainer's own writer builds it, read by an operator."""
+    from azazel_nexus.incident_explain import (
+        build_recent_incident, build_recent_incidents, read_record, read_transition)
+    from azazel_nexus.local_advisory import _DELIVERY_BANNERS
+
+    banner = _DELIVERY_BANNERS[provenance][0]  # Japanese
+    t = read_transition(example.transition("opened", example.OPENED, 1, 3, "throttle",
+                                           "severity_elevated_throttle_reversible",
+                                           example.DIGESTS[0], example.DIGESTS[0]))
+    record = read_record({
+        "incident_id": INCIDENT, "explained_at": example.OPENED + 30, "transition": "opened",
+        "edge_would": "throttle", "policy_reason": "severity_elevated_throttle_reversible",
+        "attack_type": "absent", "technique_ids": ["T1046"],
+        "mio": {"route": "local", "outcome": "answered", "reason": "local",
+                "content_kind": "ai_advice", "text": banner},
+        "knowledge_refs": [], "knowledge_state": "no_context", "failure_codes": []})
+    row = build_recent_incident(t, record=record)
+    recent = build_recent_incidents([row], NOW - 2)
+    path = root / "var/lib/azazel/run/incident-explain-status/recent.json"
+    path.write_text(json.dumps(recent))
+    # The operator path: neither ledger is readable here.
+    for leaf in ("edge-incidents", "incident-explain/explanations"):
+        for segment in (root / "var/lib/azazel" / leaf).glob("*.jsonl"):
+            segment.unlink()
+    p = build_package(INCIDENT, now=NOW, principal="operator", root=root)
+    item = p["ai_assessment"]["explanations"][0]
+    assert p["ai_assessment"]["source"] == "recent_snapshot"
+    assert item["generation_method"] == "not_recorded"
+    assert (item["text"], item["text_state"]) == (None, "ambiguous_summary")
+    # With the full text, the same banner does name its producer.
+    write_record(root, {"route": "local", "outcome": "answered", "reason": "local",
+                        "content_kind": "ai_advice", "text": banner})
+    full = build_package(INCIDENT, now=NOW, principal="root", root=root)
+    assert full["ai_assessment"]["explanations"][0]["generation_method"] == {
+        "model": "local_model_inference", "embedding": "embedding_matching",
+        "keyword": "deterministic_keyword_matching"}[provenance]
+
+
+def test_an_english_banner_summary_still_names_its_method():
+    from azazel_nexus.incident_explain import private_text
+    from azazel_nexus.local_advisory import _DELIVERY_BANNERS
+
+    fixed = handoff._fixed_texts()
+    for source, method in (("model", "local_model_inference"),
+                           ("embedding", "embedding_matching"),
+                           ("keyword", "deterministic_keyword_matching")):
+        english = _DELIVERY_BANNERS[source][1]
+        assert fixed[private_text(english[:280], 280)] == method
+        assert fixed[_DELIVERY_BANNERS[source][0]] == method
+    assert fixed["absent"] == "not_recorded"
+
+
+# -- R388b-06: every Knowledge reference is checked for its time ----------------------
+
+
+def _ref(as_of):
+    return {"technique_id": "T1046", "name": "Network Service Discovery", "summary": "",
+            "claim_id": "T1046", "bundle_digest": example.BUNDLE, "freshness": "current",
+            "source_kind": "knowledge_lite", "generation": 7, "trust_check": "verified",
+            "as_of": as_of, "citation": ""}
+
+
+def test_a_future_lookup_hidden_behind_a_duplicate_is_still_named(root):
+    from azazel_nexus.incident_explain import read_record
+
+    records = []
+    for at, as_of in ((example.OPENED + 200, "2026-10-29T03:17:00Z"),
+                      (example.OPENED + 300, "2026-10-30T00:00:00Z")):
+        records.append(read_record({
+            "incident_id": INCIDENT, "explained_at": at, "transition": "updated",
+            "edge_would": "isolate", "policy_reason": "severity_critical_contains_immediately",
+            "attack_type": "absent", "technique_ids": ["T1046"],
+            "mio": {"route": "unavailable", "outcome": "unavailable",
+                    "reason": "mio_unavailable", "text": None},
+            "knowledge_refs": [_ref(as_of)], "knowledge_state": "available",
+            "failure_codes": ["mio_unavailable"]}))
+    for old in explanations_dir(root).glob("*.jsonl"):
+        old.unlink()
+    (explanations_dir(root) / "2026-10-29.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in records))
+    p = package(root)
+    assert len(p["knowledge"]["citations"]) == 1  # merged
+    assert "knowledge_citation" in p["time"]["generation_clock"]["future_dated_sources"]
+    assert p["time"]["generation_clock"]["status"] == "untrusted"
+    assert "records_dated_after_generation" in handoff.render_markdown(p)

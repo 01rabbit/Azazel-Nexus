@@ -1,16 +1,16 @@
 {
   "files": [
     {
-      "bytes": 17333,
+      "bytes": 17347,
       "media_type": "application/json",
       "name": "handoff.json",
-      "sha256": "7293cd775a04ec381e52876c91d2e71ed695b9e1d7c5c0dcaefd35fc762c37c1"
+      "sha256": "8f63ede38370e703f3b1849f1e4361179e3fda367e133da1a4732e6f0ba34fa7"
     },
     {
-      "bytes": 8049,
+      "bytes": 8184,
       "media_type": "text/markdown; charset=utf-8",
       "name": "handoff.ja.md",
-      "sha256": "b1dae26ba301d72854ca6ea73e9e51c9ce8782a3f4c8809d17f0529b4e5cb1ed"
+      "sha256": "1fa5d9e7e56ef08f8271ef7ac46645aa3071553d3468f51304a3b730c7e02ebf"
     }
   ],
   "generated_at": "2026-10-29T05:14:00Z",

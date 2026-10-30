@@ -84,7 +84,7 @@
 
 状態: あり
 - 現在の Knowledge Lite: 読取済（記録 2026-10-29T05:13:40Z、20 秒前、期限 150 秒） 世代 8、鮮度 `current`
-- T1046 Network Service Discovery: 世代 7、参照時の鮮度 `current`、参照時刻 2026-10-29T03:14:30Z、bundle `sha256:abababababababababababababababababababababababababababababababab`、**現在の世代と異なる**
+- T1046 （名前は伏せた: withheld）: 世代 7、参照時の鮮度 `current`、参照時刻 2026-10-29T03:14:30Z、bundle `sha256:abababababababababababababababababababababababababababababababab`、**現在の世代と異なる**
 
 ## 9. 担当者の操作（監査記録）
 
@@ -104,18 +104,20 @@
 - 一部の証拠は保存されていない（容量上限）（`evidence_not_stored`）
 - 引用した Knowledge の世代は現在の世代と異なる（`knowledge_superseded`）
 - 期限切れの状態記録がある（最終記録であり、現在の状態は未確認）（`stale_snapshot`）
+- 許可した固定文・単純な語句でない自由文は伏せた（`free_text_withheld`）
 - インシデントはまだ閉じていない（生成後も続く可能性がある）（`incident_open`）
 
 ## 11. 機密の扱い
 
 既定で抑制している。秘密情報・生 payload・内部識別情報（IP・MAC・インターフェース名・ホスト名・パス・経路・操作者名）は含めない。製品の固定文と、単純な英単語だけの語句以外の自由文は伏せた。書く前に全文字列を検査し、識別子・パス・符号化値・秘密らしい形が残っていれば書かない。
 
-抑制した件数（合計 9）:
+抑制した件数（合計 12）:
 - `network_address`: 2
 - `rule_identifier`: 2
 - `service_port`: 2
 - `producer_free_text`: 2
 - `operator_identity`: 1
+- `knowledge_free_text`: 3
 - 読んでいないもの: `edge_evidence_payloads`、`decoy_evidence`、`commissioning_record`、`secrets_directory`、`interface_identity`、`torn_tail_quarantine`
 
 ## 12. 読んだ情報源

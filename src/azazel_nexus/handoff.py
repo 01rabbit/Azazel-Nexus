@@ -156,9 +156,11 @@ _FIXED_FORM = {
     "name": re.compile(r"handoff\.(?:json|ja\.md)"),
     "media_type": re.compile(r"application/json|text/markdown; charset=utf-8"),
 }
-#: Forms that are safe wherever they appear: codes, timestamps, ids.
+#: Forms that are safe wherever they appear: dotless codes, timestamps, ids.
+#: A dotted code is safe only when it is in `fixed_vocabulary()`: a dotted
+#: lower-case string is also what a host name looks like.
 _SAFE = re.compile(
-    r"[a-z][a-z0-9_]{0,63}(?:[.:][a-z][a-z0-9_]{0,39})*"
+    r"[a-z][a-z0-9_]{0,63}(?::[a-z][a-z0-9_]{0,39})*"
     r"|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
     r"|inc-[0-9a-f]{16}|T[0-9]{4}(?:\.[0-9]{3})?"
     r"|[0-9]{4}-[0-9]{2}-[0-9]{2}\.jsonl", re.ASCII)
@@ -185,12 +187,26 @@ def _walk(value, key=None):
         yield key, value
 
 
+def fixed_vocabulary() -> frozenset:
+    """The dotted words this product writes itself: event types and sources.
+
+    Taken from the event types this module copies (a subset of auditd's
+    declared `EVENT_SCHEMAS`, checked against it in the tests) and the
+    incident transitions; an event type outside it is never copied.
+    """
+    return frozenset(OPERATOR_EVENT_FIELDS) | frozenset(INCIDENT_AUDIT_TYPES) | frozenset(
+        {"incident_ledger.first_seen", "recent_snapshot.first_seen"})
+
+
 def scan_package(value) -> list[str]:
     """Every category found in any string of a package or manifest value."""
     found = []
+    vocabulary = fixed_vocabulary()
     for key, text in _walk(value):
         form = _FIXED_FORM.get(key)
         if form is not None and form.fullmatch(text):
+            continue
+        if text in vocabulary:
             continue
         # A code-shaped string is still checked for encoded and secret forms.
         found_here = detect(text)
@@ -204,34 +220,30 @@ def scan_package(value) -> list[str]:
 
 
 def scan_markdown(text: str) -> list[str]:
-    """The rendered document, with its digests and timestamps taken out."""
+    """The rendered document, with its digests, timestamps and fixed words out.
+
+    The same allowance as `scan_package`: only the product's own dotted
+    words are taken out, each as a whole word; anything else is scanned.
+    """
     text = _DIGEST.sub(" ", text)
+    words = sorted(fixed_vocabulary(), key=len, reverse=True)
+    text = re.sub(r"(?<![\w.-])(?:" + "|".join(map(re.escape, words)) + r")(?![\w.-])", " ", text)
     text = re.sub(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", " ", text)
     return detect(text)
 
 
 # -- the allowlist ------------------------------------------------------------
+#
+# Text from outside this code is shown only when it is identical to a text
+# this product ships. Nothing tries to tell natural language from an encoded
+# value by its shape: Knowledge's names, summaries and citations are
+# withheld, and the technique id, claim id, bundle digest and generation --
+# which an expert can look up -- are kept.
 
-_PLAIN = re.compile(r"[A-Za-z][A-Za-z '&(),;-]*")
 
-
-def plain_words(text: str, limit: int) -> Optional[str]:
-    """`text` if it is a short phrase of plain words, else None.
-
-    ASCII letters, spaces and ``'&(),;-`` only, and a full stop only at the
-    end of a sentence: no digit, slash, backslash, colon, ``@``, ``%`` or
-    dotted name can pass, and nothing a detector finds. A single plain word
-    (a bare host name) cannot be told from a word; that is the residue.
-    """
-    if type(text) is not str or not 0 < len(text) <= limit:
-        return None
-    normalized = unicodedata.normalize("NFKC", text)
-    if normalized != text or not text.isascii():
-        return None
-    body = re.sub(r"\.(?=\s|$)", "", text)
-    if not _PLAIN.fullmatch(body) or detect(text):
-        return None
-    return text
+def _knowledge_text(text) -> tuple[Optional[str], str]:
+    """Knowledge free text is withheld; `(None, "none")` when there is none."""
+    return (None, "withheld") if text else (None, "none")
 
 
 def _fixed_texts() -> dict:
@@ -242,26 +254,39 @@ def _fixed_texts() -> dict:
     method = {"model": "local_model_inference", "embedding": "embedding_matching",
               "keyword": "deterministic_keyword_matching"}
     texts = {}
+
+    def put(text, produced_by):
+        # A text two producers share (the ASCII summary of every Japanese
+        # banner is the same word) says nothing about which one it was.
+        if texts.get(text, produced_by) != produced_by:
+            produced_by = "not_recorded"
+        texts[text] = produced_by
+
     for source, banners in _DELIVERY_BANNERS.items():
         for i, banner in enumerate(banners):
             for note in ("", _TEMPLATE_NOTES[i]):
-                texts[banner + note] = method[source]
-                texts[private_text((banner + note)[:280], 280)] = method[source]
+                put(banner + note, method[source])
+                put(private_text((banner + note)[:280], 280), method[source])
     for notice in HANDOFF_NOTICE.values():
-        texts[notice] = "fixed_handoff_notice"
+        put(notice, "fixed_handoff_notice")
     return texts
 
 
 class HandoffRefused(Exception):
     """A fixed code; never exception text from below, which can quote a value.
 
-    `remnant` names a directory left behind when cleaning up failed.
+    `remnant` names what is left at the package's name after a failure:
+    `incomplete` -- the directory this call made, without a verified
+    manifest; `unverified` -- something there that this call cannot vouch
+    for, into which nothing was written.
     """
 
-    def __init__(self, code: str, remnant: Optional[Path] = None):
+    def __init__(self, code: str, remnant: Optional[Path] = None,
+                 remnant_kind: Optional[str] = None):
         super().__init__(code)
         self.code = code
         self.remnant = remnant
+        self.remnant_kind = remnant_kind if remnant is not None else None
 
 
 class Suppressor:
@@ -703,8 +728,13 @@ def build_package(incident_id: str, *, now: float, principal: str, root=None,
 
     # Sections.
     knowledge = _knowledge(explanations, explanation_code, row, snaps, now, hide)
-    for citation in knowledge["citations"]:
-        seen(_epoch(citation.get("looked_up_at")), "knowledge_citation")
+    # Every reference read, before duplicates are merged or the display is
+    # bounded: one future lookup time anywhere is a sign about the clock.
+    every_ref = [ref for record in explanations for ref in record["knowledge_refs"]]
+    if row is not None:
+        every_ref += row["explanation"]["knowledge_refs"]
+    for ref in every_ref:
+        seen(_epoch(ref.get("as_of")), "knowledge_citation")
     clock = _generation_clock(sources, now, note)
     occurrence = _occurrence(transitions, row, explanations, audit.kept, now, seen)
     for snap, name in ((intake, "intake"), (explainer, "explainer")):
@@ -1007,6 +1037,10 @@ def _text_of(value, fixed, hide) -> tuple[Optional[str], str]:
     """An explanation's text if it is a fixed product text, else withheld."""
     if not value:
         return None, "none"
+    if value in fixed and fixed[value] == "not_recorded":
+        # Only the producer-independent summary is left: it is not shown,
+        # and it is not counted as withheld producer text either.
+        return None, "ambiguous_summary"
     if value in fixed:
         return value, fixed[value]
     hide.drop("ai_free_text")
@@ -1046,7 +1080,7 @@ def _ai(explanations, explanation_code, row, mio, labels, hide) -> dict:
                 "labelled_ai_output": kind == "ai_advice",
                 "generation_method": method if text else "not_recorded",
                 "text": text, "text_state": "shown" if text else (
-                    "withheld" if m["text"] else "none"),
+                    method if method in ("withheld", "ambiguous_summary") else "none"),
                 "notice": notice,
                 "failure_codes": list(record["failure_codes"])})
         shown, display = _shown(items, SHOW_EXPLANATIONS, lambda x: x["explained_at"])
@@ -1066,7 +1100,7 @@ def _ai(explanations, explanation_code, row, mio, labels, hide) -> dict:
                     "labelled_ai_output": e["state"] == "explained",
                     "generation_method": method if text else "not_recorded",
                     "text": text, "text_state": "shown" if text else (
-                        "withheld" if e["summary"] else "none"),
+                        method if method in ("withheld", "ambiguous_summary") else "none"),
                     "text_is_summary": True, "notice": notice,
                     "failure_codes": list(e["failure_codes"])}]}
     code = explanation_code if explanation_code != "read" else (
@@ -1091,13 +1125,10 @@ def _knowledge(explanations, explanation_code, row, snaps, now, hide) -> dict:
         return None if at is None else int(now - at)
 
     def phrase(text, limit):
-        if not text:
-            return text, "none"
-        kept = plain_words(text, limit)
-        if kept is None:
+        kept, state = _knowledge_text(text)
+        if state == "withheld":
             hide.drop("knowledge_free_text")
-            return None, "withheld"
-        return kept, "shown"
+        return kept, state
 
     def compare(generation):
         if not is_fresh or type(current.get("generation")) is not int:
@@ -1170,6 +1201,9 @@ OPERATOR_EVENT_FIELDS = {
     "bootstrap.stopped": (),
 }
 _AUDIT_WORD = re.compile(r"[a-z][a-z0-9_]{0,63}")
+#: The incident event types the explainer forwards to auditd.
+INCIDENT_AUDIT_TYPES = ("edge.incident.opened", "edge.incident.escalated",
+                        "edge.incident.closed")
 
 
 def _operator(audit: Chain, window_from, now, hide) -> dict:
@@ -1191,8 +1225,7 @@ def _operator(audit: Chain, window_from, now, hide) -> dict:
         kind = event["event_type"]
         if kind.startswith("edge.incident."):
             incident_audit.append({
-                "event_type": kind if kind in ("edge.incident.opened", "edge.incident.escalated",
-                                               "edge.incident.closed") else "other",
+                "event_type": kind if kind in INCIDENT_AUDIT_TYPES else "other",
                 "occurred_at": at(event.get("occurred_at")),
                 "most_severe": event.get("most_severe") if type(event.get("most_severe")) is int
                 and 0 <= event["most_severe"] <= 10 else None,
@@ -1668,6 +1701,8 @@ def _open_output(parent: Path) -> int:
         info = os.fstat(fd)
         if info.st_mode & 0o022:
             raise HandoffRefused("output_dir_shared_writable")
+        if info.st_uid != os.geteuid():
+            raise HandoffRefused("output_dir_not_owned")
         return fd
     except BaseException:
         os.close(fd)
@@ -1694,23 +1729,31 @@ class WriteResult:
 
 def write_package(parent: Path, name: str, files: dict, *, statvfs=os.fstatvfs,
                   write=os.write, fsync=os.fsync, mkdir=os.mkdir) -> WriteResult:
-    """Write `files` into a new directory `parent/name`, or nothing.
+    """Write `files` into a new directory `parent/name`, or say what is left.
 
-    No step can replace anything that exists: the directory is made with
-    `mkdir` (which fails on any existing entry: a file, a directory, a link)
-    and each file with `O_CREAT | O_EXCL` inside it. The manifest is written
-    last, so a directory without one is not a package. Any failure before
-    the manifest is synced removes what this call created; a failure to
-    clean up is reported with the directory left behind.
+    Nothing that exists is replaced: the directory is made with `mkdir`
+    (which fails on any existing entry: a file, a directory, a link) and
+    each file with `O_CREAT | O_EXCL` inside it. The manifest is written
+    last, so a directory without one whose digests verify is not a package.
+
+    Nothing is deleted on failure. Deleting by name after a check is a race
+    with whatever else can write the directory, so a failure after `mkdir`
+    reports the path that is left (incomplete: no verified manifest). The
+    files this call opened are truncated through their own descriptors, so
+    a full disk gets its space back without touching any name.
+
+    Scope: `parent` must belong to this user and not be group or world
+    writable (`_open_output`), so only this user or root can race it.
     """
     if not re.fullmatch(r"azazel-handoff-inc-[0-9a-f]{16}-[0-9TZ]{16}", name):
         raise HandoffRefused("package_name_refused")
     if list(files)[-1] != MANIFEST_NAME:
         raise HandoffRefused("manifest_not_last")
     parent_fd = _open_output(parent)
+    target = Path(parent) / name
+    made = False
     directory_fd = None
-    created_directory = None
-    created = []
+    opened = []
     published = False
     try:
         try:
@@ -1727,38 +1770,39 @@ def write_package(parent: Path, name: str, files: dict, *, statvfs=os.fstatvfs,
             mkdir(name, 0o700, dir_fd=parent_fd)
         except FileExistsError:
             raise HandoffRefused("output_exists") from None
+        made = True
         directory_fd = os.open(name, _DIR_FLAGS, dir_fd=parent_fd)
         info = os.fstat(directory_fd)
-        if info.st_uid != os.geteuid() or info.st_mode & 0o077:
-            raise HandoffRefused("output_path_refused")
-        created_directory = (info.st_dev, info.st_ino)
+        # What was opened must look like what mkdir just made: this user's,
+        # private, and empty. Anything else is not written into.
+        if (info.st_uid != os.geteuid() or info.st_mode & 0o077
+                or os.listdir(directory_fd)):
+            raise HandoffRefused("output_replaced", remnant=target, remnant_kind="unverified")
         for file_name, raw in files.items():
             fd = os.open(file_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
                          | os.O_CLOEXEC, 0o600, dir_fd=directory_fd)
-            mine = os.fstat(fd)
-            created.append((file_name, mine.st_dev, mine.st_ino))
-            try:
-                view = memoryview(raw)
-                while view:
-                    n = write(fd, view)
-                    if n <= 0:
-                        raise OSError(errno.EIO, "short write")
-                    view = view[n:]
-                fsync(fd)
-            finally:
-                os.close(fd)
+            opened.append(fd)
+            view = memoryview(raw)
+            while view:
+                n = write(fd, view)
+                if n <= 0:
+                    raise OSError(errno.EIO, "short write")
+                view = view[n:]
+            fsync(fd)
         published = True
     except OSError as exc:
-        _remove(parent_fd, name, directory_fd, created_directory, created)
+        _truncate(opened)
         raise HandoffRefused("insufficient_space" if exc.errno in (errno.ENOSPC, errno.EDQUOT)
-                             else "write_failed",
-                             remnant=_left(parent_fd, name, created_directory, parent)) from None
+                             else "write_failed", remnant=target if made else None,
+                             remnant_kind="incomplete") from None
     except HandoffRefused as refused:
-        if created_directory is not None:
-            _remove(parent_fd, name, directory_fd, created_directory, created)
-            refused.remnant = _left(parent_fd, name, created_directory, parent)
+        _truncate(opened)
+        if made and refused.remnant is None:
+            refused.remnant, refused.remnant_kind = target, "incomplete"
         raise
     finally:
+        for fd in opened:
+            os.close(fd)
         if not published:
             if directory_fd is not None:
                 os.close(directory_fd)
@@ -1773,34 +1817,13 @@ def write_package(parent: Path, name: str, files: dict, *, statvfs=os.fstatvfs,
             durable = False
     os.close(directory_fd)
     os.close(parent_fd)
-    return WriteResult(Path(parent) / name, durable)
+    return WriteResult(target, durable)
 
 
-def _remove(parent_fd, name, directory_fd, created_directory, created) -> None:
-    """Remove only what this call created, recognised by device and inode."""
-    if directory_fd is None or created_directory is None:
-        return
-    for file_name, dev, ino in created:
+def _truncate(descriptors) -> None:
+    """Give back the space of files this call opened, through their fds only."""
+    for fd in descriptors:
         try:
-            info = os.lstat(file_name, dir_fd=directory_fd)
-            if (info.st_dev, info.st_ino) == (dev, ino):
-                os.unlink(file_name, dir_fd=directory_fd)
+            os.ftruncate(fd, 0)
         except OSError:
             pass
-    try:
-        info = os.lstat(name, dir_fd=parent_fd)
-        if (info.st_dev, info.st_ino) == created_directory:
-            os.rmdir(name, dir_fd=parent_fd)
-    except OSError:
-        pass
-
-
-def _left(parent_fd, name, created_directory, parent) -> Optional[Path]:
-    """The directory this call created, if it is still there."""
-    if created_directory is None:
-        return None
-    try:
-        info = os.lstat(name, dir_fd=parent_fd)
-    except OSError:
-        return None
-    return Path(parent) / name if (info.st_dev, info.st_ino) == created_directory else None

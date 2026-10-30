@@ -9,7 +9,7 @@
 
 ## 1. 操作手順
 
-1. 書き出し先を用意する。既存の実ディレクトリで、グループ・他者が書けないもの（例: 暗号化した証拠媒体の中に `mkdir -m 700` で作ったディレクトリ）。
+1. 書き出し先を用意する。既存の実ディレクトリで、**実行する利用者の所有**で、グループ・他者が書けないもの（例: 暗号化した証拠媒体の中に `sudo mkdir -m 700` で作ったディレクトリ。`sudo` で実行するなら root の所有にする）。
    シンボリックリンクを経由する経路、`/var/lib/azazel`・`/etc/azazel`・`/run`・`/proc`・`/sys`・`/dev` の中は拒否される。
 2. インシデント ID を確認する（`azazel-nexus status` の recent incidents に出る `inc-…`）。最新でよければ `latest` と書く。
 3. 実行する。
@@ -28,8 +28,9 @@
 | --- | --- | --- |
 | 0 | `handoff: written <パス>` | 完成。manifest まで書いて同期した |
 | 3 | `handoff: written <パス>` と `WARNING durability_unconfirmed` | 全ファイルは書いて同期したが、ディレクトリの同期に失敗した。電源断で失われ得る。媒体上で manifest を照合してから使う |
-| 1 | `refused (<コード>); nothing was written.` | 何も残していない |
-| 1 | `refused (<コード>); an incomplete directory … was left at <パス>` | 後始末に失敗し、manifest のない未完成のディレクトリが残った。パッケージではない。確認して消す |
+| 1 | `refused (<コード>); nothing was written.` | パッケージのディレクトリを作る前に止まった。何も作っていない |
+| 1 | `refused (<コード>); an incomplete directory … was left at <パス>` | ディレクトリを作った後に失敗した。manifest のない未完成のディレクトリが残っている（書いたファイルは空にしてある）。パッケージではない。確認して消す |
+| 1 | `refused (output_replaced); the entry at <パス> is not the directory this command made` | 作った直後のディレクトリが別のものに入れ替わっていた。そこには何も書いていない。確認する |
 | 2 | `refused (principal_refused)` | 権限がない |
 
 ## 2. 誰が実行でき、何を読むか
@@ -71,7 +72,7 @@
 | `ai_assessment` | 説明器の記録（`advisory_only_not_fact`）。経路・結果・説明器の区分・生成方式・本文（製品の固定文のときだけ。ほかは `withheld`）・失敗コード、M.I.O. 経路の能力（鮮度付き）。新しい 16 件まで表示 | `unavailable` と理由（`no_explanation_recorded`、`explanation_pending` など） |
 | `business_impact` | 評価は `unavailable`（ノードは業務上の重要度を知らない）。NOC の受動観測（インターフェース数・リンク有無・既定経路数、到達性は未測定）と Nexus が実行した制限数（0） | NOC がなければ `unavailable` |
 | `evidence_refs` | Edge の証拠記録の digest（EvidenceRef 相当: `source: edge-core`、`digest`、`role`）。中身は含めない。新しい 64 件まで表示、省略件数付き | `unavailable` |
-| `knowledge` | 引用ごとの bundle digest・世代・参照時の鮮度・参照時刻・生成時の経過秒、現在の Lite の世代と `superseded`。現在の世代は鮮度内の snapshot のときだけ比べ、そうでなければ `superseded: null` | `unavailable` と理由 |
+| `knowledge` | 引用ごとの technique id・claim id・bundle digest・世代・参照時の鮮度・参照時刻・生成時の経過秒、現在の Lite の世代と `superseded`。名前・要約・出典文は伏せる（`withheld`。§5）。現在の世代は鮮度内の snapshot のときだけ比べ、そうでなければ `superseded: null` | `unavailable` と理由 |
 | `operator_actions` | 監査記録の検証範囲（`anchored`）、インシデントの監査記録、前 1 時間からのノード操作（操作者名は `withheld`） | `unavailable` |
 | `unconfirmed` | 未確認事項（コードと日本語） | — |
 | `confidentiality` | 抑制の方針・種別ごとの件数・読んでいないもの・`upload: none` | — |
@@ -79,7 +80,7 @@
 
 **このインシデントに対する担当者の確認・承認の記録はない。** Nexus にその記録種別がないため `operator_actions.incident_scoped` は `unavailable`（`no_operator_action_record_type_for_incidents`）。並ぶのは期間内のノード操作で、このインシデントへの操作ではない。
 
-**AI の区分について。** 説明器は、ローカル経路が答えた記録をすべて `ai_advice` と区分する。本文が製品の固定文（banner）なら、その banner から生成方式（`local_model_inference`／`embedding_matching`／`deterministic_keyword_matching`）が分かるので書く。固定文でない本文は伏せ、生成方式は `not_recorded`。モデルの識別は記録されていない（`model_identity_not_recorded_in_explanation_ledger`）。
+**AI の区分について。** 説明器は、ローカル経路が答えた記録をすべて `ai_advice` と区分する。本文が製品の固定文（banner）なら、その banner から生成方式（`local_model_inference`／`embedding_matching`／`deterministic_keyword_matching`）が分かるので書く。固定文でない本文は伏せ、生成方式は `not_recorded`。recent snapshot の要約（ASCII に縮めた 280 字）は、日本語の banner がどれも同じ語になるなど複数の固定文で一致するものがあり、そのときは生成方式を決めず本文も出さない（`text_state: ambiguous_summary`）。モデルの識別は記録されていない（`model_identity_not_recorded_in_explanation_ledger`）。
 
 **表示の上限。** 上限は表示だけにかかる。最終状態・集計・最新の判断は、読んだ全記録から計算する。表示しなかった記録は `*_display` に全件数・省略件数・省略した範囲（古い側）として書き、Markdown にも出す。
 
@@ -108,12 +109,13 @@
 ## 4. 書き出しの安全性
 
 - 出力先は `/` から 1 段ずつ `O_NOFOLLOW` で開く。途中のどこかがシンボリックリンクなら `output_path_refused`。
-- 出力先がグループ・他者から書込み可能なら `output_dir_shared_writable`。
+- 出力先がグループ・他者から書込み可能なら `output_dir_shared_writable`、実行する利用者の所有でなければ `output_dir_not_owned`。これで、競合し得るのは同じ利用者か root だけになる（保証の範囲）。
 - 同じ名前が既にあれば（ディレクトリ・ファイル・リンクのどれでも）`output_exists`。上書きしない。
 - 書く前に空き容量を確かめ（本体＋1 MiB＋ファイルごとに 64 KiB）、足りなければ `insufficient_space`。
 - **どの段階でも既存のものを置き換えない。** パッケージのディレクトリは `mkdir` で作る（同名のファイル・ディレクトリ・リンクがあれば、空のディレクトリでも失敗する）。各ファイルはその中に `O_CREAT|O_EXCL` で作る。`rename` は使わない（Linux の `rename(2)` は空のディレクトリを置き換えるため。`renameat2(RENAME_NOREPLACE)` は標準ライブラリになく、このパッケージは `ctypes` を使わない方針）。
 - 各ファイルを書いて fsync し、**`manifest.json` を最後に**書く。manifest があり、その digest が合うディレクトリだけがパッケージである。
-- manifest より前で失敗（容量不足を含む）すれば、このコマンドが作ったもの（デバイス番号と inode で確認したものだけ）を消して `nothing was written` と表示する。消せなかったときは、残ったディレクトリの場所を表示する。
+- ディレクトリを作った直後に開いたものが、この利用者の・私有の・空のディレクトリでなければ（入れ替えられた）`output_replaced` とし、そこには何も書かない。
+- **失敗しても名前で消さない。** 名前を確かめてから消す方式は、その間に入れ替えられると相手のものを消すため。ディレクトリを作った後の失敗（容量不足を含む）では、このコマンドが開いたファイルを自分のファイル記述子で空にして容量を返し、manifest のない未完成のディレクトリの場所を表示する。ディレクトリを作る前の失敗だけを `nothing was written` と表示する。
 - manifest まで書けた後に、ディレクトリと親の fsync が失敗したときは、パッケージの場所を表示し `durability_unconfirmed`（終了 3）とする。
 - 電源断では manifest のない未完成のディレクトリが残り得る。manifest がないので完成品と区別できる。
 
@@ -126,13 +128,13 @@
 | 送信元アドレス（`network_address`）、ルール番号（`rule_identifier`）、宛先ポート（`service_port`）、シグネチャ本文などの producer の自由文（`producer_free_text`） | 台帳から写さない。件数を数える |
 | 操作者名（`operator_identity`） | `withheld` と書き、件数を数える |
 | 説明台帳の本文・通知（`ai_free_text`） | 製品の固定文（advisory の banner、handoff の通知）と一致するときだけ写す。ほかは出さず `text_state: withheld` |
-| Knowledge の名前・要約・出典文（`knowledge_free_text`） | 単純な英単語だけの語句（ASCII の文字・空白・`'&(),;-`、文末の `.`。数字・`/`・`\`・`:`・`@`・`%`・ドット区切りの名前を含まない）のときだけ写す。ほかは `withheld` |
+| Knowledge の名前・要約・出典文（`knowledge_free_text`） | 写さない（`withheld`）。文字の形で自然言語と符号化値（英字だけの Base64 など）・内部の識別名（`srv-db-core` など）を区別することはできないため。専門家は technique id・bundle digest・世代で引ける |
 | 監査記録の値（`audit_value`） | 小文字の語（`[a-z][a-z0-9_]*`）か整数のときだけ写す |
 | 生 payload・証拠の中身 | 読まない。digest だけ |
 | インターフェースの識別 | NOC は件数だけ（名前・アドレス・ゲートウェイは出さない） |
 
-最後に、パッケージと manifest の**すべての文字列**と Markdown を検査する。対象: IP アドレス（v4・v6）、MAC、URL、メールアドレス、Windows と Unix のパス、host:port、ドット区切りのホスト名、インターフェース名、percent 符号化、24 桁以上の 16 進、Base64 らしい値、秘密らしい形（鍵の先頭行、`password=` 等）。形の決まった欄（digest・schema・版・ファイル名）と、コード・時刻・ID の形の文字列だけを除き（コードの形でも 16 進・Base64・秘密の形は検査する）、見つかれば `suppression_incomplete:<種別>` で拒否して何も書かない。
-残る限界: ドットのない 1 語のホスト名（例: `fileserver`）は英単語と区別できず、Knowledge の語句に含まれていれば通る。
+最後に、パッケージと manifest の**すべての文字列**と Markdown を検査する。対象: IP アドレス（v4・v6）、MAC、URL、メールアドレス、Windows と Unix のパス、host:port、ドット区切りのホスト名、インターフェース名、percent 符号化、24 桁以上の 16 進、Base64 らしい値、秘密らしい形（鍵の先頭行、`password=` 等）。形の決まった欄（digest・schema・版・ファイル名）と、ドットのないコード・時刻・ID の形の文字列、製品自身のドット付き語彙だけを除き（コードの形でも 16 進・Base64・秘密の形は検査する）、見つかれば `suppression_incomplete:<種別>` で拒否して何も書かない。
+形の決まった欄・コード・時刻・ID の扱いは JSON と Markdown で同じ。ドットを含む語は、製品自身の語彙（監査のイベント種別 `bootstrap.ready` 等。auditd の宣言と照合する試験がある）だけを除き、ほかはホスト名として検査する。
 規則は [機密区分](inventory-confidentiality.md)（外部の報告に raw identity を入れない）と status view の伏字（自由文・パスは出さず `withheld` と書く）に合わせている。
 
 ## 6. 生成例（fixture 由来）
@@ -148,4 +150,5 @@ fixture は `tools/build_handoff_example.py` が作る: intake と同じ形式�
 - 業務影響はノードでは評価しない。担当者が専門家へ直接伝える。
 - 説明台帳はモデルの識別と生成方式を記録していない。説明台帳の Fabric `ClaimSet` は証拠参照を運ばない（S-18）ため、このパッケージは証拠参照をインシデント台帳から取る。
 - 監査記録は、インシデントの 1 時間前の日より前の segment があるとき、読んだ範囲の連続性だけを確かめる（`anchored: false`）。全体の検証は auditd の起動時検証による。
-- ドットのない 1 語のホスト名は英単語と区別できない（§5）。
+- Knowledge の名前・要約・出典文は出さない。検証済み bundle の語彙と照合して出す方式は今後の課題。
+- 失敗時に残る未完成のディレクトリは自動では消さない（場所を表示する）。

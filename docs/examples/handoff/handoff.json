@@ -88,14 +88,14 @@
     "suppressed": {
       "ai_free_text": 0,
       "audit_value": 0,
-      "knowledge_free_text": 0,
+      "knowledge_free_text": 3,
       "network_address": 2,
       "operator_identity": 1,
       "producer_free_text": 2,
       "rule_identifier": 2,
       "service_port": 2
     },
-    "suppressed_total": 9,
+    "suppressed_total": 12,
     "upload": "none"
   },
   "edge_decision": {
@@ -223,18 +223,18 @@
       {
         "age_s_at_generation": 7170,
         "bundle_digest": "sha256:abababababababababababababababababababababababababababababababab",
-        "citation": "MITRE ATT&CK technique, as ingested into azazel-knowledge",
-        "citation_state": "shown",
+        "citation": null,
+        "citation_state": "withheld",
         "claim_id": "T1046",
         "freshness_at_lookup": "current",
         "generation": 7,
         "generation_now": 8,
         "looked_up_at": "2026-10-29T03:14:30Z",
-        "name": "Network Service Discovery",
-        "name_state": "shown",
+        "name": null,
+        "name_state": "withheld",
         "source_kind": "knowledge_lite",
-        "summary": "Adversaries may scan for services running on remote hosts.",
-        "summary_state": "shown",
+        "summary": null,
+        "summary_state": "withheld",
         "superseded": true,
         "superseded_basis": "fresh_snapshot",
         "technique_id": "T1046",
@@ -589,6 +589,10 @@
     {
       "code": "stale_snapshot",
       "text_ja": "期限切れの状態記録がある（最終記録であり、現在の状態は未確認）"
+    },
+    {
+      "code": "free_text_withheld",
+      "text_ja": "許可した固定文・単純な語句でない自由文は伏せた"
     },
     {
       "code": "incident_open",
