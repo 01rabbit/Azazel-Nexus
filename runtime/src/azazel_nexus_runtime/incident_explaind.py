@@ -18,7 +18,8 @@ from azazel_nexus.audit import AuditEntry, GENESIS_HASH
 from azazel_nexus.edge_intake import canonical
 from azazel_nexus.fabric_boundary import project_explanation
 from azazel_nexus.incident_explain import (
-    FABRIC_RECORD_FIELD, CODES, MAX_LINE, MAX_PENDING, Selection, build_frame, decode,
+    EVIDENCE_FIELD, FABRIC_RECORD_FIELD, CODES, MAX_LINE, MAX_PENDING, Selection, build_frame, decode,
+    record_evidence,
     build_recent_incident, build_recent_incidents, read_recent_incidents, explanation_summary,
     SHOWN_STATES, closed_pairs, read_control, read_retention_boundary, read_mio_reply, read_record, read_transition, read_pending,
 )
@@ -84,7 +85,8 @@ def with_fabric_claims(value):
 
     Internal only: the view stays in this ledger. Summaries, recent rows,
     status and audit events are built from the record's own fields and never
-    carry it. Any failure leaves the record exactly as it was, because Fabric
+    carry it. The record itself keeps the evidence pointers and the generation
+    method the view is made from, so they survive when the view is dropped. Any failure leaves the record exactly as it was, because Fabric
     is optional (ADR-0001) and a projection must not cost an explanation --
     including a full day: `Explainer.explain` writes the plain record when the
     projected one no longer fits.
@@ -558,6 +560,11 @@ class Explainer:
                   "attack_type": t["attack_type"],
                   "technique_ids": t["technique_ids"], "mio": mio,
                   "knowledge_refs": refs, "knowledge_state": state, "failure_codes": codes}
+        if EVIDENCE_FIELD in t:
+            # The pointers carried since the transition, with their retention
+            # as of this record. A pending entry from before them (a previous
+            # release's checkpoint) has none, and its record says so.
+            record[EVIDENCE_FIELD] = record_evidence(t[EVIDENCE_FIELD], record["explained_at"])
         try:
             value = read_record(record)
         except ValueError:

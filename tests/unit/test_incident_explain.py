@@ -5,6 +5,7 @@ import pytest
 from azazel_nexus.edge_intake import IncidentTracker
 from azazel_nexus.incident_explain import (
     MAX_PENDING, Selection, build_frame, read_record, read_transition, explanation_input, private_text, POLICY_REASONS,
+    pending_entry,
 )
 from azazel_nexus.local_advisory import read_frame
 from azazel_nexus.reasoning_playbook import technique_ids
@@ -38,7 +39,7 @@ def test_escalation_and_rate():
     s = Selection()
     opened = transition()
     assert s.enqueue(opened, 1) == "queued"
-    assert s.take(0)[0] == explanation_input(opened)
+    assert s.take(0)[0] == pending_entry(opened)
     s.mark(opened)
     for severity in (3, 4):
         assert s.enqueue(transition(severity, "updated"), 2) == "skipped"

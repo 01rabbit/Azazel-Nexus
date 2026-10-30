@@ -132,10 +132,12 @@ socket. Edge Core connects once per event and writes one line.
   digest. The store is append-only with bounded retention (size and age), like
   the audit segments. A projection of a record onto Fabric
   `schema.evidence.EvidenceRef` (`source="edge-core"`) exists
-  (`fabric_boundary.project_edge_evidence`) and is tested against the pin, but
-  nothing in production calls it yet: Fabric is an optional extra, and the
-  intake does not import it. Exporting evidence through Fabric is left to the
-  consumer that needs it.
+  (`fabric_boundary.project_edge_evidence`) and is tested against the pin;
+  intake never imports Fabric. The explanation path carries each incident's
+  first and latest evidence digests (pointers, not content) into the
+  explanation record, whose Fabric `ClaimSet` view cites them as
+  `EvidenceRef`s and says when one may not lead to a stored record
+  (`evidence_not_stored`, `evidence_retention_elapsed`).
 - **Incidents.** Events are grouped into incidents by a fixed key (source
   address, signature id, destination port) within a fixed window. The audit
   records incident transitions (`edge.incident.opened`, `edge.incident.updated`

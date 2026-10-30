@@ -560,6 +560,13 @@ REFERENCE_BANNERS = frozenset(
     banner + note
     for i, banner in enumerate(_DELIVERY_BANNERS['keyword'])
     for note in ('', _TEMPLATE_NOTES[i]))
+#: Every advice text a local delivery can carry, by its `provenance.source`
+#: (`model`, `embedding`, `keyword`): the texts `read_delivered` admits. The
+#: explanation ledger checks a recorded generation method against them.
+DELIVERY_TEXTS = {
+    source: frozenset(banner + note for i, banner in enumerate(banners)
+                      for note in ('', _TEMPLATE_NOTES[i]))
+    for source, banners in _DELIVERY_BANNERS.items()}
 
 
 def delivered_document(frame, playbooks, options, candidate, ranked, guard, model_id, explanation=None, *, similarities=(), state='none', retrieval='keyword', benign_evidence=False,
