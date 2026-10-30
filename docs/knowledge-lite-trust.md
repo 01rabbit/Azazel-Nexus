@@ -151,9 +151,10 @@ pinned for the previous commissioning are refused rather than carried across,
 because *"these were the right keys for the node this used to be"* is not an
 argument for trusting them now.
 
-**Pinning happens once.** `pin` refuses to overwrite. Replacing the set is
-`repin`, which records why and who — the rule `lite_generation.py` applies to a
-rollback, for the same reason.
+**Pinning happens once.** `pin` refuses to overwrite, and the enrollment
+(`lite_enrollment.enroll`, the shipped first registration) refuses an
+enrolled root. Replacing the set is `repin`, which records why and who — the
+rule `lite_generation.py` applies to a rollback, for the same reason.
 
 `TrustStore.repin(request, *, confirmation, ledger, now)` takes immutable
 `RepinRequest(new_anchor_path: Path, reason: str, principal: str)` and
@@ -345,7 +346,10 @@ and commissioner-owned trust at `/var/lib/azazel/lite-trust`. It reuses the
 revocation reader here, not this module's content-generation storage format.
 See [daemon status and root reconciliation](knowledge-lite-consumer.md#milestone-1-daemon-status)
 for the anchor/pin intersection, commissioning binding, reply vocabulary and
-read-only boundary. Import and repin are separate: repin goes through the
-commissioning CLI and daemon, while the initial pin and the import have no
-shipped command and are run as library calls. See
+read-only boundary. Enrollment, import, repin and revocation acceptance are
+shipped commands ([ADR-0007](adr/0007-lite-trust-operations.md)): the import
+is the daemon's ROOT-only verb; enrollment, repin and revocation acceptance
+are root's `az-nexus-commission` transactions, each narrowed to the
+commissioning account and recorded in az-auditd before any change. A repin
+may replace the anchor with the keys (`trust-generations/N.anchors.toml`). See
 [first enrollment](knowledge-lite-consumer.md#11-first-enrollment-from-a-fresh-install-to-available).

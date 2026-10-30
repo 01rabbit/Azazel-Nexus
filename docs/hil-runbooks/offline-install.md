@@ -169,7 +169,7 @@ stat -c '%U %a' /opt/azazel-nexus/venv
 
 Expect every governed operational unit `masked` and inactive — the
 installer masks `azazel-commissiond.service`, `azazel-auditd.service`,
-`azazel-watchdog.service`, `azazel-edge-core.service`,
+`azazel-auditd-loop.service`, `azazel-watchdog.service`, `azazel-edge-core.service`,
 `azazel-edge-probed.service`, `azazel-incident-explaind.service`,
 `azazel-edge-intaked.service`, `azazel-model-fetchd.service`,
 `azazel-mio-locald.service`, `azazel-mio-remoted.service`,

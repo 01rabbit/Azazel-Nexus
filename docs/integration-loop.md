@@ -800,10 +800,12 @@ nothing in intake, detection or Edge's observe-only decisions.
   The two Knowledge Lite writers are bound like azexplain, in both
   directions: azknowledge may `audit.append` only the
   `knowledge.lite.import_*` types and azcommission only the
-  `knowledge.lite.revocation_*` types; every other uid, including root, is
-  refused for those types, and either account is refused for every other
-  type (`principal_denied`, fixed detail `bound_writer`)
-  ([knowledge-lite-consumer §11 step 7](knowledge-lite-consumer.md#step-7-first-import-knowledgeimport),
+  `knowledge.lite.revocation_*` and `knowledge.lite.trust_*` types (the
+  latter from root's trust transactions narrowed to azcommission,
+  [ADR-0007](adr/0007-lite-trust-operations.md)); every other uid, including
+  root, is refused for those types, and either account is refused for every
+  other type (`principal_denied`, fixed detail `bound_writer`)
+  ([knowledge-lite-consumer §11 step 6](knowledge-lite-consumer.md#step-6-first-import-knowledgeimport),
   [revocation](revocation.md#accepting-a-list-on-a-node)). A runtime upgraded without re-running
   install.sh refuses to start auditd and entryd, naming the missing group or
   leaf; see [the upgrade steps](operations.md#observe-only-edge-core-unit).

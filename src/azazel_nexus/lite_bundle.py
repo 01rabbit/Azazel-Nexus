@@ -100,6 +100,7 @@ __all__ = [
     "SIGNATURE_MEMBER",
     "SUPPORTED_FORMATS",
     "TrustAnchors",
+    "parse_anchors",
     "read_anchors",
     "verify_bundle",
 ]
@@ -273,6 +274,12 @@ def read_anchors(path: Path) -> TrustAnchors:
         raise BundleRefused(
             Gate.ANCHORS, "ANCHORS_UNREADABLE", f"the trust anchor could not be read: {exc}"
         ) from exc
+    return parse_anchors(raw)
+
+
+def parse_anchors(raw: bytes) -> TrustAnchors:
+    """The bytes of an `anchors.toml`, read by exactly the rules of `read_anchors`."""
+
     try:
         document = tomllib.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:

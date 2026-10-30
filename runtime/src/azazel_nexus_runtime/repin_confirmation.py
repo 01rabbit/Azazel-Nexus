@@ -5,8 +5,10 @@ confirmation consumes its challenge even when it fails. The operation receives
 an immutable copy of the bytes whose fingerprint the operator confirmed.
 
 Interactive confirmation guards human intent against accidental/non-root use,
-not against a malicious root process. A ROOT socket caller receives both the
-nonce and confirmation words and can confirm without the CLI or a TTY.
+not against a malicious root process. A ROOT caller receives both the nonce
+and confirmation words and can confirm without the CLI or a TTY. The shipped
+CLI (`lite_trust_ops.run_repin`) drives this class in its own narrowed
+process; `az-commissiond` serves the same two verbs on its socket.
 """
 
 from __future__ import annotations
@@ -204,82 +206,3 @@ class RepinConfirmation:
                     if result is not None:
                         result["cleanup_failed"] = True
         return result
-
-
-def _exchange(verb: str, arguments: dict) -> dict:
-    """One fixed local socket, authenticating the installed daemon account."""
-    import grp
-    import json
-    import pwd
-    import socket
-
-    from .principal import peer_credentials, verify_socket
-    from .runtime_paths import socket_path
-    from .transport import read_frame, send_frame
-
-    path = socket_path("commission")
-    uid = pwd.getpwnam("azcommission").pw_uid
-    gid = grp.getgrnam("azazel-operator").gr_gid
-    verify_socket(path, expected_uid=uid, expected_gid=gid)
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-        connection.settimeout(5.0)
-        connection.connect(str(path))
-        pid, peer_uid, _peer_gid = peer_credentials(connection)
-        if peer_uid != uid or pid <= 0:
-            _refuse()
-        send_frame(connection, {"verb": verb, "arguments": arguments})
-        connection.shutdown(socket.SHUT_WR)
-        response = json.loads(read_frame(connection))
-    if (type(response) is not dict or response.get("ok") is not True
-            or type(response.get("result")) is not dict):
-        _refuse()
-    return response["result"]
-
-
-def run_interactive(reason: str) -> int:
-    """Guard human intent with fresh words on a TTY, not against malicious root.
-
-    A ROOT process can echo the socket challenge directly without this CLI.
-    """
-    import re
-    import sys
-
-    if reason not in REASONS:
-        print("Choose rotation, recovery or compromise.", file=sys.stderr)
-        return 2
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        print("Trust replacement requires a local interactive terminal.", file=sys.stderr)
-        return 1
-    try:
-        result = _exchange("trust.repin.challenge",
-                           {"reason": reason, "new_anchor_file": ANCHOR_FILENAME})
-        nonce = result.get("nonce")
-        words = result.get("confirmation_words")
-        digest = result.get("new_fingerprint")
-        # Validate every displayed daemon field; never render arbitrary text
-        # from a response, including exception or key parser output.
-        if (result.get("reason") != reason
-                or not isinstance(nonce, str)
-                or re.fullmatch(r"sha256:[0-9a-f]{64}", nonce) is None
-                or not isinstance(digest, str)
-                or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
-                or not isinstance(words, str)
-                or re.fullmatch(r"REPIN-TRUST-[0-9a-f]{16}", words) is None):
-            _refuse()
-        print(f"Reason: {reason}\nNew anchor file fingerprint: {digest}")
-        print(f"Type {words} to replace the pinned trust anchors.")
-        echo = input("Confirmation: ")
-        if (not (sys.stdin.isatty() and sys.stdout.isatty())
-                or not hmac.compare_digest(echo, words)):
-            _refuse()
-        outcome = _exchange("trust.repin.confirm", {"nonce": nonce, "echo": echo})
-        if (outcome.get("promoted") is not True
-                or type(outcome.get("generation")) is not int
-                or outcome["generation"] < 0):
-            _refuse()
-        print(f"Trust anchors replaced; generation {outcome['generation']}.")
-        return 0
-    except (OSError, ValueError, TypeError, LookupError, RuntimeError,
-            RequestRefused, EOFError, KeyboardInterrupt, AttributeError):
-        print("Trust replacement refused or interrupted.", file=sys.stderr)
-        return 1

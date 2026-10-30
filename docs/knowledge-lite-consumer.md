@@ -301,32 +301,30 @@ gate.
 
 ## 11. First enrollment: from a fresh install to `available`
 
-The order a fresh node takes to reach `state: available`, using only routes
-that exist in this repository (#93). One step has **no shipped entrypoint**:
-the initial pin. Its exact minimal library call is given and it is run by
-hand, as root. The import is the ROOT-only `knowledge.import` verb of
-`az-knowledge-lited` (assess-c P4). No step below adds a flag, environment
-variable or approval.
+The order a fresh node takes to reach `state: available`, with the shipped
+entries only (#93; [ADR-0007](adr/0007-lite-trust-operations.md) since
+2026-10-30). The trust root is registered by one audited transaction,
+`az-nexus-commission trust-enroll`, and the bundle is imported by
+`az-knowledge-lited`'s ROOT-only `knowledge.import`. No step below adds a
+flag, environment variable or approval.
 
 | step | what | route | who |
 | --- | --- | --- | --- |
 | 1 | directories | `packaging/install.sh` | root |
-| 2 | `anchors.toml`, twice | file write, no entrypoint | root |
-| 3 | initial pin | `TrustStore.pin`, root-run library call | root |
-| 4 | `trust.json` owner and mode | `chown` / `chmod` | root |
-| 5 | revocation policy | `az-nexus-commission trust-repin` → `az-commissiond` → `TrustStore.repin` | root |
-| 6 | bundle in the inbox | file copy | root |
-| 7 | first import | `az-nexus-commission knowledge-import` → `az-knowledge-lited` `knowledge.import` → `LiteImport.import_entry` | root |
-| 8 | status | `azazel-nexus status`, `azazel-nexus setup` | root |
+| 2 | audit writer and Lite reader running | an activation grant whose policy names `azazel-auditd-loop.service` and `azazel-knowledge-lited.service` | root |
+| 3 | enrollment request | file write, fixed leaf | root |
+| 4 | first enrollment | `az-nexus-commission trust-enroll` → child as `azcommission` → `lite_enrollment.enroll` | root |
+| 5 | bundle in the inbox | file copy | root |
+| 6 | first import | `az-nexus-commission knowledge-import` → `az-knowledge-lited` `knowledge.import` → `LiteImport.import_entry` | root |
+| 7 | status | `azazel-nexus status`, `azazel-nexus setup` | root |
+| 8 | store-local anchor, only for a Mission Pack on this store | file copy | root |
 
-Status reports reason `trust_unreadable` on a fresh install, `unverified`
-after step 4, `no_bundle` after step 5 and `available` after step 7.
-`tests/unit/test_knowledge_lite_enrollment.py` runs the calls and documents
-below against the library in that order and checks those four reasons.
-These are the reasons `azknowledge`, the account `knowledge-lited` runs as,
-reads. Run as root, status and setup can read the `0600` `trust.json` that
-step 3 writes, so they already report `unverified` and `knowledge-trust: done`
-after step 3, while `azknowledge` still reads `trust_unreadable` until step 4.
+Status reports reason `trust_unreadable` on a fresh install, `no_bundle`
+after step 4 and `available` after step 6.
+`tests/unit/test_knowledge_lite_enrollment.py` runs the documents and calls
+below against the production code in that order and checks those three
+reasons; `tools/e2e_lite_trust.py` runs them with the real accounts and
+daemons as root.
 
 ### Step 1: directories
 
@@ -334,89 +332,36 @@ The installer creates `/var/lib/azazel/lite-trust` as
 `azcommission:azknowledge` `2750`, `/var/lib/azazel/knowledge` as
 `azknowledge:azazel-operator` `2750` and `/etc/azazel/commissioning` as
 `root:azcommission` `0750` ([layout.py](../src/azazel_nexus/layout.py)). It
-creates no trust file, key, anchor or inbox, and it masks
-`azazel-commissiond.service`.
+creates no trust file, key, anchor or inbox, and it masks every governed
+unit.
 
-### Step 2: `anchors.toml`, at both roots
+### Step 2: the audit writer and the Lite reader
 
-`anchors.toml` is TOML read by `lite_bundle.read_anchors`. `[keys]` maps a key
-ID to a 32-byte Ed25519 public key in hex. `threshold` defaults to 1.
-`key_roles`, `revoked`, `required_signer_role`, `minimum_security_epoch` and
-`accepted_export_policy_digests` are optional. The key ID must be the one the
-bundle's `manifest.sig` names.
+Both the enrollment and the import record themselves in az-auditd before
+they change anything, and are refused without it. On the ordinary path the
+writer is `azazel-auditd-loop.service`
+([ADR-0007](adr/0007-lite-trust-operations.md) D1); it runs only under an
+activation grant, like `azazel-knowledge-lited.service`. Name both in the
+activation policy, publish the generation and sign the approval
+([activation rehearsal](hil-runbooks/activation-rehearsal.md)); the next
+boot's pass grants them. A node that has run only the supporting-only
+bootstrap has no commissioning evidence yet, and step 4 refuses there
+(`evidence_unavailable`).
 
-```toml
-threshold = 1
-[keys]
-"site-bundle" = "<bundle public key hex>"
-```
+### Step 3: the enrollment request
 
-Write the same file twice. They are read by different code:
-
-- `/var/lib/azazel/lite-trust/trust/anchors.toml` is read by status, setup and
-  `knowledge-lited`. Its keys are intersected with the pin. Repin also checks
-  it against the revocation policy's roles.
-- `/var/lib/azazel/knowledge/trust/anchors.toml` is the only anchor
-  `import_entry` verifies against (`CommissionedLite.anchors_path`).
-
-```sh
-sudo install -d -m 2750 -o root -g azknowledge /var/lib/azazel/lite-trust/trust
-sudo install -m 0640 -o root -g azknowledge anchors.toml /var/lib/azazel/lite-trust/trust/anchors.toml
-sudo install -d -m 2750 -o root -g azknowledge /var/lib/azazel/knowledge/trust
-sudo install -m 0640 -o root -g azknowledge anchors.toml /var/lib/azazel/knowledge/trust/anchors.toml
-```
-
-`azknowledge` reads both copies. `az-commissiond` reads the trust-root copy
-through its supplementary `azknowledge` group; if it cannot read it, repin is
-refused.
-
-### Step 3: initial pin (no shipped entrypoint)
-
-No command calls `TrustStore.pin`. Root runs it once:
-
-```sh
-sudo /opt/azazel-nexus/venv/bin/python -I -c '
-import sys
-from pathlib import Path
-from azazel_nexus.lite_trust import TrustStore
-TrustStore(Path("/var/lib/azazel/lite-trust")).pin(
-    [sys.argv[1]], commissioning_digest=sys.argv[2], pinned_at=sys.argv[3], actor="root")
-' "<bundle public key hex>" "<commissioning digest>" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-```
-
-`pin` refuses if anything is already pinned, an empty key list, a malformed
-key and the published fixture key (`PUBLIC_FIXTURE_KEY`, §9). The commissioning digest is a binding label: status reads it back from the
-trust record and requires the revocation policy record to carry the same value,
-and repin copies it forward. Nothing on the Knowledge Lite path compares it
-with a commissioning record, and the code does not say which record supplies
-it. Use the digest of the commissioning this node runs under. A node that
-has only run the supporting-only bootstrap (variant `bootstrap/uncommissioned`)
-has no commissioning record to take it from.
-
-### Step 4: owner and mode of `trust.json`
-
-```sh
-sudo chown azcommission:azknowledge /var/lib/azazel/lite-trust/trust.json
-sudo chmod 0640 /var/lib/azazel/lite-trust/trust.json
-```
-
-`pin` writes `trust.json` as root with mode `0600`. Repin runs as the
-non-root `azcommission` and gives every file it writes `trust.json`'s owner,
-group and mode, so `trust.json` must already be `azcommission`'s. After this
-step `azknowledge` can read it too, and its reader moves from `trust_unreadable`
-to `unverified`. Root-run setup already reports `knowledge-trust: done` after
-step 3. Status reports `unverified` for both, because no revocation policy
-exists yet and a missing policy fails closed.
-
-### Step 5: revocation policy, through repin
-
-The first revocation policy is introduced by a repin. The anchor document
-keeps the pinned bundle key(s) and adds `revocation_policy`. Unchanged bundle
-keys with a new policy count as a change, so the repin is accepted.
+One closed JSON document (schema `azazel-nexus/lite-enrollment/v1`) names
+everything the trust root will hold. Public keys only, as 64 lowercase hex
+digits; key ids from `[A-Za-z0-9._-]` (the id the bundle's `manifest.sig`
+names).
 
 ```json
 {
-  "keys": ["<bundle public key hex>"],
+  "schema": "azazel-nexus/lite-enrollment/v1",
+  "commissioning_digest": "<commissioning digest>",
+  "keys": {"site-bundle": "<bundle public key hex>"},
+  "threshold": 1,
+  "minimum_security_epoch": 0,
   "revocation_policy": {
     "keys": {"site-revoker": "<revocation public key hex>"},
     "key_roles": {"site-revoker": "revocation-signing"},
@@ -426,40 +371,70 @@ keys with a new policy count as a change, so the repin is accepted.
 }
 ```
 
-The revocation key must differ from every bundle key. Repin needs
-`az-commissiond` running. The installer masks it. The only shipped start is
-the supporting-only bootstrap, whose units are auditd and commissiond
-([activation design](activation-observe-baseline.md)). This document does not
-unmask it.
+Optional fields: `key_roles` (a role per bundle key id), `required_signer_role`
+and `accepted_export_policy_digests` (a list of `sha256:` digests). The
+request is refused, and nothing is written, when:
+
+- `threshold` is not an integer from 1 to the number of bundle keys that can
+  meet it (those holding `required_signer_role` when it is set): zero, a
+  negative number, `true`, `"1"` and a threshold above the keys are all
+  `threshold_invalid`; the revocation threshold likewise against the
+  revocation keys;
+- a key holds both roles, by material or id, or a bundle key is given the
+  role `revocation-signing` (`role_conflict`);
+- any key is the published fixture key (`public_fixture_key`, §9);
+- `commissioning_digest` is not the digest of this node's verified
+  commissioning (`binding_mismatch`), or the evidence cannot be verified
+  (`evidence_unavailable`): the digest is the SHA-256 of the signed full
+  commissioning proposal, the same value the activation generation and
+  approval carry (`observe_baseline.evidence_commissioning_digest`);
+- anything else is outside the closed shape (`request_invalid`).
 
 ```sh
-sudo install -m 0640 -o root -g azcommission repin-anchor.json /etc/azazel/commissioning/repin-anchor.json
-sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus_runtime.commission_cli trust-repin --reason rotation
+sudo install -m 0640 -o root -g azcommission lite-enrollment.json /etc/azazel/commissioning/lite-enrollment.json
+```
+
+### Step 4: first enrollment (`trust-enroll`)
+
+```sh
+sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus_runtime.commission_cli trust-enroll
 ```
 
 `sudo` replaces `PATH` with its `secure_path`, which does not contain the venv,
-so a bare `az-nexus-commission` or `azazel-nexus` is not found under `sudo`.
-This line and step 8 run the console scripts' modules with the venv's
-interpreter instead, as the [activation rehearsal](hil-runbooks/activation-rehearsal.md)
+so a bare `az-nexus-commission` or `azazel-nexus` is not found under `sudo`;
+this procedure runs the console scripts' modules with the venv's interpreter
+instead, as the [activation rehearsal](hil-runbooks/activation-rehearsal.md)
 does.
 
-The CLI needs a local terminal and asks you to type fresh confirmation words
-([trust repin](trust-repin.md)). The reason must be `rotation`, `recovery` or
-`compromise`. None of the three names a first introduction; this procedure
-uses `rotation`. On success it prints
-`Trust anchors replaced; generation 1.` and writes `trust-current`,
-`trust-generations/1.json` and `trust-generations/1.revocation.json`. It also
-leaves its reservation file `trust-reserved` and an empty `trust-staging`
-directory beside them; every file has `trust.json`'s owner, group and mode,
-and the directories are `0750`. The
-commissioning ledger records `trust.repin.authorized` and
-`trust.repin.promoted`. Status now reports `no_bundle`.
+The command needs a local terminal. It verifies the node's commissioning
+evidence, shows the request digest, the key counts, the thresholds, the
+epoch, the export policies and whether the binding matches, and asks you to
+type fresh confirmation words. Then a child process that has become
+`azcommission` (the commissioning daemon's account and groups, no way back to
+root) records `knowledge.lite.trust_enroll_requested` in az-auditd, writes
+`trust/anchors.toml`, `revocation-policy.json` and, last, `trust.json` (all
+`0640`, the directory `2750`, owner `azcommission`, group `azknowledge`), and
+records `knowledge.lite.trust_enrolled`. It prints one JSON object of fixed
+words and numbers (`enrolled`, `code`, `bundle_keys`, `threshold`,
+`revocation_keys`, `trust_fingerprint`, `audit_complete`) and exits 0 only
+for an enrollment whose records both reached auditd.
 
-`revocation_policy.commission_policy` is not part of this procedure. No
-production code calls it. Only the lab provisioning and the end-to-end fixture
-call it ([revocation](revocation.md)).
+- If auditd does not take the first record, nothing is written
+  (`audit_unavailable`).
+- If the request file changed after you confirmed it, nothing is written
+  (`request_changed`).
+- A root already enrolled is refused (`already_enrolled`): later changes are
+  `trust-repin` ([trust repin](trust-repin.md)) and
+  `knowledge-revocation-accept` ([revocation](revocation.md)).
+- **Interrupted.** Until `trust.json` is renamed into place, no reader trusts
+  the root (status `trust_unreadable`). Run the same command again: it
+  replaces exactly what the interrupted run left and completes. Anything
+  else in the root refuses the request (`trust_root_not_empty`) and needs
+  inspection.
 
-### Step 6: the bundle in the inbox
+Status now reports `no_bundle`.
+
+### Step 5: the bundle in the inbox
 
 The installer creates no inbox.
 
@@ -474,17 +449,17 @@ The SHA-256 hex is the entry id (§7). The store is `2750` and the bundle
 `azazel-operator` cannot read it; the checksum runs as root like every other
 line of this procedure.
 
-### Step 7: first import (`knowledge.import`)
+### Step 6: first import (`knowledge.import`)
 
 Root asks `az-knowledge-lited` to import the entry. The daemon runs as the
 store owner `azknowledge`, which the import requires, and is the only shipped
 importer: its `knowledge.import` verb, on the operator socket only and for
 ROOT only, takes the entry id and nothing else. It verifies the bundle against
-the commissioned trust root it serves from (the pin, the trust-root
-`anchors.toml` and the cumulative revocation list; never the store-local
-copy) and appends `knowledge.lite.import_*` records to `az-auditd` through
-auditd's append-only `audit-submit` listener. The start is recorded before
-the store is touched: if auditd cannot record it, the import is refused with
+the commissioned trust root it serves from (the pin, the anchor that goes with
+it and the cumulative revocation list; never the store-local copy) and
+appends `knowledge.lite.import_*` records to `az-auditd` through auditd's
+append-only `audit-submit` listener. The start is recorded before the store
+is touched: if auditd cannot record it, the import is refused with
 `audit_unavailable` and the store is not changed. Every other refusal
 (`refused` below) admits, quarantines and moves nothing and leaves the
 watermark as it was; the store directories may already have been tightened
@@ -497,22 +472,20 @@ list that lands while the bundle is verified is caught just before promotion
 sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus_runtime.commission_cli knowledge-import --entry "<entry id>"
 ```
 
-The daemon must be running (an activation grant, or on a disposable VM the
-rehearsal-only start named in step 8), and so must auditd. The command prints
-one JSON object of fixed words and numbers: `outcome` (`admitted`,
-`quarantined`, `refused` or `failed`), `refused` (`not_in_inbox`,
-`entry_changed`, `state_untrusted`, `trust_unreadable`, `unverified`,
-`trust_changed`, `clock_untrusted` or `audit_unavailable`), `state`,
-`bundle_version`, `gate`, `code` and `audit_complete`. It exits 0 only for an
-admitted bundle whose records all reached auditd. A refused bundle is
-quarantined; a bundle whose digest, generation or signing key the revocation
-list names is quarantined with `BUNDLE_REVOKED`, so a revoked bundle never
-replaces the admitted one or raises the watermark. An import holds the
-daemon's single request loop while it verifies the archive, so status and
-lookup wait for it (lookups past their deadline read as Knowledge
+The command prints one JSON object of fixed words and numbers: `outcome`
+(`admitted`, `quarantined`, `refused` or `failed`), `refused`
+(`not_in_inbox`, `entry_changed`, `state_untrusted`, `trust_unreadable`,
+`unverified`, `trust_changed`, `clock_untrusted` or `audit_unavailable`),
+`state`, `bundle_version`, `gate`, `code` and `audit_complete`. It exits 0
+only for an admitted bundle whose records all reached auditd. A refused
+bundle is quarantined; a bundle whose digest, generation or signing key the
+revocation list names is quarantined with `BUNDLE_REVOKED`, so a revoked
+bundle never replaces the admitted one or raises the watermark. An import
+holds the daemon's single request loop while it verifies the archive, so
+status and lookup wait for it (lookups past their deadline read as Knowledge
 unavailable, which never blocks the deterministic path).
 
-### Step 8: status
+### Step 7: status
 
 ```sh
 sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus.cli status
@@ -521,77 +494,42 @@ sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus.cli setup
 
 Status shows `state: available` and `reason: available`. Setup shows
 `knowledge-store: done` and `knowledge-trust: done`. `knowledge.status` from
-`knowledge-lited` uses the same reader. That unit is masked at install, and
-step 7 needs it running; this procedure does not start it. The regular start
-is an activation grant. A disposable VM may use the rehearsal-only start of the
-[integrated loop rehearsal §6](hil-runbooks/integration-loop-rehearsal.md#6-rehearsal-only-start-alternative-to-activation),
-which needs the controller `inactive`; that start is not a substitute for an
-activation grant, and the run record must say the rehearsal-only start was
-used.
+`knowledge-lited` uses the same reader.
+
+### Step 8: the store-local anchor (Mission Pack only)
+
+`azazel-nexus pack` and the library import without commissioned trust read
+`/var/lib/azazel/knowledge/trust/anchors.toml`, not the trust root. The
+daemon import and status never read it. Only when a Mission Pack names this
+store, copy the enrolled anchor there:
+
+```sh
+sudo install -d -m 2750 -o root -g azknowledge /var/lib/azazel/knowledge/trust
+sudo install -m 0640 -o root -g azknowledge /var/lib/azazel/lite-trust/trust/anchors.toml /var/lib/azazel/knowledge/trust/anchors.toml
+```
+
+After a repin that replaces the anchor
+([trust repin](trust-repin.md#replacing-the-anchor-with-the-keys)), copy
+`/var/lib/azazel/lite-trust/trust-generations/N.anchors.toml` the same way.
 
 ### What was rehearsed
 
-Steps 1 to 8 ran in order in a disposable Debian trixie container (aarch64,
-2026-10-24), with the installer's `--without-service-manager` mode (accounts
-and owners created). Keys were generated inside the container for this run
-and never written to disk. The four reasons above were observed in order.
-`az-commissiond` ran its own `main()` as `azcommission` with the
-`azknowledge` group and umask `0027`, outside systemd: the harness `ready`
-argument replaced only the systemd notification. Its real socket served the
-real `az-nexus-commission trust-repin`, driven through a pseudo-terminal. The
-systemd sandbox, the bootstrap start of commissiond and `knowledge-lited` were
-not exercised. **This is container evidence, not hardware evidence.**
+On 2026-10-30 (ADR-0007) steps 3 to 7 ran with the real accounts and daemons
+in a disposable Debian 13 container as root (`tools/e2e.py`, stages
+"Knowledge Lite trust enrollment" and "Knowledge Lite import, repin,
+revocation and audit stop"): az-auditd as `azaudit`, az-knowledge-lited as
+`azknowledge`, the enrollment child as `azcommission`, keys generated for
+the run and never written to disk. The commissioning evidence was supplied to
+the transaction (the container has no signed full commissioning); the real
+`trust-enroll` entry on a pseudo-terminal refused there with
+`evidence_unavailable`. **Container evidence of real processes, not of
+systemd, a VM or hardware.**
 
-On 2026-10-24 the same order was taken on the Debian 13 test VM (arm64,
-systemd 257, VMware) under real systemd, with a VM-only rehearsal operator and
-VM-only keys, all destroyed afterwards. Steps 1 to 4 ran as written and gave
-`trust_unreadable` then `unverified` (for root already after step 3, see
-above). Step 5 could not be reached: the supporting-only bootstrap stopped
-before controller READY. The controller was killed at its `TimeoutStartSec`
-twice, auditd and commissiond stayed masked and never started, so the
-commissiond sandbox, the repin under it, steps 6 to 8 and `knowledge-lited`
-were not exercised there. That stop is recorded on #93; it is not a fault of
-this procedure. **VM software rehearsal, not hardware evidence.**
-
-On 2026-10-25 the order was taken twice more on the same VM, each time with
-new VM-only keys, destroyed afterwards. Both runs gave the same
-steps 1 to 4 as above. Pinning those keys to reach `available` exercised this
-enrollment procedure on a disposable VM only: the keys were made for that VM
-alone and destroyed, the VM was reverted to its snapshot, and the result is
-neither an owner approval nor hardware evidence. It is not the integrated
-loop run for which
-[integrated loop rehearsal §7](hil-runbooks/integration-loop-rehearsal.md#7-knowledge-lite)
-forbids pinning run-generated keys.
-
-- After #328 (main `64ff89e`) the controller published the auditd/commissiond
-  overlay about 6.6 s after it started, inside `TimeoutStartSec`, but the
-  loaded-unit inspection then refused commissiond (`loaded bootstrap
-  observation refused: service property`): it pinned `SupplementaryGroups` to
-  none, while commissiond's profile carries `azknowledge`. The controller
-  withdrew the overlay and exited before READY; both units stayed masked and
-  the audit ledger did not change. #330 fixed the pin.
-- After #330 (main `387ea0d`) the controller reached READY about 8.9 s after
-  it started, auditd was active at about 15.9 s and commissiond at about
-  26.4 s. Commissiond ran from the bootstrap overlay as `azcommission` with
-  the supplementary group `azknowledge`, umask `0027`, `ProtectSystem=strict`
-  and `ReadWritePaths=` its run and state leaves and
-  `/var/lib/azazel/lite-trust`. Step 5's repin, through the real CLI on a
-  pseudo-terminal, printed `Trust anchors replaced; generation 1.` and the
-  ledger recorded both events. Steps 6 to 8 then gave `no_bundle` and
-  `available`, so the four reasons were observed in order under real systemd.
-  No file under the trust root, the store or `/etc/azazel/commissioning`
-  was group- or other-writable. Stopping the controller ended the bootstrap
-  cleanly (both units stopped, overlay withdrawn). `knowledge-lited`, started
-  with the rehearsal-only start above and masked again afterwards, answered
-  `knowledge.status` with `state: available`, `reason_code: available`,
-  generation 1, and served one reference to a lookup; a query from root was
-  refused. A first attempt on that build was killed by the controller's
-  `WatchdogSec=30s` between the auditd and commissiond starts, at the moment
-  the VM's virtual disk logged a lost I/O completion; after a reboot the run
-  above passed. Step 6's checksum without `sudo` was refused for an account
-  outside `azazel-operator`, which is why it now runs as root.
-
-**VM software rehearsal, not hardware evidence.**
+Earlier runs of the hand procedure this section replaced (2026-10-24 in a
+container and on the Debian 13 test VM, 2026-10-25 twice more on the VM)
+are recorded in the history of this file and on #93. They reached
+`available` through the supporting-only bootstrap and the rehearsal-only
+start of `knowledge-lited`, not through an activation grant.
 
 ## Milestone 1 daemon status
 

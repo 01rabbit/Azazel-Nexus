@@ -792,6 +792,7 @@ class ServiceProfile:
 #: bootstrap starts those and writes no marker; they stay masked on the
 #: ordinary path and are bound to the controller (`BindsTo=`).
 GRANT_MARKER_UNITS = (
+    "azazel-auditd-loop.service",
     "azazel-decoy-netd.service",
     "azazel-decoy-nsd.service",
     "azazel-decoyd.service",
@@ -1495,6 +1496,44 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "Appends to a hash chain on local storage. It needs no capability "
             "and no network, and it is the single writer, so nothing else "
             "needs write access to the chain."
+        ),
+    ),
+    ServiceProfile(
+        # The ordinary path's audit writer (ADR 0007, 2026-10-30): the same
+        # program, account, chain, sockets and writable leaves as the
+        # bootstrap helper above, with the lifetime of a loop unit instead of
+        # the controller's. Granted by a pass like the other loop units (its
+        # marker), required by and ordered after the controller, and not
+        # bound to it: the controller exits right after READY, and a bound
+        # writer would stop with it, which is why the bootstrap helper could
+        # never serve the integrated loop. The helper itself is unchanged; the
+        # bootstrap's loaded-unit policy pins its `BindsTo=`. az-auditd takes
+        # a one-writer lock first, so the two can never write the chain at
+        # once.
+        unit="azazel-auditd-loop.service",
+        # Its own wrapper name for the same callable (`az-auditd-loop` in
+        # runtime/pyproject.toml), as every governed unit has.
+        executable="/usr/libexec/azazel/az-auditd-loop",
+        account="azaudit",
+        description="Azazel-Nexus audit ledger for the integrated loop",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/adr/0007-lite-trust-operations.md",
+        address_families=("AF_UNIX",),
+        read_write_paths=(
+            "/var/lib/azazel/run/audit",
+            "/var/lib/azazel/run/audit-submit",
+            "/var/lib/azazel/state/audit",
+            "/var/lib/azazel/state/auditd",
+        ),
+        optional_read_write_paths=("/var/lib/azazel/run/audit-status",),
+        after=(ACTIVATION_CONTROLLER_UNIT,),
+        requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition("azazel-auditd-loop.service"),
+        rationale=(
+            "Appends to the same hash chain as the bootstrap helper, for the "
+            "integrated loop: Knowledge Lite imports, trust maintenance and "
+            "incident records. No capability, no network, single writer by "
+            "lock. Granted by the pass and not bound to the controller, so it "
+            "outlives the controller's exit."
         ),
     ),
     ServiceProfile(

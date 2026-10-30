@@ -301,6 +301,7 @@ def test_the_current_generation_allowlist_and_grantable_set_are_unchanged():
     assert OBSERVE_BASELINE_SCHEMA == "azazel-nexus/observe-baseline-generation/v1"
     assert not set(ACTIVATION_UNIT_ALLOWLIST) & (EXPOSURE_UNITS | set(WATCH))
     assert GRANTABLE_UNITS == frozenset({
+        "azazel-auditd-loop.service",
         "azazel-decoy-netd.service", "azazel-decoy-nsd.service", "azazel-decoyd.service",
         "azazel-edge-core.service", "azazel-edge-intaked.service",
         "azazel-edge-probed.service", "azazel-incident-explaind.service",

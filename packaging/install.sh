@@ -251,7 +251,7 @@ fi
 # The unit files name these. An installer that enabled a unit whose ExecStart
 # does not exist would "succeed" into a boot failure, which is later and on
 # someone else's hardware.
-for binary in az-activated az-commissiond az-auditd az-watchdog az-edge-intaked az-incident-explaind az-edge-probed az-model-fetchd az-mio-locald az-mio-identity az-mio-remoted az-mio-entryd az-mio-referenced az-knowledge-lited az-decoy-netd az-decoyd az-units-observe az-noc-observe az-ui; do
+for binary in az-activated az-commissiond az-auditd az-auditd-loop az-watchdog az-edge-intaked az-incident-explaind az-edge-probed az-model-fetchd az-mio-locald az-mio-identity az-mio-remoted az-mio-entryd az-mio-referenced az-knowledge-lited az-decoy-netd az-decoyd az-units-observe az-noc-observe az-ui; do
     if [ ! -x "$LIBEXEC/$binary" ]; then
         echo "refusing to install: $LIBEXEC/$binary is missing." >&2
         echo "Install azazel-nexus and azazel-nexus-runtime into the stable" >&2
@@ -446,6 +446,9 @@ install -d -m 0755 "$UNIT_DIR" "$PRESET_DIR"
 install -m 0644 "$HERE"/systemd/azazel-activated.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-commissiond.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-auditd.service "$UNIT_DIR"
+# The integrated loop's audit writer (ADR 0007): az-auditd again, granted by
+# the ordinary pass. Masked below like every governed unit.
+install -m 0644 "$HERE"/systemd/azazel-auditd-loop.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-watchdog.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-edge-core.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-edge-probed.service "$UNIT_DIR"
@@ -518,6 +521,7 @@ systemctl daemon-reload
 # it, which it does only against a generation whose digest it just re-derived.
 systemctl mask azazel-commissiond.service
 systemctl mask azazel-auditd.service
+systemctl mask azazel-auditd-loop.service
 systemctl mask azazel-watchdog.service
 systemctl mask azazel-edge-core.service
 systemctl mask azazel-edge-probed.service

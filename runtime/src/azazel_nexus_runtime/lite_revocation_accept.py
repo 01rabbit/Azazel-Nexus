@@ -153,7 +153,7 @@ class RevocationAcceptance:
         try:
             self.append({
                 "event_type": "knowledge.lite.revocation_accepted",
-                "statement_digest": digest, "sequence": accepted.sequence,
+                "statement_digest": digest, "list_sequence": accepted.sequence,
                 "generation": accepted.generation,
                 "revoked_digests": len(accepted.revoked_digests),
                 "revoked_generations": len(accepted.revoked_generations),

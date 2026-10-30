@@ -214,7 +214,9 @@ def test_key_material_never_reaches_reply_refusal_sink_or_journal(setup, monkeyp
     recorded = repr(events) + repr([conn.sent for conn in connections]) + output.out + output.err
     assert SENTINEL not in recorded and setup.key not in recorded
     assert len(events) == 2
-    assert not list(setup.snapshots.iterdir())
+    # The commissioning lock (`lite_trust_ops.trust_lock`) is the one file
+    # left there; no snapshot of the anchor is.
+    assert [path.name for path in setup.snapshots.iterdir()] in ([], ["trust.lock"])
 
 
 @pytest.mark.parametrize("error", [OSError("unreadable"), AttributeError("SO_PEERCRED")])

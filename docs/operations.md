@@ -467,6 +467,15 @@ and counted in `audit_forward_dropped` (the incident ledger keeps them), and
    azazel-nexus status
    ```
 
+**On the ordinary path (ADR-0007).** When the integrated loop runs, the
+chain's writer is `azazel-auditd-loop.service`, not the bootstrap helper
+named above. Stop that unit in step 1 instead (commissiond is not running).
+It is not started again in the same boot -- a `systemctl start` re-runs the
+activation pass, which fails closed while other granted units run -- so step
+6 is a reboot. Until then Knowledge Lite imports and trust changes are
+refused (`audit_unavailable`) and the explainer's records are dropped and
+counted as above.
+
 **Continuity between exports.** Segments are daily and appends never go to a
 day before the latest segment, so every segment older than the newest is
 closed and never changes. A later export therefore holds the earlier export's
@@ -518,9 +527,11 @@ The UI groups information by mission state rather than by internal service. Ever
 
 The boot-time `az-activated` pass can grant the five SUPPORTING loop units
 (`azazel-edge-intaked`, `azazel-incident-explaind`, `azazel-edge-probed`,
-`azazel-mio-entryd`, `azazel-knowledge-lited`) and, when the policy, generation
-and approval name it, the model-free playbook reference service
-`azazel-mio-referenced` (proposed 2026-10-28,
+`azazel-mio-entryd`, `azazel-knowledge-lited`), the loop's audit writer
+`azazel-auditd-loop` (2026-10-30, [ADR-0007](adr/0007-lite-trust-operations.md);
+needed for any Knowledge Lite import or trust change, see below) and, when the
+policy, generation and approval name it, the model-free playbook reference
+service `azazel-mio-referenced` (proposed 2026-10-28,
 [§6](activation-observe-baseline.md#6-owner-decisions); without it a deterministic
 handoff reports `reference_service_unavailable` and shows the fixed notice only)
 when every input of
@@ -608,6 +619,68 @@ launchable.
   [integrated loop rehearsal](hil-runbooks/integration-loop-rehearsal.md)
   still uses its rehearsal-only start.
 
+### Knowledge Lite trust operations while the loop runs (ADR-0007)
+
+Every Knowledge Lite change is recorded in az-auditd **before** it happens,
+and is refused when it cannot be. On the ordinary path the writer is
+`azazel-auditd-loop.service` ([ADR-0007](adr/0007-lite-trust-operations.md)),
+a loop unit like the others: to use any of the commands below, name it,
+with `azazel-knowledge-lited.service`, in `policy.json`, publish the
+generation, request and install the signed approval; the next boot's pass
+grants both. The bootstrap helper `azazel-auditd.service` and
+`azazel-commissiond.service` stay outside the loop. Each command runs as root
+on a local terminal; the inputs are fixed leaves that root installs
+`root:azcommission 0640` in `/etc/azazel/commissioning/`; no command takes a
+path, key or flag.
+
+| task | input leaf | command (`sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus_runtime.commission_cli ...`) |
+| --- | --- | --- |
+| first registration of the trust root | `lite-enrollment.json` | `trust-enroll` |
+| import a bundle | the store inbox (`knowledge/inbox/`) | `knowledge-import --entry <sha256 hex>` |
+| rotate or replace keys, with their anchor | `repin-anchor.json` | `trust-repin --reason {rotation,recovery,compromise}` |
+| accept a signed revocation list | `lite-revocations.signed` | `knowledge-revocation-accept` |
+
+- **Enrollment** binds the keys, roles, threshold (an integer from 1 to the
+  keys that can meet it), epoch, export policies and the revocation authority
+  to this node's verified commissioning, shows them, and asks for fresh
+  confirmation words. The request format and every refusal are in
+  [knowledge-lite-consumer §11](knowledge-lite-consumer.md#11-first-enrollment-from-a-fresh-install-to-available).
+- **Repin** asks for fresh words after showing the anchor file's fingerprint;
+  with `anchors` in the document the key ids and threshold change with the
+  keys ([trust repin](trust-repin.md#replacing-the-anchor-with-the-keys)).
+- **Revocation acceptance** asks nothing: the signed list is the authority
+  and only withdraws ([revocation](revocation.md#accepting-a-list-on-a-node)).
+- Enrollment, repin and revocation acceptance run in a child process that has
+  become `azcommission` (the commissioning daemon's account and groups); they
+  hold the commissioning lock, so a second one at the same time is refused
+  (`busy`), never queued.
+- Each prints one JSON object (or, for a repin, `Trust anchors replaced;
+  generation N.`) and exits 0 only when the change was made **and** its
+  records reached auditd. `audit_complete: false` with a change made means
+  the outcome record is missing: the change stands; the request record is in
+  the chain, and repin's commissioning ledger holds its promotion.
+
+**When auditd is not running.** `knowledge-import` prints `outcome: refused`,
+`refused: audit_unavailable`; `trust-enroll` and `knowledge-revocation-accept`
+print `code: audit_unavailable`; `trust-repin` prints `Trust replacement
+refused or interrupted.` Nothing in the store or the trust root has changed.
+`azazel-auditd-loop.service` is not restarted in the same boot: a
+`systemctl start` re-runs the activation pass, which then fails closed while
+other granted units run
+([§10.2 M-5](activation-observe-baseline.md#102-residual-risks)). Check the
+chain (`audit.verify`, or `azazel-nexus status`), fix the cause (capacity,
+a broken chain), and reboot; the next pass grants it again.
+
+**When a command was interrupted.** An enrollment stopped before it wrote
+`trust.json` leaves files no reader trusts (status `trust_unreadable`): run
+the same `trust-enroll` again; it replaces exactly that residue. A repin or
+revocation acceptance either moved the trust pointer or the list, or did
+not; read `azazel-nexus status` (Knowledge Lite reason), the chain's last
+`knowledge.lite.trust_*` / `knowledge.lite.revocation_*` record and, for a
+repin, `/var/lib/azazel/state/commission/commission.jsonl`, then repeat the
+command if nothing was promoted. An import stopped mid-way is the daemon's
+own recovery ([consumer §7](knowledge-lite-consumer.md)).
+
 ## Observe-only Edge Core unit
 
 `azazel-edge-core.service` is shipped masked and preset-disabled, runs as
@@ -639,8 +712,9 @@ for privacy, deadlines, rate/retention limits and fixed refusal codes.
 longer holds `azazel-operator`. auditd and M.I.O. entry each bind a second
 listener for it, in the `run/audit-submit` (`azaudit-submit`) and
 `run/mio-advise` (`azmio-advise`) leaves. `azazel-knowledge-lited` and
-`azazel-commissiond` also carry `azaudit-submit`, and auditd lets each record
-only its own Knowledge Lite import or revocation events (P4; see
+`azazel-commissiond` also carry `azaudit-submit` (as do root's trust
+transactions, narrowed to `azcommission`, ADR-0007), and auditd lets each
+record only its own Knowledge Lite import, revocation or trust events (P4; see
 [integration loop I2](integration-loop.md#i2--explanation-explain--implemented)). The installer creates the groups,
 the leaves and the units' new `ReadWritePaths`. An upgraded runtime on a node
 where install.sh was not re-run refuses to start auditd and

@@ -187,12 +187,14 @@ jobs:
           if os.geteuid() != 0:
               sys.exit("the report check unexpectedly executes as non-root")
           text = pathlib.Path(os.environ["REPORT_PATH"]).read_text()
-          for stage in ("install accounts", "CORE + Lite configurations"):
+          for stage in ("install accounts", "CORE + Lite configurations",
+                        "Knowledge Lite trust enrollment",
+                        "Knowledge Lite import, repin, revocation and audit stop"):
               if not re.search(r"^ok\s+" + re.escape(stage) + r"\s+\(", text, re.M):
                   sys.exit(f"root harness did not execute required stage: {stage}")
           if re.search(r"^FAILED\s", text, re.M):
               sys.exit("the root harness report contains a failed stage")
-          print("root harness executed install accounts and CORE + Lite stages")
+          print("root harness executed install accounts, CORE + Lite and Lite trust stages")
           PY
 
   core-has-no-optional-dependency:

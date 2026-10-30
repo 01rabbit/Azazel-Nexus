@@ -1,12 +1,11 @@
-"""Root's two Knowledge Lite operations, each one request to an existing daemon.
+"""Root's Knowledge Lite import, one request to the daemon that owns the store.
 
 `az-nexus-commission knowledge-import --entry ID` asks `az-knowledge-lited`
-(operator socket, ROOT-only `knowledge.import`) to import one inbox entry.
-`az-nexus-commission knowledge-revocation-accept` asks `az-commissiond`
-(ROOT-only `trust.revocation.accept`) to accept the signed list root put at
-the fixed leaf. Neither command takes a path, a key, a policy or an override,
-and neither does the work itself: the daemon that owns the store does it and
-records it in `az-auditd`. Both print fixed words and numbers only.
+(operator socket, ROOT-only `knowledge.import`) to import one inbox entry. The
+command takes no path, key, policy or override and does not do the work
+itself: the daemon does it and records it in `az-auditd`. It prints fixed
+words and numbers only. Trust changes (enrollment, repin, revocation
+acceptance) are `lite_trust_ops`.
 """
 
 from __future__ import annotations
@@ -16,9 +15,7 @@ import os
 import re
 import sys
 
-from .lite_revocation_accept import REVOCATION_INPUT
-
-__all__ = ["run_import", "run_revocation_accept"]
+__all__ = ["run_import"]
 
 #: An import verifies the whole bounded archive inside the daemon.
 IMPORT_DEADLINE_S = 60
@@ -61,26 +58,3 @@ def run_import(entry_id: str) -> int:
         return 1
     _print(result)
     return 0 if result["outcome"] == "admitted" and result["audit_complete"] else 1
-
-
-def run_revocation_accept() -> int:
-    if os.geteuid() != 0:
-        print("knowledge-revocation-accept runs as root.", file=sys.stderr)
-        return 1
-    from .mio_socket_client import _exchange
-
-    try:
-        # The commissioning socket, authenticated as azcommission.
-        result = _exchange("commission", "azcommission", "trust.revocation.accept",
-                           {"revocation_file": REVOCATION_INPUT}, deadline_s=10)
-        if (set(result) != {"accepted", "code", "sequence", "audit_complete"}
-                or type(result["accepted"]) is not bool or not _word(result["code"])
-                or not (result["sequence"] is None or type(result["sequence"]) is int)
-                or type(result["audit_complete"]) is not bool):
-            raise ValueError("reply refused")
-    except Exception:  # noqa: BLE001 - fixed words only
-        print("Revocation acceptance refused or unavailable; nothing is reported as done.",
-              file=sys.stderr)
-        return 1
-    _print(result)
-    return 0 if result["accepted"] and result["audit_complete"] else 1

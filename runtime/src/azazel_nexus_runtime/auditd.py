@@ -108,6 +108,7 @@ from azazel_nexus.audit_status import (
 from azazel_nexus.edge_intake import ACTIONS
 from azazel_nexus.incident_explain import CLOSE_REASONS
 from azazel_nexus.lite_bundle import Gate
+from azazel_nexus.lite_enrollment import ENROLLMENT_REFUSAL_CODES
 from azazel_nexus.lite_import import IMPORT_REFUSAL_CODES, REVOCATION_REFUSAL_CODES
 
 from .principal import PrincipalClass
@@ -316,11 +317,55 @@ EVENT_SCHEMAS.update({
     ),
     "knowledge.lite.revocation_accepted": (
         Argument("statement_digest", ArgumentKind.DIGEST),
-        Argument("sequence", ArgumentKind.ORDINAL, maximum=_COUNT),
+        # The list's own sequence number. Not `sequence`: that is the chain
+        # position this daemon assigns (`ASSIGNED_BY_THE_DAEMON`), and a
+        # payload naming it is refused, so every accepted list went
+        # unrecorded until 2026-10-30 (`test_every_lite_schema_can_be_appended`).
+        Argument("list_sequence", ArgumentKind.ORDINAL, maximum=_COUNT),
         Argument("generation", ArgumentKind.ORDINAL, maximum=_COUNT),
         Argument("revoked_digests", ArgumentKind.ORDINAL, maximum=_COUNT),
         Argument("revoked_generations", ArgumentKind.ORDINAL, maximum=_COUNT),
         Argument("revoked_keys", ArgumentKind.ORDINAL, maximum=_COUNT),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
+})
+
+#: The Knowledge Lite trust maintenance transactions (ADR 0007): the first
+#: enrollment and a repin, run by root's `az-nexus-commission` as the
+#: commissioning account. The request is recorded before anything is written
+#: (`..._requested`); the outcome follows. Digests, counts and fixed codes only.
+_REPIN_REASONS = ("compromise", "recovery", "rotation")
+EVENT_SCHEMAS.update({
+    "knowledge.lite.trust_enroll_requested": (
+        Argument("request_digest", ArgumentKind.DIGEST),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
+    "knowledge.lite.trust_enroll_refused": (
+        Argument("request_digest", ArgumentKind.DIGEST),
+        Argument("code", ArgumentKind.ENUM, choices=ENROLLMENT_REFUSAL_CODES),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
+    "knowledge.lite.trust_enrolled": (
+        Argument("request_digest", ArgumentKind.DIGEST),
+        Argument("trust_fingerprint", ArgumentKind.DIGEST),
+        Argument("revocation_policy_fingerprint", ArgumentKind.DIGEST),
+        Argument("bundle_keys", ArgumentKind.ORDINAL, maximum=64),
+        Argument("threshold", ArgumentKind.ORDINAL, maximum=64),
+        Argument("revocation_keys", ArgumentKind.ORDINAL, maximum=64),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
+    "knowledge.lite.trust_repin_requested": (
+        Argument("anchor_digest", ArgumentKind.DIGEST),
+        Argument("reason", ArgumentKind.ENUM, choices=_REPIN_REASONS),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
+    "knowledge.lite.trust_repin_refused": (
+        Argument("anchor_digest", ArgumentKind.DIGEST),
+        Argument("occurred_at", ArgumentKind.TIMESTAMP),
+    ),
+    "knowledge.lite.trust_repin_promoted": (
+        Argument("anchor_digest", ArgumentKind.DIGEST),
+        Argument("generation", ArgumentKind.ORDINAL, maximum=_COUNT),
         Argument("occurred_at", ArgumentKind.TIMESTAMP),
     ),
 })
@@ -330,6 +375,7 @@ EVENT_SCHEMAS.update({
 BOUND_WRITERS: Mapping[str, str] = {
     "knowledge.lite.import_": "azknowledge",
     "knowledge.lite.revocation_": "azcommission",
+    "knowledge.lite.trust_": "azcommission",
 }
 
 #: What `audit.append` may carry, fixed before the daemon's own summary type
@@ -935,17 +981,21 @@ class AuditService:
                 or (incident and not is_explainer)):
             raise RequestRefused(Refusal.PRINCIPAL_DENIED, "incident_writer")
         event_type = str(arguments.get("event_type", ""))
-        for prefix, writer in self._bound_writer_uids.items():
-            # Both directions, as for the explainer above. Only the daemon that
-            # performed the transition may record it (a missing account means
-            # nobody may: the absent case fails closed), and that daemon's
-            # account may record nothing else: it reaches this chain only to
-            # record its own Knowledge Lite transitions.
-            bound = event_type.startswith(prefix)
-            is_writer = (principal is not None and writer is not None
-                         and principal.uid == writer)
-            if bound != is_writer or (is_writer and request.verb.name != "audit.append"):
-                raise RequestRefused(Refusal.PRINCIPAL_DENIED, "bound_writer")
+        # Both directions, as for the explainer above. Only the account that
+        # performed the transition may record it (a missing account means
+        # nobody may: the absent case fails closed), and a bound account may
+        # record nothing but the prefixes bound to it: it reaches this chain
+        # only to record its own Knowledge Lite transitions. One account may
+        # hold several prefixes (azcommission: revocations and trust changes).
+        uid = principal.uid if principal is not None else None
+        bound_to = [writer for prefix, writer in self._bound_writer_uids.items()
+                    if event_type.startswith(prefix)]
+        is_bound_writer = uid is not None and uid in {
+            writer for writer in self._bound_writer_uids.values() if writer is not None}
+        if ((bound_to and (uid is None or any(writer != uid for writer in bound_to)))
+                or (is_bound_writer and not bound_to)
+                or (is_bound_writer and request.verb.name != "audit.append")):
+            raise RequestRefused(Refusal.PRINCIPAL_DENIED, "bound_writer")
         if request.verb.name == "audit.bootstrap.observe":
             if not self.verified:
                 raise RequestRefused(Refusal.ARGUMENT_RANGE, "chain")
@@ -1081,6 +1131,42 @@ def _bind_event(event_type: str, payload: Mapping) -> dict:
     return event
 
 
+class SecondWriterRefused(RuntimeError):
+    """Another az-auditd holds the chain."""
+
+
+def hold_instance_lock(directory: Path) -> int:
+    """Take the one-writer lock on the chain directory itself, or refuse.
+
+    The bootstrap helper `azazel-auditd.service` and the ordinary path's
+    `azazel-auditd-loop.service` (ADR 0007) run this same program on the same
+    chain and sockets and are never meant to run together. Two would fork the
+    chain (the module docstring), so the second refuses before it reads,
+    binds or appends anything. The lock is an exclusive `flock` on the ledger
+    directory's own descriptor: no file is added to a directory whose every
+    entry the bootstrap check requires to be a segment. The descriptor is
+    returned and must stay open for the life of the process; the kernel
+    releases the lock when the process ends, so a crash never leaves the chain
+    locked.
+    """
+
+    import fcntl
+    import stat
+
+    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise SecondWriterRefused("the audit chain is not a directory")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SecondWriterRefused("another az-auditd holds the chain") from None
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
 def main(
     argv: Optional[Sequence[str]] = None,
     *,
@@ -1092,6 +1178,9 @@ def main(
     A broken chain is intentionally served without systemd readiness so an
     operator can inspect ``audit.verify``.  It must never be represented as a
     ready audit service; ``AuditService`` continues to refuse appends.
+
+    Before anything else it takes the one-writer lock (`hold_instance_lock`):
+    a second instance exits 1 without reading the chain or binding a socket.
     """
 
     from .principal import PrincipalPolicy, SERVICE_ACCOUNTS
@@ -1101,6 +1190,14 @@ def main(
     )
     from .serve import serve_forever
     from .systemd_notify import runtime_ready_callback
+
+    try:
+        lock = hold_instance_lock(ledger_dir())
+    except (OSError, SecondWriterRefused):
+        print("az-auditd: another audit writer holds the chain, or its lock is "
+              "unusable; this instance writes nothing.", file=sys.stderr, flush=True)
+        return 1
+    del lock  # held, deliberately, until the process ends
 
     service = AuditService(SegmentedLedger(ledger_dir()), status_path=audit_status_path(),
                            ui_status_path=ui_copy_path("audit_status"))

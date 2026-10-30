@@ -144,7 +144,12 @@ def test_no_governed_unit_runs_as_root():
     # without an ambient grant. The pass never grants either.
     assert [d.name for d in CORE_UNITS if d.account == "root"] == [
         "azazel-decoy-nsd.service", "azazel-decoy-netd.service"]
-    accounts = [d.account for d in CORE_UNITS if d.account != "root"]
+    # The audit pair shares azaudit (ADR 0007): one ledger daemon, two
+    # lifetimes, never both at once (az-auditd's one-writer lock).
+    assert [d.name for d in CORE_UNITS if d.account == "azaudit"] == [
+        "azazel-auditd.service", "azazel-auditd-loop.service"]
+    accounts = [d.account for d in CORE_UNITS
+                if d.account != "root" and d.name != "azazel-auditd-loop.service"]
     assert len(set(accounts)) == len(accounts), (
         "two governed daemons share an account, so a fault in one runs with "
         "the other's access"

@@ -89,14 +89,45 @@ def test_the_table_covers_every_unit_the_controller_governs():
 # -- accounts -------------------------------------------------------------
 
 
+#: The one pair of units that share an account (ADR 0007): the same ledger
+#: daemon in its two lifetimes, the bootstrap helper and the integrated
+#: loop's writer. They run one program on one chain and never together
+#: (az-auditd's one-writer lock), so neither reaches anything the other
+#: does not already hold.
+AUDIT_PAIR = ("azazel-auditd-loop.service", "azazel-auditd.service")
+
+
 def test_each_daemon_has_its_own_account():
     # root is the controller's and the decoy network helper's (#196 P1); every
-    # other daemon has an account of its own.
-    accounts = [profile.account for profile in PROFILES if profile.account != "root"]
+    # other daemon has an account of its own, except the audit pair.
+    accounts = [profile.account for profile in PROFILES
+                if profile.account != "root" and profile.unit != AUDIT_PAIR[0]]
     assert len(set(accounts)) == len(accounts), (
         "two daemons share an account, so a fault in one runs with the "
         "other's access"
     )
+    shared = sorted(p.unit for p in PROFILES if p.account == "azaudit")
+    assert tuple(shared) == AUDIT_PAIR
+
+
+def test_the_audit_pair_differs_only_in_lifetime():
+    """Same program, account, groups, families and writable leaves (ADR 0007)."""
+    loop, helper = (next(p for p in PROFILES if p.unit == unit) for unit in AUDIT_PAIR)
+    from azazel_nexus_runtime import hardening
+
+    for field in ("account", "address_families", "read_write_paths",
+                  "optional_read_write_paths", "supplementary_groups", "unit_type"):
+        assert getattr(loop, field) == getattr(helper, field), field
+    # The helper is bound to the controller and starts without a marker (the
+    # bootstrap starts it); the loop writer is granted like a loop unit and
+    # outlives the controller's exit.
+    assert helper.binds_to == (ACTIVATION_CONTROLLER_UNIT,) and loop.binds_to == ()
+    assert loop.requires == loop.after == (ACTIVATION_CONTROLLER_UNIT,)
+    assert loop.conditions == hardening._grant_condition(loop.unit)
+    assert loop.executable == "/usr/libexec/azazel/az-auditd-loop"
+    import tomllib
+    scripts = tomllib.loads((REPO_ROOT / "runtime/pyproject.toml").read_text())["project"]["scripts"]
+    assert scripts["az-auditd-loop"] == scripts["az-auditd"] == "azazel_nexus_runtime.auditd:main"
 
 
 def test_only_the_activation_controller_is_root():
@@ -482,10 +513,12 @@ def test_overlay_write_scope_and_boot_provisioning_order_are_controller_only():
         replace(controller, unit="azazel-other.service")
 
 
-#: Every governed unit except the bootstrap pair: the six loop units (§2 of
-#: docs/activation-observe-baseline.md) and the four other controller
-#: dependents (watchdog, fetch, local and remote model hosts).
+#: Every governed unit except the bootstrap pair: the loop units (§2 of
+#: docs/activation-observe-baseline.md, with the loop's audit writer since
+#: ADR 0007) and the four other controller dependents (watchdog, fetch,
+#: local and remote model hosts).
 GRANT_LOOP_UNITS = frozenset({
+    "azazel-auditd-loop.service",
     "azazel-decoy-netd.service",
     "azazel-decoy-nsd.service",
     "azazel-decoyd.service",

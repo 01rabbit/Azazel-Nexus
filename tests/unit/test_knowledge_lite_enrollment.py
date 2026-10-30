@@ -1,19 +1,19 @@
 """The first-enrollment procedure in the consumer document runs against the code (#93).
 
 docs/knowledge-lite-consumer.md §11 gives the order a fresh node takes to reach
-Knowledge Lite `available`, with the exact library calls for the two steps that
-have no shipped entrypoint. These tests take the calls, the anchor documents
-and the paths from the document itself and run them, in order, on a temporary
-root. A document that drifts from the code fails here rather than on a node.
+Knowledge Lite `available` through the shipped entries: the enrollment request
+(ADR-0007), `az-nexus-commission trust-enroll`, the inbox and
+`knowledge.import`. These tests take the request document, the commands and
+the paths from the document itself and run them, in order, on a temporary
+root through the production code; only the commissioning evidence, the
+narrowing to `azcommission` and the human's confirmation words are supplied
+(the root e2e stage `tools/e2e_lite_trust.py` runs those for real).
 
 Owners and modes are not applied, because these tests run as one user. Every
 `install`, `chown` and `chmod` the procedure prints is instead parsed and
 compared exactly with the owner and mode derived from layout.py (cross-checked
 against install.sh), and no step may grant group or other write or place key
-or secret material. The repin step
-goes through the production `RepinConfirmation` and `production_repin` with the
-runtime root relocated, as `test_runtime_repin_integration.py` does; the
-socket, the CLI's terminal and systemd are not exercised.
+or secret material.
 """
 
 from __future__ import annotations
@@ -28,20 +28,15 @@ import sys
 import tarfile
 from pathlib import Path
 
-import pytest
-from azazel_nexus_runtime import knowledge_lited, runtime_paths
+from azazel_nexus_runtime import knowledge_lited, lite_trust_ops, runtime_paths
 from azazel_nexus_runtime.knowledge_clock_floor import ClockFloor
 from azazel_nexus_runtime.lite_audit import ImportAudit
 from azazel_nexus_runtime.principal import PrincipalPolicy
 from azazel_nexus_runtime.transport import Request
-from azazel_nexus_runtime.repin_confirmation import (
-    ANCHOR_FILENAME,
-    REASONS,
-    RepinConfirmation,
-)
 from nacl.signing import SigningKey
 
 from azazel_nexus.layout import create_layout, spec_for
+from azazel_nexus.lite_enrollment import ENROLLMENT_FILENAME
 from azazel_nexus.lite_import import CommissionedLite, status_summary
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -69,27 +64,8 @@ def _blocks(text: str, language: str) -> list[str]:
     return re.findall(rf"```{language}\n(.*?)```", text, flags=re.S)
 
 
-def _python(step: str) -> str:
-    """The program a documented `python -I -c '...'` runs."""
-
-    (program,) = re.findall(r"python -I -c '\n(.*?)\n'", step, flags=re.S)
-    return program
-
-
 def _relocate(text: str, root: Path) -> str:
     return text.replace("/var/lib/azazel/", f"{root}/var/lib/azazel/")
-
-
-def _run(program: str, root: Path, *argv: str) -> int:
-    saved = sys.argv
-    sys.argv = ["-c", *argv]
-    try:
-        exec(compile(_relocate(program, root), "<doc>", "exec"), {"__name__": "__main__"})
-    except SystemExit as exit_:
-        return int(exit_.code or 0)
-    finally:
-        sys.argv = saved
-    return 0
 
 
 def _bundle(key: SigningKey, key_id: str) -> bytes:
@@ -120,94 +96,57 @@ def test_the_steps_are_the_eight_in_the_table() -> None:
     assert table == [str(n) for n in range(1, 9)]
 
 
-def test_the_documented_sequence_reaches_available(tmp_path, monkeypatch) -> None:
+def test_the_documented_sequence_reaches_available(tmp_path, monkeypatch, capsys) -> None:
     steps = _steps()
     monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
     create_layout(tmp_path)
     bundle_key, revoker = SigningKey.generate(), SigningKey.generate()
-    bundle_hex = bytes(bundle_key.verify_key).hex()
-    revoker_hex = bytes(revoker.verify_key).hex()
     reasons = [_reason(tmp_path)]
 
-    # Step 2: one anchors.toml, written at both roots the document names.
-    (anchors,) = _blocks(steps[2], "toml")
-    anchors = anchors.replace("<bundle public key hex>", bundle_hex)
-    key_id = re.search(r'^"([^"]+)" = ', anchors, flags=re.M).group(1)
-    targets = re.findall(r"anchors\.toml (/\S+/trust/anchors\.toml)", steps[2])
-    assert targets == [f"{LITE_TRUST}/trust/anchors.toml", f"{KNOWLEDGE}/trust/anchors.toml"]
-    for target in targets:
-        path = Path(_relocate(target, tmp_path))
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(anchors)
-    assert str(CommissionedLite(Path(KNOWLEDGE)).anchors_path) == targets[1]
+    # Step 3: the documented request, placed where the document places it.
+    (document,) = _blocks(steps[3], "json")
+    document = (document.replace("<bundle public key hex>", bytes(bundle_key.verify_key).hex())
+                .replace("<revocation public key hex>", bytes(revoker.verify_key).hex())
+                .replace("<commissioning digest>", DIGEST))
+    key_id = next(iter(json.loads(document)["keys"]))
+    (target,) = re.findall(r"lite-enrollment\.json (/etc/azazel/commissioning/\S+)", steps[3])
+    assert Path(target).name == ENROLLMENT_FILENAME
+    (tmp_path / target.lstrip("/")).write_text(document)
 
-    # Step 3: the root-run pin, exactly as printed.
-    assert _run(_python(steps[3]), tmp_path, bundle_hex, DIGEST, AS_OF) == 0
-    trust_json = tmp_path / LITE_TRUST.lstrip("/") / "trust.json"
-    assert trust_json.is_file()
-
-    # Step 4: the mode the document sets (owners need root and are not checked).
-    (mode,) = re.findall(r"chmod (0\d{3}) " + re.escape(f"{LITE_TRUST}/trust.json"), steps[4])
-    trust_json.chmod(int(mode, 8))
-    reasons.append(_reason(tmp_path))
-
-    # Step 5: the documented anchor document, through the production repin path.
-    (document,) = _blocks(steps[5], "json")
-    document = (document.replace("<bundle public key hex>", bundle_hex)
-                .replace("<revocation public key hex>", revoker_hex))
-    (target,) = re.findall(r"repin-anchor\.json (/etc/azazel/commissioning/\S+)", steps[5])
-    assert Path(target).name == ANCHOR_FILENAME
-    anchor = tmp_path / target.lstrip("/")
-    anchor.write_text(document)
-    (reason,) = re.findall(r"commission_cli trust-repin --reason (\w+)", steps[5])
-    assert reason in REASONS
-    confirmation = RepinConfirmation(commissioning_dir=anchor.parent,
-                                     snapshot_dir=runtime_paths.state_dir() / "commission",
-                                     now=lambda: AS_OF)
-    challenge = confirmation.challenge(PRINCIPAL, reason, ANCHOR_FILENAME)
-    outcome = confirmation.confirm(PRINCIPAL, challenge["nonce"], challenge["confirmation_words"])
-    assert outcome == {"promoted": True, "generation": 1}
+    # Step 4: the documented command reaches the production transaction.
+    (command,) = re.findall(r"-m (azazel_nexus_runtime\.commission_cli) (trust-enroll)\n", steps[4])
+    assert command == ("azazel_nexus_runtime.commission_cli", "trust-enroll")
+    recorded = []
+    monkeypatch.setattr(lite_trust_ops, "_is_root", lambda: True)
+    assert lite_trust_ops.run_enroll(evidence=lambda: DIGEST, confirm=lambda lines: True,
+                                     runner=lambda work: dict(work()),
+                                     append=recorded.append) == 0
+    assert [event["event_type"] for event in recorded] == [
+        "knowledge.lite.trust_enroll_requested", "knowledge.lite.trust_enrolled"]
+    printed = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    for field in printed:
+        assert f"`{field}`" in steps[4], field
     trust_root = tmp_path / LITE_TRUST.lstrip("/")
-    for name in ("trust-current", "trust-generations/1.json", "trust-generations/1.revocation.json"):
-        assert f"`{name}`" in steps[5]
-        assert (trust_root / name).is_file()
-    assert sorted(entry.name for entry in trust_root.iterdir()) == [
-        "trust", "trust-current", "trust-generations", "trust-reserved",
-        "trust-staging", "trust.json"]
-    for name in ("trust-reserved", "trust-staging"):
-        assert f"`{name}`" in steps[5]
-    # What repin leaves takes trust.json's owner, group and mode (files) and the
-    # directory mode the document states, and none of it is group/other-writable.
-    pinned = trust_json.stat()
-    (directory_mode,) = re.findall(r"the directories are `(0\d{3})`", _flat(steps[5]))
-    directory_mode = int(directory_mode, 8)
-    assert directory_mode & 0o022 == 0
-    for name in ("trust-current", "trust-reserved", "trust-generations/1.json",
-                 "trust-generations/1.revocation.json"):
-        observed = (trust_root / name).stat()
-        assert (observed.st_uid, observed.st_gid) == (pinned.st_uid, pinned.st_gid), name
-        assert stat.S_IMODE(observed.st_mode) == stat.S_IMODE(pinned.st_mode), name
-    for name in ("trust-generations", "trust-staging"):
-        observed = (trust_root / name).stat()
-        assert (observed.st_uid, observed.st_gid) == (pinned.st_uid, pinned.st_gid), name
-        assert stat.S_IMODE(observed.st_mode) == directory_mode, name
-    assert list((trust_root / "trust-staging").iterdir()) == []
+    for name in ("trust/anchors.toml", "revocation-policy.json", "trust.json"):
+        assert f"`{name}`" in _flat(steps[4]), name
+        assert stat.S_IMODE((trust_root / name).stat().st_mode) == 0o640, name
+    assert stat.S_IMODE((trust_root / "trust").stat().st_mode) == 0o2750
+    assert "`0640`, the directory `2750`" in _flat(steps[4])
     reasons.append(_reason(tmp_path))
 
-    # Step 6: the inbox the document names, and the entry id is the file's SHA-256.
-    (destination,) = re.findall(r"site-lite\.tar\.gz (/\S+)", steps[6])
+    # Step 5: the inbox the document names, and the entry id is the file's SHA-256.
+    (destination,) = re.findall(r"site-lite\.tar\.gz (/\S+)", steps[5])
     assert Path(destination).parent == CommissionedLite(Path(KNOWLEDGE)).inbox
     placed = Path(_relocate(destination, tmp_path))
     placed.parent.mkdir(parents=True, exist_ok=True)
     placed.write_bytes(_bundle(bundle_key, key_id))
     entry_id = hashlib.sha256(placed.read_bytes()).hexdigest()
 
-    # Step 7: the documented command, then the daemon verb it sends, as root.
+    # Step 6: the documented command, then the daemon verb it sends, as root.
     (command,) = re.findall(
         r"-m (azazel_nexus_runtime\.commission_cli) knowledge-import --entry \"<entry id>\"",
-        steps[7])
+        steps[6])
     assert command == "azazel_nexus_runtime.commission_cli"
-    recorded = []
     floor = runtime_paths.knowledge_state_dir()
     floor.mkdir(parents=True, exist_ok=True)
     floor.chmod(0o700)
@@ -220,16 +159,32 @@ def test_the_documented_sequence_reaches_available(tmp_path, monkeypatch) -> Non
                                     payload={}))
     assert result["outcome"] == "admitted" and result["audit_complete"] is True, result
     kinds = [event["event_type"] for event in recorded]
-    assert kinds[0] == "knowledge.lite.import_started"
+    assert kinds[2] == "knowledge.lite.import_started"
     assert kinds[-1] == "knowledge.lite.import_admitted"
     reasons.append(_reason(tmp_path))
 
+    # Step 8: the store-local copy goes exactly where the library import reads.
+    copies = re.findall(r"anchors\.toml (/\S+/trust/anchors\.toml)", steps[8])
+    assert copies == [f"{KNOWLEDGE}/trust/anchors.toml"]
+    assert str(CommissionedLite(Path(KNOWLEDGE)).anchors_path) == copies[0]
+
     documented = re.search(
-        r"reason `(\w+)` on a fresh install, `(\w+)`\s+after step 4, `(\w+)` after step 5"
-        r" and `(\w+)` after step 7", _section())
+        r"reason `(\w+)` on a fresh install, `(\w+)`\s+after step 4 and `(\w+)` after step 6",
+        _section())
     assert documented is not None
-    assert reasons == list(documented.groups()) == [
-        "trust_unreadable", "unverified", "no_bundle", "available"]
+    assert reasons == list(documented.groups()) == ["trust_unreadable", "no_bundle", "available"]
+
+
+def test_the_documented_refusals_are_the_enrollment_codes() -> None:
+    from azazel_nexus.lite_enrollment import ENROLLMENT_REFUSAL_CODES
+
+    named = set(re.findall(r"\(`(\w+)`", _section())) | set(
+        re.findall(r"all\s+`(\w+)`", _flat(_section())))
+    for code in ("threshold_invalid", "role_conflict", "public_fixture_key", "binding_mismatch",
+                 "evidence_unavailable", "request_invalid", "audit_unavailable",
+                 "request_changed", "already_enrolled", "trust_root_not_empty"):
+        assert code in ENROLLMENT_REFUSAL_CODES, code
+        assert code in named, code
 
 
 def test_the_installer_modes_the_document_states_are_the_declared_ones() -> None:
@@ -268,18 +223,21 @@ def _calls(name: str, *, roots: tuple[str, ...]) -> list[Path]:
 PRODUCTION = ("src", "runtime/src")
 
 
-def test_no_shipped_code_pins_trust_or_imports_a_lite_bundle() -> None:
-    """The two steps the document runs by hand have no shipped caller."""
+def test_the_shipped_enrollment_and_import_are_the_only_callers() -> None:
+    """The procedure runs no library call by hand any more (ADR-0007)."""
 
+    # TrustStore.pin keeps no shipped caller: the enrollment writes the same
+    # record through its own one-commit writer.
     assert _calls("pin", roots=PRODUCTION) == []
-    # ModelImport has its own `import_entry`; no LiteImport caller exists.
+    assert _calls("enroll", roots=PRODUCTION) == [
+        Path("runtime/src/azazel_nexus_runtime/lite_trust_ops.py")]
     lite_users = set(_calls("LiteImport", roots=PRODUCTION))
     importers = set(_calls("import_entry", roots=PRODUCTION))
     # The one shipped importer is the daemon's ROOT-only verb (P4).
     assert lite_users & importers == {
         Path("runtime/src/azazel_nexus_runtime/knowledge_lited.py")}
-    assert "No command calls `TrustStore.pin`" in _steps()[3]
-    assert "`knowledge.import`" in _steps()[7]
+    assert "`knowledge.import`" in _steps()[6]
+    assert " -c " not in _section()
 
 
 def test_commission_policy_has_no_production_caller() -> None:
@@ -288,20 +246,14 @@ def test_commission_policy_has_no_production_caller() -> None:
     assert _calls("commission_policy", roots=PRODUCTION) == []
     assert _calls("commission_policy", roots=("lab/src", "tools"))
     revocation = (ROOT / "docs" / "revocation.md").read_text(encoding="utf-8")
-    assert "production introduction and recovery use repin exclusively" in revocation
+    assert "production introduction is the enrollment" in _flat(revocation)
     assert "No production code calls it" in _flat(revocation)
-    assert "`revocation_policy.commission_policy` is not part of this procedure" in _steps()[5]
 
 
 def test_repin_document_points_at_the_procedure() -> None:
     for name in ("trust-repin.md", "revocation.md", "knowledge-lite-trust.md"):
         text = (ROOT / "docs" / name).read_text(encoding="utf-8")
         assert "knowledge-lite-consumer.md#11-first-enrollment-from-a-fresh-install-to-available" in text
-
-
-@pytest.mark.parametrize("step", [3])
-def test_documented_programs_compile(step) -> None:
-    compile(_python(_steps()[step]), "<doc>", "exec")
 
 
 def test_the_fixture_key_is_not_the_documented_anchor() -> None:
@@ -323,7 +275,8 @@ def test_the_fixture_key_is_not_the_documented_anchor() -> None:
 # owner owns what the import reads.
 
 SHELL_COMMAND = re.compile(r"^sudo (install|chown|chmod) (.*)$", re.M)
-ALLOWED_SOURCES = {"anchors.toml", "repin-anchor.json", "site-lite.tar.gz"}
+ALLOWED_SOURCES = {"lite-enrollment.json", "site-lite.tar.gz",
+                   "/var/lib/azazel/lite-trust/trust/anchors.toml"}
 
 
 def _file_mode(directory_mode: int) -> int:
@@ -336,16 +289,13 @@ def _expected() -> dict[str, tuple[str, str, str, int]]:
     trust, store = spec_for(LITE_TRUST), spec_for(KNOWLEDGE)
     commissioning = spec_for("/etc/azazel/commissioning")
     return {
-        f"{LITE_TRUST}/trust": ("dir", "root", trust.group, trust.mode),
-        f"{LITE_TRUST}/trust/anchors.toml": ("file", "root", trust.group, _file_mode(trust.mode)),
-        f"{KNOWLEDGE}/trust": ("dir", "root", trust.group, store.mode),
-        f"{KNOWLEDGE}/trust/anchors.toml": ("file", "root", trust.group, _file_mode(store.mode)),
-        f"{LITE_TRUST}/trust.json": ("file", trust.owner, trust.group, _file_mode(trust.mode)),
-        f"/etc/azazel/commissioning/{ANCHOR_FILENAME}": (
+        f"/etc/azazel/commissioning/{ENROLLMENT_FILENAME}": (
             "file", commissioning.owner, commissioning.group, _file_mode(commissioning.mode)),
         f"{KNOWLEDGE}/inbox": ("dir", store.owner, store.group, store.mode),
         f"{KNOWLEDGE}/inbox/site-lite.tar.gz": (
             "file", store.owner, store.group, _file_mode(store.mode)),
+        f"{KNOWLEDGE}/trust": ("dir", "root", trust.group, store.mode),
+        f"{KNOWLEDGE}/trust/anchors.toml": ("file", "root", trust.group, _file_mode(store.mode)),
     }
 
 
@@ -447,9 +397,8 @@ ALLOWED_COMMANDS = (
     "sudo install ",
     "sudo chown ",
     "sudo chmod ",
-    "sudo /opt/azazel-nexus/venv/bin/python -I -c '",
     "sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus_runtime.commission_cli knowledge-import ",
-    "sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus_runtime.commission_cli trust-repin ",
+    "sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus_runtime.commission_cli trust-enroll",
     "sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus.cli status",
     "sudo /opt/azazel-nexus/venv/bin/python -I -m azazel_nexus.cli setup",
     "sudo sha256sum ",
@@ -496,7 +445,7 @@ def test_the_procedure_uses_only_sh_json_and_toml_blocks() -> None:
 
 def test_the_procedure_runs_only_the_allowed_commands() -> None:
     commands = _shell_commands(_section())
-    assert len(commands) >= 11
+    assert len(commands) >= 9
     for command in commands:
         if command.startswith("' "):
             command = command[2:]
@@ -506,13 +455,6 @@ def test_the_procedure_runs_only_the_allowed_commands() -> None:
         for metacharacter in SHELL_METACHARACTERS:
             assert metacharacter not in plain, command
         assert ".pem" not in command and "umask" not in command, command
-
-
-@pytest.mark.parametrize("step", (3,))
-def test_the_documented_programs_change_no_permissions(step) -> None:
-    program = _python(_steps()[step])
-    for word in ("chmod", "chown", "umask", "subprocess", "os.system", "shutil"):
-        assert word not in program, word
 
 
 def test_no_sudo_command_relies_on_path_for_a_venv_script() -> None:
