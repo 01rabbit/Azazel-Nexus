@@ -205,14 +205,19 @@ and pin per CPU and Nexus to refuse a CPU mismatch. Decided and implemented:
   artifact is read **once**, bounded, and both the digest finding and the ELF
   check use those bytes, so a read that saw a half-written file is never made
   good by a later read. The ELF header is taken from the archive only when
-  `bin/azazel-edge-core` is exactly one regular member after name
-  normalisation (`./`, `//`), and `bin` is a directory; a second member, a
-  link of that name or a linked `bin` is a security finding (extraction would
-  let a later member replace the one read). The probe reads the unpacked
+  every member passes the shared ELF/component scanner: only the two fixed
+  payload files and their optional parent directories are allowed, with
+  unique normalised names (`./`, `//`), no absolute or parent-traversing
+  paths, links, sparse or special files. This rejects aliases outside `bin`
+  that an extractor could otherwise follow back into the checked binary.
+  The probe reads the unpacked
   binary through `read_extracted_component` (no link followed, root-owned,
   not group or other writable, one link), checks digest and ELF from those
-  bytes, and after the run reads it again: a binary changed during the probe
-  makes the answer `not-checked`. Edge reads each payload file once and runs
+  bytes, and executes a sealed executable memfd containing those same bytes
+  via an inherited descriptor, never by resolving the installed path again.
+  Snapshot creation or sealing failure means `not-checked`, with no pathname
+  fallback. A supplementary read after the run also rejects a binary that
+  changed and stays changed. Edge reads each payload file once and runs
   a private copy of the checked bytes. `tools/vm_integration.py` reads the
   archived binary's CPU before installing and ends the start phase on a
   refusal, before any marker, unmask or start.

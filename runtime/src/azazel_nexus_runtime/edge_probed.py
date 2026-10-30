@@ -68,10 +68,11 @@ to run.
 read through `edge_package.read_extracted_component` -- no link followed at
 any level, the package root, `bin/` and the file owned by root
 (`PACKAGE_OWNER_UID`) and not group or other writable, one link -- and its
-digest and ELF header are checked from those bytes. After the run it is read
-the same way again, and a binary that changed meanwhile makes the answer
-`not-checked`: the answer would be about something nobody checked. Only an
-account that may already change the installed package can swap it.
+digest and ELF header are checked from those bytes. A sealed executable memfd
+holds those same bytes for the health run: replacing and restoring the package
+pathname cannot change what executes. If that immutable snapshot cannot be
+created, nothing is run. A further protected read after the run detects an
+installed binary that changed and stays changed; it is supplementary.
 
 **And it must be for this CPU** (S-11): the host's CPU, the manifest's
 `architecture` and the ELF header of the unpacked binary about to be executed
@@ -124,6 +125,7 @@ because edge-core has not started), and once as the governed
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -272,7 +274,6 @@ def probe(
     outcome without a canonical one, and `main` reads it before probing.
     """
 
-    run = runner if runner is not None else _run
     observed_at = clock()
     pin = host_pin()
     binary = root / HEALTH_ARGV[0]
@@ -391,7 +392,7 @@ def probe(
             running=_running_finding(unit_reader),
         )
 
-    health, health_reason, health_security = _health_finding(run, root)
+    health, health_reason, health_security = _health_finding(runner, root, binary_bytes)
     try:
         after = _digest(read_extracted_component(
             HEALTH_ARGV[0], package_root=root, owner_uid=PACKAGE_OWNER_UID))
@@ -452,17 +453,49 @@ def _component_digest(manifest: dict, path: str) -> Optional[str]:
     return None
 
 
-def _health_finding(run, root: Path) -> tuple[Evidence, str, bool]:
+def _sealed_binary(data: bytes) -> int:
+    """An executable, immutable snapshot, or an error; no pathname fallback.
+
+    MFD_EXEC (Linux 6.3+) is explicit even on kernels whose default memfd is
+    non-executable. A policy that forbids executable memfds is respected by
+    failing closed. No file is created in the probe's writable result leaf.
+    """
+
+    fd = os.memfd_create("azazel-edge-health", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING | 0x0010)
+    try:
+        remaining = memoryview(data)
+        while remaining:
+            written = os.write(fd, remaining)
+            if written <= 0:
+                raise OSError("the health snapshot could not be written")
+            remaining = remaining[written:]
+        os.fchmod(fd, 0o500)
+        seals = fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
+        fcntl.fcntl(fd, fcntl.F_ADD_SEALS, seals)
+        os.lseek(fd, 0, os.SEEK_SET)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _health_finding(run, root: Path, checked_bytes: bytes) -> tuple[Evidence, str, bool]:
     """Run the fixed command and apply the four conditions, plus version."""
 
+    fd = None
     try:
-        completed = run([str(root / HEALTH_ARGV[0]), *HEALTH_ARGV[1:]], root)
-    except (OSError, subprocess.SubprocessError) as exc:
+        fd = _sealed_binary(checked_bytes)
+        argv = [f"/proc/self/fd/{fd}", *HEALTH_ARGV[1:]]
+        completed = (_run(argv, root, pass_fds=(fd,)) if run is None else run(argv, root))
+    except (AttributeError, OSError, subprocess.SubprocessError) as exc:
         return (
             Evidence.NOT_CHECKED,
             f"the health contract could not be run ({exc}); nobody looked",
             False,
         )
+    finally:
+        if fd is not None:
+            os.close(fd)
     stdout = (completed.stdout or "")[:MAX_HEALTH_BYTES]
     if completed.returncode != 0:
         return Evidence.FAILED, f"the health contract exited {completed.returncode}", False
@@ -559,12 +592,12 @@ def _running_finding(read) -> tuple[Evidence, str]:
     return Evidence.FAILED, f"{EDGE_UNIT} is {active}/{sub}, which is not running"
 
 
-def _run(argv: Sequence[str], cwd: Optional[Path]):
+def _run(argv: Sequence[str], cwd: Optional[Path], *, pass_fds: tuple[int, ...] = ()):
     """The one place in this distribution that starts a process.
 
     Contained the way `fabric_boundary.py` contains the Fabric import: one
-    call, no shell, a fixed environment, a deadline, and an argv whose every
-    element comes from a module constant or from the fixed package root.
+    call, no shell, a fixed environment, a deadline, and an argv made from
+    the sealed descriptor holding the checked binary and fixed arguments.
     `tests/unit/test_edge_probed.py` asserts each of those against the source,
     and `test_runtime_activated.py` asserts that no other module in the
     distribution can execute anything at all.
@@ -577,6 +610,7 @@ def _run(argv: Sequence[str], cwd: Optional[Path]):
         timeout=PROBE_TIMEOUT_SECONDS,
         cwd=None if cwd is None else str(cwd),
         env=dict(PROBE_ENV),
+        pass_fds=pass_fds,
     )
 
 

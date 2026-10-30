@@ -625,7 +625,8 @@ def _tar(members) -> bytes:
                 info.size = len(data)
                 tar.addfile(info, io.BytesIO(data))
             else:
-                info.type = tarfile.SYMTYPE if kind == "symlink" else tarfile.LNKTYPE
+                info.type = {"symlink": tarfile.SYMTYPE, "hardlink": tarfile.LNKTYPE,
+                             "directory": tarfile.DIRTYPE, "fifo": tarfile.FIFOTYPE}[kind]
                 info.linkname = data
                 tar.addfile(info)
     return gzip.compress(raw.getvalue(), mtime=0)
@@ -656,6 +657,20 @@ def _raw_package(root: Path, artifact: bytes) -> Path:
                  id="bin-is-a-link"),
     pytest.param([("bin/azazel-edge-core", "<other>", "file"), ("bin/azazel-edge-core", "<host>", "file")],
                  id="other-then-host"),
+    pytest.param([("bin/azazel-edge-core", "<host>", "file"), ("alias", "bin", "symlink"),
+                  ("alias/azazel-edge-core", "<other>", "file")], id="symlink-alias-overwrite"),
+    pytest.param([("bin/azazel-edge-core", "<host>", "file"),
+                  ("alias", "bin/azazel-edge-core", "hardlink")], id="unrelated-hardlink"),
+    pytest.param([("bin/azazel-edge-core", "<host>", "file"),
+                  ("unexpected", "<other>", "file")], id="unlisted-file"),
+    pytest.param([("/bin/azazel-edge-core", "<host>", "file")], id="absolute-path"),
+    pytest.param([("x/../bin/azazel-edge-core", "<host>", "file")], id="parent-segment"),
+    pytest.param([("bin/azazel-edge-core", "<host>", "file"),
+                  (PIN.manifest_name, "<host>", "file")], id="manifest-overwrite"),
+    pytest.param([("bin/azazel-edge-core", "<host>", "file"),
+                  ("bin", "", "directory"), ("./bin/", "", "directory")], id="duplicate-directory"),
+    pytest.param([("bin/azazel-edge-core", "<host>", "file"),
+                  ("unexpected", "", "fifo")], id="special-file"),
 ])
 def test_an_archive_whose_binary_is_not_one_regular_member_is_refused(tmp_path, monkeypatch, members):
     """R391-02: the header read must be the file extraction leaves behind."""
@@ -670,6 +685,21 @@ def test_an_archive_whose_binary_is_not_one_regular_member_is_refused(tmp_path, 
     assert finding.evidence is Evidence.FAILED and finding.security
     with pytest.raises(EdgePackageRefused):
         installed_package_digest(package_root=root)
+    with pytest.raises(EdgePackageRefused):
+        edge_package._archive_components(archive_bytes)
+
+
+def test_normalised_payload_paths_and_optional_parent_directories_are_accepted(tmp_path):
+    artifact = _tar([("./bin/", "", "directory"), ("config", "", "directory"),
+                     ("./bin//azazel-edge-core", elf_stub(), "file"),
+                     ("config/./redirect_policy.yaml", POLICY, "file")])
+    root = _raw_package(tmp_path / "edge", artifact)
+    assert inspect(root).finding("package_present").held
+    assert installed_package_digest(package_root=root) == "sha256:" + hashlib.sha256(artifact).hexdigest()
+    assert edge_package._archive_components(artifact) == {
+        "bin/azazel-edge-core": "sha256:" + hashlib.sha256(elf_stub()).hexdigest(),
+        "config/redirect_policy.yaml": "sha256:" + hashlib.sha256(POLICY).hexdigest(),
+    }
 
 
 def test_the_digest_and_the_elf_are_judged_on_one_read(tmp_path, monkeypatch):

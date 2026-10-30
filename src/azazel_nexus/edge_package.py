@@ -447,50 +447,69 @@ def _member_name(name: str) -> str:
 
     import posixpath
 
-    return posixpath.normpath(name.lstrip("/")) if name else name
+    if not name or name.startswith("/") or ".." in name.split("/"):
+        raise EdgePackageRefused("an Edge archive member has an unsafe path")
+    return posixpath.normpath(name)
 
 
 def _archive_elf_header(data: bytes) -> bytes:
-    """The first 64 bytes of the one `bin/azazel-edge-core` in the archive bytes.
+    """The checked binary's header, after validating every archive member."""
 
-    Never extracted. The **whole** archive is walked, with the ceilings
-    `_archive_components` uses: the binary must be exactly one regular-file
-    member once names are normalised (`./bin/...` and `bin//...` are the
-    same file), and `bin` itself must not be anything but a directory. A
-    second member of that name, a link of that name, or a `bin` that is a
-    link is refused -- extraction would let a later member replace the one
-    whose header was read.
+    header, _ = _scan_archive(data)
+    if header is None:
+        raise EdgePackageRefused(f"the Edge archive carries no {_ELF_MEMBER}")
+    return header
+
+
+def _scan_archive(data: bytes) -> tuple[Optional[bytes], dict[str, str]]:
+    """One policy for ELF and component reads, without extracting anything.
+
+    Edge's producer lists exactly `BOUND_COMPONENTS`. Only those regular
+    files and their optional parent directories are allowed. Every name is
+    normalised and unique; all links and special files are refused, including
+    aliases outside `bin` that an extractor could follow back into it.
     """
 
     import io
     import tarfile
 
     header: Optional[bytes] = None
+    found: dict[str, str] = {}
+    seen: set[str] = set()
+    directories = {path.split("/")[0] for path in BOUND_COMPONENTS}
     try:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
             for count, member in enumerate(archive):
                 if count >= _ARCHIVE_MAX_MEMBERS:
                     raise EdgePackageRefused("the Edge archive has too many members")
                 name = _member_name(member.name)
-                if name == "bin" and not member.isdir():
-                    raise EdgePackageRefused("bin in the Edge archive is not a directory")
-                if name != _ELF_MEMBER:
+                if name in seen:
+                    raise EdgePackageRefused("the Edge archive repeats a normalised member path")
+                seen.add(name)
+                if name in directories and member.isdir():
                     continue
-                if header is not None:
-                    raise EdgePackageRefused(f"the Edge archive carries {_ELF_MEMBER} more than once")
-                if not member.isreg():
-                    raise EdgePackageRefused(f"{_ELF_MEMBER} in the archive is not a regular file")
+                if (name not in BOUND_COMPONENTS or not member.isreg()
+                        or member.sparse is not None or not 0 <= member.size <= _COMPONENT_MAX_BYTES):
+                    raise EdgePackageRefused("an Edge archive member is not an allowed regular payload file")
                 stream = archive.extractfile(member)
                 if stream is None:
-                    raise EdgePackageRefused(f"{_ELF_MEMBER} in the archive is unreadable")
-                header = stream.read(64)
+                    raise EdgePackageRefused("an Edge archive member is unreadable")
+                digest, total = hashlib.sha256(), 0
+                while chunk := stream.read(1 << 20):
+                    if name == _ELF_MEMBER and total == 0:
+                        header = chunk[:64]
+                    total += len(chunk)
+                    if total > _COMPONENT_MAX_BYTES:
+                        raise EdgePackageRefused("an Edge archive member is too large")
+                    digest.update(chunk)
+                if name == _ELF_MEMBER and total == 0:
+                    header = b""
+                found[name] = "sha256:" + digest.hexdigest()
     except EdgePackageRefused:
         raise
     except Exception as exc:  # noqa: BLE001 - a malformed archive names no CPU
         raise EdgePackageRefused("the artifact is not a readable Edge archive") from exc
-    if header is None:
-        raise EdgePackageRefused(f"the Edge archive carries no {_ELF_MEMBER}")
-    return header
+    return header, found
 
 #: The manifest fields this node reads. A subset of the vendored schema, and a
 #: test asserts it is a subset -- reading a field the producer does not
@@ -1081,9 +1100,8 @@ def read_extracted_component(
     its directory and the file owned by `owner_uid` and not group or other
     writable, a regular file with one link, at most 256 MiB.
 
-    For the probe (R391-03): it checks the binary from these bytes before it
-    runs it, and only an account that may already change the installed
-    package (`owner_uid`, root in production) can replace it in between.
+    The probe checks these bytes and executes a sealed snapshot of them,
+    rather than resolving the installed pathname again (R391-03).
     """
 
     if relative not in BOUND_COMPONENTS:
@@ -1134,36 +1152,7 @@ def _manifest_components(manifest: dict) -> dict[str, str]:
 
 def _archive_components(data: bytes) -> dict[str, str]:
     """The bound members of the verified archive bytes, hashed without extracting."""
-    import io
-    import tarfile
-
-    found: dict[str, str] = {}
-    try:
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
-            for count, member in enumerate(archive):
-                if count >= _ARCHIVE_MAX_MEMBERS:
-                    raise EdgePackageRefused("the Edge archive has too many members")
-                name = _member_name(member.name)
-                if name == "bin" and not member.isdir():
-                    raise EdgePackageRefused("bin in the Edge archive is not a directory")
-                if name not in BOUND_COMPONENTS:
-                    continue
-                if name in found or not member.isreg() or member.size > _COMPONENT_MAX_BYTES:
-                    raise EdgePackageRefused("an Edge archive member is refused")
-                stream = archive.extractfile(member)
-                if stream is None:
-                    raise EdgePackageRefused("an Edge archive member is unreadable")
-                digest, total = hashlib.sha256(), 0
-                while chunk := stream.read(1 << 20):
-                    total += len(chunk)
-                    if total > _COMPONENT_MAX_BYTES:
-                        raise EdgePackageRefused("an Edge archive member is too large")
-                    digest.update(chunk)
-                found[name] = "sha256:" + digest.hexdigest()
-    except EdgePackageRefused:
-        raise
-    except Exception as exc:  # noqa: BLE001 - a malformed archive binds nothing
-        raise EdgePackageRefused("the Edge archive could not be read") from exc
+    _, found = _scan_archive(data)
     if set(found) != set(BOUND_COMPONENTS):
         raise EdgePackageRefused("the Edge archive lacks a bound component")
     return found

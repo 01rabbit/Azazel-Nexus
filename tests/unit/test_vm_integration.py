@@ -293,7 +293,9 @@ def _archive(members):
                 info.size = len(data)
                 tar.addfile(info, io.BytesIO(data))
             else:
-                info.type, info.linkname = tarfile.SYMTYPE, data
+                info.type = {"link": tarfile.SYMTYPE, "hardlink": tarfile.LNKTYPE,
+                             "directory": tarfile.DIRTYPE, "fifo": tarfile.FIFOTYPE}[kind]
+                info.linkname = data
                 tar.addfile(info)
     return gzip.compress(raw.getvalue(), mtime=0)
 
@@ -311,10 +313,24 @@ def test_the_archived_binarys_cpu_is_read_from_one_regular_member():
         [("bin/azazel-edge-core", elf_stub("aarch64"), "file"),
          ("bin/azazel-edge-core", "/usr/bin/true", "link")],
         [("bin", "/usr", "link"), ("bin/azazel-edge-core", elf_stub("aarch64"), "file")],
+        [("bin/azazel-edge-core", elf_stub("aarch64"), "file"),
+         ("alias", "bin", "link"), ("alias/azazel-edge-core", elf_stub("x86_64"), "file")],
+        [("bin/azazel-edge-core", elf_stub("aarch64"), "file"),
+         ("alias", "bin/azazel-edge-core", "hardlink")],
+        [("bin/azazel-edge-core", elf_stub("aarch64"), "file"), ("unexpected", b"x", "file")],
+        [("/bin/azazel-edge-core", elf_stub("aarch64"), "file")],
+        [("x/../bin/azazel-edge-core", elf_stub("aarch64"), "file")],
+        [("bin/azazel-edge-core", elf_stub("aarch64"), "file"), ("unexpected", "", "fifo")],
+        [("bin/azazel-edge-core", elf_stub("aarch64"), "file"),
+         ("bin", "", "directory"), ("./bin/", "", "directory")],
         [("config/redirect_policy.yaml", b"x", "file")],
     ):
         with pytest.raises(RuntimeError):
             vmit.archive_binary_architecture(_archive(bad))
+    normalised = _archive([("./bin/", "", "directory"),
+                           ("./bin//azazel-edge-core", elf_stub("aarch64"), "file"),
+                           ("config/./redirect_policy.yaml", b"x", "file")])
+    assert vmit.archive_binary_architecture(normalised) == "aarch64"
 
 
 def test_a_refused_edge_package_stops_the_start_before_any_marker_or_start(tmp_path, monkeypatch):

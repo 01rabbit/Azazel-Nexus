@@ -805,23 +805,34 @@ def import_bundle(entry: str) -> dict:
 def archive_binary_architecture(archive_bytes: bytes) -> str:
     """The CPU of the one `bin/azazel-edge-core` in a package archive, by its ELF header.
 
-    A second member of that name, a non-regular one, or a `bin` that is not a
-    directory is refused: extraction would let it replace the one read.
+    The standalone node script uses the same fixed payload allowlist as the
+    library: two regular files, optional parent directories, no links or
+    normalised duplicates anywhere, including aliases outside `bin`.
     """
 
     import io
     import posixpath
 
     found = None
+    seen = set()
+    payload = {"bin/azazel-edge-core", "config/redirect_policy.yaml"}
     with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as archive:
-        for member in archive:
-            name = posixpath.normpath(member.name.lstrip("/"))
-            if name == "bin" and not member.isdir():
-                raise RuntimeError("bin in the Edge archive is not a directory: stop")
+        for count, member in enumerate(archive):
+            if count >= 4096:
+                raise RuntimeError("the Edge archive has too many members: stop")
+            if not member.name or member.name.startswith("/") or ".." in member.name.split("/"):
+                raise RuntimeError("an Edge archive path is unsafe: stop")
+            name = posixpath.normpath(member.name)
+            if name in seen:
+                raise RuntimeError("the Edge archive repeats a normalised path: stop")
+            seen.add(name)
+            if name in {"bin", "config"} and member.isdir():
+                continue
+            if (name not in payload or not member.isreg() or member.sparse is not None
+                    or not 0 <= member.size <= 256 << 20):
+                raise RuntimeError("an Edge archive member is not an allowed payload file: stop")
             if name != "bin/azazel-edge-core":
                 continue
-            if found is not None or not member.isreg():
-                raise RuntimeError("the Edge archive's binary is not one regular member: stop")
             found = archive.extractfile(member).read(20)
     if found is None:
         raise RuntimeError("the Edge archive carries no bin/azazel-edge-core: stop")

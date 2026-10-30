@@ -168,6 +168,89 @@ def test_a_binary_replaced_while_it_runs_makes_the_answer_unused(tmp_path):
     assert "changed while it was being probed" in outcome.health_reason
 
 
+def test_a_swap_and_restore_cannot_change_the_verified_bytes_run(tmp_path):
+    import os
+
+    root = _package(tmp_path)
+    binary = root / HEALTH_ARGV[0]
+    original = binary.read_bytes()
+    snapshots = []
+
+    def swap_and_restore(argv, cwd):
+        binary.write_bytes(elf_stub(OTHER))
+        try:
+            snapshot = Path(argv[0])
+            snapshots.append(snapshot)
+            assert snapshot.read_bytes() == original
+            # Even the probe's own writable descriptor cannot modify the copy.
+            fd = int(snapshot.name)
+            with pytest.raises(OSError):
+                os.pwrite(fd, b"changed", 0)
+            with pytest.raises(OSError):
+                os.ftruncate(fd, 0)
+            return _Completed(0, HEALTHY)
+        finally:
+            binary.write_bytes(original)
+
+    result = edge_probed.probe(root, clock=_clock(), runner=swap_and_restore, unit_reader=_units())
+    assert result.health is Evidence.PASSED  # About the original checked bytes.
+    assert binary.read_bytes() == original
+    assert not snapshots[0].exists()  # Descriptor is closed after the runner.
+
+
+def test_a_snapshot_failure_runs_nothing(tmp_path, monkeypatch):
+    def denied(data):
+        raise OSError("immutable executable snapshots unavailable")
+
+    log = []
+    monkeypatch.setattr(edge_probed, "_sealed_binary", denied)
+    result = edge_probed.probe(_package(tmp_path), clock=_clock(), runner=_runner(log=log),
+                               unit_reader=_units())
+    assert result.health is Evidence.NOT_CHECKED and log == []
+    assert "immutable executable snapshots unavailable" in result.health_reason
+
+
+def test_a_seal_failure_closes_the_snapshot_and_runs_nothing(tmp_path, monkeypatch):
+    import os
+
+    opened = []
+    real_create = os.memfd_create
+
+    def remember(*args):
+        fd = real_create(*args)
+        opened.append(fd)
+        return fd
+
+    def denied(*args):
+        raise OSError("sealing denied")
+
+    log = []
+    monkeypatch.setattr(edge_probed.os, "memfd_create", remember)
+    monkeypatch.setattr(edge_probed.fcntl, "fcntl", denied)
+    result = edge_probed.probe(_package(tmp_path), clock=_clock(), runner=_runner(log=log),
+                               unit_reader=_units())
+    assert result.health is Evidence.NOT_CHECKED and log == []
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        os.fstat(opened[0])
+
+
+@pytest.mark.real_process
+def test_a_sealed_host_executable_runs_after_its_source_path_changes(tmp_path):
+    """Real Linux process; the host's /bin/true, not an Edge health claim."""
+    import os
+
+    source = tmp_path / "source"
+    source.write_bytes(Path("/bin/true").read_bytes())
+    fd = edge_probed._sealed_binary(source.read_bytes())
+    try:
+        source.write_bytes(b"this replacement is not executable")
+        completed = edge_probed._run([f"/proc/self/fd/{fd}", "--health"], None, pass_fds=(fd,))
+        assert completed.returncode == 0 and completed.stdout == ""
+    finally:
+        os.close(fd)
+
+
 # -- the CPU: nothing for another CPU is run (S-11) ------------------------
 
 OTHER = {"x86_64": "aarch64", "aarch64": "x86_64"}[PIN.architecture]
@@ -230,7 +313,9 @@ def test_it_runs_the_command_fixed_in_code(tmp_path):
     root = _package(tmp_path)
     edge_probed.probe(root, clock=_clock(), runner=_runner(log=log), unit_reader=_units())
     argv, cwd = log[0]
-    assert argv == [str(root / HEALTH_ARGV[0]), *HEALTH_ARGV[1:]]
+    assert argv[0].startswith("/proc/self/fd/")
+    assert Path(argv[0]).name.isdecimal()
+    assert argv[1:] == list(HEALTH_ARGV[1:])
     assert cwd == root
 
 
@@ -702,7 +787,7 @@ def test_the_only_spawn_uses_no_shell_a_fixed_environment_and_a_deadline():
     assert len(spawns) == 1, f"{len(spawns)} spawns; the exemption is for one"
     keywords = {kw.arg for kw in spawns[0].keywords}
     assert "shell" not in keywords
-    assert {"timeout", "env"} <= keywords
+    assert {"timeout", "env", "pass_fds"} <= keywords
 
 
 def _code_strings(module: Path) -> set[str]:
