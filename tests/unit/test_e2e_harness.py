@@ -623,6 +623,44 @@ def test_stage_privilege_accounting(short_root, monkeypatch, root, expected):
         "passed": passed, "not_executed": skipped, "failed": 0, "total": 24}
 
 
+def test_the_edge_probe_stage_accepts_the_checked_snapshot(tmp_path):
+    """Real package/result files and sealed fd; health and systemd are mocks."""
+    from types import SimpleNamespace
+
+    from tools.e2e_stages import _edge_probe
+
+    detail = _edge_probe(SimpleNamespace(root=tmp_path))
+    assert "verified-ready" in detail
+    assert "each withheld" in detail
+
+
+def test_the_edge_probe_stage_rejects_substituted_snapshot_bytes(tmp_path, monkeypatch):
+    import os
+    from types import SimpleNamespace
+
+    from azazel_nexus_runtime import edge_probed
+    from tools.e2e_stages import _edge_probe
+
+    real_probe = edge_probed.probe
+
+    def substitute(root, **kwargs):
+        original_runner = kwargs["runner"]
+
+        def wrong_snapshot(argv, cwd):
+            fd = edge_probed._sealed_binary(b"a different executable")
+            try:
+                return original_runner([f"/proc/self/fd/{fd}", *argv[1:]], cwd)
+            finally:
+                os.close(fd)
+
+        kwargs["runner"] = wrong_snapshot
+        return real_probe(root, **kwargs)
+
+    monkeypatch.setattr(edge_probed, "probe", substitute)
+    with pytest.raises(RuntimeError, match="snapshot differs from the checked binary"):
+        _edge_probe(SimpleNamespace(root=tmp_path))
+
+
 def test_offline_import_prepares_the_same_store_and_trust_as_setup(short_root):
     from azazel_nexus.lite_import import status_summary
     from tools.e2e_stages import _lite_import, _operator_setup, _setup_snapshot

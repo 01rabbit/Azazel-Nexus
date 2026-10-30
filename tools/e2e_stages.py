@@ -801,6 +801,15 @@ def _edge_probe(harness: Harness) -> str:
     ran = []
 
     def runner(argv, cwd):
+        # The descriptor is live only during this callback. Verify the fixed
+        # arguments and the executable bytes here, not an installed pathname
+        # that the probe deliberately no longer resolves at execution time.
+        if (len(argv) != 2 or argv[1] != "--health" or cwd != root
+                or not argv[0].startswith("/proc/self/fd/")
+                or not argv[0].removeprefix("/proc/self/fd/").isdecimal()):
+            raise RuntimeError(f"the probe supplied an unexpected health command: {argv}")
+        if Path(argv[0]).read_bytes() != binary:
+            raise RuntimeError("the probe's executable snapshot differs from the checked binary")
         ran.append(list(argv))
         return _Completed()
 
@@ -825,8 +834,8 @@ def _edge_probe(harness: Harness) -> str:
         )
     finally:
         edge_probed.PACKAGE_OWNER_UID = owner
-    if ran != [[str(root / "bin/azazel-edge-core"), "--health"]]:
-        raise RuntimeError(f"the probe ran {ran}, not the command fixed in code")
+    if len(ran) != 1:
+        raise RuntimeError(f"the probe supplied {len(ran)} health runs instead of one checked snapshot")
 
     state = harness.root / "run" / "edge-probe" / "edge-probe.json"
     edge_probed.write_result(outcome, state)
