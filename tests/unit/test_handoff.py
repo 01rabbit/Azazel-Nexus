@@ -1291,3 +1291,69 @@ def test_a_future_lookup_hidden_behind_a_duplicate_is_still_named(root):
     assert "knowledge_citation" in p["time"]["generation_clock"]["future_dated_sources"]
     assert p["time"]["generation_clock"]["status"] == "untrusted"
     assert "records_dated_after_generation" in handoff.render_markdown(p)
+
+
+# -- R388c-02: a failed close never hides what is on the media ------------------------
+
+
+def _failing_close_once():
+    calls = []
+
+    def close(fd):
+        calls.append(fd)
+        os.close(fd)  # the descriptor is gone, as after a real EIO from close
+        if len(calls) == 1:
+            raise OSError(errno.EIO, "I/O error")
+    return close, calls
+
+
+def test_a_close_failure_after_writing_reports_the_package_and_closes_the_rest(root, out):
+    files, name = files_and_name(root)
+    close, calls = _failing_close_once()
+    result = write_package(out, name, files, close=close)
+    assert result.path == out / name and result.problems == ("file_close_failed",)
+    assert len(calls) == len(files) + 2  # every file, the directory and its parent
+    for file_name, raw in files.items():
+        assert (out / name / file_name).read_bytes() == raw
+
+
+def test_a_close_failure_after_a_full_disk_keeps_the_original_reason(root, out):
+    files, name = files_and_name(root)
+    close, calls = _failing_close_once()
+
+    def write(fd, data):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    with pytest.raises(HandoffRefused) as refused:
+        write_package(out, name, files, write=write, close=close)
+    assert refused.value.code == "insufficient_space"
+    assert (refused.value.remnant, refused.value.remnant_kind) == (out / name, "incomplete")
+    assert refused.value.problems == ("file_close_failed",)
+    assert len(calls) == 3  # the one file opened, the directory and its parent
+
+
+@pytest.mark.parametrize("full", [False, True])
+def test_the_command_reports_a_close_failure_with_the_path(root, out, monkeypatch, full):
+    real = handoff.write_package
+
+    def write(parent, name, files):
+        close, _ = _failing_close_once()
+        kwargs = {"close": close}
+        if full:
+            def nospace(fd, data):
+                raise OSError(errno.ENOSPC, "No space left on device")
+            kwargs["write"] = nospace
+        return real(parent, name, files, **kwargs)
+
+    from azazel_nexus import handoff_cli
+
+    monkeypatch.setattr(handoff_cli, "write_package", write)
+    code, text = run_cli(["export", "--incident", INCIDENT, "--output-dir", str(out)], root=root)
+    (name,) = os.listdir(out)
+    assert "nothing was written" not in text and "internal_error" not in text
+    if full:
+        assert code == 1 and f"left at {out / name}" in text
+        assert "insufficient_space; also file_close_failed" in text
+    else:
+        assert code == 3 and f"handoff: written {out / name}" in text
+        assert "file_close_failed" in text

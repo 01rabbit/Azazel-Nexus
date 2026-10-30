@@ -68,6 +68,8 @@ def run(args, *, now: str, out, principal=None, root=None) -> int:
     except HandoffRefused as refused:
         code = refused.code
         base = code.split(":", 1)[0]
+        if refused.problems:
+            code += "; also " + ",".join(refused.problems)
         if refused.remnant is None:
             print(f"handoff: refused ({code}); nothing was written. "
                   + _REFUSALS_JA.get(base, ""), file=out)
@@ -97,5 +99,10 @@ def run(args, *, now: str, out, principal=None, root=None) -> int:
         print("handoff: WARNING durability_unconfirmed: every file was written and synced, "
               "but syncing the directory failed. The package may be lost on power failure; "
               "verify the manifest on the media before relying on it.", file=out)
+    if result.problems:
+        print("handoff: WARNING " + ",".join(result.problems) + ": every file was written and "
+              "synced, but closing failed afterwards. Verify the manifest on the media before "
+              "relying on it.", file=out)
+    if not result.durable or result.problems:
         return 3
     return 0

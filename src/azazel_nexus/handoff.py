@@ -287,6 +287,9 @@ class HandoffRefused(Exception):
         self.code = code
         self.remnant = remnant
         self.remnant_kind = remnant_kind if remnant is not None else None
+        #: Clean-up steps that also failed (`file_close_failed`, ...); the
+        #: code above stays the first, original failure.
+        self.problems: tuple = ()
 
 
 class Suppressor:
@@ -1725,10 +1728,14 @@ class WriteResult:
 
     path: Path
     durable: bool
+    #: Steps after the files were synced that failed (closing a file or a
+    #: directory). The package is in place; its state is to be verified.
+    problems: tuple = ()
 
 
 def write_package(parent: Path, name: str, files: dict, *, statvfs=os.fstatvfs,
-                  write=os.write, fsync=os.fsync, mkdir=os.mkdir) -> WriteResult:
+                  write=os.write, fsync=os.fsync, mkdir=os.mkdir,
+                  close=os.close) -> WriteResult:
     """Write `files` into a new directory `parent/name`, or say what is left.
 
     Nothing that exists is replaced: the directory is made with `mkdir`
@@ -1754,7 +1761,7 @@ def write_package(parent: Path, name: str, files: dict, *, statvfs=os.fstatvfs,
     made = False
     directory_fd = None
     opened = []
-    published = False
+    failure = None
     try:
         try:
             os.lstat(name, dir_fd=parent_fd)
@@ -1789,24 +1796,24 @@ def write_package(parent: Path, name: str, files: dict, *, statvfs=os.fstatvfs,
                     raise OSError(errno.EIO, "short write")
                 view = view[n:]
             fsync(fd)
-        published = True
     except OSError as exc:
         _truncate(opened)
-        raise HandoffRefused("insufficient_space" if exc.errno in (errno.ENOSPC, errno.EDQUOT)
-                             else "write_failed", remnant=target if made else None,
-                             remnant_kind="incomplete") from None
+        failure = HandoffRefused("insufficient_space" if exc.errno in (errno.ENOSPC, errno.EDQUOT)
+                                 else "write_failed", remnant=target if made else None,
+                                 remnant_kind="incomplete")
     except HandoffRefused as refused:
         _truncate(opened)
         if made and refused.remnant is None:
             refused.remnant, refused.remnant_kind = target, "incomplete"
-        raise
-    finally:
-        for fd in opened:
-            os.close(fd)
-        if not published:
-            if directory_fd is not None:
-                os.close(directory_fd)
-            os.close(parent_fd)
+        failure = refused
+    # Every descriptor is closed, whatever else failed; a close that fails
+    # is recorded beside the original outcome and never replaces it.
+    problems = [] if _close_all(opened, close) else ["file_close_failed"]
+    if failure is not None:
+        if not _close_all((fd for fd in (directory_fd, parent_fd) if fd is not None), close):
+            problems.append("directory_close_failed")
+        failure.problems = tuple(problems)
+        raise failure from None
     # Published: every file is complete and synced. What remains is making
     # the directory entries durable; failing that is reported, not undone.
     durable = True
@@ -1815,9 +1822,21 @@ def write_package(parent: Path, name: str, files: dict, *, statvfs=os.fstatvfs,
             fsync(fd)
         except OSError:
             durable = False
-    os.close(directory_fd)
-    os.close(parent_fd)
-    return WriteResult(target, durable)
+    if not _close_all((directory_fd, parent_fd), close):
+        problems.append("directory_close_failed")
+    return WriteResult(target, durable, tuple(problems))
+
+
+def _close_all(descriptors, close=None) -> bool:
+    """Close each descriptor; False if any close failed. Never stops early."""
+    close = close or os.close
+    ok = True
+    for fd in list(descriptors):
+        try:
+            close(fd)
+        except OSError:
+            ok = False
+    return ok
 
 
 def _truncate(descriptors) -> None:
