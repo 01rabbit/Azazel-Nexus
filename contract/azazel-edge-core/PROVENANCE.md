@@ -2,12 +2,12 @@
 
 Copied verbatim from `packaging/nexus-core/contract/` in
 [01rabbit/Azazel-Edge](https://github.com/01rabbit/Azazel-Edge), at commit
-`5fb43e9` on the branch of
+`8d5cc215c86a1e8c46af6f547f679220fba42459` on the branch of
 [Azazel-Edge#522](https://github.com/01rabbit/Azazel-Edge/pull/522)
 (per-CPU package, manifest and pin; manifest contract
-`azazel-edge-core/package-manifest/v2`). Regenerated there from a release build on
-aarch64 and on x86_64 (`nexus_core_package.py --emit-contract`); the two
-regenerations are byte-identical. That PR changes `pin.json` to
+`azazel-edge-core/package-manifest/v2`). Rechecked there against two fresh release builds per CPU on
+aarch64 and x86_64 (`nexus_core_package.py --emit-contract`): every
+regeneration is byte-identical to these three copied contract files. That PR changes `pin.json` to
 `azazel-edge-core/nexus-pin/v2` (one entry per CPU under `architectures`, each
 with its artifact, manifest and ELF identity) and adds `elf` to the manifest
 schema; the manifest contract moves to `package-manifest/v2` so that a
