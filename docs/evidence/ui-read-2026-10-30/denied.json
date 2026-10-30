@@ -4,16 +4,16 @@
  "screens": {
   "overview": {
    "png": "denied-overview.png",
-   "bytes": 107615,
-   "raw_bytes": 364643,
+   "bytes": 108760,
+   "raw_bytes": 368600,
    "width": 1280,
    "height": 2217,
    "page_height": 2217
   },
   "detail": {
    "png": "denied-detail.png",
-   "bytes": 182270,
-   "raw_bytes": 585785,
+   "bytes": 182231,
+   "raw_bytes": 585688,
    "width": 1280,
    "height": 2600,
    "page_height": 4905

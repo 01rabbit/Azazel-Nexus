@@ -4,16 +4,16 @@
  "screens": {
   "overview": {
    "png": "degraded-overview.png",
-   "bytes": 103342,
-   "raw_bytes": 344726,
+   "bytes": 103478,
+   "raw_bytes": 345794,
    "width": 1280,
    "height": 2150,
    "page_height": 2150
   },
   "detail": {
    "png": "degraded-detail.png",
-   "bytes": 181429,
-   "raw_bytes": 579863,
+   "bytes": 181512,
+   "raw_bytes": 580193,
    "width": 1280,
    "height": 2600,
    "page_height": 5022

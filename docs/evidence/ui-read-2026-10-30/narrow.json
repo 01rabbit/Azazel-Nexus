@@ -4,8 +4,8 @@
  "screens": {
   "overview": {
    "png": "narrow-overview.png",
-   "bytes": 78190,
-   "raw_bytes": 273566,
+   "bytes": 78540,
+   "raw_bytes": 275325,
    "width": 360,
    "height": 2600,
    "page_height": 2850
@@ -371,7 +371,7 @@
        "ipv6": "none"
       },
       "kind": "observed",
-      "observed_at": 1793325011.9386342
+      "observed_at": 1793333378.2948298
      },
      {
       "active_state": "inactive",
@@ -399,7 +399,7 @@
       "code": "open_incidents_listed",
       "count": 2,
       "kind": "observed",
-      "latest": 1793325008.1594393,
+      "latest": 1793333374.4418538,
       "most_severe": 3,
       "reason_code": null,
       "shown": 3
