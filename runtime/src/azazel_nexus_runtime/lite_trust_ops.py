@@ -198,14 +198,43 @@ def become_commissioner() -> None:
 CHILD_ENVIRONMENT = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
 
 
-def _shed_inherited(keep: int) -> None:
-    """Close every descriptor but 0-2 and `keep`; replace the environment."""
+def _open_descriptors() -> set[int]:
+    """The descriptors this process holds, from `/proc/self/fd` (Linux).
 
-    limit = os.sysconf("SC_OPEN_MAX") if hasattr(os, "sysconf") else 65536
-    if not 0 < limit <= 1 << 20:
-        limit = 65536
-    os.closerange(3, keep)
-    os.closerange(keep + 1, limit)
+    The directory read opens one descriptor of its own, which is gone again
+    when the listing returns; `fstat` filters it (and anything else already
+    closed) out. Without `/proc` this raises: the child then refuses rather
+    than guess a range and leave a high descriptor behind.
+    """
+
+    found = set()
+    for name in os.listdir("/proc/self/fd"):
+        fd = int(name)
+        try:
+            os.fstat(fd)
+        except OSError:
+            continue
+        found.add(fd)
+    return found
+
+
+def _shed_inherited(keep: int) -> None:
+    """Close every descriptor but 0-2 and `keep`; replace the environment.
+
+    Enumerated, not ranged: a descriptor above the current `RLIMIT_NOFILE`
+    soft limit (lowered after it was opened) stays open under any range the
+    limit would give (R390b-01). Checked again afterwards; anything left
+    makes the child refuse.
+    """
+
+    allowed = {0, 1, 2, keep}
+    for fd in _open_descriptors() - allowed:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    if _open_descriptors() - allowed:
+        raise PermissionError("an inherited descriptor could not be closed")
     os.environ.clear()
     os.environ.update(CHILD_ENVIRONMENT)
 

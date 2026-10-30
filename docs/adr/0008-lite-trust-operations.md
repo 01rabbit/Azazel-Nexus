@@ -180,7 +180,10 @@ holding the required role; R390-01).
 
 **D6c. The narrowed child inherits nothing but its terminal and result pipe**
 (R390 §3): every other descriptor is closed and the environment replaced by
-a fixed `PATH`/`LANG` before it changes identity.
+a fixed `PATH`/`LANG` before it changes identity. The descriptors are
+enumerated from `/proc/self/fd`, not taken as a range up to the open-file
+limit, so one above a lowered limit is closed too; anything still open
+afterwards, or no `/proc`, makes the child refuse (R390b-01).
 
 **D7. Fail-closed, and nothing new to approve.** A stopped auditd refuses an
 import, an enrollment, a repin and a revocation before any change. No

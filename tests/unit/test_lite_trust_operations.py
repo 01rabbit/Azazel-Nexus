@@ -969,3 +969,37 @@ def test_the_child_sheds_inherited_descriptors_and_environment(tmp_path, monkeyp
     os.close(stray)
     os.close(above)
     assert seen == {"open": False, "env": lite_trust_ops.CHILD_ENVIRONMENT}
+
+
+def test_a_descriptor_above_a_lowered_open_file_limit_is_closed_too(tmp_path):
+    """R390b-01: the soft limit lowered after a high descriptor was opened
+    must not hide it from the child's clean-up."""
+    import resource
+
+    reader, writer = os.pipe()
+    pid = os.fork()
+    if pid == 0:  # pragma: no cover - the child
+        status = 1
+        try:
+            source = os.open(tmp_path / "secret", os.O_CREAT | os.O_RDWR, 0o600)
+            high = os.dup2(source, 1000, inheritable=True)
+            os.close(source)
+            soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+            resource.setrlimit(resource.RLIMIT_NOFILE, (512, hard))
+            lite_trust_ops._shed_inherited(writer)
+            try:
+                os.fstat(high)
+                left = True
+            except OSError:
+                left = False
+            os.write(writer, json.dumps({"left": left}).encode())
+            status = 0
+        finally:
+            os._exit(status)
+    os.close(writer)
+    seen = os.read(reader, 4096)
+    os.close(reader)
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 0
+    assert json.loads(seen) == {"left": False}
+
