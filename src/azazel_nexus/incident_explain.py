@@ -7,6 +7,18 @@ import re
 import unicodedata
 from collections import deque
 
+from .explanation_claims import (
+    EDGE_CLAIM_LIMITATION,
+    EVIDENCE_FIELD,
+    EVIDENCE_NOT_CARRIED,
+    EVIDENCE_SOURCE,
+    METHOD_CLAIM_SOURCES,
+    MIO_CLAIM_SUFFIX,
+    PROVENANCE_FIELD,
+    edge_claim_limitations,
+    evidence_observed_at,
+    mio_claim_limitations,
+)
 from .edge_intake import ACTIONS, SEVERE_SEVERITY, _object, _shape, _text, _int, _number
 from .lite_import import AS_OF, TECHNIQUE_ID, as_of_text, read_knowledge_refs, short_digest
 from .local_advisory import (
@@ -172,7 +184,8 @@ def explanation_input(t):
 #: content stays in intake's private evidence store, which the explainer
 #: cannot read. Optional, so a checkpoint or a ledger written before them
 #: still reads; a record without it projects as `evidence_refs_not_carried`.
-EVIDENCE_FIELD = "evidence"
+#: The key is `EVIDENCE_FIELD` (`explanation_claims`).
+#:
 #: Which of the incident's evidence records a pointer names. When the
 #: transition's first and latest pointers are the same record, one pointer
 #: says so instead of naming it twice.
@@ -447,9 +460,8 @@ def read_mio_reply(reply):
 #: fixed product banner (`local_advisory.DELIVERY_TEXTS`).
 GENERATION_METHODS = {"model": "local_model_inference", "embedding": "embedding_matching",
                       "keyword": "deterministic_keyword_matching"}
-#: The record's `mio` key for it. Optional: records written before it read,
-#: and a reader derives nothing from its absence.
-PROVENANCE_FIELD = "provenance"
+#: The record's `mio` key for it is `PROVENANCE_FIELD`. Optional: records
+#: written before it read, and a reader derives nothing from its absence.
 _MODEL_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", re.ASCII)
 
 
@@ -617,20 +629,6 @@ FABRIC_RECORD_BYTES = 32 * 1024
 #: each cited Knowledge reference's claim id.
 EDGE_CLAIM_SUFFIX = ":edge"
 KNOWLEDGE_CLAIM_PREFIX = "knowledge:"
-#: The claim id of the M.I.O. answer, after the incident id (records with a
-#: recorded generation method only), and the Fabric `ClaimSource` of each
-#: method: a model's text and a model's ranking are `local_model`; keyword
-#: matching is deterministic and names no model.
-MIO_CLAIM_SUFFIX = ":mio"
-METHOD_CLAIM_SOURCES = {"local_model_inference": "local_model", "embedding_matching": "local_model",
-                        "deterministic_keyword_matching": "deterministic_core"}
-#: The Edge claim's fixed first limitation, and the one said when no
-#: evidence pointer was carried (a record from before them).
-EDGE_CLAIM_LIMITATION = "reported_by_edge_core_not_executed_by_nexus"
-EVIDENCE_NOT_CARRIED = "evidence_refs_not_carried"
-#: Every Edge evidence pointer is projected as this Fabric `EvidenceRef.source`
-#: (as `fabric_boundary.project_edge_evidence` does for a stored record).
-EVIDENCE_SOURCE = "edge-core"
 
 
 def read_record(value):
@@ -674,31 +672,6 @@ def read_record(value):
     if FABRIC_RECORD_FIELD in value:
         _read_fabric_projection(value[FABRIC_RECORD_FIELD], value)
     return json.loads(json.dumps(value, allow_nan=False))
-
-
-def evidence_observed_at(instant):
-    """A pointer's receive instant as Fabric `EvidenceRef.observed_at` text."""
-    from datetime import UTC, datetime
-
-    try:
-        return datetime.fromtimestamp(instant, UTC).isoformat().replace("+00:00", "Z")
-    except (OverflowError, OSError, ValueError):
-        raise ValueError("record_refused") from None
-
-
-def edge_claim_limitations(record, merged):
-    """The Edge claim's limitations, from the record alone (writer and reader)."""
-    evidence = record.get(EVIDENCE_FIELD)
-    return ([EDGE_CLAIM_LIMITATION]
-            + (list(evidence["gaps"]) if evidence is not None else [EVIDENCE_NOT_CARRIED])
-            + (["duplicate_knowledge_refs_merged"] if merged else []))
-
-
-def mio_claim_limitations(provenance):
-    """The M.I.O. claim's limitations, from its recorded provenance."""
-    return ([f"generation_method={provenance['method']}"]
-            + (["model_generation_not_delivered"] if provenance["model_ref"] else [])
-            + ["advisory_only_not_a_decision"])
 
 
 def _read_fabric_projection(f, record):

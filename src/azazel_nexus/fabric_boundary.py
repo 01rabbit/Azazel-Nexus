@@ -1215,10 +1215,10 @@ def project_explanation(record) -> Projection:
         from azazel_fabric.schema.evidence import EvidenceRef
 
         # The record is read by `incident_explain.read_record` before it gets
-        # here. Its words are imported here, not at module level: that would
-        # pull the whole explanation plane into everything that imports the
-        # Fabric boundary. The reader checks the stored form with the same.
-        from azazel_nexus.incident_explain import (
+        # here; importing that module from this one would pull the whole
+        # explanation plane into everything that imports the Fabric boundary.
+        # The words both state live in `explanation_claims`.
+        from azazel_nexus.explanation_claims import (
             EVIDENCE_FIELD, EVIDENCE_SOURCE, METHOD_CLAIM_SOURCES, MIO_CLAIM_SUFFIX,
             PROVENANCE_FIELD, edge_claim_limitations, evidence_observed_at,
             mio_claim_limitations,
