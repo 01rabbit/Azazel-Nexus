@@ -1032,77 +1032,179 @@ def test_a_marker_appearing_mid_operation_publishes_nothing(
     assert mp.MissionPack(ctx).current().number == current
 
 
+def _lab_cli(monkeypatch, marker, wait):
+    """The real lab marker entry; only the root-only file write is replaced."""
+    import sys
+
+    lab_src = str(Path(__file__).resolve().parents[2] / "lab/src")
+    if lab_src not in sys.path:
+        sys.path.insert(0, lab_src)
+    from azazel_nexus_lab import cli as lab_cli
+
+    monkeypatch.setattr(lab_cli, "_write_marker", lambda: marker.write_text("lab\n"))
+    monkeypatch.setattr(lab_cli, "MARKER_LOCK_WAIT_SECONDS", wait)
+    return lab_cli
+
+
+def _other_root(node, tmp_path):
+    """Root B: the same commissioning, a different state root."""
+    ctx, _doc, _media = node
+    return replace(ctx, root=tmp_path / "other-encrypted" / "packs")
+
+
 @pytest.mark.parametrize("operation", ["stage", "activate", "rollback"])
-def test_the_marker_writer_cannot_interleave_with_a_publication(node, monkeypatch, tmp_path, operation):
-    """The lab marker writer takes the same host writer lock: while a Pack is
-    published it is refused (bounded wait), so the marker never lands between
-    the Pack's last check and its publication."""
+def test_no_marker_or_other_root_pack_interleaves_with_a_publication(
+        node, monkeypatch, tmp_path, operation):
+    """R387b-01: the host-wide lock, not the state root, serializes. While the
+    Pack on root A is paused mid-publication, the real marker entry (whose
+    Mission Pack STATE is root B) and a Pack writer on root B are refused."""
+    from azazel_nexus import lab_host as lab_marker
+    from azazel_nexus import mission_pack_cli
+
+    ctx, pack, staged = _prepared(node)
+    other = _other_root(node, tmp_path)
+    marker = tmp_path / "lab-marker"
+    monkeypatch.setattr(lab_marker, "LAB_HOST_MARKER", marker)
+    monkeypatch.setattr(mission_pack_cli, "STATE", other.root)
+    lab_cli = _lab_cli(monkeypatch, marker, 0.2)
+    from azazel_nexus_lab.refusal import LabRefused
+
+    service = mp.MissionPack(ctx)
+    paused = []
+
+    def checkpoint(name):
+        if name in {"generation_published", "intent_durable"}:
+            with pytest.raises(LabRefused, match="a Mission Pack writer is active"):
+                lab_cli.mark_host()
+            with pytest.raises(mp.PackRefused, match="writer already active"):
+                mp.MissionPack(other).stage(node[2](), now=NOW, actor=ACTOR)
+            paused.append(name)
+    service.checkpoint = checkpoint
+    {"stage": lambda: service.stage(pack, now=NOW, actor=ACTOR),
+     "activate": lambda: service.activate(staged, now=NOW, actor=ACTOR, reason="r"),
+     "rollback": lambda: service.rollback(now=NOW, actor=ACTOR, reason="r")}[operation]()
+    assert paused and not marker.exists()
+    assert not other.root.exists()  # B was refused before its state was created
+    # Released: the marker is written, and every Pack writer is then refused.
+    lab_cli.mark_host()
+    assert marker.exists()
+    for service_ in (mp.MissionPack(ctx), mp.MissionPack(other)):
+        with pytest.raises(mp.PackRefused, match="LAB_HOST_MARKER"):
+            service_.verify(pack, now=NOW)
+
+
+def test_the_marker_entries_need_no_mission_pack_state(node, monkeypatch, tmp_path):
+    """The marker writers take only the /run host lock: a missing, read-only
+    or full /data is never created or touched."""
+    from azazel_nexus import lab_host as lab_marker
+    from azazel_nexus import mission_pack_cli
+
+    marker = tmp_path / "lab-marker"
+    monkeypatch.setattr(lab_marker, "LAB_HOST_MARKER", marker)
+    state = tmp_path / "read-only" / "data" / "azazel" / "mission-packs"
+    state.parent.parent.parent.mkdir()
+    state.parent.parent.parent.chmod(0o500)
+    monkeypatch.setattr(mission_pack_cli, "STATE", state)
+    monkeypatch.setattr(mp, "_make_store_root",
+                        lambda *_: pytest.fail("the marker writer created Mission Pack state"))
+    try:
+        _lab_cli(monkeypatch, marker, 0.2).mark_host()
+    finally:
+        state.parent.parent.parent.chmod(0o700)
+    assert marker.exists() and not state.parent.parent.exists()
+
+
+_HOLDER = """
+import fcntl, os, sys
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+print("held", flush=True)
+sys.stdin.read()
+"""
+
+
+def _hold_in_another_process(path):
+    import subprocess
+    import sys
+
+    holder = subprocess.Popen([sys.executable, "-c", _HOLDER, str(path)],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    assert holder.stdout.readline().strip() == "held"
+    return holder
+
+
+def _release(holder):
+    holder.stdin.close()
+    assert holder.wait(10) == 0
+
+
+def test_another_process_holding_the_host_lock(node, monkeypatch, tmp_path):
+    """Pack writers refuse at once; the marker writer waits (bounded) and
+    either writes after the release or refuses without writing."""
+    import threading
+    import time
+
+    from azazel_nexus import lab_host as lab_marker
+
+    ctx, pack, staged = _prepared(node)
+    marker = tmp_path / "lab-marker"
+    monkeypatch.setattr(lab_marker, "LAB_HOST_MARKER", marker)
+    before = _published(ctx)
+    holder = _hold_in_another_process(lab_marker.LAB_HOST_LOCK)
+    try:
+        service = mp.MissionPack(ctx)
+        for call in (lambda: service.stage(pack, now=NOW, actor=ACTOR),
+                     lambda: service.activate(staged, now=NOW, actor=ACTOR, reason="r"),
+                     lambda: service.rollback(now=NOW, actor=ACTOR, reason="r")):
+            started = time.monotonic()
+            with pytest.raises(mp.PackRefused, match="writer already active"):
+                call()
+            assert time.monotonic() - started < 1.0  # refused at once, never waits
+        assert _published(ctx) == before
+        lab_cli = _lab_cli(monkeypatch, marker, 0.3)
+        from azazel_nexus_lab.refusal import LabRefused
+        with pytest.raises(LabRefused, match="a Mission Pack writer is active"):
+            lab_cli.mark_host()  # timed out
+        assert not marker.exists()
+        monkeypatch.setattr(lab_cli, "MARKER_LOCK_WAIT_SECONDS", 10)
+        marking = threading.Thread(target=lab_cli.mark_host)
+        marking.start()
+        marking.join(0.3)
+        assert marking.is_alive() and not marker.exists()  # waiting, not writing
+    finally:
+        _release(holder)
+    marking.join(10)
+    assert not marking.is_alive() and marker.exists()  # wrote after the release
+
+
+@pytest.mark.parametrize("operation", ["activate", "rollback"])
+def test_an_interrupted_transition_releases_the_host_lock_and_recovers(
+        node, monkeypatch, tmp_path, operation):
+    """Interrupted at transition_prechecked (power loss in-process): nothing is
+    published, both locks are released, and the next transition succeeds."""
     from azazel_nexus import lab_host as lab_marker
 
     ctx, pack, staged = _prepared(node)
     marker = tmp_path / "lab-marker"
     monkeypatch.setattr(lab_marker, "LAB_HOST_MARKER", marker)
     service = mp.MissionPack(ctx)
-    attempts = []
+    before, current = _published(ctx), service.current().number
 
-    def checkpoint(name):
-        if name in {"before_generation", "transition_prechecked", "before_intent"}:
-            with pytest.raises(mp.PackRefused, match="writer already active"):
-                with mp.writer_lock(ctx.root, wait_seconds=0.2):
-                    marker.write_text("lab\n")
-            attempts.append(name)
-    service.checkpoint = checkpoint
-    {"stage": lambda: service.stage(pack, now=NOW, actor=ACTOR),
-     "activate": lambda: service.activate(staged, now=NOW, actor=ACTOR, reason="r"),
-     "rollback": lambda: service.rollback(now=NOW, actor=ACTOR, reason="r")}[operation]()
-    assert attempts and not marker.exists()
-    # Released: the marker is written, and the next Pack operation is refused.
-    with mp.writer_lock(ctx.root):
-        marker.write_text("lab\n")
-    with pytest.raises(mp.PackRefused, match="LAB_HOST_MARKER"):
-        service.verify(pack, now=NOW)
-
-
-def test_lab_marker_writers_hold_the_pack_lock_and_wait_bounded(node, monkeypatch, tmp_path):
-    """`azazel_nexus_lab.cli.mark_host` waits for an active Pack writer, then
-    refuses without writing; once the writer is gone it writes. No deadlock:
-    the marker writer takes only this lock, and a Pack takes nothing after it."""
-    import sys
-    import threading
-
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lab/src"))
-    from azazel_nexus_lab import cli as lab_cli
-    from azazel_nexus_lab.refusal import LabRefused
-
-    from azazel_nexus import lab_host as lab_marker
-    from azazel_nexus import mission_pack_cli
-
-    ctx, _doc, _media = node
-    marker = tmp_path / "lab-marker"
-    monkeypatch.setattr(lab_marker, "LAB_HOST_MARKER", marker)
-    monkeypatch.setattr(mission_pack_cli, "STATE", ctx.root)
-    monkeypatch.setattr(lab_cli, "_write_marker", lambda: marker.write_text("lab\n"))
-    monkeypatch.setattr(lab_cli, "MARKER_LOCK_WAIT_SECONDS", 0.2)
-    with mp.writer_lock(ctx.root):
-        with pytest.raises(LabRefused, match="a Mission Pack writer is active"):
-            lab_cli.mark_host()
-        assert not marker.exists()
-    # A writer that finishes within the wait: the marker follows it.
-    monkeypatch.setattr(lab_cli, "MARKER_LOCK_WAIT_SECONDS", 10)
-    held, released = threading.Event(), threading.Event()
-
-    def hold():
-        with mp.writer_lock(ctx.root):
-            held.set()
-            released.wait(5)
-    holder = threading.Thread(target=hold)
-    holder.start()
-    assert held.wait(5)
-    marking = threading.Thread(target=lab_cli.mark_host)
-    marking.start()
-    marking.join(0.3)
-    assert marking.is_alive() and not marker.exists()  # waiting, not writing
-    released.set()
-    holder.join(5)
-    marking.join(10)
-    assert not marking.is_alive() and marker.exists()
+    def interrupt(name):
+        if name == "transition_prechecked":
+            raise KeyboardInterrupt("power loss")
+    service.checkpoint = interrupt
+    call = {"activate": lambda s: s.activate(staged, now=NOW, actor=ACTOR, reason="r"),
+            "rollback": lambda s: s.rollback(now=NOW, actor=ACTOR, reason="r")}[operation]
+    with pytest.raises(KeyboardInterrupt):
+        call(service)
+    assert _published(ctx) == before
+    recovered = mp.MissionPack(ctx)
+    recovered.recover(now=NOW)
+    assert recovered.current().number == current
+    result = call(recovered)
+    assert result["generation"] != current and recovered.current().number == result["generation"]
+    recovered.ledger.verify()
+    # Both locks were released: a marker writer and a later writer get them.
+    with lab_marker.marker_lock():
+        pass

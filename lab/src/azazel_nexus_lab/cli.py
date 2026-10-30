@@ -51,19 +51,20 @@ MARKER_LOCK_WAIT_SECONDS = 60
 
 
 def mark_host():
-    # The marker is written under the Mission Pack host writer lock, so it can
-    # never appear between a Pack's last marker check and its publication
-    # (owner-decisions H7). A writer still active after the bounded wait
-    # refuses: no marker, so nothing that needs one proceeds.
-    from azazel_nexus import mission_pack, mission_pack_cli
+    # The marker is written under the host-wide lab marker lock that every
+    # Mission Pack publication also holds, so it can never appear between a
+    # Pack's last marker check and its publication (owner-decisions H7). It
+    # lives on /run: no Mission Pack state (/data) is created or needed. A
+    # holder still active after the bounded wait refuses: no marker, so
+    # nothing that needs one proceeds.
+    from azazel_nexus import lab_host
 
     try:
-        with mission_pack.writer_lock(mission_pack_cli.STATE,
-                                      wait_seconds=MARKER_LOCK_WAIT_SECONDS):
+        with lab_host.marker_lock(wait_seconds=MARKER_LOCK_WAIT_SECONDS):
             _write_marker()
     except LabRefused:
         raise
-    except mission_pack.PackRefused:
+    except lab_host.MarkerLockBusy:
         raise LabRefused(f"LAB: host marker {LAB_HOST_MARKER} not written: "
                          "a Mission Pack writer is active") from None
     except OSError as error:

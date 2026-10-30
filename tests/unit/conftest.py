@@ -41,6 +41,15 @@ def negative_cases(negative_index) -> dict[str, dict]:
     return {case["name"]: case for case in negative_index["fixtures"]}
 
 
+@pytest.fixture(autouse=True)
+def _lab_host_lock(tmp_path, monkeypatch):
+    """The host-wide lab marker lock lives on /run; every test gets its own,
+    so an unprivileged test never touches /run and tests do not share it."""
+    from azazel_nexus import lab_host as module
+
+    monkeypatch.setattr(module, "LAB_HOST_LOCK", tmp_path / "lab-host.lock")
+
+
 @pytest.fixture
 def lab_host(tmp_path, monkeypatch) -> Path:
     """Mark this test's host as a lab host (`lab_host.LAB_HOST_MARKER`).

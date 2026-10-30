@@ -13,7 +13,6 @@ import os
 import re
 import stat
 import tempfile
-import time
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -52,31 +51,30 @@ def refuse_lab_host() -> None:
 
 
 @contextmanager
-def writer_lock(root: Path, *, wait_seconds: float = 0.0):
-    """The single host writer lock on the Mission Pack state at ``root``.
+def writer_lock(root: Path):
+    """Every Mission Pack publication: the host-wide lab marker lock, then the
+    single writer lock on the state at ``root``. Never waits.
 
-    Every stage/activate/rollback publication holds it, and so does whoever
-    writes the lab marker (`azazel_nexus_lab.cli.mark_host`,
-    `tools/vm_integration.mark_lab_host`): the marker can never appear between
-    a Pack's last marker check and its publication. Nothing is taken while it
-    is held, so there is no lock order to invert. ``wait_seconds`` bounds the
-    wait; then it refuses (Pack operations do not wait).
+    The marker writers (`azazel_nexus_lab.cli.mark_host`,
+    `tools/vm_integration.mark_lab_host`) take the same host lock, whatever
+    root a Pack uses, so the marker can never appear between a Pack's last
+    marker check and its publication (owner-decisions H7). The order is always
+    host lock, then root lock; a marker writer takes no root lock.
     """
-    _make_store_root(root)
-    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        deadline = time.monotonic() + wait_seconds
-        while True:
+        with lab_host.marker_lock():
+            _make_store_root(root)
+            fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
                     raise PackRefused("Mission Pack writer already active") from None
-                time.sleep(0.05)
-        yield
-    finally:
-        os.close(fd)
+                yield
+            finally:
+                os.close(fd)
+    except lab_host.MarkerLockBusy:
+        raise PackRefused("Mission Pack writer already active") from None
 
 
 def _require(condition: bool, reason: str) -> None:

@@ -644,10 +644,11 @@ def lab_sign(name: str, message: bytes) -> bytes:
 
 def mark_lab_host() -> None:
     """Write the persistent lab marker as the lab tooling does: root, 0644, no
-    link, under the Mission Pack host writer lock (owner-decisions H7)."""
-    from azazel_nexus import mission_pack, mission_pack_cli
+    link, under the host-wide lab marker lock every Mission Pack publication
+    holds (owner-decisions H7)."""
+    from azazel_nexus import lab_host
 
-    with mission_pack.writer_lock(mission_pack_cli.STATE, wait_seconds=60):
+    with lab_host.marker_lock(wait_seconds=60):
         _write_lab_marker()
 
 
