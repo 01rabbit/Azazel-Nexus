@@ -165,7 +165,7 @@ are `WATERMARK_MISSING`, `WATERMARK_MALFORMED`, `WATERMARK_UNREADABLE` and
 Imports run as the store owner (`azknowledge`, which owns
 `/var/lib/azazel/knowledge`); store files owned by anyone else are refused, not
 adopted. The shipped route is `az-knowledge-lited`'s ROOT-only
-`knowledge.import` verb (§11 step 7), which runs as that owner, verifies
+`knowledge.import` verb (§11 step 6), which runs as that owner, verifies
 against the commissioned trust root and records every transition in
 `az-auditd`. The bundle is renamed and its directory synced before the watermark
 is written, so a crash leaves a bundle at or above the watermark, never below.
@@ -546,10 +546,12 @@ logs" in [operations](operations.md)).
 The installed store root is `/var/lib/azazel/knowledge`, as listed in §7 above.
 `LiteImport` still owns
 `inbox`, `admitted/current.tar.gz`, `quarantine` and `state/watermark`. The
-daemon imports only through its ROOT-only `knowledge.import` (§11 step 7),
-never on its own. It never repins, accepts revocations, promotes trust or
-repairs files: signed revocation lists are accepted by `az-commissiond`
-([revocation](revocation.md#accepting-a-list-on-a-node)). A successful status
+daemon imports only through its ROOT-only `knowledge.import` (§11 step 6),
+never on its own. It never enrolls, repins, accepts revocations, promotes
+trust or repairs files: those are the commissioning account's, through root's
+`az-nexus-commission` transactions
+([ADR-0007](adr/0007-lite-trust-operations.md),
+[revocation](revocation.md#accepting-a-list-on-a-node)). A successful status
 request writes neither store nor trust nor a read event.
 
 Trust is a separate commissioner-owned root, `/var/lib/azazel/lite-trust`,
