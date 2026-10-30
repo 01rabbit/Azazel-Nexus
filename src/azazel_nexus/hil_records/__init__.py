@@ -601,6 +601,14 @@ def validate_acquisition(record: object) -> Validation:
             # dpkg was unreadable or foreign is not an observation of it.
             if record.get("dpkg_architecture") != platform_profile.debian_name(observed.architecture):
                 raise ValueError("dpkg_architecture: the observed profile's CPU required")
+            # The capture's own negative filter, read for the CPU it observed
+            # (arm64: the x86 flag is unobservable, and `clear` is refused).
+            from azazel_nexus.virtualization import virtualization_not_observed
+
+            if (record.get("virtualization_not_observed") is not True
+                    or not virtualization_not_observed(record.get("virtualization_observations"),
+                                                       record.get("uname_machine"))):
+                raise ValueError("RESERVE_VIRTUALIZATION_OBSERVED")
             if gate == "HG-01":
                 if record.get("capture_method") != "systemd-system-bus-read-only":
                     raise ValueError("capture_method mismatch")

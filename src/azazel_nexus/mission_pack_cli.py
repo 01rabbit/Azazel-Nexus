@@ -18,6 +18,7 @@ from .mission_pack import (
     _json,
     _regular,
     inspect_media,
+    refuse_lab_host,
 )
 from .model_import import CommissionedModels, ModelImport
 from .model_paths import load_model_trust
@@ -130,6 +131,7 @@ def run(args, *, now, out):
             if (args.pack_operation in {"stage", "activate", "rollback"}
                     and not args.dry_run and os.geteuid() != 0):
                 raise PackRefused("root required for local state writes")
+            refuse_lab_host()  # Before the commissioned config or state is read.
             service = MissionPack(_context())
             if args.pack_operation == "verify":
                 result = service.verify(args.media, now=now).summary()

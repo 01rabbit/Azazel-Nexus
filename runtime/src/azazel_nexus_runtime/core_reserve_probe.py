@@ -218,7 +218,7 @@ def measure(readers: Optional[Readers] = None) -> object:
     observations = readers.virtualization()
     from azazel_nexus.virtualization import virtualization_not_observed
 
-    if not virtualization_not_observed(observations):
+    if not virtualization_not_observed(observations, platform_observed.machine):
         raise MeasurementRefused("RESERVE_VIRTUALIZATION_OBSERVED")
     samples: list[Sample] = []
     for index in range(SAMPLE_COUNT):

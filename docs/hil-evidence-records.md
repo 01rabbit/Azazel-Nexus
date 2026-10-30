@@ -98,8 +98,12 @@ per-boot run requires top-level `virtualization_not_observed: true` and
 `virtualization_observations`. The map must contain exactly `hypervisor_type`,
 `cpu_hypervisor`, `systemd_container`, `dockerenv`, `dmi_vendor`, `dmi_product`,
 and `init_cgroup`. Values must be `clear` or `absent`; CPU, DMI vendor/product
-and init cgroup must be `clear`. Missing, unknown or observed signals are
-refused with `RESERVE_VIRTUALIZATION_OBSERVED`, even in a correctly signed
+and init cgroup must be `clear`. `cpu_hypervisor` reads `unobservable` on a CPU
+without the x86 `flags` line (aarch64); the filter accepts that, and only that,
+where the record names arm64 as its CPU (a capture's `uname_machine`, a v4
+measurement's `architecture`), and refuses `clear` there. `unobservable` is
+never a negative finding: DMI and cgroup must still read `clear`. Missing,
+unknown or observed signals are refused with `RESERVE_VIRTUALIZATION_OBSERVED`, even in a correctly signed
 bundle. VMware, Apple Virtualization, KVM and containers never qualify.
 This negative filter establishes no physical property; independent physical
 provenance review and every other hardware requirement still apply.
@@ -136,9 +140,12 @@ platform: `platform_profile_id`, the reviewed profile selected from the host
 observation, `uname_machine`, and `dpkg_architecture`. A host no reviewed
 profile matches -- including one whose dpkg cannot be read
 (`DPKG_UNOBSERVED`) -- is refused before acquisition with only its reason
-code on stderr (for example `refused: UNKNOWN_ARCHITECTURE`). An arm64 lab host is recorded as
-`debian-13-arm64-cp313-lab`, and the record validator refuses that capture.
-Before acquiring either gate, `az-hil-capture` applies the negative filter;
+code on stderr (for example `refused: UNKNOWN_ARCHITECTURE`). A reviewed profile that is not the
+deployment baseline -- the arm64 lab profile `debian-13-arm64-cp313-lab` -- is refused the same
+way (`refused: LAB_PROFILE_NOT_FOR_PRODUCTION`), as the core reserve probe refuses it; the
+record validator still refuses a lab-profile capture written by an earlier version.
+`validate_acquisition` reads the capture's own negative filter for its `uname_machine`.
+Before acquiring either gate, `az-hil-capture` applies the negative filter for the observed CPU;
 a failed filter emits only `refused: RESERVE_VIRTUALIZATION_OBSERVED` on stderr
 and exits 2 with no capture on stdout.
 HG-01 adds `systemd_version`, `unit_files`, and `units` (active/sub states).

@@ -450,10 +450,59 @@ def test_every_generation_file_write_interruption_keeps_first_install_core(node,
     assert service.status()["fallback"] == "CORE (no previous provider)"
 
 
-def test_real_model_and_lite_slices_are_reused_and_not_reimported(node, tmp_path, lab_host):
-    # The producer's published fixture key is a commissioned anchor only on a
-    # marked lab host (lab_keys).
+def _lite_slice(tmp_path, *, fixture: bool):
+    """A commissioned Lite slice holding one admitted bundle.
+
+    ``fixture`` uses the producer's published fixture (anchor and bundle), a
+    commissioned anchor only on a marked lab host (lab_keys). Otherwise the
+    bundle is signed by a key generated here, as a site signer would.
+    """
+    import hashlib
+
+    from test_lite_bundle import _manifest, _tar
+
     from azazel_nexus.lite_import import CommissionedLite, LiteImport
+
+    lite_root = tmp_path / "lite"
+    (lite_root / "trust").mkdir(parents=True)
+    (lite_root / "inbox").mkdir()
+    if fixture:
+        contract = Path(__file__).resolve().parents[2] / "contract" / "azazel-knowledge-lite"
+        shutil.copyfile(contract / "anchors.toml", lite_root / "trust" / "anchors.toml")
+        shutil.copyfile(contract / "lite.tar.gz", lite_root / "inbox" / "lite.tar.gz")
+    else:
+        signer = SigningKey.generate()
+        (lite_root / "trust" / "anchors.toml").write_text(
+            f'threshold = 1\n[keys]\n"site" = "{signer.verify_key.encode().hex()}"\n')
+        tables = {"tables/attack_technique.jsonl": json.dumps(
+            {"technique_id": "T1110", "name": "Brute Force",
+             "agg_next_expiry": "2027-01-01T00:00:00Z"}).encode() + b"\n"}
+        manifest = json.dumps({**_manifest(bundle_version=5), "files": {
+            path: hashlib.sha256(body).hexdigest() for path, body in tables.items()}},
+            indent=2, sort_keys=True).encode()
+        signature = signer.sign(manifest).signature.hex()
+        (lite_root / "inbox" / "lite.tar.gz").write_bytes(_tar(
+            {"manifest.json": manifest, "manifest.sig": f"site:{signature}\n".encode(), **tables}))
+    lite = LiteImport(CommissionedLite(lite_root))
+    assert lite.import_entry(lite.list_inbox()[0].entry_id, now=NOW).admitted
+    accepted = lite._admitted_bundle()
+    lite_path = lite.commissioned.admitted / "current.tar.gz"
+    asset = mp.InstalledAsset(lite_path, accepted.bundle_digest, lite_path.stat().st_size,
+                              str(accepted.bundle_version))
+    return lite, asset
+
+
+def _with_lite(ctx, doc, lite, lite_asset):
+    assets = dict(ctx.assets)
+    assets[("knowledge_lite", "lite", lite_asset.digest)] = lite_asset
+    newer = json.loads(mp.canonical(doc))
+    newer["components"].append({"kind": "knowledge_lite", "id": "lite", "digest": lite_asset.digest,
+                                "size_bytes": lite_asset.size_bytes, "version": lite_asset.version})
+    newer["total_size_bytes"] += lite_asset.size_bytes
+    return replace(ctx, assets=assets, lite=lite), newer
+
+
+def test_real_model_and_lite_slices_are_reused_and_not_reimported(node, tmp_path):
     from azazel_nexus.model_catalog import (
         CATALOG_DOMAIN,
         CATALOG_FILENAME,
@@ -481,29 +530,16 @@ def test_real_model_and_lite_slices_are_reused_and_not_reimported(node, tmp_path
     imported = models.import_entry(entry_id_for(display_name="weights", size=len(weights)),
                                    "advisor", now=NOW, actor=ACTOR)
     assert imported.promoted
-    lite_root = tmp_path / "lite"
-    (lite_root / "trust").mkdir(parents=True)
-    (lite_root / "inbox").mkdir()
-    contract = Path(__file__).resolve().parents[2] / "contract" / "azazel-knowledge-lite"
-    shutil.copyfile(contract / "anchors.toml", lite_root / "trust" / "anchors.toml")
-    shutil.copyfile(contract / "lite.tar.gz", lite_root / "inbox" / "lite.tar.gz")
-    lite = LiteImport(CommissionedLite(lite_root))
-    assert lite.import_entry(lite.list_inbox()[0].entry_id, now=NOW).admitted
-    accepted = lite._admitted_bundle()
+    lite, lite_asset = _lite_slice(tmp_path, fixture=False)
+    lite_path = lite_asset.path
     model_asset = mp.InstalledAsset(models.commissioned.store / artifact_filename(entry),
                                     entry.digest, entry.size_bytes, "1.0.0", 4096)
-    lite_path = lite.commissioned.admitted / "current.tar.gz"
-    lite_asset = mp.InstalledAsset(lite_path, accepted.bundle_digest, lite_path.stat().st_size,
-                                   str(accepted.bundle_version))
-    assets = dict(ctx.assets)
-    assets[("model", "advisor", model_asset.digest)] = model_asset
-    assets[("knowledge_lite", "lite", lite_asset.digest)] = lite_asset
-    ctx = replace(ctx, assets=assets, models=models, lite=lite)
-    newer = json.loads(mp.canonical(doc))
-    for kind, identity, asset in [("model", "advisor", model_asset), ("knowledge_lite", "lite", lite_asset)]:
-        newer["components"].append({"kind": kind, "id": identity, "digest": asset.digest,
-                                    "size_bytes": asset.size_bytes, "version": asset.version})
-        newer["total_size_bytes"] += asset.size_bytes
+    ctx, newer = _with_lite(ctx, doc, lite, lite_asset)
+    ctx = replace(ctx, assets={**ctx.assets, ("model", "advisor", model_asset.digest): model_asset},
+                  models=models)
+    newer["components"].append({"kind": "model", "id": "advisor", "digest": model_asset.digest,
+                                "size_bytes": model_asset.size_bytes, "version": model_asset.version})
+    newer["total_size_bytes"] += model_asset.size_bytes
     newer["memory_need_mib"] = 5000
     service = mp.MissionPack(ctx)
     before_model = models.current_generation()
@@ -511,23 +547,41 @@ def test_real_model_and_lite_slices_are_reused_and_not_reimported(node, tmp_path
     stage_activate(service, media(newer))
     assert models.current_generation() == before_model
     assert lite_path.read_bytes() == before_lite
-    # Off a marked lab host the Pack's knowledge_lite slice refuses the same
-    # fixture-signed bundle: its gate reads the commissioned anchors (lab_keys).
-    from azazel_nexus import lab_host as lab_marker
-
-    marked = lab_marker.LAB_HOST_MARKER
-    lab_marker.LAB_HOST_MARKER = tmp_path / "no-lab-marker"
-    try:
-        newer["rollback_predecessor"] = service.status()["pack_digest"]
-        with pytest.raises(mp.PackRefused, match="Knowledge Lite reference refused"):
-            service.verify(media(newer), now=NOW)
-    finally:
-        lab_marker.LAB_HOST_MARKER = marked
     # A pack cannot revive missing or unverified installed assets.
     model_asset.path.write_bytes(b"x" * model_asset.size_bytes)
     newer["rollback_predecessor"] = service.status()["pack_digest"]
     with pytest.raises(mp.PackRefused, match="model verification"):
         service.verify(media(newer), now=NOW)
+
+
+def test_a_marked_lab_host_verifies_no_pack(node, tmp_path, lab_host):
+    """H7: the marker that lets a lab pin the published fixture anchor also
+    refuses every Pack, so its knowledge_lite slice cannot name a
+    fixture-signed bundle; off the marker, that slice refuses the bundle."""
+
+    from azazel_nexus import lab_host as lab_marker
+
+    ctx, doc, media = node
+    lite, lite_asset = _lite_slice(tmp_path, fixture=True)  # admitted: the host is marked
+    lab_ctx, newer = _with_lite(ctx, doc, lite, lite_asset)
+    service = mp.MissionPack(lab_ctx)
+    for pack in (media(newer), media()):  # with and without the fixture-signed slice
+        with pytest.raises(mp.PackRefused, match="LAB_HOST_MARKER"):
+            service.verify(pack, now=NOW)
+        with pytest.raises(mp.PackRefused, match="LAB_HOST_MARKER"):
+            service.stage(pack, now=NOW, actor=ACTOR, dry_run=True)
+    assert not ctx.root.exists()
+    # Unmarked, the Pack is verified and its knowledge_lite slice refuses the
+    # same fixture-signed bundle (its gate reads the commissioned anchors).
+    lab_marker.LAB_HOST_MARKER = tmp_path / "no-lab-marker"
+    with pytest.raises(mp.PackRefused, match="Knowledge Lite reference refused"):
+        service.verify(media(newer), now=NOW)
+    # A generation staged before the host was marked is not activated after.
+    staged = mp.MissionPack(ctx).stage(media(), now=NOW, actor=ACTOR)["staged_generation"]
+    lab_marker.LAB_HOST_MARKER = lab_host
+    with pytest.raises(mp.PackRefused, match="LAB_HOST_MARKER"):
+        mp.MissionPack(ctx).activate(staged, now=NOW, actor=ACTOR, reason="reviewed")
+    assert mp.MissionPack(ctx).current() is None
 
 
 def test_audit_failure_prevents_pointer_change(node, monkeypatch):
@@ -853,3 +907,304 @@ def test_cli_host_architecture_is_observed_not_declared(node, monkeypatch, tmp_p
     assert context.host.architecture == machine
     # The tested tuples are x86_64 only; an observed arm64 host matches none.
     assert all(t.architecture != machine for t in context.tuples.tuples)
+
+
+# -- R387-01: on a marked host nothing is read before the refusal --
+
+def _published(ctx):
+    """Generations, selection pointer and audit as bytes: what a write publishes."""
+    return {str(p): p.read_bytes() for p in ctx.root.rglob("*") if p.is_file()} if ctx.root.exists() else {}
+
+
+def _prepared(node):
+    """A host with an active generation, a staged successor and a rollback
+    predecessor, all prepared before the host is marked."""
+    ctx, doc, media = node
+    service = mp.MissionPack(ctx)
+    stage_activate(service, media())
+    stage_activate(service, second(service, doc, media))
+    newer = json.loads(mp.canonical(doc))
+    newer.update(pack_version="3.0.0", rollback_predecessor=service.status()["pack_digest"])
+    staged = service.stage(media(newer), now=NOW, actor=ACTOR)["staged_generation"]
+    return ctx, media(newer), staged
+
+
+def _forbid_reads(monkeypatch):
+    def fail(*_args, **_kwargs):
+        pytest.fail("media or Mission Pack state read on a marked lab host")
+    from azazel_nexus import mission_pack_cli
+    from azazel_nexus.generation import GenerationStore
+
+    monkeypatch.setattr(mp, "_media", fail)
+    monkeypatch.setattr(mp, "_make_store_root", fail)
+    monkeypatch.setattr(mp.MissionPack, "current", fail)
+    monkeypatch.setattr(mp.MissionPack, "_candidate", fail)
+    monkeypatch.setattr(GenerationStore, "read_tree", fail)
+    monkeypatch.setattr(GenerationStore, "verify", fail)
+    monkeypatch.setattr(mission_pack_cli, "_context", fail)
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("operation", ["verify", "stage", "activate", "rollback"])
+def test_a_marked_host_is_refused_before_media_or_state_is_read(
+        node, monkeypatch, tmp_path, operation, dry_run):
+    from azazel_nexus import lab_host as lab_marker
+
+    ctx, pack, staged = _prepared(node)
+    before = _published(ctx)
+    marker = tmp_path / "lab-marker"
+    marker.write_text("lab\n")
+    monkeypatch.setattr(lab_marker, "LAB_HOST_MARKER", marker)
+    _forbid_reads(monkeypatch)
+    service = mp.MissionPack(ctx)
+    call = {"verify": lambda: service.verify(pack, now=NOW),
+            "stage": lambda: service.stage(pack, now=NOW, actor=ACTOR, dry_run=dry_run),
+            "activate": lambda: service.activate(staged, now=NOW, actor=ACTOR, reason="r",
+                                                 dry_run=dry_run),
+            "rollback": lambda: service.rollback(now=NOW, actor=ACTOR, reason="r",
+                                                 dry_run=dry_run)}[operation]
+    with pytest.raises(mp.PackRefused, match="LAB_HOST_MARKER"):
+        call()
+    monkeypatch.undo()
+    assert _published(ctx) == before
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("operation", ["verify", "stage", "activate", "rollback"])
+def test_the_cli_refuses_a_marked_host_before_its_context(
+        node, monkeypatch, tmp_path, operation, dry_run):
+    from azazel_nexus import lab_host as lab_marker
+
+    if operation == "verify" and dry_run:
+        pytest.skip("verify is always read-only")
+    ctx, pack, staged = _prepared(node)
+    before = _published(ctx)
+    marker = tmp_path / "lab-marker"
+    marker.write_text("lab\n")
+    monkeypatch.setattr(lab_marker, "LAB_HOST_MARKER", marker)
+    monkeypatch.setattr("azazel_nexus.cli._now", lambda: NOW)
+    monkeypatch.setattr(mp.os, "geteuid", lambda: 0)
+    _forbid_reads(monkeypatch)
+    args = ["pack", operation, *(["--dry-run"] if dry_run else [])]
+    args += {"verify": [str(pack)], "stage": [str(pack), "--actor", ACTOR],
+             "activate": [str(staged), "--actor", ACTOR, "--reason", "r"],
+             "rollback": ["--actor", ACTOR, "--reason", "r"]}[operation]
+    out = io.StringIO()
+    assert main(args, out=out) == 1
+    assert json.loads(out.getvalue())["refused"] == "LAB_HOST_MARKER"
+    monkeypatch.undo()
+    assert _published(ctx) == before
+
+
+# -- R387-02: the marker and a Pack publication are serialized --
+
+def _mark_mid_operation(service, marker, step):
+    def checkpoint(name):
+        if name == step:
+            marker.write_text("lab\n")  # A writer that bypassed the lock.
+    service.checkpoint = checkpoint
+
+
+@pytest.mark.parametrize(("operation", "step"), [
+    ("stage", "prechecked"), ("stage", "before_generation"),
+    ("activate", "transition_prechecked"), ("activate", "before_intent"),
+    ("rollback", "transition_prechecked"),
+])
+def test_a_marker_appearing_mid_operation_publishes_nothing(
+        node, monkeypatch, tmp_path, operation, step):
+    from azazel_nexus import lab_host as lab_marker
+
+    ctx, pack, staged = _prepared(node)
+    marker = tmp_path / "lab-marker"
+    monkeypatch.setattr(lab_marker, "LAB_HOST_MARKER", marker)
+    service = mp.MissionPack(ctx)
+    before, current = _published(ctx), service.current().number
+    _mark_mid_operation(service, marker, step)
+    call = {"stage": lambda: service.stage(pack, now=NOW, actor=ACTOR),
+            "activate": lambda: service.activate(staged, now=NOW, actor=ACTOR, reason="r"),
+            "rollback": lambda: service.rollback(now=NOW, actor=ACTOR, reason="r")}[operation]
+    with pytest.raises(mp.PackRefused, match="LAB_HOST_MARKER"):
+        call()
+    assert marker.exists()
+    marker.unlink()
+    # No generation, selection pointer or (success) audit was published.
+    assert _published(ctx) == before
+    assert mp.MissionPack(ctx).current().number == current
+
+
+def _lab_cli(monkeypatch, marker, wait):
+    """The real lab marker entry; only the root-only file write is replaced."""
+    import sys
+
+    lab_src = str(Path(__file__).resolve().parents[2] / "lab/src")
+    if lab_src not in sys.path:
+        sys.path.insert(0, lab_src)
+    from azazel_nexus_lab import cli as lab_cli
+
+    monkeypatch.setattr(lab_cli, "_write_marker", lambda: marker.write_text("lab\n"))
+    monkeypatch.setattr(lab_cli, "MARKER_LOCK_WAIT_SECONDS", wait)
+    return lab_cli
+
+
+def _other_root(node, tmp_path):
+    """Root B: the same commissioning, a different state root."""
+    ctx, _doc, _media = node
+    return replace(ctx, root=tmp_path / "other-encrypted" / "packs")
+
+
+@pytest.mark.parametrize("operation", ["stage", "activate", "rollback"])
+def test_no_marker_or_other_root_pack_interleaves_with_a_publication(
+        node, monkeypatch, tmp_path, operation):
+    """R387b-01: the host-wide lock, not the state root, serializes. While the
+    Pack on root A is paused mid-publication, the real marker entry (whose
+    Mission Pack STATE is root B) and a Pack writer on root B are refused."""
+    from azazel_nexus import lab_host as lab_marker
+    from azazel_nexus import mission_pack_cli
+
+    ctx, pack, staged = _prepared(node)
+    other = _other_root(node, tmp_path)
+    marker = tmp_path / "lab-marker"
+    monkeypatch.setattr(lab_marker, "LAB_HOST_MARKER", marker)
+    monkeypatch.setattr(mission_pack_cli, "STATE", other.root)
+    lab_cli = _lab_cli(monkeypatch, marker, 0.2)
+    from azazel_nexus_lab.refusal import LabRefused
+
+    service = mp.MissionPack(ctx)
+    paused = []
+
+    def checkpoint(name):
+        if name in {"generation_published", "intent_durable"}:
+            with pytest.raises(LabRefused, match="a Mission Pack writer is active"):
+                lab_cli.mark_host()
+            with pytest.raises(mp.PackRefused, match="writer already active"):
+                mp.MissionPack(other).stage(node[2](), now=NOW, actor=ACTOR)
+            paused.append(name)
+    service.checkpoint = checkpoint
+    {"stage": lambda: service.stage(pack, now=NOW, actor=ACTOR),
+     "activate": lambda: service.activate(staged, now=NOW, actor=ACTOR, reason="r"),
+     "rollback": lambda: service.rollback(now=NOW, actor=ACTOR, reason="r")}[operation]()
+    assert paused and not marker.exists()
+    assert not other.root.exists()  # B was refused before its state was created
+    # Released: the marker is written, and every Pack writer is then refused.
+    lab_cli.mark_host()
+    assert marker.exists()
+    for service_ in (mp.MissionPack(ctx), mp.MissionPack(other)):
+        with pytest.raises(mp.PackRefused, match="LAB_HOST_MARKER"):
+            service_.verify(pack, now=NOW)
+
+
+def test_the_marker_entries_need_no_mission_pack_state(node, monkeypatch, tmp_path):
+    """The marker writers take only the /run host lock: a missing, read-only
+    or full /data is never created or touched."""
+    from azazel_nexus import lab_host as lab_marker
+    from azazel_nexus import mission_pack_cli
+
+    marker = tmp_path / "lab-marker"
+    monkeypatch.setattr(lab_marker, "LAB_HOST_MARKER", marker)
+    state = tmp_path / "read-only" / "data" / "azazel" / "mission-packs"
+    state.parent.parent.parent.mkdir()
+    state.parent.parent.parent.chmod(0o500)
+    monkeypatch.setattr(mission_pack_cli, "STATE", state)
+    monkeypatch.setattr(mp, "_make_store_root",
+                        lambda *_: pytest.fail("the marker writer created Mission Pack state"))
+    try:
+        _lab_cli(monkeypatch, marker, 0.2).mark_host()
+    finally:
+        state.parent.parent.parent.chmod(0o700)
+    assert marker.exists() and not state.parent.parent.exists()
+
+
+_HOLDER = """
+import fcntl, os, sys
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+print("held", flush=True)
+sys.stdin.read()
+"""
+
+
+def _hold_in_another_process(path):
+    import subprocess
+    import sys
+
+    holder = subprocess.Popen([sys.executable, "-c", _HOLDER, str(path)],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    assert holder.stdout.readline().strip() == "held"
+    return holder
+
+
+def _release(holder):
+    holder.stdin.close()
+    assert holder.wait(10) == 0
+
+
+def test_another_process_holding_the_host_lock(node, monkeypatch, tmp_path):
+    """Pack writers refuse at once; the marker writer waits (bounded) and
+    either writes after the release or refuses without writing."""
+    import threading
+    import time
+
+    from azazel_nexus import lab_host as lab_marker
+
+    ctx, pack, staged = _prepared(node)
+    marker = tmp_path / "lab-marker"
+    monkeypatch.setattr(lab_marker, "LAB_HOST_MARKER", marker)
+    before = _published(ctx)
+    holder = _hold_in_another_process(lab_marker.LAB_HOST_LOCK)
+    try:
+        service = mp.MissionPack(ctx)
+        for call in (lambda: service.stage(pack, now=NOW, actor=ACTOR),
+                     lambda: service.activate(staged, now=NOW, actor=ACTOR, reason="r"),
+                     lambda: service.rollback(now=NOW, actor=ACTOR, reason="r")):
+            started = time.monotonic()
+            with pytest.raises(mp.PackRefused, match="writer already active"):
+                call()
+            assert time.monotonic() - started < 1.0  # refused at once, never waits
+        assert _published(ctx) == before
+        lab_cli = _lab_cli(monkeypatch, marker, 0.3)
+        from azazel_nexus_lab.refusal import LabRefused
+        with pytest.raises(LabRefused, match="a Mission Pack writer is active"):
+            lab_cli.mark_host()  # timed out
+        assert not marker.exists()
+        monkeypatch.setattr(lab_cli, "MARKER_LOCK_WAIT_SECONDS", 10)
+        marking = threading.Thread(target=lab_cli.mark_host)
+        marking.start()
+        marking.join(0.3)
+        assert marking.is_alive() and not marker.exists()  # waiting, not writing
+    finally:
+        _release(holder)
+    marking.join(10)
+    assert not marking.is_alive() and marker.exists()  # wrote after the release
+
+
+@pytest.mark.parametrize("operation", ["activate", "rollback"])
+def test_an_interrupted_transition_releases_the_host_lock_and_recovers(
+        node, monkeypatch, tmp_path, operation):
+    """Interrupted at transition_prechecked (power loss in-process): nothing is
+    published, both locks are released, and the next transition succeeds."""
+    from azazel_nexus import lab_host as lab_marker
+
+    ctx, pack, staged = _prepared(node)
+    marker = tmp_path / "lab-marker"
+    monkeypatch.setattr(lab_marker, "LAB_HOST_MARKER", marker)
+    service = mp.MissionPack(ctx)
+    before, current = _published(ctx), service.current().number
+
+    def interrupt(name):
+        if name == "transition_prechecked":
+            raise KeyboardInterrupt("power loss")
+    service.checkpoint = interrupt
+    call = {"activate": lambda s: s.activate(staged, now=NOW, actor=ACTOR, reason="r"),
+            "rollback": lambda s: s.rollback(now=NOW, actor=ACTOR, reason="r")}[operation]
+    with pytest.raises(KeyboardInterrupt):
+        call(service)
+    assert _published(ctx) == before
+    recovered = mp.MissionPack(ctx)
+    recovered.recover(now=NOW)
+    assert recovered.current().number == current
+    result = call(recovered)
+    assert result["generation"] != current and recovered.current().number == result["generation"]
+    recovered.ledger.verify()
+    # Both locks were released: a marker writer and a later writer get them.
+    with lab_marker.marker_lock():
+        pass

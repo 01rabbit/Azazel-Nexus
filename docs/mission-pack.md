@@ -89,6 +89,24 @@ record, framing/audit allowance and retained headroom; installed asset bytes
 are referenced and already consume local disk. Generations are retained rather
 than deleted. All dry runs are read-only and run the applicable gates.
 
+Verify, stage, activate and rollback all refuse on a host carrying the lab
+marker `/etc/azazel-lab/LAB-HOST` (`PackRefused: LAB_HOST_MARKER`), at their
+entry, before the media, the current or any stored generation (and, in the
+CLI, the commissioned configuration) is read: a marked host may hold the
+published Knowledge Lite fixture anchor (`lab_keys`), and a Pack's
+`knowledge_lite` slice must never name a fixture-signed bundle
+(owner-decisions H7). Every verification checks again, and so does each write
+under the writer lock immediately before a generation, intent or pointer is
+published. Every publication (stage, activate, rollback, whatever state root
+a library caller supplies) holds the host-wide lab marker lock
+`/run/azazel-lab-host.lock` (`lab_host.marker_lock`) and then the state-root
+writer lock, always in that order, and never waits for either. The lab
+tooling writes the marker under the same host lock, waiting at most 60 seconds
+and otherwise refusing without writing the marker, so the marker cannot
+appear between a Pack's last check and its publication. The marker writer
+takes no other lock and creates no Mission Pack state, so there is no lock
+order to invert and an absent or read-only `/data` does not affect it. The marker is not an approval; removing it grants nothing.
+
 Stage reports a generation number for explicit operator review. Activate takes
 that reviewed number and repeats all gates against the staged signed bytes and
 current commissioned state. A stale staged predecessor cannot be activated.

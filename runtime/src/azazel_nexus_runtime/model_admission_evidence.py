@@ -320,7 +320,7 @@ def _collect(tree, *, trust, policy, operator):
     except (OSError, ValueError, KeyError, UnicodeError) as error:
         raise ApprovalRefused("NODE_IDENTITY_UNAVAILABLE") from error
     observed = observe_virtualization()
-    if not virtualization_not_observed(observed):
+    if not virtualization_not_observed(observed, architecture):
         raise ApprovalRefused("RESERVE_VIRTUALIZATION_OBSERVED")
     node_digest = admission.digest(tree.read("/etc/azazel/node.yaml", 1024 * 1024))
     tree.phase = "CATALOG_MISMATCH"

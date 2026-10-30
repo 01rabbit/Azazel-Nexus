@@ -46,11 +46,27 @@ def secure_directory(path, mode):
         raise ValueError("unsafe lab directory")
 
 
+#: How long the marker writer waits for an active Mission Pack writer.
+MARKER_LOCK_WAIT_SECONDS = 60
+
+
 def mark_host():
+    # The marker is written under the host-wide lab marker lock that every
+    # Mission Pack publication also holds, so it can never appear between a
+    # Pack's last marker check and its publication (owner-decisions H7). It
+    # lives on /run: no Mission Pack state (/data) is created or needed. A
+    # holder still active after the bounded wait refuses: no marker, so
+    # nothing that needs one proceeds.
+    from azazel_nexus import lab_host
+
     try:
-        _write_marker()
+        with lab_host.marker_lock(wait_seconds=MARKER_LOCK_WAIT_SECONDS):
+            _write_marker()
     except LabRefused:
         raise
+    except lab_host.MarkerLockBusy:
+        raise LabRefused(f"LAB: host marker {LAB_HOST_MARKER} not written: "
+                         "a Mission Pack writer is active") from None
     except OSError as error:
         reason = errno.errorcode.get(error.errno, "OSError")
         raise LabRefused(f"LAB: host marker {LAB_HOST_MARKER} could not be written ({reason})") from None

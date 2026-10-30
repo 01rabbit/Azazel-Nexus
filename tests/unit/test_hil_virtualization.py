@@ -6,6 +6,7 @@ import pytest
 from azazel_nexus_runtime import hil_capture, virtualization_observation
 from azazel_nexus_runtime import model_admission_evidence as loader
 from nacl.signing import SigningKey
+from test_hil_integration import BASELINE_HOST
 from test_hil_records import fixture_record
 from test_model_admission_evidence import collected_store
 
@@ -35,6 +36,8 @@ def observations(request, tmp_path, monkeypatch):
         if sensor not in ("hypervisor_type", "systemd_container", "dockerenv"):
             path.write_text("normal physical observation")
         files[sensor] = str(path)
+    # An x86 cpuinfo: the hypervisor flag is read from its flags line.
+    (tmp_path / "cpu_hypervisor").write_text("processor\t: 0\nflags\t\t: fpu vme sse2\n")
     values = {
         "vmware": ("dmi_vendor", "VMware, Inc."),
         "apple": ("dmi_product", "Apple Virtualization Generic Platform"),
@@ -167,6 +170,7 @@ def test_capture_refuses_guests_before_identity_or_acquisition(gate, observation
     name, values = observations
     if name == "physical":
         return  # Successful acquisition is covered in test_hil_integration.
+    monkeypatch.setattr(hil_capture, "observe_platform", lambda: BASELINE_HOST)
     monkeypatch.setattr(hil_capture, "observe_virtualization", lambda: values)
     monkeypatch.setattr(hil_capture, "run_identity", lambda: pytest.fail("guest reached acquisition"))
     assert hil_capture.main([gate]) == 2
@@ -232,9 +236,38 @@ def test_lab_service_objectives_refused(objective, mutation, tmp_path):
 @pytest.mark.parametrize("gate", ["hg-01", "hg-04"])
 @pytest.mark.parametrize("values", [None, {}, dict.fromkeys(SENSORS, "unknown")])
 def test_capture_refuses_missing_and_unknown_observations(gate, values, monkeypatch, capsys):
+    monkeypatch.setattr(hil_capture, "observe_platform", lambda: BASELINE_HOST)
     monkeypatch.setattr(hil_capture, "observe_virtualization", lambda: values)
     monkeypatch.setattr(hil_capture, "run_identity", lambda: pytest.fail("uncertain capture acquired"))
     assert hil_capture.main([gate]) == 2
     output = capsys.readouterr()
     assert output.out == ""
     assert output.err == "refused: RESERVE_VIRTUALIZATION_OBSERVED\n"
+
+
+@pytest.mark.parametrize(("architecture", "profile_id", "cpu", "refusal"), [
+    ("amd64", "debian-13-amd64-cp313", "clear", None),
+    ("amd64", "debian-13-amd64-cp313", "unobservable", "RESERVE_VIRTUALIZATION_OBSERVED"),
+    # arm64: the x86 flag is unobservable; `clear` is the reading of a flag
+    # that does not exist and is refused (H4).
+    ("arm64", "debian-13-arm64-cp313-lab", "clear", "RESERVE_VIRTUALIZATION_OBSERVED"),
+    ("arm64", "debian-13-arm64-cp313-lab", "unobservable", None),
+])
+def test_a_v4_reserve_record_reads_the_flag_for_its_cpu(
+        architecture, profile_id, cpu, refusal, protocol_record):
+    from azazel_nexus.core_reserve import ReserveRefused, parse_record, validate
+
+    measurement = protocol_record(MIO_CAMPAIGN_SCHEMA)["runs"][0]["measurement"]
+    assert measurement["schema"] == "azazel-nexus/core-reserve/4"
+    measurement.update(architecture=architecture, platform_profile_id=profile_id)
+    measurement["virtualization_observations"]["cpu_hypervisor"] = cpu
+    if refusal:
+        with pytest.raises(ReserveRefused, match=refusal):
+            parse_record(json.dumps(measurement))
+        return
+    result = validate(parse_record(json.dumps(measurement)))
+    assert result.admissible is (architecture == "amd64")
+    assert not any("VIRTUALIZATION" in reason for reason in result.refusals)
+    if architecture == "arm64":
+        # Read for its CPU, yet never the reserve: the lab profile is refused.
+        assert any("LAB_PROFILE_NOT_FOR_PRODUCTION" in reason for reason in result.refusals)

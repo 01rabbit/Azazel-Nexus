@@ -27,11 +27,11 @@ operator who pinned it made a mistake that should be seen.
 marker (`lab_host.LAB_HOST_MARKER`, written by the lab tooling and never
 removed by it) is what lets a lab rehearsal pin the public fixture. A marked
 host is refused by activation health, the bootstrap overlay, commissioning
-approval and model admission, so a fixture key accepted there cannot reach a
-daemon that runs under an activation grant. Not every gate checks the marker:
-Mission Pack verification does not, so on a marked host a Pack's
-`knowledge_lite` slice can name a fixture-signed bundle (an owner decision;
-off a marked host that slice refuses it like every other reader). The
+approval, model admission and Mission Pack verification (`LAB_HOST_MARKER`,
+owner-decisions H7), so a fixture key accepted there cannot reach a daemon
+that runs under an activation grant, and no Pack's `knowledge_lite` slice can
+name a fixture-signed bundle (off a marked host that slice refuses it like
+every other reader). The
 marker is not an approval: removing it grants nothing, and it never widens
 what a production host accepts. There is no flag, argument or environment
 variable that does the same.

@@ -343,14 +343,15 @@ def parse_record(text: str) -> ReserveRecord:
             "boot_fingerprint", "run_sequence", "build_commit", "kernel_release"
         )}
         _validate_v2_metadata(document)
+    if document["schema"] == RESERVE_SCHEMA_V4:
+        # The CPU first: the virtualization filter is read for it.
+        metadata.update({name: document.get(name) for name in (
+            "architecture", "platform_profile_id")})
+        _validate_v4_metadata(document)
     if document["schema"] in _V3_OR_LATER:
         metadata.update({name: document.get(name) for name in (
             "virtualization_observations", "virtualization_not_observed")})
         _validate_v3_metadata(document)
-    if document["schema"] == RESERVE_SCHEMA_V4:
-        metadata.update({name: document.get(name) for name in (
-            "architecture", "platform_profile_id")})
-        _validate_v4_metadata(document)
     return ReserveRecord(
         **metadata,
         schema=document["schema"],
@@ -568,8 +569,11 @@ def _validate_v2_metadata(document: Mapping[str, object]) -> None:
 def _validate_v3_metadata(document):
     from .virtualization import virtualization_not_observed
 
+    # v4 names the CPU, and the filter is read for it (arm64: the x86 flag is
+    # unobservable, never clear). v3 has no CPU and is read as amd64.
     if (document.get("virtualization_not_observed") is not True
-            or not virtualization_not_observed(document.get("virtualization_observations"))):
+            or not virtualization_not_observed(document.get("virtualization_observations"),
+                                               document.get("architecture"))):
         raise ReserveRefused("RESERVE_VIRTUALIZATION_OBSERVED")
 
 

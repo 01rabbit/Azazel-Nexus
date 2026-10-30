@@ -277,12 +277,12 @@ producer's bytes.
 
 The only exception is a host carrying the persistent lab marker
 `/etc/azazel-lab/LAB-HOST` (`lab_host.py`). A marked host is refused by
-activation health, the bootstrap overlay, commissioning approval and model
-admission, so a fixture key accepted there never reaches a daemon that runs
-under an activation grant. Mission Pack verification does not check the
-marker: on a marked host a Pack's `knowledge_lite` slice can name a
-fixture-signed bundle, while off one it refuses it like every other reader
-(an owner decision). The
+activation health, the bootstrap overlay, commissioning approval, model
+admission and Mission Pack verification (`LAB_HOST_MARKER`; owner-decisions
+H7, decided 2026-10-30), so a fixture key accepted there never reaches a
+daemon that runs under an activation grant, and no Pack's `knowledge_lite`
+slice can name a fixture-signed bundle; off a marked host that slice refuses
+it like every other reader. The
 [VM integration rehearsal](hil-runbooks/vm-integration.md) writes the marker
 before it pins the fixture key; unit tests that drive the fixture through a
 commissioned reader declare the same marker, and the end-to-end harness
