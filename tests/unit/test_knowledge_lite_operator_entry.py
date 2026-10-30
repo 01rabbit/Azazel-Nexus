@@ -183,6 +183,51 @@ def test_the_store_local_anchor_is_not_what_the_daemon_import_trusts(node):
     assert not (node.root / "admitted").exists() or not any((node.root / "admitted").iterdir())
 
 
+def _lookup(node, service=None) -> dict:
+    verb = knowledge_lited.REGISTRY.resolve("knowledge.lookup", SERVICE)
+    return (service or node.service).handle(Request(
+        verb=verb, arguments=verb.bind({"technique_ids": ["T1110"]}),
+        principal=SERVICE, payload={}))
+
+
+def test_a_sealed_anchor_admits_and_serves_nothing_until_it_is_unsealed(node):
+    """Azazel-Knowledge#110's seal, honoured on every path that accepts a bundle.
+
+    Knowledge's `azctl keys` seals the anchor when the last eligible key goes
+    and keeps the seal when keys are added back, until an explicit unseal.
+    Here the seal is set on an anchor whose key is pinned and still valid --
+    the seal-then-add state -- so nothing but the seal stands in the way.
+    """
+    assert _import(node, _place(node, _bundle(node.key, version=5), "v5.tar.gz"))["outcome"] \
+        == "admitted"
+    assert _lookup(node)["refs"]
+    anchors = node.trust / "trust/anchors.toml"
+    unsealed = anchors.read_text()
+    anchors.write_text("sealed = true\n" + unsealed)
+
+    # Still readable, so that revocation acceptance and repin can replace it.
+    assert read_anchors(anchors).sealed is True
+    # Serving stops at once: lookup and status re-verify under the seal.
+    assert _lookup(node)["refs"] == []
+    assert _status(node)["state"] != "available"
+    # Import refuses, and so does a restarted daemon.
+    result = _import(node, _place(node, _bundle(node.key, version=6), "v6.tar.gz"))
+    assert (result["outcome"], result["gate"], result["code"]) == (
+        "quarantined", "anchors", "BUNDLE_ANCHORS_SEALED")
+    restarted = knowledge_lited.KnowledgeLiteService(
+        root=node.root, trust_root=node.trust,
+        clock_floor=ClockFloor(node.tmp / "var/lib/azazel/state/knowledge"), now=lambda: NOW,
+        import_audit=lambda: ImportAudit(append=node.events.append))
+    assert _lookup(node, restarted)["refs"] == []
+
+    # Unsealing is writing the anchor without the seal; nothing else changes.
+    anchors.write_text(unsealed)
+    assert _lookup(node, restarted)["refs"]
+    assert _status(node)["state"] == "available"
+    assert _import(node, _place(node, _bundle(node.key, version=7), "v7.tar.gz"))["outcome"] \
+        == "admitted"
+
+
 @pytest.mark.parametrize("withdrawn", ["digest", "generation", "key"])
 def test_a_revoked_bundle_never_replaces_the_admitted_one(node, withdrawn):
     _import(node, _place(node, _bundle(node.key, version=5), "first.tar.gz"))

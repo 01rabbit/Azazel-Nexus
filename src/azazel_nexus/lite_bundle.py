@@ -238,6 +238,13 @@ class TrustAnchors:
     required_signer_role: Optional[str] = None
     minimum_security_epoch: Optional[int] = None
     accepted_export_policy_digests: Optional[frozenset[str]] = None
+    #: The producer's `sealed` (Azazel-Knowledge#110): set when the last
+    #: eligible key was removed, and kept when keys are added again until an
+    #: operator explicitly unseals. A sealed anchor still *reads* -- revocation
+    #: acceptance and repin read the current anchor to replace it, and the way
+    #: out of a seal is a repin to an unsealed anchor -- but `verify_bundle`
+    #: accepts nothing under it (`BUNDLE_ANCHORS_SEALED`).
+    sealed: bool = False
 
     def __post_init__(self) -> None:
         if self.threshold < 1:
@@ -377,6 +384,11 @@ def parse_anchors(raw: bytes) -> TrustAnchors:
     threshold = document.get("threshold", 1)
     if not isinstance(threshold, int) or isinstance(threshold, bool):
         raise BundleRefused(Gate.ANCHORS, "ANCHORS_INVALID", "threshold must be an integer")
+    sealed = document.get("sealed", False)
+    if not isinstance(sealed, bool):
+        raise BundleRefused(
+            Gate.ANCHORS, "ANCHORS_INVALID", "sealed must be a boolean when present"
+        )
 
     return TrustAnchors(
         threshold=threshold,
@@ -386,6 +398,7 @@ def parse_anchors(raw: bytes) -> TrustAnchors:
         required_signer_role=role,
         minimum_security_epoch=epoch,
         accepted_export_policy_digests=policies,
+        sealed=sealed,
     )
 
 
@@ -466,6 +479,17 @@ def verify_bundle(
     _check_local_tier(manifest)
 
     _check_format(manifest)
+    # Where the producer refuses it: once the anchor is read, before any
+    # signature. Every acceptance -- import, the re-verification behind lookup
+    # and status, and the same after a restart -- comes through here.
+    if anchors.sealed:
+        raise BundleRefused(
+            Gate.ANCHORS,
+            "BUNDLE_ANCHORS_SEALED",
+            "the trust anchor is sealed: its last eligible key was removed and it has "
+            "not been explicitly unsealed since. Nothing is accepted under it until "
+            "the trust root is repinned to an unsealed anchor",
+        )
     signers = _check_signatures(manifest_bytes, signature_bytes, anchors)
     _check_signer_role(signers, anchors)
     _check_security_epoch(manifest, anchors)
@@ -619,8 +643,15 @@ def _table_of_member(name: object) -> Optional[str]:
 
 
 def _check_local_tier(manifest: Mapping) -> None:
+    # Names are collected from whatever shape `tables` has -- an object's keys
+    # included, as the producer's `set(tables)` reads them -- so that a
+    # local-tier name is refused under the producer's code before the shape
+    # is. The shape is then required to be the one the builder writes: a list
+    # of strings, or absent. Ignoring any other shape skipped this check.
     tables = manifest.get("tables", [])
-    named = {t for t in tables if isinstance(t, str)} if isinstance(tables, list) else set()
+    named: set[str] = set()
+    if isinstance(tables, (list, dict)):
+        named = {t for t in tables if isinstance(t, str)}
     files = manifest.get("files")
     if isinstance(files, dict):
         named |= {t for t in map(_table_of_member, files) if t}
@@ -631,6 +662,12 @@ def _check_local_tier(manifest: Mapping) -> None:
             "BUNDLE_TOUCHES_LOCAL_TIER",
             f"the bundle names local-tier table(s) {touched}; a node's own records "
             "are never shipped in a bundle",
+        )
+    if not isinstance(tables, list) or not all(isinstance(t, str) for t in tables):
+        raise BundleRefused(
+            Gate.MANIFEST,
+            "BUNDLE_MANIFEST_INVALID",
+            f"tables must be a list of table names, got {type(tables).__name__}",
         )
 
 

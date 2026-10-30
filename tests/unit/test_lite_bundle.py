@@ -562,6 +562,61 @@ def test_a_bundle_naming_a_local_tier_table_is_refused(tables, member) -> None:
     assert caught.value.code == "BUNDLE_TOUCHES_LOCAL_TIER"
 
 
+#: The producer's `LOCAL_TIER_TABLES` at 09d234c, written out independently of
+#: the product's copy so that dropping a name from the product fails here.
+PRODUCER_LOCAL_TIER_TABLES = (
+    "reaction", "reaction_trust_event", "advisory_log", "observation", "observation_stats",
+    "reputation", "edge_reported_ioc", "pattern", "pattern_index", "rule_draft",
+    "bundle_state", "api_client", "feed_quarantine", "local_meta",
+)
+
+
+@pytest.mark.parametrize("table", PRODUCER_LOCAL_TIER_TABLES)
+def test_every_local_tier_table_the_producer_names_is_refused(table) -> None:
+    for raw in (_signed(_manifest(tables=[table]), {"tables/a.jsonl": b"{}\n"}),
+                _signed(_manifest(), {f"tables/{table}.jsonl": b"{}\n"})):
+        with pytest.raises(BundleRefused) as caught:
+            verify_bundle(raw, anchors=_local_anchors())
+        assert caught.value.code == "BUNDLE_TOUCHES_LOCAL_TIER"
+
+
+@pytest.mark.parametrize("tables, code", [
+    ({"reaction": True}, "BUNDLE_TOUCHES_LOCAL_TIER"),   # an object's keys still name tables
+    ({"a": True}, "BUNDLE_MANIFEST_INVALID"),
+    ("reaction", "BUNDLE_MANIFEST_INVALID"),
+    (None, "BUNDLE_MANIFEST_INVALID"),
+    (["a", 7], "BUNDLE_MANIFEST_INVALID"),
+    (["reaction", 7], "BUNDLE_TOUCHES_LOCAL_TIER"),
+])
+def test_tables_of_any_other_shape_cannot_skip_the_local_tier_check(tables, code) -> None:
+    raw = _signed(_manifest(tables=tables), {"tables/a.jsonl": b"{}\n"})
+    with pytest.raises(BundleRefused) as caught:
+        verify_bundle(raw, anchors=_local_anchors())
+    assert caught.value.code == code
+
+
+def test_a_sealed_anchor_reads_but_accepts_nothing(tmp_path) -> None:
+    raw = _signed(_manifest(), {"tables/a.jsonl": b"{}\n"})
+    body = f'threshold = 1\n[keys]\n"{KEY_ID}" = "{public_key_for(SEED).hex()}"\n'
+    path = tmp_path / "anchors.toml"
+    for seal, outcome in (("", None), ("sealed = false\n", None),
+                          ("sealed = true\n", "BUNDLE_ANCHORS_SEALED")):
+        path.write_text(seal + body, encoding="utf-8")
+        anchors = read_anchors(path)
+        assert anchors.sealed is (outcome is not None)
+        if outcome is None:
+            assert verify_bundle(raw, anchors=anchors)
+        else:
+            with pytest.raises(BundleRefused) as caught:
+                verify_bundle(raw, anchors=anchors)
+            assert (caught.value.gate, caught.value.code) == (Gate.ANCHORS, outcome)
+    for bad in ('"yes"', "1"):
+        path.write_text(f"sealed = {bad}\n" + body, encoding="utf-8")
+        with pytest.raises(BundleRefused) as caught:
+            read_anchors(path)
+        assert caught.value.code == "ANCHORS_INVALID"
+
+
 def test_a_table_merely_resembling_a_local_tier_name_is_served() -> None:
     raw = _signed(_manifest(tables=["reactions"]), {"tables/reactions.jsonl": b"{}\n"})
     assert verify_bundle(raw, anchors=_local_anchors())

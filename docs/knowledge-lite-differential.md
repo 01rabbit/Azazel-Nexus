@@ -81,10 +81,11 @@ context の `--platform linux/arm64`、ネイティブ）と x86_64（同 contex
 `--platform linux/amd64`、Rosetta による変換）の両方で実行し、表は同じだった。
 実機・VM の結果ではない。
 
-52 件のうち、**一致 41 件・不一致 11 件**。全件が記録値どおり（`not_as_recorded=0`）。
-両方が受理した 5 件（valid、expired、rollback_advances、threshold2_both_hold_role、
-member_eight_components）は、取り出した member の digest も一致した。不一致 11 件のうち
-4 件は両方とも拒否してコードだけが違うもの、6 件は Nexus だけが拒否するもの、1 件
+60 件のうち、**一致 45 件・不一致 15 件**。全件が記録値どおり（`not_as_recorded=0`）。
+両方が受理した 6 件（valid、expired、rollback_advances、threshold2_both_hold_role、
+anchor_unsealed_after_new_key、member_eight_components）は、取り出した member の digest も
+一致した。不一致 15 件のうち 6 件は両方とも拒否してコードだけが違う（または Knowledge が
+自分の語彙の外の例外で止まる）もの、8 件は Nexus だけが拒否するもの、1 件
 （`manifest_pretty_signed_raw`）が Knowledge だけが拒否するもの。
 
 ### 4.0 Knowledge #110 で何が変わったか
@@ -105,6 +106,18 @@ member_eight_components）は、取り出した member の digest も一致し�
 276 バイト）、`signature_not_second`、`manifest_shadows_rollback_state`、
 `manifest_local_tier_file_only`（`tables` には書かず member の path だけでローカル層の表を
 名乗る）。
+
+独立レビュー（#393、R393-01・R393-02）の指摘で、さらに次を足した。
+
+- `anchor_sealed`・`anchor_sealed_after_new_key`・`anchor_unsealed_after_new_key`・
+  `anchor_sealed_not_boolean`：#110 の `sealed`。Knowledge の `azctl keys` は、最後の適格な
+  鍵を消したときに anchor を封鎖し、鍵を足し直しても `keys unseal` を明示的に実行するまで
+  封鎖を保つ。`after_new_key` はその状態（唯一の役割保持者 A を失効、役割を持つ E を追加、
+  E が署名）を再現する。変更前の Nexus は `sealed` を読まず、threshold と役割が満たされれば
+  受理していた。
+- `tables_object_local_tier`・`tables_object`・`tables_string`・`tables_null`：`tables` の型。
+  変更前の Nexus は list 以外の `tables` を空として扱い、`{"reaction": true}` でローカル層の
+  検査を飛ばせた（Knowledge は `set(tables)` で object のキーを検査する）。
 
 ### 4.1 一致したもの
 
@@ -132,7 +145,9 @@ path の両方）。
 | `base_version` | 読まない（Lite は full のみ） | null か 1 以上の整数。それ以外は `BUNDLE_BASE_VERSION_INVALID` | Nexus は今後も適用しない。Knowledge が壊れた manifest として拒否するものを受理しない |
 | path 成分の長さ | 名前全体 200 文字だけ。多バイト文字なら 1 成分 255 バイト超も通った | 1 成分 255 UTF-8 バイトまで、`BUNDLE_MEMBER_COMPONENT_TOO_LONG`。名前全体より先に検査する | Nexus は disk に展開しないので NAME_MAX に当たる害は無いが、Knowledge が拒否する名前を受理しない。先に検査するのでコードも一致する |
 | member の順序 | 順序を見ない | `manifest.json`・`manifest.sig` が先頭 2 つでなければ `BUNDLE_MANIFEST_MISSING` | Nexus は全 member を読んでから判定するので順序は安全性に関わらない。形式を一つにするため（M14） |
-| ローカル層の表名 | 見ない | `tables` か `tables/<t>.jsonl`・`deltas/<t>.jsonl` がローカル層の表（Knowledge の `LOCAL_TIER_TABLES` の 14 表）を名乗れば `BUNDLE_TOUCHES_LOCAL_TIER` | Nexus にローカル層は無く読む表しか使わないので害は無いが、誤って作られた bundle を見逃さない（M14）。表の一覧は Knowledge の写しで、ずれはこの道具で検出する |
+| ローカル層の表名 | 見ない | `tables`（list の要素、object ならそのキー）か `tables/<t>.jsonl`・`deltas/<t>.jsonl` がローカル層の表（Knowledge の `LOCAL_TIER_TABLES` の 14 表）を名乗れば `BUNDLE_TOUCHES_LOCAL_TIER` | Nexus にローカル層は無く読む表しか使わないので害は無いが、誤って作られた bundle を見逃さない（M14）。表の一覧は Knowledge の写しで、ずれはこの道具と、14 表を独立に書いた単体試験で検出する |
+| `tables` の型 | list 以外は空として扱った（ローカル層の検査を飛ばせた） | ローカル層の検査の後、文字列の list（または欄なし）でなければ `BUNDLE_MANIFEST_INVALID` | builder が書く形だけを受理する。Knowledge は object・文字列を受理し、null では例外で止まる（§4.3） |
+| `sealed`（anchor） | 読まない。封鎖された anchor でも受理した | `read_anchors` は読んで `sealed` を保持し（bool 以外は `ANCHORS_INVALID`）、`verify_bundle` は封鎖中は何も受理しない（`BUNDLE_ANCHORS_SEALED`、gate `anchors`、署名の検証の前） | 読み手の用途で分けた。**受理する読み手**（import、lookup・status の背後の再検証、再起動後も同じ）はすべて `verify_bundle` を通るので封鎖で止まる。**anchor を置き換えるための読み手**（失効受理・repin）は `read_anchors` だけを使うので、封鎖された anchor も読めて復旧の入口は塞がない。Nexus に unseal の命令は無く、解除は root が `sealed = true` の無い anchor を書くこと（[consumer §11 step 2](knowledge-lite-consumer.md#step-2-anchorstoml-at-both-roots)）。封鎖中の import は他の anchor の gate の拒否と同じく bundle を隔離するので、解除後に bundle を入口へ置き直す |
 
 変更前の Nexus でこれらのケースがどう判定されたかは、§4.0 とこの PR の本文に記録した。
 
@@ -157,6 +172,9 @@ threshold と比べる）、`member_nine_components`（成分の数で数える�
 | `manifest_pretty_signed_raw`（manifest は整形、署名も整形した bytes に対して） | `BUNDLE_SIGNATURE_THRESHOLD_NOT_MET` | **受理** | Knowledge | 上と同じ差の逆向き。**安全性**：Nexus は自分が解析した bytes そのものへの署名を確かめるので、署名されていない内容を読むことはない（真正性の穴ではない）。受理するのは、正しい鍵で署名されているが Knowledge の builder が決して書かない形の manifest だけ。**互換性**：Knowledge の検証器はこれを拒否するので、Nexus が受理する集合のほうが広い。揃えるなら Nexus が「raw の bytes が正準形と一致する」ことを求める側で、Nexus の試験と共通試験ベクトル（`indent=2` の manifest に署名している）を作り直す別の PR になる。**M13 として開いたまま**（`NEXUS_LOOSER`） |
 | `manifest_bom_signed_raw` | `BUNDLE_SIGNATURE_THRESHOLD_NOT_MET` | `BUNDLE_MANIFEST_INVALID` | 両方拒否 | コードだけが違う。Nexus は manifest を BOM なしの厳密な UTF-8 として読む |
 | `manifest_bom_signed_canonical` | 受理 | `BUNDLE_MANIFEST_INVALID` | Nexus | Knowledge は読み直した正準形で署名を確かめるので通す。Knowledge の builder は BOM を書かない。M13 で正準形を要求すれば、両側とも同じ理由で拒否する形になる |
+| `anchor_sealed_not_boolean`（`sealed = "yes"`） | `BUNDLE_ANCHORS_INVALID` | `ANCHORS_INVALID` | 両方拒否 | コードだけが違う（`threshold0_bad_signature` と同じ理由で Nexus のコードは変えない） |
+| `tables_object`（`{"attack_technique": true, ...}`）、`tables_string`（`"reaction"`） | 受理 | `BUNDLE_MANIFEST_INVALID` | Nexus | Knowledge は `set(tables)` で読むので object はキー、文字列は 1 文字ずつの集合になり、どちらも通る。builder は list しか書かない。Nexus が正しい。Knowledge 側の修正候補（K12：`tables` を文字列の list に限る） |
+| `tables_null` | `exception:TypeError` | `BUNDLE_MANIFEST_INVALID` | 両方拒否 | Knowledge は `set(None)` の TypeError で止まる。拒否ではあるが、Knowledge の検証器が目指す「自分の語彙（`BundleVerifyError`）で拒否する」に反する（K12 に含める） |
 
 ### 4.4 委任された技術判断と残る論点
 
@@ -164,10 +182,15 @@ threshold と比べる）、`member_nine_components`（成分の数で数える�
 次のとおり扱った（区分 T。オーナーの追加判断は要らない）。
 
 1. **M14（順序・展開率・禁止欄の和集合・ローカル層の表名）**：すべて Nexus でも拒否する
-   ようにした（§4.2。展開率は #379 で対応済み）。
+   ようにした（§4.2。展開率は #379 で対応済み）。ローカル層の表名は、`tables` の型で検査を
+   飛ばせる穴（R393-02）を塞いだうえで対応済みとした。
 2. **M15（Knowledge への修正提案 K8〜K11）**：Knowledge #110（`09d234c`）で 4 件とも
-   実装された。この PR で記録値をそれに合わせ、K10 の成分長は Nexus にも入れた。
-3. **M13（署名の対象を正準形に限るか）**：残る唯一の「Nexus が緩い」差。真正性の穴では
+   実装された。この PR で記録値をそれに合わせ、K10 の成分長は Nexus にも入れた。#110 が
+   あわせて入れた anchor の封鎖（`sealed`）も Nexus で解釈するようにした（R393-01、§4.2）。
+   新しい提案は K12（`tables` を文字列の list に限り、null を自分の語彙で拒否する）。
+   Knowledge リポジトリはこの作業では変更していない。
+3. **M13（署名の対象を正準形に限るか）**：この表で唯一の「Knowledge が拒否し Nexus が
+   受理する」差（R393-01・R393-02 の修正後。`NEXUS_LOOSER` がそれ以外を CI で拒否する）。真正性の穴では
    ないので急がないが、方向は「Nexus が raw の bytes が正準形と一致することを求める」に
    決める（形式の持ち主は Knowledge で、受理する集合を一つにするため）。試験と共通試験
    ベクトルの作り直しを伴うので、別の PR で行う。それまでは `NEXUS_LOOSER` に残す。

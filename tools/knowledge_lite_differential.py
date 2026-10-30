@@ -200,11 +200,17 @@ class Base:
 
 
 def anchors_toml(keys: LabKeys, *, policy_digest: str, epoch: int, threshold=1,
-                 labels=("A", "B", "C"), roles=None, revoked=(), accepted=None) -> str:
-    """A production-shaped anchor: every gate Knowledge defines is set."""
+                 labels=("A", "B", "C"), roles=None, revoked=(), accepted=None,
+                 sealed: str | None = None) -> str:
+    """A production-shaped anchor: every gate Knowledge defines is set.
+
+    `sealed` is written as the TOML value given (`"true"`, `"false"`, or a
+    malformed one), and left out when None.
+    """
     roles = {"A": ROLE, "B": OTHER_ROLE} if roles is None else roles
     accepted = [policy_digest] if accepted is None else accepted
-    out = [f"threshold = {threshold}",
+    out = ([f"sealed = {sealed}"] if sealed is not None else []) + [
+           f"threshold = {threshold}",
            f'required_signer_role = "{ROLE}"',
            f"minimum_security_epoch = {epoch}",
            "accepted_export_policy_digests = [" + ", ".join(f'"{d}"' for d in accepted) + "]",
@@ -228,7 +234,7 @@ def build_cases(bases: Mapping[str, bytes], keys: LabKeys) -> list[Case]:
     """Every case, from the signed bases. The same list in both modes.
 
     `bases` holds `valid` (signed by A), `signed_B`, `signed_C`, `signed_D`,
-    `signed_AB`, `signed_AE`, `epoch_low` (one below the valid one) and
+    `signed_E`, `signed_AB`, `signed_AE`, `epoch_low` (one below the valid one) and
     `expired`. Locally Knowledge builds all of them; in CI they are derived
     from the Knowledge-emitted contract fixture.
     """
@@ -238,6 +244,13 @@ def build_cases(bases: Mapping[str, bytes], keys: LabKeys) -> list[Case]:
     epoch = m["security_epoch"]
     version = m["bundle_version"]
     prod = anchors_toml(keys, policy_digest=digest, epoch=epoch)
+
+    def after_new_key(sealed: str) -> str:
+        # Knowledge's seal-then-add sequence: A (the last role holder) revoked,
+        # E added with the role, and the seal left as given.
+        return anchors_toml(keys, policy_digest=digest, epoch=epoch, labels=("A", "B", "C", "E"),
+                            roles={"A": ROLE, "B": OTHER_ROLE, "E": ROLE}, revoked=("A",),
+                            sealed=sealed)
 
     def spare(**kwargs) -> str:
         # The production anchor plus F, a role holder that signs nothing.
@@ -286,6 +299,12 @@ def build_cases(bases: Mapping[str, bytes], keys: LabKeys) -> list[Case]:
              anchors_toml(keys, policy_digest=digest, epoch=epoch, revoked=("A",))),
         Case("anchor_role_holders_below_threshold", bases["signed_AB"],
              anchors_toml(keys, policy_digest=digest, epoch=epoch, threshold=2)),
+        Case("anchor_sealed", bases["valid"],
+             anchors_toml(keys, policy_digest=digest, epoch=epoch, sealed="true")),
+        Case("anchor_sealed_after_new_key", bases["signed_E"], after_new_key("true")),
+        Case("anchor_unsealed_after_new_key", bases["signed_E"], after_new_key("false")),
+        Case("anchor_sealed_not_boolean", bases["valid"],
+             anchors_toml(keys, policy_digest=digest, epoch=epoch, sealed='"yes"')),
         Case("threshold2_both_hold_role", bases["signed_AE"],
              anchors_toml(keys, policy_digest=digest, epoch=epoch, threshold=2,
                           labels=("A", "B", "C", "E"), roles={"A": ROLE, "B": OTHER_ROLE, "E": ROLE})),
@@ -336,6 +355,10 @@ def build_cases(bases: Mapping[str, bytes], keys: LabKeys) -> list[Case]:
              base.signed(edit(last_import_at="2026-09-19T00:00:00Z")), prod),
         Case("manifest_local_tier_table", declared(
             {"tables/reaction.jsonl": b"{}\n"}, tables=("reaction",)), prod),
+        Case("tables_object_local_tier", base.signed(edit(tables={"reaction": True})), prod),
+        Case("tables_object", base.signed(edit(tables={t: True for t in m["tables"]})), prod),
+        Case("tables_string", base.signed(edit(tables="reaction")), prod),
+        Case("tables_null", base.signed(edit(tables=None)), prod),
         Case("manifest_local_tier_file_only", declared({"tables/observation.jsonl": b"{}\n"}),
              prod),
         Case("signature_33_lines", base.signed(extra_lines=[f"{i:08x}:00" for i in range(32)]), prod),
@@ -403,6 +426,10 @@ EXPECTED: dict[str, tuple[str, str]] = {
     "threshold2_one_holds_role": (_ROLE, _ROLE),
     "anchor_revoked_leaves_no_role_holder": (_AT, "BUNDLE_REVOKED_SIGNER"),
     "anchor_role_holders_below_threshold": (_AT, _ROLE),
+    "anchor_sealed": ("BUNDLE_ANCHORS_SEALED", "BUNDLE_ANCHORS_SEALED"),
+    "anchor_sealed_after_new_key": ("BUNDLE_ANCHORS_SEALED", "BUNDLE_ANCHORS_SEALED"),
+    "anchor_unsealed_after_new_key": (ACCEPTED, ACCEPTED),
+    "anchor_sealed_not_boolean": ("BUNDLE_ANCHORS_INVALID", "ANCHORS_INVALID"),
     "threshold2_both_hold_role": (ACCEPTED, ACCEPTED),
     "threshold0_bad_signature": (_AT, "ANCHORS_INVALID"),
     "epoch_below_minimum": ("BUNDLE_SECURITY_EPOCH_TOO_LOW", "BUNDLE_SECURITY_EPOCH_TOO_LOW"),
@@ -442,6 +469,10 @@ EXPECTED: dict[str, tuple[str, str]] = {
     "manifest_shadows_rollback_state": (_SHADOW, _SHADOW),
     "manifest_local_tier_table": (_LOCAL, _LOCAL),
     "manifest_local_tier_file_only": (_LOCAL, _LOCAL),
+    "tables_object_local_tier": (_LOCAL, _LOCAL),
+    "tables_object": (ACCEPTED, "BUNDLE_MANIFEST_INVALID"),
+    "tables_string": (ACCEPTED, "BUNDLE_MANIFEST_INVALID"),
+    "tables_null": ("exception:TypeError", "BUNDLE_MANIFEST_INVALID"),
     "signature_33_lines": (ACCEPTED, "BUNDLE_SIGNATURE_MALFORMED"),
 }
 
@@ -458,6 +489,16 @@ DIVERGENCES: dict[str, tuple[str, str]] = {
         "both refuse", "Knowledge refuses at load an anchor with threshold 2 and one role "
         "holder; Nexus refuses each bundle at the signer-role gate, which counts role holders "
         "against the threshold in the same way"),
+    "anchor_sealed_not_boolean": ("both refuse", "both refuse a non-boolean seal when the anchor "
+                                  "is read; Knowledge names it BUNDLE_ANCHORS_INVALID, Nexus "
+                                  "ANCHORS_INVALID, its code for every malformed anchor"),
+    "tables_object": ("nexus", "Knowledge reads `tables` with set(), so an object passes as its "
+                      "keys; Nexus requires the list of names the builder writes"),
+    "tables_string": ("nexus", "Knowledge's set() reads a string as its characters and accepts "
+                      "it; Nexus requires a list"),
+    "tables_null": ("both refuse", "Knowledge fails with a bare TypeError from set(None), outside "
+                    "its own refusal vocabulary (proposed to Knowledge as K12); Nexus refuses it "
+                    "as BUNDLE_MANIFEST_INVALID"),
     "threshold0_bad_signature": ("both refuse", "both refuse the anchor before any signature is "
                                  "checked; Knowledge names it BUNDLE_ANCHORS_THRESHOLD_INVALID "
                                  "(Azazel-Knowledge#110, K8), Nexus ANCHORS_INVALID"),
@@ -597,6 +638,7 @@ def knowledge_bases(knowledge: Path, keys: LabKeys, work: Path) -> dict[str, byt
             "signed_B": ("live.db", ("B",), BUILD_EPOCH),
             "signed_C": ("live.db", ("C",), BUILD_EPOCH),
             "signed_D": ("live.db", ("D",), BUILD_EPOCH),
+            "signed_E": ("live.db", ("E",), BUILD_EPOCH),
             "signed_AB": ("live.db", ("A", "B"), BUILD_EPOCH),
             "signed_AE": ("live.db", ("A", "E"), BUILD_EPOCH),
             "epoch_low": ("live.db", ("A",), BUILD_EPOCH - 1),
@@ -651,6 +693,7 @@ def contract_bases(keys: LabKeys) -> dict[str, bytes]:
     valid = Base(_resign_fixture((CONTRACT / "lite.tar.gz").read_bytes(), keys, ("A",)), keys)
     out = {"valid": valid.raw}
     for name, signers in (("signed_B", ("B",)), ("signed_C", ("C",)), ("signed_D", ("D",)),
+                          ("signed_E", ("E",)),
                           ("signed_AB", ("A", "B")), ("signed_AE", ("A", "E"))):
         out[name] = valid.signed(signers=signers)
     low = json.loads(valid.manifest_bytes)

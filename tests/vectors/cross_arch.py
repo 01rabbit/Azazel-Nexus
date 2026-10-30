@@ -530,6 +530,10 @@ def knowledge_lite_refusals(ctx: Context):
         ("local_tier_table", signed(_manifest(tables=["reaction"])), anchors, 0),
         ("local_tier_member", signed(_manifest(), {"tables/observation.jsonl": table}),
          anchors, 0),
+        # The producer's seal (Azazel-Knowledge#110), and `tables` of another shape.
+        ("anchors_sealed", signed(_manifest()), _local_anchors(sealed=True), 0),
+        ("tables_object_local_tier", signed(_manifest(tables={"reaction": True})), anchors, 0),
+        ("tables_not_a_list", signed(_manifest(tables="a")), anchors, 0),
         ("version_regression_equal", signed(_manifest()), anchors, 7),
         ("version_above_watermark", signed(_manifest()), anchors, 6),
         ("files_not_a_map", signed(_manifest(), files=[]), anchors, 0),
