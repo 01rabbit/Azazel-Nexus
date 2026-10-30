@@ -4,16 +4,16 @@
  "screens": {
   "overview": {
    "png": "degraded-overview.png",
-   "bytes": 86513,
-   "raw_bytes": 288873,
+   "bytes": 103342,
+   "raw_bytes": 344726,
    "width": 1280,
-   "height": 1787,
-   "page_height": 1787
+   "height": 2150,
+   "page_height": 2150
   },
   "detail": {
    "png": "degraded-detail.png",
-   "bytes": 181434,
-   "raw_bytes": 579954,
+   "bytes": 181429,
+   "raw_bytes": 579863,
    "width": 1280,
    "height": 2600,
    "page_height": 5022
@@ -36,7 +36,7 @@
    "title": "何が起きているか",
    "word": "stale",
    "tone": "tone-unknown",
-   "reason": "snapshot_expired"
+   "reason": "intake_not_evidenced_running"
   },
   {
    "panel": "overview",
@@ -387,8 +387,30 @@
     "status": "observer_not_enabled"
    },
    "events": {
-    "basis": [],
-    "reason_code": "snapshot_expired",
+    "basis": [
+     {
+      "code": "open_incidents_total",
+      "count": null,
+      "kind": "observed",
+      "source": "intake"
+     },
+     {
+      "code": "open_incidents_listed",
+      "count": 0,
+      "kind": "observed",
+      "latest": null,
+      "most_severe": null,
+      "reason_code": "snapshot_expired",
+      "shown": 0
+     },
+     {
+      "code": "explainer_not_usable",
+      "kind": "observed",
+      "reason_code": "snapshot_expired"
+     }
+    ],
+    "intake": "snapshot_expired",
+    "reason_code": "intake_not_evidenced_running",
     "status": "stale"
    },
    "next": {

@@ -4,11 +4,11 @@
  "screens": {
   "overview": {
    "png": "narrow-overview.png",
-   "bytes": 73529,
-   "raw_bytes": 261461,
+   "bytes": 78190,
+   "raw_bytes": 273566,
    "width": 360,
    "height": 2600,
-   "page_height": 2720
+   "page_height": 2850
   }
  },
  "login": {
@@ -371,7 +371,7 @@
        "ipv6": "none"
       },
       "kind": "observed",
-      "observed_at": 1793318388.785052
+      "observed_at": 1793325011.9386342
      },
      {
       "active_state": "inactive",
@@ -390,11 +390,18 @@
    "events": {
     "basis": [
      {
-      "code": "open_incidents",
+      "code": "open_incidents_total",
       "count": 2,
       "kind": "observed",
-      "latest": 1793318385.0430164,
+      "source": "intake"
+     },
+     {
+      "code": "open_incidents_listed",
+      "count": 2,
+      "kind": "observed",
+      "latest": 1793325008.1594393,
       "most_severe": 3,
+      "reason_code": null,
       "shown": 3
      },
      {

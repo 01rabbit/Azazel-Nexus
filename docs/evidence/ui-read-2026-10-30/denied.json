@@ -4,16 +4,16 @@
  "screens": {
   "overview": {
    "png": "denied-overview.png",
-   "bytes": 83075,
-   "raw_bytes": 278238,
+   "bytes": 107615,
+   "raw_bytes": 364643,
    "width": 1280,
-   "height": 1736,
-   "page_height": 1736
+   "height": 2217,
+   "page_height": 2217
   },
   "detail": {
    "png": "denied-detail.png",
-   "bytes": 182277,
-   "raw_bytes": 586004,
+   "bytes": 182270,
+   "raw_bytes": 585785,
    "width": 1280,
    "height": 2600,
    "page_height": 4905
@@ -34,9 +34,9 @@
   {
    "panel": "overview",
    "title": "何が起きているか",
-   "word": "permission_denied",
-   "tone": "tone-unknown",
-   "reason": "access_permission_denied"
+   "word": "open_incidents",
+   "tone": "tone-warn",
+   "reason": "incident_list_incomplete"
   },
   {
    "panel": "overview",
@@ -366,13 +366,45 @@
     "status": "permission_denied"
    },
    "events": {
-    "basis": [],
-    "reason_code": "access_permission_denied",
-    "status": "permission_denied"
+    "basis": [
+     {
+      "code": "open_incidents_total",
+      "count": 2,
+      "kind": "observed",
+      "source": "intake"
+     },
+     {
+      "code": "open_incidents_listed",
+      "count": 0,
+      "kind": "observed",
+      "latest": null,
+      "most_severe": null,
+      "reason_code": "access_permission_denied",
+      "shown": 0
+     },
+     {
+      "code": "explainer_not_usable",
+      "kind": "observed",
+      "reason_code": "access_permission_denied"
+     },
+     {
+      "code": "list_differs_from_intake",
+      "count": 2,
+      "kind": "observed",
+      "listed": 0
+     }
+    ],
+    "count": 2,
+    "reason_code": "incident_list_incomplete",
+    "status": "open_incidents"
    },
    "next": {
     "basis": [],
     "items": [
+     {
+      "code": "review_incidents_and_hand_off",
+      "screen": "incidents"
+     },
      {
       "code": "check_unreadable_sources",
       "command": "azazel-nexus status",

@@ -4,32 +4,32 @@
  "screens": {
   "overview": {
    "png": "normal-overview.png",
-   "bytes": 85484,
-   "raw_bytes": 295071,
+   "bytes": 91947,
+   "raw_bytes": 313149,
    "width": 1280,
-   "height": 2041,
-   "page_height": 2041
+   "height": 2126,
+   "page_height": 2126
   },
   "incidents": {
    "png": "normal-incidents.png",
-   "bytes": 125331,
-   "raw_bytes": 432607,
+   "bytes": 125283,
+   "raw_bytes": 432286,
    "width": 1280,
    "height": 2577,
    "page_height": 2577
   },
   "detail": {
    "png": "normal-detail.png",
-   "bytes": 184696,
-   "raw_bytes": 589635,
+   "bytes": 184745,
+   "raw_bytes": 589664,
    "width": 1280,
    "height": 2600,
    "page_height": 4905
   },
   "setup": {
    "png": "normal-setup.png",
-   "bytes": 126681,
-   "raw_bytes": 438058,
+   "bytes": 126739,
+   "raw_bytes": 438976,
    "width": 1280,
    "height": 2600,
    "page_height": 5241
@@ -395,7 +395,7 @@
        "ipv6": "none"
       },
       "kind": "observed",
-      "observed_at": 1793318388.785052
+      "observed_at": 1793325011.9386342
      },
      {
       "active_state": "inactive",
@@ -414,11 +414,18 @@
    "events": {
     "basis": [
      {
-      "code": "open_incidents",
+      "code": "open_incidents_total",
       "count": 2,
       "kind": "observed",
-      "latest": 1793318379.9046714,
+      "source": "intake"
+     },
+     {
+      "code": "open_incidents_listed",
+      "count": 2,
+      "kind": "observed",
+      "latest": 1793325003.0377603,
       "most_severe": 3,
+      "reason_code": null,
       "shown": 3
      },
      {
