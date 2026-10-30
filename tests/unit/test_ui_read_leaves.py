@@ -536,22 +536,48 @@ def test_the_adapter_reads_the_admission_record_from_entryds_snapshot():
 # -- Codex review R389 ------------------------------------------------------------
 
 
-def test_r389_01_a_citation_naming_a_path_never_reaches_either_raw_file(tmp_path):
-    """The builder withholds it, so the operator snapshot and the UI's
-    byte-identical copy both lack it -- the raw UI file is read here."""
-    from azazel_nexus.incident_explain import build_recent_incidents
-    from test_incident_explaind import make
+#: Citations that name a path, with whatever comes before it (R389b-01). Each
+#: carries a marker the checks look for as a plain substring, so they do not
+#: depend on the rule the product uses to recognise a path.
+PATH_CITATIONS = (
+    ("see /srv/private/MARKA", "MARKA"), ("docs/private/MARKB.md", "MARKB"),
+    ("(./relative/MARKC)", "MARKC"), ("source=/srv/private/MARKD", "MARKD"),
+    ("source:./private/MARKE", "MARKE"), ("source\uff1a\uff0fsrv\uff0fMARKF", "MARKF"),
+    ("C:\\private\\MARKG", "MARKG"), ("path\u2215srv\u2215MARKH", "MARKH"),
+)
+MARKERS = tuple(marker for _, marker in PATH_CITATIONS)
+
+
+def _rows_with_path_citations(chunk):
+    """A row holds at most eight citations; four per run, two runs."""
     from test_status_view import DISPLAY_REF, NOW, _recent
 
     rows = _recent(NOW)["incidents"]
-    for citation in ("see /srv/private/source", "docs/private/source.md", "(./relative/source)"):
+    for citation, _ in PATH_CITATIONS[chunk * 4:chunk * 4 + 4]:
         rows[0]["explanation"]["knowledge_refs"].append({**DISPLAY_REF, "citation": citation})
-    built = json.dumps(build_recent_incidents(rows, NOW))
-    for secret in ("/srv/private", "docs/private", "relative/source"):
-        assert secret not in built, secret
-    withheld = [r for r in build_recent_incidents(rows, NOW)["incidents"][0]["explanation"]
-                ["knowledge_refs"] if r.get("citation_state") == "withheld"]
-    assert len(withheld) == 3
+    return rows
+
+
+def _no_marker(text, where):
+    for marker in MARKERS:
+        assert marker not in text, (where, marker)
+
+
+@pytest.mark.parametrize("chunk", [0, 1])
+def test_r389_01_a_citation_naming_a_path_never_reaches_either_raw_file(tmp_path, monkeypatch,
+                                                                        chunk):
+    """New writes and a restored older checkpoint alike: the operator snapshot,
+    the UI's raw copy and the browser's JSON hold none of the markers."""
+    from azazel_nexus.incident_explain import build_recent_incidents
+    from test_incident_explaind import make
+    from test_status_view import NOW
+
+    rows = _rows_with_path_citations(chunk)
+    built = build_recent_incidents(rows, NOW)
+    _no_marker(json.dumps(built, ensure_ascii=False), "builder")
+    refs = built["incidents"][0]["explanation"]["knowledge_refs"]
+    assert sum(r.get("citation_state") == "withheld" for r in refs) == 4
+    # The new-write path: the explainer's own writer.
     ui = tmp_path / "ui"
     ui.mkdir()
     e = make(tmp_path, ui_status_path=ui / "status.json", ui_recent_path=ui / "recent.json")
@@ -560,14 +586,35 @@ def test_r389_01_a_citation_naming_a_path_never_reaches_either_raw_file(tmp_path
     e.recent_status()
     raw = (ui / "recent.json").read_text("utf-8")
     assert raw == (tmp_path / "recent.json").read_text("utf-8")
-    for secret in ("/srv/private", "docs/private", "relative/source"):
-        assert secret not in raw, secret
-    import re
-    from azazel_nexus.status_view import _PATHISH
-    citations = [r.get("citation", "") for row in json.loads(raw)["incidents"]
-                 for r in row["explanation"]["knowledge_refs"]]
-    assert not any(_PATHISH.search(c) for c in citations), citations
-    assert re  # noqa: B018
+    _no_marker(raw, "new write, UI copy")
+    # The restore path: a checkpoint an older release wrote with the citations.
+    e.checkpoint()
+    cursor = tmp_path / "state" / "cursor.json"
+    checkpoint = json.loads(cursor.read_text("utf-8"))
+    checkpoint["recent"]["incidents"] = rows
+    cursor.write_text(json.dumps(checkpoint), "utf-8")
+    (ui / "recent.json").unlink()
+    restored = make(tmp_path, ui_status_path=ui / "status.json", ui_recent_path=ui / "recent.json")
+    # Restored as the older release wrote it, markers and all.
+    assert any(MARKERS[chunk * 4] in json.dumps(r) for r in restored.recent)
+    restored.monotonic = lambda: 200
+    restored.recent_status()
+    _no_marker((ui / "recent.json").read_text("utf-8"), "restored, UI copy")
+    _no_marker((tmp_path / "recent.json").read_text("utf-8"), "restored, operator snapshot")
+    # The browser's JSON, built from the raw UI copy (even one an older
+    # writer left with the citations in it).
+    from azazel_nexus import runtime_paths
+    from test_status_view import _absent, _write
+    node = tmp_path / "node"
+    node.mkdir()
+    monkeypatch.setenv("AZAZEL_ROOT", str(node))
+    _absent(node, monkeypatch)
+    legacy = {"schema": built["schema"], "written_at": NOW - 1, "incidents": rows}
+    _write(runtime_paths.incident_recent_path(reader="ui"), legacy)
+    view = _status_json(node, "--snapshot-reader", "ui")
+    assert view["sections"]["edge_loop"]["recent"]["snapshot"] is not None
+    document = ui_model.browser_json(ui_model.project(view, origin={"kind": "live"}, served_at="t"))
+    _no_marker(document.decode("utf-8"), "browser JSON")
 
 
 def test_r389_02_the_intakes_count_is_the_total_and_none_is_never_guessed():
@@ -576,6 +623,17 @@ def test_r389_02_the_intakes_count_is_the_total_and_none_is_never_guessed():
     answer = lagging["summary"]["events"]
     assert (answer["status"], answer["count"], answer["reason_code"]) == (
         "open_incidents", 1, "incident_list_incomplete")
+    # And the other way (R389b-02): the list still shows one open, the intake
+    # none -- said as a list ahead of the intake, never as a list that misses.
+    ahead = _model({"edge_loop": _loop([_row()], open_total=0)})["summary"]["events"]
+    assert (ahead["status"], ahead["count"], ahead["reason_code"]) == (
+        "open_incidents", 1, "incident_list_ahead_of_intake")
+    differs = [b for b in ahead["basis"] if b["code"] == "list_differs_from_intake"][0]
+    assert (differs["count"], differs["listed"]) == (0, 1)
+    labels = json.loads((REPO / "runtime/src/azazel_nexus_runtime/ui_static/labels.json")
+                        .read_text("utf-8"))
+    assert "少ない" in labels["reasons"]["incident_list_incomplete"]
+    assert "多い" in labels["reasons"]["incident_list_ahead_of_intake"]
     assert "list_differs_from_intake" in [b["code"] for b in answer["basis"]]
     assert lagging["summary"]["next"]["items"][0]["code"] == "review_incidents_and_hand_off"
     # An old open incident pushed out of the twenty newest closed rows.
@@ -749,3 +807,36 @@ def test_r389_04_status_never_opens_or_hashes_an_installed_artifact(tmp_path, mo
     row = [r for r in {s["key"]: s["rows"] for s in mismatch["sections"]}["catalog"]
            if r["axis"] == "model"][0]
     assert row["refused_by"] == model_catalog.Refusal.DIGEST_MISMATCH.value
+
+
+def test_r389b_concurrent_ui_copy_writes_and_removals_never_interleave(tmp_path, monkeypatch):
+    """The intake can write its status from the worker and from shutdown at
+    once; a failing call's removal must not interleave with a replace."""
+    import threading
+    import time as clock
+    from azazel_nexus_runtime import status_snapshot
+    from azazel_nexus_runtime.status_snapshot import UiCopy
+
+    inside, overlaps = [], []
+    original = status_snapshot._replace
+
+    def slow(path, body, mode):
+        if inside:
+            overlaps.append(body)
+        inside.append(body)
+        clock.sleep(0.05)
+        try:
+            if body.startswith(b"fail"):
+                raise OSError(28, "no space")
+            original(path, body, mode)
+        finally:
+            inside.pop()
+    monkeypatch.setattr(status_snapshot, "_replace", slow)
+    copy = UiCopy(tmp_path / "status.json", name="t", warn=lambda _: None)
+    threads = [threading.Thread(target=copy.write, args=(body,))
+               for body in (b"ok-1\n", b"fail\n", b"ok-2\n", b"fail\n")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert overlaps == []

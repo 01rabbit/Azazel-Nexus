@@ -828,10 +828,13 @@ def _knowledge_ref(ref: dict) -> dict:
     `declared, withheld` there too: the citation is producer text, not the
     operator's own path.
     """
+    from .incident_explain import citation_names_a_path
+
     copy = _pick(ref, KNOWLEDGE_REF_FIELDS + KNOWLEDGE_REF_DISPLAY_FIELDS)
     if "citation" in copy:
         copy["withheld"] = []
-        if _PATHISH.search(copy["citation"]):
+        # The one rule the builder applies too (R389b-01): any separator.
+        if _PATHISH.search(copy["citation"]) or citation_names_a_path(copy["citation"]):
             copy.update(citation="", citation_state="withheld", withheld=["citation"])
     return copy
 

@@ -386,7 +386,9 @@
       if (b.latest !== null && b.latest !== undefined) { node.appendChild(when("最後の観測", b.latest)); }
       if (b.reason_code) { node.appendChild(reasonLine(b.reason_code)); }
     } else if (b.code === "list_differs_from_intake") {
-      node.appendChild(el("span", "note warn", "受信側は " + b.count + " 件、一覧は " + b.listed + " 件。一覧に載っていない未解決があり得る"));
+      node.appendChild(el("span", "note warn", "受信側は " + b.count + " 件、一覧は " + b.listed + " 件。" +
+        (b.listed < b.count ? "一覧に載っていない未解決があり得る（一覧は最新 20 件まで、説明器の遅れ・失敗で欠ける）"
+          : "一覧に未解決が残っているが受信側の件数は少ない（終了の反映遅れの可能性）")));
     } else if (b.code === "explainer_behind") {
       node.appendChild(el("span", "note warn", text(b.counter) + "：" + b.count));
     } else if (b.code === "ai_explanations") {

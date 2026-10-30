@@ -575,7 +575,8 @@
     "catalog_invalid": "catalog が壊れている・形が正しくない",
     "catalog_unreadable": "catalog を読めない（入出力の失敗）",
     "section_version_unsupported": "この画面が対応していない版の節（誤読を避けて表示しない）",
-    "integrity_not_reverified": "導入時に digest を確認した記録はあるが、この画面では再検証していない"
+    "integrity_not_reverified": "導入時に digest を確認した記録はあるが、この画面では再検証していない",
+    "incident_list_ahead_of_intake": "一覧の未解決の件数が受信側の総数より多い（終了の反映遅れの可能性。「なし」とは言わない）"
   },
   "sections": {
     "overview": "概況（4 つの問い）",

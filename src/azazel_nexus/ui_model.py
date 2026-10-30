@@ -401,9 +401,13 @@ def _events(model) -> dict:
                       "count": total, "listed": len(open_rows)})
     if (total or 0) > 0 or open_rows:
         count = max(total or 0, len(open_rows))
+        # Which way they disagree is said, not assumed (R389b-02): fewer rows
+        # than the count is a list that misses some; more is a list that has
+        # not caught up with a closure (or a count that lags).
         reason = (None if total is not None and total == len(open_rows)
                   else "intake_not_evidenced_running" if total is None
-                  else "incident_list_incomplete")
+                  else "incident_list_incomplete" if len(open_rows) < total
+                  else "incident_list_ahead_of_intake")
         return _answer("open_incidents", reason, basis, count=count)
     if intake_bad:
         word, reason = intake_bad

@@ -611,7 +611,7 @@ def explanation_summary(record):
                         citation_state="shown" if ref["citation"] else "none")
         try:
             _display_citation(citation["citation"])
-            if _CITATION_PATH.search(unicodedata.normalize("NFKC", citation["citation"])):
+            if citation_names_a_path(citation["citation"]):
                 raise ValueError("citation_names_a_path")
         except ValueError:
             # Producer text with address syntax is not displayed; the rest of
@@ -647,12 +647,21 @@ def _summary_banners():
     return frozenset(private_text(b[:280], 280) for b in REFERENCE_BANNERS)
 
 
-#: A citation that names a file or directory (absolute or relative path).
-#: The same shape `status_view` withholds from its read model; it is
-#: withheld here, in the builder, so that neither file the explainer writes
-#: -- the operator snapshot nor the read-only UI's byte-identical copy
-#: (ADR-0007) -- holds it (R389-01).
-_CITATION_PATH = re.compile(r"(?:^|[\s(\[`'\"])(?:/|[\w.-]+/)[\w./-]*")
+#: Path separators, after NFKC (which folds the full-width `／` and `＼`),
+#: and the look-alike slashes NFKC leaves alone.
+_PATH_SEPARATORS = frozenset("/\\\u2044\u2215\u2216\u29f8\u29f9\ufe68")
+
+
+def citation_names_a_path(text) -> bool:
+    """Whether a citation might name a file or directory (R389-01, R389b-01).
+
+    Deliberately narrow on the public side: a displayed citation is a short
+    name ("MITRE ATT&CK v14.1"), and **any** path separator -- whatever comes
+    before it (`source=/srv/...`, `source:./...`, a full-width colon) --
+    withholds it. A citation that is withheld still says it was withheld.
+    """
+    value = unicodedata.normalize("NFKC", str(text))
+    return any(ch in _PATH_SEPARATORS for ch in value)
 
 
 def _public_refs(row):
@@ -664,7 +673,7 @@ def _public_refs(row):
     refs = []
     for ref in explanation["knowledge_refs"]:
         if (isinstance(ref, dict) and isinstance(ref.get("citation"), str)
-                and _CITATION_PATH.search(unicodedata.normalize("NFKC", ref["citation"]))):
+                and citation_names_a_path(ref["citation"])):
             ref = {**ref, "citation": "", "citation_state": "withheld"}
         refs.append(ref)
     return {**row, "explanation": {**explanation, "knowledge_refs": refs}}

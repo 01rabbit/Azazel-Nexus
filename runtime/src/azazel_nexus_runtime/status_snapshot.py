@@ -30,6 +30,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -90,10 +91,20 @@ class UiCopy:
         self.warn = warn
         self._swept = False
         self._failing = False
+        # One write or removal at a time (R389b §3): the intake can write its
+        # status from the worker and from shutdown at once, and a failure's
+        # removal must not interleave with another thread's replace. The
+        # outcome is the last call's: its copy, or none -- never an older
+        # copy left looking current.
+        self._lock = threading.Lock()
 
     def write(self, body: bytes) -> bool:
         if self.path is None:
             return False
+        with self._lock:
+            return self._write(body)
+
+    def _write(self, body: bytes) -> bool:
         try:
             if not self._swept:
                 self._swept = _sweep(self.path.parent)

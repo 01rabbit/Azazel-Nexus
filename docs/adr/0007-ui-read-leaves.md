@@ -78,9 +78,13 @@ of the same write); a second, narrower shape would be a second reader to keep
 in step. Because the copy is the same bytes, whatever the UI must not see is
 removed **in the shared builder, before either file is written**, never only
 in the read model: the explainer's recent list withholds a Knowledge citation
-that names a file or directory (absolute or relative) in
+that holds **any path separator** (`/`, `\`, after NFKC so the full-width
+forms too, and the look-alike slashes NFKC keeps) -- whatever comes before
+it, `source=/srv/...` or `source:./...` included -- in
 `incident_explain.build_recent_incidents` and `explanation_summary`, rows
-restored from an older checkpoint included (Codex review R389-01). A test
+restored from an older checkpoint included (Codex review R389-01, R389b-01).
+A displayed citation is a short name; the rule is narrow on purpose, and the
+read model applies the same rule again (`citation_names_a_path`). A test
 writes a citation with such a path through the explainer and reads the
 **raw** UI file. The remaining free text in the copied shapes is the AI
 summary and the fixed notices, which the UI shows as such anyway. Snapshots that are *not* in this shape get no copy: the Edge probe
@@ -181,7 +185,13 @@ labels GetUnit's `not-loaded` as "読込なし（未導入とは限らない）"
 * "No open incident" is said only when the intake (which owns the incident
   ledger) is fresh, running and reports zero, and the explainer's list shows
   none open: the list holds twenty rows and can lag, fail to store or break,
-  and a disagreement with the intake's count is said (R389-02).
+  and a disagreement with the intake's count is said, by direction: fewer
+  rows than the count (the list misses some) or more (the list has not caught
+  up with a closure) (R389-02, R389b-02).
+* Copy writes and removals of one snapshot are serialised (`UiCopy` holds a
+  lock), so the intake's worker and its shutdown path cannot interleave a
+  failure's removal with another write: the outcome is the last call's copy
+  or none, never an older copy left looking current.
 * The operator view on the UI shows the admission gates it can read and says
   *not read* for the model store and the consent, which `azui` cannot read.
   Publishing those to the UI would need a writer that owns them; none runs in
