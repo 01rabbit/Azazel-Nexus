@@ -35,6 +35,8 @@ from azazel_nexus.mio_profile import (
 )
 from azazel_nexus.model_import import CommissionedModels, ModelImport
 from azazel_nexus.operator_view import (
+    PROVIDER_REASON_CODES,
+    AdmissionFacts,
     NOMINAL_CLASS_GIB,
     STATUS_SENTENCE,
     Confirmation,
@@ -482,11 +484,76 @@ def test_the_sentence_does_not_move_on_any_path(measured) -> None:
 
 
 def test_even_a_measured_reserve_does_not_reach_a_running_provider() -> None:
+    """S-04: a measured reserve alone is not an admission. Without the gates
+    read, the row says not admitted (it used to say "no implementation", which
+    stopped being true when the local provider path was built)."""
     view = build_view(facts(reserve_measured=True))
     admission = view.operation(Confirmation.PROVIDER_ADMISSION)
     assert admission.available is False
-    assert "no implementation" in admission.reason
+    assert "not an admission" in admission.reason
+    row = [r for r in view.section("cognition").rows if r["axis"] == "provider_state"][0]
+    assert row["value"] == ProviderState.NOT_ADMITTED.value
     assert view.status_sentence == STATUS_SENTENCE
+
+
+@pytest.mark.parametrize("build_enabled, measured, local, codes", [
+    (False, True, "not_admitted", ["admission_switched_off_in_build", "local_not_admitted"]),
+    (False, False, None, ["admission_switched_off_in_build", "core_reserve_unmeasured",
+                          "admission_record_unread"]),
+    (True, None, "no_admission_evidence", ["core_reserve_unread", "local_no_admission_evidence"]),
+    (True, True, "bogus", ["local_observation_invalid"]),
+])
+def test_the_provider_row_lists_every_admission_gate_that_refuses(
+        build_enabled, measured, local, codes) -> None:
+    """S-04: the provider row follows the gates that decide admission -- the
+    build switch, the Core reserve, entryd's recorded local route -- one code
+    per gate that refuses or could not be read, and is never admitted then."""
+    view = build_view(facts(reserve_measured=measured,
+                            admission=AdmissionFacts(build_enabled=build_enabled, local=local)))
+    row = [r for r in view.section("cognition").rows if r["axis"] == "provider_state"][0]
+    assert row["reason_codes"] == codes
+    assert set(codes) <= PROVIDER_REASON_CODES
+    assert row["value"] == ProviderState.NOT_ADMITTED.value
+    assert view.operation(Confirmation.PROVIDER_ADMISSION).available is False
+
+
+@pytest.mark.parametrize("build_enabled", [False, True])
+@pytest.mark.parametrize("measured", [None, False, True])
+@pytest.mark.parametrize("local", [None, "not_admitted", "no_admission_evidence", "unavailable",
+                                   "invalid_observation"])
+def test_no_reading_entryd_can_record_admits_a_provider(build_enabled, measured, local) -> None:
+    """Every local-route word entryd can record is a refusal, so with the gates
+    read the provider is never shown as admitted (`not activated`)."""
+    view = build_view(facts(reserve_measured=measured,
+                            admission=AdmissionFacts(build_enabled=build_enabled, local=local)))
+    row = [r for r in view.section("cognition").rows if r["axis"] == "provider_state"][0]
+    assert row["value"] == ProviderState.NOT_ADMITTED.value
+    assert row["reason_codes"]
+
+
+def test_an_unread_store_profile_or_consent_is_said_and_never_absent_or_zero() -> None:
+    """S-04: the UI's account reads none of the model store, the commissioned
+    ceiling or the consent. Each row says *not read* with a code -- never
+    `absent`, `empty`, `refused` or a count of zero."""
+    view = build_view(facts(profile=None, opt_in=None, reserve_measured=None,
+                            catalog_access="permission_denied"))
+    document = view.as_document()
+    catalog = view.section("catalog").rows
+    assert catalog == ({"axis": "catalog_state", "value": None,
+                        "reason": "the model store was not read by this account",
+                        "reason_code": "catalog_permission_denied"},)
+    for row in view.section("import").rows:
+        assert row["value"] is None and row["reason_code"] == "catalog_permission_denied"
+    rows = {r["axis"]: r for r in view.section("cognition").rows}
+    assert rows["mio_profile"]["value"] is None and rows["mio_profile"]["reason_code"] == "not_read"
+    assert rows["mio_remote_consent"]["value"] is None
+    assert "core_reserve_unread" in rows["provider_state"]["reason_codes"]
+    for confirmation in (Confirmation.MODEL_IMPORT, Confirmation.LICENSE_ACKNOWLEDGEMENT,
+                         Confirmation.REMOTE_OPT_IN):
+        operation = view.operation(confirmation)
+        assert operation.available is False and "not read by this account" in operation.reason
+    assert "absent" not in json.dumps(view.section("catalog").as_document())
+    assert document["status_sentence"] == STATUS_SENTENCE
 
 
 # -- reading the screen does nothing ---------------------------------------

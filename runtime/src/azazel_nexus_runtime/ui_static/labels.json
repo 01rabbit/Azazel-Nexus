@@ -371,6 +371,86 @@
     "not_counted": [
       "証拠として不採用",
       "unknown"
+    ],
+    "path_observed": [
+      "経路あり（観測。到達性は未確認）",
+      "info"
+    ],
+    "path_down_observed": [
+      "経路の link が落ちている（観測）",
+      "bad"
+    ],
+    "no_default_route_observed": [
+      "既定経路なし（観測）",
+      "warn"
+    ],
+    "open_incidents": [
+      "未解決のインシデントあり",
+      "warn"
+    ],
+    "no_open_incidents": [
+      "未解決のインシデントなし（観測上）",
+      "info"
+    ],
+    "observe_only_no_execution": [
+      "自動対処の実行なし（observe-only）",
+      "info"
+    ],
+    "action_needed": [
+      "対応が必要",
+      "warn"
+    ],
+    "monitoring_only": [
+      "監視を続ける",
+      "info"
+    ],
+    "observer_not_enabled": [
+      "観測なし（未有効化）",
+      "unknown"
+    ],
+    "partial": [
+      "一部だけ読めた",
+      "unknown"
+    ],
+    "not_read": [
+      "読んでいない（権限なし）",
+      "unknown"
+    ],
+    "not admitted": [
+      "承認されていない",
+      "warn"
+    ],
+    "not activated": [
+      "承認済み・未起動",
+      "info"
+    ],
+    "on": [
+      "オン",
+      "warn"
+    ],
+    "off": [
+      "オフ",
+      "info"
+    ],
+    "enabled": [
+      "有効",
+      "info"
+    ],
+    "not_enabled": [
+      "未有効化",
+      "unknown"
+    ],
+    "not_recorded": [
+      "記録なし・不確か",
+      "unknown"
+    ],
+    "operator": [
+      "運用者用 leaf",
+      "info"
+    ],
+    "ui": [
+      "UI 用コピー",
+      "info"
     ]
   },
   "reasons": {
@@ -461,13 +541,32 @@
     "snapshot_reading_differs": "snapshot の記録が route ledger の記録と異なる",
     "route_record_expired": "route ledger の最新記録が古い",
     "route_record_in_future": "route ledger の記録時刻が未来",
-    "operator_snapshot_present": "entryd の snapshot があるため route ledger の記録は生存の証拠にしない"
+    "operator_snapshot_present": "entryd の snapshot があるため route ledger の記録は生存の証拠にしない",
+    "observer_timer_not_enabled": "観測器の timer が有効化されていない（導入手順で有効化する）",
+    "default_route_link_down": "既定経路はあるが、出口の link が落ちているか経路が無効",
+    "no_default_route": "既定経路が無い",
+    "uplink_not_observed": "既定経路を観測できなかった",
+    "intake_not_evidenced_running": "受信（intake）が動いていると確認できないため、「なし」とは言えない",
+    "inputs_not_all_read": "一部の情報源をこのアカウントでは読めない（端末で azazel-nexus status を root で確認）",
+    "not_read": "このアカウントでは読んでいない（権限がない）",
+    "catalog_permission_denied": "モデルの保存場所をこのアカウントでは読めない",
+    "catalog_refused": "モデルの保存場所を読めなかった（拒否）",
+    "catalog_absent": "モデルの保存場所が無い",
+    "admission_switched_off_in_build": "このビルドではローカルモデルの承認が切られている（ハードウェアの検証ゲートが閉じるまで）",
+    "core_reserve_unmeasured": "Core 予約が未測定（HG-05）",
+    "core_reserve_unread": "Core 予約の記録をこのアカウントでは読めない",
+    "local_not_admitted": "M.I.O. の記録：ローカル経路は承認されていない",
+    "local_no_admission_evidence": "M.I.O. の記録：ローカル経路の承認の証拠がない",
+    "local_unavailable": "M.I.O. の記録：ローカル経路は利用できない",
+    "local_observation_invalid": "M.I.O. の記録：ローカル経路の観測値が不正",
+    "admission_record_unread": "M.I.O. の承認の記録を読めない（snapshot が無い・古い・不確か）"
   },
   "sections": {
-    "overview": "概況",
+    "overview": "概況（4 つの問い）",
     "incidents": "インシデント",
     "noc": "NOC",
     "knowledge": "Knowledge",
+    "detail": "詳細",
     "setup": "セットアップ・復旧"
   },
   "keys": {
@@ -597,7 +696,28 @@
     "via_gateway": "ゲートウェイ経由",
     "withheld": "伏せた項目",
     "writer": "書き手",
-    "written_at": "書込み時刻"
+    "written_at": "書込み時刻",
+    "model_store": "モデルの保存場所",
+    "core_reserve": "Core 予約の記録",
+    "mio_entry_record": "M.I.O. の承認の記録",
+    "remote_consent": "リモート利用の同意",
+    "mio_profile": "M.I.O. の上限（profile）",
+    "mio_remote_consent": "リモート利用の同意",
+    "provider_state": "提供元の状態",
+    "mio_summary": "M.I.O. の要約",
+    "usable_memory_mib": "使えるメモリ（MiB）",
+    "resource_profile": "資源 profile",
+    "disk_total_mib": "ディスク全体（MiB）",
+    "disk_free_mib": "ディスクの空き（MiB）",
+    "catalog_state": "catalog の状態",
+    "model": "モデル",
+    "inbox": "受入箱（inbox）",
+    "staging": "作業領域（staging）",
+    "quarantine": "隔離",
+    "promoted": "導入済み",
+    "rollback_target": "戻し先の世代",
+    "possibility": "メモリ区分ごとの profile（参考）",
+    "leaf": "読んだ写し（operator＝運用者用 leaf、ui＝UI 用コピー）"
   },
   "texts": {
     "The recorded ceiling is not a grant or admission; provider admission remains closed.": "記録された上限は許可でも承認でもありません。provider admission は閉じたままです。",
@@ -617,6 +737,71 @@
     "local-only decoy observation": "ローカルだけの decoy 観測",
     "Knowledge Lite advice": "Knowledge Lite の助言",
     "local M.I.O. explanations": "ローカル M.I.O. の説明",
-    "Edge deterministic decisions": "Edge の決定論的な判断"
+    "Edge deterministic decisions": "Edge の決定論的な判断",
+    "M.I.O. routing and commissioning control plane implemented; provider execution unavailable pending hardware evidence and provider integration": "M.I.O. の経路選択と commissioning の制御面は実装済み。提供元の実行は、ハードウェアの証拠と提供元の統合が揃うまで利用できない",
+    "the model store was not read by this account": "このアカウントではモデルの保存場所を読んでいない",
+    "the commissioned ceiling was not read by this account": "このアカウントでは commission された上限を読んでいない",
+    "the remote consent record was not read by this account": "このアカウントではリモート利用の同意の記録を読んでいない",
+    "local model admission is switched off in this build until the hardware gates close; no provider is admitted": "このビルドでは、ハードウェアの検証ゲートが閉じるまでローカルモデルの承認が切られている。提供元は承認されていない",
+    "an admission gate refuses or could not be read; no provider is admitted": "承認の門のどれかが拒否しているか読めない。提供元は承認されていない",
+    "not shown: the model store was not read by this account. Run azazel-nexus status as root on the terminal": "表示しない：このアカウントではモデルの保存場所を読んでいない。端末で root として azazel-nexus status を実行する",
+    "not shown: the profile or the remote consent was not read by this account. Run azazel-nexus status as root on the terminal": "表示しない：このアカウントでは上限またはリモート利用の同意を読んでいない。端末で root として azazel-nexus status を実行する"
+  },
+  "summary": {
+    "basis": {
+      "default_route": "既定経路と出口の link（受動観測）",
+      "edge_unit_state": "Edge の unit の状態（unit 観測）",
+      "reachability_not_measured": "到達性は能動確認していない（受動観測のみ）",
+      "open_incidents": "未解決のインシデント（説明器の一覧）",
+      "ai_explanations": "AI による説明",
+      "would_not_executed": "Edge の判断は would（未実行）として受け取る",
+      "would_not_read": "Edge の判断を読めない",
+      "none_accepted": "実行結果は受理していない（なし）"
+    },
+    "path": {
+      "usable": "経路あり",
+      "down": "link が落ちている",
+      "none": "既定経路なし"
+    },
+    "next": {
+      "read_model_unavailable": "状態を読めない。端末で azazel-nexus status を実行して確認する",
+      "check_uplink": "通信の経路を確認する（NOC 画面。必要ならネットワーク担当へ連絡）",
+      "review_incidents_and_hand_off": "インシデント画面で内容を確認し、専門家へ引き継ぐ",
+      "check_failed_units": "失敗している unit を確認する（セットアップ・復旧画面）",
+      "enable_observers": "観測器（NOC・unit 状態）が有効化されていない。端末で次のコマンドを実行して有効化する",
+      "check_unreadable_sources": "この画面で読めない情報源がある。端末で azazel-nexus status を確認し、必要なら install.sh を再実行する",
+      "check_stale_sources": "古くなった情報源がある。書き手の daemon が止まっていないか確認する（詳細画面）",
+      "continue_setup": "セットアップの次の手順を進める",
+      "keep_monitoring": "対応が必要な項目はない。この画面で監視を続ける"
+    },
+    "source": {
+      "noc": "通信（NOC）",
+      "services": "サービス",
+      "knowledge_status": "Knowledge Lite",
+      "mio_status": "AI 経路",
+      "intake": "Edge 受信",
+      "explainer": "説明器",
+      "recent": "インシデント一覧"
+    },
+    "ov_section": {
+      "cognition": "M.I.O.（提供元の承認）",
+      "resources": "資源",
+      "catalog": "モデル catalog",
+      "import": "オフライン導入"
+    },
+    "confirmation": {
+      "profile": "上限（profile）の設定",
+      "remote opt-in": "リモート利用の同意",
+      "license acknowledgement": "ライセンスの確認",
+      "model import": "モデルの導入",
+      "model acquisition": "モデルの取得",
+      "provider admission": "提供元の承認"
+    },
+    "load_state": {
+      "not-loaded": "読込なし（停止後に解放された oneshot も含む。未導入とは限らない）",
+      "loaded": "読込済み",
+      "not-found": "unit ファイルが見つからない",
+      "masked": "masked（起動を禁止）"
+    }
   }
 }

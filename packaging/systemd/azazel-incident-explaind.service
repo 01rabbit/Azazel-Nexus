@@ -25,6 +25,7 @@ LimitFSIZE=128M
 RestrictAddressFamilies=AF_UNIX
 ReadWritePaths=/var/lib/azazel/incident-explain
 ReadWritePaths=/var/lib/azazel/run/incident-explain-status
+ReadWritePaths=-/var/lib/azazel/run/ui-read/incident-explain
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

@@ -392,11 +392,23 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
         # The read-only UI's login code (U5): a file, not a socket, that the
         # operator group reads.
         "/var/lib/azazel/run/ui-login",
+        # The read-only UI's snapshot copies (ADR-0007): files, not sockets,
+        # that azui reads; their parent is traversal only.
+        "/var/lib/azazel/run/ui-read",
+        *(f"/var/lib/azazel/run/ui-read/{leaf}" for leaf in (
+            "audit", "edge-intake", "incident-explain", "knowledge", "mio", "units", "noc")),
     }
     dedicated = {"knowledge-read": "azknowledge-read", "edge-intake": "azedge", "decoy-intake": "azdecoy",
                  "audit-submit": "azaudit-submit", "mio-advise": "azmio-advise"}
     for spec in socket_dirs.values():
+        if spec.path == "/var/lib/azazel/run/ui-read":
+            assert (spec.mode, spec.owner, spec.group) == (0o711, "root", "root")
+            continue
         assert stat.S_ISGID & spec.mode
+        if spec.path.startswith("/var/lib/azazel/run/ui-read/"):
+            # Only azui reads a UI copy; the writer owns its leaf.
+            assert (spec.mode, spec.group) == (0o2750, "azui")
+            continue
         assert spec.group == dedicated.get(spec.path.rsplit("/", 1)[1], "azazel-operator")
         assert spec.mode & 0o007 == 0
 

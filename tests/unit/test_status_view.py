@@ -517,7 +517,8 @@ for _name, _fields in (
                 *(f"{_LOOP}.{_name}.snapshot.{k}" for k in _fields)}
 
 # The operator snapshots (U2) and the storage measurement.
-_SNAP_SOURCE = (*_SOURCE, "source.writer")
+# `source.leaf` (ADR-0007): which copy was read, the operator's or the UI's.
+_SNAP_SOURCE = (*_SOURCE, "source.writer", "source.leaf")
 for _name, _fields in (
         ("knowledge_status", ("state", "reason_code", "generation", "freshness")),
         ("mio_status", ("recorded", "state", "ceiling", "reasons", "reasons.{code}",
@@ -557,6 +558,27 @@ ALLOWED |= {"sections.noc", "sections.noc.status", "sections.noc.reason_code", "
             "sections.noc.role", "sections.noc.role.status", "sections.noc.role.reason_code",
             "sections.noc.identity", "sections.noc.identity.interfaces_by",
             "sections.noc.identity.withheld", "sections.noc.identity.withheld[]"}
+
+# Which copy of the operator snapshots the view read (ADR-0007).
+ALLOWED |= {"snapshot_reader"}
+
+# The operator view (S-04), a versioned section built by the read adapter.
+# Its rows are `operator_view`'s own display rows (fixed English reasons,
+# model ids, inbox display names), listed field by field.
+_OV = "sections.operator_view"
+ALLOWED |= {_OV, *(f"{_OV}.{k}" for k in (
+    "schema", "status", "reason_code", "inputs", "inputs.model_store", "inputs.core_reserve",
+    "inputs.mio_entry_record", "inputs.remote_consent", "unread_inputs", "unread_inputs[]",
+    "provider", "provider.state", "provider.reason_codes", "provider.reason_codes[]",
+    "admission_build_switch", "models_omitted", "status_sentence",
+    "sections", "sections[]", "sections[].key", "sections[].title", "sections[].rows",
+    "sections[].rows[]", *(f"sections[].rows[].{f}" for f in (
+        "axis", "value", "reason", "reason_code", "reason_codes", "reason_codes[]",
+        "model_id", "refused_by", "admitted", "entries", "entries[]",
+        "nominal_gib", "profile", "is_this_node", "note")),
+    "operations", "operations[]", *(f"operations[].{f}" for f in (
+        "confirmation", "available", "reason", "transition")),
+    "source", "source.kind", "source.reader", "source.writes"))}
 
 #: Maps keyed by fixed codes rather than by field names.
 CODE_KEYED = {"refused", "content_labels", "reasons", "health"}
@@ -784,7 +806,9 @@ def _changed(a, b):
     (lambda root, mp: _fabric(mp, "0.9.0rc5"), {"fabric"}),
     # The measured envelope also enters the cognition axis's sentence (its
     # resource gate); that sentence names a document, so only the terminal has it.
-    (lambda root, mp: _measured(mp), {"profile", "next_actions"}),
+    # The operator view (S-04) shows the same usable memory and the profile
+    # it selects in its resources rows.
+    (lambda root, mp: _measured(mp), {"profile", "next_actions", "operator_view"}),
 ])
 def test_each_input_moves_only_its_own_section(tmp_path, monkeypatch, tweak, expected):
     """Changed inputs move their own axis; nothing is derived across sections."""

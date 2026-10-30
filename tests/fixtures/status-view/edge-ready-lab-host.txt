@@ -85,6 +85,20 @@ health:
     systemd units: unknown -- not established: runtime service units ship with this build; this read-only command does not query the service manager (docs/hardware-gates.md HG-01)
     audit: unknown -- no readable auditd status snapshot (auditd not running, install.sh not re-run since the upgrade, or this user cannot read run/audit-status: that needs the azazel-operator group); audit capacity unknown; audit ledger not inspected
 
+operator snapshots (each written by its own daemon or observer):
+    Knowledge Lite (knowledge-lited): unavailable (snapshot_absent_or_refused); never read
+    M.I.O. (mio-entryd): unavailable (snapshot_absent_or_refused); never read
+    unit states (units-observe): unavailable (snapshot_absent_or_refused); never read
+    passive NOC (noc-observe): unavailable (snapshot_absent_or_refused); never read
+    storage: measured
+    an observer that is not enabled writes nothing: its line says never read (azazel-nexus setup, step operator-observers)
+
+operator view: partial (inputs_not_all_read)
+    provider: not admitted; refusing gates: admission_switched_off_in_build, core_reserve_unmeasured, admission_record_unread
+    admission build switch: off
+    catalog: absent
+    inputs not read or not usable here: mio_entry_record
+
 next:
     commissioning step unavailable on a lab host (LAB_HOST_MARKER); requires a non-lab deployment
     if-1 cannot be commissioned as read: permanent_mac could not be read

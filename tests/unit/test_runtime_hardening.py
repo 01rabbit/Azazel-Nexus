@@ -763,14 +763,16 @@ def test_the_units_say_they_are_generated():
         (
             "azazel-mio-entryd.service", "azmioentry",
             ["/var/lib/azazel/state/mio", "/var/lib/azazel/run/mio-entry",
-             "/var/lib/azazel/run/mio-advise", "-/var/lib/azazel/run/mio-status"],
+             "/var/lib/azazel/run/mio-advise", "-/var/lib/azazel/run/mio-status",
+             "-/var/lib/azazel/run/ui-read/mio"],
             None,
         ),
         (
             "azazel-knowledge-lited.service", "azknowledge",
             ["/var/lib/azazel/knowledge", "/var/lib/azazel/run/knowledge",
              "/var/lib/azazel/run/knowledge-read",
-             "/var/lib/azazel/state/knowledge", "-/var/lib/azazel/run/knowledge-status"],
+             "/var/lib/azazel/state/knowledge", "-/var/lib/azazel/run/knowledge-status",
+             "-/var/lib/azazel/run/ui-read/knowledge"],
             ["/var/lib/azazel/lite-trust"],
         ),
     ],
@@ -815,7 +817,7 @@ def test_provider_hosts_write_only_their_own_socket_leaf(unit, paths):
         ("azazel-auditd.service", ("audit", "audit-submit"),
          ["/var/lib/azazel/run/audit", "/var/lib/azazel/run/audit-submit",
           "/var/lib/azazel/state/audit", "/var/lib/azazel/state/auditd",
-          "-/var/lib/azazel/run/audit-status"]),
+          "-/var/lib/azazel/run/audit-status", "-/var/lib/azazel/run/ui-read/audit"]),
         ("azazel-watchdog.service", ("watchdog",),
          ["/var/lib/azazel/run/watchdog", "/var/lib/azazel/state/watchdog"]),
     ],
@@ -824,16 +826,18 @@ def test_socket_daemons_write_only_their_own_run_leaf(unit, sockets, paths):
     """Each of these creates only its sockets under the run tree, each in its
     installer-owned leaf, so those leaves are the whole of its run-tree grant.
     auditd has two: the operator socket and the explainer's append-only one,
-    plus its capacity snapshot leaf (#211), which holds no socket."""
+    plus its capacity snapshot leaf (#211) and the read-only UI's copy of it
+    (ADR-0007), which hold no socket."""
 
-    from azazel_nexus_runtime.runtime_paths import audit_status_path, socket_path
+    from azazel_nexus_runtime.runtime_paths import audit_status_path, socket_path, ui_copy_path
 
     written = _settings(unit)["ReadWritePaths"]
     assert written == paths
     run_grants = [p for p in written if p.lstrip("-") == "/var/lib/azazel/run"
                   or p.lstrip("-").startswith("/var/lib/azazel/run/")]
     # Optional ("-"): a missing snapshot leaf must not stop auditd's start.
-    snapshot = (["-/var/lib/azazel/run/" + audit_status_path().parent.name]
+    snapshot = (["-/var/lib/azazel/run/" + audit_status_path().parent.name,
+                 "-/var/lib/azazel/run/ui-read/" + ui_copy_path("audit_status").parent.name]
                 if unit == "azazel-auditd.service" else [])
     assert run_grants == ["/var/lib/azazel/run/" + socket_path(name).parent.name
                           for name in sockets] + snapshot

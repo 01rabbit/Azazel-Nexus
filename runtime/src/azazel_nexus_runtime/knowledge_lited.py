@@ -242,6 +242,7 @@ def main(
         knowledge_store_root,
         lite_trust_root,
         socket_path,
+        ui_copy_path,
     )
     from .serve import serve_forever
     from .status_snapshot import SnapshotWriter
@@ -257,7 +258,8 @@ def main(
                                    clock_floor=ClockFloor(knowledge_state_dir()), audit=audit)
     snapshot = SnapshotWriter(knowledge_status_path(), service.status_snapshot,
                               limit=KNOWLEDGE_BYTES, interval_s=KNOWLEDGE_INTERVAL_S,
-                              name="az-knowledge-lited")
+                              name="az-knowledge-lited",
+                              ui_path=ui_copy_path("knowledge_status"))
     # After READY, never before the bind: the summary verifies the bundle,
     # which must not delay serving. Never raises: a missing leaf is logged
     # once and serving continues.

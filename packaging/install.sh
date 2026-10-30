@@ -371,6 +371,17 @@ make_owned_dir 2710 azwatch azazel-operator /var/lib/azazel/run/watchdog
 # Not a socket leaf: the Edge probe's result, renamed into place inside it.
 # Group-readable (not traversal-only) so `azazel-nexus status` can read it.
 make_owned_dir 2750 azprobe azazel-operator /var/lib/azazel/run/edge-probe
+# The read-only UI's copies (ADR-0007): each snapshot writer puts a
+# byte-identical copy of its operator snapshot into its own leaf here, and the
+# setgid group azui reads it. azui joins no group; nothing here is a socket.
+make_dir 0711 root /var/lib/azazel/run/ui-read
+make_owned_dir 2750 azaudit azui /var/lib/azazel/run/ui-read/audit
+make_owned_dir 2750 azintake azui /var/lib/azazel/run/ui-read/edge-intake
+make_owned_dir 2750 azexplain azui /var/lib/azazel/run/ui-read/incident-explain
+make_owned_dir 2750 azknowledge azui /var/lib/azazel/run/ui-read/knowledge
+make_owned_dir 2750 azmioentry azui /var/lib/azazel/run/ui-read/mio
+make_owned_dir 2750 azprobe azui /var/lib/azazel/run/ui-read/units
+make_owned_dir 2750 aznoc azui /var/lib/azazel/run/ui-read/noc
 # The read-only UI's login code (U5): azui writes it, the operator group reads
 # it with `azazel-nexus ui-login`. azui itself is in no group but its own.
 make_owned_dir 2750 azui azazel-operator /var/lib/azazel/run/ui-login

@@ -32,7 +32,7 @@ def observe(reader, *, clock: Callable[[], float] = time.time) -> dict:
 
 def main(argv: Optional[Sequence[str]] = None, *, reader=None,
          clock: Callable[[], float] = time.time) -> int:
-    from .runtime_paths import units_status_path
+    from .runtime_paths import ui_copy_path, units_status_path
     from .status_snapshot import SnapshotWriter
     from .systemd_bus import UnitStatesReader
 
@@ -42,7 +42,8 @@ def main(argv: Optional[Sequence[str]] = None, *, reader=None,
         raise SystemExit("az-units-observe takes no arguments")
     reader = reader if reader is not None else UnitStatesReader()
     writer = SnapshotWriter(units_status_path(), lambda: observe(reader, clock=clock),
-                            limit=UNITS_BYTES, interval_s=0, name="az-units-observe")
+                            limit=UNITS_BYTES, interval_s=0, name="az-units-observe",
+                            ui_path=ui_copy_path("units_status"))
     return 0 if writer.write() else 1
 
 

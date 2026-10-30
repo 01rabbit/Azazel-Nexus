@@ -175,7 +175,7 @@ def test_json_and_next_registration(tmp_path, fixture_host, monkeypatch):
         assert doc["hg05"] == "unmeasured"
         assert doc["provider_admission"] == "blocked"
         assert doc["enforcement_readiness"] == "not-established"
-        assert len(doc["steps"]) == (1 if next_only else 15)
+        assert len(doc["steps"]) == (1 if next_only else 16)
         assert doc["steps"][0]["name"] == "installed-files"
     out = StringIO()
     assert main(["setup", "--next"], out=out) == 0
@@ -301,6 +301,39 @@ def test_unit_mask_is_observed_without_claiming_active(tmp_path, fixture_host):
     assert fact.state is State.UNKNOWN
     assert "observed masks: azazel-commissiond.service" in fact.reason
     assert fact.command.startswith("systemctl status azazel-activated.service")
+
+
+def _timer_files(root, *names):
+    for name in names:
+        unit = root / "usr/lib/systemd/system" / name
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        unit.write_text("[Timer]\n", encoding="utf-8")
+
+
+def test_operator_observers_step_names_the_enable_command_until_both_timers_are_linked(
+        tmp_path, fixture_host):
+    """M24: the installer enables neither observer (SPEC 2.3), so setup is
+    where an operator enables them; the step is `needed` with the exact
+    command until both wants links exist, and reads only links."""
+    timers = ("azazel-noc-observe.timer", "azazel-units-observe.timer")
+    fact = flow.collect(args(), now=NOW, root=tmp_path)["operator-observers"]
+    assert fact.state is State.UNKNOWN and "not installed" in fact.reason
+    _timer_files(tmp_path, *timers)
+    fact = flow.collect(args(), now=NOW, root=tmp_path)["operator-observers"]
+    assert fact.state is State.MISSING
+    assert fact.command == "sudo systemctl enable --now " + " ".join(timers)
+    assert "not observed (not enabled)" in fact.reason
+    wants = tmp_path / "etc/systemd/system/timers.target.wants"
+    wants.mkdir(parents=True)
+    (wants / timers[0]).symlink_to("/usr/lib/systemd/system/" + timers[0])
+    fact = flow.collect(args(), now=NOW, root=tmp_path)["operator-observers"]
+    assert fact.state is State.MISSING
+    assert fact.command == "sudo systemctl enable --now " + timers[1]
+    (wants / timers[1]).symlink_to("/usr/lib/systemd/system/" + timers[1])
+    fact = flow.collect(args(), now=NOW, root=tmp_path)["operator-observers"]
+    assert fact.state is State.COMPLETE
+    steps = {step.name: step for step in flow.evaluate({"operator-observers": fact})}
+    assert steps["operator-observers"].status == "done"
 
 
 def test_manifest_option_error_is_json():

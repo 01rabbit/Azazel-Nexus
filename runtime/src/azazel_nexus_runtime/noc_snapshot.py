@@ -46,7 +46,7 @@ def observe(collect: Callable[..., dict], *, clock: Callable[[], float] = time.t
 def main(argv: Optional[Sequence[str]] = None, *, collect: Optional[Callable[..., dict]] = None,
          clock: Callable[[], float] = time.time) -> int:
     from .noc_observe import collect as passive_collect
-    from .runtime_paths import noc_status_path
+    from .runtime_paths import noc_status_path, ui_copy_path
     from .status_snapshot import SnapshotWriter
 
     if argv is None:
@@ -55,7 +55,8 @@ def main(argv: Optional[Sequence[str]] = None, *, collect: Optional[Callable[...
         raise SystemExit("az-noc-observe takes no arguments")
     collect = collect if collect is not None else passive_collect
     writer = SnapshotWriter(noc_status_path(), lambda: observe(collect, clock=clock),
-                            limit=NOC_BYTES, interval_s=0, name="az-noc-observe")
+                            limit=NOC_BYTES, interval_s=0, name="az-noc-observe",
+                            ui_path=ui_copy_path("noc_status"))
     return 0 if writer.write() else 1
 
 

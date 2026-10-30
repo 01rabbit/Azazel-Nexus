@@ -32,7 +32,10 @@ class Step:
 ORDER = (
     "installed-files", "host-preflight", "commissioning", "commission-review",
     "bootstrap-deployment", "bootstrap-selection", "knowledge-store", "knowledge-trust",
-    "mission-pack", "fetch-commissioning", "model-import-fetched", "provider-admission",
+    "mission-pack", "fetch-commissioning", "model-import-fetched",
+    # M24: the NOC and unit-state observers. Not enabled by the installer
+    # (SPEC 2.3); this step is where an operator enables them.
+    "operator-observers", "provider-admission",
     "activation-units", "integration-broker", "mio-configuration",
 )
 

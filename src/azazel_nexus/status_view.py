@@ -108,6 +108,9 @@ REASON_CODES = frozenset({
     "no_location_measured", "status_unrecognised",
     # The NOC section (U3).
     "collection_failed", "active_check_not_performed", "role_evidence_not_provided",
+    # The operator_view section (S-04, `operator_view_source`).
+    "inputs_not_all_read", "not_read", "catalog_permission_denied", "catalog_refused",
+    "catalog_absent",
 })
 #: Knowledge Lite's closed status shape (`lite_import.status_summary`).
 KNOWLEDGE_STATES = frozenset({"available", "stale", "unavailable", "quarantined"})
@@ -833,7 +836,7 @@ def _knowledge_ref(ref: dict) -> dict:
     return copy
 
 
-def _edge_loop(now) -> dict:
+def _edge_loop(now, reader: str = "operator") -> dict:
     from . import edge_loop_status
     from .edge_intake import STATUS_SCHEMA as INTAKE_SCHEMA
     from .incident_explain import CONTENT_LABELS, RECENT_SCHEMA
@@ -842,7 +845,8 @@ def _edge_loop(now) -> dict:
     try:
         if type(now) not in (int, float):
             return {**base, "status": "unavailable", "reason_code": "clock_unknown"}
-        raw = edge_loop_status.read_edge_loop()
+        raw = (edge_loop_status.read_edge_loop() if reader == "operator"
+               else edge_loop_status.read_edge_loop(reader))
         return {
             **base, "status": "read", "reason_code": None,
             "intake": _component(raw["intake"], now, LOOP_STALE_S, INTAKE_FIELDS,
@@ -939,13 +943,15 @@ _storage_probes = None
 
 
 def _snapshot_section(path, reader, limit, now, stale_after, fields, *,
-                      schema: str, writer: str, extra=None) -> dict:
+                      schema: str, writer: str, extra=None, leaf: str = "operator") -> dict:
     from .edge_loop_status import read_snapshot
 
     value = read_snapshot(path, reader, limit)
     section = _component(value, now, stale_after, ("schema", "written_at", *fields),
                          schema=schema, extra=extra)
     section["source"]["writer"] = writer
+    # Which copy was read: the operator group's leaf or the UI's (ADR-0007).
+    section["source"]["leaf"] = leaf
     # Freshness is its own item. `status` below never says `running`: a fresh
     # snapshot of a failed unit or of quarantined Knowledge is fresh news of
     # a problem, and each caller turns the snapshot into its own word.
@@ -957,14 +963,14 @@ def _fresh(section) -> bool:
     return section["snapshot"] is not None and section["freshness"] == "fresh"
 
 
-def _knowledge_status(now) -> dict:
+def _knowledge_status(now, reader: str = "operator") -> dict:
     from . import operator_snapshots as snap
     from .runtime_paths import knowledge_status_path
 
     section = _snapshot_section(
-        knowledge_status_path(), snap.read_knowledge_status, snap.KNOWLEDGE_BYTES, now,
+        knowledge_status_path(reader=reader), snap.read_knowledge_status, snap.KNOWLEDGE_BYTES, now,
         snap.KNOWLEDGE_STALE_S, KNOWLEDGE_SNAPSHOT_FIELDS, schema=snap.KNOWLEDGE_SCHEMA,
-        writer="az-knowledge-lited")
+        writer="az-knowledge-lited", leaf=reader)
     # Knowledge Lite's own word decides: only `available` is available;
     # anything else is `degraded` with Knowledge Lite's reason code.
     snapshot = section["snapshot"]
@@ -982,14 +988,14 @@ def _knowledge_status(now) -> dict:
     return section
 
 
-def _mio_status(now) -> dict:
+def _mio_status(now, reader: str = "operator") -> dict:
     from . import operator_snapshots as snap
     from .mio_status import NOTICE
     from .runtime_paths import mio_status_path
 
     section = _snapshot_section(
-        mio_status_path(), snap.read_mio_status, snap.MIO_BYTES, now, snap.MIO_STALE_S,
-        MIO_SNAPSHOT_FIELDS, schema=snap.MIO_SCHEMA, writer="az-mio-entryd")
+        mio_status_path(reader=reader), snap.read_mio_status, snap.MIO_BYTES, now, snap.MIO_STALE_S,
+        MIO_SNAPSHOT_FIELDS, schema=snap.MIO_SCHEMA, writer="az-mio-entryd", leaf=reader)
     snapshot = section["snapshot"]
     if _fresh(section):
         if not snapshot["recorded"]:
@@ -1003,7 +1009,7 @@ def _mio_status(now) -> dict:
     return section
 
 
-def _services(now) -> dict:
+def _services(now, reader: str = "operator") -> dict:
     from . import operator_snapshots as snap
     from .runtime_paths import units_status_path
 
@@ -1011,9 +1017,9 @@ def _services(now) -> dict:
         snapshot["units"] = [_pick(unit, UNIT_FIELDS) for unit in value["units"]]
 
     section = _snapshot_section(
-        units_status_path(), snap.read_units_status, snap.UNITS_BYTES, now,
+        units_status_path(reader=reader), snap.read_units_status, snap.UNITS_BYTES, now,
         snap.UNITS_STALE_S, (), schema=snap.UNITS_SCHEMA, writer="az-units-observe",
-        extra=extra)
+        extra=extra, leaf=reader)
     section["source"]["reader"] = "systemd_bus.UnitStatesReader (read-only)"
     if _fresh(section):
         units = section["snapshot"]["units"]
@@ -1045,13 +1051,14 @@ NOC_FIELDS = ("collection", "reason_code", "observed_at", "active_checks", "inte
               "interfaces_omitted", "uplink", "routes", "dns")
 
 
-def _noc(now) -> dict:
+def _noc(now, reader: str = "operator") -> dict:
     from . import noc_status
     from .runtime_paths import noc_status_path
 
-    section = _snapshot_section(noc_status_path(), noc_status.read_noc_status,
+    section = _snapshot_section(noc_status_path(reader=reader), noc_status.read_noc_status,
                                 noc_status.NOC_BYTES, now, noc_status.NOC_STALE_S, NOC_FIELDS,
-                                schema=noc_status.NOC_SCHEMA, writer="az-noc-observe")
+                                schema=noc_status.NOC_SCHEMA, writer="az-noc-observe",
+                                leaf=reader)
     snapshot = section["snapshot"]
     if _fresh(section):
         if snapshot["collection"] == "failed":
@@ -1073,9 +1080,22 @@ def _noc(now) -> dict:
     return section
 
 
-def _guarded_section(build_section, now) -> dict:
+def _operator_view(report, mio_status, storage) -> dict:
+    """The catalog, import, admission and confirmations screen (S-04).
+
+    Built by `operator_view_source` from what this account can read, as a
+    versioned section of its own; never raises.
+    """
+    from .operator_view_source import read_section
+
+    reading = report.profile.reading
+    return read_section(usable_mib=None if reading is None else reading.usable_mib,
+                        mio_status_section=mio_status, storage_section=storage)
+
+
+def _guarded_section(build_section, now, reader: str = "operator") -> dict:
     try:
-        return build_section(now)
+        return build_section(now) if reader == "operator" else build_section(now, reader)
     except Exception:  # noqa: BLE001 - presentation only; status continues
         return {"status": "unavailable", "reason_code": "internal_error"}
 
@@ -1114,6 +1134,7 @@ def build(
     probe: str = "not_read",
     boot_id: str = "not_read",
     preamble: str = "",
+    reader: str = "operator",
 ) -> StatusView:
     """Project what `status` read into the read model and its terminal half.
 
@@ -1124,6 +1145,8 @@ def build(
     and its source come from one read. `probe` and `boot_id` are fixed codes
     for what reading the probe result and this boot's id came to; `preamble`
     is the text the command printed about them, which only a terminal shows.
+    `reader` picks which copy of the operator snapshots is read: the operator
+    group's leaves, or the read-only UI's copies (ADR-0007).
     """
 
     from .lab_host import is_lab_host
@@ -1137,8 +1160,11 @@ def build(
         from .broker_cli import status_summary as broker_summary
         broker = broker_summary(now=wall_now)
         terminal["broker_level"] = broker["status_level"]
-    # Read once: the M.I.O. section counts it as entryd's liveness evidence.
-    mio_status = _guarded_section(_mio_status, now)
+    # Read once: the M.I.O. section counts it as entryd's liveness evidence,
+    # and the operator_view section reads the admission record from it.
+    mio_status = _guarded_section(_mio_status, now, reader)
+    # Measured once: the operator view shows the same free space.
+    storage = _guarded_section(_storage, now)
     sections = {
         "profile": _profile(report, terminal),
         "mio": _mio(mio_summary(), now, terminal, mio_status),
@@ -1150,13 +1176,14 @@ def build(
         "edge_core": _edge(edge, probe, boot_id, terminal),
         "integration": _integration(integration, broker, terminal),
         "fabric": _fabric(report),
-        "edge_loop": _edge_loop(now),
+        "edge_loop": _edge_loop(now, reader),
         "health": _health(report, audit_seen, now, terminal),
-        "knowledge_status": _guarded_section(_knowledge_status, now),
+        "knowledge_status": _guarded_section(_knowledge_status, now, reader),
         "mio_status": mio_status,
-        "services": _guarded_section(_services, now),
-        "storage": _guarded_section(_storage, now),
-        "noc": _guarded_section(_noc, now),
+        "services": _guarded_section(_services, now, reader),
+        "storage": storage,
+        "noc": _guarded_section(_noc, now, reader),
+        "operator_view": _operator_view(report, mio_status, storage),
     }
     sections["next_actions"] = _next_actions(report, lab_host, terminal)
     view = {
@@ -1166,6 +1193,8 @@ def build(
         "clock": {"status": "known" if now is not None else "unknown",
                   "reason_code": None if now is not None else "clock_unknown"},
         "lab_host": bool(lab_host),
+        # Which copy of the operator snapshots this view read (ADR-0007).
+        "snapshot_reader": reader,
         "authority": dict(AUTHORITY),
         "sections": sections,
     }
@@ -1231,6 +1260,12 @@ def render_text(status: StatusView, out: TextIO) -> None:
     _text_edge_loop(s["edge_loop"], out)
     print(file=out)
     _text_health(s["health"], terminal, out)
+    print(file=out)
+    # L8: the operator snapshots (U2, U3) and the operator view (S-04) are
+    # on the text screen as well as in `--json`: the same words and codes.
+    _text_operator_snapshots(s, out)
+    print(file=out)
+    _text_operator_view(s.get("operator_view"), out)
     print(file=out)
     print("next:", file=out)
     if not s["next_actions"]:
@@ -1363,6 +1398,51 @@ def _text_edge_loop(section, out) -> None:
         return
     render_edge_loop(out, now=section["evaluated_at"], snapshots={
         name: section[name]["snapshot"] for name in ("intake", "explainer", "recent")})
+
+
+#: The text screen's names for the operator snapshot sections.
+_SNAPSHOT_LINES = (("knowledge_status", "Knowledge Lite (knowledge-lited)"),
+                   ("mio_status", "M.I.O. (mio-entryd)"),
+                   ("services", "unit states (units-observe)"),
+                   ("noc", "passive NOC (noc-observe)"))
+
+
+def _text_operator_snapshots(sections, out) -> None:
+    print("operator snapshots (each written by its own daemon or observer):", file=out)
+    for name, label in _SNAPSHOT_LINES:
+        section = sections.get(name) or {}
+        source = section.get("source") or {}
+        reason = section.get("reason_code")
+        written = source.get("written_at")
+        age = source.get("age_s")
+        when = ("never read" if written is None
+                else f"written {age} s before as-of" if type(age) is int else "written at an unreadable time")
+        print(f"    {label}: {section.get('status', 'unavailable')}"
+              + (f" ({reason})" if reason else "") + f"; {when}", file=out)
+    storage = sections.get("storage") or {}
+    print(f"    storage: {storage.get('status', 'unavailable')}"
+          + (f" ({storage['reason_code']})" if storage.get("reason_code") else ""), file=out)
+    print("    an observer that is not enabled writes nothing: its line says never read "
+          "(azazel-nexus setup, step operator-observers)", file=out)
+
+
+def _text_operator_view(section, out) -> None:
+    if not isinstance(section, dict) or section.get("status") == "unavailable":
+        print("operator view: unavailable (internal)", file=out)
+        return
+    provider = section.get("provider") or {}
+    codes = ", ".join(provider.get("reason_codes") or ()) or "none"
+    print(f"operator view: {section['status']}"
+          + (f" ({section['reason_code']})" if section.get("reason_code") else ""), file=out)
+    print(f"    provider: {provider.get('state')}; refusing gates: {codes}", file=out)
+    print(f"    admission build switch: {section.get('admission_build_switch')}", file=out)
+    catalog = next((row for sec in section.get("sections") or () if sec.get("key") == "catalog"
+                    for row in sec.get("rows") or () if row.get("axis") == "catalog_state"), {})
+    print(f"    catalog: {catalog.get('value') or 'not read'}"
+          + (f" ({catalog['reason_code']})" if catalog.get("reason_code") else ""), file=out)
+    unread = section.get("unread_inputs") or ()
+    if unread:
+        print("    inputs not read or not usable here: " + ", ".join(unread), file=out)
 
 
 def _text_health(entries, terminal, out) -> None:

@@ -51,7 +51,7 @@ Nexus のローカルか）を決める文書で、この表はそれと重な�
 | K4 | Knowledge Lite の状態 snapshot | knowledge-lited → status・UI | `azazel-nexus/knowledge-status/v1` | 本番の経路 |
 | K5 | 外部 Knowledge peer | Nexus → Knowledge 本体（HTTPS） | `azazel-nexus/knowledge-peer/1` | 試験用プロトコル。実 Knowledge と相互運用しない（§5） |
 | U1 | 操作 UI | Nexus の UI → ブラウザ | `azazel-nexus/ui-model/1`（`azazel-nexus/status-view/1` と `azazel-nexus/setup/1` の allowlist） | 本番の経路（loopback のみ、installer は有効化しない） |
-| U2 | 運用者向け snapshot | 各 daemon → status・UI | `azazel-nexus/mio-status/v1`、`azazel-nexus/units-status/v1`、`azazel-nexus/noc-status/v1`、`azazel-nexus/audit-status/v1`、`azazel-nexus/edge-intake-status/v1` | 本番の経路（observer の timer は有効化しない） |
+| U2 | 運用者向け snapshot | 各 daemon → status・UI | `azazel-nexus/mio-status/v1`、`azazel-nexus/units-status/v1`、`azazel-nexus/noc-status/v1`、`azazel-nexus/audit-status/v1`、`azazel-nexus/edge-intake-status/v1` | 本番の経路（observer の timer は有効化しない）。UI 用の同じ内容の写しを `run/ui-read/<leaf>`（`2750 <書き手>:azui`）に書く（[ADR-0007](adr/0007-ui-read-leaves.md)） |
 | M1 | M.I.O. の経路と参照 | 説明器・運用者 → entryd → locald・referenced・remoted | 動詞 `mio.route`・`mio.advise`、route ledger | 本番の経路（モデル無しでは決定論の handoff） |
 | M2 | 送信用の封筒 | sanitizer → remoted → 提供者 | `azazel-nexus/sanitized-envelope/2`、domain `azazel-nexus/sanitized-envelope/v1` | 実装済み。署名器と transport が無く、この build では送れない |
 | M3 | 助言の応答 | 提供者・ローカルモデル → Nexus | `advisory_response`、`local_advisory` | 実装済み（実モデル・実提供者とは未接続） |

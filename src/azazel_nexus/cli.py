@@ -149,7 +149,8 @@ def _module_reports() -> tuple[ModuleReport, ...]:
     )
 
 
-def _audit_snapshot_report(now: Optional[float], seen: Optional[list] = None) -> HealthReport:
+def _audit_snapshot_report(now: Optional[float], seen: Optional[list] = None,
+                           reader: str = "operator") -> HealthReport:
     """auditd's capacity snapshot (#211), when no ledger path was supplied.
 
     Read from its operator-readable leaf; never from the `0700` ledger and
@@ -162,7 +163,7 @@ def _audit_snapshot_report(now: Optional[float], seen: Optional[list] = None) ->
     from .edge_loop_status import read_snapshot
     from .runtime_paths import audit_status_path
 
-    value = read_snapshot(audit_status_path(), read_audit_status, STATUS_BYTES)
+    value = read_snapshot(audit_status_path(reader=reader), read_audit_status, STATUS_BYTES)
     if seen is not None:
         seen.append(value)
     healthy, detail, advisory = audit_health(value, now)
@@ -171,7 +172,8 @@ def _audit_snapshot_report(now: Optional[float], seen: Optional[list] = None) ->
 
 def _health_reports(ledger_path: Optional[Path],
                     now: Optional[float] = None,
-                    audit_seen: Optional[list] = None) -> tuple[HealthReport, ...]:
+                    audit_seen: Optional[list] = None,
+                    reader: str = "operator") -> tuple[HealthReport, ...]:
     from .audit import AuditChainBroken, AuditLedger, AuditUnavailable
 
     checks = [
@@ -186,7 +188,7 @@ def _health_reports(ledger_path: Optional[Path],
     ]
     if ledger_path is None:
         try:
-            checks.append(_audit_snapshot_report(now, audit_seen))
+            checks.append(_audit_snapshot_report(now, audit_seen, reader))
         except Exception:  # noqa: BLE001 - presentation only; status continues
             checks.append(HealthReport("audit", None, "auditd status snapshot unavailable (internal)"))
         return tuple(checks)
@@ -293,13 +295,14 @@ def _report(
     permanent_mac_reader=no_permanent_mac,
     now: Optional[float] = None,
     audit_seen: Optional[list] = None,
+    reader: str = "operator",
 ) -> OperatorReport:
     return build_report(
         readouts=read_interfaces(sysfs, permanent_mac_reader=permanent_mac_reader),
         profile=_profile_report(),
         capabilities=_capability_report(),
         modules=_module_reports(),
-        health=_health_reports(ledger, now, audit_seen),
+        health=_health_reports(ledger, now, audit_seen, reader),
     )
 
 
@@ -707,6 +710,13 @@ def main(
     parser.add_argument(
         "--edge-probe", type=Path, default=PROBE_STATE_PATH, help=argparse.SUPPRESS
     )
+    # Which copy of the operator snapshots `status` reads: the operator
+    # group's leaves (default) or the read-only UI's copies (ADR-0007), which
+    # `az-ui` asks for. Read-only either way; file permissions decide.
+    parser.add_argument(
+        "--snapshot-reader", choices=("operator", "ui"), default="operator",
+        help=argparse.SUPPRESS,
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     from .mission_pack_cli import add_parser as add_pack_parser
@@ -1057,7 +1067,7 @@ def main(
 
     audit_seen: list = []
     report = _report(args.sysfs, args.ledger, permanent_mac_reader, _instant(args.as_of),
-                     audit_seen)
+                     audit_seen, args.snapshot_reader)
     if args.command == "inventory":
         _render_interfaces(report, stream)
     elif args.command == "profile":
@@ -1110,6 +1120,7 @@ def main(
             probe=probe_code,
             boot_id=boot_code,
             preamble=preamble.getvalue(),
+            reader=args.snapshot_reader,
         )
         from . import status_view
         if getattr(args, "json", False):

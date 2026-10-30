@@ -32,6 +32,7 @@ ReadWritePaths=/var/lib/azazel/state/mio
 ReadWritePaths=/var/lib/azazel/run/mio-entry
 ReadWritePaths=/var/lib/azazel/run/mio-advise
 ReadWritePaths=-/var/lib/azazel/run/mio-status
+ReadWritePaths=-/var/lib/azazel/run/ui-read/mio
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

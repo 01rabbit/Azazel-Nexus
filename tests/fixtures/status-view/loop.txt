@@ -102,6 +102,20 @@ health:
     systemd units: unknown -- not established: runtime service units ship with this build; this read-only command does not query the service manager (docs/hardware-gates.md HG-01)
     audit: ok -- WARNING: capacity warning (chain_size, filesystem_free): nothing is deleted (retention policy: never delete, warn only); see docs/operations.md (Audit chain retention); chain verified at auditd start; chain 3.0 GiB in 3 segment(s); 1.0 GiB free on its filesystem; warns at >= 2.0 GiB chain or < 2.0 GiB free; capacity warning (chain_size, filesystem_free); rate_limited: 6 (daily:edge.alert:ordinary=4, rate:mio.request:service=2); summaries dropped: 1 (snapshot 20s old)
 
+operator snapshots (each written by its own daemon or observer):
+    Knowledge Lite (knowledge-lited): unavailable (snapshot_absent_or_refused); never read
+    M.I.O. (mio-entryd): unavailable (snapshot_absent_or_refused); never read
+    unit states (units-observe): unavailable (snapshot_absent_or_refused); never read
+    passive NOC (noc-observe): unavailable (snapshot_absent_or_refused); never read
+    storage: measured
+    an observer that is not enabled writes nothing: its line says never read (azazel-nexus setup, step operator-observers)
+
+operator view: partial (inputs_not_all_read)
+    provider: not admitted; refusing gates: admission_switched_off_in_build, core_reserve_unmeasured, admission_record_unread
+    admission build switch: off
+    catalog: absent
+    inputs not read or not usable here: mio_entry_record
+
 next:
     No operator has confirmed what this node is attached to. Commission it before anything is activated.
         azazel-nexus commission

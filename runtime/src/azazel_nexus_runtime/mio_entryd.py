@@ -769,7 +769,7 @@ def main(
     # never creates it; prepare() probes append access to today's segment.
     from azazel_nexus.operator_snapshots import MIO_BYTES, MIO_INTERVAL_S
 
-    from .runtime_paths import mio_status_path
+    from .runtime_paths import mio_status_path, ui_copy_path
     from .status_snapshot import SnapshotWriter
 
     # Locald's own admission result, read per advice request within its
@@ -783,7 +783,8 @@ def main(
     except OSError as error:
         raise AuditUnavailable("M.I.O. route ledger unavailable") from error
     snapshot = SnapshotWriter(mio_status_path(), service.status_snapshot, limit=MIO_BYTES,
-                              interval_s=MIO_INTERVAL_S, name="az-mio-entryd")
+                              interval_s=MIO_INTERVAL_S, name="az-mio-entryd",
+                              ui_path=ui_copy_path("mio_status"))
     def recorded():
         return (repr(service._last_capability), service._observed_at,
                 service._capability_uncertain)

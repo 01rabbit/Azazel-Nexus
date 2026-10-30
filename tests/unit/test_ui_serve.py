@@ -1181,7 +1181,7 @@ def test_the_live_source_reads_status_and_setup_as_their_commands_print_them(tmp
 
     def fake_main(argv, out, err):
         calls.append(list(argv))
-        if argv == ["status", "--json"]:
+        if argv == ["--snapshot-reader", "ui", "status", "--json"]:
             out.write(DEMO.read_text(encoding="utf-8"))
         else:
             out.write(json.dumps({"schema": "azazel-nexus/setup/1", "steps": [
@@ -1191,14 +1191,22 @@ def test_the_live_source_reads_status_and_setup_as_their_commands_print_them(tmp
                 "enforcement_readiness": "not-established", "notice": "n", "mio": {"x": 1}}))
         return 0
     read = ui_serve.LiveSource(fake_main).read()
-    assert calls == [["status", "--json"], ["setup", "--json"]]
-    assert read["origin"] == {"kind": "live", "reader": "azazel-nexus status --json",
+    # ADR-0007: the UI's copies of the operator snapshots, never the
+    # operator group's leaves.
+    assert calls == [["--snapshot-reader", "ui", "status", "--json"], ["setup", "--json"]]
+    assert read["origin"] == {"kind": "live", "reader": "azazel-nexus status --json (UI copies)",
                               "account": "azui"}
     assert set(read["access"]) == {"edge_intake_status", "incident_explain_status",
                                    "incident_recent", "audit_status", "edge_probe",
                                    "knowledge_lite", "mio_route_ledger", "knowledge_status",
-                                   "mio_status", "units_status", "noc_status"}
+                                   "mio_status", "units_status", "noc_status",
+                                   "model_store", "core_reserve"}
     assert set(read["access"].values()) == {"absent"}
+    ui_read = tmp_path / "var/lib/azazel/run/ui-read"
+    from azazel_nexus import runtime_paths
+    for name in runtime_paths.UI_COPIES:
+        assert ui_serve.access_paths()[name].is_relative_to(ui_read), name
+    assert read["observers"] == {"noc": "not_enabled", "units": "not_enabled"}
     model = ui_model.project(read["view"], origin=read["origin"], served_at="t",
                              setup=read["setup"], access=read["access"])
     assert model["setup"]["steps"] == [{"name": "commissioning", "status": "needed",
@@ -1373,8 +1381,18 @@ def test_azui_is_created_without_shell_home_or_any_group_but_its_own():
     assert not re.search(r"(usermod|gpasswd|adduser)[^\n]*azui", installer)
     assert not re.search(r"azui[^\n]*(usermod|gpasswd)", installer)
     assert [p.unit for p in ALL_PROFILES if "azui" in p.supplementary_groups] == []
-    assert [(s.path, s.group) for s in LAYOUT if "azui" in (s.owner, s.group)] == [
+    # azui owns only its login-code leaf; it is the *group* of the UI read
+    # leaves (ADR-0007), each owned by the snapshot's writer, so azui reads
+    # them and writes none of them.
+    assert [(s.path, s.group) for s in LAYOUT if s.owner == "azui"] == [
         ("/var/lib/azazel/run/ui-login", "azazel-operator")]
+    ui_read = [(s.path, s.owner, s.mode) for s in LAYOUT if s.group == "azui"]
+    assert [path for path, _, _ in ui_read] == [
+        f"/var/lib/azazel/run/ui-read/{leaf}" for leaf in (
+            "audit", "edge-intake", "incident-explain", "knowledge", "mio", "units", "noc")]
+    assert all(owner != "azui" and mode == 0o2750 for _, owner, mode in ui_read)
+    for path, owner, _ in ui_read:
+        assert f"make_owned_dir 2750 {owner} azui {path}" in installer
     assert "make_owned_dir 2750 azui azazel-operator /var/lib/azazel/run/ui-login" in installer
     assert 'install -m 0644 "$HERE"/systemd/azazel-ui.socket "$UNIT_DIR"' in installer
     commands = "\n".join(line for line in installer.splitlines()

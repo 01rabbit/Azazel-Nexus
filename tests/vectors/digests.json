@@ -173,7 +173,7 @@
       ]
     },
     "status.read_model": {
-      "sha256": "fe7d401ecc449859474d021b886878f45a5be78c33db4f8b4de243280ae45c9a",
+      "sha256": "38c9ee96f9b19bcaa100485605d34b62978ab187be9fa15b7e58c372432f7e9b",
       "covers": "status --json の read model（test_status_view の golden 10 場面）。float の時刻は除外し、その path を記録",
       "history": [
         {
@@ -187,6 +187,12 @@
           "sha256": "fe7d401ecc449859474d021b886878f45a5be78c33db4f8b4de243280ae45c9a",
           "commit_note": "#370 status の M.I.O. 節に書き手の生存の証拠を加える",
           "reason": "製品の意味を意図して変えた。#370（#358 案 1）で read model の M.I.O. 節に age_s・age_reason（変化していない期間は情報として出す）と liveness（stale を書き手 entryd の生存の証拠で判定する）を足した。ベクトルの 10 場面では route ledger を読めないため、liveness は status unknown・理由 route_ledger_unreadable_or_refused、age_s・age_reason は null になる。既存の項目（status・reason_code・reading など）の値は変わっていない（--show で変更前と比べて確認）"
+        },
+        {
+          "date": "2026-10-30",
+          "sha256": "38c9ee96f9b19bcaa100485605d34b62978ab187be9fa15b7e58c372432f7e9b",
+          "commit_note": "S-03・S-04 UI 用の読取経路と operator_view の status 節",
+          "reason": "製品の意味を意図して変えた。ADR-0007 で read model に snapshot_reader（どの写しを読んだか）、運用者向け snapshot 4 節の source.leaf、版付きの operator_view 節（読取 adapter が集めた承認の門・catalog・導入・確認操作）を足した。既存の欄の値は変わっていない（--show で変更前と比べ、変化は追加だけであることを確認）"
         }
       ]
     }

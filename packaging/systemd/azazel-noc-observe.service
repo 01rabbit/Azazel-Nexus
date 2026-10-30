@@ -20,6 +20,7 @@ ExecStart=/usr/libexec/azazel/az-noc-observe
 TimeoutStartSec=60s
 RestrictAddressFamilies=AF_NETLINK AF_UNIX
 ReadWritePaths=-/var/lib/azazel/run/noc-status
+ReadWritePaths=-/var/lib/azazel/run/ui-read/noc
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

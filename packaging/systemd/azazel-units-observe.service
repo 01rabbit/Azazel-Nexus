@@ -19,6 +19,7 @@ ExecStart=/usr/libexec/azazel/az-units-observe
 TimeoutStartSec=30s
 RestrictAddressFamilies=AF_UNIX
 ReadWritePaths=-/var/lib/azazel/run/units-status
+ReadWritePaths=-/var/lib/azazel/run/ui-read/units
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

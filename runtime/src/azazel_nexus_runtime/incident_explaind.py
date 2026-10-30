@@ -30,6 +30,7 @@ from .knowledge_client import lookup_context
 from .mio_locald import KNOWLEDGE_MAX_S
 from .mio_referenced import REFERENCE_DEADLINE_MS
 from .mio_socket_client import ServiceRefused, _exchange
+from .status_snapshot import UiCopy
 
 POLL_SECONDS = 1
 POLL_BYTES = 256 * 1024
@@ -132,8 +133,12 @@ def advise(frame):
 
 class Explainer:
     def __init__(self, *, incidents, state, status_path, clock=time.time,
-                 monotonic=time.monotonic, mio=None, knowledge=None, store_limits=None, audit=None):
+                 monotonic=time.monotonic, mio=None, knowledge=None, store_limits=None, audit=None,
+                 ui_status_path=None, ui_recent_path=None):
         self.incidents, self.state, self.status_path = incidents, state, status_path
+        # The read-only UI's byte-identical copies (ADR-0007); optional.
+        self.ui_status = UiCopy(ui_status_path, name="az-incident-explaind")
+        self.ui_recent = UiCopy(ui_recent_path, name="az-incident-explaind")
         self.clock, self.monotonic = clock, monotonic
         self.mio = mio or advise
         self.knowledge = knowledge or (lambda ids: lookup_context(ids, deadline_s=KNOWLEDGE_MAX_S))
@@ -187,6 +192,8 @@ class Explainer:
         self._recent_at = now
         try:
             atomic_json(self.status_path.with_name("recent.json"), value, 0o644)
+            # The same bytes for the read-only UI (ADR-0007); never raises.
+            self.ui_recent.write(canonical(value) + b"\n")
             self._recent_value = value["incidents"]
         except Exception:  # noqa: BLE001 - fixed code, independent snapshot
             self.refuse("status_write_failed")
@@ -293,6 +300,7 @@ class Explainer:
         self._status_at = now
         try:
             atomic_json(self.status_path, value, 0o644)
+            self.ui_status.write(canonical(value) + b"\n")
             self._status_value = content
         except Exception:  # noqa: BLE001 - fixed code only
             self.refuse("status_write_failed")
@@ -694,7 +702,10 @@ def decode_checkpoint(raw):
 
 
 def main(argv=None):
-    from .runtime_paths import incident_segments_dir, incident_explain_state_dir, incident_explain_status_path
+    from .runtime_paths import (
+        incident_explain_state_dir, incident_explain_status_path, incident_segments_dir,
+        ui_copy_path,
+    )
     from .systemd_notify import runtime_ready_callback
 
     if sys.argv[1:] if argv is None else argv:
@@ -703,7 +714,9 @@ def main(argv=None):
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, lambda *_: stopped.set())
     return Explainer(incidents=incident_segments_dir(), state=incident_explain_state_dir(),
-                     status_path=incident_explain_status_path()).serve(
+                     status_path=incident_explain_status_path(),
+                     ui_status_path=ui_copy_path("incident_explain_status"),
+                     ui_recent_path=ui_copy_path("incident_recent")).serve(
                          stop=stopped.is_set, ready=runtime_ready_callback())
 
 

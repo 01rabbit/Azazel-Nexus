@@ -650,6 +650,7 @@
         "age_s": 20,
         "freshness": "fresh",
         "kind": "snapshot",
+        "leaf": "operator",
         "reason_code": null,
         "schema": "azazel-nexus/knowledge-status/v1",
         "writer": "az-knowledge-lited",
@@ -704,6 +705,7 @@
         "age_s": 20,
         "freshness": "fresh",
         "kind": "snapshot",
+        "leaf": "operator",
         "reason_code": null,
         "schema": "azazel-nexus/mio-status/v1",
         "writer": "az-mio-entryd",
@@ -1194,12 +1196,204 @@
         "age_s": 20,
         "freshness": "fresh",
         "kind": "snapshot",
+        "leaf": "operator",
         "reason_code": null,
         "schema": "azazel-nexus/noc-status/v1",
         "writer": "az-noc-observe",
         "written_at": 1789963240.0
       },
       "status": "observed"
+    },
+    "operator_view": {
+      "admission_build_switch": "off",
+      "inputs": {
+        "core_reserve": "readable",
+        "mio_entry_record": "absent",
+        "model_store": "readable",
+        "remote_consent": "not_read"
+      },
+      "models_omitted": 0,
+      "operations": [
+        {
+          "available": true,
+          "confirmation": "profile",
+          "reason": "an operator may set the ceiling at any time. It admits nothing by itself",
+          "transition": "mio.profile.commissioned"
+        },
+        {
+          "available": false,
+          "confirmation": "remote opt-in",
+          "reason": "not shown: the profile or the remote consent was not read by this account. Run azazel-nexus status as root on the terminal",
+          "transition": "mio.remote.opt_in"
+        },
+        {
+          "available": false,
+          "confirmation": "license acknowledgement",
+          "reason": "no model shown here is waiting on an acknowledgement",
+          "transition": "mio.model.license_acknowledged"
+        },
+        {
+          "available": false,
+          "confirmation": "model import",
+          "reason": "no catalog has been presented, so there is no model an operator could select. A catalog is not the same as an empty one",
+          "transition": "mio.model.import.promoted"
+        },
+        {
+          "available": false,
+          "confirmation": "model acquisition",
+          "reason": "no acquisition path is commissioned/startable on this node. It is absent rather than switched off. The offline import route is unaffected: install from an operator's media",
+          "transition": "mio.model.acquisition.planned"
+        },
+        {
+          "available": false,
+          "confirmation": "provider admission",
+          "reason": "the resource gate refuses for want of a measured Core reserve (HG-05). This holds on every profile: selecting fastest-permitted does not admit a provider, and M.I.O. is not functional",
+          "transition": "mio.provider.admitted"
+        }
+      ],
+      "provider": {
+        "reason_codes": [
+          "admission_switched_off_in_build",
+          "core_reserve_unmeasured",
+          "admission_record_unread"
+        ],
+        "state": "not admitted"
+      },
+      "reason_code": "inputs_not_all_read",
+      "schema": "azazel-nexus/status-view/operator-view/1",
+      "sections": [
+        {
+          "key": "cognition",
+          "rows": [
+            {
+              "axis": "mio_profile",
+              "reason": "the commissioned ceiling was not read by this account",
+              "reason_code": "not_read",
+              "value": null
+            },
+            {
+              "axis": "mio_remote_consent",
+              "reason": "the remote consent record was not read by this account",
+              "reason_code": "not_read",
+              "value": null
+            },
+            {
+              "axis": "provider_state",
+              "reason": "the resource gate refuses for want of a measured Core reserve (HG-05). This holds on every profile: selecting fastest-permitted does not admit a provider, and M.I.O. is not functional",
+              "reason_codes": [
+                "admission_switched_off_in_build",
+                "core_reserve_unmeasured",
+                "admission_record_unread"
+              ],
+              "value": "not admitted"
+            },
+            {
+              "axis": "mio_summary",
+              "reason": "",
+              "value": "M.I.O. routing and commissioning control plane implemented; provider execution unavailable pending hardware evidence and provider integration"
+            }
+          ],
+          "title": "M.I.O."
+        },
+        {
+          "key": "resources",
+          "rows": [
+            {
+              "axis": "usable_memory_mib",
+              "reason": "what the OS reports, read once and displayed",
+              "value": 7800
+            },
+            {
+              "axis": "resource_profile",
+              "reason": "the hardware class this node selects. A class is never evidence that a capability fits (capability model §2)",
+              "value": "core"
+            },
+            {
+              "axis": "disk_total_mib",
+              "reason": "displayed; an import checks free space for itself",
+              "value": 3
+            },
+            {
+              "axis": "disk_free_mib",
+              "reason": "displayed; an import checks free space for itself",
+              "value": 1
+            },
+            {
+              "is_this_node": true,
+              "nominal_gib": 8,
+              "note": "what a host of this class selects. A class is not evidence that any capability fits, and nothing is chosen, fetched or started because it appears here",
+              "profile": "core"
+            },
+            {
+              "is_this_node": false,
+              "nominal_gib": 16,
+              "note": "what a host of this class selects. A class is not evidence that any capability fits, and nothing is chosen, fetched or started because it appears here",
+              "profile": "lite"
+            },
+            {
+              "is_this_node": false,
+              "nominal_gib": 32,
+              "note": "what a host of this class selects. A class is not evidence that any capability fits, and nothing is chosen, fetched or started because it appears here",
+              "profile": "standard"
+            }
+          ],
+          "title": "Resources"
+        },
+        {
+          "key": "catalog",
+          "rows": [
+            {
+              "axis": "catalog_state",
+              "reason": "no catalog has been presented; the node was told nothing",
+              "value": "absent"
+            }
+          ],
+          "title": "Catalog"
+        },
+        {
+          "key": "import",
+          "rows": [
+            {
+              "axis": "inbox",
+              "entries": [],
+              "reason": "artifacts an operator has placed; listing reads none of them",
+              "value": 0
+            },
+            {
+              "axis": "staging",
+              "reason": "staging holds nothing between imports; anything found there is debris and is swept when the next import starts",
+              "value": 0
+            },
+            {
+              "axis": "quarantine",
+              "reason": "held and nothing else: never executed, extracted, served or retried",
+              "value": 0
+            },
+            {
+              "axis": "promoted",
+              "entries": [],
+              "reason": "installed in the current generation. Installed is not admitted and not activated",
+              "value": 0
+            },
+            {
+              "axis": "rollback_target",
+              "reason": "no earlier generation is retained, so there is nothing to restore",
+              "value": null
+            }
+          ],
+          "title": "Offline import"
+        }
+      ],
+      "source": {
+        "kind": "read_adapter",
+        "reader": "operator_view_source.read_section",
+        "writes": "none"
+      },
+      "status": "partial",
+      "status_sentence": "M.I.O. routing and commissioning control plane implemented; provider execution unavailable pending hardware evidence and provider integration",
+      "unread_inputs": [
+        "mio_entry_record"
+      ]
     },
     "profile": {
       "profile": "core",
@@ -1403,6 +1597,7 @@
         "age_s": 20,
         "freshness": "fresh",
         "kind": "snapshot",
+        "leaf": "operator",
         "reader": "systemd_bus.UnitStatesReader (read-only)",
         "reason_code": null,
         "schema": "azazel-nexus/units-status/v1",
@@ -1474,5 +1669,6 @@
       },
       "status": "measured"
     }
-  }
+  },
+  "snapshot_reader": "operator"
 }
