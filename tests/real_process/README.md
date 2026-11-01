@@ -2,12 +2,18 @@
 
 `test_mio_process_integration.py` is intentionally outside `tests/unit`: it
 needs Linux `SO_PEERCRED`, a root orchestrator only inside a disposable
-container, and temporary service accounts. It launches the production
-`knowledge_lited`, `mio_locald`, and `mio_entryd` mains under their named UIDs.
-An operator UID sends the public `mio.advise` protocol request through
-entryd; locald calls the real shared MIO core and the existing read-only
-Knowledge client reaches the real Knowledge Lite daemon over its service
-socket. The test does not change product principal rules or model admission.
+container, and temporary service accounts. The 500 ms case launches the
+production `knowledge_lited`, `mio_locald`, and `mio_entryd` mains; an
+`azexplain` peer sends the public `mio.advise` request through entryd. The
+normal-entry case additionally starts production `edge_intaked` and
+`incident_explaind`: it sends one bounded producer-shaped alert as `azedge`
+through the public `edge-intake` socket, waits for the persisted explanation,
+and checks its redacted MIO and Knowledge Lite provenance. Both paths use the
+real shared MIO core and actual Knowledge Lite daemon. The fixture is
+test-key-signed after admission and is not evidence of live Knowledge
+producer authentication or full-node interoperability. This does not claim
+that Edge's dirty MIO adapter uses Knowledge. No product principal rules or
+model admission are changed.
 
 The standard `nexus-main-run.sh` unit command does not select this test. Run
 the focused process suite under the suite lock with a cached Linux arm64
@@ -28,10 +34,10 @@ DOCKER_CONTEXT=colima-rosetta SUITE_CONTEXT=rosetta \
 The container runner checks the pinned MIO wheel digest before installing it
 offline, provisions only temporary container identities/groups, installs the
 source copy into the container, and selects this process test plus the
-fast-assistance unit tests. All source and dependency mounts are read-only;
-the test container is removed after the run. The successful run and earlier
-incomplete setup attempts are recorded in the candidate's external evidence
-report.
+fast-assistance unit tests. It then removes the shared MIO wheel and runs the
+degraded process phase. All source and dependency mounts are read-only; the
+test container is removed after the run. Suite phases, including the
+no-wheel phase, are kept in `run-container.sh`.
 
 Knowledge data is based on the checked-in producer-shaped fixture, then
 re-signed with the suite's test key and given a test-only description so the

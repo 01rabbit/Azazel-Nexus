@@ -136,6 +136,145 @@ except Exception as error:
     return result
 
 
+def _send_edge_alert(env: dict[str, str], socket_path: Path, groups: tuple[int, ...]) -> None:
+    """Send one fixed producer fixture through the public intake socket as azedge."""
+    from tools.e2e_loop import golden_lines
+
+    proc = subprocess.run(
+        [sys.executable, "-B", "-c", (
+            "import socket,sys; s=socket.socket(socket.AF_UNIX); "
+            "s.settimeout(2); s.connect(sys.argv[1]); "
+            "s.sendall(bytes.fromhex(sys.argv[2])); s.close()"
+        ), str(socket_path), golden_lines()[0].hex() + "0a"],
+        cwd=ROOT, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, timeout=4, check=False,
+        preexec_fn=_credentials("azedge", groups), text=True,
+    )
+    assert proc.returncode == 0, (proc.stdout + proc.stderr)[:80]
+
+
+@pytest.mark.real_process
+@pytest.mark.skipif(sys.platform != "linux", reason="SO_PEERCRED is required")
+def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request, monkeypatch):
+    """One producer-shaped alert follows both production daemon entrypoints."""
+    if importlib.util.find_spec("azazel_mio") is None:
+        pytest.skip("normal-entry healthy path requires the pinned shared MIO wheel")
+    import test_knowledge_lited as knowledge_tests
+    from test_knowledge_lookup import _producer_manifest, admit_rows
+    from azazel_nexus.incident_explain import read_record
+
+    if os.geteuid() != 0:
+        pytest.skip("requires root only inside the disposable test container")
+    ids = {name: _identity(name) for name in (
+        "azknowledge", "azmio", "azmioentry", "azintake", "azedge", "azexplain")}
+    groups = {name: _group(name) for name in (
+        "azazel-operator", "azknowledge-read", "azincident-read", "azedge", "azmio-advise",
+        "azmission-read")}
+    runtime_root = Path(tempfile.mkdtemp(prefix="nxs-edge-mio-", dir="/tmp"))
+    runtime_root.chmod(0o755)
+    request.addfinalizer(lambda: shutil.rmtree(runtime_root, ignore_errors=True))
+    monkeypatch.setenv("AZAZEL_ROOT", str(runtime_root))
+    _, store, trust, _ = knowledge_tests.node.__wrapped__(runtime_root, monkeypatch)
+    manifest, rows = _producer_manifest()
+    rows = [({**row, "description": "Fixture technique reference"}
+             if row.get("technique_id") == "T1110" else row) for row in rows]
+    admit_rows((None, store, trust, None), rows, profile=manifest["profile"])
+
+    azazel = runtime_root / "var/lib/azazel"
+    for path, mode in ((runtime_root / "var", 0o755), (runtime_root / "var/lib", 0o755),
+                       (azazel, 0o711), (azazel / "run", 0o711),
+                       (azazel / "run/ui-read", 0o711)):
+        _owned_dir(path, 0, 0, mode)
+    run = azazel / "run"
+    _owned_dir(run / "knowledge", ids["azknowledge"].pw_uid, groups["azazel-operator"], 0o2710)
+    _owned_dir(run / "knowledge-read", ids["azknowledge"].pw_uid, groups["azknowledge-read"], 0o2710)
+    _owned_dir(run / "mio", ids["azmio"].pw_uid, groups["azazel-operator"], 0o2710)
+    _owned_dir(run / "mio-entry", ids["azmioentry"].pw_uid, groups["azazel-operator"], 0o2710)
+    _owned_dir(run / "mio-advise", ids["azmioentry"].pw_uid, groups["azmio-advise"], 0o2710)
+    _owned_dir(run / "edge-intake", ids["azintake"].pw_uid, groups["azedge"], 0o2710)
+    _owned_dir(run / "knowledge-status", ids["azknowledge"].pw_uid, groups["azazel-operator"], 0o2750)
+    _owned_dir(run / "mio-status", ids["azmioentry"].pw_uid, groups["azazel-operator"], 0o2750)
+    _owned_dir(run / "edge-intake-status", ids["azintake"].pw_uid, groups["azazel-operator"], 0o2750)
+    _owned_dir(run / "incident-explain-status", ids["azexplain"].pw_uid, groups["azazel-operator"], 0o2750)
+    _owned_dir(run / "ui-read/edge-intake", ids["azintake"].pw_uid, 0, 0o2750)
+    _owned_dir(run / "ui-read/incident-explain", ids["azexplain"].pw_uid, 0, 0o2750)
+    _owned_dir(azazel / "state", 0, 0, 0o711)
+    _owned_dir(azazel / "state/knowledge", ids["azknowledge"].pw_uid, ids["azknowledge"].pw_gid, 0o700)
+    _owned_dir(azazel / "state/mio", ids["azmioentry"].pw_uid, 0, 0o700)
+    _owned_dir(azazel / "mio", ids["azmio"].pw_uid, ids["azmio"].pw_gid, 0o750)
+    _owned_dir(azazel / "edge-intake", ids["azintake"].pw_uid, 0, 0o700)
+    _owned_dir(azazel / "edge-incidents", ids["azintake"].pw_uid, groups["azincident-read"], 0o2750)
+    _owned_dir(azazel / "incident-explain", ids["azexplain"].pw_uid, 0, 0o700)
+    _own_tree(store, ids["azknowledge"].pw_uid, groups["azazel-operator"])
+    _own_tree(trust, ids["azknowledge"].pw_uid, ids["azknowledge"].pw_gid)
+
+    env = os.environ.copy()
+    env.update({"AZAZEL_ROOT": str(runtime_root),
+                "PYTHONPATH": os.pathsep.join((str(ROOT / "src"), str(ROOT / "runtime/src"), str(ROOT / "tests"))),
+                "PYTHONDONTWRITEBYTECODE": "1"})
+    children = []
+    try:
+        launch_specs = (
+            ("azknowledge", (groups["azazel-operator"],), "azazel_nexus_runtime.knowledge_lited"),
+            ("azmio", (groups["azknowledge-read"], groups["azmission-read"]), "azazel_nexus_runtime.mio_locald"),
+            ("azmioentry", (groups["azazel-operator"],), "azazel_nexus_runtime.mio_entryd"),
+            ("azintake", (groups["azincident-read"],), "azazel_nexus_runtime.edge_intaked"),
+            ("azexplain", (groups["azincident-read"], groups["azknowledge-read"], groups["azmio-advise"]),
+             "azazel_nexus_runtime.incident_explaind"),
+        )
+        for account, extra_groups, module in launch_specs:
+            script = f"from {module} import main; raise SystemExit(main())"
+            children.append(subprocess.Popen(
+                [sys.executable, "-B", "-c", script], cwd=ROOT, env=env,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                preexec_fn=_credentials(account, extra_groups)))
+        for path, child in ((run / "knowledge/knowledge.sock", children[0]),
+                            (run / "knowledge-read/knowledge-read.sock", children[0]),
+                            (run / "mio/mio.sock", children[1]),
+                            (run / "mio-entry/mio-entry.sock", children[2]),
+                            (run / "edge-intake/edge-intake.sock", children[3])):
+            _wait_socket(path, child, time.monotonic() + 6)
+        _send_edge_alert(env, run / "edge-intake/edge-intake.sock", (groups["azedge"],))
+
+        explanation_dir = azazel / "incident-explain/explanations"
+        status_path = run / "incident-explain-status/status.json"
+        deadline = time.monotonic() + 12
+        status, lines = {}, []
+        while time.monotonic() < deadline:
+            assert all(child.poll() is None for child in children)
+            try:
+                status = json.loads(status_path.read_text())
+                records = sorted(explanation_dir.glob("*.jsonl"))
+                lines = [line for path in records for line in path.read_bytes().splitlines()]
+                if status.get("explained", 0) >= 1 and lines:
+                    break
+            except FileNotFoundError:
+                pass
+            time.sleep(0.05)
+        assert status["explained"] >= 1
+        assert len(lines) >= 1
+        record = read_record(json.loads(lines[0]))
+        assert record["transition"] == "opened"
+        assert record["technique_ids"] == ["T1021.004", "T1110"]
+        assert record["mio"]["route"] == "deterministic handoff"
+        assert record["knowledge_state"] == "available"
+        assert record["knowledge_refs"]
+        assert any(ref["technique_id"] == "T1110" for ref in record["knowledge_refs"])
+        assert all((ref["source_kind"], ref["trust_check"], ref["revocation_status"]) ==
+                   ("knowledge_lite", "verified", "clear") for ref in record["knowledge_refs"])
+        assert all(child.poll() is None for child in children)
+        assert b"10.0.0.8" not in b"\n".join(lines)
+    finally:
+        for child in reversed(children):
+            if child.poll() is None:
+                child.terminate()
+                try:
+                    child.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait(timeout=2)
+
+
 @pytest.mark.real_process
 @pytest.mark.skipif(sys.platform != "linux", reason="SO_PEERCRED is required")
 def test_500ms_explainer_process_reaches_shared_core_and_readonly_knowledge(
