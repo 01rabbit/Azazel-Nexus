@@ -403,6 +403,7 @@ def test_explanation_summary_carries_digest_generation_freshness_as_of_and_citat
 
 
 def test_recent_reader_accepts_not_queried_and_rejects_malformed_fast_assistance():
+    pytest.importorskip("azazel_mio")
     from azazel_nexus.incident_explain import build_recent_incident, build_recent_incidents, read_recent_incidents
     from azazel_nexus.local_advisory import read_frame
     from azazel_nexus_runtime import mio_fast_assistance
