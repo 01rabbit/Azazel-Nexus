@@ -157,8 +157,7 @@ def _send_edge_alert(env: dict[str, str], socket_path: Path, groups: tuple[int, 
 @pytest.mark.skipif(sys.platform != "linux", reason="SO_PEERCRED is required")
 def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request, monkeypatch):
     """One producer-shaped alert follows both production daemon entrypoints."""
-    if importlib.util.find_spec("azazel_mio") is None:
-        pytest.skip("normal-entry healthy path requires the pinned shared MIO wheel")
+    package_installed = importlib.util.find_spec("azazel_mio") is not None
     import test_knowledge_lited as knowledge_tests
     from test_knowledge_lookup import _producer_manifest, admit_rows
     from azazel_nexus.incident_explain import read_record
@@ -259,9 +258,13 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
         assert record["mio"]["route"] == "deterministic handoff"
         # The MIO fast-assistance object comes from entryd's reply, validated
         # by read_mio_reply. Its status proves that Knowledge was not queried
-        # on the latency-bounded fast lane.
+        # on the latency-bounded fast lane when the shared package is present.
         mio_fast = record["mio"]["fast_assistance"]
-        assert mio_fast["dependency_outcome"]["knowledge"] == "not_queried"
+        if package_installed:
+            assert mio_fast["dependency_outcome"]["knowledge"] == "not_queried"
+        else:
+            assert mio_fast["state"] == "dependency_unavailable"
+            assert mio_fast["dependency_outcome"]["knowledge"] == "unavailable"
         assert mio_fast["knowledge"] == []
 
         # These refs are the explainer's separate Knowledge Lite query.
@@ -278,6 +281,11 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
                    and all(char in "0123456789abcdef" for char in ref["bundle_digest"][7:])
                    for ref in record["knowledge_refs"])
         assert all(child.poll() is None for child in children)
+        private_markers = (b"SSH brute-force observations", b"redacted test fixture")
+        for path in (azazel / "state").rglob("*"):
+            if path.is_file():
+                raw = path.read_bytes()
+                assert all(marker not in raw for marker in private_markers)
         assert b"10.0.0.8" not in b"\n".join(lines)
     finally:
         for child in reversed(children):
