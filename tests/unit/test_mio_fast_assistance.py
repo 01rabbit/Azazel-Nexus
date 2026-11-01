@@ -106,7 +106,7 @@ def test_locald_passes_core_only_time_left_after_its_delivery_reserve(monkeypatc
 
     observed = []
     monkeypatch.setattr(adapter, "fast_assistance",
-                        lambda frame, *, deadline_s:
+                        lambda frame, *, deadline_s, **kwargs:
                         observed.append(deadline_s) or {"assessment": "bounded"})
     frame = read_frame({"request_id": "delivery-reserve", "privacy_class": "P3-restricted",
                         "question": "T1110", "context": []})
@@ -230,3 +230,135 @@ def test_500ms_entry_service_calls_fast_lane_with_bounded_reply(tmp_path, monkey
     assert checked[0][1] <= 0.045
     assert elapsed < 0.5
     assert order == ["fast_assessment", "deep_route"]
+
+
+def _lite_frame(question='T1110'):
+    return read_frame({'request_id': 'lite-fast', 'privacy_class': 'P2-mission',
+                       'question': question, 'context': []})
+
+
+def _lite_ref(**changes):
+    from azazel_nexus.lite_import import KnowledgeRef
+    from datetime import datetime, timezone
+    values = dict(technique_id='T1110', name='Brute Force', summary='', claim_id='T1110',
+                  bundle_digest='sha256:' + 'a' * 64, freshness='static',
+                  source_kind='knowledge_lite', generation=5, trust_check='verified',
+                  as_of=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                  citation='MITRE ATT&CK technique')
+    return KnowledgeRef(**(values | changes))
+
+
+def test_live_lite_claim_preserves_exact_metadata_and_same_frame(monkeypatch):
+    source = _lite_frame('SSH T1110 and invalid T1110.003x')
+    ref = _lite_ref()
+    calls, frames = [], []
+    real = adapter.AssistantCore.explain
+    def explain(self, frame, **kwargs):
+        frames.append(frame.to_dict())
+        assert kwargs['knowledge_attempted'] is True
+        assert kwargs['knowledge_lite_advisories'][0].citation == ref.claim_id
+        return real(self, frame, **kwargs)
+    monkeypatch.setattr(adapter.AssistantCore, 'explain', explain)
+    def lookup(ids, *, deadline_s):
+        calls.append((ids, deadline_s))
+        return (ref,)
+    result = read_fast_assistance(adapter.fast_assistance(source, deadline_s=.2,
+                                                         knowledge_lookup=lookup))
+    assert calls[0][0] == ('T1110',)
+    assert 0 < calls[0][1] <= .175
+    claim, = result['knowledge']
+    for field in ('name', 'summary', 'claim_id', 'bundle_digest', 'freshness', 'as_of'):
+        assert claim[field] == getattr(ref, field)
+    assert claim['generation'] == '5'
+    assert claim['source_kind'] == 'knowledge_lite'
+    assert claim['source_citation'] == ref.citation
+    assert claim['citation'] == ref.claim_id
+    assert claim['trust_check'] == 'verified' and claim['revocation_status'] == 'clear'
+    assert claim['claim_status'] == 'reported_unverified'
+    assert frames[0]['known_facts'] == [] and frames[0]['noc_summary'] == source['question']
+    assert result['handoff']['frame_id'] == frames[0]['frame_id']
+    assert result['dependency_outcome']['knowledge'] == 'available'
+
+
+def test_lite_empty_result_is_absent_and_no_ids_never_queries():
+    result = read_fast_assistance(adapter.fast_assistance(_lite_frame(), deadline_s=.2,
+                                                         knowledge_lookup=lambda *a, **k: ()))
+    assert result['knowledge'] == []
+    assert result['dependency_outcome']['knowledge'] == 'absent'
+    def forbidden(*a, **k):
+        pytest.fail('no exact technique IDs')
+    result = adapter.fast_assistance(_lite_frame('T1110x XT1110 T1110.003x'),
+                                    deadline_s=.2, knowledge_lookup=forbidden)
+    assert result['dependency_outcome']['knowledge'] == 'not_queried'
+
+
+@pytest.mark.parametrize('refs', [(_lite_ref(trust_check='unknown'),),
+                                  (_lite_ref(freshness='expired'),),
+                                  (_lite_ref(claim_id='T1059'),),
+                                  ({'technique_id': 'T1110'},),
+                                  (_lite_ref(technique_id='T1059', claim_id='T1059'),),
+                                  (_lite_ref(freshness='current', as_of='2020-01-01T00:00:00Z'),)])
+def test_lite_malformed_stale_or_untrusted_refs_degrade_without_refs(refs):
+    result = read_fast_assistance(adapter.fast_assistance(_lite_frame(), deadline_s=.2,
+                                                         knowledge_lookup=lambda *a, **k: refs))
+    assert result['knowledge'] == []
+    assert result['dependency_outcome']['knowledge'] == 'unavailable'
+
+
+@pytest.mark.parametrize('error, outcome', [(TimeoutError(), 'timeout'),
+                                           (OSError('private service detail'), 'unavailable')])
+def test_lite_lookup_failures_are_bounded_public_outcomes(error, outcome):
+    def lookup(*a, **k):
+        raise error
+    result = read_fast_assistance(adapter.fast_assistance(_lite_frame(), deadline_s=.2,
+                                                         knowledge_lookup=lookup))
+    assert result['knowledge'] == []
+    assert result['dependency_outcome']['knowledge'] == outcome
+    assert 'private service detail' not in repr(result)
+
+
+def test_core_reserve_skips_lookup_and_discards_late_result(monkeypatch):
+    def forbidden(*a, **k):
+        pytest.fail('core reserve cannot fund lookup')
+    result = adapter.fast_assistance(_lite_frame(), deadline_s=.004, knowledge_lookup=forbidden)
+    assert result['knowledge'] == []
+    assert result['dependency_outcome']['knowledge'] == 'timeout'
+    clock = [10.0]
+    monkeypatch.setattr(adapter.time, 'monotonic', lambda: clock[0])
+    def late(*a, **k):
+        clock[0] += .198
+        return (_lite_ref(),)
+    result = adapter.fast_assistance(_lite_frame(), deadline_s=.2, knowledge_lookup=late)
+    assert result['knowledge'] == []
+    assert result['dependency_outcome']['knowledge'] == 'timeout'
+
+
+def test_all_local_refs_are_validated_before_bounded_prefix():
+    refs = tuple(_lite_ref() for _ in range(16))
+    result = read_fast_assistance(adapter.fast_assistance(_lite_frame(), deadline_s=.2,
+                                                         knowledge_lookup=lambda *a, **k: refs))
+    assert len(result['knowledge']) == 8
+    result = adapter.fast_assistance(_lite_frame(), deadline_s=.2,
+                                    knowledge_lookup=lambda *a, **k: refs[:15] + (_lite_ref(trust_check='unknown'),))
+    assert result['knowledge'] == []
+    assert result['dependency_outcome']['knowledge'] == 'unavailable'
+
+
+def test_normal_locald_fast_assess_injects_authenticated_lookup():
+    from azazel_nexus_runtime import mio_locald
+    source = _lite_frame()
+    calls = []
+    def lookup(ids, *, deadline_s):
+        calls.append((ids, deadline_s))
+        return (_lite_ref(),)
+    service = mio_locald.LocalRuntimeService(knowledge_lookup=lookup)
+    reply = service.handle(SimpleNamespace(verb=mio_locald.FAST_ASSESS_VERB,
+                           arguments={'deadline_ms': 500}, payload=source))
+    fast = read_fast_assistance(reply['fast_assistance'])
+    assert calls[0][0] == ('T1110',)
+    assert calls[0][1] <= mio_locald.KNOWLEDGE_MAX_S
+    assert fast['knowledge'][0]['citation'] == 'T1110'
+    forged = copy.deepcopy(fast)
+    forged['knowledge'][0]['citation'] = 'unrelated'
+    with pytest.raises(ValueError):
+        read_fast_assistance(forged)

@@ -34,9 +34,9 @@ annotated-types==0.8.0 \
 azazel-fabric==0.9.0rc5 \
     --hash=sha256:5eb6593ee6824400bc5a00c3e5c799abb2f88def6273a2486c8b88959c908eda
 # azazel_mio-0.1.0-py3-none-any.whl
-# built from https://github.com/01rabbit/Azazel-MIO.git commit 6cd015351979ba69e18517d71f79c0c347bb2722
+# built from https://github.com/01rabbit/Azazel-MIO.git commit 97c58f92f3be68e48e99e3c837e7d535f0bd4051
 azazel-mio==0.1.0 \
-    --hash=sha256:99efaf16e5df2bfafa11e9a10c3f3d3a6dd7432d9e2aa0b6ae555caee727d45a
+    --hash=sha256:34ded37544f0a7317d7ac8a778a37147fe6f7c18685216968da1869c5678e71e
 # dbus_next-0.2.3-py3-none-any.whl
 dbus-next==0.2.3 \
     --hash=sha256:58948f9aff9db08316734c0be2a120f6dc502124d9642f55e90ac82ffb16a18b

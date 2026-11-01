@@ -81,7 +81,7 @@ def _wait_socket(path: Path, process: subprocess.Popen, deadline: float) -> None
     pytest.fail("daemon did not bind its declared socket before the deadline")
 
 
-def _request_child(env: dict[str, str], user: str, groups: tuple[int, ...]):
+def _request_child(env: dict[str, str], user: str, groups: tuple[int, ...], *, deadline_ms=500):
     # The child sends the normal public `mio.advise` request and prints only a
     # fixed, redacted projection. No question, context, citation text, digest,
     # or service log is surfaced as process evidence.
@@ -99,7 +99,8 @@ frame = {
 try:
   started = time.monotonic()
   reply = _exchange("mio-advise", "azmioentry", "mio.advise",
-                    {"deadline_ms": 500}, payload=frame, deadline_s=0.75)
+                    {"deadline_ms": int(sys.argv[1])}, payload=frame,
+                    deadline_s=int(sys.argv[1]) / 1000 + .25)
   elapsed_ms = (time.monotonic() - started) * 1000
   fast = reply["fast_assistance"]
   knowledge = fast["knowledge"]
@@ -113,6 +114,10 @@ try:
     "knowledge_source_kind": knowledge[0]["source_kind"] if knowledge else None,
     "knowledge_trust_check": knowledge[0]["trust_check"] if knowledge else None,
     "knowledge_revocation_status": knowledge[0]["revocation_status"] if knowledge else None,
+    "same_handoff": fast["handoff"] is not None and fast["handoff"]["frame_id"] == fast["frame_id"],
+    "empty_summary": knowledge[0]["summary"] == "" if knowledge else None,
+    "canonical_citation": knowledge[0]["citation"] == knowledge[0]["claim_id"] if knowledge else None,
+    "source_citation_preserved": knowledge[0]["source_citation"] == "MITRE ATT&CK technique, as ingested into azazel-knowledge intel.attack_technique" if knowledge else None,
     "elapsed_ms": elapsed_ms,
   }, sort_keys=True))
 except Exception as error:
@@ -120,7 +125,7 @@ except Exception as error:
   raise SystemExit(1)
 '''
     proc = subprocess.run(
-        [sys.executable, "-B", "-c", code], cwd=ROOT, env=env,
+        [sys.executable, "-B", "-c", code, str(deadline_ms)], cwd=ROOT, env=env,
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         timeout=6, check=False, preexec_fn=_credentials(user, groups),
         text=True,
@@ -132,7 +137,8 @@ except Exception as error:
         "route", "state", "knowledge_status", "knowledge_count",
         "knowledge_technique", "knowledge_generation", "knowledge_source_kind",
         "knowledge_trust_check", "knowledge_revocation_status",
-        "elapsed_ms",
+        "elapsed_ms", "same_handoff", "empty_summary", "canonical_citation",
+        "source_citation_preserved",
     }
     return result
 
@@ -334,48 +340,15 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
         assert record["technique_ids"] == ["T1021.004", "T1110"]
         assert record["mio"]["route"] == "deterministic handoff"
         # The MIO fast-assistance object comes from entryd's reply, validated
-        # by read_mio_reply. Its status proves that Knowledge was not queried
-        # on the latency-bounded fast lane when the shared package is present.
+        # by read_mio_reply. The 500ms incident path preserves the core and
+        # delivery reserves, leaving no optional lookup share.
         mio_fast = record["mio"]["fast_assistance"]
         if package_installed:
-            outcome = mio_fast["dependency_outcome"]["knowledge"]
-            if real_producer:
-                # The real-builder path must prove the shared fast core
-                # completed without a Knowledge query; no timeout is allowed.
-                assert outcome == "not_queried"
-            else:
-                # Synthetic-reader runs share the 500 ms explainer deadline
-                # with earlier ledger and probe work, so the typed timeout
-                # fallback is accepted here only.
-                assert outcome in {"not_queried", "timeout"}
-            if outcome == "not_queried":
-                from azazel_nexus.audit import AuditLedger
-
-                incident_hex = record["incident_id"][4:]
-                expected_event = "edge.incident." + record["transition"]
-                matching_entries = [
-                    entry
-                    for path in sorted((azazel / "edge-incidents").glob("????-??-??.jsonl"))
-                    for entry in AuditLedger(path, private=True)
-                    if entry.event.get("incident_id") == record["incident_id"]
-                    and entry.event.get("event_type") == expected_event
-                ]
-                assert matching_entries
-                expected_sequence = matching_entries[-1].sequence
-                assert mio_fast["trace_id"] == f"mio-{incident_hex}-{expected_sequence}"
-                assert mio_fast["frame_id"] == mio_fast["trace_id"] + ":frame"
-                expected_refs = [ref["evidence_id"] for ref in record["evidence"]["refs"]]
-                assert expected_refs and all(ref.startswith("sha256:") and len(ref) == 71
-                                             for ref in expected_refs)
-                grounded_refs = [ref for hypothesis in mio_fast["hypotheses"]
-                                 for ref in hypothesis.get("supporting_evidence_refs", [])]
-                assert grounded_refs == expected_refs
-                assert mio_fast["observations"] == []
-            else:
-                assert mio_fast["state"] == "dependency_unavailable"
-                assert mio_fast["observations"] == []
-                assert mio_fast["hypotheses"] == []
-            assert record["edge_would"] == "notify"
+            assert mio_fast["dependency_outcome"]["knowledge"] == "timeout"
+            assert mio_fast["state"] == "dependency_unavailable"
+            assert mio_fast["observations"] == []
+            assert mio_fast["hypotheses"] == []
+        assert record["edge_would"] == "notify"
         else:
             assert mio_fast["state"] == "dependency_unavailable"
             assert mio_fast["dependency_outcome"]["knowledge"] == "unavailable"
@@ -395,6 +368,30 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
                    and all(char in "0123456789abcdef" for char in ref["bundle_digest"][7:])
                    for ref in record["knowledge_refs"])
         assert all(child.poll() is None for child in children)
+        if real_producer and package_installed:
+            # Same real imported bundle, authenticated locald, ordinary public
+            # advise entrypoint. A larger legal request budget funds optional
+            # context without stealing the 500ms incident path's reserves.
+            claim = _request_child(env, "azexplain", (groups["azmio-advise"],), deadline_ms=1500)
+            assert claim["knowledge_status"] == "available"
+            assert claim["knowledge_count"] == 1
+            assert claim["knowledge_technique"] == "T1110"
+            assert claim["knowledge_generation"] == "5"
+            assert claim["knowledge_source_kind"] == "knowledge_lite"
+            assert claim["knowledge_trust_check"] == "verified"
+            assert claim["knowledge_revocation_status"] == "clear"
+            assert claim["empty_summary"] is True
+            assert claim["canonical_citation"] is True
+            assert claim["source_citation_preserved"] is True
+            assert claim["same_handoff"] is True
+            assert claim["route"] == "deterministic handoff"
+            children[0].terminate()
+            children[0].wait(timeout=2)
+            degraded = _request_child(env, "azexplain", (groups["azmio-advise"],), deadline_ms=1500)
+            assert degraded["knowledge_status"] == "unavailable"
+            assert degraded["knowledge_count"] == 0
+            assert degraded["route"] == "deterministic handoff"
+            assert children[1].poll() is None
         private_markers = (b"SSH brute-force observations", b"redacted test fixture")
         for path in (azazel / "state").rglob("*"):
             if path.is_file():
@@ -517,9 +514,8 @@ def test_500ms_explainer_process_reaches_shared_core_and_readonly_knowledge(
             assert second["elapsed_ms"] < 750
             assert children[1].poll() is None
         else:
-            # The fast reply makes no Knowledge query; the explainer performs
-            # its own independently authenticated lookup below.
-            assert result["knowledge_status"] == "not_queried"
+            # The 500ms path has no optional lookup share after reserves.
+            assert result["knowledge_status"] == "timeout"
             assert result["knowledge_count"] == 0
             # The production build keeps model admission disabled; the route
             # remains a deterministic handoff even with trusted Knowledge.
