@@ -273,8 +273,15 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
         assert record["knowledge_state"] == "available"
         assert record["knowledge_refs"]
         assert any(ref["technique_id"] == "T1110" for ref in record["knowledge_refs"])
-        assert all((ref["source_kind"], ref["trust_check"], ref["revocation_status"]) ==
-                   ("knowledge_lite", "verified", "clear") for ref in record["knowledge_refs"])
+        assert all(ref["source_kind"] == "knowledge_lite"
+                   and ref["trust_check"] == "verified"
+                   and ref["generation"] == 5
+                   and ref["claim_id"] == ref["technique_id"]
+                   and ref["freshness"] in {"current", "static"}
+                   and len(ref["bundle_digest"]) == 71
+                   and ref["bundle_digest"].startswith("sha256:")
+                   and all(char in "0123456789abcdef" for char in ref["bundle_digest"][7:])
+                   for ref in record["knowledge_refs"])
         assert all(child.poll() is None for child in children)
         assert b"10.0.0.8" not in b"\n".join(lines)
     finally:
