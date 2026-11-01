@@ -1694,7 +1694,7 @@ def test_the_mio_source_wheel_hash_is_reproduced_and_exactly_pinned():
     build = build_wheelhouse.SOURCE_BUILDS["azazel-mio"]
     lock = build_wheelhouse.parse_lock(ROOT / build_wheelhouse.LOCK)
     digest, = lock["azazel-mio==0.1.0"]
-    assert digest == "862dcc7c4b726a3887d9820e94c09fece32f3b97a4fc023e85c6faf5c00ef17b"
+    assert digest == "99b42ccd13d8c13e5a78932cfa7ab057b612f15d6d478742e0153ee43a3f145b"
     for target in offline_bundle.TARGETS:
         target_lock = build_wheelhouse.parse_lock(ROOT / offline_bundle.target_lock(target))
         assert target_lock["azazel-mio==0.1.0"] == [digest]
