@@ -93,10 +93,10 @@ def fast_assistance(source: dict, *, deadline_s: float, knowledge_lookup=None,
                 now = datetime.now(timezone.utc)
                 for ref in refs:
                     as_of = datetime.fromisoformat(ref.as_of.replace('Z', '+00:00'))
-                    # current is only current at this live lookup, never a cache
-                    # lease. UTC seconds truncate by less than one second.
-                    if as_of > now or (ref.freshness == 'current' and
-                                       (now - as_of).total_seconds() >= 1):
+                    # The trusted service evaluated freshness at its live
+                    # lookup instant, truncated to UTC seconds. Crossing a
+                    # second boundary during bounded I/O does not expire it.
+                    if as_of > now:
                         raise ValueError("stale_knowledge_refs")
                 if time.monotonic() > end - core_reserve_s:
                     raise TimeoutError

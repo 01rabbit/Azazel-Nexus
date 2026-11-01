@@ -297,7 +297,7 @@ def test_lite_empty_result_is_absent_and_no_ids_never_queries():
                                   (_lite_ref(claim_id='T1059'),),
                                   ({'technique_id': 'T1110'},),
                                   (_lite_ref(technique_id='T1059', claim_id='T1059'),),
-                                  (_lite_ref(freshness='current', as_of='2020-01-01T00:00:00Z'),)])
+                                  (_lite_ref(as_of='2099-01-01T00:00:00Z'),)])
 def test_lite_malformed_stale_or_untrusted_refs_degrade_without_refs(refs):
     result = read_fast_assistance(adapter.fast_assistance(_lite_frame(), deadline_s=.2,
                                                          knowledge_lookup=lambda *a, **k: refs))
@@ -362,3 +362,35 @@ def test_normal_locald_fast_assess_injects_authenticated_lookup():
     forged['knowledge'][0]['citation'] = 'unrelated'
     with pytest.raises(ValueError):
         read_fast_assistance(forged)
+
+
+def test_current_at_lookup_survives_second_boundary(monkeypatch):
+    from datetime import datetime, timezone
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 2, 0, 0, 1, 100000, tzinfo=timezone.utc)
+    monkeypatch.setattr(adapter, 'datetime', Clock)
+    monotonic = [10.0]
+    monkeypatch.setattr(adapter.time, 'monotonic', lambda: monotonic[0])
+    def lookup(*args, deadline_s):
+        assert deadline_s == pytest.approx(.225)
+        monotonic[0] += .2
+        return (_lite_ref(freshness='current', as_of='2026-11-02T00:00:00Z'),)
+    result = read_fast_assistance(adapter.fast_assistance(
+        _lite_frame(), deadline_s=.25, knowledge_lookup=lookup))
+    assert result['dependency_outcome']['knowledge'] == 'available'
+    assert result['knowledge'][0]['as_of'] == '2026-11-02T00:00:00Z'
+    assert result['knowledge'][0]['temporal_validity'] == 'current_at_lookup'
+
+
+def test_discarded_temporal_tail_never_becomes_output():
+    prefix = tuple(_lite_ref() for _ in range(8))
+    # A row outside the deterministic output prefix is schema-validated but
+    # never projected into MIO, regardless of its lookup timestamp.
+    tail = tuple(_lite_ref(freshness='current', as_of='2020-01-01T00:00:00Z') for _ in range(8))
+    result = read_fast_assistance(adapter.fast_assistance(
+        _lite_frame(), deadline_s=.2, knowledge_lookup=lambda *a, **k: prefix + tail))
+    assert len(result['knowledge']) == 8
+    assert all(row['freshness'] == 'static' for row in result['knowledge'])
+    assert all(row['as_of'] != '2020-01-01T00:00:00Z' for row in result['knowledge'])
