@@ -33,12 +33,14 @@ DOCKER_CONTEXT=colima-rosetta SUITE_CONTEXT=rosetta \
 ```
 
 The container runner checks the pinned MIO wheel digest before installing it
-offline, provisions only temporary container identities/groups, installs the
-source copy into the container, and selects this process test plus the
-fast-assistance unit tests. It then removes the shared MIO wheel and runs the
-degraded process phase. All source and dependency mounts are read-only; the
-test container is removed after the run. Suite phases, including the
-no-wheel phase, are kept in `run-container.sh`.
+offline, provisions only temporary container identities/groups, and copies
+the source mount into a unique `/tmp` directory created for that run. It
+installs and selects this process test plus the fast-assistance unit tests
+from that copy, then removes the shared MIO wheel and runs the degraded
+process phase. An exit trap removes only the created temporary source
+directory. All source and dependency mounts are read-only; the test container
+is removed after the run. Suite phases, including the no-wheel phase, are
+kept in `run-container.sh`.
 
 Knowledge data is based on the checked-in producer-shaped fixture, then
 re-signed with the suite's test key and given a test-only description so the

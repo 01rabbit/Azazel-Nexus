@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 022
 
 python -B - <<'PY'
 from pathlib import Path
@@ -29,9 +30,16 @@ if actual != expected:
 print(f'verified MIO wheel digest against both Debian locks: {actual}')
 PY
 
-cp -a /src /w
-rm -rf /w/.venv /w/.pytest_cache /w/runtime/.pytest_cache
-python -m pip install --no-index --find-links=/wheels -e '/w[dev]' -e /w/runtime \
+SCRATCH_SRC=$(mktemp -d /tmp/nxs-real-process.XXXXXX)
+cleanup() {
+  rm -rf -- "$SCRATCH_SRC"
+}
+trap cleanup EXIT
+
+cp -a /src/. "$SCRATCH_SRC/"
+chmod 0755 "$SCRATCH_SRC"
+rm -rf -- "$SCRATCH_SRC/.venv" "$SCRATCH_SRC/.pytest_cache" "$SCRATCH_SRC/runtime/.pytest_cache"
+python -m pip install --no-index --find-links=/wheels -e "${SCRATCH_SRC}[dev]" -e "$SCRATCH_SRC/runtime" \
   /wheel/azazel_mio-0.1.0-py3-none-any.whl
 
 # The test's Linux SO_PEERCRED run uses these ordinary system identities. They
@@ -62,7 +70,7 @@ usermod --append --groups azazel-operator azoperator
 usermod --append --groups azmio-advise azexplain
 usermod --append --groups azincident-read azintake
 
-cd /w
+cd "$SCRATCH_SRC"
 PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
   tests/unit/test_mio_fast_assistance.py \
   tests/unit/test_mio_reference.py \
