@@ -82,6 +82,7 @@ def fast_assistance(source: dict, *, deadline_s: float, knowledge_lookup=None,
         else:
             attempted = True
             try:
+                lookup_started = datetime.now(timezone.utc).replace(microsecond=0)
                 raw = tuple(knowledge_lookup(ids, deadline_s=budget))
                 # Revalidate injected/local replies before trust is projected.
                 if any(type(ref) is not KnowledgeRef for ref in raw):
@@ -89,14 +90,13 @@ def fast_assistance(source: dict, *, deadline_s: float, knowledge_lookup=None,
                 refs = read_knowledge_refs([asdict(ref) for ref in raw])
                 if any(ref.technique_id not in ids for ref in refs):
                     raise ValueError("invalid_knowledge_refs")
-                refs = refs[:8]
                 now = datetime.now(timezone.utc)
                 for ref in refs:
                     as_of = datetime.fromisoformat(ref.as_of.replace('Z', '+00:00'))
                     # The trusted service evaluated freshness at its live
                     # lookup instant, truncated to UTC seconds. Crossing a
                     # second boundary during bounded I/O does not expire it.
-                    if as_of > now:
+                    if as_of > now or (ref.freshness == 'current' and as_of < lookup_started):
                         raise ValueError("stale_knowledge_refs")
                 if time.monotonic() > end - core_reserve_s:
                     raise TimeoutError
@@ -110,7 +110,7 @@ def fast_assistance(source: dict, *, deadline_s: float, knowledge_lookup=None,
                     as_of=ref.as_of, citation=ref.claim_id,
                     source_citation=ref.citation, trust_check=ref.trust_check,
                     revocation_status='clear',
-                ) for ref in refs)
+                ) for ref in refs[:8])
             except TimeoutError:
                 failure = "timeout"
             except ValueError:

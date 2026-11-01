@@ -223,8 +223,6 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
         groups["azaudit-submit"] = _group("azaudit-submit")
     else:
         manifest, rows = _producer_manifest()
-        rows = [({**row, "description": "Fixture technique reference"}
-                 if row.get("technique_id") == "T1110" else row) for row in rows]
         admit_rows((None, store, trust, None), rows, profile=manifest["profile"])
 
     azazel = runtime_root / "var/lib/azazel"
@@ -435,11 +433,7 @@ def test_500ms_explainer_process_reaches_shared_core_and_readonly_knowledge(
     monkeypatch.setenv("AZAZEL_ROOT", str(runtime_root))
     _, store, trust, _ = knowledge_tests.node.__wrapped__(runtime_root, monkeypatch)
     manifest, rows = _producer_manifest()
-    # The published snapshot's technique rows have no display summary. Add a
-    # bounded test-only summary before re-signing so the downstream MIO type
-    # accepts and carries a non-empty advisory description.
-    rows = [({**row, "description": "Fixture technique reference"}
-             if row.get("technique_id") == "T1110" else row) for row in rows]
+    # Preserve the producer snapshot's empty technique summary verbatim.
     admit_rows((None, store, trust, None), rows, profile=manifest["profile"])
 
     azazel = runtime_root / "var/lib/azazel"
