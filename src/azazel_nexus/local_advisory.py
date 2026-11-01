@@ -810,7 +810,7 @@ def read_fast_assistance(value):
     require(type(value['state']) is str and value['state'] in MIO_ASSISTANCE_STATES)
     dependency = value['dependency_outcome']
     require(type(dependency) is dict and set(dependency) == {'knowledge', 'deception'})
-    require(type(dependency['knowledge']) is str and dependency['knowledge'] in {'available', 'partial', 'absent', 'timeout', 'expired', 'rejected', 'unavailable'})
+    require(type(dependency['knowledge']) is str and dependency['knowledge'] in {'available', 'partial', 'absent', 'not_queried', 'timeout', 'expired', 'rejected', 'unavailable'})
     require(type(dependency['deception']) is str and dependency['deception'] in {'available', 'absent', 'timeout', 'rejected', 'unavailable'})
     require(type(value['observations']) is list and not value['observations'])
     for key, limit in (('unknowns', 24), ('next_checks', 8)):
@@ -862,6 +862,8 @@ def read_fast_assistance(value):
                                   else 'unverified_advisory_revocation_unknown'))
     if value['knowledge']:
         require(dependency['knowledge'] in {'available', 'partial'})
+    if dependency['knowledge'] == 'not_queried':
+        require(not value['knowledge'])
     handoff = value['handoff']
     if handoff is not None:
         require(type(handoff) is dict and set(handoff) == {

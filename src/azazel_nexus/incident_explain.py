@@ -1131,10 +1131,12 @@ def read_recent_incidents(raw):
                 dependency = f["dependency_outcome"]
                 if (type(dependency["knowledge"]) is not str
                         or dependency["knowledge"] not in {
-                            "available", "partial", "absent", "timeout", "expired", "rejected", "unavailable"}
+                            "available", "partial", "absent", "not_queried", "timeout", "expired", "rejected", "unavailable"}
                         or type(dependency["deception"]) is not str
                         or dependency["deception"] not in {
                             "available", "absent", "timeout", "rejected", "unavailable"}):
+                    return None
+                if dependency["knowledge"] == "not_queried" and f["knowledge"]:
                     return None
         if v["incidents"] != sorted(v["incidents"], key=lambda r: (r["last_seen"], r["first_seen"], r["incident_id"]), reverse=True):
             return None

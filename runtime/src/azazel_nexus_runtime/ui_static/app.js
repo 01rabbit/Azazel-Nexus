@@ -626,7 +626,8 @@
     var fast = ex.fast_assistance;
     if (fast) {
       var fastNode = block("M.I.O. 共通コアの静的評価（モデルなし）");
-      add(fastNode, kv([["状態", fast.state], ["Knowledge 状態", (fast.dependency_outcome || {}).knowledge]]));
+      var knowledgeOutcome = (fast.dependency_outcome || {}).knowledge;
+      add(fastNode, kv([["状態", fast.state], ["Knowledge 状態", knowledgeOutcome === "not_queried" ? "この高速判定ではKnowledge未照会" : knowledgeOutcome]]));
       if ((fast.unknowns || []).length) { add(fastNode, el("p", "small", "未確認事項（状況文は未検証の報告です）："), list(fast.unknowns)); }
       if ((fast.next_checks || []).length) { add(fastNode, el("p", "small", "確認候補（助言のみ）："), list(fast.next_checks)); }
       (fast.knowledge || []).forEach(function (item) {

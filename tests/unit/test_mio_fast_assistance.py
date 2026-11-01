@@ -7,73 +7,23 @@ import pytest
 pytest.importorskip("azazel_mio", reason="the shared MIO package is an optional integration extra")
 
 from azazel_nexus_runtime import mio_fast_assistance as adapter
-from azazel_nexus.lite_import import KnowledgeRef
 from azazel_nexus.local_advisory import read_fast_assistance, read_frame
 
 
-def test_adapter_keeps_reports_out_of_facts_and_preserves_trusted_reference(monkeypatch):
+def test_adapter_uses_model_free_shared_assessment_without_querying_knowledge(monkeypatch):
     frame = read_frame({"request_id": "fast-lane-test", "privacy_class": "P2-mission",
                         "question": "SSH host-1 T1110.003",
                         "context": [{"kind": "auth_log", "text": "Password spray"}]})
-    ref = KnowledgeRef("T1110.003", "Password spraying", "Reference summary", "T1110.003",
-                       "sha256:" + "a" * 64, "static", "knowledge_lite", 7, "verified",
-                       "2026-10-31T00:00:00Z", "MITRE ATT&CK technique")
-    observed = []
-    monkeypatch.setattr(adapter, "lookup_context", lambda ids, *, deadline_s:
-                        observed.append((ids, deadline_s)) or (ref,))
+    def forbidden_lookup(*args, **kwargs):
+        pytest.fail("fast assessment must not query Knowledge")
+    from azazel_nexus_runtime import knowledge_client
+    monkeypatch.setattr(knowledge_client, "lookup_context", forbidden_lookup)
     result = adapter.fast_assistance(frame, deadline_s=0.2)
     result = read_fast_assistance(result)
-    assert observed[0][0] == ("T1110.003",)
     assert result["observations"] == []
-    claim, = result["knowledge"]
-    assert claim["source_kind"] == "knowledge_lite"
-    assert claim["bundle_digest"] == ref.bundle_digest
-    assert claim["generation"] == "7"
-    assert claim["as_of"] == ref.as_of
-    assert claim["freshness"] == "static"
-    assert claim["source_citation"] == ref.citation
-    assert claim["citation"] == "kn:lite:T1110.003"
-    assert claim["revocation_status"] == "clear"
-    assert claim["expires_at"] is None
-
-
-def test_adapter_maps_lookup_failure_to_typed_degradation(monkeypatch):
-    frame = read_frame({"request_id": "fast-timeout-test", "privacy_class": "P2-mission",
-                        "question": "SSH host-1 T1110.003", "context": []})
-    def timeout(*args, **kwargs):
-        raise adapter.KnowledgeUnavailable()
-    monkeypatch.setattr(adapter, "lookup_context", timeout)
-    result = read_fast_assistance(adapter.fast_assistance(frame, deadline_s=0.2))
     assert result["knowledge"] == []
-    assert result["dependency_outcome"]["knowledge"] == "unavailable"
-
-
-def test_adapter_omits_empty_summary_without_inventing_text(monkeypatch):
-    frame = read_frame({"request_id": "empty-summary", "privacy_class": "P2-mission",
-                        "question": "SSH host-1 T1110.003", "context": []})
-    ref = KnowledgeRef("T1110.003", "Password spraying", "", "T1110.003",
-                       "sha256:" + "a" * 64, "static", "knowledge_lite", 7, "verified",
-                       "2026-10-31T00:00:00Z", "MITRE ATT&CK technique")
-    monkeypatch.setattr(adapter, "lookup_context", lambda *a, **k: (ref,))
-    result = read_fast_assistance(adapter.fast_assistance(frame, deadline_s=0.2))
-    assert result["knowledge"] == []
-    assert result["dependency_outcome"]["knowledge"] == "rejected"
-
-
-def test_adapter_keeps_valid_refs_and_marks_mixed_projection_partial(monkeypatch):
-    frame = read_frame({"request_id": "mixed-summary", "privacy_class": "P2-mission",
-                        "question": "SSH host-1 T1110.003", "context": []})
-    empty = KnowledgeRef("T1110.003", "Password spraying", "", "T1110.003",
-                         "sha256:" + "a" * 64, "static", "knowledge_lite", 7, "verified",
-                         "2026-10-31T00:00:00Z", "MITRE ATT&CK technique")
-    valid = KnowledgeRef("T1110.003", "Password spraying", "Checked summary", "T1110.003",
-                         "sha256:" + "a" * 64, "static", "knowledge_lite", 7, "verified",
-                         "2026-10-31T00:00:00Z", "MITRE ATT&CK technique")
-    monkeypatch.setattr(adapter, "lookup_context", lambda *a, **k: (valid, empty))
-    result = read_fast_assistance(adapter.fast_assistance(frame, deadline_s=0.2))
-    assert len(result["knowledge"]) == 1
-    assert result["knowledge"][0]["summary"] == "Checked summary"
-    assert result["dependency_outcome"]["knowledge"] == "partial"
+    assert result["dependency_outcome"]["knowledge"] == "not_queried"
+    assert any("did not query Knowledge" in check for check in result["next_checks"])
 
 
 def test_locald_fast_assess_converts_adapter_exception_to_degradation(monkeypatch):
@@ -135,15 +85,31 @@ def test_locald_passes_core_only_time_left_after_its_delivery_reserve(monkeypatc
     assert reply["fast_assistance"] == {"assessment": "bounded"}
 
 
-def test_adapter_collapses_unavailable_knowledge_failure_codes(monkeypatch):
+def test_zero_locald_budget_returns_timeout_without_calling_shared_core(monkeypatch):
+    from azazel_nexus_runtime import mio_locald
+
+    monkeypatch.setattr(adapter.AssistantCore, "explain",
+                        lambda *a, **k: pytest.fail("shared core called with zero budget"))
+    frame = read_frame({"request_id": "zero-budget", "privacy_class": "P2-mission",
+                        "question": "SSH host-1 T1110.003", "context": []})
+    service = mio_locald.LocalRuntimeService()
+    reply = service.handle(SimpleNamespace(
+        verb=mio_locald.FAST_ASSESS_VERB,
+        arguments={"deadline_ms": int(mio_locald.DELIVERY_RESERVE_S * 1000)},
+        payload=frame,
+    ))
+
+    fast = read_fast_assistance(reply["fast_assistance"])
+    assert reply["outcome"] == "assessed"
+    assert fast["knowledge"] == []
+    assert fast["dependency_outcome"]["knowledge"] == "timeout"
+
+
+def test_adapter_marks_knowledge_as_not_queried_without_a_lookup(monkeypatch):
     frame = read_frame({"request_id": "fast-status-test", "privacy_class": "P2-mission",
                         "question": "SSH host-1 T1110.003", "context": []})
-    for error, expected in ((adapter.KnowledgeUnavailable("knowledge_timeout"), "unavailable"),
-                            (adapter.KnowledgeUnavailable("knowledge_peer_refused"), "unavailable"),
-                            (adapter.KnowledgeUnavailable("knowledge_reply_refused"), "rejected")):
-        monkeypatch.setattr(adapter, "lookup_context", lambda *a, _error=error, **k: (_ for _ in ()).throw(_error))
-        result = read_fast_assistance(adapter.fast_assistance(frame, deadline_s=0.2))
-        assert result["dependency_outcome"]["knowledge"] == expected
+    result = read_fast_assistance(adapter.fast_assistance(frame, deadline_s=0.2))
+    assert result["dependency_outcome"]["knowledge"] == "not_queried"
 
 
 def test_fast_assistance_reader_rejects_malformed_fields_before_persistence():
@@ -162,6 +128,25 @@ def test_fast_assistance_reader_rejects_malformed_fields_before_persistence():
         forged[key] = bad
         with pytest.raises(ValueError):
             read_fast_assistance(forged)
+    forged = copy.deepcopy(valid)
+    forged["knowledge"].append({"invalid": "reference"})
+    with pytest.raises(ValueError):
+        read_fast_assistance(forged)
+    populated = copy.deepcopy(valid)
+    populated["knowledge"] = [{
+        "kind": "knowledge_lite_advisory", "source_kind": "knowledge_lite",
+        "claim_status": "reported_unverified", "technique_id": "T1110.003",
+        "name": "Password spraying", "summary": "Reference summary",
+        "claim_id": "T1110.003", "bundle_digest": "sha256:" + "a" * 64,
+        "freshness": "static", "temporal_validity": "static", "generation": "7",
+        "as_of": "2026-10-31T00:00:00Z", "expires_at": None,
+        "citation": "kn:lite:T1110.003", "trust_check": "verified",
+        "revocation_status": "clear", "trust": "unverified_advisory_only",
+        "source_citation": "MITRE ATT&CK technique",
+    }]
+    populated["dependency_outcome"]["knowledge"] = "not_queried"
+    with pytest.raises(ValueError):
+        read_fast_assistance(populated)
 
 
 def test_500ms_entry_service_calls_fast_lane_with_bounded_reply(tmp_path, monkeypatch):

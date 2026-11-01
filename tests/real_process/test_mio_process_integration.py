@@ -258,16 +258,11 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
         assert record["technique_ids"] == ["T1021.004", "T1110"]
         assert record["mio"]["route"] == "deterministic handoff"
         # The MIO fast-assistance object comes from entryd's reply, validated
-        # by read_mio_reply; this proves the shared core's own lookup for this
-        # incident, independently of incident_explaind's lookup below.
+        # by read_mio_reply. Its status proves that Knowledge was not queried
+        # on the latency-bounded fast lane.
         mio_fast = record["mio"]["fast_assistance"]
-        assert mio_fast["dependency_outcome"]["knowledge"] == "available"
-        mio_refs = [ref for ref in mio_fast["knowledge"] if ref["technique_id"] == "T1110"]
-        assert len(mio_refs) == 1
-        mio_ref = mio_refs[0]
-        assert mio_ref["technique_id"] in record["technique_ids"]
-        assert (mio_ref["generation"], mio_ref["source_kind"], mio_ref["trust_check"],
-                mio_ref["revocation_status"]) == ("5", "knowledge_lite", "verified", "clear")
+        assert mio_fast["dependency_outcome"]["knowledge"] == "not_queried"
+        assert mio_fast["knowledge"] == []
 
         # These refs are the explainer's separate Knowledge Lite query.
         assert record["knowledge_state"] == "available"
@@ -400,17 +395,10 @@ def test_500ms_explainer_process_reaches_shared_core_and_readonly_knowledge(
             assert second["elapsed_ms"] < 750
             assert children[1].poll() is None
         else:
-            # With the shared MIO wheel installed, this is the healthy
-            # full-path case: the bounded Knowledge fixture must arrive as a
-            # trusted ref under the route's 500 ms deadline. Degradation is
-            # exercised only by the explicit no-wheel branch above.
-            assert result["knowledge_status"] == "available"
-            assert result["knowledge_count"] == 1
-            assert result["knowledge_technique"] == "T1110"
-            assert result["knowledge_generation"] == "5"
-            assert result["knowledge_source_kind"] == "knowledge_lite"
-            assert result["knowledge_trust_check"] == "verified"
-            assert result["knowledge_revocation_status"] == "clear"
+            # The fast reply makes no Knowledge query; the explainer performs
+            # its own independently authenticated lookup below.
+            assert result["knowledge_status"] == "not_queried"
+            assert result["knowledge_count"] == 0
             # The production build keeps model admission disabled; the route
             # remains a deterministic handoff even with trusted Knowledge.
             assert result["route"] == "deterministic handoff"

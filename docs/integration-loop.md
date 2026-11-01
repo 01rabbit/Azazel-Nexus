@@ -651,9 +651,12 @@ nothing in intake, detection or Edge's observe-only decisions.
   `azexplain` reaches it through `azmio-advise` membership. It does **not**
   hold `azazel-operator`, so it reaches no operator socket leaf and no
   `2750` operator read area (#213 O1); `classify()` also excludes
-  service/daemon UIDs from OPERATOR. Independent Knowledge `lookup_context` uses the technique ids,
-  the `knowledge-read` socket, `azknowledge-read` membership and locald's
-  existing **250 ms `KNOWLEDGE_MAX_S`** deadline. Empty ids skip the lookup.
+  service/daemon UIDs from OPERATOR. The latency-bounded shared-core fast
+  assessment does not query Knowledge; it returns `not_queried` and a fixed
+  next check directing the operator to the separate validated Knowledge lane.
+  The explainer's independent `lookup_context` uses the technique ids, the
+  `knowledge-read` socket, `azknowledge-read` membership and its existing
+  **250 ms `KNOWLEDGE_MAX_S`** deadline. Empty ids skip that lookup.
   No signature-to-technique mapping is invented. Both sockets authenticate
   their daemon owner and peer via the shared bounded AF_UNIX exchange.
   Entry reply metadata is closed and bounded; local bodies pass
@@ -661,6 +664,10 @@ nothing in intake, detection or Edge's observe-only decisions.
   citations pass `read_knowledge_refs`, including technique membership.
   Remote replies are refused. Without an admitted model, the record can hold
   a deterministic reference banner plus independently obtained Knowledge refs.
+  Readers from before PR #396 reject its new `fast_assistance` record field;
+  readers at PR #396's earlier head `48e5885` recognize that field but reject
+  this candidate's new `not_queried` status. Rollback does not rewrite or
+  discard the append-only source ledger or explanation records.
 - **Entry rate and route ledger capacity (#211 S4).** Entryd admits at most
   **30 requests a minute per kernel-reported UID (burst 10)**, five times the
   explainer's ceiling of six `mio.advise` a minute. Over the limit, and when
