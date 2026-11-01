@@ -51,13 +51,17 @@ kept in `run-container.sh`.
 
 The fallback case starts only `mio_entryd` (no `mio_locald`, so its socket is
 absent) and sends one ordinary `mio.advise` request as `azexplain`. The reply
-must either carry the shared core's result (which queries no Knowledge) or the
-explicit `dependency_unavailable` degradation when the MIO package is absent.
-It is not model admission, and it does not change the route.
+must either carry the shared core's result or the explicit
+`dependency_unavailable` degradation when the MIO package is absent. The shared
+core can read only bounded, authenticated local Knowledge context when the
+request has deadline slack; the 500 ms incident path must preserve its core and
+delivery reserves and may return typed timeout degradation. It is not model
+admission, and it does not change the route.
 
-For the `synthetic-reader` case, Knowledge data is the producer-shaped fixture
-re-signed with the suite's test key and given a test-only description so the
-shared core can project the advisory. For the `knowledge-builder` case, the
-data is the real `build-lite` output described above. Neither proves live
-producer authentication or full-node interoperability. No model is admitted or
-invoked; it is not admission or HG evidence.
+For the `synthetic-reader` case, Knowledge data is based on the checked-in
+producer-shaped signed bundle, retains its empty T1110 summary, is re-signed
+with the suite's test key, and is given a test-only description where needed.
+For the `knowledge-builder` case, the data is the real `build-lite` output
+described above. These exercise consumer behavior with the read-only Knowledge
+service, not live producer authentication or full-node interoperability. No
+model is admitted or invoked; this is not admission or HG evidence.
