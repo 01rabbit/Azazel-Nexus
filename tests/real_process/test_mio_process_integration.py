@@ -1,13 +1,14 @@
 """One bounded Linux process path through entryd, locald and Knowledge Lite.
 
-This uses real service UIDs, SO_PEERCRED, the public runtime frame protocol,
-the production daemons and the checked-in Lite test fixture. The fixture is
-re-signed with the suite's test key; it is not a live Knowledge producer or
-full-node interoperability claim.
+This uses real service UIDs, SO_PEERCRED, the public runtime frame protocol
+and production daemons. The knowledge-builder case imports unmodified output
+from Knowledge's pinned build-lite CLI through the ROOT-only operator socket
+and production audit daemon. All input data and signers are lab-only.
 """
 from __future__ import annotations
 
 import grp
+import hashlib
 import importlib.util
 import json
 import os
@@ -154,8 +155,9 @@ def _send_edge_alert(env: dict[str, str], socket_path: Path, groups: tuple[int, 
 
 
 @pytest.mark.real_process
+@pytest.mark.parametrize("real_producer", [False, True], ids=["synthetic-reader", "knowledge-builder"])
 @pytest.mark.skipif(sys.platform != "linux", reason="SO_PEERCRED is required")
-def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request, monkeypatch):
+def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request, monkeypatch, real_producer):
     """One producer-shaped alert follows both production daemon entrypoints."""
     package_installed = importlib.util.find_spec("azazel_mio") is not None
     import test_knowledge_lited as knowledge_tests
@@ -174,10 +176,16 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
     request.addfinalizer(lambda: shutil.rmtree(runtime_root, ignore_errors=True))
     monkeypatch.setenv("AZAZEL_ROOT", str(runtime_root))
     _, store, trust, _ = knowledge_tests.node.__wrapped__(runtime_root, monkeypatch)
-    manifest, rows = _producer_manifest()
-    rows = [({**row, "description": "Fixture technique reference"}
-             if row.get("technique_id") == "T1110" else row) for row in rows]
-    admit_rows((None, store, trust, None), rows, profile=manifest["profile"])
+    if real_producer:
+        from test_real_knowledge_lite_fixture import commission_real_fixture
+        entry_id = commission_real_fixture(store, trust)
+        ids["azaudit"] = _identity("azaudit")
+        groups["azaudit-submit"] = _group("azaudit-submit")
+    else:
+        manifest, rows = _producer_manifest()
+        rows = [({**row, "description": "Fixture technique reference"}
+                 if row.get("technique_id") == "T1110" else row) for row in rows]
+        admit_rows((None, store, trust, None), rows, profile=manifest["profile"])
 
     azazel = runtime_root / "var/lib/azazel"
     for path, mode in ((runtime_root / "var", 0o755), (runtime_root / "var/lib", 0o755),
@@ -207,6 +215,14 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
     _own_tree(store, ids["azknowledge"].pw_uid, groups["azazel-operator"])
     _own_tree(trust, ids["azknowledge"].pw_uid, ids["azknowledge"].pw_gid)
 
+    if real_producer:
+        for leaf, gid, mode in (("audit", groups["azazel-operator"], 0o2710),
+                                ("audit-submit", groups["azaudit-submit"], 0o2710),
+                                ("audit-status", groups["azazel-operator"], 0o2750)):
+            _owned_dir(run / leaf, ids["azaudit"].pw_uid, gid, mode)
+        _owned_dir(azazel / "state/audit", ids["azaudit"].pw_uid, ids["azaudit"].pw_gid, 0o700)
+        _owned_dir(run / "ui-read/audit", ids["azaudit"].pw_uid, 0, 0o2750)
+
     env = os.environ.copy()
     env.update({"AZAZEL_ROOT": str(runtime_root),
                 "PYTHONPATH": os.pathsep.join((str(ROOT / "src"), str(ROOT / "runtime/src"), str(ROOT / "tests"))),
@@ -214,13 +230,16 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
     children = []
     try:
         launch_specs = (
-            ("azknowledge", (groups["azazel-operator"],), "azazel_nexus_runtime.knowledge_lited"),
+            ("azknowledge", (groups["azazel-operator"],) +
+             ((groups["azaudit-submit"],) if real_producer else ()), "azazel_nexus_runtime.knowledge_lited"),
             ("azmio", (groups["azknowledge-read"], groups["azmission-read"]), "azazel_nexus_runtime.mio_locald"),
             ("azmioentry", (groups["azazel-operator"],), "azazel_nexus_runtime.mio_entryd"),
             ("azintake", (groups["azincident-read"],), "azazel_nexus_runtime.edge_intaked"),
             ("azexplain", (groups["azincident-read"], groups["azknowledge-read"], groups["azmio-advise"]),
              "azazel_nexus_runtime.incident_explaind"),
         )
+        if real_producer:
+            launch_specs += (("azaudit", (), "azazel_nexus_runtime.auditd"),)
         for account, extra_groups, module in launch_specs:
             script = f"from {module} import main; raise SystemExit(main())"
             children.append(subprocess.Popen(
@@ -233,6 +252,15 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
                             (run / "mio-entry/mio-entry.sock", children[2]),
                             (run / "edge-intake/edge-intake.sock", children[3])):
             _wait_socket(path, child, time.monotonic() + 6)
+        if real_producer:
+            _wait_socket(run / "audit-submit/audit-submit.sock", children[-1], time.monotonic() + 6)
+            code = ("from azazel_nexus_runtime.lite_operator_cli import run_import; "
+                    f"raise SystemExit(run_import({entry_id!r}))")
+            imported = subprocess.run([sys.executable, "-B", "-c", code], cwd=ROOT, env=env,
+                                      capture_output=True, text=True, timeout=12, check=False)
+            assert imported.returncode == 0, imported.stdout[:200]
+            assert json.loads(imported.stdout)["audit_complete"] is True
+            assert hashlib.sha256((store / "admitted/current.tar.gz").read_bytes()).hexdigest() == entry_id
         _send_edge_alert(env, run / "edge-intake/edge-intake.sock", (groups["azedge"],))
 
         explanation_dir = azazel / "incident-explain/explanations"

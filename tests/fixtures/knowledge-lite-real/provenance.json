@@ -1,0 +1,12 @@
+{
+  "archive_sha256": "bdebcaa5d81a76016f94fd50a69a9e1ab12cfa3ca729c122733154f44f6fb955",
+  "builder": "tools/bundle_build.py build-lite",
+  "bundle_version": 5,
+  "data": "synthetic lab only",
+  "export_policy_sha256": "085f3162aa73df9d627d56aed2ab09267dda023117886c8d10c77986f5ddd44e",
+  "producer_commit": "09d234cde0ceb447a3ebc7e9704eef4758ac4a4d",
+  "rows": {
+    "attack_technique": 1
+  },
+  "signer": "ephemeral lab key; private seed discarded"
+}
