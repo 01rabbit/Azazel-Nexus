@@ -58,10 +58,11 @@ request has deadline slack; the 500 ms incident path must preserve its core and
 delivery reserves and may return typed timeout degradation. It is not model
 admission, and it does not change the route.
 
-For the `synthetic-reader` case, Knowledge data is based on the checked-in
-producer-shaped signed bundle, retains its empty T1110 summary, is re-signed
-with the suite's test key, and is given a test-only description where needed.
-For the `knowledge-builder` case, the data is the real `build-lite` output
-described above. These exercise consumer behavior with the read-only Knowledge
-service, not live producer authentication or full-node interoperability. No
-model is admitted or invoked; this is not admission or HG evidence.
+The tests use lab-only signing keys. The real-producer phase imports the
+checked-in signed bundle unchanged, retaining its empty T1110 summary. The
+`synthetic-reader` case admits separate producer-shaped rows with the suite
+test key and test-only description where needed. For the `knowledge-builder`
+case, data is the real `build-lite` output described above. These exercise
+consumer behavior with the read-only Knowledge service, not live producer
+authentication or full-node interoperability. No model is admitted or invoked;
+this is not admission or HG evidence.
