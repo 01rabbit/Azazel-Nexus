@@ -698,18 +698,17 @@ class MioEntryService:
             remaining = (deadline_at - self.router.monotonic()
                          - ENTRY_DELIVERY_RESERVE_MS / 1000)
             # Cap the optional fast lane by the slack left after reserving the
-            # minimum deep attempt, handoff/delivery time and the existing
-            # ledger/probe allowance. Probe share is one quarter of the
-            # remaining budget; solving that bound leaves it intact even if
-            # assess consumes its full deadline.
+            # minimum deep attempt, handoff/delivery time, ledger allowance,
+            # and three minimum probe shares. The final admission share is
+            # recalculated after both observations, so its worst-case bound is
+            # 5/72 of the initial probe remainder; 15 * MIN_PROBE_S leaves
+            # 75ms for all three. locald separately holds 20ms for its reply,
+            # leaving up to 25ms for the shared core at an otherwise clean
+            # 500ms request. Any earlier ledger or later gate work is charged
+            # to the same deadline and probes are skipped below their minimum.
             fast_budget = max(0.0, remaining - HANDOFF_RESERVE_MS / 1000
                               - MIN_AI_ATTEMPT_MS / 1000 - LEDGER_ALLOWANCE_MS / 1000
-                              # Keep the probe quarter large enough for three
-                              # minimum reads. The admission share is measured
-                              # again after the two probes, so reserve 72
-                              # minimum shares to keep that final recalculated
-                              # share above MIN_PROBE_S as well.
-                              - (72 * MIN_PROBE_S))
+                              - (15 * MIN_PROBE_S))
             try:
                 if fast_budget <= 0:
                     from .mio_socket_client import fast_assessment_degraded

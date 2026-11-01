@@ -87,16 +87,19 @@ def _request_child(env: dict[str, str], user: str, groups: tuple[int, ...]):
     code = r'''
 import json
 import sys
+import time
 from azazel_nexus_runtime.mio_socket_client import _exchange
 frame = {
   "request_id": "process-evidence",
-  "privacy_class": "P2-mission",
+  "privacy_class": "P3-restricted",
   "question": "SSH brute-force observations; technique T1110",
   "context": [{"kind": "auth_log", "text": "redacted test fixture"}],
 }
 try:
-  reply = _exchange("mio-entry", "azmioentry", "mio.advise",
-                    {"deadline_ms": 3000}, payload=frame, deadline_s=3)
+  started = time.monotonic()
+  reply = _exchange("mio-advise", "azmioentry", "mio.advise",
+                    {"deadline_ms": 500}, payload=frame, deadline_s=0.75)
+  elapsed_ms = (time.monotonic() - started) * 1000
   fast = reply["fast_assistance"]
   knowledge = fast["knowledge"]
   print(json.dumps({
@@ -107,6 +110,9 @@ try:
     "knowledge_technique": knowledge[0]["technique_id"] if knowledge else None,
     "knowledge_generation": knowledge[0]["generation"] if knowledge else None,
     "knowledge_source_kind": knowledge[0]["source_kind"] if knowledge else None,
+    "knowledge_trust_check": knowledge[0]["trust_check"] if knowledge else None,
+    "knowledge_revocation_status": knowledge[0]["revocation_status"] if knowledge else None,
+    "elapsed_ms": elapsed_ms,
   }, sort_keys=True))
 except Exception as error:
   print(getattr(error, "refusal", type(error).__name__))
@@ -124,23 +130,25 @@ except Exception as error:
     assert set(result) == {
         "route", "state", "knowledge_status", "knowledge_count",
         "knowledge_technique", "knowledge_generation", "knowledge_source_kind",
+        "knowledge_trust_check", "knowledge_revocation_status",
+        "elapsed_ms",
     }
     return result
 
 
 @pytest.mark.real_process
 @pytest.mark.skipif(sys.platform != "linux", reason="SO_PEERCRED is required")
-def test_entry_service_process_reaches_shared_core_and_readonly_knowledge(
+def test_500ms_explainer_process_reaches_shared_core_and_readonly_knowledge(
     request, monkeypatch,
 ):
-    """Real entryd -> locald -> Knowledge Lite socket calls, with model admission closed."""
+    """Production path with a 500 ms route deadline and 250 ms caller margin."""
     import test_knowledge_lited as knowledge_tests
     from test_knowledge_lookup import _producer_manifest, admit_rows
 
     if os.geteuid() != 0:
         pytest.skip("requires root only inside the disposable test container")
     ids = {name: _identity(name) for name in
-           ("azknowledge", "azmio", "azmioentry", "azoperator")}
+           ("azknowledge", "azmio", "azmioentry", "azoperator", "azexplain")}
     operator_gid = _group("azazel-operator")
     knowledge_read_gid = _group("azknowledge-read")
     mission_read_gid = _group("azmission-read")
@@ -212,7 +220,11 @@ def test_entry_service_process_reaches_shared_core_and_readonly_knowledge(
         _wait_socket(run / "knowledge-read/knowledge-read.sock", children[0], time.monotonic() + 2)
         _wait_socket(run / "mio/mio.sock", children[1], time.monotonic() + 5)
         _wait_socket(run / "mio-entry/mio-entry.sock", children[2], time.monotonic() + 5)
-        result = _request_child(root_env, "azoperator", (operator_gid,))
+        result = _request_child(root_env, "azexplain", (advise_gid,))
+        # The route deadline is 500 ms; the public caller gives 250 ms for
+        # connection/framing/delivery. This asserts the documented 750 ms
+        # caller bound, not a sub-500 ms wall-clock duration.
+        assert result["elapsed_ms"] < 750
 
         assert result["route"] == "deterministic handoff"
         if importlib.util.find_spec("azazel_mio") is None:
@@ -222,15 +234,27 @@ def test_entry_service_process_reaches_shared_core_and_readonly_knowledge(
             assert children[1].poll() is None
             # A second normal public request proves a missing shared wheel
             # degraded the verb without killing the locald daemon.
-            second = _request_child(root_env, "azoperator", (operator_gid,))
-            assert second == result
+            second = _request_child(root_env, "azexplain", (advise_gid,))
+            assert second["route"] == result["route"]
+            assert second["knowledge_status"] == "unavailable"
+            assert second["knowledge_count"] == 0
+            assert second["elapsed_ms"] < 750
             assert children[1].poll() is None
         else:
+            # With the shared MIO wheel installed, this is the healthy
+            # full-path case: the bounded Knowledge fixture must arrive as a
+            # trusted ref under the route's 500 ms deadline. Degradation is
+            # exercised only by the explicit no-wheel branch above.
             assert result["knowledge_status"] == "available"
             assert result["knowledge_count"] == 1
             assert result["knowledge_technique"] == "T1110"
             assert result["knowledge_generation"] == "5"
             assert result["knowledge_source_kind"] == "knowledge_lite"
+            assert result["knowledge_trust_check"] == "verified"
+            assert result["knowledge_revocation_status"] == "clear"
+            # The production build keeps model admission disabled; the route
+            # remains a deterministic handoff even with trusted Knowledge.
+            assert result["route"] == "deterministic handoff"
 
         # No input prompt/context makes it into the bounded persistent ledgers.
         private_markers = (b"SSH brute-force observations", b"redacted test fixture")

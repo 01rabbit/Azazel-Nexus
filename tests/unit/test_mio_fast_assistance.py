@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 import copy
+import time
 
 import pytest
 
@@ -115,6 +116,25 @@ def test_local_socket_assess_preserves_failure_classes(monkeypatch):
     assert result["dependency_outcome"]["knowledge"] == "rejected"
 
 
+def test_locald_passes_core_only_time_left_after_its_delivery_reserve(monkeypatch):
+    from azazel_nexus_runtime import mio_locald
+
+    observed = []
+    monkeypatch.setattr(adapter, "fast_assistance",
+                        lambda frame, *, deadline_s:
+                        observed.append(deadline_s) or {"assessment": "bounded"})
+    frame = read_frame({"request_id": "delivery-reserve", "privacy_class": "P3-restricted",
+                        "question": "T1110", "context": []})
+    service = mio_locald.LocalRuntimeService()
+    reply = service.handle(SimpleNamespace(
+        verb=mio_locald.FAST_ASSESS_VERB, arguments={"deadline_ms": 45}, payload=frame,
+    ))
+
+    assert observed == [pytest.approx(0.025)]
+    assert reply["outcome"] == "assessed"
+    assert reply["fast_assistance"] == {"assessment": "bounded"}
+
+
 def test_adapter_collapses_unavailable_knowledge_failure_codes(monkeypatch):
     frame = read_frame({"request_id": "fast-status-test", "privacy_class": "P2-mission",
                         "question": "SSH host-1 T1110.003", "context": []})
@@ -144,7 +164,7 @@ def test_fast_assistance_reader_rejects_malformed_fields_before_persistence():
             read_fast_assistance(forged)
 
 
-def test_entry_service_calls_fast_lane_without_changing_deterministic_route(tmp_path, monkeypatch):
+def test_500ms_entry_service_calls_fast_lane_with_bounded_reply(tmp_path, monkeypatch):
     from azazel_nexus_runtime import mio_entryd as entry
     from azazel_nexus_runtime import runtime_paths
     from azazel_nexus.routing import Route
@@ -176,13 +196,17 @@ def test_entry_service_calls_fast_lane_without_changing_deterministic_route(tmp_
         return payload
 
     monkeypatch.setattr(target.local, "assess", assess)
-    request = SimpleNamespace(verb=entry.ADVISE_VERB, arguments={"deadline_ms": 1000},
+    request = SimpleNamespace(verb=entry.ADVISE_VERB, arguments={"deadline_ms": 500},
                               payload={"request_id": "integration", "privacy_class": "P2-mission",
                                        "question": "SSH host-1 T1110.003",
                                        "context": [{"kind": "auth_log", "text": "Password spray"}]})
+    started = time.monotonic()
     reply = target.handle(request)
+    elapsed = time.monotonic() - started
     assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
     assert reply["fast_assistance"] == payload
     assert checked and checked[0][0] == request.payload and checked[0][1] > 0
     assert checked[0][1] <= entry.FAST_ASSESS_MAX_S
+    assert checked[0][1] <= 0.045
+    assert elapsed < 0.5
     assert order == ["fast_assessment", "deep_route"]

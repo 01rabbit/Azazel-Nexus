@@ -625,6 +625,22 @@ nothing in intake, detection or Edge's observe-only decisions.
   reference all share it, delivering the reply before it. The client exchange
   waits 250 ms longer (`ADVISE_CALLER_MARGIN_MS`), so the explainer does not
   record `mio_unavailable` for a handoff entry has answered.
+  Before capability probes and optional deep inference, entryd gives the
+  shared model-free `local.assess` lane at most the slack left after the
+  30 ms entry delivery reserve, 200 ms handoff reserve, 100 ms minimum deep
+  AI attempt, 50 ms ledger allowance, and 75 ms probe reserve. Three reads
+  need 72 ms initially: each of the two observations receives one twelfth of
+  the probe remainder, while admission recomputes after them and needs `5/72`
+  of the initial remainder. The 75 ms reserve rounds that threshold up to
+  `15 * MIN_PROBE_S`. locald also holds 20 ms from its received deadline for
+  reply delivery; at a clean 500 ms request, entryd can pass at most 45 ms to
+  locald, leaving up to 25 ms for the shared core. Earlier ledger work reduces
+  that cap. Each sequential probe rechecks the same monotonic deadline and is
+  skipped fail-closed if its share is below `MIN_PROBE_S`; admission is then
+  false and LOCAL is not permitted. Slow gate or ledger work consumes the
+  same deadline and can make later probes unobservable without changing the
+  trusted status of any Knowledge result that was returned. These are software
+  bounds, not latency measurements.
   `azexplain` is admitted as SERVICE in entryd and knowledge-lited's explicit
   service allowlists, never the shared SERVICE list. Entryd identifies its
   kernel-derived UID and permits only `mio.advise` with P3-restricted frames;

@@ -45,13 +45,16 @@ groupadd --gid 20005 azknowledge-read
 groupadd --gid 20006 azmission-read
 groupadd --gid 20007 azmio-advise
 groupadd --gid 20008 azoperator
+groupadd --gid 20009 azexplain
 useradd --uid 20001 --gid azknowledge --no-create-home --shell /usr/sbin/nologin azknowledge
 useradd --uid 20002 --gid azmio --no-create-home --shell /usr/sbin/nologin azmio
 useradd --uid 20003 --gid azmioentry --no-create-home --shell /usr/sbin/nologin azmioentry
 useradd --uid 20004 --gid azoperator --no-create-home --shell /usr/sbin/nologin azoperator
+useradd --uid 20009 --gid azexplain --no-create-home --shell /usr/sbin/nologin azexplain
 usermod --append --groups azknowledge-read,azmission-read azmio
 usermod --append --groups azazel-operator azmioentry
 usermod --append --groups azazel-operator azoperator
+usermod --append --groups azmio-advise azexplain
 
 cd /w
 PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
