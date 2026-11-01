@@ -18,6 +18,7 @@ from azazel_nexus.local_advisory import (
     handoff_notice,
     read_frame,
     read_reference,
+    read_fast_assistance,
     request_event,
 )
 from azazel_nexus.mio_profile import (
@@ -131,6 +132,10 @@ REQUEST_MARKER = "mio.entry.request"
 #: Kept after the playbook-reference fetch for validating, recording and
 #: delivering the handoff reply before the request's deadline. Software budget.
 ENTRY_DELIVERY_RESERVE_MS = 30
+# The shared deterministic assessment is the short time-scale lane. It runs
+# before capability probes and any optional model attempt, while preserving
+# the request's one deadline and leaving the final delivery reserve intact.
+FAST_ASSESS_MAX_S = 0.25
 #: A reference fetch is not started with less than this left of its share;
 #: the handoff is then delivered at once with `reference_reason: deadline`.
 MIN_REFERENCE_FETCH_MS = 50
@@ -675,6 +680,7 @@ class MioEntryService:
         if explainer and not is_advice:
             raise RequestRefused(Refusal.PRINCIPAL_DENIED, "explainer_verb")
         local_request = None
+        fast_assistance = None
         if is_advice:
             try:
                 frame = read_frame(request.payload)
@@ -685,11 +691,43 @@ class MioEntryService:
                 raise RequestRefused(Refusal.PRINCIPAL_DENIED, "explainer_privacy")
             self._mark(key)
             self.router._record(request_event(frame))
+            # Give the model-free shared core first use of a small, fixed
+            # portion of this request's deadline. The result remains its own
+            # `fast_assistance` field; it neither selects a route nor replaces
+            # the router's optional deep local/remote advisory attempt.
+            remaining = (deadline_at - self.router.monotonic()
+                         - ENTRY_DELIVERY_RESERVE_MS / 1000)
+            # Cap the optional fast lane by the slack left after reserving the
+            # minimum deep attempt, handoff/delivery time and the existing
+            # ledger/probe allowance. Probe share is one quarter of the
+            # remaining budget; solving that bound leaves it intact even if
+            # assess consumes its full deadline.
+            fast_budget = max(0.0, remaining - HANDOFF_RESERVE_MS / 1000
+                              - MIN_AI_ATTEMPT_MS / 1000 - LEDGER_ALLOWANCE_MS / 1000
+                              # Keep the probe quarter large enough for three
+                              # minimum reads. The admission share is measured
+                              # again after the two probes, so reserve 72
+                              # minimum shares to keep that final recalculated
+                              # share above MIN_PROBE_S as well.
+                              - (72 * MIN_PROBE_S))
+            try:
+                if fast_budget <= 0:
+                    from .mio_socket_client import fast_assessment_degraded
+                    fast_assistance = fast_assessment_degraded("timeout")
+                else:
+                    fast_assistance = self.local.assess(
+                        frame, deadline_s=min(FAST_ASSESS_MAX_S, fast_budget))
+                fast_assistance = read_fast_assistance(fast_assistance)
+            except Exception:
+                from .mio_socket_client import fast_assessment_degraded
+                fast_assistance = read_fast_assistance(
+                    fast_assessment_degraded("unavailable"))
             gated = gate_frame(frame)
             if gated is not None and gated["reason"] == "insufficient_information":
                 self.router._record({"event_type": "mio.local.gated", "reason": gated["reason"]})
                 return {**gated, "route": Route.DETERMINISTIC_HANDOFF.value,
-                        "ledger_seq": self.router.ledger.head()[0]}
+                        "ledger_seq": self.router.ledger.head()[0],
+                        "fast_assistance": fast_assistance}
             local_request = SimpleNamespace(
                 verb=INFER_VERB, arguments=request.arguments, payload=frame,
             )
@@ -753,6 +791,8 @@ class MioEntryService:
                 reply.update(read_delivered(result.reply))
         if is_advice and result.route is Route.DETERMINISTIC_HANDOFF:
             reply.update(self._handoff(frame, result, deadline_at))
+        if is_advice:
+            reply["fast_assistance"] = fast_assistance
         return reply
 
 

@@ -177,7 +177,7 @@ def test_no_document_denies_something_this_repository_has(relative, fact, patter
     )
 
 
-def test_the_fabric_pin_is_an_optional_extra_and_not_a_required_dependency():
+def test_fabric_and_mio_are_optional_extras_and_not_core_dependencies():
     """The successor to a guard that has now fired.
 
     This file used to assert that Nexus had **no** Fabric pin. That assertion
@@ -188,8 +188,8 @@ def test_the_fabric_pin_is_an_optional_extra_and_not_a_required_dependency():
 
     What matters next is the *shape* of the dependency. Nexus must be useful as
     `CORE` with no external Knowledge, no Deception, no remote cognition and no
-    cloud connectivity (ADR-0001). Fabric moving from `[project.optional-
-    dependencies]` into `dependencies` would end that quietly -- an import
+    cloud connectivity (ADR-0001). Fabric or MIO moving from
+    `[project.optional-dependencies]` into `dependencies` would end that quietly -- an import
     line, no document touched -- so it ends loudly here instead.
     """
 
@@ -203,10 +203,16 @@ def test_the_fabric_pin_is_an_optional_extra_and_not_a_required_dependency():
         "needs its own ADR (see docs/adr/0001-fabric-pin.md §Consequences) "
         "plus a revision of docs/inheritance-ledger.md §4.1."
     )
+    assert "azazel-mio" not in required, (
+        "azazel-mio appears in the required dependency list. Nexus declares "
+        "it as the optional `mio` extra so CORE remains independently usable."
+    )
     assert "azazel-fabric" in text, (
         "the Fabric pin has disappeared from pyproject.toml; "
         "src/azazel_nexus/fabric_boundary.py names a tag that nothing installs"
     )
+    assert ("azazel-mio @ git+https://github.com/01rabbit/Azazel-MIO.git@"
+            "1b7ed8de33b1e7500fbdfb2d7fbecdb75a372f03") in text
 
 
 def test_the_fabric_observation_is_written_against_a_named_tag():

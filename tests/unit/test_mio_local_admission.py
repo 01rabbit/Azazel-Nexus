@@ -216,6 +216,7 @@ def test_the_three_reads_share_the_probe_quarter(make_service, monkeypatch):
     assert len(reads) == 3  # local probe, remote probe (refused), admission
     assert sum(reads) <= left_ms / 4 / 1000 + 1e-9
     assert all(read <= left_ms / 4 / 3 / 1000 + 1e-9 for read in reads)
+    assert all(read >= entry.MIN_PROBE_S for read in reads)
     # Probes and the admission read left the first attempt its minimum.
     assert selected(service)["route"] == Route.LOCAL.value
 

@@ -52,7 +52,7 @@ Nexus のローカルか）を決める文書で、この表はそれと重な�
 | K5 | 外部 Knowledge peer | Nexus → Knowledge 本体（HTTPS） | `azazel-nexus/knowledge-peer/1` | 試験用プロトコル。実 Knowledge と相互運用しない（§5） |
 | U1 | 操作 UI | Nexus の UI → ブラウザ | `azazel-nexus/ui-model/1`（`azazel-nexus/status-view/1` と `azazel-nexus/setup/1` の allowlist） | 本番の経路（loopback のみ、installer は有効化しない） |
 | U2 | 運用者向け snapshot | 各 daemon → status・UI | `azazel-nexus/mio-status/v1`、`azazel-nexus/units-status/v1`、`azazel-nexus/noc-status/v1`、`azazel-nexus/audit-status/v1`、`azazel-nexus/edge-intake-status/v1` | 本番の経路（observer の timer は有効化しない）。UI 用の同じ内容の写しを `run/ui-read/<leaf>`（`2750 <書き手>:azui`）に書く（[ADR-0007](adr/0007-ui-read-leaves.md)） |
-| M1 | M.I.O. の経路と参照 | 説明器・運用者 → entryd → locald・referenced・remoted | 動詞 `mio.route`・`mio.advise`、route ledger | 本番の経路（モデル無しでは決定論の handoff） |
+| M1 | M.I.O. の経路、速い静的評価と参照 | 説明器・運用者 → entryd → locald・referenced・remoted | `mio.route`・`mio.advise` に加え、locald の SERVICE 専用 `mio.local.assess`。速い評価は共有 M.I.O. core と Knowledge Lite 読取 client を使い、同じ期限内の最大 250 ms を使う。結果 `fast_assistance` は deep/model answer とは別フィールドで、route selection の score/input にしない | 通常の route/handoff は維持。モデル無しの評価も処理可能。`tests/real_process/test_mio_process_integration.py` は Docker で実 UID と socket を確認 |
 | M2 | 送信用の封筒 | sanitizer → remoted → 提供者 | `azazel-nexus/sanitized-envelope/2`、domain `azazel-nexus/sanitized-envelope/v1` | 実装済み。署名器と transport が無く、この build では送れない |
 | M3 | 助言の応答 | 提供者・ローカルモデル → Nexus | `advisory_response`、`local_advisory` | 実装済み（実モデル・実提供者とは未接続） |
 | M4 | 送信同意 | 運用者 → entryd → remoted | `azazel-nexus/mio-remote-opt-in/v1` | 実装済み（remoted は読めず拒否する。[オーナー判断 M1](owner-decisions.md#31-mio-とオンライン-ai-送信)） |

@@ -402,6 +402,47 @@ def test_explanation_summary_carries_digest_generation_freshness_as_of_and_citat
     assert read_recent_incidents(json.dumps(value).encode()) == value
 
 
+def test_recent_reader_rejects_malformed_persisted_fast_assistance(monkeypatch):
+    from azazel_nexus.incident_explain import build_recent_incident, build_recent_incidents, read_recent_incidents
+    from azazel_nexus.lite_import import KnowledgeRef
+    from azazel_nexus.local_advisory import read_frame
+    from azazel_nexus_runtime import mio_fast_assistance
+
+    ref = KnowledgeRef("T1110.003", "Password spraying", "Reference summary", "T1110.003",
+                       "sha256:" + "a" * 64, "current", "knowledge_lite", 2, "verified",
+                       "2026-10-31T00:00:00Z", "MITRE ATT&CK technique")
+    monkeypatch.setattr(mio_fast_assistance, "lookup_context", lambda *args, **kwargs: (ref,))
+    source = read_frame({"request_id": "recent-fast", "privacy_class": "P2-mission",
+                         "question": "SSH host-1 T1110.003", "context": []})
+    fast = mio_fast_assistance.fast_assistance(source, deadline_s=0.2)
+    transition_record = _record({"route": "unavailable", "outcome": "unavailable",
+                                 "reason": "mio_unavailable", "text": None,
+                                 "fast_assistance": fast})
+    transition_record["technique_ids"] = ["T1110.003"]
+    transition_record["incident_id"] = _t1110()["incident_id"]
+    row = build_recent_incident(_t1110(), record=transition_record)
+    valid = build_recent_incidents([row], 1)
+    assert read_recent_incidents(json.dumps(valid).encode()) == valid
+
+    changes = (
+        ("dependency_outcome", "deception", []),
+        ("dependency_outcome", "deception", "attacker"),
+        ("state", None, "attacker"),
+        ("knowledge", 0, {"technique_id": "not-a-technique"}),
+        ("knowledge", 0, {"as_of": "yesterday"}),
+    )
+    for field, child, bad in changes:
+        forged = json.loads(json.dumps(valid))
+        fast_summary = forged["incidents"][0]["explanation"]["fast_assistance"]
+        if field == "dependency_outcome":
+            fast_summary[field][child] = bad
+        elif field == "state":
+            fast_summary[field] = bad
+        else:
+            fast_summary[field][child].update(bad)
+        assert read_recent_incidents(json.dumps(forged).encode()) is None
+
+
 @pytest.mark.parametrize("citation", ["ingested from 192.0.2.1", "fe80::1:2:3",
                                       "feed.example:8443 aggregate", "mirror at host:443"])
 def test_citation_with_address_syntax_is_withheld_and_says_so(citation):

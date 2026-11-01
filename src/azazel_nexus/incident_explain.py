@@ -24,8 +24,10 @@ from .local_advisory import (
     DELIVERY_TEXTS,
     HANDOFF_NOTICE,
     MACHINE_FIELDS,
+    MIO_ASSISTANCE_STATES,
     REFERENCE_BANNERS,
     read_delivered,
+    read_fast_assistance,
     read_frame,
     read_reference,
 )
@@ -409,6 +411,14 @@ class Selection:
 
 def read_mio_reply(reply):
     """Closed entryd reply, with separately validated advice/reference body."""
+    fast = None
+    if type(reply) is dict and "fast_assistance" in reply:
+        fast = read_fast_assistance(reply["fast_assistance"])
+        reply = {key: value for key, value in reply.items() if key != "fast_assistance"}
+    def finish(value):
+        if fast is not None:
+            value["fast_assistance"] = fast
+        return value
     base = {"route", "outcome", "reason", "ledger_seq"}
     if type(reply) is not dict or not base <= set(reply):
         raise ValueError("mio_reply_refused")
@@ -418,16 +428,16 @@ def read_mio_reply(reply):
             and reply["fields"] == {}):
         _text(reply["advice"], 4096)
         _int(reply["ledger_seq"], 2**63-1)
-        return {"route": reply["route"], "outcome": "refused", "reason": "mio_gated", "text": None,
-                "content_kind": "none"}
+        return finish({"route": reply["route"], "outcome": "refused", "reason": "mio_gated", "text": None,
+                       "content_kind": "none"})
     if reply["route"] not in {"local", "deterministic handoff"} or reply["outcome"] not in {o.value for o in RequestOutcome}:
         raise ValueError("mio_reply_refused")
     _text(reply["reason"], 2048)
     _int(reply["ledger_seq"], 2**63-1)
     advice = None
     if set(reply) == base and reply["route"] == "local" and reply["outcome"] != "answered":
-        return {"route": "local", "outcome": reply["outcome"], "reason": "mio_local_non_advisory",
-                "text": None, "content_kind": "none"}
+        return finish({"route": "local", "outcome": reply["outcome"], "reason": "mio_local_non_advisory",
+                       "text": None, "content_kind": "none"})
     if reply["route"] == "local":
         body_keys = {"advice", "fields", "knowledge", *MACHINE_FIELDS}
         if not set(reply) <= base | body_keys:
@@ -437,7 +447,7 @@ def read_mio_reply(reply):
         provenance = generation_provenance(body)
     else:
         if "handoff" in reply:
-            return _read_handoff(reply, base)
+            return finish(_read_handoff(reply, base))
         # The pre-handoff shape carries no fixed notice, so a reference in it
         # could not be recorded with its label: it is refused, not guessed.
         # Only the bare "no reference" form of that shape is still read.
@@ -449,7 +459,7 @@ def read_mio_reply(reply):
               "content_kind": kind}
     if advice is not None:
         result[PROVENANCE_FIELD] = provenance
-    return result
+    return finish(result)
 
 
 #: How a local-route answer was produced, recorded beside `content_kind`
@@ -694,7 +704,8 @@ def read_record(value):
     if type(codes) is not list or len(codes) > len(CODES) or any(type(c) is not str or c not in CODES for c in codes):
         raise ValueError("record_refused")
     m = value["mio"]
-    _shape(m, ("route", "outcome", "reason", "text"), ("content_kind", "notice", PROVENANCE_FIELD))
+    _shape(m, ("route", "outcome", "reason", "text"),
+           ("content_kind", "notice", PROVENANCE_FIELD, "fast_assistance"))
     if m["route"] not in {"local", "deterministic handoff", "unavailable"} or m["outcome"] not in {o.value for o in RequestOutcome} | {"unavailable"}:
         raise ValueError("record_refused")
     _text(m["reason"], 2048)
@@ -703,6 +714,8 @@ def read_record(value):
     _read_content(m)
     if PROVENANCE_FIELD in m:
         _read_provenance(m)
+    if "fast_assistance" in m:
+        read_fast_assistance(m["fast_assistance"])
     if EVIDENCE_FIELD in value:
         try:
             _read_evidence(value[EVIDENCE_FIELD], value["explained_at"])
@@ -874,6 +887,23 @@ def explanation_summary(record):
                "content_kind": kind}
     if "notice" in m:
         summary["notice"] = m["notice"]
+    if "fast_assistance" in m:
+        fast = m["fast_assistance"]
+        summary["fast_assistance"] = {
+            "state": fast.get("state", "unknown"),
+            "unknowns": [private_text(v[:240], 240) for v in fast.get("unknowns", [])[:8]],
+            "next_checks": [private_text(v[:240], 240) for v in fast.get("next_checks", [])[:8]],
+            "knowledge": [
+                {"technique_id": item.get("technique_id"), "name": private_text(item.get("name", "")[:120], 120),
+                 "summary": private_text(item.get("summary", "")[:240], 240),
+                 "freshness": item.get("freshness"), "as_of": item.get("as_of"),
+                 "citation": private_text(item.get("source_citation", "")[:160], 160),
+                 "revocation_status": item.get("revocation_status"),
+                 "claim_status": "reported_unverified"}
+                for item in fast.get("knowledge", [])[:8]
+            ],
+            "dependency_outcome": fast.get("dependency_outcome", {}),
+        }
     if omitted:
         summary["knowledge_refs_omitted"] = omitted
     return summary
@@ -1032,7 +1062,7 @@ def read_recent_incidents(raw):
                 return None
             e = row["explanation"]
             _shape(e, ("state", "route", "outcome", "summary", "knowledge_refs", "failure_codes"),
-                   ("content_kind", "notice", "knowledge_refs_omitted"))
+                   ("content_kind", "notice", "knowledge_refs_omitted", "fast_assistance"))
             # The same consistency rule as a record, applied to the summary.
             if "content_kind" in e:
                 try:
@@ -1066,6 +1096,46 @@ def read_recent_incidents(raw):
             if "knowledge_refs_omitted" in e:
                 # At most sixteen references are recorded per explanation.
                 _int(e["knowledge_refs_omitted"], 16 - len(refs), 1)
+            if "fast_assistance" in e:
+                f = e["fast_assistance"]
+                _shape(f, ("state", "unknowns", "next_checks", "knowledge", "dependency_outcome"))
+                if type(f["state"]) is not str or f["state"] not in MIO_ASSISTANCE_STATES:
+                    return None
+                for key in ("unknowns", "next_checks"):
+                    if type(f[key]) is not list or len(f[key]) > 8:
+                        return None
+                    for text in f[key]:
+                        _text(text, 240)
+                if type(f["knowledge"]) is not list or len(f["knowledge"]) > 8:
+                    return None
+                for item in f["knowledge"]:
+                    _shape(item, ("technique_id", "name", "summary", "freshness", "as_of",
+                                  "citation", "revocation_status", "claim_status"))
+                    if (type(item["claim_status"]) is not str
+                            or item["claim_status"] != "reported_unverified"
+                            or type(item["freshness"]) is not str
+                            or item["freshness"] not in {"current", "static"}
+                            or type(item["revocation_status"]) is not str
+                            or item["revocation_status"] not in {"clear", "unknown"}):
+                        return None
+                    if (type(item["technique_id"]) is not str
+                            or not TECHNIQUE_ID.fullmatch(item["technique_id"])):
+                        return None
+                    _text(item["name"], 120)
+                    _text(item["summary"], 240)
+                    if (type(item["as_of"]) is not str or not AS_OF.fullmatch(item["as_of"])
+                            or as_of_text(item["as_of"]) != item["as_of"]):
+                        return None
+                    _text(item["citation"], 160)
+                _shape(f["dependency_outcome"], ("knowledge", "deception"))
+                dependency = f["dependency_outcome"]
+                if (type(dependency["knowledge"]) is not str
+                        or dependency["knowledge"] not in {
+                            "available", "partial", "absent", "timeout", "expired", "rejected", "unavailable"}
+                        or type(dependency["deception"]) is not str
+                        or dependency["deception"] not in {
+                            "available", "absent", "timeout", "rejected", "unavailable"}):
+                    return None
         if v["incidents"] != sorted(v["incidents"], key=lambda r: (r["last_seen"], r["first_seen"], r["incident_id"]), reverse=True):
             return None
         return v

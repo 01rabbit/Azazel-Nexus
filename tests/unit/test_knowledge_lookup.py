@@ -220,26 +220,34 @@ def test_client_exchange_and_empty_result(monkeypatch):
     assert client.lookup_context(("T1110",)) == ()
 
 
-@pytest.mark.parametrize("response", [
-    {}, {"refs": [], "reason_code": "revoked"}, {"refs": [], "reason_code": "available"},
-    {"refs": [{}] * 17, "reason_code": "available"},
-    {"refs": [{"text": "must not leak"}], "reason_code": "available"},
+@pytest.mark.parametrize("response,expected", [
+    ({}, "knowledge_reply_refused"),
+    ({"refs": [], "reason_code": "revoked"}, "knowledge_unavailable"),
+    ({"refs": [], "reason_code": "state_untrusted"}, "knowledge_unavailable"),
+    ({"refs": [], "reason_code": "trust_unreadable"}, "knowledge_unavailable"),
+    ({"refs": [], "reason_code": "store_unreadable"}, "knowledge_unavailable"),
+    ({"refs": [{}], "reason_code": "state_untrusted"}, "knowledge_reply_refused"),
+    ({"refs": [], "reason_code": "available"}, "knowledge_reply_refused"),
+    ({"refs": [{}] * 17, "reason_code": "available"}, "knowledge_reply_refused"),
+    ({"refs": [{"text": "must not leak"}], "reason_code": "available"}, "knowledge_reply_refused"),
 ])
-def test_client_malformed_or_unavailable_fixed_exception(monkeypatch, response):
+def test_client_malformed_or_unavailable_fixed_exception(monkeypatch, response, expected):
     from azazel_nexus_runtime import knowledge_client as client
 
     monkeypatch.setattr(client, "_exchange", lambda *a, **k: response)
     with pytest.raises(client.KnowledgeUnavailable, match="^knowledge unavailable$") as caught:
         client.lookup_context(("T1110",))
-    assert caught.value.code == ("knowledge_unavailable" if response.get("reason_code") == "revoked"
-                                 else "knowledge_reply_refused")
+    assert caught.value.code == expected
 
 
-@pytest.mark.parametrize("error", [TimeoutError("secret"), PermissionError("secret"), ValueError("secret"),
-                                       ValueError("M.I.O. peer refused"), ValueError("M.I.O. response bound refused"),
-                                       ValueError("M.I.O. service refused"),
-                                       json.JSONDecodeError("secret", "", 0)])
-def test_client_transport_failure_fixed_exception(monkeypatch, error):
+@pytest.mark.parametrize("error,expected", [(TimeoutError("secret"), "knowledge_unavailable"),
+                                       (PermissionError("secret"), "knowledge_unavailable"),
+                                       (ValueError("secret"), "knowledge_unavailable"),
+                                       (ValueError("M.I.O. peer refused"), "knowledge_unavailable"),
+                                       (ValueError("M.I.O. response bound refused"), "knowledge_unavailable"),
+                                       (ValueError("M.I.O. service refused"), "knowledge_unavailable"),
+                                       (json.JSONDecodeError("secret", "", 0), "knowledge_unavailable")])
+def test_client_transport_failure_fixed_exception(monkeypatch, error, expected):
     from azazel_nexus_runtime import knowledge_client as client
 
     def exchange(*a, **k):
@@ -247,6 +255,17 @@ def test_client_transport_failure_fixed_exception(monkeypatch, error):
 
     monkeypatch.setattr(client, "_exchange", exchange)
     with pytest.raises(client.KnowledgeUnavailable, match="^knowledge unavailable$") as caught:
+        client.lookup_context(("T1110",))
+    assert caught.value.code == expected
+
+
+def test_client_collapses_declared_peer_refusal(monkeypatch):
+    from azazel_nexus_runtime import knowledge_client as client
+    from azazel_nexus_runtime.mio_socket_client import ServiceRefused
+
+    monkeypatch.setattr(client, "_exchange",
+                        lambda *a, **k: (_ for _ in ()).throw(ServiceRefused("principal_denied")))
+    with pytest.raises(client.KnowledgeUnavailable) as caught:
         client.lookup_context(("T1110",))
     assert caught.value.code == "knowledge_unavailable"
 
