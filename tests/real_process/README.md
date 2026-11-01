@@ -8,12 +8,13 @@ production `knowledge_lited`, `mio_locald`, and `mio_entryd` mains; an
 normal-entry case additionally starts production `edge_intaked` and
 `incident_explaind`: it sends one bounded producer-shaped alert as `azedge`
 through the public `edge-intake` socket, waits for the persisted explanation,
-and checks its redacted MIO and Knowledge Lite provenance. Both paths use the
-real shared MIO core and actual Knowledge Lite daemon. The fixture is
-test-key-signed after admission and is not evidence of live Knowledge
-producer authentication or full-node interoperability. This does not claim
-that Edge's dirty MIO adapter uses Knowledge. No product principal rules or
-model admission are changed.
+and checks the MIO reply's own fast-assistance Knowledge status and T1110 ref
+separately from the explainer's independent Knowledge query and persisted
+ref. Both paths use the real shared MIO core and actual Knowledge Lite
+daemon. The fixture is test-key-signed after admission and is not evidence of
+live Knowledge producer authentication or full-node interoperability. This
+does not claim that Edge's dirty MIO adapter uses Knowledge. No product
+principal rules or model admission are changed.
 
 The standard `nexus-main-run.sh` unit command does not select this test. Run
 the focused process suite under the suite lock with a cached Linux arm64

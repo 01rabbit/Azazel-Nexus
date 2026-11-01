@@ -257,6 +257,19 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
         assert record["transition"] == "opened"
         assert record["technique_ids"] == ["T1021.004", "T1110"]
         assert record["mio"]["route"] == "deterministic handoff"
+        # The MIO fast-assistance object comes from entryd's reply, validated
+        # by read_mio_reply; this proves the shared core's own lookup for this
+        # incident, independently of incident_explaind's lookup below.
+        mio_fast = record["mio"]["fast_assistance"]
+        assert mio_fast["dependency_outcome"]["knowledge"] == "available"
+        mio_refs = [ref for ref in mio_fast["knowledge"] if ref["technique_id"] == "T1110"]
+        assert len(mio_refs) == 1
+        mio_ref = mio_refs[0]
+        assert mio_ref["technique_id"] in record["technique_ids"]
+        assert (mio_ref["generation"], mio_ref["source_kind"], mio_ref["trust_check"],
+                mio_ref["revocation_status"]) == ("5", "knowledge_lite", "verified", "clear")
+
+        # These refs are the explainer's separate Knowledge Lite query.
         assert record["knowledge_state"] == "available"
         assert record["knowledge_refs"]
         assert any(ref["technique_id"] == "T1110" for ref in record["knowledge_refs"])
