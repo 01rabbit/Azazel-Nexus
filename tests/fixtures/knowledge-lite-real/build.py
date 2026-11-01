@@ -13,6 +13,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import tarfile
 
 from nacl.signing import SigningKey
 
@@ -57,13 +58,30 @@ with sqlite3.connect(sys.argv[1]) as conn:
         subprocess.run([sys.executable, "-B", str(source / "tools/bundle_build.py"), *args],
                        env=env, check=True, capture_output=True)
     (OUT / "anchors.toml").write_text(f'threshold = 1\n[keys]\n"{public[:8]}" = "{public}"\n')
-    (OUT / "provenance.json").write_text(json.dumps({
+    provenance = json.dumps({
         "producer_commit": SHA, "builder": "tools/bundle_build.py build-lite",
         "export_policy_sha256": hashlib.sha256((source / "config/lite-export-policy.yaml").read_bytes()).hexdigest(),
         "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
         "bundle_version": 5, "rows": {"attack_technique": 1},
         "data": "synthetic lab only", "signer": "ephemeral lab key; private seed discarded",
-    }, indent=2, sort_keys=True) + "\n")
+    }, indent=2, sort_keys=True) + "\n"
+    (OUT / "provenance.json").write_text(provenance)
+    (OUT / "provenance.sig").write_text(key.sign(provenance.encode()).signature.hex() + "\n")
+    if len(sys.argv) > 2:
+        evidence = Path(sys.argv[2])
+        evidence.mkdir(parents=True, exist_ok=False)
+        with tarfile.open(archive) as bundle:
+            for name in ("manifest.json", "manifest.sig"):
+                (evidence / name).write_bytes(bundle.extractfile(name).read())
+        (evidence / "build-evidence.json").write_text(json.dumps({
+            "source": str(source), "head": SHA, "status_porcelain": "",
+            "command": [sys.executable, "-B", str(source / "tools/bundle_build.py"), *args],
+            "synthetic_input": {"attack_technique": [["T1110", "Brute Force", ["credential-access"], "lab-v1"]]},
+            "builder_sha256": hashlib.sha256((source / "tools/bundle_build.py").read_bytes()).hexdigest(),
+            "policy_sha256": hashlib.sha256((source / "config/lite-export-policy.yaml").read_bytes()).hexdigest(),
+            "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+            "private_key_retained": False, "builder_exit_code": 0,
+        }, indent=2) + "\n")
 
 
 if __name__ == "__main__":

@@ -8,6 +8,8 @@ import shutil
 import tarfile
 import tomllib
 
+from nacl.signing import VerifyKey
+
 from azazel_nexus.lite_import import CommissionedLite, CommissionedTrust, LiteImport
 from azazel_nexus.lite_trust import TrustStore
 
@@ -23,6 +25,27 @@ def commission_real_fixture(store: Path, trust: Path) -> str:
     assert provenance["producer_commit"] == "09d234cde0ceb447a3ebc7e9704eef4758ac4a4d"
     anchors = (FIXTURE / "anchors.toml").read_text()
     public = next(iter(tomllib.loads(anchors)["keys"].values()))
+    VerifyKey(bytes.fromhex(public)).verify((FIXTURE / "provenance.json").read_bytes(),
+                                            bytes.fromhex((FIXTURE / "provenance.sig").read_text().strip()))
+    assert provenance["export_policy_sha256"] == "085f3162aa73df9d627d56aed2ab09267dda023117886c8d10c77986f5ddd44e"
+    with tarfile.open(archive) as bundle:
+        manifest_raw = bundle.extractfile("manifest.json").read()
+        signer, signature = bundle.extractfile("manifest.sig").read().decode().strip().split(":")
+        assert signer == public[:8]
+        VerifyKey(bytes.fromhex(public)).verify(manifest_raw, bytes.fromhex(signature))
+        manifest = json.loads(manifest_raw)
+        assert {field: manifest[field] for field in ("bundle_format_version", "bundle_version", "kind", "security_epoch", "attack_version")} == {
+            "bundle_format_version": 1, "bundle_version": 5, "kind": "full", "security_epoch": 1, "attack_version": "lab-v1"}
+        assert manifest["profile"]["counts"] == {"datasets": 3, "rows": 1, "uncompressed_bytes": 108}
+        assert manifest["profile"]["selection_inputs"] == {
+            "as_of": NOW, "attack_version": "lab-v1", "config_hash": "nexus-process-lab",
+            "export_policy_digest": "c75b4e31c65108ea5e843328109d71317a6215956b09997e70b23348de1f8da9",
+            "intel_generation": 5, "profile_id": "knowledge-lite-16g", "stats_generation": 1}
+        assert set(manifest["files"]) == {"tables/attack_technique.jsonl", "tables/ioc.jsonl", "tables/kev.jsonl"}
+        for name, digest in manifest["files"].items():
+            data = bundle.extractfile(name).read()
+            assert hashlib.sha256(data).hexdigest() == digest
+            assert len(data.splitlines()) == (1 if name == "tables/attack_technique.jsonl" else 0)
     # Replace this disposable node's synthetic anchor before commissioning.
     (trust / "trust.json").unlink()
     (trust / "trust/anchors.toml").write_text(anchors)

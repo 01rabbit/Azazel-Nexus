@@ -1,5 +1,5 @@
 {
-  "archive_sha256": "bdebcaa5d81a76016f94fd50a69a9e1ab12cfa3ca729c122733154f44f6fb955",
+  "archive_sha256": "138b20b186f1e190696a55a2521edb1273d954d6da73403c8385ccccc92a9e77",
   "builder": "tools/bundle_build.py build-lite",
   "bundle_version": 5,
   "data": "synthetic lab only",

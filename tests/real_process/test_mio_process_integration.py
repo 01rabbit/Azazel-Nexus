@@ -154,6 +154,39 @@ def _send_edge_alert(env: dict[str, str], socket_path: Path, groups: tuple[int, 
     assert proc.returncode == 0, (proc.stdout + proc.stderr)[:80]
 
 
+def _assert_socket_identity(path: Path, uid: int, gid: int) -> None:
+    # transport.bind_socket uses principal.REQUIRED_SOCKET_MODE (0660).
+    from azazel_nexus_runtime.principal import REQUIRED_SOCKET_MODE
+    info = path.lstat()
+    assert stat.S_ISSOCK(info.st_mode)
+    assert (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (uid, gid, REQUIRED_SOCKET_MODE)
+
+
+def _refuse_operator_calls(env: dict[str, str], entry_id: str, groups: tuple[int, ...]) -> None:
+    # Give the non-root operator DAC access so this exercises verb admission,
+    # rather than merely failing to traverse the socket's parent directory.
+    # knowledge.IMPORT_VERB admits ROOT; audit.VERBS admits ROOT/SERVICE.
+    code = r'''
+import sys
+from azazel_nexus_runtime.mio_socket_client import _exchange, ServiceRefused
+calls = (
+    ("knowledge", "azknowledge", "knowledge.import", {"entry_id": sys.argv[1]}),
+    ("audit-submit", "azaudit", "audit.append", {"event_type": "knowledge.lite.import_started"}),
+)
+for leaf, account, verb, arguments in calls:
+    try:
+        _exchange(leaf, account, verb, arguments, deadline_s=1)
+    except ServiceRefused as error:
+        assert error.refusal == "principal_denied"
+    else:
+        raise AssertionError("unauthorized call admitted")
+'''
+    result = subprocess.run([sys.executable, "-B", "-c", code, entry_id], cwd=ROOT, env=env,
+                            capture_output=True, text=True, timeout=4, check=False,
+                            preexec_fn=_credentials("azoperator", groups))
+    assert result.returncode == 0, "unauthorized operator call did not refuse as declared"
+
+
 @pytest.mark.real_process
 @pytest.mark.parametrize("real_producer", [False, True], ids=["synthetic-reader", "knowledge-builder"])
 @pytest.mark.skipif(sys.platform != "linux", reason="SO_PEERCRED is required")
@@ -180,6 +213,7 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
         from test_real_knowledge_lite_fixture import commission_real_fixture
         entry_id = commission_real_fixture(store, trust)
         ids["azaudit"] = _identity("azaudit")
+        ids["azoperator"] = _identity("azoperator")
         groups["azaudit-submit"] = _group("azaudit-submit")
     else:
         manifest, rows = _producer_manifest()
@@ -254,6 +288,21 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
             _wait_socket(path, child, time.monotonic() + 6)
         if real_producer:
             _wait_socket(run / "audit-submit/audit-submit.sock", children[-1], time.monotonic() + 6)
+            _wait_socket(run / "mio-advise/mio-advise.sock", children[2], time.monotonic() + 6)
+            for leaf, account, group in (
+                ("knowledge", "azknowledge", "azazel-operator"),
+                ("knowledge-read", "azknowledge", "azknowledge-read"),
+                ("mio", "azmio", "azazel-operator"),
+                ("mio-entry", "azmioentry", "azazel-operator"),
+                ("mio-advise", "azmioentry", "azmio-advise"),
+                ("edge-intake", "azintake", "azedge"),
+                ("audit", "azaudit", "azazel-operator"),
+                ("audit-submit", "azaudit", "azaudit-submit"),
+            ):
+                _assert_socket_identity(run / leaf / (leaf + ".sock"), ids[account].pw_uid, groups[group])
+            before = knowledge_tests.snapshot(store, trust, azazel / "state/audit")
+            _refuse_operator_calls(env, entry_id, (groups["azazel-operator"], groups["azaudit-submit"]))
+            assert knowledge_tests.snapshot(store, trust, azazel / "state/audit") == before
             code = ("from azazel_nexus_runtime.lite_operator_cli import run_import; "
                     f"raise SystemExit(run_import({entry_id!r}))")
             imported = subprocess.run([sys.executable, "-B", "-c", code], cwd=ROOT, env=env,
