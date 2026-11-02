@@ -81,6 +81,24 @@ def write_record(root, mio, *, refs=(), state="skipped", codes=()):
     (explanations_dir(root) / "2026-10-29.jsonl").write_text(json.dumps(record) + "\n")
 
 
+def write_slow_recent(root, *, state="complete", written_at=None):
+    from azazel_nexus.incident_explain import read_recent_incidents
+
+    path = root / "var/lib/azazel/run/incident-explain-status/recent.json"
+    recent = read_recent_incidents(path.read_bytes())
+    assert recent is not None and recent["incidents"]
+    recent["written_at"] = NOW - 2 if written_at is None else written_at
+    slow = {"state": state, "usage": "unknown"}
+    if state == "complete":
+        slow = {**slow, "verification": "model_proposed_unverified",
+                "hypotheses": ["A change may explain observed behavior"],
+                "unknowns": ["The cause is not confirmed"],
+                "next_checks": ["Check the approved change record"]}
+    recent["incidents"][0]["explanation"]["slow_analysis"] = slow
+    assert read_recent_incidents(json.dumps(recent).encode()) == recent
+    path.write_text(json.dumps(recent))
+
+
 # -- the documented example ------------------------------------------------------
 
 
@@ -160,6 +178,45 @@ def test_no_ai_and_no_explanation_is_unavailable_not_a_default(root):
     assert ai["explanations"] == []
     assert "no_ai_answer" in [u["code"] for u in p["unconfirmed"]]
     assert p["knowledge"]["status"] == "unavailable"
+
+
+def test_slow_advisory_is_separate_in_handoff_with_and_without_ledgers(root):
+    write_slow_recent(root)
+    full = package(root)
+    slow = full["ai_assessment"]["slow_advisory"]
+    assert slow["status"] == "available"
+    assert slow["authority"] == "advisory_only_not_fact"
+    assert slow["verification"] == "model_proposed_unverified"
+    assert slow["hypotheses"] == ["A change may explain observed behavior"]
+    assert "A change may explain observed behavior" not in json.dumps(full["ai_assessment"]["explanations"])
+    rendered = handoff.render_markdown(full)
+    assert "非同期のモデル提案（未検証・助言のみ）" in rendered
+    assert "事実・判断・実行指示として扱わない" in rendered
+
+    for segment in explanations_dir(root).glob("*.jsonl"):
+        segment.unlink()
+    for segment in (root / "var/lib/azazel/edge-incidents").glob("*.jsonl"):
+        segment.unlink()
+    snapshot_only = package(root)
+    assert snapshot_only["ai_assessment"]["source"] == "recent_snapshot"
+    assert snapshot_only["ai_assessment"]["slow_advisory"] == slow
+    assert "ai_advice_unverified" in [item["code"] for item in snapshot_only["unconfirmed"]]
+
+
+@pytest.mark.parametrize("state", ["queued", "stale", "superseded", "timeout"])
+def test_noncomplete_or_stale_slow_advisory_is_never_exported(root, state):
+    write_slow_recent(root, state=state)
+    p = package(root)
+    slow = p["ai_assessment"]["slow_advisory"]
+    assert slow["status"] == "unavailable"
+    assert slow["hypotheses"] == slow["unknowns"] == slow["next_checks"] == []
+    assert "A change may explain observed behavior" not in handoff.render_markdown(p)
+
+    write_slow_recent(root, state="complete", written_at=NOW - 31)
+    stale = package(root)["ai_assessment"]["slow_advisory"]
+    assert stale["status"] == "unavailable"
+    assert stale["reason_code"] == "recent_snapshot_stale"
+    assert stale["hypotheses"] == []
 
 
 def test_an_unreachable_mio_is_recorded_as_not_ai(root):

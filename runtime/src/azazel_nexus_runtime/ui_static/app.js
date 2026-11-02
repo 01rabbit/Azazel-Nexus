@@ -638,6 +638,21 @@
       });
       add(node, fastNode);
     }
+    var slow = ex.slow_analysis;
+    if (slow) {
+      var slowNode = block("M.I.O. 非同期モデル提案（未検証・助言のみ）");
+      add(slowNode, kv([["状態", slow.state], ["検証区分", slow.verification], ["使用量", slow.usage]]));
+      add(slowNode, el("p", "small", "Edge の判断、説明台帳の記録、高速評価とは別の時間軸です。事実・判断・実行指示として扱わないでください。"));
+      if (slow.state === "complete" && slow.verification === "model_proposed_unverified") {
+        [["仮説（未検証）", slow.hypotheses], ["未確認事項", slow.unknowns], ["確認候補", slow.next_checks]]
+          .forEach(function (entry) {
+            if (Array.isArray(entry[1]) && entry[1].length) {
+              add(slowNode, el("p", "small", entry[0]), list(entry[1]));
+            }
+          });
+      }
+      add(node, slowNode);
+    }
     var refs = block("参照根拠");
     var items = (ex.knowledge_refs || []).map(citation);
     add(refs, items.length ? list(items) : el("p", null, "参照根拠なし"));

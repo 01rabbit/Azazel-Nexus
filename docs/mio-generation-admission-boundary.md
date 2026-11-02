@@ -93,6 +93,12 @@ frame/trace/generation/handle. This append-only store is not hash-chained and
 does not amend the Edge intake chain or the original explanation record. Its
 handles and generation identifiers never enter `recent.json` or the UI.
 
+Each terminal event is appended to the receipt's daily segment, so a midnight
+rollover cannot retain a result while retiring its receipt. A final torn row
+refuses this optional store on restart without modifying the file or disabling
+the fast explainer, Knowledge lookup or Edge intake; status reports the slow
+result store as unavailable.
+
 GenerationLane state is process-local. After an explainer restart, an
 uncompleted durable receipt is polled again; if its original result has expired
 or been evicted, the lane records only `stale` and never starts the work again.

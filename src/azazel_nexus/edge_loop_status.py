@@ -101,6 +101,8 @@ def _render_edge_loop(out, now, snapshots=None):
             _render_edge_forward(out, value.get("edge_forward"), now)
         else:
             print(f"        explained: {value['explained']}; chain_broken: {value['chain_broken']}; storage_failed: {value['storage_failed']}", file=out)
+            if value.get("slow_result_store") == "unavailable":
+                print("        slow result store: unavailable (private result log refused)", file=out)
             if value["chain_broken"]:
                 print("        inspect_incident_chain_then_remove_cursor_and_restart", file=out)
             print(f"        last attempt: mio {_availability(value['mio_available'])}; knowledge {_availability(value['knowledge_available'])}; audit_forward_dropped: {value['audit_forward_dropped']}; audit_forward_refused: {value['audit_forward_refused']}", file=out)

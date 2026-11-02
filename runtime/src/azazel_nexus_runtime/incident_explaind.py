@@ -203,11 +203,14 @@ class GenerationResultStore(DailySegments):
             path.unlink()
         self.retain()
 
-    def append_event(self, value):
+    def append_event(self, value, *, segment_at=None):
         checked = read_generation_event(value)
-        path = self.path_at(self.bounded(checked["recorded_at"]))
+        path = self.path_at(self.bounded(
+            checked["recorded_at"] if segment_at is None else segment_at))
         self.current = path
         self.retain()
+        if checked["event_type"] == "mio.generation.result" and not path.exists():
+            raise ValueError("generation_result_receipt_segment_missing")
         data = canonical(checked) + b"\n"
         if len(data) > 128 * 1024:
             raise SegmentFull("generation_result_segment_full")
@@ -230,6 +233,8 @@ class GenerationResultStore(DailySegments):
                     or info.st_size > self.segment_bytes):
                 raise ValueError("generation_result_segment_refused")
             raw = read_file(path, self.segment_bytes)
+            if raw and not raw.endswith(b"\n"):
+                raise ValueError("generation_result_tail_incomplete")
             for line in raw.splitlines():
                 if not line or len(line) > 128 * 1024:
                     raise ValueError("generation_result_line_refused")
@@ -333,6 +338,8 @@ class Explainer:
                 "cursor_lag": self.cursor_lag, "chain_broken": self.chain_broken,
                 "recovery_hint": "inspect_incident_chain_then_remove_cursor_and_restart" if self.chain_broken else None,
                 "storage_failed": self.storage_failed, "mio_available": self.mio_available,
+                "slow_result_store": ("unavailable" if self._generation_store_failed else
+                                      "available" if self.generation_store is not None else None),
                 "knowledge_available": self.knowledge_available,
                 "audit_forward_dropped": self.audit_forward_dropped,
                 "audit_forward_refused": self.audit_forward_refused}
@@ -425,11 +432,11 @@ class Explainer:
                 ("incident_id", "incident_sequence", "request_id", "frame_id",
                  "trace_id", "generation_id", "result_handle")}
 
-    def _append_generation_event(self, event):
+    def _append_generation_event(self, event, *, segment_at=None):
         if self._generation_store_failed or self.generation_store is None:
             return False
         try:
-            self.generation_store.append_event(event)
+            self.generation_store.append_event(event, segment_at=segment_at)
             return True
         except Exception:  # noqa: BLE001 - optional result store never blocks Edge intake
             self._generation_store_failed = True
@@ -471,7 +478,7 @@ class Explainer:
             event = {"event_type": "mio.generation.result", **self._generation_binding(receipt),
                      "state": "degraded", "usage": "unknown", "recorded_at": self.clock()}
             checked = read_generation_event(event)
-        if not self._append_generation_event(checked):
+        if not self._append_generation_event(checked, segment_at=receipt["recorded_at"]):
             return False
         self._generation_terminal[handle] = checked
         self._set_generation_projection(receipt, checked)

@@ -1417,7 +1417,7 @@ def read_explainer_status(raw):
         _shape(v, ("schema", "written_at", "last_explained_at", "explained", "refused", "pending",
                    "cursor_lag", "chain_broken", "recovery_hint", "storage_failed",
                    "mio_available", "knowledge_available", "audit_forward_dropped",
-                   "audit_forward_refused"))
+                   "audit_forward_refused"), ("slow_result_store",))
         if v["schema"] != "azazel-nexus/incident-explain-status/v1":
             return None
         _number(v["written_at"])
@@ -1431,6 +1431,8 @@ def read_explainer_status(raw):
         for key in ("mio_available", "knowledge_available"):
             if v[key] is not None and type(v[key]) is not bool:
                 return None
+        if "slow_result_store" in v and v["slow_result_store"] not in {None, "available", "unavailable"}:
+            return None
         if v["recovery_hint"] != (RECOVERY_HINT if v["chain_broken"] else None):
             return None
         if type(v["refused"]) is not dict or not set(v["refused"]) <= CODES:
