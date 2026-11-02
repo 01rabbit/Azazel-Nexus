@@ -169,6 +169,19 @@ LEDGER_ALLOWANCE_MS = 50
 MIN_PROBE_S = 0.005
 
 
+def locald_absent() -> bool:
+    """Whether locald is absent: its service account or its socket is missing.
+
+    Reads names and paths only; nothing is sent. A running locald that refuses,
+    times out or fails is not absent, so it never selects the local fallback.
+    """
+    try:
+        pwd.getpwnam("azmio")
+    except KeyError:
+        return True
+    return not socket_path("mio").exists()
+
+
 class PrincipalRate:
     """A token bucket per kernel-reported uid; never per client-supplied text."""
 
@@ -666,6 +679,22 @@ class MioEntryService:
         return (local if local is not None else self.local.observe(deadline_s=each),
                 remote if remote is not None else self.remote.observe(deadline_s=each))
 
+    def _shared_fast_assistance(self, frame: dict, budget_s: float) -> dict:
+        """The shared model-free core, run in this process: no socket, no network.
+
+        Reached only when locald is absent. It gets what is left of the
+        request's one deadline; if none is left, or the package or core fails,
+        the result is the explicit degraded status, never an executed assessment.
+        """
+        from .mio_socket_client import fast_assessment_degraded
+        if budget_s <= 0:
+            return fast_assessment_degraded("timeout")
+        try:
+            from .mio_fast_assistance import fast_assistance
+            return fast_assistance(frame, deadline_s=min(FAST_ASSESS_MAX_S, budget_s))
+        except Exception:  # noqa: BLE001 - a missing or failing core is a degradation
+            return fast_assessment_degraded("unavailable")
+
     def _mark(self, key: str) -> None:
         if hasattr(self.router.ledger, "rebuild_usage"):
             self.router._record({"event_type": REQUEST_MARKER, "caller": key})
@@ -731,8 +760,17 @@ class MioEntryService:
                         from .mio_socket_client import fast_assessment_degraded
                         fast_assistance = fast_assessment_degraded("timeout")
                     else:
+                        started = self.router.monotonic()
                         fast_assistance = self.local.assess(
                             frame, deadline_s=min(FAST_ASSESS_MAX_S, fast_budget))
+                        # Only an absent locald (dependency unavailable, no
+                        # socket or account) hands the same core to this
+                        # process. A timeout, refusal or a locald-run core
+                        # failure keeps its own degraded status.
+                        if (fast_assistance["dependency_outcome"]["knowledge"] == "unavailable"
+                                and locald_absent()):
+                            fast_assistance = self._shared_fast_assistance(
+                                frame, fast_budget - (self.router.monotonic() - started))
                     fast_assistance = read_fast_assistance(fast_assistance)
             except Exception:
                 from .mio_socket_client import fast_assessment_degraded

@@ -42,6 +42,12 @@ directory. All source and dependency mounts are read-only; the test container
 is removed after the run. Suite phases, including the no-wheel phase, are
 kept in `run-container.sh`.
 
+The fallback case starts only `mio_entryd` (no `mio_locald`, so its socket is
+absent) and sends one ordinary `mio.advise` request as `azexplain`. The reply
+must either carry the shared core's result (which queries no Knowledge) or the
+explicit `dependency_unavailable` degradation when the MIO package is absent.
+It is not model admission, and it does not change the route.
+
 Knowledge data is based on the checked-in producer-shaped fixture, then
 re-signed with the suite's test key and given a test-only description so the
 shared core can project the advisory. This proves the current consumer path

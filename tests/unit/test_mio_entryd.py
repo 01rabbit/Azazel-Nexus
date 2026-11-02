@@ -3,6 +3,7 @@
 import ast
 import errno
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -307,3 +308,118 @@ def test_entry_rechecks_remote_with_the_same_no_opt_in_reading(service, monkeypa
     assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
     assert not any(e.get("terminal_event") == "remote opt-in withdrawn"
                    for e in recorded(service))
+
+
+def _fast_frame():
+    # An ordinary, non-Edge advice frame: no reserved transition context.
+    return {"request_id": "fallback-unit", "privacy_class": PrivacyClass.P0_PUBLIC.value,
+            "question": "SSH brute-force observations; technique T1110",
+            "context": [{"kind": "auth_log", "text": "redacted test fixture"}]}
+
+
+def _advise_fast(service, monkeypatch, *, assess_result, absent, core):
+    """One ordinary advice request; locald's assess and the core are injected."""
+    from azazel_nexus.local_advisory import read_fast_assistance
+
+    calls = {"assess": 0, "core": []}
+
+    def assess(frame, *, deadline_s):
+        calls["assess"] += 1
+        return assess_result
+
+    def run_core(frame, *, deadline_s):
+        calls["core"].append((frame, deadline_s))
+        if isinstance(core, Exception):
+            raise core
+        return core
+
+    monkeypatch.setattr(service.local, "assess", assess)
+    monkeypatch.setattr(entry, "locald_absent", lambda: absent)
+    # The package may be absent; the core is replaced at the module boundary.
+    monkeypatch.setitem(sys.modules, "azazel_nexus_runtime.mio_fast_assistance",
+                        SimpleNamespace(fast_assistance=run_core))
+    monkeypatch.setattr(service, "_local_admitted", lambda *a, **k: False)
+    monkeypatch.setattr(service.local, "observe", lambda **_: "local_unavailable")
+    monkeypatch.setattr(service.remote, "observe", lambda **_: "remote_unavailable")
+    monkeypatch.setattr(service.remote, "handle",
+                        lambda *a, **k: pytest.fail("remote request"))
+    monkeypatch.setattr(service.reference, "reference", lambda *a, **k: (None, "no_pack"))
+    monkeypatch.setattr(service.local, "handle",
+                        lambda *a, **k: {"outcome": "not_advice", "refusal": "not_advice"})
+    frame = _fast_frame()
+    request = SimpleNamespace(verb=entry.ADVISE_VERB, arguments={"deadline_ms": 2000},
+                              payload=frame, principal=None)
+    reply = service.handle(request)
+    return reply, calls, frame, read_fast_assistance
+
+
+def test_locald_absent_entry_runs_the_shared_core_in_process(service, monkeypatch):
+    from azazel_nexus.local_advisory import read_fast_assistance
+
+    degraded = client.fast_assessment_degraded("unavailable")
+    core = client.fast_assessment_degraded("rejected")  # a valid, distinct core result
+    reply, calls, frame, _ = _advise_fast(
+        service, monkeypatch, assess_result=degraded, absent=True, core=core)
+
+    assert calls["assess"] == 1
+    assert [item[0] for item in calls["core"]] == [frame]
+    assert 0 < calls["core"][0][1] <= entry.FAST_ASSESS_MAX_S
+    assert reply["fast_assistance"] == read_fast_assistance(core)
+    assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
+
+
+def test_locald_present_entry_keeps_locald_result_and_never_falls_back(service, monkeypatch):
+    from azazel_nexus.local_advisory import read_fast_assistance
+
+    # Normal entry: locald answers with the shared core's assessment.
+    assessed = client.fast_assessment_degraded("absent")
+    reply, calls, _, _ = _advise_fast(service, monkeypatch, assess_result=assessed,
+                                      absent=False, core=assessed)
+    assert calls["core"] == []
+    assert reply["fast_assistance"] == read_fast_assistance(assessed)
+
+
+@pytest.mark.parametrize("status", ["timeout", "rejected"])
+def test_locald_timeout_or_refusal_is_not_replaced_by_local_fallback(
+        service, monkeypatch, status):
+    from azazel_nexus.local_advisory import read_fast_assistance
+
+    locald = client.fast_assessment_degraded(status)
+    reply, calls, _, _ = _advise_fast(service, monkeypatch, assess_result=locald,
+                                      absent=True, core=client.fast_assessment_degraded("absent"))
+    assert calls["core"] == []
+    assert reply["fast_assistance"] == read_fast_assistance(locald)
+
+
+def test_locald_present_but_unavailable_does_not_fall_back(service, monkeypatch):
+    from azazel_nexus.local_advisory import read_fast_assistance
+
+    # A socket that exists but fails (locald running, its core failing) keeps
+    # locald's explicit degraded status: only absence selects the fallback.
+    locald = client.fast_assessment_degraded("unavailable")
+    reply, calls, _, _ = _advise_fast(service, monkeypatch, assess_result=locald,
+                                      absent=False, core=client.fast_assessment_degraded("absent"))
+    assert calls["core"] == []
+    assert reply["fast_assistance"] == read_fast_assistance(locald)
+
+
+def test_locald_absent_with_missing_or_failing_core_is_explicitly_degraded(
+        service, monkeypatch):
+    degraded = client.fast_assessment_degraded("unavailable")
+    reply, calls, _, _ = _advise_fast(service, monkeypatch, assess_result=degraded,
+                                      absent=True, core=ImportError("no package"))
+    assert len(calls["core"]) == 1
+    assert reply["fast_assistance"]["dependency_outcome"]["knowledge"] == "unavailable"
+    assert reply["fast_assistance"]["state"] == "dependency_unavailable"
+    assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
+
+
+def test_locald_absent_without_budget_runs_no_core(service, monkeypatch):
+    calls = []
+    monkeypatch.setattr(service.local, "assess",
+                        lambda *a, **k: pytest.fail("locald asked without budget"))
+    monkeypatch.setitem(sys.modules, "azazel_nexus_runtime.mio_fast_assistance",
+                        SimpleNamespace(fast_assistance=lambda *a, **k: calls.append(a)))
+    assert service._shared_fast_assistance(_fast_frame(), 0.0)["dependency_outcome"][
+        "knowledge"] == "timeout"
+    assert calls == []

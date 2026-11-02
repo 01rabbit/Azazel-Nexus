@@ -459,3 +459,76 @@ def test_500ms_explainer_process_reaches_shared_core_and_readonly_knowledge(
                 except subprocess.TimeoutExpired:
                     child.kill()
                     child.wait(timeout=2)
+
+
+@pytest.mark.real_process
+@pytest.mark.skipif(sys.platform != "linux", reason="SO_PEERCRED is required")
+def test_entryd_without_locald_runs_shared_core_or_degrades_explicitly(request):
+    """Only entryd runs (locald absent): one ordinary advise request, no socket to locald."""
+    if os.geteuid() != 0:
+        pytest.skip("requires root only inside the disposable test container")
+    ids = {name: _identity(name) for name in ("azmioentry", "azexplain")}
+    operator_gid = _group("azazel-operator")
+    advise_gid = _group("azmio-advise")
+    runtime_root = Path(tempfile.mkdtemp(prefix="nxs-mio-", dir="/tmp"))
+    runtime_root.chmod(0o755)
+    request.addfinalizer(lambda: shutil.rmtree(runtime_root, ignore_errors=True))
+
+    azazel = runtime_root / "var/lib/azazel"
+    (runtime_root / "var").mkdir(exist_ok=True)
+    (runtime_root / "var").chmod(0o755)
+    (runtime_root / "var/lib").mkdir(exist_ok=True)
+    (runtime_root / "var/lib").chmod(0o755)
+    azazel.mkdir(parents=True, exist_ok=True)
+    azazel.chmod(0o755)
+
+    # The same account/group/mode contract as the 500 ms test; no locald
+    # directory exists, so the mio socket is absent for this process.
+    run = azazel / "run"
+    _owned_dir(run, 0, 0, 0o755)
+    _owned_dir(run / "mio-entry", ids["azmioentry"].pw_uid, operator_gid, 0o2710)
+    _owned_dir(run / "mio-advise", ids["azmioentry"].pw_uid, advise_gid, 0o2710)
+    _owned_dir(run / "mio-status", ids["azmioentry"].pw_uid, operator_gid, 0o2750)
+    _owned_dir(azazel / "state", 0, 0, 0o755)
+    _owned_dir(azazel / "state/mio", ids["azmioentry"].pw_uid, 0, 0o700)
+
+    root_env = os.environ.copy()
+    root_env.update({
+        "AZAZEL_ROOT": str(runtime_root),
+        "PYTHONPATH": os.pathsep.join((str(ROOT / "src"), str(ROOT / "runtime/src"))),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    })
+    child = subprocess.Popen(
+        [sys.executable, "-B", "-c",
+         "from azazel_nexus_runtime.mio_entryd import main; raise SystemExit(main())"],
+        cwd=ROOT, env=root_env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE, preexec_fn=_credentials("azmioentry", (operator_gid,)),
+    )
+    try:
+        _wait_socket(run / "mio-entry/mio-entry.sock", child, time.monotonic() + 5)
+        _wait_socket(run / "mio-advise/mio-advise.sock", child, time.monotonic() + 5)
+        assert not (run / "mio/mio.sock").exists()
+        result = _request_child(root_env, "azexplain", (advise_gid,))
+        assert result["elapsed_ms"] < 750
+        assert result["route"] == "deterministic handoff"
+        if importlib.util.find_spec("azazel_mio") is None:
+            # Package absent: explicit degradation, never an executed assessment.
+            assert result["state"] == "dependency_unavailable"
+            assert result["knowledge_status"] == "unavailable"
+        else:
+            # The shared core ran in-process: it queries no Knowledge.
+            assert result["knowledge_status"] == "not_queried"
+        assert result["knowledge_count"] == 0
+        assert child.poll() is None
+        private_markers = (b"SSH brute-force observations", b"redacted test fixture")
+        for path in (azazel / "state").rglob("*"):
+            if path.is_file():
+                assert all(marker not in path.read_bytes() for marker in private_markers)
+    finally:
+        if child.poll() is None:
+            child.terminate()
+            try:
+                child.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=2)
