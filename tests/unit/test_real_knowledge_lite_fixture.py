@@ -27,7 +27,8 @@ def commission_real_fixture(store: Path, trust: Path) -> str:
     public = next(iter(tomllib.loads(anchors)["keys"].values()))
     VerifyKey(bytes.fromhex(public)).verify((FIXTURE / "provenance.json").read_bytes(),
                                             bytes.fromhex((FIXTURE / "provenance.sig").read_text().strip()))
-    assert provenance["export_policy_sha256"] == "085f3162aa73df9d627d56aed2ab09267dda023117886c8d10c77986f5ddd44e"
+    policy_digest = hashlib.sha256((FIXTURE / "lite-export-policy.yaml").read_bytes()).hexdigest()
+    assert provenance["export_policy_sha256"] == policy_digest
     with tarfile.open(archive) as bundle:
         manifest_raw = bundle.extractfile("manifest.json").read()
         signer, signature = bundle.extractfile("manifest.sig").read().decode().strip().split(":")
@@ -47,7 +48,7 @@ def commission_real_fixture(store: Path, trust: Path) -> str:
             assert hashlib.sha256(data).hexdigest() == digest
             assert len(data.splitlines()) == (1 if name == "tables/attack_technique.jsonl" else 0)
     # Replace this disposable node's synthetic anchor before commissioning.
-    (trust / "trust.json").unlink()
+    (trust / "trust.json").unlink(missing_ok=True)
     (trust / "trust/anchors.toml").write_text(anchors)
     TrustStore(trust).pin([public], commissioning_digest="sha256:" + "a" * 64,
                          pinned_at=NOW, actor="test")

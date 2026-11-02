@@ -339,11 +339,15 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
         mio_fast = record["mio"]["fast_assistance"]
         if package_installed:
             outcome = mio_fast["dependency_outcome"]["knowledge"]
-            # The ordinary 500 ms explainer request charges earlier ledger and
-            # probe work to one deadline. The shared fast lane may therefore
-            # return its typed timeout fallback; the separate normal-entry
-            # process case below proves a completed shared-core response.
-            assert outcome in {"not_queried", "timeout"}
+            if real_producer:
+                # The real-builder path must prove the shared fast core
+                # completed without a Knowledge query; no timeout is allowed.
+                assert outcome == "not_queried"
+            else:
+                # Synthetic-reader runs share the 500 ms explainer deadline
+                # with earlier ledger and probe work, so the typed timeout
+                # fallback is accepted here only.
+                assert outcome in {"not_queried", "timeout"}
             if outcome == "not_queried":
                 from azazel_nexus.audit import AuditLedger
 

@@ -11,8 +11,15 @@ through the public `edge-intake` socket, waits for the persisted explanation,
 and checks the MIO reply's own fast-assistance Knowledge status and T1110 ref
 separately from the explainer's independent Knowledge query and persisted
 ref. Both paths use the real shared MIO core and actual Knowledge Lite
-daemon. The fixture is test-key-signed after admission and is not evidence of
-live Knowledge producer authentication or full-node interoperability. This
+daemon. The `synthetic-reader` case uses the producer-shaped fixture admitted
+by the shared reader and re-signed with the suite's test key. The
+`knowledge-builder` case instead commissions the checked-in
+`tests/fixtures/knowledge-lite-real/` archive, generated with the unmodified
+`build-lite` CLI from Knowledge main at 09d234cd and signed by an ephemeral lab
+key whose seed is discarded. That archive crosses the real LiteImport and
+auditd boundaries. In that case, the MIO fast-assistance Knowledge outcome must
+be `not_queried`; a `timeout` fails the case. Neither data source is live
+upstream producer, authenticity, or full-node interoperability proof. This
 does not claim that Edge's dirty MIO adapter uses Knowledge. No product
 principal rules or model admission are changed.
 
@@ -48,9 +55,9 @@ must either carry the shared core's result (which queries no Knowledge) or the
 explicit `dependency_unavailable` degradation when the MIO package is absent.
 It is not model admission, and it does not change the route.
 
-Knowledge data is based on the checked-in producer-shaped fixture, then
+For the `synthetic-reader` case, Knowledge data is the producer-shaped fixture
 re-signed with the suite's test key and given a test-only description so the
-shared core can project the advisory. This proves the current consumer path
-with the read-only Knowledge service, not live producer authentication or
-full-node interoperability. No model is admitted or invoked; it is not
-admission or HG evidence.
+shared core can project the advisory. For the `knowledge-builder` case, the
+data is the real `build-lite` output described above. Neither proves live
+producer authentication or full-node interoperability. No model is admitted or
+invoked; it is not admission or HG evidence.

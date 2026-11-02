@@ -3,6 +3,11 @@
 Run with a Python containing Knowledge's core dependencies and pass a clean
 Knowledge checkout. Only the archive, public anchor and provenance are retained.
 The generated signing and alias keys live only in a temporary directory.
+
+The output is generated with Knowledge main's build-lite CLI and crosses the
+LiteImport/auditd boundaries in tests. It is not live upstream producer,
+authenticity, or full-node interoperability proof. The checkout's export
+policy must match the checked-in lite-export-policy.yaml copy.
 """
 from __future__ import annotations
 
@@ -21,10 +26,32 @@ SHA = "09d234cde0ceb447a3ebc7e9704eef4758ac4a4d"
 OUT = Path(__file__).resolve().parent
 
 
+def _fail(message: str) -> None:
+    raise SystemExit(f"build.py: {message}")
+
+
+def _run(cmd: list[str], env: dict[str, str], step: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(cmd, env=env, cwd=cwd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        _fail(f"{step} failed with exit code {result.returncode}\n--- stderr ---\n{result.stderr}"
+              f"--- stdout ---\n{result.stdout}")
+    return result
+
+
 def main() -> None:
+    if len(sys.argv) < 2:
+        _fail("usage: build.py <knowledge-checkout> [evidence-dir]")
     source = Path(sys.argv[1]).resolve()
-    assert subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip() == SHA
-    assert not subprocess.check_output(["git", "status", "--porcelain"], cwd=source, text=True).strip()
+    head = _run(["git", "rev-parse", "HEAD"], os.environ.copy(), "git rev-parse HEAD", cwd=source)
+    if head.stdout.strip() != SHA:
+        _fail(f"checkout HEAD is {head.stdout.strip()!r}, expected {SHA}")
+    status = _run(["git", "status", "--porcelain"], os.environ.copy(), "git status", cwd=source)
+    if status.stdout.strip():
+        _fail(f"checkout is dirty:\n{status.stdout}")
+    policy = source / "config/lite-export-policy.yaml"
+    checked_in = OUT / "lite-export-policy.yaml"
+    if policy.read_bytes() != checked_in.read_bytes():
+        _fail(f"{policy} differs from the checked-in copy {checked_in}")
     env = {**os.environ, "PYTHONPATH": str(source / "src"), "PYTHONDONTWRITEBYTECODE": "1"}
     key = SigningKey.generate()
     public = key.verify_key.encode().hex()
@@ -38,15 +65,16 @@ def main() -> None:
         alias.write_text(os.urandom(16).hex())
         alias.chmod(0o600)
         db = work / "intel.db"
-        subprocess.run([sys.executable, "-B", "-c", '''
+        _run([sys.executable, "-B", "-c", '''
 import sqlite3, sys
 from azazel_knowledge.db.repository import apply_migrations
 with sqlite3.connect(sys.argv[1]) as conn:
     apply_migrations(conn, "intel")
     conn.execute("INSERT INTO attack_technique (technique_id, name, tactics, attack_version) VALUES (?, ?, ?, ?)",
                  ("T1110", "Brute Force", '["credential-access"]', "lab-v1"))
-''', str(db)], env=env, check=True)
+''', str(db)], env, "synthetic intel database setup")
         archive = OUT / "lite.tar.gz"
+        archive.unlink(missing_ok=True)
         args = ["build-lite", "--source-db", str(db), "--out", str(archive),
                 "--version", "5", "--profile", "knowledge-lite-16g",
                 "--export-policy", str(source / "config/lite-export-policy.yaml"),
@@ -55,8 +83,8 @@ with sqlite3.connect(sys.argv[1]) as conn:
                 "--stats-generation", "1", "--attack-version", "lab-v1",
                 "--config-hash", "nexus-process-lab", "--security-epoch", "1",
                 "--sign-key", str(signing)]
-        subprocess.run([sys.executable, "-B", str(source / "tools/bundle_build.py"), *args],
-                       env=env, check=True, capture_output=True)
+        _run([sys.executable, "-B", str(source / "tools/bundle_build.py"), *args],
+             env, "Knowledge build-lite")
     (OUT / "anchors.toml").write_text(f'threshold = 1\n[keys]\n"{public[:8]}" = "{public}"\n')
     provenance = json.dumps({
         "producer_commit": SHA, "builder": "tools/bundle_build.py build-lite",
