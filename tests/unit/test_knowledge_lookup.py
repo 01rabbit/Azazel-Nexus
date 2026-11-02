@@ -559,3 +559,86 @@ def test_revocation_between_consumer_lookups_preserves_model_free_core(node, mon
         assert result["handoff"]["frame_id"] == frame["frame_id"]
         assert result["next_checks"]
     assert [event["count"] for event in events if event["event_type"] == "knowledge.lookup"] == [1, 0]
+
+
+def test_expiry_between_consumer_lookups_preserves_model_free_core(node, monkeypatch):
+    """Synthetic in-process clock transition, with real lookup and Core logic."""
+    pytest.importorskip("azazel_mio", reason="shared MIO is an optional integration extra")
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from azazel_nexus.local_advisory import read_fast_assistance, read_frame
+    from azazel_nexus_runtime import knowledge_client, knowledge_lited, mio_fast_assistance, mio_locald
+
+    service, _, _, _ = node
+    expiry = "2026-10-18T00:00:01Z"
+    clock = [NOW]
+    service.now = lambda: clock[0]
+    admit_rows(node, [{"technique_id": "T1110", "name": "Synthetic expiring reference",
+                       "description": "Reference only", "agg_next_expiry": expiry}])
+
+    class LookupClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            instant = cls.fromisoformat(clock[0].replace("Z", "+00:00"))
+            return instant.astimezone(tz) if tz is not None else instant.replace(tzinfo=None)
+
+    # Align only the consumer's wall-clock validation with the injected service
+    # clock. Monotonic deadline accounting remains real and unmodified.
+    monkeypatch.setattr(mio_fast_assistance, "datetime", LookupClock)
+    replies, frames, advisories, events = [], [], [], []
+    service.audit = events.append
+
+    def exchange(socket_name, account, verb, arguments, *, deadline_s):
+        assert (socket_name, account, verb) == ("knowledge-read", "azknowledge", "knowledge.lookup")
+        assert arguments == {"technique_ids": ["T1110"]}
+        assert 0 < deadline_s <= mio_locald.KNOWLEDGE_MAX_S
+        reply = service.handle(SimpleNamespace(verb=knowledge_lited.LOOKUP_VERB,
+                                               arguments=arguments, payload={}))
+        replies.append(reply)
+        return reply
+
+    real_explain = mio_fast_assistance.AssistantCore.explain
+
+    def explain(self, frame, **kwargs):
+        frames.append(frame.to_dict())
+        advisories.append(kwargs["knowledge_lite_advisories"])
+        assert kwargs["knowledge_attempted"] is True
+        return real_explain(self, frame, **kwargs)
+
+    # Bridge transport only; both requests read the admitted signed bundle.
+    monkeypatch.setattr(knowledge_client, "_exchange", exchange)
+    monkeypatch.setattr(mio_fast_assistance.AssistantCore, "explain", explain)
+    consumer = mio_locald.LocalRuntimeService(knowledge_lookup=knowledge_client.lookup_context)
+    source = read_frame({"request_id": "synthetic-expiry", "privacy_class": "P2-mission",
+                         "question": "Assess synthetic T1110", "context": []})
+    request = SimpleNamespace(verb=mio_locald.FAST_ASSESS_VERB,
+                              arguments={"deadline_ms": 1000}, payload=source)
+
+    before = consumer.handle(request)
+    first = read_fast_assistance(before["fast_assistance"])
+    assert before["outcome"] == "assessed"
+    assert replies[0]["reason_code"] == "available"
+    ref, = replies[0]["refs"]
+    assert (ref["freshness"], ref["as_of"]) == ("current", NOW)
+    claim, = first["knowledge"]
+    assert (claim["claim_id"], claim["freshness"], claim["as_of"]) == ("T1110", "current", NOW)
+    assert claim["claim_status"] == "reported_unverified"
+    assert claim["trust"] == "unverified_advisory_only"
+
+    clock[0] = expiry
+    after = consumer.handle(request)
+    second = read_fast_assistance(after["fast_assistance"])
+    assert after["outcome"] == "assessed"
+    assert replies[1] == {"refs": [], "reason_code": "no_context"}
+    assert len(replies) == 2
+    assert second["knowledge"] == []
+    assert len(advisories[0]) == 1 and advisories[1] == ()
+    assert len(frames) == 2
+    for result, frame in zip((first, second), frames):
+        assert frame["known_facts"] == []
+        assert frame["current_defensive_state"] == "OBSERVE"
+        assert frame["mission"] == "Assess the supplied security situation; no operational authority"
+        assert result["handoff"]["frame_id"] == frame["frame_id"]
+        assert result["next_checks"]
+    assert [event["count"] for event in events if event["event_type"] == "knowledge.lookup"] == [1, 0]
