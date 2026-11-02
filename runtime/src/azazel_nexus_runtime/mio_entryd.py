@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pwd
 import sys
+import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -213,6 +214,7 @@ class MioEntryService:
         rate: PrincipalRate | None = None,
         consent: ConsentStore | None = None,
     ):
+        self._fast_slot = threading.Lock()
         self._explainer_uid = self._account_uid("azexplain")
         self._arbiter_uid = self._account_uid("azarbiter")
         self.local = LocalSocketClient()
@@ -689,11 +691,35 @@ class MioEntryService:
         from .mio_socket_client import fast_assessment_degraded
         if budget_s <= 0:
             return fast_assessment_degraded("timeout")
+        # One daemon worker at a time per service. The slot is freed only by
+        # the worker itself when the core actually returns, so a core that
+        # ignores its deadline can hold at most one thread and no queue: while
+        # it runs, further requests get an immediate timeout.
+        if not self._fast_slot.acquire(blocking=False):
+            return fast_assessment_degraded("timeout")
+        wait_s = min(FAST_ASSESS_MAX_S, budget_s)
+        outcome: dict = {}
+        done = threading.Event()
+
+        def work() -> None:
+            try:
+                from .mio_fast_assistance import fast_assistance
+                outcome["result"] = fast_assistance(frame, deadline_s=wait_s)
+            except Exception:  # noqa: BLE001 - a missing or failing core is a degradation
+                pass
+            finally:
+                self._fast_slot.release()
+                done.set()
+
         try:
-            from .mio_fast_assistance import fast_assistance
-            return fast_assistance(frame, deadline_s=min(FAST_ASSESS_MAX_S, budget_s))
-        except Exception:  # noqa: BLE001 - a missing or failing core is a degradation
+            threading.Thread(target=work, name="mio-entry-fast-core", daemon=True).start()
+        except Exception:  # noqa: BLE001 - no worker started, so none will free the slot
+            self._fast_slot.release()
             return fast_assessment_degraded("unavailable")
+        # Real time: the worker runs on real time whatever the router's clock.
+        if not done.wait(wait_s):
+            return fast_assessment_degraded("timeout")  # a late result is discarded
+        return outcome.get("result") or fast_assessment_degraded("unavailable")
 
     def _mark(self, key: str) -> None:
         if hasattr(self.router.ledger, "rebuild_usage"):

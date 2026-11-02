@@ -414,6 +414,51 @@ def test_locald_absent_with_missing_or_failing_core_is_explicitly_degraded(
     assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
 
 
+def test_shared_core_past_budget_is_timeout_busy_is_immediate_and_slot_recovers(
+        service, monkeypatch):
+    import threading
+
+    started, release = threading.Event(), threading.Event()
+    calls = []
+    late = client.fast_assessment_degraded("rejected")
+
+    def slow_core(frame, deadline_s):
+        calls.append(frame)
+        started.set()
+        release.wait(5)
+        return late
+
+    monkeypatch.setitem(sys.modules, "azazel_nexus_runtime.mio_fast_assistance",
+                        SimpleNamespace(fast_assistance=slow_core))
+    frame = _fast_frame()
+    try:
+        # Core still running past the budget: explicit timeout, late result unused.
+        first = service._shared_fast_assistance(frame, 0.05)
+        assert started.is_set()
+        assert first["dependency_outcome"]["knowledge"] == "timeout"
+        # Busy: no second worker, no wait, immediate timeout.
+        second = service._shared_fast_assistance(frame, 5.0)
+        assert second["dependency_outcome"]["knowledge"] == "timeout"
+        assert len(calls) == 1
+    finally:
+        release.set()
+    # The slot frees only when the worker really finishes.
+    assert service._fast_slot.acquire(timeout=5)
+    service._fast_slot.release()
+    fast = SimpleNamespace(fast_assistance=lambda f, deadline_s: late)
+    monkeypatch.setitem(sys.modules, "azazel_nexus_runtime.mio_fast_assistance", fast)
+    assert service._shared_fast_assistance(frame, 1.0) == late
+    # A failing core is still explicit unavailability and frees the slot.
+    def boom(f, deadline_s):
+        raise RuntimeError("core")
+    monkeypatch.setitem(sys.modules, "azazel_nexus_runtime.mio_fast_assistance",
+                        SimpleNamespace(fast_assistance=boom))
+    assert service._shared_fast_assistance(frame, 1.0)["dependency_outcome"][
+        "knowledge"] == "unavailable"
+    assert service._fast_slot.acquire(timeout=5)
+    service._fast_slot.release()
+
+
 def test_locald_absent_without_budget_runs_no_core(service, monkeypatch):
     calls = []
     monkeypatch.setattr(service.local, "assess",
