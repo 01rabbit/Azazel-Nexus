@@ -515,8 +515,57 @@ class Selection:
             del self.explained[next(iter(self.explained))]
 
 
+def _validate_slow_analysis(value):
+    """Mirror runtime mio_generation.read_slow_analysis admission checks.
+
+    CORE cannot import the optional runtime. Unlike runtime normalization,
+    malformed wire metadata refuses the reply instead of becoming closed.
+    Valid slow output is not the incident fast conclusion and is not stored here.
+    """
+    try:
+        if (type(value) is not dict or len(json.dumps(value, allow_nan=False).encode()) > 128 * 1024
+                or set(value) - {'state', 'usage', 'generation_id', 'frame_id', 'trace_id',
+                                 'assistance', 'calls', 'origin', 'result_handle'}
+                or value['state'] not in {'closed', 'degraded', 'queued', 'queue_full',
+                                          'complete', 'timeout', 'cancelled', 'superseded', 'stale'}
+                or value['usage'] not in {'known', 'unknown'}):
+            raise ValueError("mio_reply_refused")
+        if 'result_handle' in value and (type(value['result_handle']) is not str
+                or re.fullmatch(r'[0-9a-f]{64}', value['result_handle']) is None):
+            raise ValueError("mio_reply_refused")
+        if 'assistance' in value:
+            result = value['assistance']
+            if (type(result) is not dict or result.get('schema_version') != 'mio.assistance.v1'
+                    or result.get('frame_id') != value['frame_id']
+                    or result.get('trace_id') != value['trace_id']
+                    or value['frame_id'] != value['trace_id'] + ':frame'
+                    or result.get('generation_method') not in {'model', 'static_reference'}):
+                raise ValueError("mio_reply_refused")
+        calls = value.get('calls', [])
+        if type(calls) is not list or len(calls) > 16:
+            raise ValueError("mio_reply_refused")
+        for call in calls:
+            if type(call) is not dict or set(call) != {'usage', 'timings'}:
+                raise ValueError("mio_reply_refused")
+            if call['usage'] is not None and (type(call['usage']) is not dict
+                    or set(call['usage']) != {'tokens_in', 'tokens_out'}
+                    or any(type(v) is not int or v < 0 for v in call['usage'].values())):
+                raise ValueError("mio_reply_refused")
+            if type(call['timings']) is not dict or any(type(v) not in (int, float)
+                    or not math.isfinite(v) or v < 0 for v in call['timings'].values()):
+                raise ValueError("mio_reply_refused")
+        if value['usage'] == 'known' and (not calls or any(c['usage'] is None for c in calls)):
+            raise ValueError("mio_reply_refused")
+        return
+    except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
+        raise ValueError("mio_reply_refused") from None
+
+
 def read_mio_reply(reply):
     """Closed entryd reply, with separately validated advice/reference body."""
+    if type(reply) is dict and "slow_analysis" in reply:
+        _validate_slow_analysis(reply["slow_analysis"])
+        reply = {key: value for key, value in reply.items() if key != "slow_analysis"}
     fast = None
     if type(reply) is dict and "fast_assistance" in reply:
         fast = read_fast_assistance(reply["fast_assistance"])
