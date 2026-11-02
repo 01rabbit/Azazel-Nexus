@@ -161,6 +161,14 @@ class LocalRuntimeService:
         playbooks: Library | None = None,
         knowledge_lookup: KnowledgeLookup | None = None,
     ) -> None:
+        # The deterministic MIO lane must not pay the shared-package import
+        # cost inside the first request's short deadline. Importing this
+        # adapter is side-effect-free; model/runtime admission remains a
+        # separate, per-request gate below.
+        try:
+            from . import mio_fast_assistance as _mio_fast_assistance  # noqa: F401
+        except Exception:  # noqa: BLE001 - the shared package is optional
+            pass
         self._artifact_path = artifact_path
         self._retriever = retriever
         self._staging = staging
