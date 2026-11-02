@@ -128,6 +128,7 @@ class LocalSocketClient:
 
     def assess(self, frame, *, deadline_s: float) -> dict:
         """Call the model-free service verb; this does not read model admission."""
+        self.last_slow_analysis = {"state": "closed", "usage": "unknown"}
         if type(deadline_s) not in {int, float} or deadline_s <= 0:
             return fast_assessment_degraded("timeout")
         milliseconds = max(0, min(60_000, int(deadline_s * 1000)))
@@ -149,7 +150,10 @@ class LocalSocketClient:
             if (type(result) is not dict or result.get("outcome") != "assessed"
                     or type(result.get("fast_assistance")) is not dict):
                 raise ValueError("invalid_fast_assessment")
-            return read_fast_assistance(result["fast_assistance"])
+            fast = read_fast_assistance(result["fast_assistance"])
+            from .mio_generation import read_slow_analysis
+            self.last_slow_analysis = read_slow_analysis(result.get('slow_analysis'))
+            return fast
         except Exception:
             return fast_assessment_degraded("rejected")
 

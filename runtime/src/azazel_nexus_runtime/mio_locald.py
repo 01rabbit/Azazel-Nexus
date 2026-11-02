@@ -160,6 +160,8 @@ class LocalRuntimeService:
         runtime: Callable = resolve_runtime,
         playbooks: Library | None = None,
         knowledge_lookup: KnowledgeLookup | None = None,
+        generation_lane=None,
+        generation_id: str = "uncommissioned",
     ) -> None:
         # The deterministic MIO lane must not pay the shared-package import
         # cost inside the first request's short deadline. Importing this
@@ -185,6 +187,9 @@ class LocalRuntimeService:
         self._playbooks = playbooks
         # The injected runtime client owns its socket deadline.
         self._knowledge_lookup = knowledge_lookup
+        from .mio_generation import GenerationLane
+        self._generation_lane = generation_lane if generation_lane is not None else GenerationLane()
+        self._generation_id = generation_id
 
     def set_playbooks(self, library: Library | None) -> None:
         self._playbooks = library
@@ -215,16 +220,22 @@ class LocalRuntimeService:
             # for the local service process to exit. Keep a typed, fixed
             # degradation at this boundary when it is absent or broken.
             try:
-                from .mio_fast_assistance import fast_assistance
+                from .mio_fast_assistance import fast_assistance, _frame
+                situation = _frame(frame)
                 result = fast_assistance(
                     frame, deadline_s=max(0.0, request.arguments["deadline_ms"] / 1000
                                           - DELIVERY_RESERVE_S),
                     knowledge_lookup=self._knowledge_lookup, knowledge_max_s=KNOWLEDGE_MAX_S,
-                    core_reserve_s=FAST_CORE_RESERVE_S)
+                    core_reserve_s=FAST_CORE_RESERVE_S, situation_frame=situation)
             except Exception:
                 from .mio_socket_client import fast_assessment_degraded
                 result = fast_assessment_degraded("unavailable")
-            return {"outcome": "assessed", "fast_assistance": result}
+            slow = {"state": "closed", "usage": "unknown"}
+            try:
+                slow = self._generation_lane.submit(frame, situation, self._generation_id)
+            except Exception:
+                pass
+            return {"outcome": "assessed", "fast_assistance": result, "slow_analysis": slow}
         if name == ADMISSION_VERB.name:
             return self.admission()
         arguments = request.arguments

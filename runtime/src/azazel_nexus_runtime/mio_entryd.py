@@ -809,6 +809,9 @@ class MioEntryService:
                          "ledger_seq": self.router.ledger.head()[0]}
                 if fast_assistance is not None:
                     reply["fast_assistance"] = fast_assistance
+                    reply["slow_analysis"] = getattr(
+                        self.local, 'last_slow_analysis',
+                        {"state": "closed", "usage": "unknown"})
                 return reply
             local_request = SimpleNamespace(
                 verb=INFER_VERB, arguments=request.arguments, payload=frame,
@@ -875,6 +878,8 @@ class MioEntryService:
             reply.update(self._handoff(frame, result, deadline_at))
         if is_advice and fast_assistance is not None:
             reply["fast_assistance"] = fast_assistance
+            reply["slow_analysis"] = getattr(self.local, 'last_slow_analysis',
+                                             {"state": "closed", "usage": "unknown"})
         return reply
 
 
