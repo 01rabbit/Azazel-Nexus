@@ -238,7 +238,10 @@ def test_an_operator_cannot_reach_past_the_admission_decision():
 def test_readiness_and_advisory_verbs_exist():
     # The playbook reference moved to the model-free reference service.
     assert mio_locald.REGISTRY.names() == (
-        "mio.local.admission", "mio.local.assess", "mio.local.infer", "model.activate")
+        "mio.local.admission", "mio.local.assess", "mio.local.generation.result",
+        "mio.local.infer", "model.activate")
+    assert mio_locald.GENERATION_RESULT_VERB.admits == frozenset({PrincipalClass.SERVICE})
+    assert not mio_locald.GENERATION_RESULT_VERB.accepts_payload
 
 
 def test_the_staging_directory_is_fixed_in_code():

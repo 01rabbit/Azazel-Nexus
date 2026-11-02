@@ -126,6 +126,28 @@ class LocalSocketClient:
     def observe(self, *, deadline_s: float = PROBE_MAX_S) -> str:
         return _probe("mio", min(PROBE_MAX_S, deadline_s))
 
+    def generation_result(self, receipt, *, deadline_s=PROBE_MAX_S):
+        """Poll explicit original binding; never modify the current fast assessment."""
+        stale = {"state": "stale", "usage": "unknown"}
+        try:
+            from .mio_generation import read_slow_analysis
+            receipt = read_slow_analysis(receipt)
+            arguments = {key: receipt[key] for key in
+                         ('result_handle', 'generation_id', 'trace_id')}
+            reply = _exchange("mio", "azmio", "mio.local.generation.result", arguments,
+                              deadline_s=min(PROBE_MAX_S, deadline_s))
+            value = read_slow_analysis(reply['slow_analysis'])
+            if reply.get('outcome') != 'generation_result':
+                return stale
+            if value.get('state') == 'stale':
+                return stale
+            if any(value.get(key) != receipt.get(key) for key in
+                   ('result_handle', 'generation_id', 'trace_id', 'frame_id')):
+                return stale
+            return value
+        except Exception:
+            return stale
+
     def assess(self, frame, *, deadline_s: float) -> dict:
         """Call the model-free service verb; this does not read model admission."""
         self.last_slow_analysis = {"state": "closed", "usage": "unknown"}

@@ -104,6 +104,12 @@ FAST_ASSESS_VERB = Verb(
     admits=frozenset({PrincipalClass.SERVICE}), accepts_payload=True,
     payload_contract="azazel_nexus.local_advisory.read_frame",
 )
+GENERATION_RESULT_VERB = Verb(
+    name="mio.local.generation.result",
+    arguments=tuple(Argument(name, ArgumentKind.IDENTIFIER) for name in
+                    ("result_handle", "generation_id", "trace_id")),
+    admits=frozenset({PrincipalClass.SERVICE}),
+)
 #: Read-only: whether this service now holds an admitted local model, as the
 #: result of its own `AdmissionHolder` (refreshed before every request). No
 #: arguments, no payload, SERVICE only -- the same principal set as the
@@ -117,7 +123,7 @@ ADMISSION_VERB = Verb(
 #: No reference verb: verified playbook references are served by the
 #: model-free `azazel-mio-referenced.service` (`mio_referenced`), which runs
 #: on a node with no admitted model. This host serves only model verbs.
-REGISTRY = VerbRegistry([ACTIVATE_VERB, ADMISSION_VERB, INFER_VERB, FAST_ASSESS_VERB])
+REGISTRY = VerbRegistry([ACTIVATE_VERB, ADMISSION_VERB, INFER_VERB, FAST_ASSESS_VERB, GENERATION_RESULT_VERB])
 
 
 @dataclass(frozen=True)
@@ -209,6 +215,9 @@ class LocalRuntimeService:
 
     def handle(self, request: Any, *, audit: Callable[[dict], None] = lambda e: None) -> dict:
         name = getattr(getattr(request, "verb", None), "name", None)
+        if name == GENERATION_RESULT_VERB.name:
+            return {"outcome": "generation_result", "slow_analysis":
+                    self._generation_lane.poll(**request.arguments)}
         if name == INFER_VERB.name:
             return self._infer(request, audit=audit)
         if name == FAST_ASSESS_VERB.name:

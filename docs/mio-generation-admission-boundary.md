@@ -67,9 +67,31 @@ feeds route selection or replaces `fast_assistance`. Fast and slow initially
 share the validated MIO frame. Completed slow results retain their original
 frame/trace/generation bindings when polled; the new fast assessment can have
 its own fresh frame. This is polling, not a background push/publication service.
-A future consumer must poll the identical source to retrieve a completed result.
-No new socket verb, startup grant, process-start path or production policy is
-introduced. The structured transport uses existing product-owned `LocalServer`
+An additive Draft candidate protocol also permits explicit original-job polling:
+`mio.local.generation.result` takes exactly `result_handle`, `generation_id` and
+`trace_id` identifier arguments, no event payload, and the same SERVICE principal
+restriction as assessment. A queued receipt includes a random 64-hex-character
+handle. This is retrieval correlation, never an admission grant. Both generation
+authorization gates and the current capability remain required on polling.
+
+The reply is `{"outcome":"generation_result","slow_analysis":...}`. A missing,
+expired, evicted, unauthorized or mismatched binding returns only
+`{"state":"stale","usage":"unknown"}`. A valid handle returns only its original
+job's queued/terminal metadata and original generation/frame/trace. A changed
+current event is assessed separately; polling never projects old assistance into
+that event. `LocalSocketClient.generation_result(receipt)` validates all original
+bindings and never alters its current `last_slow_analysis` or fast assistance.
+It uses the existing authenticated AF_UNIX exchange and does not rerun source,
+perform embedding lookup, or start generation work.
+
+Handles expire on a monotonic sixty-second TTL starting at queue acceptance
+(configurable positive maximum: three hundred seconds), with sixteen retained
+records and the existing 128 KiB advisory output bound. Expiry/cap eviction
+forgets retrieval, including the legacy source cache; reads do not extend TTL.
+Original exact-source polling and changed-source supersession semantics remain.
+This protocol is an additive Draft candidate awaiting owner/API acceptance before
+rollout; it grants no production permission.
+No startup grant, process-start path or production policy is introduced. The structured transport uses existing product-owned `LocalServer`
 and MIO response schemas, then the core's grounding/lifecycle validation. Usage
 is known only for actual nonnegative integer provider counters on every call;
 missing counters remain unknown. Existing inference consumers retain strict

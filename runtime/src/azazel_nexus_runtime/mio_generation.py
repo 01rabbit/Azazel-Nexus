@@ -9,6 +9,8 @@ import copy
 import hashlib
 import json
 import math
+import re
+import secrets
 import threading
 import time
 from dataclasses import dataclass, field
@@ -92,11 +94,17 @@ class GenerationLane:
 
     Superseding an active request stops its owned provider, bounding work as
     well as publication. The loader must replace a stopped server explicitly.
-    No restart/spawn occurs here. A repeat of the exact source polls its result.
+    No restart/spawn occurs here. Exact-source repeats and explicit handles poll
+    results. Handles retain original bindings for at most sixty seconds (maximum
+    configurable TTL: three hundred seconds), with sixteen retained records.
     """
-    def __init__(self, *, capability=None, server=None, deadline_s=5.0):
+    def __init__(self, *, capability=None, server=None, deadline_s=5.0, result_ttl_s=60.0):
         if type(deadline_s) not in (int, float) or not math.isfinite(deadline_s) or not 0 < deadline_s <= 30:
             raise ValueError('invalid_generation_deadline')
+        if type(result_ttl_s) not in (int, float) or not math.isfinite(result_ttl_s) or not 0 < result_ttl_s <= 300:
+            raise ValueError('invalid_result_ttl')
+        self.result_ttl_s = result_ttl_s
+        self._receipts = {}
         self.capability, self.server, self.deadline_s = capability, server, deadline_s
         self._lock = threading.RLock()
         self._stop_lock = threading.Lock()
@@ -116,8 +124,37 @@ class GenerationLane:
     def _cancel(self, job, reason):
         job['cancelled'].set()
         job['reason'] = reason
+        with self._lock:
+            record = self._receipts.get(job['handle'])
+            if record:
+                record['status'] = self._status(reason, job['frame'], job['generation'],
+                                                 result_handle=job['handle'])
         # stop() is the existing bounded supervisor process-group termination.
         # Do not call it in the fast caller: the worker/timer owns cancellation.
+
+    def _prune(self):
+        now = time.monotonic()
+        for handle, record in list(self._receipts.items()):
+            if now >= record['expires']:
+                self._receipts.pop(handle)
+        while len(self._receipts) > 16:
+            self._receipts.pop(next(iter(self._receipts)))
+        live = set(self._receipts)
+        self._results = {key: value for key, value in self._results.items()
+                         if value.get('result_handle') in live}
+
+    def poll(self, result_handle, generation_id, trace_id):
+        """Read one original job, never dispatch or consult embedding admission."""
+        stale = {'state': 'stale', 'usage': 'unknown'}
+        if not self._authorized(generation_id):
+            return stale
+        with self._lock:
+            self._prune()
+            record = self._receipts.get(result_handle) if type(result_handle) is str else None
+            if (not record or record['generation'] != generation_id
+                    or record['trace'] != trace_id):
+                return stale
+            return copy.deepcopy(record['status'])
 
     def submit(self, source, frame, generation_id):
         if not self._authorized(generation_id):
@@ -127,11 +164,12 @@ class GenerationLane:
         fingerprint = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
         key = (generation_id, fingerprint)
         with self._lock:
+            self._prune()
             if key in self._results:
                 return copy.deepcopy(self._results[key])
             for job in (self._active, self._pending):
                 if job and job['key'] == key:
-                    return self._status('queued', job['frame'], generation_id)
+                    return self._status('queued', job['frame'], generation_id, result_handle=job['handle'])
             # A new revision of the same caller request supersedes its old work.
             for job in (self._active, self._pending):
                 if job and job['source']['request_id'] == source['request_id']:
@@ -140,14 +178,19 @@ class GenerationLane:
                 self._pending = None
             if self._pending is not None:
                 return self._status('queue_full', frame, generation_id)
-            self._pending = dict(key=key, source=copy.deepcopy(source), frame=frame,
+            handle = secrets.token_hex(32)
+            queued = self._status('queued', frame, generation_id, result_handle=handle)
+            self._receipts[handle] = dict(generation=generation_id, trace=frame.trace_id,
+                expires=time.monotonic() + self.result_ttl_s, status=queued)
+            self._prune()
+            self._pending = dict(handle=handle, key=key, source=copy.deepcopy(source), frame=frame,
                                  generation=generation_id, cancelled=threading.Event(),
                                  end=time.monotonic() + self.deadline_s, reason='cancelled')
             if self._worker is None or not self._worker.is_alive():
                 self._worker = threading.Thread(target=self._run, daemon=True,
                                                 name='mio-generation')
                 self._worker.start()
-            return self._status('queued', frame, generation_id)
+            return copy.deepcopy(queued)
 
     def cancel(self):
         with self._lock:
@@ -209,6 +252,14 @@ class GenerationLane:
                 status = self._status(job['reason'] if job['cancelled'].is_set() else 'timeout',
                                       job['frame'], job['generation'])
             with self._lock:
+                status['result_handle'] = job['handle']
+                # Retained output has the same hard byte/schema bound as the wire reader.
+                if read_slow_analysis(status).get('state') == 'closed' and status['state'] != 'closed':
+                    status = self._status('degraded', job['frame'], job['generation'],
+                                          result_handle=job['handle'])
+                self._prune()
+                if job['handle'] in self._receipts:
+                    self._receipts[job['handle']]['status'] = copy.deepcopy(status)
                 self._results[job['key']] = status
                 while len(self._results) > 16:
                     del self._results[next(iter(self._results))]
@@ -221,10 +272,13 @@ def read_slow_analysis(value):
     try:
         if (type(value) is not dict or len(json.dumps(value, allow_nan=False).encode()) > 128 * 1024
                 or set(value) - {'state', 'usage', 'generation_id', 'frame_id', 'trace_id',
-                                 'assistance', 'calls', 'origin'}
+                                 'assistance', 'calls', 'origin', 'result_handle'}
                 or value['state'] not in {'closed', 'degraded', 'queued', 'queue_full',
-                                          'complete', 'timeout', 'cancelled', 'superseded'}
+                                          'complete', 'timeout', 'cancelled', 'superseded', 'stale'}
                 or value['usage'] not in {'known', 'unknown'}):
+            return closed
+        if 'result_handle' in value and (type(value['result_handle']) is not str
+                or re.fullmatch(r'[0-9a-f]{64}', value['result_handle']) is None):
             return closed
         if 'assistance' in value:
             result = value['assistance']

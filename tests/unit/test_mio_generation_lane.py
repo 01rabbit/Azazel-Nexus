@@ -157,3 +157,68 @@ def test_normal_locald_preserves_fast_knowledge_and_closed_slow():
     assert reply['fast_assistance']['knowledge'][0]['claim_id'] == 'T1110'
     assert reply['slow_analysis']['state'] == 'closed'
     assert reply['fast_assistance']['frame_id'] == reply['slow_analysis']['frame_id']
+
+
+@pytest.mark.parametrize('next_request', ['fixture-event', 'new-event'])
+def test_explicit_result_poll_survives_changed_current_assessment(monkeypatch, next_request):
+    from azazel_nexus_runtime.mio_locald import LocalRuntimeService, FAST_ASSESS_VERB, GENERATION_RESULT_VERB
+    from azazel_nexus_runtime import mio_socket_client as client
+    lane, source, frame = setup()
+    service = LocalRuntimeService(generation_lane=lane, generation_id='fixture-generation')
+    def exchange(socket, account, verb, arguments, **kwargs):
+        return service.handle(SimpleNamespace(verb=SimpleNamespace(name=verb),
+            arguments=arguments, payload=kwargs.get('payload')))
+    monkeypatch.setattr(client, '_exchange', exchange)
+    socket = client.LocalSocketClient()
+    fast = socket.assess(source, deadline_s=.5)
+    receipt = socket.last_slow_analysis
+    until = time.monotonic() + 2
+    while time.monotonic() < until:
+        original = socket.generation_result(receipt)
+        if original['state'] != 'queued':
+            break
+        time.sleep(.005)
+    assert original['state'] in {'complete', 'degraded'}
+    assert original['frame_id'] == fast['frame_id']
+    changed = socket.assess(source | {'request_id': next_request, 'question': 'Changed'}, deadline_s=.5)
+    assert changed['frame_id'] != original['frame_id']
+    assert socket.generation_result(receipt) == original
+    assert socket.last_slow_analysis['frame_id'] == changed['frame_id']
+    for key in ('generation_id', 'trace_id', 'result_handle', 'frame_id'):
+        assert socket.generation_result(receipt | {key: 'wrong'})['state'] == 'stale'
+    # Polling does not invoke inference, even after a new current event exists.
+    lane.cancel()
+
+
+def test_result_expiry_and_retention_cap(monkeypatch):
+    lane, source, frame = setup()
+    value = result(lane, source, frame)
+    assert lane.poll(value['result_handle'], 'fixture-generation', frame.trace_id) == value
+    assert lane.poll('f' * 64, 'fixture-generation', frame.trace_id)['state'] == 'stale'
+    record = lane._receipts[value['result_handle']]
+    record['expires'] = time.monotonic() - 1
+    assert lane.poll(value['result_handle'], 'fixture-generation', frame.trace_id)['state'] == 'stale'
+    assert not lane._results
+    for n in range(20):
+        result(lane, source | {'request_id': str(n)}, frame)
+    assert len(lane._receipts) <= 16
+    assert len(lane._results) <= 16
+    lane.capability = replace(lane.capability, role='embedding')
+    latest = next(reversed(lane._receipts))
+    assert lane.poll(latest, 'fixture-generation', frame.trace_id)['state'] == 'stale'
+
+
+def test_result_poll_without_capability_never_dispatches():
+    lane, source, frame = setup()
+    value = result(lane, source, frame)
+    calls = len(lane.server.requests)
+    assert lane.poll(value['result_handle'], 'fixture-generation', frame.trace_id) == value
+    assert len(lane.server.requests) == calls
+    lane.capability = replace(lane.capability, role='embedding')
+    assert lane.poll(value['result_handle'], 'fixture-generation', frame.trace_id)['state'] == 'stale'
+
+
+@pytest.mark.parametrize('ttl', [0, -1, float('inf'), 301, True])
+def test_invalid_result_ttl_rejected(ttl):
+    with pytest.raises(ValueError):
+        generation.GenerationLane(result_ttl_s=ttl)
