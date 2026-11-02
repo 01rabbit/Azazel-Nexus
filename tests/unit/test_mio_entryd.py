@@ -233,6 +233,51 @@ def test_explainer_p3_through_handler_never_dispatches_remote(service, monkeypat
         service.handle(req)
 
 
+def test_reserved_edge_transition_context_requires_the_explainer_principal(service):
+    from azazel_nexus.incident_explain import build_frame, pending_entry
+    from test_incident_explain import transition
+
+    service._explainer_uid = 4242
+    frame = build_frame(pending_entry(transition()), 1)
+    request = SimpleNamespace(
+        verb=entry.ADVISE_VERB, arguments={"deadline_ms": 500}, payload=frame,
+        principal=Principal(4243, 7, 1, frozenset({PrincipalClass.SERVICE})),
+    )
+    with pytest.raises(RequestRefused) as refused:
+        service.handle(request)
+    assert refused.value.refusal.value == "principal_denied"
+
+
+def test_edge_sequence_outside_mio_trace_grammar_skips_only_fast_assistance(
+        service, monkeypatch):
+    from azazel_nexus.incident_explain import (
+        MIO_TRACE_SEQUENCE_MAX, build_frame, pending_entry,
+    )
+    from test_incident_explain import transition
+
+    service._explainer_uid = os.getuid()
+    service._local_admitted = lambda *args, **kwargs: False
+    monkeypatch.setattr(service.local, "assess",
+                        lambda *args, **kwargs: pytest.fail("unsupported fast frame was sent"))
+    monkeypatch.setattr(service.local, "observe", lambda **_: "local_not_admitted")
+    monkeypatch.setattr(service.remote, "observe", lambda **_: "remote_not_admitted")
+    monkeypatch.setattr(service.remote, "handle",
+                        lambda *args, **kwargs: pytest.fail("remote request"))
+    monkeypatch.setattr(service.reference, "reference", lambda *args, **kwargs: (None, "no_pack"))
+    monkeypatch.setattr(service.local, "handle",
+                        lambda *args, **kwargs: {"outcome": "not_advice", "refusal": "not_advice"})
+    frame = build_frame(pending_entry(transition()), MIO_TRACE_SEQUENCE_MAX + 1)
+    request = SimpleNamespace(
+        verb=entry.ADVISE_VERB, arguments={"deadline_ms": 2000}, payload=frame,
+        principal=Principal(os.getuid(), os.getgid(), 1, frozenset({PrincipalClass.SERVICE})),
+    )
+
+    reply = service.handle(request)
+
+    assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
+    assert "fast_assistance" not in reply
+
+
 @pytest.mark.parametrize("profile", list(MioProfile))
 @pytest.mark.parametrize("privacy", list(PrivacyClass))
 def test_entry_rechecks_remote_with_the_same_no_opt_in_reading(service, monkeypatch,

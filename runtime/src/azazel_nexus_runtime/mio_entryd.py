@@ -11,6 +11,9 @@ from datetime import datetime
 from types import SimpleNamespace
 
 from azazel_nexus.audit import AuditChainBroken, AuditUnavailable
+from azazel_nexus.incident_explain import (
+    FAST_TRANSITION_KIND, edge_fast_assistance_unavailable, read_fast_transition,
+)
 from azazel_nexus.capability import CapabilityState
 from azazel_nexus.local_advisory import (
     FrameRefused,
@@ -681,6 +684,7 @@ class MioEntryService:
             raise RequestRefused(Refusal.PRINCIPAL_DENIED, "explainer_verb")
         local_request = None
         fast_assistance = None
+        skip_fast_assistance = False
         if is_advice:
             try:
                 frame = read_frame(request.payload)
@@ -689,6 +693,18 @@ class MioEntryService:
             privacy = PrivacyClass(frame["privacy_class"])
             if explainer and privacy is not PrivacyClass.P3_RESTRICTED:
                 raise RequestRefused(Refusal.PRINCIPAL_DENIED, "explainer_privacy")
+            reserved_transition = any(item["kind"] == FAST_TRANSITION_KIND
+                                      for item in frame["context"])
+            if reserved_transition and not explainer:
+                raise RequestRefused(Refusal.PRINCIPAL_DENIED, "edge_transition_context")
+            if reserved_transition:
+                try:
+                    read_fast_transition(frame)
+                except ValueError:
+                    raise RequestRefused(Refusal.MALFORMED_FRAME,
+                                         "edge_transition_context") from None
+            skip_fast_assistance = (explainer and
+                                    edge_fast_assistance_unavailable(frame))
             self._mark(key)
             self.router._record(request_event(frame))
             # Give the model-free shared core first use of a small, fixed
@@ -710,13 +726,14 @@ class MioEntryService:
                               - MIN_AI_ATTEMPT_MS / 1000 - LEDGER_ALLOWANCE_MS / 1000
                               - (15 * MIN_PROBE_S))
             try:
-                if fast_budget <= 0:
-                    from .mio_socket_client import fast_assessment_degraded
-                    fast_assistance = fast_assessment_degraded("timeout")
-                else:
-                    fast_assistance = self.local.assess(
-                        frame, deadline_s=min(FAST_ASSESS_MAX_S, fast_budget))
-                fast_assistance = read_fast_assistance(fast_assistance)
+                if not skip_fast_assistance:
+                    if fast_budget <= 0:
+                        from .mio_socket_client import fast_assessment_degraded
+                        fast_assistance = fast_assessment_degraded("timeout")
+                    else:
+                        fast_assistance = self.local.assess(
+                            frame, deadline_s=min(FAST_ASSESS_MAX_S, fast_budget))
+                    fast_assistance = read_fast_assistance(fast_assistance)
             except Exception:
                 from .mio_socket_client import fast_assessment_degraded
                 fast_assistance = read_fast_assistance(
@@ -724,9 +741,11 @@ class MioEntryService:
             gated = gate_frame(frame)
             if gated is not None and gated["reason"] == "insufficient_information":
                 self.router._record({"event_type": "mio.local.gated", "reason": gated["reason"]})
-                return {**gated, "route": Route.DETERMINISTIC_HANDOFF.value,
-                        "ledger_seq": self.router.ledger.head()[0],
-                        "fast_assistance": fast_assistance}
+                reply = {**gated, "route": Route.DETERMINISTIC_HANDOFF.value,
+                         "ledger_seq": self.router.ledger.head()[0]}
+                if fast_assistance is not None:
+                    reply["fast_assistance"] = fast_assistance
+                return reply
             local_request = SimpleNamespace(
                 verb=INFER_VERB, arguments=request.arguments, payload=frame,
             )
@@ -790,7 +809,7 @@ class MioEntryService:
                 reply.update(read_delivered(result.reply))
         if is_advice and result.route is Route.DETERMINISTIC_HANDOFF:
             reply.update(self._handoff(frame, result, deadline_at))
-        if is_advice:
+        if is_advice and fast_assistance is not None:
             reply["fast_assistance"] = fast_assistance
         return reply
 

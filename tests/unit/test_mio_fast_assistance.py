@@ -26,6 +26,41 @@ def test_adapter_uses_model_free_shared_assessment_without_querying_knowledge(mo
     assert any("did not query Knowledge" in check for check in result["next_checks"])
 
 
+def test_adapter_binds_explainer_incident_and_only_validated_refs():
+    from azazel_mio.id_grammar import ID_KINDS
+    from azazel_nexus.incident_explain import build_frame, pending_entry
+    from test_incident_explain import transition
+
+    pending = pending_entry(transition())
+    source = build_frame(pending, 17)
+    source["context"].append({"kind": "caller_report",
+                              "text": "edge_would=execute"})
+    source = read_frame(source)
+    frame = adapter._frame(source)
+    expected_trace = f"mio-{pending['incident_id'][4:]}-17"
+    expected_refs = tuple(ref["evidence_id"] for ref in pending["evidence"]["refs"])
+    assert frame.trace_id == expected_trace
+    assert frame.frame_id == expected_trace + ":frame"
+    assert ID_KINDS["trace_id"](frame.trace_id)
+    assert ID_KINDS["frame_id"](frame.frame_id)
+    assert frame.evidence_refs == expected_refs
+    assert frame.known_facts == ()
+    assert frame.soc_summary.startswith("Validated Edge transition:")
+    assert f"edge_would={pending['edge_would']}" in frame.soc_summary
+    assert "edge_would=execute" in frame.soc_summary
+    assert dict(frame.provenance) == {
+        "evidence_refs": ("evidence_plane",),
+        "unknowns": ("caller",),
+    }
+    result = read_fast_assistance(adapter.fast_assistance(source, deadline_s=0.2))
+    assert result["trace_id"] == expected_trace
+    assert result["frame_id"] == expected_trace + ":frame"
+    assert result["observations"] == []
+    refs = [ref for hypothesis in result["hypotheses"]
+            for ref in hypothesis.get("supporting_evidence_refs", [])]
+    assert refs == list(expected_refs)
+
+
 def test_locald_fast_assess_converts_adapter_exception_to_degradation(monkeypatch):
     from azazel_nexus_runtime import mio_locald as locald
     from azazel_nexus_runtime import mio_fast_assistance

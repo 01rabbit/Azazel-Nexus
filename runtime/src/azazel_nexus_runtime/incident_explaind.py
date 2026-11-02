@@ -18,7 +18,8 @@ from azazel_nexus.audit import AuditEntry, GENESIS_HASH
 from azazel_nexus.edge_intake import canonical
 from azazel_nexus.fabric_boundary import project_explanation
 from azazel_nexus.incident_explain import (
-    EVIDENCE_FIELD, FABRIC_RECORD_FIELD, CODES, MAX_LINE, MAX_PENDING, Selection, build_frame, decode,
+    EVIDENCE_FIELD, FABRIC_RECORD_FIELD, CODES, MAX_LINE, MAX_PENDING, MIO_TRACE_SEQUENCE_MAX,
+    Selection, build_frame, decode,
     record_evidence,
     build_recent_incident, build_recent_incidents, read_recent_incidents, explanation_summary,
     SHOWN_STATES, closed_pairs, read_control, read_retention_boundary, read_mio_reply, read_record, read_transition, read_pending,
@@ -515,6 +516,8 @@ class Explainer:
         codes = []
         t = read_pending(t)
         frame = build_frame(t, sequence)
+        if sequence > MIO_TRACE_SEQUENCE_MAX:
+            codes.append("mio_fast_unavailable")
         mio = {"route": "unavailable", "outcome": "unavailable", "reason": "mio_unavailable", "text": None}
         self.mio_available = False
         try:

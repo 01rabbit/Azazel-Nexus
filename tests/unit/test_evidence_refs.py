@@ -172,14 +172,19 @@ def test_evidence_intake_did_not_store_is_said_of_the_whole_record():
     assert pending_entry(updated)["evidence"]["gaps"] == ["evidence_not_stored"]
 
 
-def test_the_frame_never_carries_the_pointers():
+def test_frame_carries_only_validated_digest_refs_without_pointer_metadata():
+    from azazel_nexus.incident_explain import read_fast_transition
+
     (first, latest), (_, updated) = _incident(0.0, 100.0)
     entry = pending_entry(updated)
     frame = build_frame(entry, 7)
     assert frame == build_frame(updated, 7)
     text = json.dumps(frame)
-    assert first.digest not in text and latest.digest not in text
-    assert first.digest.removeprefix("sha256:")[:16] not in text
+    projected = read_fast_transition(frame)
+    assert projected["evidence_refs"] == [first.digest, latest.digest]
+    assert first.digest.removeprefix("sha256:")[:16] in text
+    assert '"observed_at"' not in text and '"role"' not in text
+    assert str(first.received_at) not in text and str(latest.received_at) not in text
 
 
 def test_a_pending_entry_from_before_the_pointers_still_reads():

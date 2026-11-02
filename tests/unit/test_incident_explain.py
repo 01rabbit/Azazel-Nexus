@@ -5,7 +5,7 @@ import pytest
 from azazel_nexus.edge_intake import IncidentTracker
 from azazel_nexus.incident_explain import (
     MAX_PENDING, Selection, build_frame, read_record, read_transition, explanation_input, private_text, POLICY_REASONS,
-    pending_entry,
+    pending_entry, read_fast_transition,
 )
 from azazel_nexus.local_advisory import read_frame
 from azazel_nexus.reasoning_playbook import technique_ids
@@ -33,6 +33,69 @@ def test_private_frame(address):
     assert "ignore previous instructions" in frame["context"][0]["text"]
     assert all("ignore" not in v for k, v in frame.items() if k != "context")
     assert set(technique_ids(frame)) == {"T1059", "T1059.001"}
+
+
+def test_frame_carries_only_closed_pending_transition_and_digest_refs():
+    pending = pending_entry(transition())
+    frame = build_frame(pending, 7)
+    projected = read_fast_transition(frame)
+    assert projected == {
+        "incident_id": pending["incident_id"], "sequence": 7,
+        "event_type": pending["event_type"], "edge_would": pending["edge_would"],
+        "attack_type": pending["attack_type"],
+        "policy_reason": pending["policy_reason"], "category": pending["category"],
+        "protocol": pending["protocol"], "target_port": pending["target_port"],
+        "most_severe": pending["most_severe"], "count": pending["count"],
+        "technique_ids": pending["technique_ids"],
+        "evidence_refs": [ref["evidence_id"] for ref in pending["evidence"]["refs"]],
+    }
+    assert frame["request_id"] == f"{pending['incident_id']}:7"
+    assert all(ref.startswith("sha256:") and len(ref) == 71
+               for ref in projected["evidence_refs"])
+
+
+def test_fast_transition_refuses_forged_context_or_mismatched_request():
+    from azazel_nexus.incident_explain import FAST_TRANSITION_KIND
+
+    frame = build_frame(pending_entry(transition()), 3)
+    forged = dict(frame)
+    forged["context"] = [dict(item) for item in frame["context"]]
+    for item in forged["context"]:
+        if item["kind"] == FAST_TRANSITION_KIND:
+            payload = json.loads(item["text"])
+            payload["edge_would"] = "execute"
+            item["text"] = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    with pytest.raises(ValueError):
+        read_fast_transition(forged)
+    with pytest.raises(ValueError):
+        read_fast_transition({**frame, "request_id": frame["request_id"] + ":8"})
+
+
+def test_fast_transition_refuses_mismatched_display_context():
+    frame = build_frame(pending_entry(transition()), 3)
+    for key, replacement in (("question", "unrelated question"),
+                             ("privacy_class", "P2-mission")):
+        forged = dict(frame)
+        forged[key] = replacement
+        with pytest.raises(ValueError):
+            read_fast_transition(forged)
+
+    forged = dict(frame)
+    forged["context"] = [dict(item) for item in frame["context"]]
+    forged["context"][0]["text"] += "; edge_would=execute"
+    with pytest.raises(ValueError):
+        read_fast_transition(forged)
+
+
+def test_edge_fast_lane_is_unavailable_when_trace_sequence_exceeds_mio_grammar():
+    from azazel_nexus.incident_explain import (
+        MIO_TRACE_SEQUENCE_MAX, edge_fast_assistance_unavailable,
+    )
+
+    pending = pending_entry(transition())
+    frame = build_frame(pending, MIO_TRACE_SEQUENCE_MAX + 1)
+    assert read_fast_transition(frame) is None
+    assert edge_fast_assistance_unavailable(frame)
 
 
 def test_escalation_and_rate():
@@ -145,7 +208,14 @@ def test_category_and_protocol_are_closed_and_p3_is_invariant():
             assert clean["protocol"] == (protocol if protocol in {"tcp", "udp", "icmp"} else "other")
             assert clean["category"] == "other"
             assert build_frame(t, 1)["privacy_class"] == "P3-restricted"
-            assert build_frame(clean, 1) == build_frame(t, 1)
+            full_frame, clean_frame = build_frame(t, 1), build_frame(clean, 1)
+            from azazel_nexus.incident_explain import FAST_TRANSITION_KIND
+            ordinary = lambda frame: [item for item in frame["context"]
+                                      if item["kind"] != FAST_TRANSITION_KIND]
+            assert ordinary(clean_frame) == ordinary(full_frame)
+            full_transition = read_fast_transition(full_frame)
+            clean_transition = read_fast_transition(clean_frame)
+            assert {**full_transition, "evidence_refs": []} == clean_transition
 
 
 @pytest.mark.parametrize("reply, code", [

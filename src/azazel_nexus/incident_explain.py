@@ -42,12 +42,15 @@ CODES = frozenset({"transition_refused", "chain_broken", "queue_full", "mio_unav
                    "storage_failed", "status_write_failed", "explanation_segment_full",
                    "cursor_refused", "read_failed", "cursor_overtaken", "stale_skipped",
                    "incident_segment_full", "ledger_tail_incomplete", "mio_gated",
-                   "mio_handoff", "mio_local_non_advisory", "segment_from_future"})
+                   "mio_handoff", "mio_local_non_advisory", "mio_fast_unavailable",
+                   "segment_from_future"})
 QUESTION = ("Edge Core が次のセキュリティインシデントを検知しました。状況と、運用者が確認すべき点を説明してください。"
             "Edge の判断は観測のみで実行されていません。")
 FIELDS = {"incident_id", "src_ip", "sid", "target_port", "count", "first_seen", "last_seen",
           "most_severe", "technique_ids", "first_evidence", "latest_evidence", "last_update",
           "edge_would", "policy_reason", "attack_type", "event_type"}
+FAST_TRANSITION_KIND = "edge_transition"
+MIO_TRACE_SEQUENCE_MAX = 999_999_999_999
 
 
 def closed_pairs(pairs):
@@ -305,19 +308,122 @@ def read_pending(t):
 
 
 def build_frame(transition, sequence):
-    t = explanation_input(transition) if "src_ip" in transition else read_pending(transition)
+    pending = "src_ip" not in transition
+    t = read_pending(transition) if pending else read_transition(transition)
     _int(sequence, 2**63-1, 1)
+    edge = t if pending else explanation_input(t)
     context = [
         {"kind": "edge_alert", "text": (
-            f"incident={t['incident_id']}; signature={t['attack_type']}; "
-            f"category={t['category']}; protocol={t['protocol']}; "
-            f"destination_port={t['target_port']}; severity={t['most_severe']}; count={t['count']}")},
-        {"kind": "edge_decision", "text": f"Edge would {t['edge_would']}; policy_reason={t['policy_reason']}"},
+            f"incident={edge['incident_id']}; signature={edge['attack_type']}; "
+            f"category={edge['category']}; protocol={edge['protocol']}; "
+            f"destination_port={edge['target_port']}; severity={edge['most_severe']}; count={edge['count']}")},
+        {"kind": "edge_decision", "text": f"Edge would {edge['edge_would']}; policy_reason={edge['policy_reason']}"},
     ]
     context.extend({"kind": "technique", "text": t_id} for t_id in t["technique_ids"])
+    # The explainer listener is the only ingress permitted to carry this
+    # reserved machine projection. Prose stays in the ordinary report fields.
+    evidence = (t.get(EVIDENCE_FIELD) if pending else evidence_pointer(t))
+    evidence_refs = ([] if evidence is None else list(dict.fromkeys(
+        ref["evidence_id"] for ref in evidence["refs"])))
+    # The pinned trace grammar caps decimal sequence suffixes at twelve
+    # digits. Preserve the general Edge sequence range; when it exceeds that
+    # grammar, this optional M.I.O. projection is omitted.
+    if sequence <= MIO_TRACE_SEQUENCE_MAX:
+        structured = {
+            "incident_id": t["incident_id"], "sequence": sequence,
+            "event_type": edge["event_type"], "edge_would": edge["edge_would"],
+            "attack_type": edge["attack_type"],
+            "policy_reason": edge["policy_reason"], "category": edge["category"],
+            "protocol": edge["protocol"], "target_port": edge["target_port"],
+            "most_severe": edge["most_severe"], "count": edge["count"],
+            "technique_ids": edge["technique_ids"], "evidence_refs": evidence_refs,
+        }
+        context.append({"kind": FAST_TRANSITION_KIND,
+                        "text": json.dumps(structured, sort_keys=True, separators=(",", ":"))})
     return read_frame({"request_id": f"{t['incident_id']}:{sequence}",
                        "privacy_class": PrivacyClass.P3_RESTRICTED.value,
                        "question": QUESTION, "context": context})
+
+
+def read_fast_transition(frame):
+    """Validate the explainer-only structured projection inside a local frame."""
+    entries = [item for item in frame["context"] if item["kind"] == FAST_TRANSITION_KIND]
+    if not entries:
+        return None
+    if len(entries) != 1:
+        raise ValueError("fast_transition_refused")
+    try:
+        value = json.loads(entries[0]["text"], object_pairs_hook=closed_pairs,
+                           parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        required = {"incident_id", "sequence", "event_type", "edge_would", "attack_type", "policy_reason",
+                    "category", "protocol", "target_port", "most_severe", "count",
+                    "technique_ids", "evidence_refs"}
+        _shape(value, required)
+        if (type(value["incident_id"]) is not str
+                or not re.fullmatch(r"inc-([0-9a-f]{16})", value["incident_id"])
+                or type(value["sequence"]) is not int
+                or not 1 <= value["sequence"] <= 999_999_999_999
+                or frame["request_id"] != f"{value['incident_id']}:{value['sequence']}"
+                or frame["privacy_class"] != PrivacyClass.P3_RESTRICTED.value
+                or frame["question"] != QUESTION
+                or value["event_type"] not in {"edge.incident." + kind
+                                                for kind in ("opened", "updated", "closed")}
+                or value["edge_would"] not in ACTIONS
+                or value["policy_reason"] not in POLICY_REASONS | {"other"}
+                or value["category"] not in CATEGORIES | {"other"}
+                or value["protocol"] not in {"tcp", "udp", "icmp", "other"}):
+            raise ValueError("fast_transition_refused")
+        _text(value["attack_type"], 160, field="attack_type")
+        if private_text(value["attack_type"]) != value["attack_type"]:
+            raise ValueError("fast_transition_refused")
+        _int(value["target_port"], 65535)
+        _int(value["most_severe"], 10)
+        _int(value["count"], 2**64-1)
+        ids = value["technique_ids"]
+        if type(ids) is not list or len(ids) > 8 or any(
+                type(item) is not str or not TECHNIQUE_ID.fullmatch(item) for item in ids):
+            raise ValueError("fast_transition_refused")
+        refs = value["evidence_refs"]
+        if (type(refs) is not list or len(refs) > 2 or
+                any(type(ref) is not str or not _DIGEST.fullmatch(ref) for ref in refs)):
+            raise ValueError("fast_transition_refused")
+        edge_alert = (
+            f"incident={value['incident_id']}; signature={value['attack_type']}; "
+            f"category={value['category']}; protocol={value['protocol']}; "
+            f"destination_port={value['target_port']}; severity={value['most_severe']}; "
+            f"count={value['count']}"
+        )
+        expected_context = [
+            {"kind": "edge_alert", "text": edge_alert},
+            {"kind": "edge_decision", "text": (
+                f"Edge would {value['edge_would']}; policy_reason={value['policy_reason']}"
+            )},
+            *({"kind": "technique", "text": technique_id}
+              for technique_id in ids),
+            {"kind": FAST_TRANSITION_KIND, "text": json.dumps(
+                value, sort_keys=True, separators=(",", ":"))},
+        ]
+        machine_context = [item for item in frame["context"]
+                           if item["kind"] in {
+                               "edge_alert", "edge_decision", "technique", FAST_TRANSITION_KIND,
+                           }]
+        if machine_context != expected_context:
+            raise ValueError("fast_transition_refused")
+        return value
+    except (TypeError, ValueError, KeyError):
+        raise ValueError("fast_transition_refused") from None
+
+
+def edge_fast_assistance_unavailable(frame):
+    """Identify an Edge explainer frame whose cursor exceeds MIO's trace grammar."""
+    if (frame.get("privacy_class") != PrivacyClass.P3_RESTRICTED.value
+            or frame.get("question") != QUESTION
+            or any(item["kind"] == FAST_TRANSITION_KIND for item in frame["context"])
+            or not any(item["kind"] in {"edge_alert", "edge_decision", "technique"}
+                       for item in frame["context"])):
+        return False
+    match = re.fullmatch(r"inc-[0-9a-f]{16}:([1-9][0-9]{12,18})", frame["request_id"])
+    return match is not None and int(match.group(1)) > MIO_TRACE_SEQUENCE_MAX
 
 
 class Selection:

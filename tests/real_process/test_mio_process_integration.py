@@ -261,7 +261,40 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
         # on the latency-bounded fast lane when the shared package is present.
         mio_fast = record["mio"]["fast_assistance"]
         if package_installed:
-            assert mio_fast["dependency_outcome"]["knowledge"] == "not_queried"
+            outcome = mio_fast["dependency_outcome"]["knowledge"]
+            # The ordinary 500 ms explainer request charges earlier ledger and
+            # probe work to one deadline. The shared fast lane may therefore
+            # return its typed timeout fallback; the separate normal-entry
+            # process case below proves a completed shared-core response.
+            assert outcome in {"not_queried", "timeout"}
+            if outcome == "not_queried":
+                from azazel_nexus.audit import AuditLedger
+
+                incident_hex = record["incident_id"][4:]
+                expected_event = "edge.incident." + record["transition"]
+                matching_entries = [
+                    entry
+                    for path in sorted((azazel / "edge-incidents").glob("????-??-??.jsonl"))
+                    for entry in AuditLedger(path, private=True)
+                    if entry.event.get("incident_id") == record["incident_id"]
+                    and entry.event.get("event_type") == expected_event
+                ]
+                assert matching_entries
+                expected_sequence = matching_entries[-1].sequence
+                assert mio_fast["trace_id"] == f"mio-{incident_hex}-{expected_sequence}"
+                assert mio_fast["frame_id"] == mio_fast["trace_id"] + ":frame"
+                expected_refs = [ref["evidence_id"] for ref in record["evidence"]["refs"]]
+                assert expected_refs and all(ref.startswith("sha256:") and len(ref) == 71
+                                             for ref in expected_refs)
+                grounded_refs = [ref for hypothesis in mio_fast["hypotheses"]
+                                 for ref in hypothesis.get("supporting_evidence_refs", [])]
+                assert grounded_refs == expected_refs
+                assert mio_fast["observations"] == []
+            else:
+                assert mio_fast["state"] == "dependency_unavailable"
+                assert mio_fast["observations"] == []
+                assert mio_fast["hypotheses"] == []
+            assert record["edge_would"] == "notify"
         else:
             assert mio_fast["state"] == "dependency_unavailable"
             assert mio_fast["dependency_outcome"]["knowledge"] == "unavailable"
