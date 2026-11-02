@@ -49,9 +49,14 @@ def authorized(value, generation_id):
 
 class StructuredGenerationTransport:
     """Product-owned bounded AF_UNIX server -> MIO StructuredTransport."""
-    def __init__(self, server, capability, *, deadline, cancelled, check):
+    def __init__(self, server, capability, *, deadline, cancelled, check, state=None):
         self.server, self.capability = server, capability
         self.deadline, self.cancelled, self.check = deadline, cancelled, check
+        # state: job-owned {'gate': Lock, 'in_flight': bool, 'started': bool}. The gate
+        # makes "may start a provider request" and "a request is in flight" atomic
+        # with respect to the cancel/deadline watcher.
+        self.state = state if state is not None else {
+            'gate': threading.Lock(), 'in_flight': False, 'started': False}
         self.last_model = capability.model_id
         self.calls = []
         self.failed = False
@@ -60,9 +65,12 @@ class StructuredGenerationTransport:
         from azazel_mio.model_adapter import MioModelBlocked, MioModelUnavailable
         from azazel_mio.model_schema import model_response_schema
         from .mio_serve import LocalInferenceRequest
-        remaining = self.deadline - time.monotonic()
-        if self.cancelled.is_set() or remaining <= 0 or not self.check():
-            raise MioModelBlocked('generation_closed')
+        state = self.state
+        with state['gate']:
+            remaining = self.deadline - time.monotonic()
+            if self.cancelled.is_set() or remaining <= 0 or not self.check():
+                raise MioModelBlocked('generation_closed')
+            state['in_flight'] = state['started'] = True
         try:
             result = self.server.infer(LocalInferenceRequest(
                 (('user', prompt),), max_tokens=768,
@@ -78,15 +86,23 @@ class StructuredGenerationTransport:
             timings = {k: v for k, v in result.timings.items()
                        if type(v) in (int, float) and math.isfinite(v) and v >= 0}
             self.calls.append({'usage': usage, 'timings': timings})
-            value = json.loads(result.text)
-            if type(value) is not dict:
-                raise ValueError
-            return value
         except MioModelBlocked:
             raise
         except Exception:
+            # Transport/provider failure only: the server is no longer trusted.
             self.failed = True
             raise MioModelUnavailable('generation_unavailable') from None
+        finally:
+            with state['gate']:
+                state['in_flight'] = False
+        # Content failure is per job: the provider stays usable and is not stopped.
+        try:
+            value = json.loads(result.text)
+        except (TypeError, ValueError):
+            raise MioModelUnavailable('generation_content_invalid') from None
+        if type(value) is not dict:
+            raise MioModelUnavailable('generation_content_invalid')
+        return value
 
 
 class GenerationLane:
@@ -202,8 +218,62 @@ class GenerationLane:
         with self._stop_lock:
             self.server.stop()
 
-    def _run(self):
+    def _execute(self, job):
+        """Run one job. The provider is stopped only while one of its requests is in flight."""
         from azazel_mio import AssistantCore
+        if job['cancelled'].is_set() or time.monotonic() >= job['end']:
+            # Cancelled or expired before any provider request: no watcher, no stop.
+            return self._status(job['reason'] if job['cancelled'].is_set() else 'timeout',
+                                job['frame'], job['generation'])
+        state = {'gate': threading.Lock(), 'in_flight': False, 'started': False}
+        timer_stop = threading.Event()
+        def watch():
+            while not timer_stop.wait(.01):
+                if job['cancelled'].is_set() or time.monotonic() >= job['end']:
+                    if not job['cancelled'].is_set():
+                        self._cancel(job, 'timeout')
+                    # The transport checks cancel/deadline under this gate before it
+                    # marks a request in flight, so no request can begin after this read.
+                    with state['gate']:
+                        in_flight = state['in_flight']
+                    if in_flight:
+                        self._stop_provider()
+                    return
+        watcher = threading.Thread(target=watch, daemon=True, name='mio-generation-deadline')
+        watcher.start()
+        transport = StructuredGenerationTransport(self.server, self.capability,
+            deadline=job['end'], cancelled=job['cancelled'],
+            check=lambda: self._authorized(job['generation']), state=state)
+        status = self._status('degraded', job['frame'], job['generation'])
+        try:
+            result = AssistantCore(model=transport).explain(job['frame'],
+                now=datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                knowledge_attempted=False, cancel_check=job['cancelled'].is_set,
+                stale_check=lambda: not self._authorized(job['generation'])).to_dict()
+            if (result['frame_id'] != job['frame'].frame_id
+                    or result['trace_id'] != job['frame'].trace_id):
+                raise ValueError('binding_mismatch')
+            if not self._authorized(job['generation']):
+                status['state'] = 'closed'
+            elif not job['cancelled'].is_set() and time.monotonic() < job['end']:
+                status.update(state='complete' if result['generation_method'] == 'model' else 'degraded',
+                              assistance=result, calls=transport.calls)
+                if transport.calls and all(call['usage'] is not None for call in transport.calls):
+                    status['usage'] = 'known'
+        except Exception:
+            pass
+        finally:
+            timer_stop.set()
+            watcher.join(timeout=.1)
+        # Only a transport/provider failure stops the provider here; content failures do not.
+        if transport.failed:
+            self._stop_provider()
+        if job['cancelled'].is_set() or time.monotonic() >= job['end']:
+            status = self._status(job['reason'] if job['cancelled'].is_set() else 'timeout',
+                                  job['frame'], job['generation'])
+        return status
+
+    def _run(self):
         while True:
             with self._lock:
                 job, self._pending = self._pending, None
@@ -211,46 +281,7 @@ class GenerationLane:
                 if job is None:
                     self._worker = None
                     return
-            timer_stop = threading.Event()
-            def watch(job=job, timer_stop=timer_stop):
-                while not timer_stop.wait(.01):
-                    if job['cancelled'].is_set() or time.monotonic() >= job['end']:
-                        if not job['cancelled'].is_set():
-                            self._cancel(job, 'timeout')
-                        self._stop_provider()
-                        return
-            watcher = threading.Thread(target=watch, daemon=True, name='mio-generation-deadline')
-            watcher.start()
-            transport = StructuredGenerationTransport(self.server, self.capability,
-                deadline=job['end'], cancelled=job['cancelled'],
-                check=lambda: self._authorized(job['generation']))
-            status = self._status('degraded', job['frame'], job['generation'])
-            try:
-                result = AssistantCore(model=transport).explain(job['frame'],
-                    now=datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ'),
-                    knowledge_attempted=False, cancel_check=job['cancelled'].is_set,
-                    stale_check=lambda: not self._authorized(job['generation'])).to_dict()
-                if (result['frame_id'] != job['frame'].frame_id
-                        or result['trace_id'] != job['frame'].trace_id):
-                    raise ValueError('binding_mismatch')
-                if not self._authorized(job['generation']):
-                    status['state'] = 'closed'
-                elif not job['cancelled'].is_set() and time.monotonic() < job['end']:
-                    status.update(state='complete' if result['generation_method'] == 'model' else 'degraded',
-                                  assistance=result, calls=transport.calls)
-                    if transport.calls and all(call['usage'] is not None for call in transport.calls):
-                        status['usage'] = 'known'
-            except Exception:
-                pass
-            finally:
-                timer_stop.set()
-                watcher.join(timeout=.1)
-            if (transport.failed or job['cancelled'].is_set()
-                    or time.monotonic() >= job['end']):
-                self._stop_provider()
-            if job['cancelled'].is_set() or time.monotonic() >= job['end']:
-                status = self._status(job['reason'] if job['cancelled'].is_set() else 'timeout',
-                                      job['frame'], job['generation'])
+            status = self._execute(job)
             with self._lock:
                 status['result_handle'] = job['handle']
                 # Retained output has the same hard byte/schema bound as the wire reader.

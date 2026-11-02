@@ -28,6 +28,7 @@ class FixtureServer:
         self.known, self.block = known, block
         self.entered, self.stopped = threading.Event(), threading.Event()
         self.requests = []
+        self.reply = None  # raw model text override for malformed-content tests
 
     def infer(self, request, deadline_s, **kwargs):
         self.requests.append(request)
@@ -35,6 +36,8 @@ class FixtureServer:
         if self.block:
             self.stopped.wait(deadline_s + .2)
             raise TimeoutError
+        if self.reply is not None:
+            return LocalInferenceResult(self.reply, 12, 7, {'total_ms': .1})
         task = request.response_format['json_schema']['name']
         if task == 'generate_hypotheses':
             value = {'hypotheses': [dict(hypothesis_id=f'h{i}',
@@ -120,6 +123,44 @@ def test_one_pending_slot_and_timeout_stops_provider():
     assert result(lane, source, frame)['state'] == 'timeout'
     assert lane.server.stopped.is_set()
     lane.cancel()
+
+
+@pytest.mark.parametrize('reply', ['{not json', '[]', '"text"', 'null'])
+def test_malformed_model_content_degrades_job_but_keeps_provider(reply):
+    lane, source, frame = setup()
+    lane.server.reply = reply
+    value = result(lane, source, frame)
+    assert lane.server.requests
+    assert value['state'] == 'degraded'
+    assert not lane.server.stopped.is_set()
+    # Same provider serves a later job after the content failure.
+    lane.server.reply = None
+    calls = len(lane.server.requests)
+    later = result(lane, source | {'request_id': 'after-malformed'}, frame)
+    assert len(lane.server.requests) > calls
+    assert later['state'] in {'complete', 'degraded'}
+    assert not lane.server.stopped.is_set()
+
+
+def test_cancel_before_any_provider_request_does_not_stop_provider():
+    lane, source, frame = setup(block=True)
+    # Hold the lane lock so the worker sees the job only after it is cancelled.
+    with lane._lock:
+        assert lane.submit(source, frame, 'fixture-generation')['state'] == 'queued'
+        lane.cancel()
+    assert result(lane, source, frame)['state'] == 'cancelled'
+    assert not lane.server.requests
+    assert not lane.server.stopped.is_set()
+
+
+def test_expiry_before_any_provider_request_does_not_stop_provider():
+    lane, source, frame = setup(block=True, deadline_s=.05)
+    with lane._lock:
+        assert lane.submit(source, frame, 'fixture-generation')['state'] == 'queued'
+        time.sleep(.15)  # deadline passes while still pending
+    assert result(lane, source, frame)['state'] == 'timeout'
+    assert not lane.server.requests
+    assert not lane.server.stopped.is_set()
 
 
 def test_supersession_stops_work_and_rejects_old_publication():
