@@ -143,6 +143,32 @@ except Exception as error:
     return result
 
 
+def _poll_generation_child(env: dict[str, str], user: str, groups: tuple[int, ...]):
+    """Exercise the explainer-only entry socket and expose only terminal state."""
+    code = r'''
+import json
+from azazel_nexus_runtime.mio_socket_client import _exchange
+trace = "mio-0123456789abcdef-1"
+reply = _exchange("mio-advise", "azmioentry", "mio.generation.result", {
+  "deadline_ms": 50, "result_handle": "a" * 64,
+  "generation_id": "process-generation", "frame_id": trace + ":frame",
+  "trace_id": trace,
+}, deadline_s=.25)
+value = reply["slow_analysis"]
+print(json.dumps({"outcome": reply["outcome"], "state": value["state"],
+                  "usage": value["usage"]}, sort_keys=True))
+'''
+    proc = subprocess.run(
+        [sys.executable, "-B", "-c", code], cwd=ROOT, env=env,
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        timeout=3, check=False, preexec_fn=_credentials(user, groups), text=True,
+    )
+    assert proc.returncode == 0, (proc.stdout + proc.stderr)[:80]
+    result = json.loads(proc.stdout)
+    assert set(result) == {"outcome", "state", "usage"}
+    return result
+
+
 def _send_edge_alert(env: dict[str, str], socket_path: Path, groups: tuple[int, ...]) -> None:
     """Send one fixed producer fixture through the public intake socket as azedge."""
     from tools.e2e_loop import golden_lines
@@ -290,9 +316,11 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
                             (run / "mio-entry/mio-entry.sock", children[2]),
                             (run / "edge-intake/edge-intake.sock", children[3])):
             _wait_socket(path, child, time.monotonic() + 6)
+        _wait_socket(run / "mio-advise/mio-advise.sock", children[2], time.monotonic() + 6)
+        poll = _poll_generation_child(env, "azexplain", (groups["azmio-advise"],))
+        assert poll == {"outcome": "generation_result", "state": "stale", "usage": "unknown"}
         if real_producer:
             _wait_socket(run / "audit-submit/audit-submit.sock", children[-1], time.monotonic() + 6)
-            _wait_socket(run / "mio-advise/mio-advise.sock", children[2], time.monotonic() + 6)
             for leaf, account, group in (
                 ("knowledge", "azknowledge", "azazel-operator"),
                 ("knowledge-read", "azknowledge", "azknowledge-read"),

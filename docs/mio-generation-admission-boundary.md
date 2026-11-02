@@ -84,6 +84,24 @@ bindings and never alters its current `last_slow_analysis` or fast assistance.
 It uses the existing authenticated AF_UNIX exchange and does not rerun source,
 perform embedding lookup, or start generation work.
 
+The incident explainer polls this result only through its explainer-authorized
+`mio-advise` entry socket. Before the first poll it appends the receipt to a
+separate private `mio-generation-results/YYYY-MM-DD.jsonl` event store (0700
+directory, 0600 segments, bounded to 8 MiB and fourteen days). Receipt and
+terminal events bind incident ID/sequence/request ID to the original
+frame/trace/generation/handle. This append-only store is not hash-chained and
+does not amend the Edge intake chain or the original explanation record. Its
+handles and generation identifiers never enter `recent.json` or the UI.
+
+GenerationLane state is process-local. After an explainer restart, an
+uncompleted durable receipt is polled again; if its original result has expired
+or been evicted, the lane records only `stale` and never starts the work again.
+A newer incident sequence or intake reset supersedes the earlier receipt. Only
+a complete, schema-validated response may add a sanitized
+`model_proposed_unverified` advisory to the recent projection. Timeout, cancel,
+superseded, stale and other terminal outcomes carry status only; none can
+change Edge policy, fast assistance or admission.
+
 Handles expire on a monotonic sixty-second TTL starting at queue acceptance
 (configurable positive maximum: three hundred seconds), with sixteen retained
 records and the existing 128 KiB advisory output bound. Expiry/cap eviction

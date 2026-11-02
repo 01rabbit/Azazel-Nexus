@@ -472,6 +472,38 @@ def test_explanation_summary_carries_digest_generation_freshness_as_of_and_citat
     assert read_recent_incidents(json.dumps(value).encode()) == value
 
 
+def test_slow_result_projection_is_unverified_bounded_and_identifier_free():
+    from azazel_nexus.incident_explain import (
+        build_recent_incident, build_recent_incidents, read_recent_incidents,
+        slow_analysis_projection,
+    )
+
+    trace = "mio-0000000000000000-1"
+    result = {"state": "complete", "usage": "known", "generation_id": "generation-secret",
+              "frame_id": trace + ":frame", "trace_id": trace,
+              "result_handle": "c" * 64, "assistance": {
+                  "schema_version": "mio.assistance.v1", "generation_method": "model",
+                  "frame_id": trace + ":frame", "trace_id": trace,
+                  "hypotheses": [{"verification": "model_proposed_unverified",
+                                  "statement": "A change may explain the observations."}],
+                  "unknowns": ["https://example.invalid/path/10.0.0.1"],
+                  "next_checks": ["Check the approved change record."]}}
+    projection = slow_analysis_projection(result)
+    assert projection["verification"] == "model_proposed_unverified"
+    assert projection["unknowns"] == ["Details withheld verify through an authorized source"]
+    assert not any(secret in json.dumps(projection) for secret in
+                   ("generation-secret", "c" * 64, trace, ":frame"))
+
+    row = build_recent_incident(_t1110(), record={
+        **_cited(), "incident_id": _t1110()["incident_id"]})
+    row["explanation"]["slow_analysis"] = projection
+    value = build_recent_incidents([row], 1)
+    assert read_recent_incidents(json.dumps(value).encode()) == value
+    forged = json.loads(json.dumps(value))
+    forged["incidents"][0]["explanation"]["slow_analysis"]["result_handle"] = "c" * 64
+    assert read_recent_incidents(json.dumps(forged).encode()) is None
+
+
 def test_recent_reader_accepts_not_queried_and_rejects_malformed_fast_assistance():
     pytest.importorskip("azazel_mio")
     from azazel_nexus.incident_explain import build_recent_incident, build_recent_incidents, read_recent_incidents

@@ -1,6 +1,8 @@
 """Read incident chains and append local explanations; no Edge connection exists."""
 from __future__ import annotations
 
+import json
+import math
 import os
 import queue
 import re
@@ -23,6 +25,7 @@ from azazel_nexus.incident_explain import (
     record_evidence,
     build_recent_incident, build_recent_incidents, read_recent_incidents, explanation_summary,
     SHOWN_STATES, closed_pairs, read_control, read_retention_boundary, read_mio_reply, read_record, read_transition, read_pending,
+    slow_analysis_projection,
 )
 from azazel_nexus.lite_import import read_knowledge_refs
 from azazel_nexus.store_dirs import fsync_directory, store_directory
@@ -117,6 +120,125 @@ class ExplanationStore(EvidenceStore):
             raise SegmentFull("explanation_segment_full") from None
 
 
+GENERATION_RESULT_STATES = frozenset({"complete", "degraded", "timeout", "cancelled",
+                                      "superseded", "stale", "closed"})
+GENERATION_RESULT_SEGMENT_BYTES = 2 * 1024 * 1024
+GENERATION_RESULT_MAX_BYTES = 8 * 1024 * 1024
+
+
+def read_generation_event(value):
+    """A separate durable record; never an amendment to either incident chain."""
+    if type(value) is not dict:
+        raise ValueError("generation_event_refused")
+    kind = value.get("event_type")
+    binding = {"incident_id", "incident_sequence", "request_id", "frame_id", "trace_id",
+               "generation_id", "result_handle", "recorded_at"}
+    if kind == "mio.generation.receipt":
+        if set(value) != binding | {"event_type"}:
+            raise ValueError("generation_event_refused")
+    elif kind == "mio.generation.result":
+        if set(value) not in (binding | {"event_type", "state", "usage"},
+                              binding | {"event_type", "state", "usage", "assistance"}):
+            raise ValueError("generation_event_refused")
+        if value.get("state") not in GENERATION_RESULT_STATES:
+            raise ValueError("generation_event_refused")
+        if value.get("usage") not in {"known", "unknown"}:
+            raise ValueError("generation_event_refused")
+        if value["state"] == "complete":
+            assistance = value.get("assistance")
+            if (type(assistance) is not dict or assistance.get("schema_version") != "mio.assistance.v1"
+                    or assistance.get("generation_method") != "model"
+                    or assistance.get("frame_id") != value["frame_id"]
+                    or assistance.get("trace_id") != value["trace_id"]
+                    or type(assistance.get("hypotheses")) is not list
+                    or len(assistance["hypotheses"]) > 4):
+                raise ValueError("generation_event_refused")
+            for hypothesis in assistance["hypotheses"]:
+                if (type(hypothesis) is not dict
+                        or hypothesis.get("verification") != "model_proposed_unverified"
+                        or type(hypothesis.get("statement")) is not str
+                        or not 0 < len(hypothesis["statement"]) <= 480):
+                    raise ValueError("generation_event_refused")
+            for key, maximum in (("unknowns", 24), ("next_checks", 8)):
+                values = assistance.get(key)
+                if (type(values) is not list or len(values) > maximum
+                        or any(type(item) is not str or not 0 < len(item) <= 480 for item in values)):
+                    raise ValueError("generation_event_refused")
+        elif "assistance" in value:
+            raise ValueError("generation_event_refused")
+    else:
+        raise ValueError("generation_event_refused")
+    ident, seq = value["incident_id"], value["incident_sequence"]
+    if (type(ident) is not str or not re.fullmatch(r"inc-[0-9a-f]{16}", ident)
+            or type(seq) is not int or not 1 <= seq <= MIO_TRACE_SEQUENCE_MAX
+            or value["request_id"] != f"{ident}:{seq}"):
+        raise ValueError("generation_event_refused")
+    expected_trace = f"mio-{ident[4:]}-{seq}"
+    if (value["trace_id"] != expected_trace or value["frame_id"] != expected_trace + ":frame"
+            or type(value["generation_id"]) is not str
+            or not re.fullmatch(r"[A-Za-z0-9._@:+-]{1,64}", value["generation_id"])
+            or type(value["result_handle"]) is not str
+            or not re.fullmatch(r"[0-9a-f]{64}", value["result_handle"])):
+        raise ValueError("generation_event_refused")
+    stamp = value["recorded_at"]
+    if type(stamp) not in (int, float) or not math.isfinite(stamp) or stamp < 0:
+        raise ValueError("generation_event_refused")
+    if len(canonical(value)) > 128 * 1024:
+        raise ValueError("generation_event_refused")
+    return json.loads(json.dumps(value, allow_nan=False))
+
+
+class GenerationResultStore(DailySegments):
+    """Private append-only event stream for slow M.I.O. receipts and results."""
+    def __init__(self, root):
+        super().__init__(root, "mio-generation-results", max_bytes=GENERATION_RESULT_MAX_BYTES,
+                         days=14, segment_bytes=GENERATION_RESULT_SEGMENT_BYTES, mode=0o700)
+
+    def prepare(self, now):
+        path = self.path_at(self.bounded(now))
+        self.current = path
+        existed = path.exists()
+        os.close(self.open_segment(path, 0o600))
+        if not existed:
+            path.unlink()
+        self.retain()
+
+    def append_event(self, value):
+        checked = read_generation_event(value)
+        path = self.path_at(self.bounded(checked["recorded_at"]))
+        self.current = path
+        self.retain()
+        data = canonical(checked) + b"\n"
+        if len(data) > 128 * 1024:
+            raise SegmentFull("generation_result_segment_full")
+        fd = self.open_segment(path, 0o600)
+        try:
+            if os.fstat(fd).st_size + len(data) > self.segment_bytes:
+                raise SegmentFull("generation_result_segment_full")
+            if os.write(fd, data) != len(data):
+                raise OSError("generation result append incomplete")
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        self.retain()
+
+    def events(self):
+        rows = []
+        for path in sorted(self.directory.glob("????-??-??.jsonl")):
+            info = path.lstat()
+            if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_size > self.segment_bytes):
+                raise ValueError("generation_result_segment_refused")
+            raw = read_file(path, self.segment_bytes)
+            for line in raw.splitlines():
+                if not line or len(line) > 128 * 1024:
+                    raise ValueError("generation_result_line_refused")
+                value = json.loads(line.decode("utf-8"), object_pairs_hook=closed_pairs,
+                                   parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+                rows.append(read_generation_event(value))
+        return rows
+
+
 #: The deadline the explainer gives entry for one `mio.advise`.
 ADVISE_DEADLINE_MS = REFERENCE_DEADLINE_MS
 #: How much longer the explainer waits than that. Entry measures its deadline
@@ -134,18 +256,53 @@ def advise(frame):
         payload=frame, deadline_s=(ADVISE_DEADLINE_MS + ADVISE_CALLER_MARGIN_MS) / 1000)
 
 
+def poll_generation_result(receipt, *, deadline_s=0.05):
+    """Relay a bound result poll through entryd's explainer-only socket."""
+    stale = {"state": "stale", "usage": "unknown"}
+    try:
+        arguments = {key: receipt[key] for key in
+                     ("result_handle", "generation_id", "frame_id", "trace_id")}
+        arguments["deadline_ms"] = max(1, min(50, int(deadline_s * 1000)))
+        response = _exchange(
+            "mio-advise", "azmioentry", "mio.generation.result", arguments,
+            deadline_s=deadline_s)
+        if type(response) is not dict or set(response) != {"outcome", "slow_analysis"}:
+            return None
+        from .mio_generation import read_slow_analysis
+        value = read_slow_analysis(response["slow_analysis"])
+        if response["outcome"] != "generation_result":
+            return None
+        if value.get("state") == "stale":
+            return stale
+        if any(value.get(key) != receipt.get(key) for key in
+               ("result_handle", "generation_id", "frame_id", "trace_id")):
+            return stale
+        return value
+    except Exception:
+        # Transport failure is retryable; do not confuse it with an expired
+        # or revoked handle and append a false terminal record.
+        return None
+
+
 class Explainer:
     def __init__(self, *, incidents, state, status_path, clock=time.time,
                  monotonic=time.monotonic, mio=None, knowledge=None, store_limits=None, audit=None,
-                 ui_status_path=None, ui_recent_path=None):
+                 ui_status_path=None, ui_recent_path=None, mio_result=None):
         self.incidents, self.state, self.status_path = incidents, state, status_path
         # The read-only UI's byte-identical copies (ADR-0007); optional.
         self.ui_status = UiCopy(ui_status_path, name="az-incident-explaind")
         self.ui_recent = UiCopy(ui_recent_path, name="az-incident-explaind")
         self.clock, self.monotonic = clock, monotonic
         self.mio = mio or advise
+        self.mio_result = mio_result or poll_generation_result
         self.knowledge = knowledge or (lambda ids: lookup_context(ids, deadline_s=KNOWLEDGE_MAX_S))
         self.store_limits = store_limits or {}
+        self.generation_store = None
+        self._generation_store_failed = False
+        self._generation_replay_required = False
+        self._generation_receipts = {}
+        self._generation_terminal = {}
+        self._generation_current = {}
         self.recent = []
         self.audit_severities = {}
         self.audit_forward_dropped = self.audit_forward_refused = 0
@@ -201,11 +358,18 @@ class Explainer:
         except Exception:  # noqa: BLE001 - fixed code, independent snapshot
             self.refuse("status_write_failed")
 
-    def observe_transition(self, t):
+    def observe_transition(self, t, *, sequence=None):
         ident = t["incident_id"]
         try:
+            if sequence is not None:
+                self._supersede_generation_for_transition(ident, sequence)
             previous = next((r for r in self.recent if r["incident_id"] == ident), None)
             row = build_recent_incident(t, previous)
+            if sequence is not None and isinstance(row.get("explanation"), dict):
+                if row["explanation"].get("slow_analysis") is not None:
+                    row["explanation"] = {**row["explanation"],
+                                           "slow_analysis": {"state": "superseded",
+                                                             "usage": "unknown"}}
             self.recent = build_recent_incidents(
                 [r for r in self.recent if r["incident_id"] != ident] + [row], self.clock())["incidents"]
         except Exception:  # noqa: BLE001 - display projection must not cost the audit record
@@ -254,6 +418,168 @@ class Explainer:
                 row["explanation"] = {"state": "unavailable", "route": "unavailable",
                                       "outcome": "unavailable", "summary": "",
                                       "knowledge_refs": [], "failure_codes": [code]}
+
+    @staticmethod
+    def _generation_binding(event):
+        return {key: event[key] for key in
+                ("incident_id", "incident_sequence", "request_id", "frame_id",
+                 "trace_id", "generation_id", "result_handle")}
+
+    def _append_generation_event(self, event):
+        if self._generation_store_failed or self.generation_store is None:
+            return False
+        try:
+            self.generation_store.append_event(event)
+            return True
+        except Exception:  # noqa: BLE001 - optional result store never blocks Edge intake
+            self._generation_store_failed = True
+            self.refuse("storage_failed")
+            return False
+
+    def _set_generation_projection(self, receipt, value):
+        handle = receipt["result_handle"]
+        if self._generation_current.get(receipt["incident_id"]) != handle:
+            return
+        try:
+            projection = slow_analysis_projection(value)
+        except ValueError:
+            projection = {"state": "degraded", "usage": "unknown"}
+        for row in self.recent:
+            if row["incident_id"] == receipt["incident_id"]:
+                explanation = dict(row["explanation"])
+                explanation["slow_analysis"] = projection
+                row["explanation"] = explanation
+
+    def _record_generation_terminal(self, receipt, value):
+        handle = receipt["result_handle"]
+        state = value.get("state") if type(value) is dict else None
+        if state not in GENERATION_RESULT_STATES:
+            state = "degraded"
+        previous = self._generation_terminal.get(handle)
+        if previous is not None:
+            if previous["state"] == "superseded" or state != "superseded":
+                return
+        event = {"event_type": "mio.generation.result", **self._generation_binding(receipt),
+                 "state": state,
+                 "usage": value.get("usage", "unknown") if state == "complete" else "unknown",
+                 "recorded_at": self.clock()}
+        if state == "complete":
+            event["assistance"] = value.get("assistance")
+        try:
+            checked = read_generation_event(event)
+        except ValueError:
+            event = {"event_type": "mio.generation.result", **self._generation_binding(receipt),
+                     "state": "degraded", "usage": "unknown", "recorded_at": self.clock()}
+            checked = read_generation_event(event)
+        if not self._append_generation_event(checked):
+            return False
+        self._generation_terminal[handle] = checked
+        self._set_generation_projection(receipt, checked)
+        return True
+
+    def _capture_generation_receipt(self, reply, transition, sequence):
+        if self._generation_store_failed or self.generation_store is None or type(reply) is not dict:
+            return
+        raw = reply.get("slow_analysis")
+        if type(raw) is not dict:
+            return
+        from .mio_generation import read_slow_analysis
+        value = read_slow_analysis(raw)
+        if (value.get("state") not in {"queued", *GENERATION_RESULT_STATES}
+                or "result_handle" not in value):
+            return
+        ident = transition["incident_id"]
+        seq = int(sequence)
+        expected_trace = f"mio-{ident[4:]}-{seq}"
+        if (seq > MIO_TRACE_SEQUENCE_MAX or value.get("trace_id") != expected_trace
+                or value.get("frame_id") != expected_trace + ":frame"
+                or type(value.get("generation_id")) is not str):
+            return
+        receipt = {"event_type": "mio.generation.receipt", "incident_id": ident,
+                   "incident_sequence": seq, "request_id": f"{ident}:{seq}",
+                   "frame_id": value["frame_id"], "trace_id": value["trace_id"],
+                   "generation_id": value["generation_id"],
+                   "result_handle": value["result_handle"], "recorded_at": self.clock()}
+        try:
+            receipt = read_generation_event(receipt)
+        except ValueError:
+            return
+        existing = self._generation_receipts.get(receipt["result_handle"])
+        if existing is not None:
+            if self._generation_binding(existing) != self._generation_binding(receipt):
+                self._generation_store_failed = True
+                self.refuse("storage_failed")
+                return
+            receipt = existing
+        else:
+            # Durable receipt first: polling never starts for an unrecorded job.
+            if not self._append_generation_event(receipt):
+                return
+            self._generation_receipts[receipt["result_handle"]] = receipt
+        current = self._generation_current.get(ident)
+        if current is None or self._generation_receipts[current]["incident_sequence"] <= seq:
+            self._generation_current[ident] = receipt["result_handle"]
+        if value["state"] != "queued":
+            self._record_generation_terminal(receipt, value)
+        else:
+            self._set_generation_projection(receipt, {"state": "queued", "usage": "unknown"})
+
+    def _restore_generation_results(self):
+        receipts, terminal, current = {}, {}, {}
+        for event in self.generation_store.events():
+            handle = event["result_handle"]
+            if event["event_type"] == "mio.generation.receipt":
+                old = receipts.get(handle)
+                if old is not None and self._generation_binding(old) != self._generation_binding(event):
+                    raise ValueError("generation_receipt_conflict")
+                receipts[handle] = event
+                ident = event["incident_id"]
+                if ident not in current or receipts[current[ident]]["incident_sequence"] <= event["incident_sequence"]:
+                    current[ident] = handle
+                continue
+            receipt = receipts.get(handle)
+            if (receipt is None or self._generation_binding(receipt) != self._generation_binding(event)):
+                raise ValueError("generation_result_unbound")
+            old = terminal.get(handle)
+            if old is not None and not (event["state"] == "superseded" and old["state"] != "superseded"):
+                raise ValueError("generation_result_duplicate")
+            terminal[handle] = event
+        self._generation_receipts, self._generation_terminal = receipts, terminal
+        self._generation_current = current
+        for ident, handle in current.items():
+            receipt = receipts[handle]
+            self._set_generation_projection(
+                receipt, terminal.get(handle, {"state": "queued", "usage": "unknown"}))
+
+    def _supersede_generation_for_transition(self, ident, sequence):
+        for handle, receipt in tuple(self._generation_receipts.items()):
+            if receipt["incident_id"] != ident or receipt["incident_sequence"] >= sequence:
+                continue
+            previous = self._generation_terminal.get(handle)
+            if previous is not None and previous["state"] == "superseded":
+                continue
+            if not self._record_generation_terminal(
+                    receipt, {"state": "superseded", "usage": "unknown"}):
+                self._generation_replay_required = True
+
+    def _poll_generation_results(self):
+        if self._generation_store_failed:
+            return
+        for handle, receipt in tuple(self._generation_receipts.items()):
+            if handle in self._generation_terminal:
+                continue
+            try:
+                value = self.mio_result(receipt, deadline_s=0.05)
+            except Exception:  # noqa: BLE001 - transient poll failure retries on the next tick
+                return
+            if type(value) is not dict or value.get("state") in (None, "queued"):
+                return
+            if any(value.get(key) != receipt.get(key) for key in
+                   ("result_handle", "generation_id", "frame_id", "trace_id")):
+                self._record_generation_terminal(receipt, {"state": "stale", "usage": "unknown"})
+            else:
+                self._record_generation_terminal(receipt, value)
+            return
 
     def forward_audit(self, stopped):
         # Keep the head inside the 256-entry queue during retries. This worker
@@ -309,6 +635,8 @@ class Explainer:
             self.refuse("status_write_failed")
 
     def checkpoint(self):
+        if self._generation_replay_required:
+            return
         value = {
             "cursor": self.cursor, "pending": list(self.selection.pending),
             "recent": build_recent_incidents(self.recent, 0),
@@ -350,10 +678,25 @@ class Explainer:
         self.store = ExplanationStore(self.state, **self.store_limits)
         self.store.prepare(self.clock())
         try:
+            self.generation_store = GenerationResultStore(self.state)
+            self.generation_store.prepare(self.clock())
+        except Exception:  # noqa: BLE001 - optional result storage cannot stop Edge intake
+            self._generation_store_failed = True
+            self.refuse("storage_failed")
+        try:
             self.restore()
         except Exception:  # noqa: BLE001 - corrupt durable state must not replay history
             self.refuse("cursor_refused")
             raise ValueError("cursor_refused") from None
+        if not self._generation_store_failed:
+            try:
+                self._restore_generation_results()
+            except Exception:  # noqa: BLE001 - corrupt advisory data closes only this lane
+                self._generation_store_failed = True
+                self._generation_receipts.clear()
+                self._generation_terminal.clear()
+                self._generation_current.clear()
+                self.refuse("storage_failed")
         self._future()
         self.checkpoint()
 
@@ -468,6 +811,11 @@ class Explainer:
                             if event["event_type"] == "edge.incident.truncated":
                                 self.refuse("incident_segment_full")
                             elif event["event_type"] == "edge.incident.reset":
+                                for handle, receipt in tuple(self._generation_receipts.items()):
+                                    if handle not in self._generation_terminal or self._generation_terminal[handle]["state"] != "superseded":
+                                        if not self._record_generation_terminal(
+                                                receipt, {"state": "superseded", "usage": "unknown"}):
+                                            self._generation_replay_required = True
                                 self.audit_severities.clear()
                                 for row in self.recent:
                                     row["state"] = "closed"
@@ -482,7 +830,7 @@ class Explainer:
                                 else:
                                     self.audit_severities.pop(t["incident_id"], None)
                                 continue
-                            self.observe_transition(t)
+                            self.observe_transition(t, sequence=entry.sequence)
                             if t["event_type"] == "edge.incident.opened" and self.clock() - t["first_seen"] > 3600:
                                 self.refuse("stale_skipped")
                                 self.explanation_unavailable(t["incident_id"], "stale_skipped")
@@ -528,6 +876,7 @@ class Explainer:
             try:
                 mio = read_mio_reply(reply)
                 self.mio_available = True
+                self._capture_generation_receipt(reply, t, sequence)
                 if mio["reason"] in {"mio_gated", "mio_handoff", "mio_local_non_advisory"}:
                     codes.append(mio["reason"])
                 elif mio["reason"].startswith("mio_handoff:"):
@@ -595,6 +944,12 @@ class Explainer:
         for row in self.recent:
             if row["incident_id"] == t["incident_id"]:
                 row["explanation"] = explanation_summary(value)
+        handle = self._generation_current.get(t["incident_id"])
+        if handle is not None:
+            self._set_generation_projection(
+                self._generation_receipts[handle],
+                self._generation_terminal.get(
+                    handle, {"state": "queued", "usage": "unknown"}))
         for code in codes:
             self.refuse(code)
         self.selection.mark(t)
@@ -624,6 +979,10 @@ class Explainer:
                         self.explanation_unavailable(item[0]["incident_id"], "storage_failed")
                         raise
                     self.checkpoint()
+                # One bounded slow-result IPC per poll tick. It never delays
+                # the deterministic Edge process or waits for model work.
+                self._poll_generation_results()
+                self.checkpoint()
             except Exception:  # noqa: BLE001 - storage fails closed, Edge remains independent
                 self.storage_failed = True
                 self.refuse("storage_failed")

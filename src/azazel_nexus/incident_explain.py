@@ -1081,6 +1081,71 @@ def explanation_summary(record):
     return summary
 
 
+SLOW_RESULT_STATES = frozenset({"queued", "complete", "degraded", "timeout", "cancelled",
+                                "superseded", "stale", "closed"})
+
+
+def _public_model_text(value):
+    """Bound optional model prose before the read-only operator projection."""
+    if type(value) is not str or not value:
+        raise ValueError("slow_result_refused")
+    normalized = unicodedata.normalize("NFKC", value)
+    # The MIO frame excludes network addresses, but a generated response is
+    # still untrusted. Withhold any address/path-like string at this boundary.
+    if (any(ch in normalized for ch in "/\\⁄∕∖⧸⧹﹨")
+            or re.search(r"://|(?:^|\s)//|[\w.+-]+@[\w.-]+|\b\d+(?:\.\d+){3}\b", normalized)
+            or re.search(r"(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.]*", normalized)):
+        return "Details withheld verify through an authorized source"
+    words = []
+    current = []
+    for char in normalized:
+        if char.isalpha():
+            current.append(char)
+        else:
+            if current:
+                words.append("".join(current[:32]))
+                current = []
+            if char.isspace() and (not words or words[-1] != " "):
+                words.append(" ")
+    if current:
+        words.append("".join(current[:32]))
+    text = "".join(words).strip()
+    return text[:240] or "Details withheld verify through an authorized source"
+
+
+def slow_analysis_projection(value):
+    """Project only a labelled, bounded advisory; never expose retrieval handles."""
+    if type(value) is not dict or value.get("state") not in SLOW_RESULT_STATES:
+        raise ValueError("slow_result_refused")
+    state = value["state"]
+    if state != "complete":
+        return {"state": state, "usage": "unknown"}
+    if value.get("usage") not in {"known", "unknown"}:
+        raise ValueError("slow_result_refused")
+    assistance = value.get("assistance")
+    if (type(assistance) is not dict or assistance.get("schema_version") != "mio.assistance.v1"
+            or assistance.get("generation_method") != "model"
+            or type(assistance.get("hypotheses")) is not list
+            or len(assistance["hypotheses"]) > 4):
+        raise ValueError("slow_result_refused")
+    hypotheses = []
+    for item in assistance["hypotheses"]:
+        if (type(item) is not dict or item.get("verification") != "model_proposed_unverified"
+                or type(item.get("statement")) is not str or not 0 < len(item["statement"]) <= 480):
+            raise ValueError("slow_result_refused")
+        hypotheses.append(_public_model_text(item["statement"]))
+    arrays = {}
+    for key, maximum in (("unknowns", 24), ("next_checks", 8)):
+        values = assistance.get(key)
+        if (type(values) is not list or len(values) > maximum
+                or any(type(item) is not str or not 0 < len(item) <= 480 for item in values)):
+            raise ValueError("slow_result_refused")
+        arrays[key] = [_public_model_text(item) for item in values[:8]]
+    return {"state": "complete", "usage": value.get("usage", "unknown"),
+            "verification": "model_proposed_unverified", "hypotheses": hypotheses,
+            **arrays}
+
+
 def _summary_banners():
     return frozenset(private_text(b[:280], 280) for b in REFERENCE_BANNERS)
 
@@ -1234,7 +1299,8 @@ def read_recent_incidents(raw):
                 return None
             e = row["explanation"]
             _shape(e, ("state", "route", "outcome", "summary", "knowledge_refs", "failure_codes"),
-                   ("content_kind", "notice", "knowledge_refs_omitted", "fast_assistance"))
+                   ("content_kind", "notice", "knowledge_refs_omitted", "fast_assistance",
+                    "slow_analysis"))
             # The same consistency rule as a record, applied to the summary.
             if "content_kind" in e:
                 try:
@@ -1309,6 +1375,32 @@ def read_recent_incidents(raw):
                             "available", "absent", "timeout", "rejected", "unavailable"}):
                     return None
                 if dependency["knowledge"] == "not_queried" and f["knowledge"]:
+                    return None
+            if "slow_analysis" in e:
+                slow = e["slow_analysis"]
+                if type(slow) is not dict or slow.get("state") not in SLOW_RESULT_STATES:
+                    return None
+                if slow.get("usage") not in {"known", "unknown"}:
+                    return None
+                if slow["state"] == "complete":
+                    if set(slow) != {"state", "usage", "verification", "hypotheses",
+                                     "unknowns", "next_checks"}:
+                        return None
+                    if (slow["verification"] != "model_proposed_unverified"
+                            or type(slow["hypotheses"]) is not list or len(slow["hypotheses"]) > 4):
+                        return None
+                    for text in slow["hypotheses"]:
+                        _text(text, 240)
+                        if _public_model_text(text) != text:
+                            return None
+                    for key, maximum in (("unknowns", 8), ("next_checks", 8)):
+                        if type(slow[key]) is not list or len(slow[key]) > maximum:
+                            return None
+                        for text in slow[key]:
+                            _text(text, 240)
+                            if _public_model_text(text) != text:
+                                return None
+                elif set(slow) != {"state", "usage"} or slow["usage"] != "unknown":
                     return None
         if v["incidents"] != sorted(v["incidents"], key=lambda r: (r["last_seen"], r["first_seen"], r["incident_id"]), reverse=True):
             return None

@@ -198,6 +198,29 @@ def test_main_uses_shared_socket_and_only_contracted_service_principal(service, 
     assert resolved == [{"service_accounts": ("azarbiter", "azexplain")}]
 
 
+def test_generation_result_poll_is_explainer_service_only(service, monkeypatch):
+    service._explainer_uid = 4242
+    receipt = {"result_handle": "a" * 64, "generation_id": "generation-1",
+               "frame_id": "mio-0123456789abcdef-1:frame",
+               "trace_id": "mio-0123456789abcdef-1"}
+    calls = []
+    monkeypatch.setattr(service.local, "generation_result",
+                        lambda value, **kw: calls.append((value, kw)) or {"state": "stale", "usage": "unknown"})
+    principal = Principal(4242, 7, 1, frozenset({PrincipalClass.SERVICE}))
+    req = SimpleNamespace(verb=entry.POLL_GENERATION_RESULT_VERB,
+                          arguments={"deadline_ms": 25, **receipt}, principal=principal)
+    assert service.handle(req) == {"outcome": "generation_result",
+                                   "slow_analysis": {"state": "stale", "usage": "unknown"}}
+    assert calls == [({"state": "queued", "usage": "unknown", **receipt}, {"deadline_s": .025})]
+
+    other = SimpleNamespace(verb=entry.POLL_GENERATION_RESULT_VERB,
+                            arguments={"deadline_ms": 25, **receipt},
+                            principal=Principal(4243, 7, 1, frozenset({PrincipalClass.SERVICE})))
+    with pytest.raises(RequestRefused, match="generation_result_explainer"):
+        service.handle(other)
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize("profile", list(MioProfile))
 @pytest.mark.parametrize("local_admitted", [False, True])
 def test_explainer_p3_through_handler_never_dispatches_remote(service, monkeypatch, profile, local_admitted):
