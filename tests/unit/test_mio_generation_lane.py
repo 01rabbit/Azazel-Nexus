@@ -125,7 +125,14 @@ def test_one_pending_slot_and_timeout_stops_provider():
     lane.cancel()
 
 
-@pytest.mark.parametrize('reply', ['{not json', '[]', '"text"', 'null'])
+DEEP_NESTING = '[' * 100000 + ']' * 100000
+
+
+@pytest.mark.parametrize('reply', ['{not json', '[]', '"text"', 'null', DEEP_NESTING,
+                                   '{"summary": NaN}', '{"summary": Infinity}',
+                                   '{"summary": -Infinity}'],
+                         ids=['not-json', 'list', 'string', 'null', 'deep-nesting',
+                              'nan', 'infinity', 'negative-infinity'])
 def test_malformed_model_content_degrades_job_but_keeps_provider(reply):
     lane, source, frame = setup()
     lane.server.reply = reply
@@ -140,6 +147,56 @@ def test_malformed_model_content_degrades_job_but_keeps_provider(reply):
     assert len(lane.server.requests) > calls
     assert later['state'] in {'complete', 'degraded'}
     assert not lane.server.stopped.is_set()
+
+
+class GatedServer(FixtureServer):
+    """First request waits for stop(); stop() releases it, then sleeps before finishing."""
+    def __init__(self):
+        super().__init__()
+        self.release, self.stop_done = threading.Event(), threading.Event()
+        self.second_started_after_stop = None
+
+    def infer(self, request, deadline_s, **kwargs):
+        if not self.requests:
+            self.entered.set()
+            self.release.wait(2)
+        else:
+            self.second_started_after_stop = self.stop_done.is_set()
+        return super().infer(request, deadline_s, **kwargs)
+
+    def stop(self):
+        self.release.set()
+        time.sleep(.3)  # slower than the lane's former join timeout
+        self.stop_done.set()
+        super().stop()
+
+
+def test_queued_job_waits_for_prior_watcher_stop():
+    lane, source, frame = setup(deadline_s=.5)
+    lane.server = GatedServer()
+    assert lane.submit(source, frame, 'fixture-generation')['state'] == 'queued'
+    assert lane.server.entered.wait(.5)
+    # Same request ID with changed content supersedes the active in-flight job;
+    # the replacement gets a fresh deadline while the old provider stop finishes.
+    second = source | {'question': 'Changed report'}
+    assert lane.submit(second, frame, 'fixture-generation')['state'] == 'queued'
+    assert result(lane, second, frame)['state'] in {'complete', 'degraded'}
+    assert lane.server.second_started_after_stop is True
+
+
+class NoTextServer(FixtureServer):
+    def infer(self, request, deadline_s, **kwargs):
+        super().infer(request, deadline_s, **kwargs)
+        return SimpleNamespace(tokens_in=12, tokens_out=7, timings={'total_ms': .1})
+
+
+def test_infer_result_without_text_is_provider_failure():
+    lane, source, frame = setup()
+    lane.server = NoTextServer()
+    value = result(lane, source, frame)
+    assert lane.server.requests
+    assert value['state'] == 'degraded'
+    assert lane.server.stopped.is_set()
 
 
 def test_cancel_before_any_provider_request_does_not_stop_provider():

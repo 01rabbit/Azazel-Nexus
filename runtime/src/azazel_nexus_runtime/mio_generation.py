@@ -47,6 +47,11 @@ def authorized(value, generation_id):
         return False
 
 
+def _reject_json_constant(name):
+    """Non-standard JSON NaN/Infinity/-Infinity is invalid model content."""
+    raise ValueError('non_standard_json_constant')
+
+
 class StructuredGenerationTransport:
     """Product-owned bounded AF_UNIX server -> MIO StructuredTransport."""
     def __init__(self, server, capability, *, deadline, cancelled, check, state=None):
@@ -79,6 +84,10 @@ class StructuredGenerationTransport:
                 deadline_s=remaining, allow_unknown_usage=True)
             if self.cancelled.is_set() or time.monotonic() >= self.deadline or not self.check():
                 raise MioModelBlocked('generation_stale')
+            # A malformed infer result is a transport failure, so access it inside this try.
+            text = result.text
+            if type(text) is not str:
+                raise TypeError('malformed_infer_result')
             usage = None
             if (type(result.tokens_in) is int and result.tokens_in >= 0
                     and type(result.tokens_out) is int and result.tokens_out >= 0):
@@ -97,8 +106,8 @@ class StructuredGenerationTransport:
                 state['in_flight'] = False
         # Content failure is per job: the provider stays usable and is not stopped.
         try:
-            value = json.loads(result.text)
-        except (TypeError, ValueError):
+            value = json.loads(text, parse_constant=_reject_json_constant)
+        except (TypeError, ValueError, RecursionError):
             raise MioModelUnavailable('generation_content_invalid') from None
         if type(value) is not dict:
             raise MioModelUnavailable('generation_content_invalid')
@@ -264,7 +273,9 @@ class GenerationLane:
             pass
         finally:
             timer_stop.set()
-            watcher.join(timeout=.1)
+            # Unbounded join: a watcher already inside _stop_provider must finish before
+            # this job ends, so a queued next job never races a stale provider stop.
+            watcher.join()
         # Only a transport/provider failure stops the provider here; content failures do not.
         if transport.failed:
             self._stop_provider()
