@@ -204,6 +204,10 @@ class GenerationLane:
         fingerprint = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
         key = (generation_id, fingerprint)
         with self._lock:
+            # _fence() sets the flag under this lock: recheck so a fence that landed
+            # after the unlocked fast path above can never admit a new receipt/pending.
+            if self._fenced:
+                return self._status('degraded', frame, generation_id)
             self._prune()
             if key in self._results:
                 return copy.deepcopy(self._results[key])
@@ -247,11 +251,14 @@ class GenerationLane:
         with self._stop_lock:
             if self._fenced:
                 return False  # already fenced: stop() was attempted once, never again
+            if job.get('stopped'):
+                return True  # stop() already succeeded for this job: never call it twice
             try:
                 self.server.stop()
             except Exception:
                 self._fence(job)
                 return False
+            job['stopped'] = True
         return True
 
     def _fence(self, job):

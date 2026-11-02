@@ -297,6 +297,56 @@ def test_stop_failure_publishes_degraded_while_infer_is_still_blocked():
         server.release.set()
 
 
+class StopOnceServer(FixtureServer):
+    """stop() succeeds the first time; a second call would raise."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.stop_calls = 0
+
+    def stop(self):
+        self.stop_calls += 1
+        if self.stop_calls > 1:
+            raise OSError('second stop must never happen')
+        super().stop()
+
+
+def test_successful_watcher_stop_is_not_repeated_by_worker():
+    lane, source, frame = setup(deadline_s=.08)
+    lane.server = StopOnceServer(block=True)  # infer raises after stop => transport failure
+    value = result(lane, source, frame)
+    assert _wait(lambda: lane._active is None)
+    assert lane.server.requests
+    assert lane.server.stop_calls == 1
+    assert not lane._fenced
+    assert value['state'] == 'timeout'
+    assert lane._receipts[value['result_handle']]['status']['state'] == 'timeout'
+
+
+class FenceAfterFastPathLane(FixtureLane):
+    """The unlocked fast-path read sees False; every later read sees the fence."""
+    _reads = 0
+
+    @property
+    def _fenced(self):
+        type(self)._reads += 1
+        return self.__dict__.get('_fence_flag', False) or type(self)._reads > 1
+
+    @_fenced.setter
+    def _fenced(self, value):
+        self.__dict__['_fence_flag'] = value
+
+
+def test_submit_rechecks_fence_inside_lock_before_admitting_work():
+    lane, source, frame = setup()
+    racing = FenceAfterFastPathLane(capability=lane.capability, server=lane.server,
+                                    deadline_s=.5)
+    FenceAfterFastPathLane._reads = 0
+    value = racing.submit(source, frame, 'fixture-generation')
+    assert value['state'] == 'degraded' and 'result_handle' not in value
+    assert racing._receipts == {} and racing._pending is None and racing._worker is None
+    assert not lane.server.requests
+
+
 def test_cancel_before_any_provider_request_does_not_stop_provider():
     lane, source, frame = setup(block=True)
     # Hold the lane lock so the worker sees the job only after it is cancelled.

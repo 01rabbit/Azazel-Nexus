@@ -84,6 +84,15 @@ overwrite them. The lane keeps at most that single blocked worker, queues nothin
 further and rejects every later submit as `degraded` without inference. A new
 lane/server from the loader is required.
 
+A successful `stop()` is recorded for the job and is never called a second time
+(the worker does not repeat the watcher's stop after the resulting transport
+failure). A `timeout` or `cancelled` receipt can be visible while the stop outcome
+is still pending; receipts are overwritten with `degraded` only after a stop
+failure is confirmed. If `stop()` hangs rather than raises, no such confirmation
+arrives and the pending/queued and active slots can stay stuck until it returns
+(open limitation, G-4). `submit` rechecks the fence under the lane lock, so a
+fence that lands mid-call admits no new receipt or pending job.
+
 Known limitations: admission closing mid-flight is not an in-flight stop trigger,
 so a request already running finishes or hits its deadline. The production
 supervisor `stop()` implementation is outside this change and unchanged; a stop
