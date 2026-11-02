@@ -374,7 +374,8 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
                 # A fixed dependency-unavailable response has no incident-bound
                 # trace; the delivery reader has already validated its shape.
                 assert mio_fast["state"] == "dependency_unavailable"
-                assert mio_fast["trace_id"] != f"mio-{record['incident_id'][4:]}-1"
+                assert not mio_fast["trace_id"].startswith(
+                    f"mio-{record['incident_id'][4:]}-")
             assert record["edge_would"] == "notify"
         else:
             assert mio_fast["state"] == "dependency_unavailable"
