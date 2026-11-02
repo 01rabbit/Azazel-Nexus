@@ -51,7 +51,9 @@ def test_resume_and_pending_survive_restart(tmp_path):
     e = make(tmp_path)
     path = append(e)
     e.poll()
-    assert len(records(e)) == 1
+    first = records(e)
+    assert len(first) == 1
+    assert first[0]["incident_sequence"] == 1
     offset = e.cursor["offset"]
     restarted = make(tmp_path)
     restarted.poll()
@@ -63,6 +65,7 @@ def test_resume_and_pending_survive_restart(tmp_path):
     restarted.monotonic = lambda: 61
     restarted.poll()
     assert len(records(restarted)) == 2
+    assert records(restarted)[1]["incident_sequence"] == 2
     restarted.monotonic = lambda: 66
     restarted.poll()
     status = json.loads(restarted.status_path.read_text())

@@ -557,7 +557,8 @@ class Explainer:
                 except Exception:  # noqa: BLE001 - caller cannot inject partial refs
                     refs, state = [], "unavailable"
                     codes.append("knowledge_reply_refused")
-        record = {"incident_id": t["incident_id"], "explained_at": self.clock(),
+        record = {"incident_id": t["incident_id"], "incident_sequence": sequence,
+                  "explained_at": self.clock(),
                   "transition": t["event_type"].removeprefix("edge.incident."),
                   "edge_would": t["edge_would"], "policy_reason": t["policy_reason"],
                   "attack_type": t["attack_type"],

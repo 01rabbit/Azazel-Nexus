@@ -517,6 +517,82 @@ def test_recent_reader_accepts_not_queried_and_rejects_malformed_fast_assistance
         assert read_recent_incidents(json.dumps(forged).encode()) is None
 
 
+def test_fast_assistance_is_bound_to_incident_and_edge_sequence():
+    pytest.importorskip("azazel_mio")
+    from azazel_nexus.incident_explain import build_frame, read_mio_reply, read_record
+    from azazel_nexus_runtime import mio_fast_assistance
+
+    edge = transition()
+    edge_sequence, mio_sequence = 105, 41
+    fast = mio_fast_assistance.fast_assistance(build_frame(edge, edge_sequence), deadline_s=0.2)
+    # Use the bound result class here so incident/sequence mismatch assertions
+    # exercise the strict branch; degradation has its own random-trace case.
+    fast["state"] = "complete"
+    normalized = read_mio_reply({"route": "local", "outcome": "abandoned",
+                                 "reason": "no advice", "ledger_seq": mio_sequence,
+                                 "fast_assistance": fast})
+    assert normalized["ledger_seq"] == mio_sequence
+    valid = _record(normalized)
+    valid["incident_id"] = edge["incident_id"]
+    valid["incident_sequence"] = edge_sequence
+    checked = read_record(valid)
+    assert checked["mio"]["ledger_seq"] == mio_sequence
+    assert checked["incident_sequence"] == edge_sequence
+
+    wrong_incident = json.loads(json.dumps(valid))
+    wrong_incident["incident_id"] = "inc-" + "f" * 16
+    with pytest.raises(ValueError, match="record_refused"):
+        read_record(wrong_incident)
+
+    wrong_sequence = json.loads(json.dumps(valid))
+    wrong_sequence["incident_sequence"] = edge_sequence + 1
+    with pytest.raises(ValueError, match="record_refused"):
+        read_record(wrong_sequence)
+
+    # M.I.O.'s independent sequence is range-checked but does not bind the
+    # Edge trace; changing 41 to 42 remains valid when the Edge sequence is 105.
+    independent_mio_sequence = json.loads(json.dumps(valid))
+    independent_mio_sequence["mio"]["ledger_seq"] = mio_sequence + 1
+    assert read_record(independent_mio_sequence)["incident_sequence"] == edge_sequence
+
+    invalid_mio_sequence = json.loads(json.dumps(valid))
+    invalid_mio_sequence["mio"]["ledger_seq"] = True
+    with pytest.raises(ValueError):
+        read_record(invalid_mio_sequence)
+
+
+def test_fast_assistance_without_new_sequence_field_remains_legacy_readable():
+    pytest.importorskip("azazel_mio")
+    from azazel_nexus.incident_explain import build_frame, read_mio_reply, read_record
+    from azazel_nexus_runtime import mio_fast_assistance
+
+    edge = transition()
+    fast = mio_fast_assistance.fast_assistance(build_frame(edge, 23), deadline_s=0.2)
+    normalized = read_mio_reply({"route": "local", "outcome": "abandoned",
+                                 "reason": "no advice", "ledger_seq": 23,
+                                 "fast_assistance": fast})
+    legacy_mio = {key: value for key, value in normalized.items() if key != "ledger_seq"}
+    legacy = _record(legacy_mio)
+    legacy["incident_id"] = edge["incident_id"]
+    assert "ledger_seq" not in read_record(legacy)["mio"]
+
+    old_record = _record({"route": "unavailable", "outcome": "unavailable",
+                          "reason": "mio_unavailable", "text": None})
+    assert "ledger_seq" not in read_record(old_record)["mio"]
+
+
+def test_dependency_unavailable_fast_assistance_keeps_unbound_trace():
+    from azazel_nexus.incident_explain import read_record
+    from azazel_nexus_runtime.mio_socket_client import fast_assessment_degraded
+
+    degraded = fast_assessment_degraded("unavailable")
+    record = _record({"route": "unavailable", "outcome": "unavailable",
+                      "reason": "mio_unavailable", "text": None,
+                      "ledger_seq": 41, "fast_assistance": degraded})
+    record["incident_sequence"] = 105
+    assert read_record(record)["mio"]["fast_assistance"]["state"] == "dependency_unavailable"
+
+
 @pytest.mark.parametrize("citation", ["ingested from 192.0.2.1", "fe80::1:2:3",
                                       "feed.example:8443 aggregate", "mirror at host:443"])
 def test_citation_with_address_syntax_is_withheld_and_says_so(citation):

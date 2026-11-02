@@ -522,6 +522,10 @@ def read_mio_reply(reply):
         fast = read_fast_assistance(reply["fast_assistance"])
         reply = {key: value for key, value in reply.items() if key != "fast_assistance"}
     def finish(value):
+        # Preserve the request's ledger position with the validated reply.
+        # The explanation record reader uses it to bind the optional fast
+        # projection back to the Edge incident transition that produced it.
+        value["ledger_seq"] = reply["ledger_seq"]
         if fast is not None:
             value["fast_assistance"] = fast
         return value
@@ -787,9 +791,11 @@ KNOWLEDGE_CLAIM_PREFIX = "knowledge:"
 
 
 def read_record(value):
-    _shape(value, RECORD_FIELDS, (FABRIC_RECORD_FIELD, EVIDENCE_FIELD))
+    _shape(value, RECORD_FIELDS, (FABRIC_RECORD_FIELD, EVIDENCE_FIELD, "incident_sequence"))
     if type(value["incident_id"]) is not str or not re.fullmatch(r"inc-[0-9a-f]{16}", value["incident_id"]):
         raise ValueError("record_refused")
+    if "incident_sequence" in value:
+        _int(value["incident_sequence"], 2**63-1, 1)
     _number(value["explained_at"])
     if value["transition"] not in {"opened", "updated"} or value["edge_would"] not in ACTIONS:
         raise ValueError("record_refused")
@@ -811,17 +817,28 @@ def read_record(value):
         raise ValueError("record_refused")
     m = value["mio"]
     _shape(m, ("route", "outcome", "reason", "text"),
-           ("content_kind", "notice", PROVENANCE_FIELD, "fast_assistance"))
+           ("content_kind", "notice", PROVENANCE_FIELD, "fast_assistance", "ledger_seq"))
     if m["route"] not in {"local", "deterministic handoff", "unavailable"} or m["outcome"] not in {o.value for o in RequestOutcome} | {"unavailable"}:
         raise ValueError("record_refused")
     _text(m["reason"], 2048)
     if m["text"] is not None:
         _text(m["text"], 4096)
     _read_content(m)
+    if "ledger_seq" in m:
+        _int(m["ledger_seq"], 2**63-1, 1)
     if PROVENANCE_FIELD in m:
         _read_provenance(m)
     if "fast_assistance" in m:
-        read_fast_assistance(m["fast_assistance"])
+        fast = read_fast_assistance(m["fast_assistance"])
+        # Older records predate incident_sequence and remain readable. New
+        # records bind this projection to Edge's incident sequence. M.I.O.'s
+        # ledger_seq is a separate counter and is validated independently.
+        # Its fixed dependency_unavailable payload intentionally has a random
+        # trace id because it can be produced without the Edge frame.
+        if "incident_sequence" in value and fast["state"] != "dependency_unavailable":
+            expected = f"mio-{value['incident_id'][4:]}-{value['incident_sequence']}"
+            if fast["trace_id"] != expected or fast["frame_id"] != expected + ":frame":
+                raise ValueError("record_refused")
     if EVIDENCE_FIELD in value:
         try:
             _read_evidence(value[EVIDENCE_FIELD], value["explained_at"])
