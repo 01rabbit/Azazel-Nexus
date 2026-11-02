@@ -69,12 +69,16 @@ a five-second default deadline (hard maximum thirty seconds), 768 output tokens
 per structured task, and sixteen retained results. Exact repeated source polls
 the result; a changed report with the same request ID supersedes old work. A
 worker deadline watcher stops the owned supervised server only while a provider
-request is in flight (timeout, cancel, supersession or transport failure), using
-its existing process-group cleanup; it never starts or restarts it. An idle
+request is in flight (timeout, cancel or supersession, while it is in flight); after
+a transport failure the worker stops it once the failed or returned call has ended.
+It uses its existing process-group cleanup and never starts or restarts it. An idle
 provider is kept: supersession or cancel with no request in flight stops nothing.
 A content-invalid model response (non-JSON, non-object, non-finite numbers) fails
 only that job; the provider is retained and not stopped. Stopping a server
-requires explicit loader replacement before future use.
+requires explicit loader replacement before future use: after a successful
+`stop()` the lane is permanently stopped, any pending job is dropped and its receipt
+published as `degraded`, and every later submit returns `degraded` with no result
+handle and no inference. The in-flight job keeps its `timeout`/`cancelled` receipt.
 
 If `stop()` raises, termination is unconfirmed. The lane fences the server
 permanently and attempts `stop()` only once. It immediately publishes `degraded`

@@ -318,8 +318,25 @@ def test_successful_watcher_stop_is_not_repeated_by_worker():
     assert lane.server.requests
     assert lane.server.stop_calls == 1
     assert not lane._fenced
+    assert lane._stopped
     assert value['state'] == 'timeout'
     assert lane._receipts[value['result_handle']]['status']['state'] == 'timeout'
+    before = len(lane.server.requests)
+    later = lane.submit(source | {'request_id': 'after-stop'}, frame, 'fixture-generation')
+    assert later['state'] == 'degraded' and 'result_handle' not in later
+    assert len(lane.server.requests) == before and lane.server.stop_calls == 1
+
+
+def test_successful_stop_degrades_pending_job_without_inference():
+    lane, source, frame = setup(block=True, deadline_s=.08)
+    assert lane.submit(source, frame, 'fixture-generation')['state'] == 'queued'
+    assert lane.server.entered.wait(.5)
+    pending = lane.submit(source | {'request_id': 'pending'}, frame, 'fixture-generation')
+    assert pending['state'] == 'queued'
+    assert _wait(lambda: lane._stopped and lane._active is None)
+    assert lane._pending is None
+    assert lane._receipts[pending['result_handle']]['status']['state'] == 'degraded'
+    assert len(lane.server.requests) == 1  # the pending job never reached the stopped server
 
 
 class FenceAfterFastPathLane(FixtureLane):

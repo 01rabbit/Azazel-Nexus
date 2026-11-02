@@ -126,12 +126,18 @@ class StructuredGenerationTransport:
 class GenerationLane:
     """One worker, one pending request, sixteen retained bounded results.
 
-    The provider is stopped only when a request is in flight (supersession,
-    cancel, deadline, or transport failure), bounding work as well as
-    publication; an idle provider is kept on supersession. The loader must
-    replace a stopped server explicitly. If stop() raises, termination is
-    unconfirmed: the lane fences the server permanently, reports degraded
-    (never timeout/cancelled), and later submits degrade without inference.
+    The provider is stopped only when a request is in flight, bounding work as
+    well as publication. Timeout, cancel, or supersession while a provider
+    request is in flight stops the provider from a watcher while infer() is
+    still blocked. A transport failure stops it only after the failed call has
+    returned. An idle provider is kept on supersession. The loader must
+    replace a stopped server explicitly: after a successful stop() the lane is
+    stopped for good (_stopped), drops/degrades its pending job and rejects later
+    submits without a handle or inference. If stop() raises, termination is
+    unconfirmed: once that failure is known, the lane fences the server
+    permanently and changes active/pending receipts to degraded. A
+    timeout/cancelled receipt may remain visible while stop() is still pending.
+    Later submits degrade without inference.
     No restart/spawn occurs here. Exact-source repeats and explicit handles poll
     results. Handles retain original bindings for at most sixty seconds (maximum
     configurable TTL: three hundred seconds), with sixteen retained records.
@@ -147,6 +153,7 @@ class GenerationLane:
         self._lock = threading.RLock()
         self._stop_lock = threading.Lock()
         self._fenced = False  # set permanently when provider stop() raises
+        self._stopped = False  # set permanently when provider stop() succeeded
         self._pending = None
         self._active = None
         self._worker = None
@@ -199,14 +206,14 @@ class GenerationLane:
     def submit(self, source, frame, generation_id):
         if not self._authorized(generation_id):
             return self._status('closed', frame, generation_id)
-        if self.server is None or self._fenced:
+        if self.server is None or self._fenced or self._stopped:
             return self._status('degraded', frame, generation_id)
         fingerprint = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
         key = (generation_id, fingerprint)
         with self._lock:
             # _fence() sets the flag under this lock: recheck so a fence that landed
             # after the unlocked fast path above can never admit a new receipt/pending.
-            if self._fenced:
+            if self._fenced or self._stopped:
                 return self._status('degraded', frame, generation_id)
             self._prune()
             if key in self._results:
@@ -259,7 +266,18 @@ class GenerationLane:
                 self._fence(job)
                 return False
             job['stopped'] = True
+            self._mark_stopped()
         return True
+
+    def _mark_stopped(self):
+        """Fence the lane against the stopped provider; degrade and drop the pending job."""
+        with self._lock:
+            self._stopped = True
+            pending, self._pending = self._pending, None
+            record = self._receipts.get(pending['handle']) if pending else None
+            if record:
+                record['status'] = self._status('degraded', pending['frame'], pending['generation'],
+                                                 result_handle=pending['handle'])
 
     def _fence(self, job):
         """Fence permanently and publish degraded receipts now, without waiting for infer().
@@ -281,7 +299,7 @@ class GenerationLane:
     def _execute(self, job):
         """Run one job. The provider is stopped only while one of its requests is in flight."""
         from azazel_mio import AssistantCore
-        if self._fenced:
+        if self._fenced or self._stopped:
             return self._status('degraded', job['frame'], job['generation'])
         if job['cancelled'].is_set() or time.monotonic() >= job['end']:
             # Cancelled or expired before any provider request: no watcher, no stop.
@@ -305,7 +323,8 @@ class GenerationLane:
         watcher.start()
         transport = StructuredGenerationTransport(self.server, self.capability,
             deadline=job['end'], cancelled=job['cancelled'],
-            check=lambda: self._authorized(job['generation']) and not self._fenced,
+            check=lambda: self._authorized(job['generation'])
+                           and not (self._fenced or self._stopped),
             state=state)
         status = self._status('degraded', job['frame'], job['generation'])
         try:
