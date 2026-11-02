@@ -77,15 +77,19 @@ A content-invalid model response (non-JSON, non-object, non-finite numbers) fail
 only that job; the provider is retained and not stopped. Stopping a server
 requires explicit loader replacement before future use: after a successful
 `stop()` the lane is permanently stopped, any pending job is dropped and its receipt
-published as `degraded`, and every later submit returns `degraded` with no result
-handle and no inference. The in-flight job keeps its `timeout`/`cancelled` receipt.
+published as `degraded`, and a stopped lane admits no new work: later new submits return
+`degraded` with no result handle and no inference. Same-source retries still retrieve an
+existing cached result or queued/active handle (the stored receipt), and poll handles
+remain usable until their TTL. The in-flight job keeps its `timeout`/`cancelled` receipt.
 
 If `stop()` raises, termination is unconfirmed. The lane fences the server
-permanently and attempts `stop()` only once. It immediately publishes `degraded`
-receipts (never `timeout`/`cancelled`) for the in-flight job and any pending job,
-without waiting for `infer()` to return; a late return of the blocked call cannot
-overwrite them. The lane keeps at most that single blocked worker, queues nothing
-further and rejects every later submit as `degraded` without inference. A new
+permanently and attempts `stop()` only once. When that failure is confirmed, it
+publishes `degraded` receipts for the in-flight job and any pending job without
+waiting for `infer()` to return; until then, the prior `timeout`/`cancelled` receipt
+may still be visible. A late return of the blocked call cannot overwrite them. The
+lane keeps at most that single blocked worker, queues nothing
+further and rejects every later new submit as `degraded` without inference; exact
+retries of existing work return its stored (degraded) receipt or cached result. A new
 lane/server from the loader is required.
 
 A successful `stop()` is recorded for the job and is never called a second time
@@ -94,8 +98,8 @@ failure). A `timeout` or `cancelled` receipt can be visible while the stop outco
 is still pending; receipts are overwritten with `degraded` only after a stop
 failure is confirmed. If `stop()` hangs rather than raises, no such confirmation
 arrives and the pending/queued and active slots can stay stuck until it returns
-(open limitation, G-4). `submit` rechecks the fence under the lane lock, so a
-fence that lands mid-call admits no new receipt or pending job.
+(open limitation, G-4). `submit` checks cached/active/pending matches, then the stop/fence flags, under
+the lane lock, so a stop or fence that lands mid-call admits no new receipt or pending job.
 
 Known limitations: admission closing mid-flight is not an in-flight stop trigger,
 so a request already running finishes or hits its deadline. The production

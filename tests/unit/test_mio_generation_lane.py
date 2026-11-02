@@ -176,12 +176,22 @@ def test_queued_job_waits_for_prior_watcher_stop():
     lane.server = GatedServer()
     assert lane.submit(source, frame, 'fixture-generation')['state'] == 'queued'
     assert lane.server.entered.wait(.5)
-    # Same request ID with changed content supersedes the active in-flight job;
-    # the replacement gets a fresh deadline while the old provider stop finishes.
+    # Same request ID with changed content supersedes the active in-flight job.
+    # The provider stop then succeeds, so the lane is stopped for good: the
+    # pending replacement is dropped and degraded, and never reaches infer().
     second = source | {'question': 'Changed report'}
     assert lane.submit(second, frame, 'fixture-generation')['state'] == 'queued'
-    assert result(lane, second, frame)['state'] in {'complete', 'degraded'}
-    assert lane.server.second_started_after_stop is True
+    value = result(lane, second, frame)
+    assert value['state'] == 'degraded'
+    assert lane.server.stop_done.is_set()
+    assert lane._pending is None
+    assert lane.server.second_started_after_stop is None
+    assert len(lane.server.requests) == 1
+    # New work on the stopped lane gets no handle and no inference.
+    third = source | {'question': 'Third report'}
+    refused = lane.submit(third, frame, 'fixture-generation')
+    assert refused['state'] == 'degraded' and 'result_handle' not in refused
+    assert len(lane.server.requests) == 1
 
 
 class NoTextServer(FixtureServer):
@@ -339,14 +349,14 @@ def test_successful_stop_degrades_pending_job_without_inference():
     assert len(lane.server.requests) == 1  # the pending job never reached the stopped server
 
 
-class FenceAfterFastPathLane(FixtureLane):
-    """The unlocked fast-path read sees False; every later read sees the fence."""
-    _reads = 0
+class FenceVisibleOnlyUnderLockLane(FixtureLane):
+    """The fence reads True only while _lock is held, so admission must inspect it under the lock."""
 
     @property
     def _fenced(self):
-        type(self)._reads += 1
-        return self.__dict__.get('_fence_flag', False) or type(self)._reads > 1
+        owned = self._lock._is_owned()  # RLock: True only for the thread holding _lock
+        self.__dict__.setdefault('_fence_inspections', []).append(owned)
+        return owned or self.__dict__.get('_fence_flag', False)
 
     @_fenced.setter
     def _fenced(self, value):
@@ -355,11 +365,13 @@ class FenceAfterFastPathLane(FixtureLane):
 
 def test_submit_rechecks_fence_inside_lock_before_admitting_work():
     lane, source, frame = setup()
-    racing = FenceAfterFastPathLane(capability=lane.capability, server=lane.server,
-                                    deadline_s=.5)
-    FenceAfterFastPathLane._reads = 0
+    racing = FenceVisibleOnlyUnderLockLane(capability=lane.capability, server=lane.server,
+                                           deadline_s=.5)
     value = racing.submit(source, frame, 'fixture-generation')
+    inspections = racing.__dict__.get('_fence_inspections', [])
     assert value['state'] == 'degraded' and 'result_handle' not in value
+    # The admission decision read the fence while _lock was held, and it refused the work.
+    assert inspections and inspections[-1] is True
     assert racing._receipts == {} and racing._pending is None and racing._worker is None
     assert not lane.server.requests
 

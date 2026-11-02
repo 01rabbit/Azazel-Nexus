@@ -206,21 +206,26 @@ class GenerationLane:
     def submit(self, source, frame, generation_id):
         if not self._authorized(generation_id):
             return self._status('closed', frame, generation_id)
-        if self.server is None or self._fenced or self._stopped:
+        if self.server is None:
             return self._status('degraded', frame, generation_id)
         fingerprint = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
         key = (generation_id, fingerprint)
         with self._lock:
-            # _fence() sets the flag under this lock: recheck so a fence that landed
-            # after the unlocked fast path above can never admit a new receipt/pending.
-            if self._fenced or self._stopped:
-                return self._status('degraded', frame, generation_id)
             self._prune()
             if key in self._results:
                 return copy.deepcopy(self._results[key])
             for job in (self._active, self._pending):
                 if job and job['key'] == key:
+                    # Exact retry of existing work stays pollable even after a stop/fence;
+                    # then the receipt (timeout/cancelled/degraded) is the truth, not 'queued'.
+                    record = self._receipts.get(job['handle'])
+                    if (self._fenced or self._stopped) and record:
+                        return copy.deepcopy(record['status'])
                     return self._status('queued', job['frame'], generation_id, result_handle=job['handle'])
+            # _fence()/_mark_stopped() set their flags under this lock: new work is
+            # refused here, so a stop that lands mid-call admits no receipt or pending job.
+            if self._fenced or self._stopped:
+                return self._status('degraded', frame, generation_id)
             # A new revision of the same caller request supersedes its old work.
             for job in (self._active, self._pending):
                 if job and job['source']['request_id'] == source['request_id']:
