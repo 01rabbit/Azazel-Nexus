@@ -338,15 +338,44 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
         assert record["technique_ids"] == ["T1021.004", "T1110"]
         assert record["mio"]["route"] == "deterministic handoff"
         # The MIO fast-assistance object comes from entryd's reply, validated
-        # by read_mio_reply. The 500ms incident path preserves the core and
-        # delivery reserves, leaving no optional lookup share.
+        # by read_mio_reply. The 500ms incident path preserves core and delivery
+        # reserves; Knowledge may use only remaining slack.
         mio_fast = record["mio"]["fast_assistance"]
         if package_installed:
-            assert mio_fast["dependency_outcome"]["knowledge"] == "timeout"
-            assert mio_fast["state"] == "dependency_unavailable"
+            outcome = mio_fast["dependency_outcome"]["knowledge"]
+            # Knowledge is optional on this bounded lane. A lookup timeout may
+            # coexist with the model-free Edge-grounded static alternative.
+            assert outcome in {"not_queried", "timeout"}
+            assert mio_fast["knowledge"] == []
             assert mio_fast["observations"] == []
-            assert mio_fast["hypotheses"] == []
-        assert record["edge_would"] == "notify"
+            expected_refs = [ref["evidence_id"] for ref in record["evidence"]["refs"]]
+            assert expected_refs and all(ref.startswith("sha256:") and len(ref) == 71
+                                         for ref in expected_refs)
+            if mio_fast["hypotheses"]:
+                from azazel_nexus.audit import AuditLedger
+
+                incident_hex = record["incident_id"][4:]
+                expected_event = "edge.incident." + record["transition"]
+                matching_entries = [
+                    entry
+                    for path in sorted((azazel / "edge-incidents").glob("????-??-??.jsonl"))
+                    for entry in AuditLedger(path, private=True)
+                    if entry.event.get("incident_id") == record["incident_id"]
+                    and entry.event.get("event_type") == expected_event
+                ]
+                assert matching_entries
+                expected_sequence = matching_entries[-1].sequence
+                assert mio_fast["trace_id"] == f"mio-{incident_hex}-{expected_sequence}"
+                assert mio_fast["frame_id"] == mio_fast["trace_id"] + ":frame"
+                grounded_refs = [ref for hypothesis in mio_fast["hypotheses"]
+                                 for ref in hypothesis.get("supporting_evidence_refs", [])]
+                assert grounded_refs == expected_refs
+            else:
+                # A fixed dependency-unavailable response has no incident-bound
+                # trace; the delivery reader has already validated its shape.
+                assert mio_fast["state"] == "dependency_unavailable"
+                assert mio_fast["trace_id"] != f"mio-{record['incident_id'][4:]}-1"
+            assert record["edge_would"] == "notify"
         else:
             assert mio_fast["state"] == "dependency_unavailable"
             assert mio_fast["dependency_outcome"]["knowledge"] == "unavailable"
