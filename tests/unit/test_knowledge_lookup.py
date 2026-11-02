@@ -483,3 +483,79 @@ def test_non_text_citation_is_empty(value):
 
     manifest = {"profile": {"provenance": {"attack_technique": {"dataset": {"citation": value}}}}}
     assert lite_import._dataset_citation(manifest, "tables/attack_technique.jsonl") == ""
+
+
+def test_revocation_between_consumer_lookups_preserves_model_free_core(node, monkeypatch):
+    """In-process consumer integration; only the socket exchange is bridged."""
+    pytest.importorskip("azazel_mio", reason="shared MIO is an optional integration extra")
+    from types import SimpleNamespace
+
+    from azazel_nexus.local_advisory import read_fast_assistance, read_frame
+    from azazel_nexus_runtime import knowledge_client, knowledge_lited, mio_fast_assistance, mio_locald
+
+    service, _, trust, revoker = node
+    admit_rows(node, [{"technique_id": "T1110", "name": "Synthetic reference",
+                       "description": "Reference only; never an operational instruction"}])
+    replies, frames, advisories = [], [], []
+    events = []
+    service.audit = events.append
+
+    def exchange(socket_name, account, verb, arguments, *, deadline_s):
+        assert (socket_name, account, verb) == ("knowledge-read", "azknowledge", "knowledge.lookup")
+        assert arguments == {"technique_ids": ["T1110"]}
+        assert 0 < deadline_s <= mio_locald.KNOWLEDGE_MAX_S
+        # Exercise the commissioned store and lookup handler on each consumer
+        # request, rather than replaying a constructed KnowledgeRef response.
+        reply = service.handle(SimpleNamespace(verb=knowledge_lited.LOOKUP_VERB,
+                                               arguments=arguments, payload={}))
+        replies.append(reply)
+        return reply
+
+    real_explain = mio_fast_assistance.AssistantCore.explain
+
+    def explain(self, frame, **kwargs):
+        frames.append(frame.to_dict())
+        advisories.append(kwargs["knowledge_lite_advisories"])
+        assert kwargs["knowledge_attempted"] is True
+        return real_explain(self, frame, **kwargs)
+
+    monkeypatch.setattr(knowledge_client, "_exchange", exchange)
+    monkeypatch.setattr(mio_fast_assistance.AssistantCore, "explain", explain)
+    # This is a lifecycle regression, not a filesystem/crypto latency test.
+    monkeypatch.setattr(mio_fast_assistance.time, "monotonic", lambda: 100.0)
+    consumer = mio_locald.LocalRuntimeService(knowledge_lookup=knowledge_client.lookup_context)
+    source = read_frame({"request_id": "synthetic-revocation", "privacy_class": "P2-mission",
+                         "question": "Assess synthetic T1110", "context": []})
+    request = SimpleNamespace(verb=mio_locald.FAST_ASSESS_VERB,
+                              arguments={"deadline_ms": 1000}, payload=source)
+
+    before = consumer.handle(request)
+    first = read_fast_assistance(before["fast_assistance"])
+    assert before["outcome"] == "assessed"
+    assert replies[0]["reason_code"] == "available"
+    claim, = first["knowledge"]
+    assert claim["claim_id"] == "T1110"
+    assert claim["claim_status"] == "reported_unverified"
+    assert claim["trust"] == "unverified_advisory_only"
+    assert first["dependency_outcome"]["knowledge"] == "available"
+
+    statement = RevocationList(sequence=1, issued_at=NOW, revoked_generations=frozenset({5}))
+    (trust / "revocations.signed").write_bytes(
+        revoker.sign(statement.signature_target()).signature + statement.as_payload())
+
+    after = consumer.handle(request)
+    second = read_fast_assistance(after["fast_assistance"])
+    assert after["outcome"] == "assessed"
+    assert replies[1] == {"refs": [], "reason_code": "revoked"}
+    assert len(replies) == 2
+    assert second["knowledge"] == []
+    assert second["dependency_outcome"]["knowledge"] == "unavailable"
+    assert len(advisories[0]) == 1 and advisories[1] == ()
+    assert len(frames) == 2  # The real model-free Core ran for both requests.
+    for result, frame in zip((first, second), frames):
+        assert frame["known_facts"] == []
+        assert frame["current_defensive_state"] == "OBSERVE"
+        assert frame["mission"] == "Assess the supplied security situation; no operational authority"
+        assert result["handoff"]["frame_id"] == frame["frame_id"]
+        assert result["next_checks"]
+    assert [event["count"] for event in events if event["event_type"] == "knowledge.lookup"] == [1, 0]
