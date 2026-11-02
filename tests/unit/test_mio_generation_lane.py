@@ -497,3 +497,66 @@ def test_result_poll_without_capability_never_dispatches():
 def test_invalid_result_ttl_rejected(ttl):
     with pytest.raises(ValueError):
         generation.GenerationLane(result_ttl_s=ttl)
+
+
+def test_pending_same_source_retry_after_stop_returns_original_handle():
+    lane, source, frame = setup(block=True, deadline_s=.08)
+    lane.submit(source, frame, 'fixture-generation')
+    assert lane.server.entered.wait(.5)
+    other = source | {'request_id': 'pending'}
+    pending = lane.submit(other, frame, 'fixture-generation')
+    assert _wait(lambda: lane._stopped and lane._active is None)
+    calls = len(lane.server.requests)
+    retry = lane.submit(other, frame, 'fixture-generation')
+    assert retry['state'] == 'degraded' and retry['result_handle'] == pending['result_handle']
+    assert lane.poll(pending['result_handle'], 'fixture-generation', frame.trace_id)['state'] == 'degraded'
+    fresh = lane.submit(source | {'request_id': 'new'}, frame, 'fixture-generation')
+    assert fresh['state'] == 'degraded' and 'result_handle' not in fresh
+    assert len(lane.server.requests) == calls and len(lane._results) <= 16
+
+
+def test_pending_same_source_retry_after_fence_returns_original_handle():
+    lane, source, frame = setup(deadline_s=.08)
+    server = lane.server = HungStopFailsServer()
+    try:
+        lane.submit(source, frame, 'fixture-generation')
+        assert server.entered.wait(2)
+        other = source | {'request_id': 'second'}
+        queued = lane.submit(other, frame, 'fixture-generation')
+        assert _wait(lambda: lane._fenced and lane._pending is None)
+        calls = len(server.requests)
+        retry = lane.submit(other, frame, 'fixture-generation')
+        assert retry['state'] == 'degraded' and retry['result_handle'] == queued['result_handle']
+        fresh = lane.submit(source | {'request_id': 'new'}, frame, 'fixture-generation')
+        assert fresh['state'] == 'degraded' and 'result_handle' not in fresh
+        assert len(server.requests) == calls
+    finally:
+        server.release.set()
+
+
+def test_completed_cached_output_survives_lane_stop():
+    lane, source, frame = setup()
+    done = result(lane, source, frame)
+    assert done['state'] == 'complete'
+    lane.server.stop()
+    lane._mark_stopped()
+    calls = len(lane.server.requests)
+    again = lane.submit(source, frame, 'fixture-generation')
+    assert again == done and len(lane.server.requests) == calls
+
+
+def test_active_same_source_retry_after_stop_or_fence_is_terminal():
+    lane, source, frame = setup(deadline_s=.08)
+    server = lane.server = HungStopFailsServer()
+    try:
+        first = lane.submit(source, frame, 'fixture-generation')
+        assert server.entered.wait(2)
+        assert _wait(lambda: lane._fenced)
+        retry = lane.submit(source, frame, 'fixture-generation')
+        assert retry['state'] == 'degraded' and retry['result_handle'] == first['result_handle']
+        # F2: receipt pruned while the active key still matches -> no unpollable handle.
+        lane._receipts.clear()
+        pruned = lane.submit(source, frame, 'fixture-generation')
+        assert pruned['state'] == 'degraded' and 'result_handle' not in pruned
+    finally:
+        server.release.set()

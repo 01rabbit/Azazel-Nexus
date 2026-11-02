@@ -179,6 +179,12 @@ class GenerationLane:
         # stop() is the existing bounded supervisor process-group termination.
         # Do not call it in the fast caller: the worker/timer owns cancellation.
 
+    def _retain(self, key, status):
+        """Cache one terminal status under the existing sixteen-entry bound (caller holds lock)."""
+        self._results[key] = status
+        while len(self._results) > 16:
+            del self._results[next(iter(self._results))]
+
     def _prune(self):
         now = time.monotonic()
         for handle, record in list(self._receipts.items()):
@@ -219,8 +225,11 @@ class GenerationLane:
                     # Exact retry of existing work stays pollable even after a stop/fence;
                     # then the receipt (timeout/cancelled/degraded) is the truth, not 'queued'.
                     record = self._receipts.get(job['handle'])
-                    if (self._fenced or self._stopped) and record:
-                        return copy.deepcopy(record['status'])
+                    if self._fenced or self._stopped:
+                        if record:
+                            return copy.deepcopy(record['status'])
+                        # Receipt pruned/expired: never hand out a handle that cannot poll.
+                        return self._status('degraded', frame, generation_id)
                     return self._status('queued', job['frame'], generation_id, result_handle=job['handle'])
             # _fence()/_mark_stopped() set their flags under this lock: new work is
             # refused here, so a stop that lands mid-call admits no receipt or pending job.
@@ -283,6 +292,8 @@ class GenerationLane:
             if record:
                 record['status'] = self._status('degraded', pending['frame'], pending['generation'],
                                                  result_handle=pending['handle'])
+                # Dropped pending work: an exact retry gets this terminal receipt, not a bare degraded.
+                self._retain(pending['key'], copy.deepcopy(record['status']))
 
     def _fence(self, job):
         """Fence permanently and publish degraded receipts now, without waiting for infer().
@@ -300,6 +311,8 @@ class GenerationLane:
                 if record:
                     record['status'] = self._status('degraded', item['frame'], item['generation'],
                                                      result_handle=item['handle'])
+                    if item is pending:
+                        self._retain(item['key'], copy.deepcopy(record['status']))
 
     def _execute(self, job):
         """Run one job. The provider is stopped only while one of its requests is in flight."""
@@ -386,9 +399,7 @@ class GenerationLane:
                 self._prune()
                 if job['handle'] in self._receipts:
                     self._receipts[job['handle']]['status'] = copy.deepcopy(status)
-                self._results[job['key']] = status
-                while len(self._results) > 16:
-                    del self._results[next(iter(self._results))]
+                self._retain(job['key'], status)
                 self._active = None
 
 

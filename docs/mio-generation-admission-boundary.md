@@ -80,7 +80,10 @@ requires explicit loader replacement before future use: after a successful
 published as `degraded`, and a stopped lane admits no new work: later new submits return
 `degraded` with no result handle and no inference. Same-source retries still retrieve an
 existing cached result or queued/active handle (the stored receipt), and poll handles
-remain usable until their TTL. The in-flight job keeps its `timeout`/`cancelled` receipt.
+remain usable until their TTL. A pending job dropped by the stop is recorded as a terminal
+`degraded` entry in the same sixteen-entry result cache (same TTL), so an exact retry returns
+`degraded` with its original handle; if an active job's receipt was already pruned or expired,
+the retry returns `degraded` with no handle rather than an unpollable `queued` one. The in-flight job keeps its `timeout`/`cancelled` receipt.
 
 If `stop()` raises, termination is unconfirmed. The lane fences the server
 permanently and attempts `stop()` only once. When that failure is confirmed, it
