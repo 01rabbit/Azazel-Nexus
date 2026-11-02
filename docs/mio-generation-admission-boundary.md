@@ -4,8 +4,18 @@ Status: additive runtime seam, closed by default. No production generation
 loader or grant exists. The current normal fast lane remains
 `AssistantCore(model=None)` with authenticated Knowledge Lite advisories.
 
-Audited source: Nexus `8301bc82f31313e930c25e75788b6fd89295e559`;
-MIO pin `9fedb01bc9936531407a5181aa8fa5553ec19d55`.
+Historical audit reference: Nexus `8301bc82f31313e930c25e75788b6fd89295e559`;
+MIO pin `9fedb01bc9936531407a5181aa8fa5553ec19d55`. This identifies an
+earlier audit snapshot, not the current candidate head.
+
+Current candidate scope (before this documentation-only correction):
+[PR #398](https://github.com/01rabbit/Azazel-Nexus/pull/398) head
+`6c3f07011c2dc337d2ecb2bc0e8b44179e2a180a` is the base of
+[PR #399](https://github.com/01rabbit/Azazel-Nexus/pull/399), whose head is
+`bdae6388c014dd78a3a1897e44460dd1c67d2a54`. Fixture results in this scope are
+synthetic software evidence; they do not establish real-model or product-process
+success. Admission remains disabled, with no production generation issuer or
+generation server; existing HG and generation reserve gates remain intact.
 
 The existing contract cannot authenticate a separate `generation` admission:
 
