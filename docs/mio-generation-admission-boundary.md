@@ -68,9 +68,26 @@ It creates one bounded worker only after authorization, with one pending slot,
 a five-second default deadline (hard maximum thirty seconds), 768 output tokens
 per structured task, and sixteen retained results. Exact repeated source polls
 the result; a changed report with the same request ID supersedes old work. A
-worker deadline watcher stops the owned supervised server on timeout/cancel,
-using its existing process-group cleanup; it never starts or restarts it.
-Stopping a server requires explicit loader replacement before future use.
+worker deadline watcher stops the owned supervised server only while a provider
+request is in flight (timeout, cancel, supersession or transport failure), using
+its existing process-group cleanup; it never starts or restarts it. An idle
+provider is kept: supersession or cancel with no request in flight stops nothing.
+A content-invalid model response (non-JSON, non-object, non-finite numbers) fails
+only that job; the provider is retained and not stopped. Stopping a server
+requires explicit loader replacement before future use.
+
+If `stop()` raises, termination is unconfirmed. The lane fences the server
+permanently and attempts `stop()` only once. It immediately publishes `degraded`
+receipts (never `timeout`/`cancelled`) for the in-flight job and any pending job,
+without waiting for `infer()` to return; a late return of the blocked call cannot
+overwrite them. The lane keeps at most that single blocked worker, queues nothing
+further and rejects every later submit as `degraded` without inference. A new
+lane/server from the loader is required.
+
+Known limitations: admission closing mid-flight is not an in-flight stop trigger,
+so a request already running finishes or hits its deadline. The production
+supervisor `stop()` implementation is outside this change and unchanged; a stop
+that hangs or fails there remains an open limitation (G-4) beyond this fence.
 
 The normal entry reply carries separate `slow_analysis` metadata, which never
 feeds route selection or replaces `fast_assistance`. Fast and slow initially

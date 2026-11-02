@@ -126,8 +126,12 @@ class StructuredGenerationTransport:
 class GenerationLane:
     """One worker, one pending request, sixteen retained bounded results.
 
-    Superseding an active request stops its owned provider, bounding work as
-    well as publication. The loader must replace a stopped server explicitly.
+    The provider is stopped only when a request is in flight (supersession,
+    cancel, deadline, or transport failure), bounding work as well as
+    publication; an idle provider is kept on supersession. The loader must
+    replace a stopped server explicitly. If stop() raises, termination is
+    unconfirmed: the lane fences the server permanently, reports degraded
+    (never timeout/cancelled), and later submits degrade without inference.
     No restart/spawn occurs here. Exact-source repeats and explicit handles poll
     results. Handles retain original bindings for at most sixty seconds (maximum
     configurable TTL: three hundred seconds), with sixteen retained records.
@@ -142,6 +146,7 @@ class GenerationLane:
         self.capability, self.server, self.deadline_s = capability, server, deadline_s
         self._lock = threading.RLock()
         self._stop_lock = threading.Lock()
+        self._fenced = False  # set permanently when provider stop() raises
         self._pending = None
         self._active = None
         self._worker = None
@@ -160,7 +165,8 @@ class GenerationLane:
         job['reason'] = reason
         with self._lock:
             record = self._receipts.get(job['handle'])
-            if record:
+            # A fenced lane's degraded receipts are final; never rewrite them.
+            if record and not self._fenced:
                 record['status'] = self._status(reason, job['frame'], job['generation'],
                                                  result_handle=job['handle'])
         # stop() is the existing bounded supervisor process-group termination.
@@ -193,7 +199,7 @@ class GenerationLane:
     def submit(self, source, frame, generation_id):
         if not self._authorized(generation_id):
             return self._status('closed', frame, generation_id)
-        if self.server is None:
+        if self.server is None or self._fenced:
             return self._status('degraded', frame, generation_id)
         fingerprint = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
         key = (generation_id, fingerprint)
@@ -232,13 +238,44 @@ class GenerationLane:
                 if job:
                     self._cancel(job, 'cancelled')
 
-    def _stop_provider(self):
+    def _stop_provider(self, job):
+        """Stop the provider; never raises. A stop failure fences the server for this lane.
+
+        The fence is permanent: no further request may reach a provider whose
+        termination is unconfirmed. The loader must supply a new lane/server.
+        """
         with self._stop_lock:
-            self.server.stop()
+            if self._fenced:
+                return False  # already fenced: stop() was attempted once, never again
+            try:
+                self.server.stop()
+            except Exception:
+                self._fence(job)
+                return False
+        return True
+
+    def _fence(self, job):
+        """Fence permanently and publish degraded receipts now, without waiting for infer().
+
+        The only worker the lane may retain is the one blocked in infer(); the
+        pending job is dropped and its receipt degraded, so nothing else is
+        queued or run. A late return of the blocked worker cannot overwrite these.
+        """
+        with self._lock:
+            self._fenced = True
+            job['stop_failed'] = True
+            pending, self._pending = self._pending, None
+            for item in (job, pending):
+                record = self._receipts.get(item['handle']) if item else None
+                if record:
+                    record['status'] = self._status('degraded', item['frame'], item['generation'],
+                                                     result_handle=item['handle'])
 
     def _execute(self, job):
         """Run one job. The provider is stopped only while one of its requests is in flight."""
         from azazel_mio import AssistantCore
+        if self._fenced:
+            return self._status('degraded', job['frame'], job['generation'])
         if job['cancelled'].is_set() or time.monotonic() >= job['end']:
             # Cancelled or expired before any provider request: no watcher, no stop.
             return self._status(job['reason'] if job['cancelled'].is_set() else 'timeout',
@@ -255,13 +292,14 @@ class GenerationLane:
                     with state['gate']:
                         in_flight = state['in_flight']
                     if in_flight:
-                        self._stop_provider()
+                        self._stop_provider(job)
                     return
         watcher = threading.Thread(target=watch, daemon=True, name='mio-generation-deadline')
         watcher.start()
         transport = StructuredGenerationTransport(self.server, self.capability,
             deadline=job['end'], cancelled=job['cancelled'],
-            check=lambda: self._authorized(job['generation']), state=state)
+            check=lambda: self._authorized(job['generation']) and not self._fenced,
+            state=state)
         status = self._status('degraded', job['frame'], job['generation'])
         try:
             result = AssistantCore(model=transport).explain(job['frame'],
@@ -287,7 +325,10 @@ class GenerationLane:
             watcher.join()
         # Only a transport/provider failure stops the provider here; content failures do not.
         if transport.failed:
-            self._stop_provider()
+            self._stop_provider(job)
+        if job.get('stop_failed'):
+            # Stop raised: termination is unconfirmed, so report degraded, not timeout/cancelled.
+            return self._status('degraded', job['frame'], job['generation'])
         if job['cancelled'].is_set() or time.monotonic() >= job['end']:
             status = self._status(job['reason'] if job['cancelled'].is_set() else 'timeout',
                                   job['frame'], job['generation'])
@@ -301,7 +342,10 @@ class GenerationLane:
                 if job is None:
                     self._worker = None
                     return
-            status = self._execute(job)
+            try:
+                status = self._execute(job)
+            except Exception:
+                status = self._status('degraded', job['frame'], job['generation'])
             with self._lock:
                 status['result_handle'] = job['handle']
                 # Retained output has the same hard byte/schema bound as the wire reader.

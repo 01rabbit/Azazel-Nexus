@@ -199,6 +199,104 @@ def test_infer_result_without_text_is_provider_failure():
     assert lane.server.stopped.is_set()
 
 
+class StopFailsServer(FixtureServer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.stop_calls = 0
+
+    def stop(self):
+        self.stop_calls += 1
+        self.stopped.set()  # releases a blocked infer; termination is still unconfirmed
+        raise OSError('stop failed')
+
+
+def assert_fenced_after_stop_failure(lane, source, frame, value):
+    assert value['state'] == 'degraded'
+    until = time.monotonic() + 2
+    while lane._active is not None and time.monotonic() < until:
+        time.sleep(.005)
+    assert lane._active is None
+    assert lane._receipts[value['result_handle']]['status']['state'] == 'degraded'
+    calls = len(lane.server.requests)
+    later = lane.submit(source | {'request_id': 'after-stop-failure'}, frame, 'fixture-generation')
+    assert later['state'] == 'degraded'
+    assert len(lane.server.requests) == calls
+
+
+def test_stop_failure_after_transport_failure_fences_provider():
+    lane, source, frame = setup()
+    lane.server = StopFailsServer()
+    lane.server.infer = lambda *a, **k: SimpleNamespace(tokens_in=1, tokens_out=1, timings={})
+    value = result(lane, source, frame)
+    assert lane.server.stop_calls >= 1
+    assert_fenced_after_stop_failure(lane, source, frame, value)
+
+
+def test_stop_failure_in_deadline_watcher_fences_provider():
+    lane, source, frame = setup(deadline_s=.08)
+    lane.server = StopFailsServer(block=True)
+    value = result(lane, source, frame)
+    assert lane.server.requests and lane.server.stop_calls >= 1
+    assert_fenced_after_stop_failure(lane, source, frame, value)
+
+
+class HungStopFailsServer(StopFailsServer):
+    """infer() never returns until the test releases it; stop() raises."""
+    def __init__(self):
+        super().__init__()
+        self.release = threading.Event()
+
+    def infer(self, request, deadline_s, **kwargs):
+        self.requests.append(request)
+        self.entered.set()
+        self.release.wait(10)
+        raise TimeoutError
+
+
+def _wait(predicate):
+    until = time.monotonic() + 2
+    while not predicate() and time.monotonic() < until:
+        time.sleep(.005)
+    return predicate()
+
+
+def _workers():
+    return [t for t in threading.enumerate() if t.name == 'mio-generation']
+
+
+def test_stop_failure_publishes_degraded_while_infer_is_still_blocked():
+    lane, source, frame = setup(deadline_s=.08)
+    server = lane.server = HungStopFailsServer()
+    try:
+        receipt = lane.submit(source, frame, 'fixture-generation')
+        handle = receipt['result_handle']
+        assert server.entered.wait(2)
+        # A second job queues behind the blocked worker before the deadline fires.
+        queued = lane.submit(source | {'request_id': 'second'}, frame, 'fixture-generation')
+        polled = lambda: lane.poll(handle, 'fixture-generation', frame.trace_id)
+        assert _wait(lambda: polled()['state'] == 'degraded')  # infer has NOT returned
+        assert not server.release.is_set() and lane._active is not None
+        assert lane._pending is None
+        assert lane.poll(queued['result_handle'], 'fixture-generation',
+                         frame.trace_id)['state'] == 'degraded'
+        assert len(_workers()) == 1
+        calls = len(server.requests)
+        later = lane.submit(source | {'request_id': 'third'}, frame, 'fixture-generation')
+        assert later['state'] == 'degraded' and 'result_handle' not in later
+        assert lane._pending is None and len(_workers()) == 1
+        assert len(server.requests) == calls
+        # Late worker completion and an explicit cancel cannot rewrite the receipt.
+        lane.cancel()
+        assert polled()['state'] == 'degraded'
+        server.release.set()
+        assert _wait(lambda: lane._active is None)
+        assert polled()['state'] == 'degraded'
+        assert server.stop_calls == 1  # stop() attempted once, never retried
+        assert len(server.requests) == calls
+    finally:
+        server.release.set()
+
+
 def test_cancel_before_any_provider_request_does_not_stop_provider():
     lane, source, frame = setup(block=True)
     # Hold the lane lock so the worker sees the job only after it is cancelled.
