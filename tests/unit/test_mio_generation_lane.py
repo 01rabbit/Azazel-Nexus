@@ -130,9 +130,9 @@ DEEP_NESTING = '[' * 100000 + ']' * 100000
 
 @pytest.mark.parametrize('reply', ['{not json', '[]', '"text"', 'null', DEEP_NESTING,
                                    '{"summary": NaN}', '{"summary": Infinity}',
-                                   '{"summary": -Infinity}'],
+                                   '{"summary": -Infinity}', '{"summary": 1e999}'],
                          ids=['not-json', 'list', 'string', 'null', 'deep-nesting',
-                              'nan', 'infinity', 'negative-infinity'])
+                              'nan', 'infinity', 'negative-infinity', 'overflow-float'])
 def test_malformed_model_content_degrades_job_but_keeps_provider(reply):
     lane, source, frame = setup()
     lane.server.reply = reply

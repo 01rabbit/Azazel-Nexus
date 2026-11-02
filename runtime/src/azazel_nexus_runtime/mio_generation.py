@@ -52,16 +52,24 @@ def _reject_json_constant(name):
     raise ValueError('non_standard_json_constant')
 
 
+def _finite_json_float(value):
+    """Reject exponent overflow, which Python's JSON decoder otherwise maps to inf."""
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError('non_finite_json_number')
+    return result
+
+
 class StructuredGenerationTransport:
     """Product-owned bounded AF_UNIX server -> MIO StructuredTransport."""
     def __init__(self, server, capability, *, deadline, cancelled, check, state=None):
         self.server, self.capability = server, capability
         self.deadline, self.cancelled, self.check = deadline, cancelled, check
-        # state: job-owned {'gate': Lock, 'in_flight': bool, 'started': bool}. The gate
+        # state: job-owned {'gate': Lock, 'in_flight': bool}. The gate
         # makes "may start a provider request" and "a request is in flight" atomic
         # with respect to the cancel/deadline watcher.
         self.state = state if state is not None else {
-            'gate': threading.Lock(), 'in_flight': False, 'started': False}
+            'gate': threading.Lock(), 'in_flight': False}
         self.last_model = capability.model_id
         self.calls = []
         self.failed = False
@@ -75,7 +83,7 @@ class StructuredGenerationTransport:
             remaining = self.deadline - time.monotonic()
             if self.cancelled.is_set() or remaining <= 0 or not self.check():
                 raise MioModelBlocked('generation_closed')
-            state['in_flight'] = state['started'] = True
+            state['in_flight'] = True
         try:
             result = self.server.infer(LocalInferenceRequest(
                 (('user', prompt),), max_tokens=768,
@@ -106,7 +114,8 @@ class StructuredGenerationTransport:
                 state['in_flight'] = False
         # Content failure is per job: the provider stays usable and is not stopped.
         try:
-            value = json.loads(text, parse_constant=_reject_json_constant)
+            value = json.loads(text, parse_constant=_reject_json_constant,
+                               parse_float=_finite_json_float)
         except (TypeError, ValueError, RecursionError):
             raise MioModelUnavailable('generation_content_invalid') from None
         if type(value) is not dict:
@@ -234,7 +243,7 @@ class GenerationLane:
             # Cancelled or expired before any provider request: no watcher, no stop.
             return self._status(job['reason'] if job['cancelled'].is_set() else 'timeout',
                                 job['frame'], job['generation'])
-        state = {'gate': threading.Lock(), 'in_flight': False, 'started': False}
+        state = {'gate': threading.Lock(), 'in_flight': False}
         timer_stop = threading.Event()
         def watch():
             while not timer_stop.wait(.01):
