@@ -39,12 +39,13 @@ def lookup_context(technique_ids: tuple[str, ...], *,
                     "revoked", "unverified", "trust_unreadable", "store_unreadable",
                 }):
             raise ValueError
-        # Missing/untrusted context must reach locald's unavailable audit path.
-        if result["reason_code"] not in {"available", "no_context"}:
-            raise KnowledgeUnavailable()
         refs = read_knowledge_refs(result["refs"])
         if any(ref.technique_id not in technique_ids for ref in refs):
             raise ValueError
+        if result["reason_code"] not in {"available", "no_context"}:
+            if refs:
+                raise ValueError
+            raise KnowledgeUnavailable()
         if bool(refs) != (result["reason_code"] == "available"):
             raise ValueError
         return tuple(refs)

@@ -20,6 +20,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "azazel-mio"
+version = "0.1.0"
+source = { git = "https://github.com/01rabbit/Azazel-MIO.git?rev=6cd015351979ba69e18517d71f79c0c347bb2722#6cd015351979ba69e18517d71f79c0c347bb2722" }
+
+[[package]]
 name = "azazel-nexus"
 version = "0.0.1.dev0"
 source = { editable = "." }
@@ -32,14 +37,18 @@ dev = [
 fabric = [
     { name = "azazel-fabric" },
 ]
+mio = [
+    { name = "azazel-mio" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "azazel-fabric", marker = "extra == 'fabric'", git = "https://github.com/01rabbit/Azazel-Fabric.git?rev=v0.9.0rc5" },
+    { name = "azazel-mio", marker = "extra == 'mio'", git = "https://github.com/01rabbit/Azazel-MIO.git?rev=6cd015351979ba69e18517d71f79c0c347bb2722" },
     { name = "pynacl", marker = "extra == 'dev'", specifier = ">=1.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]
-provides-extras = ["dev", "fabric"]
+provides-extras = ["dev", "fabric", "mio"]
 
 [[package]]
 name = "cffi"

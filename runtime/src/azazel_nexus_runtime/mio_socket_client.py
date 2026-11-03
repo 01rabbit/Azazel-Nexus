@@ -12,13 +12,14 @@ import grp
 import hashlib
 import json
 import pwd
+import secrets
 import socket
 import time
 
 from azazel_nexus import model_admission
 from azazel_nexus.advisory_response import AdvisoryRefused
 from azazel_nexus.audit import AuditUnavailable
-from azazel_nexus.local_advisory import read_delivered, read_reference
+from azazel_nexus.local_advisory import read_delivered, read_fast_assistance, read_reference
 
 from .bootstrap_audit_client import _pairs, _read_exact, _set_remaining_timeout
 from .principal import SocketMisconfigured, peer_credentials, verify_socket
@@ -125,6 +126,34 @@ class LocalSocketClient:
     def observe(self, *, deadline_s: float = PROBE_MAX_S) -> str:
         return _probe("mio", min(PROBE_MAX_S, deadline_s))
 
+    def assess(self, frame, *, deadline_s: float) -> dict:
+        """Call the model-free service verb; this does not read model admission."""
+        if type(deadline_s) not in {int, float} or deadline_s <= 0:
+            return fast_assessment_degraded("timeout")
+        milliseconds = max(0, min(60_000, int(deadline_s * 1000)))
+        try:
+            result = _exchange("mio", "azmio", "mio.local.assess",
+                               {"deadline_ms": milliseconds}, payload=frame,
+                               deadline_s=deadline_s)
+        except TimeoutError:
+            return fast_assessment_degraded("timeout")
+        except ServiceRefused:
+            return fast_assessment_degraded("rejected")
+        except (OSError, KeyError, SocketMisconfigured):
+            return fast_assessment_degraded("unavailable")
+        except ValueError:
+            return fast_assessment_degraded("rejected")
+        except Exception:
+            return fast_assessment_degraded("unavailable")
+        try:
+            if (type(result) is not dict or result.get("outcome") != "assessed"
+                    or type(result.get("fast_assistance")) is not dict):
+                raise ValueError("invalid_fast_assessment")
+            return read_fast_assistance(result["fast_assistance"])
+        except Exception:
+            return fast_assessment_degraded("rejected")
+
+
     def handle(self, request, *, audit=None) -> dict:
         if getattr(getattr(request, "verb", None), "name", None) != "mio.local.infer":
             return {"readiness": "refused", "reason": self.observe()}
@@ -159,6 +188,20 @@ class LocalSocketClient:
             return {"outcome": "timed_out", "refusal": "deadline"}
         except (OSError, KeyError, ValueError, SocketMisconfigured):
             return {"outcome": "failed", "refusal": "local_unavailable"}
+
+
+def fast_assessment_degraded(status: str) -> dict:
+    """Fixed model-free degradation payload for an absent/late locald reply."""
+    if status not in {"timeout", "unavailable", "rejected"}:
+        status = "unavailable"
+    trace_id = f"mio-{secrets.token_hex(8)}-1"
+    return {"schema_version": "mio.assistance.v1", "trace_id": trace_id,
+            "frame_id": trace_id + ":frame", "generation_method": "static_reference",
+            "state": "dependency_unavailable",
+            "observations": [], "hypotheses": [], "unknowns": ["Fast assessment unavailable"],
+            "next_checks": [], "knowledge": [], "handoff": None, "reasoning_trace": [],
+            "dependency_outcome": {"knowledge": status, "deception": "absent"},
+            }
 
 
 #: Locald's read-only admission verb (`mio_locald.ADMISSION_VERB`).

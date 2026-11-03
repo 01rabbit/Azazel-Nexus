@@ -34,8 +34,12 @@ class Exchange:
     def __init__(self, admission):
         self.admission = admission
         self.calls = []
+        self.assess_calls = []
 
     def __call__(self, leaf, account, verb, arguments, *, payload=None, deadline_s=0.5):
+        if verb == "mio.local.assess":
+            self.assess_calls.append((verb, deadline_s))
+            raise ConnectionRefusedError()
         self.calls.append((verb, deadline_s))
         if verb == "model.activate":
             return {"readiness": "refused", "reason": "not admitted"}
@@ -212,12 +216,74 @@ def test_the_three_reads_share_the_probe_quarter(make_service, monkeypatch):
     left_ms = (deadline_ms - entry.HANDOFF_RESERVE_MS - entry.MIN_AI_ATTEMPT_MS
                - entry.LEDGER_ALLOWANCE_MS)
     advise(service, deadline_ms)
+    assert len(exchange.assess_calls) == 1
+    assert 0 < exchange.assess_calls[0][1] <= 0.045
     reads = [deadline for _, deadline in exchange.calls]
     assert len(reads) == 3  # local probe, remote probe (refused), admission
     assert sum(reads) <= left_ms / 4 / 1000 + 1e-9
     assert all(read <= left_ms / 4 / 3 / 1000 + 1e-9 for read in reads)
+    assert all(read >= entry.MIN_PROBE_S for read in reads)
     # Probes and the admission read left the first attempt its minimum.
     assert selected(service)["route"] == Route.LOCAL.value
+
+
+def test_500ms_budget_keeps_third_recalculated_read_at_minimum(
+        make_service, monkeypatch):
+    enable(monkeypatch)
+    now = [100.0]
+    service, exchange, _ = make_service({"admitted": True}, clock=lambda: now[0])
+
+    # Consume the full fast-lane budget (45ms), then model 30ms of bounded gate
+    # work. Each observation consumes its shared bound and admission
+    # recalculates after them. This leaves 75ms initially and 75*5/72 ~=
+    # 5.21ms for the third read.
+    assess_budgets = []
+    monkeypatch.setattr(
+        service.local, "assess",
+        lambda frame, *, deadline_s: assess_budgets.append(deadline_s)
+        or now.__setitem__(0, now[0] + deadline_s)
+        or client.fast_assessment_degraded("timeout"),
+    )
+    monkeypatch.setattr(entry, "gate_frame", lambda frame:
+                        now.__setitem__(0, now[0] + 0.030) or None)
+    original = client._exchange
+
+    def blocking(*args, deadline_s=0.5, **kwargs):
+        now[0] += deadline_s
+        return original(*args, deadline_s=deadline_s, **kwargs)
+
+    monkeypatch.setattr(client, "_exchange", blocking)
+    reply = advise(service, deadline_ms=500)
+
+    reads = [deadline for _, deadline in exchange.calls]
+    assert assess_budgets == [pytest.approx(0.045)]
+    assert len(reads) == 3  # local probe, remote probe, then admission
+    assert reads == pytest.approx([0.00625, 0.00625, 0.00625 * 5 / 6])
+    assert all(read >= entry.MIN_PROBE_S for read in reads)
+    assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
+    assert Route.LOCAL.value in selected(service)["permitted"]
+
+
+def test_insufficient_post_assessment_budget_never_grants_local(
+        make_service, monkeypatch):
+    enable(monkeypatch)
+    now = [100.0]
+    service, exchange, _ = make_service({"admitted": True}, clock=lambda: now[0])
+    monkeypatch.setattr(
+        service.local, "assess",
+        lambda frame, *, deadline_s:
+        now.__setitem__(0, now[0] + deadline_s)
+        or client.fast_assessment_degraded("timeout"),
+    )
+    monkeypatch.setattr(entry, "gate_frame", lambda frame:
+                        now.__setitem__(0, now[0] + 0.060) or None)
+
+    reply = advise(service, deadline_ms=500)
+
+    assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
+    assert exchange.calls == []
+    assert exchange.admission_calls() == []
+    assert Route.LOCAL.value not in selected(service)["permitted"]
 
 
 def test_no_room_for_the_read_means_not_admitted(make_service, monkeypatch):

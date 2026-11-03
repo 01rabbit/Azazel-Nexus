@@ -680,7 +680,8 @@ def read_delivered(reply):
             text(value['title'], 160)
 
     require(type(reply) is dict and set(reply) <= {
-        'outcome', 'refusal', 'response_digest', 'advice', 'fields', 'knowledge', *MACHINE_FIELDS,
+        'outcome', 'refusal', 'response_digest', 'advice', 'fields', 'knowledge',
+        'fast_assistance', *MACHINE_FIELDS,
     })
     require(all(k in reply for k in ('advice', 'fields', *MACHINE_FIELDS)))
     option(reply['candidate'])
@@ -776,9 +777,151 @@ def read_delivered(reply):
                                  ensure_ascii=False).encode('utf-8'))
     if 'knowledge' in reply:
         read_knowledge_refs(reply['knowledge'])
+    if 'fast_assistance' in reply:
+        read_fast_assistance(reply['fast_assistance'])
     require(len(json.dumps(reply, ensure_ascii=False).encode('utf-8')) <= DELIVERED_MAX_BYTES)
-    return {key: reply[key] for key in ('advice', 'fields', *MACHINE_FIELDS, 'knowledge')
+    return {key: reply[key] for key in ('advice', 'fields', *MACHINE_FIELDS, 'knowledge', 'fast_assistance')
             if key in reply}
+
+
+MIO_ASSISTANCE_STATES = frozenset({
+    'frame_ready', 'hypotheses_ready', 'evidence_gaps_identified', 'request_planned',
+    'evidence_collected', 'hypotheses_updated', 'recommendation_ready', 'complete',
+    'insufficient_evidence', 'budget_exhausted', 'stale_superseded', 'operator_cancelled',
+    'validation_rejected', 'dependency_unavailable', 'error_fallback',
+})
+
+
+def read_fast_assistance(value):
+    """Validate the separately labeled shared-core result at delivery."""
+    require = lambda ok: (_ for _ in ()).throw(ValueError('invalid_fast_assistance')) if not ok else None
+    def bounded_text(item, cap):
+        require(type(item) is str and 0 < len(item) <= cap)
+        require(all(c.isprintable() or c in '\n\t' for c in item))
+        item.encode('utf-8')
+    require(type(value) is dict and set(value) == {
+        'schema_version', 'trace_id', 'frame_id', 'generation_method', 'state',
+        'dependency_outcome', 'observations', 'hypotheses', 'unknowns', 'next_checks',
+        'knowledge', 'handoff', 'reasoning_trace'})
+    require(value['schema_version'] == 'mio.assistance.v1')
+    require(value['generation_method'] == 'static_reference')
+    require(type(value['trace_id']) is str and re.fullmatch(r'mio-[0-9a-f]{16}-[0-9]{1,12}', value['trace_id']))
+    require(type(value['frame_id']) is str and value['frame_id'] == value['trace_id'] + ':frame')
+    require(type(value['state']) is str and value['state'] in MIO_ASSISTANCE_STATES)
+    dependency = value['dependency_outcome']
+    require(type(dependency) is dict and set(dependency) == {'knowledge', 'deception'})
+    require(type(dependency['knowledge']) is str and dependency['knowledge'] in {'available', 'partial', 'absent', 'not_queried', 'timeout', 'expired', 'rejected', 'unavailable'})
+    require(type(dependency['deception']) is str and dependency['deception'] in {'available', 'absent', 'timeout', 'rejected', 'unavailable'})
+    require(type(value['observations']) is list and not value['observations'])
+    for key, limit in (('unknowns', 24), ('next_checks', 8)):
+        require(type(value[key]) is list and len(value[key]) <= limit)
+        for text_value in value[key]:
+            bounded_text(text_value, 480)
+    hypotheses = value['hypotheses']
+    require(type(hypotheses) is list and len(hypotheses) <= 4)
+    for hypothesis in hypotheses:
+        require(type(hypothesis) is dict)
+        if hypothesis.get('kind') == 'static_alternative':
+            require(set(hypothesis) == {'kind', 'verification', 'statement',
+                    'supporting_evidence_refs', 'missing_evidence'})
+            require(hypothesis['verification'] == 'unverified')
+            bounded_text(hypothesis['statement'], 480)
+            for key in ('supporting_evidence_refs', 'missing_evidence'):
+                require(type(hypothesis[key]) is list and len(hypothesis[key]) <= 32)
+                for item in hypothesis[key]:
+                    bounded_text(item, 480)
+        else:
+            raise ValueError('invalid_fast_assistance')
+    require(type(value['knowledge']) is list and len(value['knowledge']) <= 8)
+    for item in value['knowledge']:
+        require(type(item) is dict and set(item) == {
+                'kind', 'source_kind', 'claim_status', 'technique_id', 'name', 'summary',
+                'claim_id', 'bundle_digest', 'freshness', 'temporal_validity', 'generation',
+                'as_of', 'expires_at', 'citation', 'trust_check', 'revocation_status', 'trust',
+                'source_citation'} and item.get('kind') == 'knowledge_lite_advisory'
+                and item.get('source_kind') == 'knowledge_lite'
+                and item.get('claim_status') == 'reported_unverified'
+                and type(item.get('freshness')) is str and item.get('freshness') in {'current', 'static'}
+                and type(item.get('temporal_validity')) is str and item.get('temporal_validity') in {'current_at_lookup', 'static'}
+                and item.get('trust_check') == 'verified'
+                and type(item.get('revocation_status')) is str and item.get('revocation_status') in {'clear', 'unknown'}
+                and item.get('expires_at') is None
+                and type(item.get('source_citation')) is str
+                and len(item['source_citation']) <= 160)
+        bounded_text(item['source_citation'] or ' ', 160)
+        read_knowledge_refs([{
+            'technique_id': item.get('technique_id'), 'name': item.get('name'),
+            'summary': item.get('summary'), 'claim_id': item.get('claim_id'),
+            'bundle_digest': item.get('bundle_digest'), 'freshness': item.get('freshness'),
+            'source_kind': 'knowledge_lite', 'generation': int(item.get('generation', '-1')),
+            'trust_check': item.get('trust_check'), 'as_of': item.get('as_of'),
+            'citation': 'adapter-validation',
+        }])
+        require(item['temporal_validity'] == ('current_at_lookup' if item['freshness'] == 'current' else 'static'))
+        require(item['trust'] == ('unverified_advisory_only' if item['revocation_status'] == 'clear'
+                                  else 'unverified_advisory_revocation_unknown'))
+    if value['knowledge']:
+        require(dependency['knowledge'] in {'available', 'partial'})
+    if dependency['knowledge'] == 'not_queried':
+        require(not value['knowledge'])
+    handoff = value['handoff']
+    if handoff is not None:
+        require(type(handoff) is dict and set(handoff) == {
+            'schema_version', 'trace_id', 'frame_id', 'frame_digest', 'reason', 'summary', 'current_defensive_state',
+            'threat_level', 'counts', 'dependency_status', 'contradiction_markers', 'unknown_markers',
+            'evidence_refs', 'current_action', 'model_contribution', 'limitations',
+            'operator_guidance', 'playbook', 'model_proposed_hypotheses'})
+        require(handoff['schema_version'] == 'mio.no_model_handoff.v2'
+                and handoff['trace_id'] == value['trace_id'] and handoff['frame_id'] == value['frame_id'])
+        require(type(handoff['frame_digest']) is str
+                and re.fullmatch(r'[0-9a-f]{64}', handoff['frame_digest']) is not None)
+        bounded_text(handoff['reason'], 64)
+        bounded_text(handoff['summary'], 480)
+        require(type(handoff['current_defensive_state']) is str and handoff['current_defensive_state'] in {'OBSERVE', 'NOTIFY', 'THROTTLE', 'REDIRECT', 'ISOLATE'})
+        require(type(handoff['threat_level']) is str and handoff['threat_level'] in {'LOW', 'MEDIUM', 'HIGH', 'CRITICAL', 'UNKNOWN'})
+        counts = handoff['counts']
+        require(type(counts) is dict and set(counts) == {'actions', 'actors', 'contradictions',
+                'evidence_refs', 'knowledge_refs', 'known_facts', 'unknowns'})
+        require(all(type(n) is int and 0 <= n <= 1_000_000 for n in counts.values()))
+        statuses = handoff['dependency_status']
+        require(type(statuses) is dict and set(statuses) == {'knowledge', 'deception'}
+                and all(type(s) is str and s in {'available', 'not_provided', 'unavailable', 'timeout', 'malformed'}
+                        for s in statuses.values()))
+        require(handoff['current_action'] is None and handoff['model_contribution'] == 'none')
+        for key, cap in (('contradiction_markers', 8), ('unknown_markers', 16),
+                         ('evidence_refs', 12), ('limitations', 8), ('operator_guidance', 4),
+                         ('model_proposed_hypotheses', 6)):
+            require(type(handoff[key]) is list and len(handoff[key]) <= cap)
+            for item in handoff[key]:
+                bounded_text(item, 512)
+        playbook = handoff['playbook']
+        require(type(playbook) is dict and set(playbook) == {
+            'playbook_id', 'version', 'guidance_source', 'check_next', 'stop_conditions', 'claim_boundaries'})
+        for key, cap in (('playbook_id', 96), ('version', 32), ('guidance_source', 32)):
+            bounded_text(playbook[key], cap)
+        for key, cap in (('check_next', 4), ('stop_conditions', 4), ('claim_boundaries', 4)):
+            require(type(playbook[key]) is list and len(playbook[key]) <= cap)
+            for item in playbook[key]:
+                bounded_text(item, 512)
+    trace = value['reasoning_trace']
+    require(type(trace) is list and len(trace) <= 64)
+    for event in trace:
+        require(type(event) is dict and set(event) in ({'state', 'kind'}, {'state', 'kind', 'payload'}))
+        bounded_text(event['state'], 64)
+        bounded_text(event['kind'], 64)
+        if 'payload' in event:
+            payload = event['payload']
+            require(type(payload) is dict and set(payload) == {'slots'}
+                    and type(payload['slots']) is list and len(payload['slots']) <= 4)
+            for slot in payload['slots']:
+                require(type(slot) is dict and set(slot) == {
+                    'hypothesis_id', 'alternative_id', 'proposed_role', 'verification'})
+                bounded_text(slot['hypothesis_id'], 16)
+                bounded_text(slot['alternative_id'], 64)
+                require(type(slot['proposed_role']) is str and slot['proposed_role'] in {'hostile', 'benign', 'unresolved'}
+                        and slot['verification'] == 'model_proposed_unverified')
+    require(len(json.dumps(value, ensure_ascii=False).encode('utf-8')) <= DELIVERED_MAX_BYTES // 2)
+    return value
 
 
 

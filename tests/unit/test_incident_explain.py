@@ -5,7 +5,7 @@ import pytest
 from azazel_nexus.edge_intake import IncidentTracker
 from azazel_nexus.incident_explain import (
     MAX_PENDING, Selection, build_frame, read_record, read_transition, explanation_input, private_text, POLICY_REASONS,
-    pending_entry,
+    pending_entry, read_fast_transition,
 )
 from azazel_nexus.local_advisory import read_frame
 from azazel_nexus.reasoning_playbook import technique_ids
@@ -33,6 +33,69 @@ def test_private_frame(address):
     assert "ignore previous instructions" in frame["context"][0]["text"]
     assert all("ignore" not in v for k, v in frame.items() if k != "context")
     assert set(technique_ids(frame)) == {"T1059", "T1059.001"}
+
+
+def test_frame_carries_only_closed_pending_transition_and_digest_refs():
+    pending = pending_entry(transition())
+    frame = build_frame(pending, 7)
+    projected = read_fast_transition(frame)
+    assert projected == {
+        "incident_id": pending["incident_id"], "sequence": 7,
+        "event_type": pending["event_type"], "edge_would": pending["edge_would"],
+        "attack_type": pending["attack_type"],
+        "policy_reason": pending["policy_reason"], "category": pending["category"],
+        "protocol": pending["protocol"], "target_port": pending["target_port"],
+        "most_severe": pending["most_severe"], "count": pending["count"],
+        "technique_ids": pending["technique_ids"],
+        "evidence_refs": [ref["evidence_id"] for ref in pending["evidence"]["refs"]],
+    }
+    assert frame["request_id"] == f"{pending['incident_id']}:7"
+    assert all(ref.startswith("sha256:") and len(ref) == 71
+               for ref in projected["evidence_refs"])
+
+
+def test_fast_transition_refuses_forged_context_or_mismatched_request():
+    from azazel_nexus.incident_explain import FAST_TRANSITION_KIND
+
+    frame = build_frame(pending_entry(transition()), 3)
+    forged = dict(frame)
+    forged["context"] = [dict(item) for item in frame["context"]]
+    for item in forged["context"]:
+        if item["kind"] == FAST_TRANSITION_KIND:
+            payload = json.loads(item["text"])
+            payload["edge_would"] = "execute"
+            item["text"] = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    with pytest.raises(ValueError):
+        read_fast_transition(forged)
+    with pytest.raises(ValueError):
+        read_fast_transition({**frame, "request_id": frame["request_id"] + ":8"})
+
+
+def test_fast_transition_refuses_mismatched_display_context():
+    frame = build_frame(pending_entry(transition()), 3)
+    for key, replacement in (("question", "unrelated question"),
+                             ("privacy_class", "P2-mission")):
+        forged = dict(frame)
+        forged[key] = replacement
+        with pytest.raises(ValueError):
+            read_fast_transition(forged)
+
+    forged = dict(frame)
+    forged["context"] = [dict(item) for item in frame["context"]]
+    forged["context"][0]["text"] += "; edge_would=execute"
+    with pytest.raises(ValueError):
+        read_fast_transition(forged)
+
+
+def test_edge_fast_lane_is_unavailable_when_trace_sequence_exceeds_mio_grammar():
+    from azazel_nexus.incident_explain import (
+        MIO_TRACE_SEQUENCE_MAX, edge_fast_assistance_unavailable,
+    )
+
+    pending = pending_entry(transition())
+    frame = build_frame(pending, MIO_TRACE_SEQUENCE_MAX + 1)
+    assert read_fast_transition(frame) is None
+    assert edge_fast_assistance_unavailable(frame)
 
 
 def test_escalation_and_rate():
@@ -145,7 +208,14 @@ def test_category_and_protocol_are_closed_and_p3_is_invariant():
             assert clean["protocol"] == (protocol if protocol in {"tcp", "udp", "icmp"} else "other")
             assert clean["category"] == "other"
             assert build_frame(t, 1)["privacy_class"] == "P3-restricted"
-            assert build_frame(clean, 1) == build_frame(t, 1)
+            full_frame, clean_frame = build_frame(t, 1), build_frame(clean, 1)
+            from azazel_nexus.incident_explain import FAST_TRANSITION_KIND
+            ordinary = lambda frame: [item for item in frame["context"]
+                                      if item["kind"] != FAST_TRANSITION_KIND]
+            assert ordinary(clean_frame) == ordinary(full_frame)
+            full_transition = read_fast_transition(full_frame)
+            clean_transition = read_fast_transition(clean_frame)
+            assert {**full_transition, "evidence_refs": []} == clean_transition
 
 
 @pytest.mark.parametrize("reply, code", [
@@ -400,6 +470,127 @@ def test_explanation_summary_carries_digest_generation_freshness_as_of_and_citat
     value = build_recent_incidents([row], 1)
     assert value["incidents"][0]["explanation"]["knowledge_refs"] == [DISPLAY_REF]
     assert read_recent_incidents(json.dumps(value).encode()) == value
+
+
+def test_recent_reader_accepts_not_queried_and_rejects_malformed_fast_assistance():
+    pytest.importorskip("azazel_mio")
+    from azazel_nexus.incident_explain import build_recent_incident, build_recent_incidents, read_recent_incidents
+    from azazel_nexus.local_advisory import read_frame
+    from azazel_nexus_runtime import mio_fast_assistance
+
+    source = read_frame({"request_id": "recent-fast", "privacy_class": "P2-mission",
+                         "question": "SSH host-1 T1110.003", "context": []})
+    fast = mio_fast_assistance.fast_assistance(source, deadline_s=0.2)
+    transition_record = _record({"route": "unavailable", "outcome": "unavailable",
+                                 "reason": "mio_unavailable", "text": None,
+                                 "fast_assistance": fast})
+    transition_record["technique_ids"] = ["T1110.003"]
+    transition_record["incident_id"] = _t1110()["incident_id"]
+    row = build_recent_incident(_t1110(), record=transition_record)
+    valid = build_recent_incidents([row], 1)
+    assert read_recent_incidents(json.dumps(valid).encode()) == valid
+    assert valid["incidents"][0]["explanation"]["fast_assistance"]["dependency_outcome"]["knowledge"] == "not_queried"
+
+    forged = json.loads(json.dumps(valid))
+    forged_fast = forged["incidents"][0]["explanation"]["fast_assistance"]
+    forged_fast["knowledge"] = [{
+        "technique_id": "T1110.003", "name": "Password spraying",
+        "summary": "Reference summary", "freshness": "current",
+        "as_of": "2026-10-31T00:00:00Z", "citation": "MITRE ATT&CK technique",
+        "revocation_status": "clear", "claim_status": "reported_unverified",
+    }]
+    assert read_recent_incidents(json.dumps(forged).encode()) is None
+
+    changes = (
+        ("dependency_outcome", "deception", []),
+        ("dependency_outcome", "deception", "attacker"),
+        ("dependency_outcome", "knowledge", "surprise"),
+        ("state", None, "attacker"),
+    )
+    for field, child, bad in changes:
+        forged = json.loads(json.dumps(valid))
+        fast_summary = forged["incidents"][0]["explanation"]["fast_assistance"]
+        if field == "dependency_outcome":
+            fast_summary[field][child] = bad
+        elif field == "state":
+            fast_summary[field] = bad
+        assert read_recent_incidents(json.dumps(forged).encode()) is None
+
+
+def test_fast_assistance_is_bound_to_incident_and_edge_sequence():
+    pytest.importorskip("azazel_mio")
+    from azazel_nexus.incident_explain import build_frame, read_mio_reply, read_record
+    from azazel_nexus_runtime import mio_fast_assistance
+
+    edge = transition()
+    edge_sequence, mio_sequence = 105, 41
+    fast = mio_fast_assistance.fast_assistance(build_frame(edge, edge_sequence), deadline_s=0.2)
+    # Use the bound result class here so incident/sequence mismatch assertions
+    # exercise the strict branch; degradation has its own random-trace case.
+    fast["state"] = "complete"
+    normalized = read_mio_reply({"route": "local", "outcome": "abandoned",
+                                 "reason": "no advice", "ledger_seq": mio_sequence,
+                                 "fast_assistance": fast})
+    assert normalized["ledger_seq"] == mio_sequence
+    valid = _record(normalized)
+    valid["incident_id"] = edge["incident_id"]
+    valid["incident_sequence"] = edge_sequence
+    checked = read_record(valid)
+    assert checked["mio"]["ledger_seq"] == mio_sequence
+    assert checked["incident_sequence"] == edge_sequence
+
+    wrong_incident = json.loads(json.dumps(valid))
+    wrong_incident["incident_id"] = "inc-" + "f" * 16
+    with pytest.raises(ValueError, match="record_refused"):
+        read_record(wrong_incident)
+
+    wrong_sequence = json.loads(json.dumps(valid))
+    wrong_sequence["incident_sequence"] = edge_sequence + 1
+    with pytest.raises(ValueError, match="record_refused"):
+        read_record(wrong_sequence)
+
+    # M.I.O.'s independent sequence is range-checked but does not bind the
+    # Edge trace; changing 41 to 42 remains valid when the Edge sequence is 105.
+    independent_mio_sequence = json.loads(json.dumps(valid))
+    independent_mio_sequence["mio"]["ledger_seq"] = mio_sequence + 1
+    assert read_record(independent_mio_sequence)["incident_sequence"] == edge_sequence
+
+    invalid_mio_sequence = json.loads(json.dumps(valid))
+    invalid_mio_sequence["mio"]["ledger_seq"] = True
+    with pytest.raises(ValueError):
+        read_record(invalid_mio_sequence)
+
+
+def test_fast_assistance_without_new_sequence_field_remains_legacy_readable():
+    pytest.importorskip("azazel_mio")
+    from azazel_nexus.incident_explain import build_frame, read_mio_reply, read_record
+    from azazel_nexus_runtime import mio_fast_assistance
+
+    edge = transition()
+    fast = mio_fast_assistance.fast_assistance(build_frame(edge, 23), deadline_s=0.2)
+    normalized = read_mio_reply({"route": "local", "outcome": "abandoned",
+                                 "reason": "no advice", "ledger_seq": 23,
+                                 "fast_assistance": fast})
+    legacy_mio = {key: value for key, value in normalized.items() if key != "ledger_seq"}
+    legacy = _record(legacy_mio)
+    legacy["incident_id"] = edge["incident_id"]
+    assert "ledger_seq" not in read_record(legacy)["mio"]
+
+    old_record = _record({"route": "unavailable", "outcome": "unavailable",
+                          "reason": "mio_unavailable", "text": None})
+    assert "ledger_seq" not in read_record(old_record)["mio"]
+
+
+def test_dependency_unavailable_fast_assistance_keeps_unbound_trace():
+    from azazel_nexus.incident_explain import read_record
+    from azazel_nexus_runtime.mio_socket_client import fast_assessment_degraded
+
+    degraded = fast_assessment_degraded("unavailable")
+    record = _record({"route": "unavailable", "outcome": "unavailable",
+                      "reason": "mio_unavailable", "text": None,
+                      "ledger_seq": 41, "fast_assistance": degraded})
+    record["incident_sequence"] = 105
+    assert read_record(record)["mio"]["fast_assistance"]["state"] == "dependency_unavailable"
 
 
 @pytest.mark.parametrize("citation", ["ingested from 192.0.2.1", "fe80::1:2:3",

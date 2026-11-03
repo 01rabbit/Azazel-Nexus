@@ -98,6 +98,12 @@ INFER_VERB = Verb(
     accepts_payload=True,
     payload_contract="azazel_nexus.local_advisory.read_frame",
 )
+FAST_ASSESS_VERB = Verb(
+    name="mio.local.assess",
+    arguments=(Argument("deadline_ms", ArgumentKind.ORDINAL, maximum=60_000),),
+    admits=frozenset({PrincipalClass.SERVICE}), accepts_payload=True,
+    payload_contract="azazel_nexus.local_advisory.read_frame",
+)
 #: Read-only: whether this service now holds an admitted local model, as the
 #: result of its own `AdmissionHolder` (refreshed before every request). No
 #: arguments, no payload, SERVICE only -- the same principal set as the
@@ -111,7 +117,7 @@ ADMISSION_VERB = Verb(
 #: No reference verb: verified playbook references are served by the
 #: model-free `azazel-mio-referenced.service` (`mio_referenced`), which runs
 #: on a node with no admitted model. This host serves only model verbs.
-REGISTRY = VerbRegistry([ACTIVATE_VERB, ADMISSION_VERB, INFER_VERB])
+REGISTRY = VerbRegistry([ACTIVATE_VERB, ADMISSION_VERB, INFER_VERB, FAST_ASSESS_VERB])
 
 
 @dataclass(frozen=True)
@@ -155,6 +161,14 @@ class LocalRuntimeService:
         playbooks: Library | None = None,
         knowledge_lookup: KnowledgeLookup | None = None,
     ) -> None:
+        # The deterministic MIO lane must not pay the shared-package import
+        # cost inside the first request's short deadline. Importing this
+        # adapter is side-effect-free; model/runtime admission remains a
+        # separate, per-request gate below.
+        try:
+            from . import mio_fast_assistance as _mio_fast_assistance  # noqa: F401
+        except Exception:  # noqa: BLE001 - the shared package is optional
+            pass
         self._artifact_path = artifact_path
         self._retriever = retriever
         self._staging = staging
@@ -192,6 +206,23 @@ class LocalRuntimeService:
         name = getattr(getattr(request, "verb", None), "name", None)
         if name == INFER_VERB.name:
             return self._infer(request, audit=audit)
+        if name == FAST_ASSESS_VERB.name:
+            try:
+                frame = read_frame(request.payload)
+            except FrameRefused:
+                return {"outcome": "failed", "refusal": "malformed_frame"}
+            # The shared package is an integration dependency, not a reason
+            # for the local service process to exit. Keep a typed, fixed
+            # degradation at this boundary when it is absent or broken.
+            try:
+                from .mio_fast_assistance import fast_assistance
+                result = fast_assistance(
+                    frame, deadline_s=max(0.0, request.arguments["deadline_ms"] / 1000
+                                          - DELIVERY_RESERVE_S))
+            except Exception:
+                from .mio_socket_client import fast_assessment_degraded
+                result = fast_assessment_degraded("unavailable")
+            return {"outcome": "assessed", "fast_assistance": result}
         if name == ADMISSION_VERB.name:
             return self.admission()
         arguments = request.arguments
@@ -250,6 +281,7 @@ class LocalRuntimeService:
             if self._playbooks is None:
                 return refuse("not_admitted")
             from .mio_embedding import retrieve
+
 
             playbooks, similarities, method, embed_ms = retrieve(
                 frame, self._playbooks, None, end=began + deadline_ms / 1000)

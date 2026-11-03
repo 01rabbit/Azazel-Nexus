@@ -137,7 +137,7 @@ def test_each_aarch64_lock_entry_names_one_file_that_fits_the_lab_target_only():
     assert "LAB TARGET" in text and "ADR-0005" in text
 
 
-def test_the_source_built_fabric_wheel_is_pinned_by_the_same_hash_on_both_targets():
+def test_source_built_wheels_are_pinned_by_the_same_hash_on_both_targets():
     baseline, lab = _locks()
     for name, build in build_wheelhouse.SOURCE_BUILDS.items():
         requirement = f"{name}=={build['version']}"
@@ -354,15 +354,18 @@ def test_the_container_record_is_a_lab_container_record_with_the_locked_hashes()
     assert "Not Arm hardware, not an Arm VM" in record["scope"]
     assert "not hardware-gate evidence" in record["scope"]
     lock = _locks()[1]
-    third_party = 0
+    recorded = set()
     for filename, wheel in record["build_container"]["wheels"].items():
         parts = offline_bundle.parse_wheel_name(filename)
         requirement = f"{offline_bundle.canonical_name(parts['name'])}=={parts['version']}"
         assert offline_bundle.wheel_fits_target(filename, offline_bundle.TARGETS[LAB]), filename
         if requirement in lock:
-            third_party += 1
             assert lock[requirement] == [wheel["sha256"]], filename
-    assert third_party == len(lock)
+            recorded.add(requirement)
+    # This historical container record predates the MIO source pin. Preserve
+    # its evidence as a record of the earlier wheelhouse; MIO target builds
+    # remain explicitly unverified until a new container rehearsal.
+    assert set(lock) - recorded == {"azazel-mio==0.1.0"}
     assert record["offline_container"]["install"]["observed_platform"] == {
         "platform_profile_id": "debian-13-arm64-cp313-lab", "purpose": "lab-software-verification"}
     refused = record["offline_container"]["production_uses_on_this_host"]["require_deployment_baseline"]
