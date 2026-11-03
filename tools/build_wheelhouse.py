@@ -90,9 +90,9 @@ SOURCE_BUILDS = {
         "commit": "450d9502884ba533653210056a6fb85012b96b84",
     },
     "azazel-mio": {
-        "version": "0.1.0",
+        "version": "0.1.0+git.c31c244",
         "repository": "https://github.com/01rabbit/Azazel-MIO.git",
-        "commit": "9fedb01bc9936531407a5181aa8fa5553ec19d55",
+        "commit": "7a3adab6d287356e892e8d0f4f95bd7245f56180",
     },
 }
 

@@ -614,6 +614,19 @@ release-digest signature is not verified: its key is not a Nexus trust
 anchor. MIO's pinned commit must be fetchable from its GitHub repository for a
 standard remote wheelhouse build; a local clean checkout at that exact commit
 can be passed with `--mio-source` while the commit remains unpublished.
+The current main pin remains MIO `9fedb01bc9936531407a5181aa8fa5553ec19d55`.
+Draft [MIO PR #41](https://github.com/01rabbit/Azazel-MIO/pull/41) adds a
+source-build-only local version `0.1.0+git.c31c244`, based on reviewed MIO
+commit `c31c2442899e778f1c49e5becd739c59ef8f1092`. Its exact candidate source
+commit is `7a3adab6d287356e892e8d0f4f95bd7245f56180`; the generated wheel is
+`azazel_mio-0.1.0+git.c31c244-py3-none-any.whl`, SHA-256
+`ee4b8a785bd558d190448dcd67afd37a1dea748fdee114680cc2d0f3b1aa816f`,
+reproduced on Linux arm64 and amd64 CPython 3.13.18 using setuptools 84.0.0,
+`SOURCE_DATE_EPOCH=315532800`, and umask 022. This Nexus candidate changes the
+optional MIO extra only; it does not change Nexus's own `0.0.1.dev0` version or
+CORE dependencies. It depends on MIO PR #41 and is not yet merged; target Debian
+CPython 3.13 offline wheelhouse installation and process validation must pass
+before these proposed locks can be treated as accepted Nexus package inputs.
 `build_offline_bundle.py`, `verify`, `recheck` and `install` refuse a
 wheelhouse or bundle that lacks any locked wheel. The two Nexus wheels are
 recorded by the hash this build produced; their reproducibility across
