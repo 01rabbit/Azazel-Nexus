@@ -1622,10 +1622,10 @@ def _closure_root(tmp_path: Path) -> Path:
 @pytest.mark.parametrize("path, old, new, match", [
     ("pyproject.toml", "Azazel-Fabric.git@v0.9.0rc5", "Azazel-Fabric.git@main", "not a pinned source build"),
     ("uv.lock", "#450d9502884ba533653210056a6fb85012b96b84", "#" + "0" * 40, "does not resolve azazel-fabric"),
-    ("pyproject.toml", "Azazel-MIO.git@6cd015351979ba69e18517d71f79c0c347bb2722",
+    ("pyproject.toml", "Azazel-MIO.git@9fedb01bc9936531407a5181aa8fa5553ec19d55",
      "Azazel-MIO.git@main", "not a pinned source build"),
-    ("uv.lock", "Azazel-MIO.git?rev=6cd015351979ba69e18517d71f79c0c347bb2722#6cd015351979ba69e18517d71f79c0c347bb2722",
-     "Azazel-MIO.git?rev=6cd015351979ba69e18517d71f79c0c347bb2722#" + "0" * 40,
+    ("uv.lock", "Azazel-MIO.git?rev=9fedb01bc9936531407a5181aa8fa5553ec19d55#9fedb01bc9936531407a5181aa8fa5553ec19d55",
+     "Azazel-MIO.git?rev=9fedb01bc9936531407a5181aa8fa5553ec19d55#" + "0" * 40,
      "does not resolve azazel-mio"),
     ("uv.lock", '    { name = "pydantic-core" },\n', '    { name = "pydantic-core", marker = "x" },\n', "markers"),
     ("uv.lock", 'name = "pydantic"\nversion = "2.13.5"\nsource = { registry = "https://pypi.org/simple" }',
@@ -1694,7 +1694,7 @@ def test_the_mio_source_wheel_hash_is_reproduced_and_exactly_pinned():
     build = build_wheelhouse.SOURCE_BUILDS["azazel-mio"]
     lock = build_wheelhouse.parse_lock(ROOT / build_wheelhouse.LOCK)
     digest, = lock["azazel-mio==0.1.0"]
-    assert digest == "99efaf16e5df2bfafa11e9a10c3f3d3a6dd7432d9e2aa0b6ae555caee727d45a"
+    assert digest == "889fce3d13141ec2f4371252acdb0c5fc0fadd0bea00631cd92c643ea33bfdaa"
     for target in offline_bundle.TARGETS:
         target_lock = build_wheelhouse.parse_lock(ROOT / offline_bundle.target_lock(target))
         assert target_lock["azazel-mio==0.1.0"] == [digest]

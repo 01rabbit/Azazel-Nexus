@@ -55,6 +55,10 @@ must either carry the shared core's result (which queries no Knowledge) or the
 explicit `dependency_unavailable` degradation when the MIO package is absent.
 It is not model admission, and it does not change the route.
 
+The tests use lab-only signing keys; the real-producer phase imports the
+checked-in signed bundle unchanged, retaining its empty T1110 summary.
+Separate synthetic producer-shaped rows are admitted with the suite test key.
+
 For the `synthetic-reader` case, Knowledge data is the producer-shaped fixture
 re-signed with the suite's test key and given a test-only description so the
 shared core can project the advisory. For the `knowledge-builder` case, the

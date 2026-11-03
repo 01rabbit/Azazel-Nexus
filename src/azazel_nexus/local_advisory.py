@@ -841,6 +841,7 @@ def read_fast_assistance(value):
                 'source_citation'} and item.get('kind') == 'knowledge_lite_advisory'
                 and item.get('source_kind') == 'knowledge_lite'
                 and item.get('claim_status') == 'reported_unverified'
+                and item.get('citation') == item.get('claim_id')
                 and type(item.get('freshness')) is str and item.get('freshness') in {'current', 'static'}
                 and type(item.get('temporal_validity')) is str and item.get('temporal_validity') in {'current_at_lookup', 'static'}
                 and item.get('trust_check') == 'verified'

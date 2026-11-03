@@ -3,10 +3,15 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import secrets
+import time
+from dataclasses import asdict
 
-from azazel_mio import AssistantCore, MioSituationFrame
-from azazel_mio.id_grammar import ID_KINDS
+from azazel_nexus.lite_import import KnowledgeRef, read_knowledge_refs
+from azazel_nexus.reasoning_playbook import technique_ids
 from azazel_nexus.incident_explain import FAST_TRANSITION_KIND, read_fast_transition
+
+from azazel_mio import AssistantCore, MioSituationFrame, KnowledgeLiteAdvisory
+from azazel_mio.id_grammar import ID_KINDS
 
 
 def _frame(source: dict) -> MioSituationFrame:
@@ -54,12 +59,74 @@ def _frame(source: dict) -> MioSituationFrame:
     )
 
 
-def fast_assistance(source: dict, *, deadline_s: float) -> dict:
-    """Run the deterministic shared assessment without querying Knowledge."""
+def fast_assistance(source: dict, *, deadline_s: float, knowledge_lookup=None,
+                    knowledge_max_s: float = 0.25, core_reserve_s: float = 0.025) -> dict:
+    """Read optional authenticated local context, then run the model-free core.
+
+    The caller already reserves socket delivery time. Keep the existing 25ms fast-core budget
+    for core composition; a 500ms entry request cannot fund a lookup.
+    This is a software budget, not a hardware latency guarantee.
+    """
+    from .mio_socket_client import fast_assessment_degraded
     if deadline_s <= 0:
-        from .mio_socket_client import fast_assessment_degraded
+        return fast_assessment_degraded("timeout")
+    end = time.monotonic() + deadline_s
+    frame = _frame(source)
+    ids = technique_ids(source)
+    attempted = False
+    advisories = ()
+    failure = None
+    budget = min(knowledge_max_s, end - time.monotonic() - core_reserve_s)
+    if knowledge_lookup is not None and ids:
+        if budget < core_reserve_s:
+            # Leave the remaining slack to the model-free core. No query was
+            # attempted, so reserve `timeout` for an actual bounded read.
+            pass
+        else:
+            attempted = True
+            try:
+                lookup_started = datetime.now(timezone.utc).replace(microsecond=0)
+                raw = tuple(knowledge_lookup(ids, deadline_s=budget))
+                # Revalidate injected/local replies before trust is projected.
+                if any(type(ref) is not KnowledgeRef for ref in raw):
+                    raise ValueError("invalid_knowledge_refs")
+                refs = read_knowledge_refs([asdict(ref) for ref in raw])
+                if any(ref.technique_id not in ids for ref in refs):
+                    raise ValueError("invalid_knowledge_refs")
+                now = datetime.now(timezone.utc)
+                for ref in refs:
+                    as_of = datetime.fromisoformat(ref.as_of.replace('Z', '+00:00'))
+                    # The trusted service evaluated freshness at its live
+                    # lookup instant, truncated to UTC seconds. Crossing a
+                    # second boundary during bounded I/O does not expire it.
+                    if as_of > now or (ref.freshness == 'current' and as_of < lookup_started):
+                        raise ValueError("stale_knowledge_refs")
+                if time.monotonic() > end - core_reserve_s:
+                    raise TimeoutError
+                # The authenticated reader verifies the commissioned signature,
+                # revocations, anti-rollback watermark and unchanged trust on
+                # every read; only those admitted rows can be 'verified'.
+                advisories = tuple(KnowledgeLiteAdvisory(
+                    technique_id=ref.technique_id, name=ref.name, summary=ref.summary,
+                    claim_id=ref.claim_id, bundle_digest=ref.bundle_digest,
+                    freshness=ref.freshness, generation=str(ref.generation),
+                    as_of=ref.as_of, citation=ref.claim_id,
+                    source_citation=ref.citation, trust_check=ref.trust_check,
+                    revocation_status='clear',
+                ) for ref in refs[:8])
+            except TimeoutError:
+                failure = "timeout"
+            except ValueError:
+                failure = "unavailable"
+            except Exception:
+                failure = "unavailable"
+    if failure:
+        payload = frame.to_dict()
+        payload['knowledge_status'] = failure
+        frame = MioSituationFrame.from_dict(payload)
+    if time.monotonic() >= end:
         return fast_assessment_degraded("timeout")
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
-    result = AssistantCore(model=None).explain(
-        _frame(source), now=now, knowledge_attempted=False).to_dict()
-    return result
+    return AssistantCore(model=None).explain(
+        frame, now=now, knowledge_attempted=attempted,
+        knowledge_lite_advisories=advisories).to_dict()

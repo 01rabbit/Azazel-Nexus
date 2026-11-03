@@ -218,7 +218,9 @@ class LocalRuntimeService:
                 from .mio_fast_assistance import fast_assistance
                 result = fast_assistance(
                     frame, deadline_s=max(0.0, request.arguments["deadline_ms"] / 1000
-                                          - DELIVERY_RESERVE_S))
+                                          - DELIVERY_RESERVE_S),
+                    knowledge_lookup=self._knowledge_lookup, knowledge_max_s=KNOWLEDGE_MAX_S,
+                    core_reserve_s=FAST_CORE_RESERVE_S)
             except Exception:
                 from .mio_socket_client import fast_assessment_degraded
                 result = fast_assessment_degraded("unavailable")
@@ -360,6 +362,9 @@ EXPLANATION_MIN_S = 1.0
 # Knowledge is a local socket read of at most 64 KiB; a healthy service answers
 # well inside this, and an unhealthy one must not take the request with it.
 KNOWLEDGE_MAX_S = 0.25
+# Preserve the pre-existing clean 500ms route's maximum shared-core budget.
+# Optional Knowledge may use only slack beyond this; no measured reduction.
+FAST_CORE_RESERVE_S = 0.025
 # Deterministic selection, validation and audit after the optional lookup.
 PIPELINE_RESERVE_S = 0.05
 
