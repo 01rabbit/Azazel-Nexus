@@ -57,6 +57,8 @@ groupadd --gid 20009 azexplain
 groupadd --gid 20010 azintake
 groupadd --gid 20011 azedge
 groupadd --gid 20012 azincident-read
+groupadd --gid 20013 azaudit
+groupadd --gid 20014 azaudit-submit
 useradd --uid 20001 --gid azknowledge --no-create-home --shell /usr/sbin/nologin azknowledge
 useradd --uid 20002 --gid azmio --no-create-home --shell /usr/sbin/nologin azmio
 useradd --uid 20003 --gid azmioentry --no-create-home --shell /usr/sbin/nologin azmioentry
@@ -64,6 +66,7 @@ useradd --uid 20004 --gid azoperator --no-create-home --shell /usr/sbin/nologin 
 useradd --uid 20009 --gid azexplain --no-create-home --shell /usr/sbin/nologin azexplain
 useradd --uid 20010 --gid azintake --no-create-home --shell /usr/sbin/nologin azintake
 useradd --uid 20011 --gid azedge --no-create-home --shell /usr/sbin/nologin azedge
+useradd --uid 20013 --gid azaudit --no-create-home --shell /usr/sbin/nologin azaudit
 usermod --append --groups azknowledge-read,azmission-read azmio
 usermod --append --groups azazel-operator azmioentry
 usermod --append --groups azazel-operator azoperator
@@ -75,6 +78,7 @@ PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
   tests/unit/test_mio_fast_assistance.py \
   tests/unit/test_mio_reference.py \
   tests/unit/test_knowledge_lookup.py \
+  tests/unit/test_real_knowledge_lite_fixture.py \
   tests/unit/test_incident_explain.py \
   tests/real_process/test_mio_process_integration.py
 
