@@ -137,24 +137,31 @@ the lab target **may carry a filled Edge slot**, and only the aarch64 one:
   platform profile to be the target's.
 - **The lab pin is shipped**:
   `packaging/offline/edge-artifact-aarch64-lab.sha256` names the
-  `azazel-edge-core-0.1.0-aarch64.tar.gz` built natively on aarch64 from the
-  Azazel-Edge#522 branch (the core source and `config/redirect_policy.yaml`
-  are those of Edge main `cc769e0`) in `rust:1.99.1-trixie` (rustc 1.99.1)
-  with `cargo build --release --locked`, and packaged by that branch's
-  packager with `--architecture aarch64`. Three builds in fresh containers
-  produced the identical binary, so the pin names something anyone can
-  rebuild from public inputs; it is not a released artifact.
-  **Checked against a fresh build (2026-10-30)**: at Azazel-Edge `5fb43e9`,
-  in `rust@sha256:09027f873d45b8ecd1dc86f1fa13b7a62b875c961f017a0e331267b350430137`
-  (the image index `rust:1.99.1-trixie` resolved to; native aarch64 on the
-  colima VM), a new container built the core and the packager wrote the
-  aarch64 archive; its sha256 equals the shipped pin. To repeat it: build and
-  package as above in that image, then
-  `sha256sum azazel-edge-core-0.1.0-aarch64.tar.gz` and compare with the
-  pin's first field (or carry the package in a lab bundle: `verify_edge_slot`
-  compares it before parsing anything). Any change to the core, the policy, `Cargo.lock` or the image
-  changes the digest, and the slot is then refused until the pin is renewed
-  (Azazel-Edge#521, for example, changes both the core and the policy).
+  `azazel-edge-core-0.1.0-aarch64.tar.gz` from Azazel-Edge commit
+  `8d5cc215c86a1e8c46af6f547f679220fba42459` (the #522 source rebased on
+  main after #521 and #523). On 2026-10-30, two fresh native aarch64
+  containers built it with `cargo build --release --locked` and packaged it
+  with that commit's `nexus_core_package.py --architecture aarch64`.
+  The build used `rust:1.99.1-trixie` resolved to a recorded immutable image
+  index and aarch64 child manifest, rustc and Cargo 1.99.1, the committed
+  `Cargo.lock`, and the source commit epoch as `SOURCE_DATE_EPOCH`.
+  The build evidence records the exact image identities, packager and lock
+  bytes, toolchain, and Python/test dependency versions; the apt-installed
+  Python dependencies are recorded, not assumed immutable.
+  Both fresh builds produced byte-identical binary, archive and manifest;
+  re-packaging also reproduced the same bytes. The shipped lab pin is
+  checked against those actual archive bytes and their manifest. The
+  regenerated contract files match the copies under
+  `contract/azazel-edge-core/` on both CPUs. The x86_64 package was built
+  and checked separately; it does not supply a deployment-baseline pin.
+  These are private container build and integrity results, not a released
+  artifact, deployment, signature, readiness result or hardware gate.
+  A lab slot can repeat the consumer integrity check with `verify_edge_slot`,
+  which compares the actual archive with this target's pin before parsing
+  it and then checks the manifest, component bytes and aarch64 ELF identity.
+  A change to the core, policy, lock, packager or build inputs requires a
+  fresh artifact review and explicit lab-pin update; do not accept it by
+  changing the pin merely to make a failed integrity check pass.
 - **The baseline's pin is not shipped** and stays an owner decision:
   `packaging/offline/edge-artifact.sha256` would let a deployment-baseline
   medium carry an Edge artifact, which is closer to a production deployment
