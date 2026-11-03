@@ -263,6 +263,22 @@ class HungStopFailsServer(StopFailsServer):
         raise TimeoutError
 
 
+def test_active_same_source_retry_after_receipt_expiry_never_returns_poll_handle():
+    lane, source, frame = setup(deadline_s=10)
+    server = lane.server = HungStopFailsServer()
+    try:
+        first = lane.submit(source, frame, 'fixture-generation')
+        assert server.entered.wait(2)
+        lane._receipts[first['result_handle']]['expires'] = time.monotonic() - 1
+        retry = lane.submit(source, frame, 'fixture-generation')
+        assert retry['state'] == 'degraded' and 'result_handle' not in retry
+        assert lane.poll(first['result_handle'], 'fixture-generation', frame.trace_id)['state'] == 'stale'
+        assert len(server.requests) == 1
+    finally:
+        server.release.set()
+        assert _wait(lambda: lane._active is None)
+
+
 def _wait(predicate):
     until = time.monotonic() + 2
     while not predicate() and time.monotonic() < until:

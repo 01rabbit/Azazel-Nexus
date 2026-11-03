@@ -225,11 +225,12 @@ class GenerationLane:
                     # Exact retry of existing work stays pollable even after a stop/fence;
                     # then the receipt (timeout/cancelled/degraded) is the truth, not 'queued'.
                     record = self._receipts.get(job['handle'])
-                    if self._fenced or self._stopped:
-                        if record:
-                            return copy.deepcopy(record['status'])
-                        # Receipt pruned/expired: never hand out a handle that cannot poll.
+                    if not record:
+                        # Receipt TTL/eviction applies even while the lane is still
+                        # running. Never return a queued handle that poll() cannot read.
                         return self._status('degraded', frame, generation_id)
+                    if self._fenced or self._stopped:
+                        return copy.deepcopy(record['status'])
                     return self._status('queued', job['frame'], generation_id, result_handle=job['handle'])
             # _fence()/_mark_stopped() set their flags under this lock: new work is
             # refused here, so a stop that lands mid-call admits no receipt or pending job.
