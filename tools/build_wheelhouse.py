@@ -248,6 +248,7 @@ def _extract_regular_tar(archive: Path, tree: Path, *, directories: bool) -> Non
             assert extracted is not None
             destination.write_bytes(extracted.read())
             destination.chmod(member.mode)
+            os.utime(destination, (member.mtime, member.mtime))
 
 
 def fetch_source_build(name: str, scratch: Path, *, source_checkout: Path | None = None) -> Path:

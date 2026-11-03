@@ -1736,6 +1736,23 @@ def test_the_mio_source_checkout_is_archived_only_at_its_exact_commit(tmp_path, 
     assert not any("clone" in argv for argv in calls)
 
 
+def test_source_archive_extraction_preserves_member_mtime(tmp_path):
+    archive = tmp_path / "source.tar"
+    with tarfile.open(archive, "w") as stream:
+        info = tarfile.TarInfo("src/module.py")
+        data = b"VALUE = 1\n"
+        info.size, info.mode, info.mtime = len(data), 0o644, 315532800
+        stream.addfile(info, io.BytesIO(data))
+
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    build_wheelhouse._extract_regular_tar(archive, tree, directories=True)
+
+    extracted = tree / "src/module.py"
+    assert extracted.read_bytes() == b"VALUE = 1\n"
+    assert extracted.stat().st_mtime == 315532800
+
+
 def test_the_fabric_tree_is_archived_by_commit_with_normalised_modes(tmp_path, monkeypatch):
     build = build_wheelhouse.SOURCE_BUILDS["azazel-fabric"]
     calls = []
