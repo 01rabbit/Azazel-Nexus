@@ -90,9 +90,9 @@ SOURCE_BUILDS = {
         "commit": "450d9502884ba533653210056a6fb85012b96b84",
     },
     "azazel-mio": {
-        "version": "0.1.0",
+        "version": "0.1.0+git.c31c244",
         "repository": "https://github.com/01rabbit/Azazel-MIO.git",
-        "commit": "9fedb01bc9936531407a5181aa8fa5553ec19d55",
+        "commit": "b441d431532507387fb81f1e03e31fd1aea57b68",
     },
 }
 
@@ -248,6 +248,7 @@ def _extract_regular_tar(archive: Path, tree: Path, *, directories: bool) -> Non
             assert extracted is not None
             destination.write_bytes(extracted.read())
             destination.chmod(member.mode)
+            os.utime(destination, (member.mtime, member.mtime))
 
 
 def fetch_source_build(name: str, scratch: Path, *, source_checkout: Path | None = None) -> Path:

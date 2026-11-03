@@ -362,10 +362,10 @@ def test_the_container_record_is_a_lab_container_record_with_the_locked_hashes()
         if requirement in lock:
             assert lock[requirement] == [wheel["sha256"]], filename
             recorded.add(requirement)
-    # This historical container record predates the MIO source pin. Preserve
-    # its evidence as a record of the earlier wheelhouse; MIO target builds
-    # remain explicitly unverified until a new container rehearsal.
-    assert set(lock) - recorded == {"azazel-mio==0.1.0"}
+    # This historical container record predates the current MIO source build.
+    # Preserve it as evidence for the earlier wheelhouse; it does not claim an
+    # offline install rehearsal for the separately verified MIO candidate.
+    assert set(lock) - recorded == {"azazel-mio==0.1.0+git.c31c244"}
     assert record["offline_container"]["install"]["observed_platform"] == {
         "platform_profile_id": "debian-13-arm64-cp313-lab", "purpose": "lab-software-verification"}
     refused = record["offline_container"]["production_uses_on_this_host"]["require_deployment_baseline"]

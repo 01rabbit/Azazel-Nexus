@@ -19,10 +19,9 @@
 # 022 fixed. The build is refused unless it reproduces the lock hash. The
 # Fabric hash was observed on Debian 13 CPython 3.13.5, pip 25.1.1,
 # setuptools 84.0.0, x86_64 (Rosetta) and aarch64 containers, 2026-10-28;
-# MIO 9fedb01's digest was reproduced from its exact archived commit using
-# the repository's source archive and wheel build path on Debian 13 CPython
-# 3.13.5 x86_64 (Rosetta) and native aarch64 containers, pip 25.1.1,
-# setuptools 84.0.0, SOURCE_DATE_EPOCH=315532800 and umask 022, 2026-11-02.
+# MIO b441d43's local-version candidate digest was reproduced from its exact
+# archived commit with setuptools 84.0.0, SOURCE_DATE_EPOCH=315532800 and
+# umask 022 on linux/amd64 and linux/arm64.
 #
 # annotated_types-0.8.0-py3-none-any.whl
 annotated-types==0.8.0 \
@@ -31,10 +30,10 @@ annotated-types==0.8.0 \
 # built from https://github.com/01rabbit/Azazel-Fabric.git v0.9.0rc5 = 450d9502884ba533653210056a6fb85012b96b84
 azazel-fabric==0.9.0rc5 \
     --hash=sha256:5eb6593ee6824400bc5a00c3e5c799abb2f88def6273a2486c8b88959c908eda
-# azazel_mio-0.1.0-py3-none-any.whl
-# built from https://github.com/01rabbit/Azazel-MIO.git commit 9fedb01bc9936531407a5181aa8fa5553ec19d55
-azazel-mio==0.1.0 \
-    --hash=sha256:889fce3d13141ec2f4371252acdb0c5fc0fadd0bea00631cd92c643ea33bfdaa
+# azazel_mio-0.1.0+git.c31c244-py3-none-any.whl
+# built from https://github.com/01rabbit/Azazel-MIO.git commit b441d431532507387fb81f1e03e31fd1aea57b68
+azazel-mio==0.1.0+git.c31c244 \
+    --hash=sha256:584bbc7fe1874b2ad2045c99d83ccbf3cd96aefc5de1910fbfc4c2ebd7ac6148
 # dbus_next-0.2.3-py3-none-any.whl
 dbus-next==0.2.3 \
     --hash=sha256:58948f9aff9db08316734c0be2a120f6dc502124d9642f55e90ac82ffb16a18b
