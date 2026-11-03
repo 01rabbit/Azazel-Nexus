@@ -20,16 +20,14 @@ Steps, each with no resolver latitude:
 2. Download the third-party wheels named by the target's lock
    (``packaging/offline/requirements-<arch>-cp313.lock``) with
    ``--require-hashes --only-binary=:all: --no-deps``. pip refuses any file
-   whose sha256 is not in the lock. The lock's one source-built entry,
-   ``azazel-fabric`` (``SOURCE_BUILDS``), is not downloaded from an index.
-2a. Build ``azazel-fabric`` from the exact commit its tag names (ADR-0004):
-   a bare ``git clone`` of the repository, ``TAG^{commit}`` must equal the
-   pinned commit, ``git archive`` of that commit (modes normalised with
-   ``tar.umask=0022``), and the same pinned backend with
-   ``--no-build-isolation --no-index``. The wheel must reproduce the sha256
-   the lock pins, or the build is refused: Fabric publishes no wheel, pip
-   cannot hash a VCS requirement, and a hash of the build output turns the
-   commit pin into a content pin.
+   whose sha256 is not in the lock. The source-built ``azazel-fabric`` and
+   ``azazel-mio`` entries (``SOURCE_BUILDS``) are not downloaded from an index.
+2a. Build each source-built package from its immutable source pin: Fabric's
+   exact tag/commit pair (ADR-0004) or MIO's exact commit. A bare ``git clone``
+   must resolve the declared pin to that commit, then ``git archive`` of the
+   commit (modes normalised with ``tar.umask=0022``), and the same pinned
+   backend with ``--no-build-isolation --no-index``. The wheel must reproduce
+   its target lock sha256 or the build is refused.
 3. Build both Nexus distributions from the deterministic source bundle
    (``build_offline_bundle.build_bundle``), not from the checkout, with
    ``--no-build-isolation --no-index`` so only the pinned backend is used.
@@ -74,23 +72,27 @@ BACKEND_LOCK = Path("packaging/offline/build-backend.lock")
 UV_LOCK = Path("uv.lock")
 BUILD_UMASK = 0o022
 
-#: The library extras the wheelhouse carries, with their uv.lock closure
-#: (ADR-0004). ``fabric`` is optional for CORE and required by every
-#: activation pass that needs commissioning evidence, which is every
-#: production pass; a node installed offline has no other way to obtain it.
-BUNDLED_EXTRAS = ("fabric",)
+#: The library extras the wheelhouse carries, with their uv.lock closure.
+#: Fabric supports production commissioning; MIO is the shared advisory core
+#: used by the full runtime bundle. Both remain optional to standalone CORE.
+BUNDLED_EXTRAS = ("fabric", "mio")
 
 #: Third-party distributions with no published wheel, built here from an
 #: exact commit. The lock pins each one's built wheel by sha256, so the build
-#: must reproduce it bit for bit. ``commit`` must equal the commit uv.lock
-#: resolved the extra's tag to; ``tests/unit/test_offline_install_bundle.py``
-#: holds pyproject.toml, uv.lock, this table and the lock together.
+#: must reproduce it bit for bit. Tagged entries bind tag -> commit; commit
+#: entries have no tag or release. Tests hold pyproject.toml, uv.lock, this
+#: table and both target locks together.
 SOURCE_BUILDS = {
     "azazel-fabric": {
         "version": "0.9.0rc5",
         "repository": "https://github.com/01rabbit/Azazel-Fabric.git",
         "tag": "v0.9.0rc5",
         "commit": "450d9502884ba533653210056a6fb85012b96b84",
+    },
+    "azazel-mio": {
+        "version": "0.1.0",
+        "repository": "https://github.com/01rabbit/Azazel-MIO.git",
+        "commit": "9fedb01bc9936531407a5181aa8fa5553ec19d55",
     },
 }
 
@@ -121,7 +123,7 @@ def bundled_extra_closure(root: Path) -> set[str]:
     """``name==version`` for each bundled extra and everything it pulls in.
 
     The extra's own requirement must be a ``SOURCE_BUILDS`` entry named by
-    its exact tag; its version and every transitive dependency come from
+    its exact tag or immutable commit; its version and every transitive dependency come from
     ``uv.lock``, which is the reviewed resolution of the library's extras.
     A dependency with an environment marker, a second version, or a source
     other than the registry (or the pinned commit) is refused rather than
@@ -146,12 +148,13 @@ def bundled_extra_closure(root: Path) -> set[str]:
         name, _, url = requirements[0].replace(" ", "").partition("@")
         name = offline_bundle.canonical_name(name)
         build = SOURCE_BUILDS.get(name)
-        if build is None or url != f"git+{build['repository']}@{build['tag']}":
+        reference = (build.get("tag", build["commit"]) if build else None)
+        if build is None or url != f"git+{build['repository']}@{reference}":
             raise ValueError(f"the {extra!r} extra {requirements[0]!r} is not a pinned source build")
         package = packages.get(name)
-        expected = f"{build['repository']}?rev={build['tag']}#{build['commit']}"
+        expected = f"{build['repository']}?rev={reference}#{build['commit']}"
         if package is None or package.get("source") != {"git": expected}:
-            raise ValueError(f"{UV_LOCK} does not resolve {name} to {build['tag']} at {build['commit']}")
+            raise ValueError(f"{UV_LOCK} does not resolve {name} to {reference} at {build['commit']}")
         if package["version"] != build["version"]:
             raise ValueError(f"{UV_LOCK} resolves {name} {package['version']}, not {build['version']}")
         pending.append(name)
@@ -247,19 +250,38 @@ def _extract_regular_tar(archive: Path, tree: Path, *, directories: bool) -> Non
             destination.chmod(member.mode)
 
 
-def fetch_source_build(name: str, scratch: Path) -> Path:
-    """A clean tree of ``SOURCE_BUILDS[name]`` at its pinned commit, or refuse."""
+def fetch_source_build(name: str, scratch: Path, *, source_checkout: Path | None = None) -> Path:
+    """A clean archived tree at the source pin, or refuse.
+
+    ``source_checkout`` supports local-only builds of unpublished commits.
+    Its HEAD must match the pin and the archive always comes from that commit,
+    never from uncommitted checkout bytes.
+    """
 
     build = SOURCE_BUILDS[name]
     git = ["git", "-c", "protocol.file.allow=never", "-c", "tar.umask=0022"]
-    clone = scratch / f"{name}.git"
-    _run([*git, "clone", "--quiet", "--bare", "--", build["repository"], str(clone)], env=_git_env())
-    resolved = _run([*git, "-C", str(clone), "rev-parse", "--verify",
-                     f"refs/tags/{build['tag']}^{{commit}}"], env=_git_env()).strip()
+    if source_checkout is None:
+        repository = scratch / f"{name}.git"
+        _run([*git, "clone", "--quiet", "--bare", "--", build["repository"], str(repository)],
+             env=_git_env())
+    else:
+        repository = source_checkout.resolve(strict=True)
+        if not repository.is_dir():
+            raise ValueError(f"{name} source checkout is not a directory")
+        dirty = _run([*git, "-C", str(repository), "status", "--porcelain", "--untracked-files=all"],
+                     env=_git_env()).strip()
+        if dirty:
+            raise ValueError(f"{name} source checkout is dirty")
+    tag = build.get("tag")
+    revision = ("HEAD^{commit}" if source_checkout is not None else
+                f"refs/tags/{tag}^{{commit}}" if tag else f"{build['commit']}^{{commit}}")
+    resolved = _run([*git, "-C", str(repository), "rev-parse", "--verify", revision],
+                    env=_git_env()).strip()
     if resolved != build["commit"]:
-        raise ValueError(f"{build['repository']} tag {build['tag']} is {resolved}, not the pinned {build['commit']}")
+        label = f"tag {tag}" if tag else "commit pin"
+        raise ValueError(f"{build['repository']} {label} resolves to {resolved}, not the pinned {build['commit']}")
     archive = scratch / f"{name}.tar"
-    _run([*git, "-C", str(clone), "archive", "--format=tar", f"--output={archive}",
+    _run([*git, "-C", str(repository), "archive", "--format=tar", f"--output={archive}",
           build["commit"]], env=_git_env())
     tree = scratch / f"{name}-source"
     tree.mkdir()
@@ -281,12 +303,15 @@ def source_build_origin(filename: str, digest: str, lock: dict[str, list[str]],
             f"{filename} built from {build['commit']} has sha256 {digest}, which "
             f"{lock_path.as_posix()} does not pin; the build did not reproduce the locked wheel"
         )
-    return (f"built:{build['repository']}@{build['commit']} (tag {build['tag']}; "
+    pin = (f"tag {build['tag']} = {build['commit']}" if "tag" in build
+           else f"commit {build['commit']}")
+    return (f"built:{build['repository']}@{build['commit']} ({pin}; "
             f"hash-pinned in {lock_path.as_posix()})")
 
 
 def build_wheelhouse(root: Path, output: Path, *, python: str = sys.executable,
-                     target_name: str = TARGET) -> dict:
+                     target_name: str = TARGET,
+                     mio_source: Path | None = None) -> dict:
     root = root.resolve(strict=True)
     lock_path = offline_bundle.target_lock(target_name)
     target = offline_bundle.TARGETS[target_name]
@@ -328,8 +353,10 @@ def build_wheelhouse(root: Path, output: Path, *, python: str = sys.executable,
               "-d", str(staging), "-r", str(index_requirements)])
         downloaded = sorted(p.name for p in staging.iterdir())
         for name in sorted(SOURCE_BUILDS):
+            source_checkout = mio_source if name == "azazel-mio" else None
             _run([*pip, "wheel", "--no-build-isolation", "--no-deps", "--no-index",
-                  "-w", str(staging), str(fetch_source_build(name, scratch))])
+                  "-w", str(staging), str(fetch_source_build(
+                      name, scratch, source_checkout=source_checkout))])
         from_source = sorted(set(p.name for p in staging.iterdir()) - set(downloaded))
 
         source_archive = scratch / "source.tar.gz"
@@ -429,10 +456,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target", choices=sorted(offline_bundle.TARGETS), default=TARGET,
                         help=f"declared bundle target (default: the deployment baseline, {TARGET}); "
                         "debian-13-aarch64-cp313 is a lab-software-verification target")
+    parser.add_argument("--mio-source", type=Path,
+                        help="local clean Azazel-MIO checkout at the pinned commit (for unpublished source)")
     args = parser.parse_args(argv)
     root = Path(__file__).resolve().parents[1]
     try:
-        record = build_wheelhouse(root, args.output, target_name=args.target)
+        record = build_wheelhouse(root, args.output, target_name=args.target, mio_source=args.mio_source)
     except (OSError, ValueError, RuntimeError) as error:
         parser.error(str(error))
     print(json.dumps(record, sort_keys=True))

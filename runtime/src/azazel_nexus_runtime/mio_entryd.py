@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pwd
 import sys
+import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -11,6 +12,9 @@ from datetime import datetime
 from types import SimpleNamespace
 
 from azazel_nexus.audit import AuditChainBroken, AuditUnavailable
+from azazel_nexus.incident_explain import (
+    FAST_TRANSITION_KIND, edge_fast_assistance_unavailable, read_fast_transition,
+)
 from azazel_nexus.capability import CapabilityState
 from azazel_nexus.local_advisory import (
     FrameRefused,
@@ -18,6 +22,7 @@ from azazel_nexus.local_advisory import (
     handoff_notice,
     read_frame,
     read_reference,
+    read_fast_assistance,
     request_event,
 )
 from azazel_nexus.mio_profile import (
@@ -84,6 +89,13 @@ ADVISE_VERB = Verb(
     accepts_payload=True,
     payload_contract="azazel_nexus.local_advisory.read_frame",
 )
+POLL_GENERATION_RESULT_VERB = Verb(
+    "mio.generation.result",
+    arguments=(Argument("deadline_ms", ArgumentKind.ORDINAL, maximum=50),) + tuple(
+        Argument(name, ArgumentKind.IDENTIFIER) for name in
+        ("result_handle", "generation_id", "frame_id", "trace_id")),
+    admits=frozenset({PrincipalClass.SERVICE}),
+)
 #: The remote opt-in (`mio_remote_consent`): the only writers of the store,
 #: and its read. `OPERATOR` alone -- not `SERVICE` (the arbiter, the
 #: explainer), not the advice listener -- and no argument is free text.
@@ -108,7 +120,7 @@ REGISTRY = VerbRegistry([ROUTE_VERB, ADVISE_VERB, OPT_IN_STATUS_VERB,
                          OPT_IN_SET_VERB, OPT_IN_WITHDRAW_VERB])
 #: The explainer's own listener (`mio-advise`, group azmio-advise): advice
 #: only. Its client holds that group and not the operator group (#213 O1).
-ADVISE_REGISTRY = VerbRegistry([ADVISE_VERB])
+ADVISE_REGISTRY = VerbRegistry([ADVISE_VERB, POLL_GENERATION_RESULT_VERB])
 LOCAL_REFUSAL = "HG-05 Core reserve unmeasured; no local provider admitted"
 CAPABILITY_INTERVAL_SECONDS = 10
 #: Per-principal request rate (#211 S4). The explainer sends at most six
@@ -131,6 +143,10 @@ REQUEST_MARKER = "mio.entry.request"
 #: Kept after the playbook-reference fetch for validating, recording and
 #: delivering the handoff reply before the request's deadline. Software budget.
 ENTRY_DELIVERY_RESERVE_MS = 30
+# The shared deterministic assessment is the short time-scale lane. It runs
+# before capability probes and any optional model attempt, while preserving
+# the request's one deadline and leaving the final delivery reserve intact.
+FAST_ASSESS_MAX_S = 0.25
 #: A reference fetch is not started with less than this left of its share;
 #: the handoff is then delivered at once with `reference_reason: deadline`.
 MIN_REFERENCE_FETCH_MS = 50
@@ -159,6 +175,19 @@ LEDGER_ALLOWANCE_MS = 50
 #: attempt starts only if the first returns while MIN_AI_ATTEMPT_MS plus the
 #: reserve is still left; nothing guarantees it.
 MIN_PROBE_S = 0.005
+
+
+def locald_absent() -> bool:
+    """Whether locald is absent: its service account or its socket is missing.
+
+    Reads names and paths only; nothing is sent. A running locald that refuses,
+    times out or fails is not absent, so it never selects the local fallback.
+    """
+    try:
+        pwd.getpwnam("azmio")
+    except KeyError:
+        return True
+    return not socket_path("mio").exists()
 
 
 class PrincipalRate:
@@ -192,6 +221,7 @@ class MioEntryService:
         rate: PrincipalRate | None = None,
         consent: ConsentStore | None = None,
     ):
+        self._fast_slot = threading.Lock()
         self._explainer_uid = self._account_uid("azexplain")
         self._arbiter_uid = self._account_uid("azarbiter")
         self.local = LocalSocketClient()
@@ -658,6 +688,46 @@ class MioEntryService:
         return (local if local is not None else self.local.observe(deadline_s=each),
                 remote if remote is not None else self.remote.observe(deadline_s=each))
 
+    def _shared_fast_assistance(self, frame: dict, budget_s: float) -> dict:
+        """The shared model-free core, run in this process: no socket, no network.
+
+        Reached only when locald is absent. It gets what is left of the
+        request's one deadline; if none is left, or the package or core fails,
+        the result is the explicit degraded status, never an executed assessment.
+        """
+        from .mio_socket_client import fast_assessment_degraded
+        if budget_s <= 0:
+            return fast_assessment_degraded("timeout")
+        # One daemon worker at a time per service. The slot is freed only by
+        # the worker itself when the core actually returns, so a core that
+        # ignores its deadline can hold at most one thread and no queue: while
+        # it runs, further requests get an immediate timeout.
+        if not self._fast_slot.acquire(blocking=False):
+            return fast_assessment_degraded("timeout")
+        wait_s = min(FAST_ASSESS_MAX_S, budget_s)
+        outcome: dict = {}
+        done = threading.Event()
+
+        def work() -> None:
+            try:
+                from .mio_fast_assistance import fast_assistance
+                outcome["result"] = fast_assistance(frame, deadline_s=wait_s)
+            except Exception:  # noqa: BLE001 - a missing or failing core is a degradation
+                pass
+            finally:
+                self._fast_slot.release()
+                done.set()
+
+        try:
+            threading.Thread(target=work, name="mio-entry-fast-core", daemon=True).start()
+        except Exception:  # noqa: BLE001 - no worker started, so none will free the slot
+            self._fast_slot.release()
+            return fast_assessment_degraded("unavailable")
+        # Real time: the worker runs on real time whatever the router's clock.
+        if not done.wait(wait_s):
+            return fast_assessment_degraded("timeout")  # a late result is discarded
+        return outcome.get("result") or fast_assessment_degraded("unavailable")
+
     def _mark(self, key: str) -> None:
         if hasattr(self.router.ledger, "rebuild_usage"):
             self.router._record({"event_type": REQUEST_MARKER, "caller": key})
@@ -672,9 +742,20 @@ class MioEntryService:
         explainer = (principal is not None and self._explainer_uid is not None
                      and principal.uid == self._explainer_uid
                      and PrincipalClass.SERVICE in principal.classes)
+        if getattr(getattr(request, "verb", None), "name", None) == POLL_GENERATION_RESULT_VERB.name:
+            if not explainer:
+                raise RequestRefused(Refusal.PRINCIPAL_DENIED, "generation_result_explainer")
+            receipt = {"state": "queued", "usage": "unknown",
+                       **{key: request.arguments[key] for key in
+                          ("result_handle", "generation_id", "frame_id", "trace_id")}}
+            value = self.local.generation_result(
+                receipt, deadline_s=request.arguments["deadline_ms"] / 1000)
+            return {"outcome": "generation_result", "slow_analysis": value}
         if explainer and not is_advice:
             raise RequestRefused(Refusal.PRINCIPAL_DENIED, "explainer_verb")
         local_request = None
+        fast_assistance = None
+        skip_fast_assistance = False
         if is_advice:
             try:
                 frame = read_frame(request.payload)
@@ -683,13 +764,71 @@ class MioEntryService:
             privacy = PrivacyClass(frame["privacy_class"])
             if explainer and privacy is not PrivacyClass.P3_RESTRICTED:
                 raise RequestRefused(Refusal.PRINCIPAL_DENIED, "explainer_privacy")
+            reserved_transition = any(item["kind"] == FAST_TRANSITION_KIND
+                                      for item in frame["context"])
+            if reserved_transition and not explainer:
+                raise RequestRefused(Refusal.PRINCIPAL_DENIED, "edge_transition_context")
+            if reserved_transition:
+                try:
+                    read_fast_transition(frame)
+                except ValueError:
+                    raise RequestRefused(Refusal.MALFORMED_FRAME,
+                                         "edge_transition_context") from None
+            skip_fast_assistance = (explainer and
+                                    edge_fast_assistance_unavailable(frame))
             self._mark(key)
             self.router._record(request_event(frame))
+            # Give the model-free shared core first use of a small, fixed
+            # portion of this request's deadline. The result remains its own
+            # `fast_assistance` field; it neither selects a route nor replaces
+            # the router's optional deep local/remote advisory attempt.
+            remaining = (deadline_at - self.router.monotonic()
+                         - ENTRY_DELIVERY_RESERVE_MS / 1000)
+            # Cap the optional fast lane by the slack left after reserving the
+            # minimum deep attempt, handoff/delivery time, ledger allowance,
+            # and three minimum probe shares. The final admission share is
+            # recalculated after both observations, so its worst-case bound is
+            # 5/72 of the initial probe remainder; 15 * MIN_PROBE_S leaves
+            # 75ms for all three. locald separately holds 20ms for its reply,
+            # leaving up to 25ms for the shared core at an otherwise clean
+            # 500ms request. Any earlier ledger or later gate work is charged
+            # to the same deadline and probes are skipped below their minimum.
+            fast_budget = max(0.0, remaining - HANDOFF_RESERVE_MS / 1000
+                              - MIN_AI_ATTEMPT_MS / 1000 - LEDGER_ALLOWANCE_MS / 1000
+                              - (15 * MIN_PROBE_S))
+            try:
+                if not skip_fast_assistance:
+                    if fast_budget <= 0:
+                        from .mio_socket_client import fast_assessment_degraded
+                        fast_assistance = fast_assessment_degraded("timeout")
+                    else:
+                        started = self.router.monotonic()
+                        fast_assistance = self.local.assess(
+                            frame, deadline_s=min(FAST_ASSESS_MAX_S, fast_budget))
+                        # Only an absent locald (dependency unavailable, no
+                        # socket or account) hands the same core to this
+                        # process. A timeout, refusal or a locald-run core
+                        # failure keeps its own degraded status.
+                        if (fast_assistance["dependency_outcome"]["knowledge"] == "unavailable"
+                                and locald_absent()):
+                            fast_assistance = self._shared_fast_assistance(
+                                frame, fast_budget - (self.router.monotonic() - started))
+                    fast_assistance = read_fast_assistance(fast_assistance)
+            except Exception:
+                from .mio_socket_client import fast_assessment_degraded
+                fast_assistance = read_fast_assistance(
+                    fast_assessment_degraded("unavailable"))
             gated = gate_frame(frame)
             if gated is not None and gated["reason"] == "insufficient_information":
                 self.router._record({"event_type": "mio.local.gated", "reason": gated["reason"]})
-                return {**gated, "route": Route.DETERMINISTIC_HANDOFF.value,
-                        "ledger_seq": self.router.ledger.head()[0]}
+                reply = {**gated, "route": Route.DETERMINISTIC_HANDOFF.value,
+                         "ledger_seq": self.router.ledger.head()[0]}
+                if fast_assistance is not None:
+                    reply["fast_assistance"] = fast_assistance
+                    reply["slow_analysis"] = getattr(
+                        self.local, 'last_slow_analysis',
+                        {"state": "closed", "usage": "unknown"})
+                return reply
             local_request = SimpleNamespace(
                 verb=INFER_VERB, arguments=request.arguments, payload=frame,
             )
@@ -753,6 +892,10 @@ class MioEntryService:
                 reply.update(read_delivered(result.reply))
         if is_advice and result.route is Route.DETERMINISTIC_HANDOFF:
             reply.update(self._handoff(frame, result, deadline_at))
+        if is_advice and fast_assistance is not None:
+            reply["fast_assistance"] = fast_assistance
+            reply["slow_analysis"] = getattr(self.local, 'last_slow_analysis',
+                                             {"state": "closed", "usage": "unknown"})
         return reply
 
 

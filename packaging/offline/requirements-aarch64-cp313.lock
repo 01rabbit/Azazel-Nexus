@@ -8,7 +8,8 @@
 # evidence at most, never hardware-gate evidence or a production admission.
 #
 # The names and versions MUST equal the x86_64 lock's (and so the pyproject
-# files' `dependencies` plus the bundled `fabric` extra's uv.lock closure,
+# files' `dependencies` plus the bundled `fabric` and `mio` extras' uv.lock
+# closure,
 # ADR-0004); tests/unit/test_offline_arm_lab_target.py holds them together.
 # Only the native wheels differ: pydantic-core and PyYAML carry the manylinux
 # aarch64 cp313 file. Every other wheel is pure and pinned by the same hash
@@ -19,10 +20,11 @@
 # 2026-10-29; pydantic-core's also equals uv.lock's). pip refuses any other file
 # under --require-hashes.
 #
-# azazel-fabric has no published wheel. It is pure, and its hash is that of
-# the wheel tools/build_wheelhouse.py builds from the commit its tag names
-# (SOURCE_BUILDS), exactly as for the x86_64 lock; the build is refused unless
-# it reproduces this hash (ADR-0004).
+# azazel-fabric and azazel-mio have no published wheel. Their hashes are those
+# of the wheels tools/build_wheelhouse.py builds from their pinned source
+# commits (SOURCE_BUILDS), exactly as for the x86_64 lock; each build is
+# refused unless it reproduces this hash (Fabric's tag is also checked per
+# ADR-0004).
 #
 # annotated_types-0.8.0-py3-none-any.whl
 annotated-types==0.8.0 \
@@ -31,6 +33,10 @@ annotated-types==0.8.0 \
 # built from https://github.com/01rabbit/Azazel-Fabric.git v0.9.0rc5 = 450d9502884ba533653210056a6fb85012b96b84
 azazel-fabric==0.9.0rc5 \
     --hash=sha256:5eb6593ee6824400bc5a00c3e5c799abb2f88def6273a2486c8b88959c908eda
+# azazel_mio-0.1.0-py3-none-any.whl
+# built from https://github.com/01rabbit/Azazel-MIO.git commit 9fedb01bc9936531407a5181aa8fa5553ec19d55
+azazel-mio==0.1.0 \
+    --hash=sha256:889fce3d13141ec2f4371252acdb0c5fc0fadd0bea00631cd92c643ea33bfdaa
 # dbus_next-0.2.3-py3-none-any.whl
 dbus-next==0.2.3 \
     --hash=sha256:58948f9aff9db08316734c0be2a120f6dc502124d9642f55e90ac82ffb16a18b

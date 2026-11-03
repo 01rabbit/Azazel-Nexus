@@ -24,8 +24,10 @@ from .local_advisory import (
     DELIVERY_TEXTS,
     HANDOFF_NOTICE,
     MACHINE_FIELDS,
+    MIO_ASSISTANCE_STATES,
     REFERENCE_BANNERS,
     read_delivered,
+    read_fast_assistance,
     read_frame,
     read_reference,
 )
@@ -40,12 +42,15 @@ CODES = frozenset({"transition_refused", "chain_broken", "queue_full", "mio_unav
                    "storage_failed", "status_write_failed", "explanation_segment_full",
                    "cursor_refused", "read_failed", "cursor_overtaken", "stale_skipped",
                    "incident_segment_full", "ledger_tail_incomplete", "mio_gated",
-                   "mio_handoff", "mio_local_non_advisory", "segment_from_future"})
+                   "mio_handoff", "mio_local_non_advisory", "mio_fast_unavailable",
+                   "segment_from_future"})
 QUESTION = ("Edge Core が次のセキュリティインシデントを検知しました。状況と、運用者が確認すべき点を説明してください。"
             "Edge の判断は観測のみで実行されていません。")
 FIELDS = {"incident_id", "src_ip", "sid", "target_port", "count", "first_seen", "last_seen",
           "most_severe", "technique_ids", "first_evidence", "latest_evidence", "last_update",
           "edge_would", "policy_reason", "attack_type", "event_type"}
+FAST_TRANSITION_KIND = "edge_transition"
+MIO_TRACE_SEQUENCE_MAX = 999_999_999_999
 
 
 def closed_pairs(pairs):
@@ -303,19 +308,122 @@ def read_pending(t):
 
 
 def build_frame(transition, sequence):
-    t = explanation_input(transition) if "src_ip" in transition else read_pending(transition)
+    pending = "src_ip" not in transition
+    t = read_pending(transition) if pending else read_transition(transition)
     _int(sequence, 2**63-1, 1)
+    edge = t if pending else explanation_input(t)
     context = [
         {"kind": "edge_alert", "text": (
-            f"incident={t['incident_id']}; signature={t['attack_type']}; "
-            f"category={t['category']}; protocol={t['protocol']}; "
-            f"destination_port={t['target_port']}; severity={t['most_severe']}; count={t['count']}")},
-        {"kind": "edge_decision", "text": f"Edge would {t['edge_would']}; policy_reason={t['policy_reason']}"},
+            f"incident={edge['incident_id']}; signature={edge['attack_type']}; "
+            f"category={edge['category']}; protocol={edge['protocol']}; "
+            f"destination_port={edge['target_port']}; severity={edge['most_severe']}; count={edge['count']}")},
+        {"kind": "edge_decision", "text": f"Edge would {edge['edge_would']}; policy_reason={edge['policy_reason']}"},
     ]
     context.extend({"kind": "technique", "text": t_id} for t_id in t["technique_ids"])
+    # The explainer listener is the only ingress permitted to carry this
+    # reserved machine projection. Prose stays in the ordinary report fields.
+    evidence = (t.get(EVIDENCE_FIELD) if pending else evidence_pointer(t))
+    evidence_refs = ([] if evidence is None else list(dict.fromkeys(
+        ref["evidence_id"] for ref in evidence["refs"])))
+    # The pinned trace grammar caps decimal sequence suffixes at twelve
+    # digits. Preserve the general Edge sequence range; when it exceeds that
+    # grammar, this optional M.I.O. projection is omitted.
+    if sequence <= MIO_TRACE_SEQUENCE_MAX:
+        structured = {
+            "incident_id": t["incident_id"], "sequence": sequence,
+            "event_type": edge["event_type"], "edge_would": edge["edge_would"],
+            "attack_type": edge["attack_type"],
+            "policy_reason": edge["policy_reason"], "category": edge["category"],
+            "protocol": edge["protocol"], "target_port": edge["target_port"],
+            "most_severe": edge["most_severe"], "count": edge["count"],
+            "technique_ids": edge["technique_ids"], "evidence_refs": evidence_refs,
+        }
+        context.append({"kind": FAST_TRANSITION_KIND,
+                        "text": json.dumps(structured, sort_keys=True, separators=(",", ":"))})
     return read_frame({"request_id": f"{t['incident_id']}:{sequence}",
                        "privacy_class": PrivacyClass.P3_RESTRICTED.value,
                        "question": QUESTION, "context": context})
+
+
+def read_fast_transition(frame):
+    """Validate the explainer-only structured projection inside a local frame."""
+    entries = [item for item in frame["context"] if item["kind"] == FAST_TRANSITION_KIND]
+    if not entries:
+        return None
+    if len(entries) != 1:
+        raise ValueError("fast_transition_refused")
+    try:
+        value = json.loads(entries[0]["text"], object_pairs_hook=closed_pairs,
+                           parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        required = {"incident_id", "sequence", "event_type", "edge_would", "attack_type", "policy_reason",
+                    "category", "protocol", "target_port", "most_severe", "count",
+                    "technique_ids", "evidence_refs"}
+        _shape(value, required)
+        if (type(value["incident_id"]) is not str
+                or not re.fullmatch(r"inc-([0-9a-f]{16})", value["incident_id"])
+                or type(value["sequence"]) is not int
+                or not 1 <= value["sequence"] <= 999_999_999_999
+                or frame["request_id"] != f"{value['incident_id']}:{value['sequence']}"
+                or frame["privacy_class"] != PrivacyClass.P3_RESTRICTED.value
+                or frame["question"] != QUESTION
+                or value["event_type"] not in {"edge.incident." + kind
+                                                for kind in ("opened", "updated", "closed")}
+                or value["edge_would"] not in ACTIONS
+                or value["policy_reason"] not in POLICY_REASONS | {"other"}
+                or value["category"] not in CATEGORIES | {"other"}
+                or value["protocol"] not in {"tcp", "udp", "icmp", "other"}):
+            raise ValueError("fast_transition_refused")
+        _text(value["attack_type"], 160, field="attack_type")
+        if private_text(value["attack_type"]) != value["attack_type"]:
+            raise ValueError("fast_transition_refused")
+        _int(value["target_port"], 65535)
+        _int(value["most_severe"], 10)
+        _int(value["count"], 2**64-1)
+        ids = value["technique_ids"]
+        if type(ids) is not list or len(ids) > 8 or any(
+                type(item) is not str or not TECHNIQUE_ID.fullmatch(item) for item in ids):
+            raise ValueError("fast_transition_refused")
+        refs = value["evidence_refs"]
+        if (type(refs) is not list or len(refs) > 2 or
+                any(type(ref) is not str or not _DIGEST.fullmatch(ref) for ref in refs)):
+            raise ValueError("fast_transition_refused")
+        edge_alert = (
+            f"incident={value['incident_id']}; signature={value['attack_type']}; "
+            f"category={value['category']}; protocol={value['protocol']}; "
+            f"destination_port={value['target_port']}; severity={value['most_severe']}; "
+            f"count={value['count']}"
+        )
+        expected_context = [
+            {"kind": "edge_alert", "text": edge_alert},
+            {"kind": "edge_decision", "text": (
+                f"Edge would {value['edge_would']}; policy_reason={value['policy_reason']}"
+            )},
+            *({"kind": "technique", "text": technique_id}
+              for technique_id in ids),
+            {"kind": FAST_TRANSITION_KIND, "text": json.dumps(
+                value, sort_keys=True, separators=(",", ":"))},
+        ]
+        machine_context = [item for item in frame["context"]
+                           if item["kind"] in {
+                               "edge_alert", "edge_decision", "technique", FAST_TRANSITION_KIND,
+                           }]
+        if machine_context != expected_context:
+            raise ValueError("fast_transition_refused")
+        return value
+    except (TypeError, ValueError, KeyError):
+        raise ValueError("fast_transition_refused") from None
+
+
+def edge_fast_assistance_unavailable(frame):
+    """Identify an Edge explainer frame whose cursor exceeds MIO's trace grammar."""
+    if (frame.get("privacy_class") != PrivacyClass.P3_RESTRICTED.value
+            or frame.get("question") != QUESTION
+            or any(item["kind"] == FAST_TRANSITION_KIND for item in frame["context"])
+            or not any(item["kind"] in {"edge_alert", "edge_decision", "technique"}
+                       for item in frame["context"])):
+        return False
+    match = re.fullmatch(r"inc-[0-9a-f]{16}:([1-9][0-9]{12,18})", frame["request_id"])
+    return match is not None and int(match.group(1)) > MIO_TRACE_SEQUENCE_MAX
 
 
 class Selection:
@@ -407,8 +515,69 @@ class Selection:
             del self.explained[next(iter(self.explained))]
 
 
+def _validate_slow_analysis(value):
+    """Mirror runtime mio_generation.read_slow_analysis admission checks.
+
+    CORE cannot import the optional runtime. Unlike runtime normalization,
+    malformed wire metadata refuses the reply instead of becoming closed.
+    Valid slow output is not the incident fast conclusion and is not stored here.
+    """
+    try:
+        if (type(value) is not dict or len(json.dumps(value, allow_nan=False).encode()) > 128 * 1024
+                or set(value) - {'state', 'usage', 'generation_id', 'frame_id', 'trace_id',
+                                 'assistance', 'calls', 'origin', 'result_handle'}
+                or value['state'] not in {'closed', 'degraded', 'queued', 'queue_full',
+                                          'complete', 'timeout', 'cancelled', 'superseded', 'stale'}
+                or value['usage'] not in {'known', 'unknown'}):
+            raise ValueError("mio_reply_refused")
+        if 'result_handle' in value and (type(value['result_handle']) is not str
+                or re.fullmatch(r'[0-9a-f]{64}', value['result_handle']) is None):
+            raise ValueError("mio_reply_refused")
+        if 'assistance' in value:
+            result = value['assistance']
+            if (type(result) is not dict or result.get('schema_version') != 'mio.assistance.v1'
+                    or result.get('frame_id') != value['frame_id']
+                    or result.get('trace_id') != value['trace_id']
+                    or value['frame_id'] != value['trace_id'] + ':frame'
+                    or result.get('generation_method') not in {'model', 'static_reference'}):
+                raise ValueError("mio_reply_refused")
+        calls = value.get('calls', [])
+        if type(calls) is not list or len(calls) > 16:
+            raise ValueError("mio_reply_refused")
+        for call in calls:
+            if type(call) is not dict or set(call) != {'usage', 'timings'}:
+                raise ValueError("mio_reply_refused")
+            if call['usage'] is not None and (type(call['usage']) is not dict
+                    or set(call['usage']) != {'tokens_in', 'tokens_out'}
+                    or any(type(v) is not int or v < 0 for v in call['usage'].values())):
+                raise ValueError("mio_reply_refused")
+            if type(call['timings']) is not dict or any(type(v) not in (int, float)
+                    or not math.isfinite(v) or v < 0 for v in call['timings'].values()):
+                raise ValueError("mio_reply_refused")
+        if value['usage'] == 'known' and (not calls or any(c['usage'] is None for c in calls)):
+            raise ValueError("mio_reply_refused")
+        return
+    except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
+        raise ValueError("mio_reply_refused") from None
+
+
 def read_mio_reply(reply):
     """Closed entryd reply, with separately validated advice/reference body."""
+    if type(reply) is dict and "slow_analysis" in reply:
+        _validate_slow_analysis(reply["slow_analysis"])
+        reply = {key: value for key, value in reply.items() if key != "slow_analysis"}
+    fast = None
+    if type(reply) is dict and "fast_assistance" in reply:
+        fast = read_fast_assistance(reply["fast_assistance"])
+        reply = {key: value for key, value in reply.items() if key != "fast_assistance"}
+    def finish(value):
+        # Preserve the request's ledger position with the validated reply.
+        # The explanation record reader uses it to bind the optional fast
+        # projection back to the Edge incident transition that produced it.
+        value["ledger_seq"] = reply["ledger_seq"]
+        if fast is not None:
+            value["fast_assistance"] = fast
+        return value
     base = {"route", "outcome", "reason", "ledger_seq"}
     if type(reply) is not dict or not base <= set(reply):
         raise ValueError("mio_reply_refused")
@@ -418,16 +587,16 @@ def read_mio_reply(reply):
             and reply["fields"] == {}):
         _text(reply["advice"], 4096)
         _int(reply["ledger_seq"], 2**63-1)
-        return {"route": reply["route"], "outcome": "refused", "reason": "mio_gated", "text": None,
-                "content_kind": "none"}
+        return finish({"route": reply["route"], "outcome": "refused", "reason": "mio_gated", "text": None,
+                       "content_kind": "none"})
     if reply["route"] not in {"local", "deterministic handoff"} or reply["outcome"] not in {o.value for o in RequestOutcome}:
         raise ValueError("mio_reply_refused")
     _text(reply["reason"], 2048)
     _int(reply["ledger_seq"], 2**63-1)
     advice = None
     if set(reply) == base and reply["route"] == "local" and reply["outcome"] != "answered":
-        return {"route": "local", "outcome": reply["outcome"], "reason": "mio_local_non_advisory",
-                "text": None, "content_kind": "none"}
+        return finish({"route": "local", "outcome": reply["outcome"], "reason": "mio_local_non_advisory",
+                       "text": None, "content_kind": "none"})
     if reply["route"] == "local":
         body_keys = {"advice", "fields", "knowledge", *MACHINE_FIELDS}
         if not set(reply) <= base | body_keys:
@@ -437,7 +606,7 @@ def read_mio_reply(reply):
         provenance = generation_provenance(body)
     else:
         if "handoff" in reply:
-            return _read_handoff(reply, base)
+            return finish(_read_handoff(reply, base))
         # The pre-handoff shape carries no fixed notice, so a reference in it
         # could not be recorded with its label: it is refused, not guessed.
         # Only the bare "no reference" form of that shape is still read.
@@ -449,7 +618,7 @@ def read_mio_reply(reply):
               "content_kind": kind}
     if advice is not None:
         result[PROVENANCE_FIELD] = provenance
-    return result
+    return finish(result)
 
 
 #: How a local-route answer was produced, recorded beside `content_kind`
@@ -671,9 +840,11 @@ KNOWLEDGE_CLAIM_PREFIX = "knowledge:"
 
 
 def read_record(value):
-    _shape(value, RECORD_FIELDS, (FABRIC_RECORD_FIELD, EVIDENCE_FIELD))
+    _shape(value, RECORD_FIELDS, (FABRIC_RECORD_FIELD, EVIDENCE_FIELD, "incident_sequence"))
     if type(value["incident_id"]) is not str or not re.fullmatch(r"inc-[0-9a-f]{16}", value["incident_id"]):
         raise ValueError("record_refused")
+    if "incident_sequence" in value:
+        _int(value["incident_sequence"], 2**63-1, 1)
     _number(value["explained_at"])
     if value["transition"] not in {"opened", "updated"} or value["edge_would"] not in ACTIONS:
         raise ValueError("record_refused")
@@ -694,15 +865,29 @@ def read_record(value):
     if type(codes) is not list or len(codes) > len(CODES) or any(type(c) is not str or c not in CODES for c in codes):
         raise ValueError("record_refused")
     m = value["mio"]
-    _shape(m, ("route", "outcome", "reason", "text"), ("content_kind", "notice", PROVENANCE_FIELD))
+    _shape(m, ("route", "outcome", "reason", "text"),
+           ("content_kind", "notice", PROVENANCE_FIELD, "fast_assistance", "ledger_seq"))
     if m["route"] not in {"local", "deterministic handoff", "unavailable"} or m["outcome"] not in {o.value for o in RequestOutcome} | {"unavailable"}:
         raise ValueError("record_refused")
     _text(m["reason"], 2048)
     if m["text"] is not None:
         _text(m["text"], 4096)
     _read_content(m)
+    if "ledger_seq" in m:
+        _int(m["ledger_seq"], 2**63-1, 1)
     if PROVENANCE_FIELD in m:
         _read_provenance(m)
+    if "fast_assistance" in m:
+        fast = read_fast_assistance(m["fast_assistance"])
+        # Older records predate incident_sequence and remain readable. New
+        # records bind this projection to Edge's incident sequence. M.I.O.'s
+        # ledger_seq is a separate counter and is validated independently.
+        # Its fixed dependency_unavailable payload intentionally has a random
+        # trace id because it can be produced without the Edge frame.
+        if "incident_sequence" in value and fast["state"] != "dependency_unavailable":
+            expected = f"mio-{value['incident_id'][4:]}-{value['incident_sequence']}"
+            if fast["trace_id"] != expected or fast["frame_id"] != expected + ":frame":
+                raise ValueError("record_refused")
     if EVIDENCE_FIELD in value:
         try:
             _read_evidence(value[EVIDENCE_FIELD], value["explained_at"])
@@ -874,9 +1059,91 @@ def explanation_summary(record):
                "content_kind": kind}
     if "notice" in m:
         summary["notice"] = m["notice"]
+    if "fast_assistance" in m:
+        fast = m["fast_assistance"]
+        summary["fast_assistance"] = {
+            "state": fast.get("state", "unknown"),
+            "unknowns": [private_text(v[:240], 240) for v in fast.get("unknowns", [])[:8]],
+            "next_checks": [private_text(v[:240], 240) for v in fast.get("next_checks", [])[:8]],
+            "knowledge": [
+                {"technique_id": item.get("technique_id"), "name": private_text(item.get("name", "")[:120], 120),
+                 "summary": private_text(item.get("summary", "")[:240], 240),
+                 "freshness": item.get("freshness"), "as_of": item.get("as_of"),
+                 "citation": private_text(item.get("source_citation", "")[:160], 160),
+                 "revocation_status": item.get("revocation_status"),
+                 "claim_status": "reported_unverified"}
+                for item in fast.get("knowledge", [])[:8]
+            ],
+            "dependency_outcome": fast.get("dependency_outcome", {}),
+        }
     if omitted:
         summary["knowledge_refs_omitted"] = omitted
     return summary
+
+
+SLOW_RESULT_STATES = frozenset({"queued", "complete", "degraded", "timeout", "cancelled",
+                                "superseded", "stale", "closed"})
+
+
+def _public_model_text(value):
+    """Bound optional model prose before the read-only operator projection."""
+    if type(value) is not str or not value:
+        raise ValueError("slow_result_refused")
+    normalized = unicodedata.normalize("NFKC", value)
+    # The MIO frame excludes network addresses, but a generated response is
+    # still untrusted. Withhold any address/path-like string at this boundary.
+    if (any(ch in normalized for ch in "/\\⁄∕∖⧸⧹﹨")
+            or re.search(r"://|(?:^|\s)//|[\w.+-]+@[\w.-]+|\b\d+(?:\.\d+){3}\b", normalized)
+            or re.search(r"(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.]*", normalized)):
+        return "Details withheld verify through an authorized source"
+    words = []
+    current = []
+    for char in normalized:
+        if char.isalpha():
+            current.append(char)
+        else:
+            if current:
+                words.append("".join(current[:32]))
+                current = []
+            if char.isspace() and (not words or words[-1] != " "):
+                words.append(" ")
+    if current:
+        words.append("".join(current[:32]))
+    text = "".join(words).strip()
+    return text[:240] or "Details withheld verify through an authorized source"
+
+
+def slow_analysis_projection(value):
+    """Project only a labelled, bounded advisory; never expose retrieval handles."""
+    if type(value) is not dict or value.get("state") not in SLOW_RESULT_STATES:
+        raise ValueError("slow_result_refused")
+    state = value["state"]
+    if state != "complete":
+        return {"state": state, "usage": "unknown"}
+    if value.get("usage") not in {"known", "unknown"}:
+        raise ValueError("slow_result_refused")
+    assistance = value.get("assistance")
+    if (type(assistance) is not dict or assistance.get("schema_version") != "mio.assistance.v1"
+            or assistance.get("generation_method") != "model"
+            or type(assistance.get("hypotheses")) is not list
+            or len(assistance["hypotheses"]) > 4):
+        raise ValueError("slow_result_refused")
+    hypotheses = []
+    for item in assistance["hypotheses"]:
+        if (type(item) is not dict or item.get("verification") != "model_proposed_unverified"
+                or type(item.get("statement")) is not str or not 0 < len(item["statement"]) <= 480):
+            raise ValueError("slow_result_refused")
+        hypotheses.append(_public_model_text(item["statement"]))
+    arrays = {}
+    for key, maximum in (("unknowns", 24), ("next_checks", 8)):
+        values = assistance.get(key)
+        if (type(values) is not list or len(values) > maximum
+                or any(type(item) is not str or not 0 < len(item) <= 480 for item in values)):
+            raise ValueError("slow_result_refused")
+        arrays[key] = [_public_model_text(item) for item in values[:8]]
+    return {"state": "complete", "usage": value.get("usage", "unknown"),
+            "verification": "model_proposed_unverified", "hypotheses": hypotheses,
+            **arrays}
 
 
 def _summary_banners():
@@ -1032,7 +1299,8 @@ def read_recent_incidents(raw):
                 return None
             e = row["explanation"]
             _shape(e, ("state", "route", "outcome", "summary", "knowledge_refs", "failure_codes"),
-                   ("content_kind", "notice", "knowledge_refs_omitted"))
+                   ("content_kind", "notice", "knowledge_refs_omitted", "fast_assistance",
+                    "slow_analysis"))
             # The same consistency rule as a record, applied to the summary.
             if "content_kind" in e:
                 try:
@@ -1066,6 +1334,74 @@ def read_recent_incidents(raw):
             if "knowledge_refs_omitted" in e:
                 # At most sixteen references are recorded per explanation.
                 _int(e["knowledge_refs_omitted"], 16 - len(refs), 1)
+            if "fast_assistance" in e:
+                f = e["fast_assistance"]
+                _shape(f, ("state", "unknowns", "next_checks", "knowledge", "dependency_outcome"))
+                if type(f["state"]) is not str or f["state"] not in MIO_ASSISTANCE_STATES:
+                    return None
+                for key in ("unknowns", "next_checks"):
+                    if type(f[key]) is not list or len(f[key]) > 8:
+                        return None
+                    for text in f[key]:
+                        _text(text, 240)
+                if type(f["knowledge"]) is not list or len(f["knowledge"]) > 8:
+                    return None
+                for item in f["knowledge"]:
+                    _shape(item, ("technique_id", "name", "summary", "freshness", "as_of",
+                                  "citation", "revocation_status", "claim_status"))
+                    if (type(item["claim_status"]) is not str
+                            or item["claim_status"] != "reported_unverified"
+                            or type(item["freshness"]) is not str
+                            or item["freshness"] not in {"current", "static"}
+                            or type(item["revocation_status"]) is not str
+                            or item["revocation_status"] not in {"clear", "unknown"}):
+                        return None
+                    if (type(item["technique_id"]) is not str
+                            or not TECHNIQUE_ID.fullmatch(item["technique_id"])):
+                        return None
+                    _text(item["name"], 120)
+                    _text(item["summary"], 240)
+                    if (type(item["as_of"]) is not str or not AS_OF.fullmatch(item["as_of"])
+                            or as_of_text(item["as_of"]) != item["as_of"]):
+                        return None
+                    _text(item["citation"], 160)
+                _shape(f["dependency_outcome"], ("knowledge", "deception"))
+                dependency = f["dependency_outcome"]
+                if (type(dependency["knowledge"]) is not str
+                        or dependency["knowledge"] not in {
+                            "available", "partial", "absent", "not_queried", "timeout", "expired", "rejected", "unavailable"}
+                        or type(dependency["deception"]) is not str
+                        or dependency["deception"] not in {
+                            "available", "absent", "timeout", "rejected", "unavailable"}):
+                    return None
+                if dependency["knowledge"] == "not_queried" and f["knowledge"]:
+                    return None
+            if "slow_analysis" in e:
+                slow = e["slow_analysis"]
+                if type(slow) is not dict or slow.get("state") not in SLOW_RESULT_STATES:
+                    return None
+                if slow.get("usage") not in {"known", "unknown"}:
+                    return None
+                if slow["state"] == "complete":
+                    if set(slow) != {"state", "usage", "verification", "hypotheses",
+                                     "unknowns", "next_checks"}:
+                        return None
+                    if (slow["verification"] != "model_proposed_unverified"
+                            or type(slow["hypotheses"]) is not list or len(slow["hypotheses"]) > 4):
+                        return None
+                    for text in slow["hypotheses"]:
+                        _text(text, 240)
+                        if _public_model_text(text) != text:
+                            return None
+                    for key, maximum in (("unknowns", 8), ("next_checks", 8)):
+                        if type(slow[key]) is not list or len(slow[key]) > maximum:
+                            return None
+                        for text in slow[key]:
+                            _text(text, 240)
+                            if _public_model_text(text) != text:
+                                return None
+                elif set(slow) != {"state", "usage"} or slow["usage"] != "unknown":
+                    return None
         if v["incidents"] != sorted(v["incidents"], key=lambda r: (r["last_seen"], r["first_seen"], r["incident_id"]), reverse=True):
             return None
         return v
@@ -1081,7 +1417,7 @@ def read_explainer_status(raw):
         _shape(v, ("schema", "written_at", "last_explained_at", "explained", "refused", "pending",
                    "cursor_lag", "chain_broken", "recovery_hint", "storage_failed",
                    "mio_available", "knowledge_available", "audit_forward_dropped",
-                   "audit_forward_refused"))
+                   "audit_forward_refused"), ("slow_result_store",))
         if v["schema"] != "azazel-nexus/incident-explain-status/v1":
             return None
         _number(v["written_at"])
@@ -1095,6 +1431,8 @@ def read_explainer_status(raw):
         for key in ("mio_available", "knowledge_available"):
             if v[key] is not None and type(v[key]) is not bool:
                 return None
+        if "slow_result_store" in v and v["slow_result_store"] not in {None, "available", "unavailable"}:
+            return None
         if v["recovery_hint"] != (RECOVERY_HINT if v["chain_broken"] else None):
             return None
         if type(v["refused"]) is not dict or not set(v["refused"]) <= CODES:

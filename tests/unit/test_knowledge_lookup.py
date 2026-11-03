@@ -220,26 +220,34 @@ def test_client_exchange_and_empty_result(monkeypatch):
     assert client.lookup_context(("T1110",)) == ()
 
 
-@pytest.mark.parametrize("response", [
-    {}, {"refs": [], "reason_code": "revoked"}, {"refs": [], "reason_code": "available"},
-    {"refs": [{}] * 17, "reason_code": "available"},
-    {"refs": [{"text": "must not leak"}], "reason_code": "available"},
+@pytest.mark.parametrize("response,expected", [
+    ({}, "knowledge_reply_refused"),
+    ({"refs": [], "reason_code": "revoked"}, "knowledge_unavailable"),
+    ({"refs": [], "reason_code": "state_untrusted"}, "knowledge_unavailable"),
+    ({"refs": [], "reason_code": "trust_unreadable"}, "knowledge_unavailable"),
+    ({"refs": [], "reason_code": "store_unreadable"}, "knowledge_unavailable"),
+    ({"refs": [{}], "reason_code": "state_untrusted"}, "knowledge_reply_refused"),
+    ({"refs": [], "reason_code": "available"}, "knowledge_reply_refused"),
+    ({"refs": [{}] * 17, "reason_code": "available"}, "knowledge_reply_refused"),
+    ({"refs": [{"text": "must not leak"}], "reason_code": "available"}, "knowledge_reply_refused"),
 ])
-def test_client_malformed_or_unavailable_fixed_exception(monkeypatch, response):
+def test_client_malformed_or_unavailable_fixed_exception(monkeypatch, response, expected):
     from azazel_nexus_runtime import knowledge_client as client
 
     monkeypatch.setattr(client, "_exchange", lambda *a, **k: response)
     with pytest.raises(client.KnowledgeUnavailable, match="^knowledge unavailable$") as caught:
         client.lookup_context(("T1110",))
-    assert caught.value.code == ("knowledge_unavailable" if response.get("reason_code") == "revoked"
-                                 else "knowledge_reply_refused")
+    assert caught.value.code == expected
 
 
-@pytest.mark.parametrize("error", [TimeoutError("secret"), PermissionError("secret"), ValueError("secret"),
-                                       ValueError("M.I.O. peer refused"), ValueError("M.I.O. response bound refused"),
-                                       ValueError("M.I.O. service refused"),
-                                       json.JSONDecodeError("secret", "", 0)])
-def test_client_transport_failure_fixed_exception(monkeypatch, error):
+@pytest.mark.parametrize("error,expected", [(TimeoutError("secret"), "knowledge_unavailable"),
+                                       (PermissionError("secret"), "knowledge_unavailable"),
+                                       (ValueError("secret"), "knowledge_unavailable"),
+                                       (ValueError("M.I.O. peer refused"), "knowledge_unavailable"),
+                                       (ValueError("M.I.O. response bound refused"), "knowledge_unavailable"),
+                                       (ValueError("M.I.O. service refused"), "knowledge_unavailable"),
+                                       (json.JSONDecodeError("secret", "", 0), "knowledge_unavailable")])
+def test_client_transport_failure_fixed_exception(monkeypatch, error, expected):
     from azazel_nexus_runtime import knowledge_client as client
 
     def exchange(*a, **k):
@@ -247,6 +255,17 @@ def test_client_transport_failure_fixed_exception(monkeypatch, error):
 
     monkeypatch.setattr(client, "_exchange", exchange)
     with pytest.raises(client.KnowledgeUnavailable, match="^knowledge unavailable$") as caught:
+        client.lookup_context(("T1110",))
+    assert caught.value.code == expected
+
+
+def test_client_collapses_declared_peer_refusal(monkeypatch):
+    from azazel_nexus_runtime import knowledge_client as client
+    from azazel_nexus_runtime.mio_socket_client import ServiceRefused
+
+    monkeypatch.setattr(client, "_exchange",
+                        lambda *a, **k: (_ for _ in ()).throw(ServiceRefused("principal_denied")))
+    with pytest.raises(client.KnowledgeUnavailable) as caught:
         client.lookup_context(("T1110",))
     assert caught.value.code == "knowledge_unavailable"
 
@@ -464,3 +483,162 @@ def test_non_text_citation_is_empty(value):
 
     manifest = {"profile": {"provenance": {"attack_technique": {"dataset": {"citation": value}}}}}
     assert lite_import._dataset_citation(manifest, "tables/attack_technique.jsonl") == ""
+
+
+def test_revocation_between_consumer_lookups_preserves_model_free_core(node, monkeypatch):
+    """In-process consumer integration; only the socket exchange is bridged."""
+    pytest.importorskip("azazel_mio", reason="shared MIO is an optional integration extra")
+    from types import SimpleNamespace
+
+    from azazel_nexus.local_advisory import read_fast_assistance, read_frame
+    from azazel_nexus_runtime import knowledge_client, knowledge_lited, mio_fast_assistance, mio_locald
+
+    service, _, trust, revoker = node
+    admit_rows(node, [{"technique_id": "T1110", "name": "Synthetic reference",
+                       "description": "Reference only; never an operational instruction"}])
+    replies, frames, advisories = [], [], []
+    events = []
+    service.audit = events.append
+
+    def exchange(socket_name, account, verb, arguments, *, deadline_s):
+        assert (socket_name, account, verb) == ("knowledge-read", "azknowledge", "knowledge.lookup")
+        assert arguments == {"technique_ids": ["T1110"]}
+        assert 0 < deadline_s <= mio_locald.KNOWLEDGE_MAX_S
+        # Exercise the commissioned store and lookup handler on each consumer
+        # request, rather than replaying a constructed KnowledgeRef response.
+        reply = service.handle(SimpleNamespace(verb=knowledge_lited.LOOKUP_VERB,
+                                               arguments=arguments, payload={}))
+        replies.append(reply)
+        return reply
+
+    real_explain = mio_fast_assistance.AssistantCore.explain
+
+    def explain(self, frame, **kwargs):
+        frames.append(frame.to_dict())
+        advisories.append(kwargs["knowledge_lite_advisories"])
+        assert kwargs["knowledge_attempted"] is True
+        return real_explain(self, frame, **kwargs)
+
+    monkeypatch.setattr(knowledge_client, "_exchange", exchange)
+    monkeypatch.setattr(mio_fast_assistance.AssistantCore, "explain", explain)
+    # This is a lifecycle regression, not a filesystem/crypto latency test.
+    monkeypatch.setattr(mio_fast_assistance.time, "monotonic", lambda: 100.0)
+    consumer = mio_locald.LocalRuntimeService(knowledge_lookup=knowledge_client.lookup_context)
+    source = read_frame({"request_id": "synthetic-revocation", "privacy_class": "P2-mission",
+                         "question": "Assess synthetic T1110", "context": []})
+    request = SimpleNamespace(verb=mio_locald.FAST_ASSESS_VERB,
+                              arguments={"deadline_ms": 1000}, payload=source)
+
+    before = consumer.handle(request)
+    first = read_fast_assistance(before["fast_assistance"])
+    assert before["outcome"] == "assessed"
+    assert replies[0]["reason_code"] == "available"
+    claim, = first["knowledge"]
+    assert claim["claim_id"] == "T1110"
+    assert claim["claim_status"] == "reported_unverified"
+    assert claim["trust"] == "unverified_advisory_only"
+    assert first["dependency_outcome"]["knowledge"] == "available"
+
+    statement = RevocationList(sequence=1, issued_at=NOW, revoked_generations=frozenset({5}))
+    (trust / "revocations.signed").write_bytes(
+        revoker.sign(statement.signature_target()).signature + statement.as_payload())
+
+    after = consumer.handle(request)
+    second = read_fast_assistance(after["fast_assistance"])
+    assert after["outcome"] == "assessed"
+    assert replies[1] == {"refs": [], "reason_code": "revoked"}
+    assert len(replies) == 2
+    assert second["knowledge"] == []
+    assert second["dependency_outcome"]["knowledge"] == "unavailable"
+    assert len(advisories[0]) == 1 and advisories[1] == ()
+    assert len(frames) == 2  # The real model-free Core ran for both requests.
+    for result, frame in zip((first, second), frames):
+        assert frame["known_facts"] == []
+        assert frame["current_defensive_state"] == "OBSERVE"
+        assert frame["mission"] == "Assess the supplied security situation; no operational authority"
+        assert result["handoff"]["frame_id"] == frame["frame_id"]
+        assert result["next_checks"]
+    assert [event["count"] for event in events if event["event_type"] == "knowledge.lookup"] == [1, 0]
+
+
+def test_expiry_between_consumer_lookups_preserves_model_free_core(node, monkeypatch):
+    """Synthetic in-process clock transition, with real lookup and Core logic."""
+    pytest.importorskip("azazel_mio", reason="shared MIO is an optional integration extra")
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from azazel_nexus.local_advisory import read_fast_assistance, read_frame
+    from azazel_nexus_runtime import knowledge_client, knowledge_lited, mio_fast_assistance, mio_locald
+
+    service, _, _, _ = node
+    expiry = "2026-10-18T00:00:01Z"
+    clock = [NOW]
+    service.now = lambda: clock[0]
+    admit_rows(node, [{"technique_id": "T1110", "name": "Synthetic expiring reference",
+                       "description": "Reference only", "agg_next_expiry": expiry}])
+
+    class LookupClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            instant = cls.fromisoformat(clock[0].replace("Z", "+00:00"))
+            return instant.astimezone(tz) if tz is not None else instant.replace(tzinfo=None)
+
+    # Align only the consumer's wall-clock validation with the injected service
+    # clock. Monotonic deadline accounting remains real and unmodified.
+    monkeypatch.setattr(mio_fast_assistance, "datetime", LookupClock)
+    replies, frames, advisories, events = [], [], [], []
+    service.audit = events.append
+
+    def exchange(socket_name, account, verb, arguments, *, deadline_s):
+        assert (socket_name, account, verb) == ("knowledge-read", "azknowledge", "knowledge.lookup")
+        assert arguments == {"technique_ids": ["T1110"]}
+        assert 0 < deadline_s <= mio_locald.KNOWLEDGE_MAX_S
+        reply = service.handle(SimpleNamespace(verb=knowledge_lited.LOOKUP_VERB,
+                                               arguments=arguments, payload={}))
+        replies.append(reply)
+        return reply
+
+    real_explain = mio_fast_assistance.AssistantCore.explain
+
+    def explain(self, frame, **kwargs):
+        frames.append(frame.to_dict())
+        advisories.append(kwargs["knowledge_lite_advisories"])
+        assert kwargs["knowledge_attempted"] is True
+        return real_explain(self, frame, **kwargs)
+
+    # Bridge transport only; both requests read the admitted signed bundle.
+    monkeypatch.setattr(knowledge_client, "_exchange", exchange)
+    monkeypatch.setattr(mio_fast_assistance.AssistantCore, "explain", explain)
+    consumer = mio_locald.LocalRuntimeService(knowledge_lookup=knowledge_client.lookup_context)
+    source = read_frame({"request_id": "synthetic-expiry", "privacy_class": "P2-mission",
+                         "question": "Assess synthetic T1110", "context": []})
+    request = SimpleNamespace(verb=mio_locald.FAST_ASSESS_VERB,
+                              arguments={"deadline_ms": 1000}, payload=source)
+
+    before = consumer.handle(request)
+    first = read_fast_assistance(before["fast_assistance"])
+    assert before["outcome"] == "assessed"
+    assert replies[0]["reason_code"] == "available"
+    ref, = replies[0]["refs"]
+    assert (ref["freshness"], ref["as_of"]) == ("current", NOW)
+    claim, = first["knowledge"]
+    assert (claim["claim_id"], claim["freshness"], claim["as_of"]) == ("T1110", "current", NOW)
+    assert claim["claim_status"] == "reported_unverified"
+    assert claim["trust"] == "unverified_advisory_only"
+
+    clock[0] = expiry
+    after = consumer.handle(request)
+    second = read_fast_assistance(after["fast_assistance"])
+    assert after["outcome"] == "assessed"
+    assert replies[1] == {"refs": [], "reason_code": "no_context"}
+    assert len(replies) == 2
+    assert second["knowledge"] == []
+    assert len(advisories[0]) == 1 and advisories[1] == ()
+    assert len(frames) == 2
+    for result, frame in zip((first, second), frames):
+        assert frame["known_facts"] == []
+        assert frame["current_defensive_state"] == "OBSERVE"
+        assert frame["mission"] == "Assess the supplied security situation; no operational authority"
+        assert result["handoff"]["frame_id"] == frame["frame_id"]
+        assert result["next_checks"]
+    assert [event["count"] for event in events if event["event_type"] == "knowledge.lookup"] == [1, 0]

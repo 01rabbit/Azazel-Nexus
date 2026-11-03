@@ -661,7 +661,7 @@ def test_the_wheel_lock_pins_exactly_what_the_pyproject_files_declare():
 def test_each_locked_wheel_named_in_the_lock_fits_the_target():
     text = (ROOT / build_wheelhouse.LOCK).read_text(encoding="utf-8")
     named = [line.strip("# \n") for line in text.splitlines() if line.strip().endswith(".whl")]
-    assert len(named) == 8
+    assert len(named) == 9
     for filename in named:
         assert offline_bundle.wheel_fits_target(filename, TARGET), filename
 
@@ -875,7 +875,8 @@ def test_an_own_wheel_at_another_version_is_refused(built, tmp_path):
 def test_the_reviewed_lock_is_the_real_one():
     lock, versions = offline_bundle.reviewed_pins()
     assert set(lock) == {
-        "dbus-next==0.2.3", "pyyaml==6.0.3", "azazel-fabric==0.9.0rc5", "pydantic==2.13.5",
+        "dbus-next==0.2.3", "pyyaml==6.0.3", "azazel-fabric==0.9.0rc5", "azazel-mio==0.1.0",
+        "pydantic==2.13.5",
         "pydantic-core==2.46.5", "annotated-types==0.8.0", "typing-extensions==4.16.0",
         "typing-inspection==0.4.4",
     }
@@ -1572,7 +1573,26 @@ def test_the_fabric_source_build_is_the_pin_pyproject_uv_lock_and_the_boundary_n
     assert extras["fabric"] == [f"azazel-fabric @ git+{build['repository']}@{build['tag']}"]
     package = _uv_lock_packages()["azazel-fabric"]
     assert package["source"] == {"git": f"{build['repository']}?rev={build['tag']}#{build['commit']}"}
-    assert build_wheelhouse.BUNDLED_EXTRAS == ("fabric",)
+    assert build_wheelhouse.BUNDLED_EXTRAS == ("fabric", "mio")
+
+
+def test_mio_extra_is_optional_exact_commit_and_does_not_change_core_dependencies():
+    import tomllib
+
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    build = build_wheelhouse.SOURCE_BUILDS["azazel-mio"]
+    requirement = f"azazel-mio @ git+{build['repository']}@{build['commit']}"
+    assert project["dependencies"] == []
+    assert project["optional-dependencies"]["mio"] == [requirement]
+    assert "tag" not in build
+    assert len(build["commit"]) == 40
+    package = _uv_lock_packages()["azazel-mio"]
+    expected = f"{build['repository']}?rev={build['commit']}#{build['commit']}"
+    assert package["source"] == {"git": expected}
+    assert package.get("dependencies", []) == []
+    extras = _uv_lock_packages()["azazel-nexus"]["optional-dependencies"]
+    assert extras["mio"] == [{"name": "azazel-mio"}]
+    assert build_wheelhouse.bundled_extra_closure(ROOT) >= {"azazel-mio==0.1.0"}
 
 
 def test_each_pypi_wheel_hash_in_the_lock_is_one_uv_lock_records():
@@ -1580,10 +1600,11 @@ def test_each_pypi_wheel_hash_in_the_lock_is_one_uv_lock_records():
     lock = build_wheelhouse.parse_lock(ROOT / build_wheelhouse.LOCK)
     closure = build_wheelhouse.bundled_extra_closure(ROOT)
     assert closure == {
-        "azazel-fabric==0.9.0rc5", "pydantic==2.13.5", "pydantic-core==2.46.5",
+        "azazel-fabric==0.9.0rc5", "azazel-mio==0.1.0",
+        "pydantic==2.13.5", "pydantic-core==2.46.5",
         "annotated-types==0.8.0", "typing-extensions==4.16.0", "typing-inspection==0.4.4",
     }
-    for requirement in closure - {"azazel-fabric==0.9.0rc5"}:
+    for requirement in closure - {"azazel-fabric==0.9.0rc5", "azazel-mio==0.1.0"}:
         name, _, version = requirement.partition("==")
         assert packages[name]["version"] == version
         recorded = {w["hash"].removeprefix("sha256:") for w in packages[name]["wheels"]}
@@ -1601,6 +1622,11 @@ def _closure_root(tmp_path: Path) -> Path:
 @pytest.mark.parametrize("path, old, new, match", [
     ("pyproject.toml", "Azazel-Fabric.git@v0.9.0rc5", "Azazel-Fabric.git@main", "not a pinned source build"),
     ("uv.lock", "#450d9502884ba533653210056a6fb85012b96b84", "#" + "0" * 40, "does not resolve azazel-fabric"),
+    ("pyproject.toml", "Azazel-MIO.git@9fedb01bc9936531407a5181aa8fa5553ec19d55",
+     "Azazel-MIO.git@main", "not a pinned source build"),
+    ("uv.lock", "Azazel-MIO.git?rev=9fedb01bc9936531407a5181aa8fa5553ec19d55#9fedb01bc9936531407a5181aa8fa5553ec19d55",
+     "Azazel-MIO.git?rev=9fedb01bc9936531407a5181aa8fa5553ec19d55#" + "0" * 40,
+     "does not resolve azazel-mio"),
     ("uv.lock", '    { name = "pydantic-core" },\n', '    { name = "pydantic-core", marker = "x" },\n', "markers"),
     ("uv.lock", 'name = "pydantic"\nversion = "2.13.5"\nsource = { registry = "https://pypi.org/simple" }',
      'name = "pydantic"\nversion = "2.13.5"\nsource = { git = "https://example.invalid/pydantic.git" }',
@@ -1664,6 +1690,52 @@ def test_a_source_built_wheel_that_did_not_reproduce_the_lock_is_refused():
         build_wheelhouse.source_build_origin("azazel_fabric-0.9.0rc6-py3-none-any.whl", locked, lock)
 
 
+def test_the_mio_source_wheel_hash_is_reproduced_and_exactly_pinned():
+    build = build_wheelhouse.SOURCE_BUILDS["azazel-mio"]
+    lock = build_wheelhouse.parse_lock(ROOT / build_wheelhouse.LOCK)
+    digest, = lock["azazel-mio==0.1.0"]
+    assert digest == "889fce3d13141ec2f4371252acdb0c5fc0fadd0bea00631cd92c643ea33bfdaa"
+    for target in offline_bundle.TARGETS:
+        target_lock = build_wheelhouse.parse_lock(ROOT / offline_bundle.target_lock(target))
+        assert target_lock["azazel-mio==0.1.0"] == [digest]
+    origin = build_wheelhouse.source_build_origin(
+        "azazel_mio-0.1.0-py3-none-any.whl", digest, lock)
+    assert build["commit"] in origin and "hash-pinned" in origin
+
+
+def test_the_mio_source_checkout_is_archived_only_at_its_exact_commit(tmp_path, monkeypatch):
+    build = build_wheelhouse.SOURCE_BUILDS["azazel-mio"]
+    calls = []
+
+    def fake_run(argv, *, env=None):
+        calls.append(argv)
+        if "rev-parse" in argv:
+            assert argv[-1] == "HEAD^{commit}"
+            return build["commit"] + "\n"
+        if "status" in argv:
+            return ""
+        if "archive" in argv:
+            output = next(a for a in argv if a.startswith("--output="))[len("--output="):]
+            with tarfile.open(output, "w") as archive:
+                data = b"[project]\n"
+                info = tarfile.TarInfo("pyproject.toml")
+                info.size, info.mode = len(data), 0o644
+                archive.addfile(info, io.BytesIO(data))
+        return ""
+
+    monkeypatch.setattr(build_wheelhouse, "_run", fake_run)
+    source = tmp_path / "checkout"
+    source.mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    tree = build_wheelhouse.fetch_source_build("azazel-mio", scratch,
+                                               source_checkout=source)
+    assert (tree / "pyproject.toml").read_bytes() == b"[project]\n"
+    archive, = [argv for argv in calls if "archive" in argv]
+    assert archive[-1] == build["commit"]
+    assert not any("clone" in argv for argv in calls)
+
+
 def test_the_fabric_tree_is_archived_by_commit_with_normalised_modes(tmp_path, monkeypatch):
     build = build_wheelhouse.SOURCE_BUILDS["azazel-fabric"]
     calls = []
@@ -1693,7 +1765,9 @@ def test_the_fabric_tree_is_archived_by_commit_with_normalised_modes(tmp_path, m
 def test_the_lock_comment_names_the_source_build_pin():
     text = (ROOT / build_wheelhouse.LOCK).read_text(encoding="utf-8")
     for name, build in build_wheelhouse.SOURCE_BUILDS.items():
-        assert f"# built from {build['repository']} {build['tag']} = {build['commit']}\n" in text, name
+        pin = (f"{build['tag']} = {build['commit']}" if "tag" in build
+               else f"commit {build['commit']}")
+        assert f"# built from {build['repository']} {pin}\n" in text, name
         assert f"\n{name}=={build['version']} \\\n" in text
 
 

@@ -43,9 +43,13 @@ dev = ["pytest>=8", "pynacl>=1.5"]
 # Optional, never required. Nexus must be useful as CORE with no external
 # Knowledge, no Deception, no remote cognition and no cloud connectivity, so
 # Fabric cannot enter `dependencies` above -- a CORE path that fails when a
-# contract library is missing is not a CORE path. An exact tag, never a branch
-# and never a development commit (ADR-0001).
+# contract library is missing is not a CORE path. Fabric uses an exact tag,
+# never a branch or development commit (ADR-0001).
 fabric = ["azazel-fabric @ git+https://github.com/01rabbit/Azazel-Fabric.git@v0.9.0rc5"]
+
+# Optional shared M.I.O. core for the complete runtime distribution. Keep it
+# out of CORE dependencies; the offline bundle builds this exact source commit.
+mio = ["azazel-mio @ git+https://github.com/01rabbit/Azazel-MIO.git@9fedb01bc9936531407a5181aa8fa5553ec19d55"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

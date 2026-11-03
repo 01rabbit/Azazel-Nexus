@@ -469,6 +469,14 @@ def test_the_page_renders_the_four_answers_first_and_the_details_on_their_own_sc
     assert "operatorViewCard(section(\"operator_view\"))" in script
 
 
+def test_incident_ui_labels_async_slow_result_as_unverified_and_separate():
+    script = (REPO / "runtime/src/azazel_nexus_runtime/ui_static/app.js").read_text("utf-8")
+    assert 'var slow = ex.slow_analysis' in script
+    assert 'M.I.O. 非同期モデル提案（未検証・助言のみ）' in script
+    assert 'slow.state === "complete" && slow.verification === "model_proposed_unverified"' in script
+    assert "事実・判断・実行指示として扱わない" in script
+
+
 # -- the operator view's read adapter -----------------------------------------------------
 
 

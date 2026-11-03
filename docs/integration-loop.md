@@ -625,6 +625,22 @@ nothing in intake, detection or Edge's observe-only decisions.
   reference all share it, delivering the reply before it. The client exchange
   waits 250 ms longer (`ADVISE_CALLER_MARGIN_MS`), so the explainer does not
   record `mio_unavailable` for a handoff entry has answered.
+  Before capability probes and optional deep inference, entryd gives the
+  shared model-free `local.assess` lane at most the slack left after the
+  30 ms entry delivery reserve, 200 ms handoff reserve, 100 ms minimum deep
+  AI attempt, 50 ms ledger allowance, and 75 ms probe reserve. Three reads
+  need 72 ms initially: each of the two observations receives one twelfth of
+  the probe remainder, while admission recomputes after them and needs `5/72`
+  of the initial remainder. The 75 ms reserve rounds that threshold up to
+  `15 * MIN_PROBE_S`. locald also holds 20 ms from its received deadline for
+  reply delivery; at a clean 500 ms request, entryd can pass at most 45 ms to
+  locald, leaving up to 25 ms for the shared core. Earlier ledger work reduces
+  that cap. Each sequential probe rechecks the same monotonic deadline and is
+  skipped fail-closed if its share is below `MIN_PROBE_S`; admission is then
+  false and LOCAL is not permitted. Slow gate or ledger work consumes the
+  same deadline and can make later probes unobservable without changing the
+  trusted status of any Knowledge result that was returned. These are software
+  bounds, not latency measurements.
   `azexplain` is admitted as SERVICE in entryd and knowledge-lited's explicit
   service allowlists, never the shared SERVICE list. Entryd identifies its
   kernel-derived UID and permits only `mio.advise` with P3-restricted frames;
@@ -635,9 +651,12 @@ nothing in intake, detection or Edge's observe-only decisions.
   `azexplain` reaches it through `azmio-advise` membership. It does **not**
   hold `azazel-operator`, so it reaches no operator socket leaf and no
   `2750` operator read area (#213 O1); `classify()` also excludes
-  service/daemon UIDs from OPERATOR. Independent Knowledge `lookup_context` uses the technique ids,
-  the `knowledge-read` socket, `azknowledge-read` membership and locald's
-  existing **250 ms `KNOWLEDGE_MAX_S`** deadline. Empty ids skip the lookup.
+  service/daemon UIDs from OPERATOR. The latency-bounded shared-core fast
+  assessment does not query Knowledge; it returns `not_queried` and a fixed
+  next check directing the operator to the separate validated Knowledge lane.
+  The explainer's independent `lookup_context` uses the technique ids, the
+  `knowledge-read` socket, `azknowledge-read` membership and its existing
+  **250 ms `KNOWLEDGE_MAX_S`** deadline. Empty ids skip that lookup.
   No signature-to-technique mapping is invented. Both sockets authenticate
   their daemon owner and peer via the shared bounded AF_UNIX exchange.
   Entry reply metadata is closed and bounded; local bodies pass
@@ -645,6 +664,10 @@ nothing in intake, detection or Edge's observe-only decisions.
   citations pass `read_knowledge_refs`, including technique membership.
   Remote replies are refused. Without an admitted model, the record can hold
   a deterministic reference banner plus independently obtained Knowledge refs.
+  Readers from before PR #396 reject its new `fast_assistance` record field;
+  readers at PR #396's earlier head `48e5885` recognize that field but reject
+  this candidate's new `not_queried` status. Rollback does not rewrite or
+  discard the append-only source ledger or explanation records.
 - **Entry rate and route ledger capacity (#211 S4).** Entryd admits at most
   **30 requests a minute per kernel-reported UID (burst 10)**, five times the
   explainer's ceiling of six `mio.advise` a minute. Over the limit, and when

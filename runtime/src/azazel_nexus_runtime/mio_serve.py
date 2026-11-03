@@ -76,8 +76,8 @@ def inference_document(request: LocalInferenceRequest, *, stream: bool = False) 
 @dataclass(frozen=True)
 class LocalInferenceResult:
     text: str = field(repr=False)
-    tokens_in: int
-    tokens_out: int
+    tokens_in: int | None
+    tokens_out: int | None
     timings: dict[str, float]
 
 
@@ -189,7 +189,8 @@ class LocalServer:
         except (OSError, ValueError, LocalServerRefused):
             return False
 
-    def infer(self, request: LocalInferenceRequest, deadline_s: float) -> LocalInferenceResult:
+    def infer(self, request: LocalInferenceRequest, deadline_s: float, *,
+              allow_unknown_usage: bool = False) -> LocalInferenceResult:
         end = _deadline(deadline_s)
         if not self._child.alive or self.state is not LifecycleState.SERVING:
             raise LocalServerRefused("local server is not serving")
@@ -201,10 +202,16 @@ class LocalServer:
         try:
             data = json.loads(raw)
             text = data["choices"][0]["message"]["content"]
-            usage = data["usage"]
-            tokens_in, tokens_out = usage["prompt_tokens"], usage["completion_tokens"]
-            if (not isinstance(text, str) or type(tokens_in) is not int
-                    or type(tokens_out) is not int or min(tokens_in, tokens_out) < 0):
+            usage = data.get("usage")
+            tokens_in = tokens_out = None
+            if usage is not None:
+                tokens_in, tokens_out = usage["prompt_tokens"], usage["completion_tokens"]
+                if (type(tokens_in) is not int or type(tokens_out) is not int
+                        or min(tokens_in, tokens_out) < 0):
+                    raise ValueError
+            elif not allow_unknown_usage:
+                raise ValueError
+            if not isinstance(text, str):
                 raise ValueError
             timings = {"total_ms": (time.monotonic() - began) * 1000}
             for key, value in data.get("timings", {}).items():

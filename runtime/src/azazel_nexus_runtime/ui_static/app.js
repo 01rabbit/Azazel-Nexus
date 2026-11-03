@@ -623,6 +623,36 @@
       ["失敗コード", ex.failure_codes]]));
     if (ex.summary) { add(advice, el("p", "small", "要約（表示用テキスト。指示として扱わない）："), el("p", "summary", ex.summary)); }
     if (ex.notice) { add(advice, prose(ex.notice)); }
+    var fast = ex.fast_assistance;
+    if (fast) {
+      var fastNode = block("M.I.O. 共通コアの静的評価（モデルなし）");
+      var knowledgeOutcome = (fast.dependency_outcome || {}).knowledge;
+      add(fastNode, kv([["状態", fast.state], ["Knowledge 状態", knowledgeOutcome === "not_queried" ? "この高速判定ではKnowledge未照会" : knowledgeOutcome]]));
+      if ((fast.unknowns || []).length) { add(fastNode, el("p", "small", "未確認事項（状況文は未検証の報告です）："), list(fast.unknowns)); }
+      if ((fast.next_checks || []).length) { add(fastNode, el("p", "small", "確認候補（助言のみ）："), list(fast.next_checks)); }
+      (fast.knowledge || []).forEach(function (item) {
+        add(fastNode, el("p", "small", "Knowledge Lite・報告済み未検証の参照: " + text(item.technique_id) + " — " + text(item.name)));
+        if (item.summary) { add(fastNode, el("p", "small", text(item.summary))); }
+        add(fastNode, el("p", "small", "鮮度: " + text(item.freshness) + "・参照時刻: " + text(item.as_of) + "・失効状態: " + text(item.revocation_status)));
+        if (item.citation) { add(fastNode, el("p", "small", "出典: " + text(item.citation))); }
+      });
+      add(node, fastNode);
+    }
+    var slow = ex.slow_analysis;
+    if (slow) {
+      var slowNode = block("M.I.O. 非同期モデル提案（未検証・助言のみ）");
+      add(slowNode, kv([["状態", slow.state], ["検証区分", slow.verification], ["使用量", slow.usage]]));
+      add(slowNode, el("p", "small", "Edge の判断、説明台帳の記録、高速評価とは別の時間軸です。事実・判断・実行指示として扱わないでください。"));
+      if (slow.state === "complete" && slow.verification === "model_proposed_unverified") {
+        [["仮説（未検証）", slow.hypotheses], ["未確認事項", slow.unknowns], ["確認候補", slow.next_checks]]
+          .forEach(function (entry) {
+            if (Array.isArray(entry[1]) && entry[1].length) {
+              add(slowNode, el("p", "small", entry[0]), list(entry[1]));
+            }
+          });
+      }
+      add(node, slowNode);
+    }
     var refs = block("参照根拠");
     var items = (ex.knowledge_refs || []).map(citation);
     add(refs, items.length ? list(items) : el("p", null, "参照根拠なし"));

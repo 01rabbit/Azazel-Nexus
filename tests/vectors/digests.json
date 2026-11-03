@@ -41,7 +41,7 @@
       ]
     },
     "edge.explain": {
-      "sha256": "be318c3f12aaa3dfa2825eda2279a9c46805ece06146567456a09446b47342e0",
+      "sha256": "d439dbe06cef54ec6ec1b4a054b146e74262c8c3258972b743aeb720ac0d98ad",
       "covers": "上の遷移から作る説明要求 frame（explanation_input・build_frame）と recent incident の行（build_recent_incident・build_recent_incidents）",
       "history": [
         {
@@ -49,6 +49,12 @@
           "sha256": "be318c3f12aaa3dfa2825eda2279a9c46805ece06146567456a09446b47342e0",
           "commit_note": "初版（共通試験ベクトルの導入）",
           "reason": "初めて固定した。aarch64（colima）と amd64（Rosetta）、Python 3.11 と 3.12 で同じ値になることを確認してから記録した"
+        },
+        {
+          "date": "2026-11-02",
+          "sha256": "d439dbe06cef54ec6ec1b4a054b146e74262c8c3258972b743aeb720ac0d98ad",
+          "commit_note": "#396 fast M.I.O. assistance を Edge transition に結び付ける",
+          "reason": "製品の意味を意図して変えた。#396 の incident_explain.build_frame が説明要求 frame に edge_transition の構造化投影を追加し、M.I.O. fast assistance が Edge の遷移を機械的に読む。既存の edge_alert・edge_decision と recent incident の行は維持した。提示された検算では aarch64・amd64 と Python 3.11・3.12 の全 4 構成で同じ digest になることを確認"
         }
       ]
     },

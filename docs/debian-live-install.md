@@ -600,16 +600,20 @@ downloads the third-party wheels named in
 `packaging/offline/requirements-x86_64-cp313.lock` with `--require-hashes
 --only-binary=:all: --no-deps`, and builds both Nexus wheels from the source
 bundle with `--no-build-isolation --no-index`. The lock's names and versions
-are tested against `runtime/pyproject.toml` plus the library's `fabric` extra
-and its closure as `uv.lock` resolves it
+are tested against runtime requirements plus the library's bundled `fabric`
+and `mio` extras and their closures as `uv.lock` resolves them
 ([ADR-0004](adr/0004-fabric-in-offline-wheelhouse.md)): every production
 activation pass needs commissioning evidence, which needs pinned Fabric, so
-the bundle carries `azazel-fabric` and pydantic. Fabric publishes no wheel;
-the builder clones its repository (so the build host needs `git` and HTTPS to
-GitHub), refuses unless the tag resolves to the pinned commit, builds that
-commit with the same pinned backend (child processes at umask 022), and
-refuses unless the wheel reproduces the sha256 the lock pins. Fabric's own
-release-digest signature is not verified: its key is not a Nexus trust anchor.
+the bundle carries `azazel-fabric` and pydantic. The full runtime bundle also
+carries `azazel-mio` from its exact optional `mio` extra commit; CORE's
+`dependencies = []` remains unchanged. Neither source-built package publishes
+a wheel. The builder checks each tag/commit or commit-only identity, builds
+that source with the same pinned backend (child processes at umask 022), and
+refuses unless the wheel reproduces the sha256 the target lock pins. Fabric's
+release-digest signature is not verified: its key is not a Nexus trust
+anchor. MIO's pinned commit must be fetchable from its GitHub repository for a
+standard remote wheelhouse build; a local clean checkout at that exact commit
+can be passed with `--mio-source` while the commit remains unpublished.
 `build_offline_bundle.py`, `verify`, `recheck` and `install` refuse a
 wheelhouse or bundle that lacks any locked wheel. The two Nexus wheels are
 recorded by the hash this build produced; their reproducibility across
@@ -729,8 +733,9 @@ but never installed by this tool.
 
 | Item | Status | Evidence / what is missing |
 | --- | --- | --- |
-| Hash-pinned wheelhouse build (backend, `dbus-next`, `PyYAML`, both Nexus wheels incl. native `_bootstrap_deadline`) | implemented; container-rehearsed | [container evidence](evidence/offline-install-container-2026-10-28.json); x86_64 under Rosetta emulation, not hardware |
+| Hash-pinned wheelhouse build (backend, runtime dependencies, pinned Fabric/MIO, both Nexus wheels incl. native `_bootstrap_deadline`) | implemented; prior container-rehearsal plus local MIO source-build hash check | [container evidence](evidence/offline-install-container-2026-10-28.json); MIO's target CPython 3.13 bundle build and offline install remain unverified |
 | Pinned Fabric and pydantic in the wheelhouse ([ADR-0004](adr/0004-fabric-in-offline-wheelhouse.md)) | implemented; container-rehearsed (build, `--network none` install, Fabric hardware projection) | x86_64 under Rosetta emulation; the Fabric wheel hash reproduced on x86_64 and aarch64 containers; Fabric's release signature not verified by Nexus |
+| Shared MIO optional extra in the standard offline wheelhouse | candidate source MIO PR #18 commit 7a9cc624e4c0b3795b0258ac95a0650364a22a80; wheel sha256 99b42ccd13d8c13e5a78932cfa7ab057b612f15d6d478742e0153ee43a3f145b reproduced from its exact git archive with setuptools 84.0.0, SOURCE_DATE_EPOCH 315532800 and umask 022 on Debian CPython 3.13 aarch64 and x86_64 (Rosetta) containers | At the time of this historical build check, the candidate source was not merged. This records the prior pin only; full Debian CPython 3.13 target wheelhouses and offline installs with the current pin remain unverified. |
 | Arm lab target `debian-13-aarch64-cp313` ([ADR-0005](adr/0005-arm-lab-offline-target.md)) | implemented; container-rehearsed (native aarch64 build, `--network none` install, `install.sh --without-service-manager`) | [aarch64 container record](evidence/offline-install-aarch64-lab-container-2026-10-29.json); lab-software-verification only, not the baseline; not Arm hardware, no Arm VM/systemd run; the aarch64 Edge slot (lab pin, 2026-10-30) is unit-tested, not container-rehearsed |
 | Single bundle manifest (source, wheels, slots; sha256/size/kind/source) | implemented | `tests/unit/test_offline_install_bundle.py` |
 | Safe atomic extraction and refusal cases | implemented | same tests; one tampered bundle refused in the container |

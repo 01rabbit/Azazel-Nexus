@@ -484,9 +484,12 @@ def test_the_notice_and_the_content_kind_are_kept_in_the_record(frame, tmp_path,
     missing = referenced.ReferenceService(playbooks=None, selection_reason="no_pack")
     reply = advise(entry_service(tmp_path, monkeypatch, FakeReference(missing)), frame)
     mio = read_mio_reply(reply)
-    assert mio == {"route": "deterministic handoff", "outcome": "refused",
-                   "reason": "mio_handoff:no_pack", "text": None,
-                   "content_kind": "deterministic_notice", "notice": HANDOFF_NOTICE["en"]}
+    assert {key: mio[key] for key in ("route", "outcome", "reason", "text",
+                                     "content_kind", "notice")} == {
+        "route": "deterministic handoff", "outcome": "refused",
+        "reason": "mio_handoff:no_pack", "text": None,
+        "content_kind": "deterministic_notice", "notice": HANDOFF_NOTICE["en"]}
+    assert mio["fast_assistance"]["generation_method"] == "static_reference"
     record = {"incident_id": "inc-" + "0" * 16, "explained_at": 1.0, "transition": "opened",
               "edge_would": "observe", "policy_reason": "other", "attack_type": "other",
               "technique_ids": [], "mio": mio, "knowledge_refs": [], "knowledge_state": "skipped",
@@ -495,6 +498,8 @@ def test_the_notice_and_the_content_kind_are_kept_in_the_record(frame, tmp_path,
     summary = explanation_summary(checked)
     assert summary["content_kind"] == "deterministic_notice"
     assert summary["notice"] == HANDOFF_NOTICE["en"]
+    assert "fast_assistance" in summary
+    assert "unknowns" in summary["fast_assistance"]
     assert "not AI" in CONTENT_LABELS["deterministic_notice"]
     # A notice may not pose as AI advice, nor a reference lose its label.
     for forged in ({**mio, "content_kind": "ai_advice"},
