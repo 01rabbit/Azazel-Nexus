@@ -6,11 +6,12 @@ import secrets
 import time
 from dataclasses import asdict
 
-from azazel_mio import AssistantCore, MioSituationFrame, KnowledgeLiteAdvisory
-from azazel_mio.id_grammar import ID_KINDS
-from azazel_nexus.incident_explain import FAST_TRANSITION_KIND, read_fast_transition
 from azazel_nexus.lite_import import KnowledgeRef, read_knowledge_refs
 from azazel_nexus.reasoning_playbook import technique_ids
+from azazel_nexus.incident_explain import FAST_TRANSITION_KIND, read_fast_transition
+
+from azazel_mio import AssistantCore, MioSituationFrame, KnowledgeLiteAdvisory
+from azazel_mio.id_grammar import ID_KINDS
 
 
 def _frame(source: dict) -> MioSituationFrame:
@@ -77,8 +78,10 @@ def fast_assistance(source: dict, *, deadline_s: float, knowledge_lookup=None,
     failure = None
     budget = min(knowledge_max_s, end - time.monotonic() - core_reserve_s)
     if knowledge_lookup is not None and ids:
-        if budget <= 0:
-            failure = "timeout"
+        if budget < core_reserve_s:
+            # Leave the remaining slack to the model-free core. No query was
+            # attempted, so reserve `timeout` for an actual bounded read.
+            pass
         else:
             attempted = True
             try:

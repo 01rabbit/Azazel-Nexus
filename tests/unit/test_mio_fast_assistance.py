@@ -321,9 +321,10 @@ def test_lite_lookup_failures_are_bounded_public_outcomes(error, outcome):
 def test_core_reserve_skips_lookup_and_discards_late_result(monkeypatch):
     def forbidden(*a, **k):
         pytest.fail('core reserve cannot fund lookup')
-    result = adapter.fast_assistance(_lite_frame(), deadline_s=.004, knowledge_lookup=forbidden)
+    monkeypatch.setattr(adapter.time, 'monotonic', lambda: 10.0)
+    result = adapter.fast_assistance(_lite_frame(), deadline_s=.024, knowledge_lookup=forbidden)
     assert result['knowledge'] == []
-    assert result['dependency_outcome']['knowledge'] == 'timeout'
+    assert result['dependency_outcome']['knowledge'] == 'not_queried'
     clock = [10.0]
     monkeypatch.setattr(adapter.time, 'monotonic', lambda: clock[0])
     def late(*a, **k):
@@ -363,6 +364,21 @@ def test_normal_locald_fast_assess_injects_authenticated_lookup():
     forged['knowledge'][0]['citation'] = 'unrelated'
     with pytest.raises(ValueError):
         read_fast_assistance(forged)
+
+
+def test_normal_locald_fast_assess_skips_lookup_without_a_budget(monkeypatch):
+    from azazel_nexus_runtime import mio_locald
+    monkeypatch.setattr(adapter.time, 'monotonic', lambda: 10.0)
+    calls = []
+    service = mio_locald.LocalRuntimeService(
+        knowledge_lookup=lambda *args, **kwargs: calls.append((args, kwargs)))
+    reply = service.handle(SimpleNamespace(
+        verb=mio_locald.FAST_ASSESS_VERB,
+        arguments={'deadline_ms': 47}, payload=_lite_frame()))
+    fast = read_fast_assistance(reply['fast_assistance'])
+    assert calls == []
+    assert fast['dependency_outcome']['knowledge'] == 'not_queried'
+    assert fast['knowledge'] == []
 
 
 def test_current_at_lookup_survives_second_boundary(monkeypatch):

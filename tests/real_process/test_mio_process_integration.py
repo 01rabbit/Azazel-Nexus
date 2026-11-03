@@ -338,20 +338,25 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
         assert record["technique_ids"] == ["T1021.004", "T1110"]
         assert record["mio"]["route"] == "deterministic handoff"
         # The MIO fast-assistance object comes from entryd's reply, validated
-        # by read_mio_reply. The 500ms incident path preserves core and delivery
-        # reserves; Knowledge may use only remaining slack.
+        # by read_mio_reply. The 500ms incident path preserves the core and
+        # delivery reserves, leaving no optional lookup share.
         mio_fast = record["mio"]["fast_assistance"]
         if package_installed:
             outcome = mio_fast["dependency_outcome"]["knowledge"]
-            # Knowledge is optional on this bounded lane. A lookup timeout may
-            # coexist with the model-free Edge-grounded static alternative.
-            assert outcome in {"not_queried", "timeout"}
             assert mio_fast["knowledge"] == []
-            assert mio_fast["observations"] == []
             expected_refs = [ref["evidence_id"] for ref in record["evidence"]["refs"]]
             assert expected_refs and all(ref.startswith("sha256:") and len(ref) == 71
-                                         for ref in expected_refs)
-            if mio_fast["hypotheses"]:
+                                          for ref in expected_refs)
+            if real_producer:
+                # The real-builder path must prove the shared fast core
+                # completed without a Knowledge query; no timeout is allowed.
+                assert outcome == "not_queried"
+            else:
+                # Synthetic-reader runs share the 500 ms explainer deadline
+                # with earlier ledger and probe work, so the typed timeout
+                # fallback is accepted here only.
+                assert outcome in {"not_queried", "timeout"}
+            if outcome == "not_queried":
                 from azazel_nexus.audit import AuditLedger
 
                 incident_hex = record["incident_id"][4:]
@@ -370,10 +375,14 @@ def test_edge_intake_normal_process_reaches_explainer_mio_and_knowledge(request,
                 grounded_refs = [ref for hypothesis in mio_fast["hypotheses"]
                                  for ref in hypothesis.get("supporting_evidence_refs", [])]
                 assert grounded_refs == expected_refs
+                assert mio_fast["observations"] == []
             else:
                 # A fixed dependency-unavailable response has no incident-bound
                 # trace; the delivery reader has already validated its shape.
+                assert outcome == "timeout"
                 assert mio_fast["state"] == "dependency_unavailable"
+                assert mio_fast["observations"] == []
+                assert mio_fast["hypotheses"] == []
                 assert not mio_fast["trace_id"].startswith(
                     f"mio-{record['incident_id'][4:]}-")
             assert record["edge_would"] == "notify"
@@ -539,7 +548,7 @@ def test_500ms_explainer_process_reaches_shared_core_and_readonly_knowledge(
             assert children[1].poll() is None
         else:
             # The 500ms path has no optional lookup share after reserves.
-            assert result["knowledge_status"] == "timeout"
+            assert result["knowledge_status"] == "not_queried"
             assert result["knowledge_count"] == 0
             # The production build keeps model admission disabled; the route
             # remains a deterministic handoff even with trusted Knowledge.
