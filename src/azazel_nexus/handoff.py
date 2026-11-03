@@ -761,7 +761,7 @@ def build_package(incident_id: str, *, now: float, principal: str, root=None,
     execution = _execution(transitions, row, intake)
     evidence = _evidence(transitions, ledger_status, ledger_code)
     ai = _ai(explanations, explanation_code, row, snaps["mio_status_snapshot"], CONTENT_LABELS,
-             hide)
+             hide, recent_fresh)
     operator = _operator(audit, window_from, now, hide)
     impact = _impact(snaps["noc_status_snapshot"], execution)
     loop = _loop(snaps)
@@ -1050,7 +1050,7 @@ def _text_of(value, fixed, hide) -> tuple[Optional[str], str]:
     return None, "withheld"
 
 
-def _ai(explanations, explanation_code, row, mio, labels, hide) -> dict:
+def _ai(explanations, explanation_code, row, mio, labels, hide, recent_fresh=None) -> dict:
     from .explanation_claims import PROVENANCE_FIELD
     from .incident_explain import content_kind
 
@@ -1064,7 +1064,27 @@ def _ai(explanations, explanation_code, row, mio, labels, hide) -> dict:
                       "ceiling": value["ceiling"], "observed_at": value["observed_at"],
                       "record_uncertain": value["record_uncertain"]}
     recorded = [r["mio"][PROVENANCE_FIELD] for r in explanations if PROVENANCE_FIELD in r["mio"]]
+    slow_advisory = {"status": "unavailable", "reason_code": "no_current_slow_result",
+                     "authority": "advisory_only_not_fact", "verification": "model_proposed_unverified",
+                     "hypotheses": [], "unknowns": [], "next_checks": []}
+    if recent_fresh is not None and recent_fresh["freshness"] != "fresh":
+        slow_advisory["reason_code"] = "recent_snapshot_stale"
+    elif row is not None:
+        slow = row["explanation"].get("slow_analysis")
+        if type(slow) is dict and slow.get("state") == "complete":
+            # `read_recent_incidents` already checked this closed, sanitized
+            # projection. Keep it separate from the immutable explanation
+            # record and from the deterministic/fast assessment.
+            slow_advisory = {
+                "status": "available", "reason_code": None,
+                "authority": "advisory_only_not_fact",
+                "verification": slow["verification"], "usage": slow["usage"],
+                "hypotheses": list(slow["hypotheses"]),
+                "unknowns": list(slow["unknowns"]),
+                "next_checks": list(slow["next_checks"]),
+            }
     base = {"authority": "advisory_only_not_fact", "route_capability_now": capability,
+            "slow_advisory": slow_advisory,
             "label_basis": "the explainer's content_kind: every answered local-route reply is "
                            "labelled AI advice; the generation method is the one the explainer "
                            "recorded with the answer or, for a record from before that, the one "
@@ -1321,7 +1341,7 @@ def _loop(snaps) -> dict:
                 "refused": {k: v for k, v in sorted(value["refused"].items())}}
     return {"intake": snap("intake_status_snapshot", ("storage_failed",)),
             "explainer": snap("explainer_status_snapshot",
-                              ("chain_broken", "storage_failed", "mio_available",
+                              ("chain_broken", "storage_failed", "slow_result_store", "mio_available",
                                "knowledge_available"))}
 
 
@@ -1356,7 +1376,10 @@ def _unconfirmed(p) -> list:
     items = ["edge_judgement_unreviewed", "evidence_content_not_included",
              "business_impact_not_assessed", "source_address_withheld"]
     explanations = p["ai_assessment"].get("explanations", [])
-    items.append("ai_advice_unverified" if any(e["labelled_ai_output"] for e in explanations)
+    slow_advisory = p["ai_assessment"].get("slow_advisory", {})
+    items.append("ai_advice_unverified" if (
+        any(e["labelled_ai_output"] for e in explanations)
+        or slow_advisory.get("status") == "available")
                  else "no_ai_answer")
     occurrence = p["time"]["occurrence"]["status"]
     items.append("occurrence_time_untrusted" if occurrence == "untrusted"
@@ -1570,6 +1593,19 @@ def render_markdown(p: dict) -> str:
     if ai.get("explanations_display", {}).get("omitted"):
         add("")
         add("説明の記録" + _omitted_ja(ai["explanations_display"]))
+    slow = ai["slow_advisory"]
+    add("")
+    add("### 非同期のモデル提案（未検証・助言のみ）")
+    add("")
+    add(f"状態: {_state_ja(slow)}")
+    add("Edge の判断、説明台帳の記録、M.I.O. 高速評価とは別の時間軸です。")
+    if slow["status"] == "available":
+        add("検証区分: `model_proposed_unverified`。事実・判断・実行指示として扱わないでください。")
+        for label, key in (("仮説", "hypotheses"), ("未確認事項", "unknowns"), ("確認候補", "next_checks")):
+            for text in slow[key]:
+                add(f"- {label}: {_md(text)}")
+    else:
+        add(f"結果の表示なし（`{slow['reason_code']}`）。")
     add("")
 
     b = p["business_impact"]

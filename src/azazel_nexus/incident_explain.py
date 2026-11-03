@@ -515,8 +515,57 @@ class Selection:
             del self.explained[next(iter(self.explained))]
 
 
+def _validate_slow_analysis(value):
+    """Mirror runtime mio_generation.read_slow_analysis admission checks.
+
+    CORE cannot import the optional runtime. Unlike runtime normalization,
+    malformed wire metadata refuses the reply instead of becoming closed.
+    Valid slow output is not the incident fast conclusion and is not stored here.
+    """
+    try:
+        if (type(value) is not dict or len(json.dumps(value, allow_nan=False).encode()) > 128 * 1024
+                or set(value) - {'state', 'usage', 'generation_id', 'frame_id', 'trace_id',
+                                 'assistance', 'calls', 'origin', 'result_handle'}
+                or value['state'] not in {'closed', 'degraded', 'queued', 'queue_full',
+                                          'complete', 'timeout', 'cancelled', 'superseded', 'stale'}
+                or value['usage'] not in {'known', 'unknown'}):
+            raise ValueError("mio_reply_refused")
+        if 'result_handle' in value and (type(value['result_handle']) is not str
+                or re.fullmatch(r'[0-9a-f]{64}', value['result_handle']) is None):
+            raise ValueError("mio_reply_refused")
+        if 'assistance' in value:
+            result = value['assistance']
+            if (type(result) is not dict or result.get('schema_version') != 'mio.assistance.v1'
+                    or result.get('frame_id') != value['frame_id']
+                    or result.get('trace_id') != value['trace_id']
+                    or value['frame_id'] != value['trace_id'] + ':frame'
+                    or result.get('generation_method') not in {'model', 'static_reference'}):
+                raise ValueError("mio_reply_refused")
+        calls = value.get('calls', [])
+        if type(calls) is not list or len(calls) > 16:
+            raise ValueError("mio_reply_refused")
+        for call in calls:
+            if type(call) is not dict or set(call) != {'usage', 'timings'}:
+                raise ValueError("mio_reply_refused")
+            if call['usage'] is not None and (type(call['usage']) is not dict
+                    or set(call['usage']) != {'tokens_in', 'tokens_out'}
+                    or any(type(v) is not int or v < 0 for v in call['usage'].values())):
+                raise ValueError("mio_reply_refused")
+            if type(call['timings']) is not dict or any(type(v) not in (int, float)
+                    or not math.isfinite(v) or v < 0 for v in call['timings'].values()):
+                raise ValueError("mio_reply_refused")
+        if value['usage'] == 'known' and (not calls or any(c['usage'] is None for c in calls)):
+            raise ValueError("mio_reply_refused")
+        return
+    except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
+        raise ValueError("mio_reply_refused") from None
+
+
 def read_mio_reply(reply):
     """Closed entryd reply, with separately validated advice/reference body."""
+    if type(reply) is dict and "slow_analysis" in reply:
+        _validate_slow_analysis(reply["slow_analysis"])
+        reply = {key: value for key, value in reply.items() if key != "slow_analysis"}
     fast = None
     if type(reply) is dict and "fast_assistance" in reply:
         fast = read_fast_assistance(reply["fast_assistance"])
@@ -1032,6 +1081,71 @@ def explanation_summary(record):
     return summary
 
 
+SLOW_RESULT_STATES = frozenset({"queued", "complete", "degraded", "timeout", "cancelled",
+                                "superseded", "stale", "closed"})
+
+
+def _public_model_text(value):
+    """Bound optional model prose before the read-only operator projection."""
+    if type(value) is not str or not value:
+        raise ValueError("slow_result_refused")
+    normalized = unicodedata.normalize("NFKC", value)
+    # The MIO frame excludes network addresses, but a generated response is
+    # still untrusted. Withhold any address/path-like string at this boundary.
+    if (any(ch in normalized for ch in "/\\⁄∕∖⧸⧹﹨")
+            or re.search(r"://|(?:^|\s)//|[\w.+-]+@[\w.-]+|\b\d+(?:\.\d+){3}\b", normalized)
+            or re.search(r"(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.]*", normalized)):
+        return "Details withheld verify through an authorized source"
+    words = []
+    current = []
+    for char in normalized:
+        if char.isalpha():
+            current.append(char)
+        else:
+            if current:
+                words.append("".join(current[:32]))
+                current = []
+            if char.isspace() and (not words or words[-1] != " "):
+                words.append(" ")
+    if current:
+        words.append("".join(current[:32]))
+    text = "".join(words).strip()
+    return text[:240] or "Details withheld verify through an authorized source"
+
+
+def slow_analysis_projection(value):
+    """Project only a labelled, bounded advisory; never expose retrieval handles."""
+    if type(value) is not dict or value.get("state") not in SLOW_RESULT_STATES:
+        raise ValueError("slow_result_refused")
+    state = value["state"]
+    if state != "complete":
+        return {"state": state, "usage": "unknown"}
+    if value.get("usage") not in {"known", "unknown"}:
+        raise ValueError("slow_result_refused")
+    assistance = value.get("assistance")
+    if (type(assistance) is not dict or assistance.get("schema_version") != "mio.assistance.v1"
+            or assistance.get("generation_method") != "model"
+            or type(assistance.get("hypotheses")) is not list
+            or len(assistance["hypotheses"]) > 4):
+        raise ValueError("slow_result_refused")
+    hypotheses = []
+    for item in assistance["hypotheses"]:
+        if (type(item) is not dict or item.get("verification") != "model_proposed_unverified"
+                or type(item.get("statement")) is not str or not 0 < len(item["statement"]) <= 480):
+            raise ValueError("slow_result_refused")
+        hypotheses.append(_public_model_text(item["statement"]))
+    arrays = {}
+    for key, maximum in (("unknowns", 24), ("next_checks", 8)):
+        values = assistance.get(key)
+        if (type(values) is not list or len(values) > maximum
+                or any(type(item) is not str or not 0 < len(item) <= 480 for item in values)):
+            raise ValueError("slow_result_refused")
+        arrays[key] = [_public_model_text(item) for item in values[:8]]
+    return {"state": "complete", "usage": value.get("usage", "unknown"),
+            "verification": "model_proposed_unverified", "hypotheses": hypotheses,
+            **arrays}
+
+
 def _summary_banners():
     return frozenset(private_text(b[:280], 280) for b in REFERENCE_BANNERS)
 
@@ -1185,7 +1299,8 @@ def read_recent_incidents(raw):
                 return None
             e = row["explanation"]
             _shape(e, ("state", "route", "outcome", "summary", "knowledge_refs", "failure_codes"),
-                   ("content_kind", "notice", "knowledge_refs_omitted", "fast_assistance"))
+                   ("content_kind", "notice", "knowledge_refs_omitted", "fast_assistance",
+                    "slow_analysis"))
             # The same consistency rule as a record, applied to the summary.
             if "content_kind" in e:
                 try:
@@ -1261,6 +1376,32 @@ def read_recent_incidents(raw):
                     return None
                 if dependency["knowledge"] == "not_queried" and f["knowledge"]:
                     return None
+            if "slow_analysis" in e:
+                slow = e["slow_analysis"]
+                if type(slow) is not dict or slow.get("state") not in SLOW_RESULT_STATES:
+                    return None
+                if slow.get("usage") not in {"known", "unknown"}:
+                    return None
+                if slow["state"] == "complete":
+                    if set(slow) != {"state", "usage", "verification", "hypotheses",
+                                     "unknowns", "next_checks"}:
+                        return None
+                    if (slow["verification"] != "model_proposed_unverified"
+                            or type(slow["hypotheses"]) is not list or len(slow["hypotheses"]) > 4):
+                        return None
+                    for text in slow["hypotheses"]:
+                        _text(text, 240)
+                        if _public_model_text(text) != text:
+                            return None
+                    for key, maximum in (("unknowns", 8), ("next_checks", 8)):
+                        if type(slow[key]) is not list or len(slow[key]) > maximum:
+                            return None
+                        for text in slow[key]:
+                            _text(text, 240)
+                            if _public_model_text(text) != text:
+                                return None
+                elif set(slow) != {"state", "usage"} or slow["usage"] != "unknown":
+                    return None
         if v["incidents"] != sorted(v["incidents"], key=lambda r: (r["last_seen"], r["first_seen"], r["incident_id"]), reverse=True):
             return None
         return v
@@ -1276,7 +1417,7 @@ def read_explainer_status(raw):
         _shape(v, ("schema", "written_at", "last_explained_at", "explained", "refused", "pending",
                    "cursor_lag", "chain_broken", "recovery_hint", "storage_failed",
                    "mio_available", "knowledge_available", "audit_forward_dropped",
-                   "audit_forward_refused"))
+                   "audit_forward_refused"), ("slow_result_store",))
         if v["schema"] != "azazel-nexus/incident-explain-status/v1":
             return None
         _number(v["written_at"])
@@ -1290,6 +1431,8 @@ def read_explainer_status(raw):
         for key in ("mio_available", "knowledge_available"):
             if v[key] is not None and type(v[key]) is not bool:
                 return None
+        if "slow_result_store" in v and v["slow_result_store"] not in {None, "available", "unavailable"}:
+            return None
         if v["recovery_hint"] != (RECOVERY_HINT if v["chain_broken"] else None):
             return None
         if type(v["refused"]) is not dict or not set(v["refused"]) <= CODES:

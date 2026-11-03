@@ -26,11 +26,11 @@ from azazel_nexus_runtime.transport import read_frame, send_frame
 SERVICE = Principal(uid=900, gid=900, pid=7, classes=frozenset({PrincipalClass.SERVICE}))
 
 
-def test_submit_listener_registers_append_alone_by_name():
+def test_submit_listener_registries_are_exact_by_name():
     assert auditd.SUBMIT_REGISTRY.names() == ("audit.append",)
     assert auditd.SUBMIT_REGISTRY.resolve("audit.append", SERVICE) is next(
         verb for verb in auditd.VERBS if verb.name == "audit.append")
-    assert mio_entryd.ADVISE_REGISTRY.names() == ("mio.advise",)
+    assert mio_entryd.ADVISE_REGISTRY.names() == ("mio.advise", "mio.generation.result")
 
 
 @pytest.mark.parametrize(("name", "group"), [("audit-submit", "azaudit-submit"),

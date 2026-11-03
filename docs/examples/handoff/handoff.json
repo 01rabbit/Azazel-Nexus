@@ -52,6 +52,15 @@
       "reason_code": "snapshot_unavailable",
       "status": "unavailable"
     },
+    "slow_advisory": {
+      "authority": "advisory_only_not_fact",
+      "hypotheses": [],
+      "next_checks": [],
+      "reason_code": "recent_snapshot_stale",
+      "status": "unavailable",
+      "unknowns": [],
+      "verification": "model_proposed_unverified"
+    },
     "source": "explanation_ledger",
     "status": "available"
   },
@@ -275,6 +284,7 @@
       "mio_available": true,
       "reason_code": null,
       "refused": {},
+      "slow_result_store": "available",
       "snapshot": {
         "age_s": 1,
         "freshness": "fresh",

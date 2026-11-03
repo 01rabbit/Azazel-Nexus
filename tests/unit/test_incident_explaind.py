@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,10 +28,12 @@ def handoff():
 def make(tmp_path, *, prepare=True, **kwargs):
     incidents = tmp_path / "incidents"
     incidents.mkdir(exist_ok=True)
-    e = daemon.Explainer(incidents=incidents, state=tmp_path / "state",
-                            status_path=tmp_path / "status.json", clock=lambda: 0,
-                            monotonic=lambda: 0, mio=lambda _: handoff(),
-                            knowledge=lambda _: (), **kwargs)
+    options = {"incidents": incidents, "state": tmp_path / "state",
+               "status_path": tmp_path / "status.json", "clock": lambda: 0,
+               "monotonic": lambda: 0, "mio": lambda _: handoff(),
+               "knowledge": lambda _: ()}
+    options.update(kwargs)
+    e = daemon.Explainer(**options)
     if prepare:
         e.prepare()
     return e
@@ -75,6 +78,189 @@ def test_resume_and_pending_survive_restart(tmp_path):
     assert status["knowledge_available"] is True
     assert not status["chain_broken"] and not status["storage_failed"]
     assert status["cursor_lag"] >= 0
+
+
+def test_slow_result_receipt_is_durable_before_poll_and_projected_once(tmp_path):
+    t = transition()
+    seq = 1
+    trace = f"mio-{t['incident_id'][4:]}-{seq}"
+    queued = {"state": "queued", "usage": "unknown", "generation_id": "generation-1",
+              "frame_id": trace + ":frame", "trace_id": trace, "result_handle": "a" * 64}
+    from azazel_nexus.incident_explain import read_mio_reply
+    assert read_mio_reply({**handoff(), "slow_analysis": queued})["route"] == "deterministic handoff"
+
+    def complete(receipt, *, deadline_s):
+        assert deadline_s == .05
+        return {**receipt, "state": "complete", "usage": "known",
+                "calls": [{"usage": {"tokens_in": 1, "tokens_out": 2}, "timings": {}}],
+                "assistance": {
+            "schema_version": "mio.assistance.v1", "frame_id": receipt["frame_id"],
+            "trace_id": receipt["trace_id"], "generation_method": "model",
+            "hypotheses": [{"verification": "model_proposed_unverified",
+                            "statement": "Observed symptoms may reflect a benign change."}],
+            "unknowns": ["The approved change record is not present."],
+            "next_checks": ["Check the authorized change record."]}}
+
+    e = make(tmp_path, mio=lambda _: {**handoff(), "slow_analysis": queued}, mio_result=complete)
+    append(e, t)
+    e.poll()
+    events = e.generation_store.events()
+    assert [event["event_type"] for event in events] == [
+        "mio.generation.receipt", "mio.generation.result"]
+    assert events[0]["result_handle"] == "a" * 64
+    assert events[1]["state"] == "complete"
+    assert daemon.Explainer._generation_binding(events[0]) == daemon.Explainer._generation_binding(events[1])
+    row = e.recent[0]["explanation"]["slow_analysis"]
+    assert row["state"] == "complete"
+    assert row["verification"] == "model_proposed_unverified"
+    encoded = (tmp_path / "recent.json").read_text()
+    assert all(secret not in encoded for secret in ("a" * 64, "generation-1", trace, ":frame"))
+
+    restarted = make(tmp_path, mio_result=lambda *_a, **_k: pytest.fail("terminal result polled twice"))
+    assert restarted.recent[0]["explanation"]["slow_analysis"] == row
+    assert [event["event_type"] for event in restarted.generation_store.events()] == [
+        "mio.generation.receipt", "mio.generation.result"]
+
+
+@pytest.mark.parametrize("polled", [
+    {"state": "stale", "usage": "unknown"},
+    {"state": "complete", "usage": "unknown", "trace_id": "mio-ffffffffffffffff-1"},
+], ids=["revoked-or-expired", "binding-mismatch"])
+def test_mismatched_or_revoked_slow_result_persists_status_only(tmp_path, polled):
+    t = transition()
+    trace = f"mio-{t['incident_id'][4:]}-1"
+    queued = {"state": "queued", "usage": "unknown", "generation_id": "generation-1",
+              "frame_id": trace + ":frame", "trace_id": trace, "result_handle": "8" * 64}
+    e = make(tmp_path, mio=lambda _: {**handoff(), "slow_analysis": queued},
+             mio_result=lambda _receipt, **_kw: polled)
+    append(e, t)
+    e.poll()
+    events = e.generation_store.events()
+    result, = [event for event in events if event["event_type"] == "mio.generation.result"]
+    assert result["state"] == "stale" and "assistance" not in result
+    projection = e.recent[0]["explanation"]["slow_analysis"]
+    assert projection == {"state": "stale", "usage": "unknown"}
+    encoded = (tmp_path / "recent.json").read_text()
+    assert all(secret not in encoded for secret in ("8" * 64, "generation-1", trace, ":frame"))
+
+
+def test_generation_terminal_stays_in_receipt_segment_across_midnight_and_retention(tmp_path):
+    incident = "inc-0123456789abcdef"
+    midnight = datetime(2026, 11, 2, tzinfo=UTC).timestamp()
+    before_midnight = midnight - 1
+    trace = "mio-0123456789abcdef-1"
+    store = daemon.GenerationResultStore(tmp_path)
+    store.monotonic = lambda: 0
+    store.prepare(before_midnight)
+    receipt = {"event_type": "mio.generation.receipt", "incident_id": incident,
+               "incident_sequence": 1, "request_id": incident + ":1",
+               "frame_id": trace + ":frame", "trace_id": trace,
+               "generation_id": "generation-1", "result_handle": "e" * 64,
+               "recorded_at": before_midnight}
+    store.append_event(receipt)
+    result = {**receipt, "event_type": "mio.generation.result", "state": "stale",
+              "usage": "unknown", "recorded_at": midnight + 1}
+    store.append_event(result, segment_at=receipt["recorded_at"])
+    segment = store.path_at(before_midnight)
+    assert segment != store.path_at(midnight + 1)
+    assert list(store.directory.glob("*.jsonl")) == [segment]
+    assert [event["event_type"] for event in store.events()] == [
+        "mio.generation.receipt", "mio.generation.result"]
+
+    # Once the ordinary 14-day retention window advances, the receipt and its
+    # terminal event retire together as a whole daily segment.
+    store.monotonic = lambda: 15 * 86400
+    later = before_midnight + 15 * 86400
+    trace2 = "mio-0123456789abcdef-2"
+    receipt2 = {**receipt, "incident_sequence": 2, "request_id": incident + ":2",
+                "frame_id": trace2 + ":frame", "trace_id": trace2,
+                "result_handle": "f" * 64, "recorded_at": later}
+    store.append_event(receipt2)
+    assert not segment.exists()
+    assert [event["result_handle"] for event in store.events()] == ["f" * 64]
+    with pytest.raises(ValueError, match="receipt_segment_missing"):
+        store.append_event(result, segment_at=receipt["recorded_at"])
+
+
+def test_torn_generation_result_tail_disables_only_slow_lane_on_restart(tmp_path):
+    e = make(tmp_path)
+    t = transition()
+    append(e, t)
+    e.poll()
+    trace = f"mio-{t['incident_id'][4:]}-1"
+    receipt = {"event_type": "mio.generation.receipt", "incident_id": t["incident_id"],
+               "incident_sequence": 1, "request_id": f"{t['incident_id']}:1",
+               "frame_id": trace + ":frame", "trace_id": trace,
+               "generation_id": "generation-1", "result_handle": "9" * 64,
+               "recorded_at": 0}
+    e.generation_store.append_event(receipt)
+    path = e.generation_store.path_at(0)
+    with path.open("ab") as stream:
+        stream.write(b'{"event_type":"mio.generation.result"')
+        stream.flush()
+        os.fsync(stream.fileno())
+    damaged = path.read_bytes()
+
+    restarted = make(tmp_path, mio_result=lambda *_a, **_k: pytest.fail("torn receipt was polled"))
+    assert restarted._generation_store_failed is True
+    assert restarted.storage_failed is False
+    assert restarted.snapshot()["slow_result_store"] == "unavailable"
+    from azazel_nexus.incident_explain import read_explainer_status
+    assert read_explainer_status(json.dumps(restarted.snapshot()).encode()) == restarted.snapshot()
+    assert restarted._generation_receipts == {}
+    restarted.poll()
+    assert restarted.storage_failed is False
+    assert path.read_bytes() == damaged
+    assert restarted.snapshot()["refused"]["storage_failed"] == 1
+
+
+def test_new_edge_sequence_invalidates_completed_slow_projection(tmp_path):
+    t = transition()
+    e = make(tmp_path)
+    e.recent = [daemon.build_recent_incident(t)]
+    trace = f"mio-{t['incident_id'][4:]}-1"
+    receipt = {"event_type": "mio.generation.receipt", "incident_id": t["incident_id"],
+               "incident_sequence": 1, "request_id": f"{t['incident_id']}:1",
+               "frame_id": trace + ":frame", "trace_id": trace,
+               "generation_id": "generation-1", "result_handle": "b" * 64,
+               "recorded_at": 0}
+    e._append_generation_event(receipt)
+    e._generation_receipts["b" * 64] = daemon.read_generation_event(receipt)
+    e._generation_current[t["incident_id"]] = "b" * 64
+    complete = {"state": "complete", "usage": "known", "assistance": {
+        "schema_version": "mio.assistance.v1", "frame_id": trace + ":frame",
+        "trace_id": trace, "generation_method": "model", "hypotheses": [],
+        "unknowns": [], "next_checks": []}}
+    e._record_generation_terminal(e._generation_receipts["b" * 64], complete)
+
+    changed = {**t, "event_type": "edge.incident.updated", "count": t["count"] + 1,
+               "last_update": t["last_update"] + 1}
+    e.observe_transition(changed, sequence=2)
+    assert e._generation_terminal["b" * 64]["state"] == "superseded"
+    assert e.recent[0]["explanation"]["slow_analysis"] == {
+        "state": "superseded", "usage": "unknown"}
+
+
+def test_intake_reset_supersedes_pending_slow_result(tmp_path):
+    e = make(tmp_path)
+    t = transition()
+    e.recent = [daemon.build_recent_incident(t)]
+    trace = f"mio-{t['incident_id'][4:]}-1"
+    receipt = {"event_type": "mio.generation.receipt", "incident_id": t["incident_id"],
+               "incident_sequence": 1, "request_id": f"{t['incident_id']}:1",
+               "frame_id": trace + ":frame", "trace_id": trace,
+               "generation_id": "generation-1", "result_handle": "d" * 64,
+               "recorded_at": 0}
+    assert e._append_generation_event(receipt)
+    e._generation_receipts["d" * 64] = daemon.read_generation_event(receipt)
+    e._generation_current[t["incident_id"]] = "d" * 64
+    e._set_generation_projection(e._generation_receipts["d" * 64],
+                                 {"state": "queued", "usage": "unknown"})
+    append(e, {"event_type": "edge.incident.reset", "at": 1, "reason": "intake_started"})
+    e.poll()
+    assert e._generation_terminal["d" * 64]["state"] == "superseded"
+    assert e.recent[0]["explanation"]["slow_analysis"] == {
+        "state": "superseded", "usage": "unknown"}
 
 
 def test_chain_break_stops_linked_chain_across_days(tmp_path):
@@ -177,7 +363,7 @@ def test_registration_and_only_allowed_connections():
     tree = ast.parse(text)
     exchanges = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_exchange"]
     assert {n.args[0].value for n in exchanges} == {"mio-advise", "audit-submit"}
-    assert len(exchanges) == 2
+    assert len(exchanges) == 3
     assert 'lookup_context(ids, deadline_s=KNOWLEDGE_MAX_S)' in text
     assert not any(isinstance(n, ast.Attribute) and n.attr == "connect" for n in ast.walk(tree))
     assert not any(word in text for word in ("subprocess", "dbus", "systemctl", 'socket_path("edge'))
@@ -337,7 +523,7 @@ def test_explainer_reaches_only_its_own_listeners_not_operator_sockets():
         assert writers == (["azazel-auditd-loop.service", unit]
                            if name == "audit-submit" else [unit])
     assert auditd.SUBMIT_REGISTRY.names() == ("audit.append",)
-    assert mio_entryd.ADVISE_REGISTRY.names() == ("mio.advise",)
+    assert mio_entryd.ADVISE_REGISTRY.names() == ("mio.advise", "mio.generation.result")
 
 
 @pytest.mark.parametrize("resume", [False, True])

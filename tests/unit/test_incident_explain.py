@@ -472,6 +472,38 @@ def test_explanation_summary_carries_digest_generation_freshness_as_of_and_citat
     assert read_recent_incidents(json.dumps(value).encode()) == value
 
 
+def test_slow_result_projection_is_unverified_bounded_and_identifier_free():
+    from azazel_nexus.incident_explain import (
+        build_recent_incident, build_recent_incidents, read_recent_incidents,
+        slow_analysis_projection,
+    )
+
+    trace = "mio-0000000000000000-1"
+    result = {"state": "complete", "usage": "known", "generation_id": "generation-secret",
+              "frame_id": trace + ":frame", "trace_id": trace,
+              "result_handle": "c" * 64, "assistance": {
+                  "schema_version": "mio.assistance.v1", "generation_method": "model",
+                  "frame_id": trace + ":frame", "trace_id": trace,
+                  "hypotheses": [{"verification": "model_proposed_unverified",
+                                  "statement": "A change may explain the observations."}],
+                  "unknowns": ["https://example.invalid/path/10.0.0.1"],
+                  "next_checks": ["Check the approved change record."]}}
+    projection = slow_analysis_projection(result)
+    assert projection["verification"] == "model_proposed_unverified"
+    assert projection["unknowns"] == ["Details withheld verify through an authorized source"]
+    assert not any(secret in json.dumps(projection) for secret in
+                   ("generation-secret", "c" * 64, trace, ":frame"))
+
+    row = build_recent_incident(_t1110(), record={
+        **_cited(), "incident_id": _t1110()["incident_id"]})
+    row["explanation"]["slow_analysis"] = projection
+    value = build_recent_incidents([row], 1)
+    assert read_recent_incidents(json.dumps(value).encode()) == value
+    forged = json.loads(json.dumps(value))
+    forged["incidents"][0]["explanation"]["slow_analysis"]["result_handle"] = "c" * 64
+    assert read_recent_incidents(json.dumps(forged).encode()) is None
+
+
 def test_recent_reader_accepts_not_queried_and_rejects_malformed_fast_assistance():
     pytest.importorskip("azazel_mio")
     from azazel_nexus.incident_explain import build_recent_incident, build_recent_incidents, read_recent_incidents
@@ -767,3 +799,47 @@ def test_citation_display_table(citation, shown):
     ref, = explanation_summary(_cited({**LEDGER_REF, "citation": citation}))["knowledge_refs"]
     assert ref["citation_state"] == ("shown" if shown else "withheld")
     assert ref["citation"] == (citation if shown else "")
+
+
+@pytest.mark.parametrize("shape", ["reference", "notice", "gated"])
+def test_optional_slow_analysis_is_validated_separately(shape):
+    from azazel_nexus.incident_explain import read_mio_reply
+    from azazel_nexus.local_advisory import HANDOFF_NOTICE, build_options, delivered_document
+    base = {"route": "deterministic handoff", "outcome": "answered",
+            "reason": "no model", "ledger_seq": 1}
+    if shape == "gated":
+        reply = {**base, "outcome": "insufficient_information", "reason": "insufficient_information",
+                 "advice": "Need context", "refusal": None, "fields": {}}
+    else:
+        handoff = {"kind": "deterministic_" + shape, "notice": HANDOFF_NOTICE["en"],
+                   "ai_attempts": 0, "failures": []}
+        if shape == "reference":
+            frame = build_frame(transition(), 1)
+            options = build_options(frame)
+            body = delivered_document(frame, (), options,
+                {"option_id": "other_suspicious", "kind": "other_suspicious"},
+                list(options), None, "deterministic")
+            reply = {**base, "handoff": handoff, "reference_status": "attached",
+                     "reference": {"banner": body["advice"],
+                                   **{k: v for k, v in body.items() if k != "advice"}}}
+        else:
+            reply = {**base, "handoff": handoff, "reference_status": "unavailable",
+                     "reference_reason": "no_reference"}
+    expected = read_mio_reply(reply)
+    valid = [{"state": "closed", "usage": "unknown"},
+             {"state": "complete", "usage": "known", "frame_id": "trace:frame", "trace_id": "trace",
+              "assistance": {"schema_version": "mio.assistance.v1", "frame_id": "trace:frame",
+                             "trace_id": "trace", "generation_method": "model"},
+              "calls": [{"usage": {"tokens_in": 1, "tokens_out": 2}, "timings": {"total": .1}}]}]
+    for slow in valid:
+        assert read_mio_reply({**reply, "slow_analysis": slow}) == expected
+    invalid = [None, {}, {"state": "injected", "usage": "unknown"},
+               {"state": "closed", "usage": "unknown", "extra": True},
+               {"state": "complete", "usage": "known"},
+               {**valid[1], "frame_id": "wrong"},
+               {**valid[1], "result_handle": "wrong"},
+               {**valid[1], "calls": [{"usage": None, "timings": {"total": float("nan")}}]},
+               {**valid[1], "origin": "x" * (128 * 1024)}]
+    for slow in invalid:
+        with pytest.raises(ValueError, match="mio_reply_refused"):
+            read_mio_reply({**reply, "slow_analysis": slow})

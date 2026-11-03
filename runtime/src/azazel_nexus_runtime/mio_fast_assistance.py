@@ -60,7 +60,8 @@ def _frame(source: dict) -> MioSituationFrame:
 
 
 def fast_assistance(source: dict, *, deadline_s: float, knowledge_lookup=None,
-                    knowledge_max_s: float = 0.25, core_reserve_s: float = 0.025) -> dict:
+                    knowledge_max_s: float = 0.25, core_reserve_s: float = 0.025,
+                    situation_frame=None) -> dict:
     """Read optional authenticated local context, then run the model-free core.
 
     The caller already reserves socket delivery time. Keep the existing 25ms fast-core budget
@@ -71,7 +72,7 @@ def fast_assistance(source: dict, *, deadline_s: float, knowledge_lookup=None,
     if deadline_s <= 0:
         return fast_assessment_degraded("timeout")
     end = time.monotonic() + deadline_s
-    frame = _frame(source)
+    frame = situation_frame if situation_frame is not None else _frame(source)
     ids = technique_ids(source)
     attempted = False
     advisories = ()

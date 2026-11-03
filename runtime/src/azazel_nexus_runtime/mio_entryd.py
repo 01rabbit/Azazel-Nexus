@@ -89,6 +89,13 @@ ADVISE_VERB = Verb(
     accepts_payload=True,
     payload_contract="azazel_nexus.local_advisory.read_frame",
 )
+POLL_GENERATION_RESULT_VERB = Verb(
+    "mio.generation.result",
+    arguments=(Argument("deadline_ms", ArgumentKind.ORDINAL, maximum=50),) + tuple(
+        Argument(name, ArgumentKind.IDENTIFIER) for name in
+        ("result_handle", "generation_id", "frame_id", "trace_id")),
+    admits=frozenset({PrincipalClass.SERVICE}),
+)
 #: The remote opt-in (`mio_remote_consent`): the only writers of the store,
 #: and its read. `OPERATOR` alone -- not `SERVICE` (the arbiter, the
 #: explainer), not the advice listener -- and no argument is free text.
@@ -113,7 +120,7 @@ REGISTRY = VerbRegistry([ROUTE_VERB, ADVISE_VERB, OPT_IN_STATUS_VERB,
                          OPT_IN_SET_VERB, OPT_IN_WITHDRAW_VERB])
 #: The explainer's own listener (`mio-advise`, group azmio-advise): advice
 #: only. Its client holds that group and not the operator group (#213 O1).
-ADVISE_REGISTRY = VerbRegistry([ADVISE_VERB])
+ADVISE_REGISTRY = VerbRegistry([ADVISE_VERB, POLL_GENERATION_RESULT_VERB])
 LOCAL_REFUSAL = "HG-05 Core reserve unmeasured; no local provider admitted"
 CAPABILITY_INTERVAL_SECONDS = 10
 #: Per-principal request rate (#211 S4). The explainer sends at most six
@@ -735,6 +742,15 @@ class MioEntryService:
         explainer = (principal is not None and self._explainer_uid is not None
                      and principal.uid == self._explainer_uid
                      and PrincipalClass.SERVICE in principal.classes)
+        if getattr(getattr(request, "verb", None), "name", None) == POLL_GENERATION_RESULT_VERB.name:
+            if not explainer:
+                raise RequestRefused(Refusal.PRINCIPAL_DENIED, "generation_result_explainer")
+            receipt = {"state": "queued", "usage": "unknown",
+                       **{key: request.arguments[key] for key in
+                          ("result_handle", "generation_id", "frame_id", "trace_id")}}
+            value = self.local.generation_result(
+                receipt, deadline_s=request.arguments["deadline_ms"] / 1000)
+            return {"outcome": "generation_result", "slow_analysis": value}
         if explainer and not is_advice:
             raise RequestRefused(Refusal.PRINCIPAL_DENIED, "explainer_verb")
         local_request = None
@@ -809,6 +825,9 @@ class MioEntryService:
                          "ledger_seq": self.router.ledger.head()[0]}
                 if fast_assistance is not None:
                     reply["fast_assistance"] = fast_assistance
+                    reply["slow_analysis"] = getattr(
+                        self.local, 'last_slow_analysis',
+                        {"state": "closed", "usage": "unknown"})
                 return reply
             local_request = SimpleNamespace(
                 verb=INFER_VERB, arguments=request.arguments, payload=frame,
@@ -875,6 +894,8 @@ class MioEntryService:
             reply.update(self._handoff(frame, result, deadline_at))
         if is_advice and fast_assistance is not None:
             reply["fast_assistance"] = fast_assistance
+            reply["slow_analysis"] = getattr(self.local, 'last_slow_analysis',
+                                             {"state": "closed", "usage": "unknown"})
         return reply
 
 

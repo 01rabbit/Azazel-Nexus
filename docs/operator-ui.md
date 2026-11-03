@@ -101,6 +101,12 @@ copies with the same strict readers and the same freshness:
 | `units-status/v1` | `az-units-observe` | `run/ui-read/units` |
 | `noc-status/v1` | `az-noc-observe` | `run/ui-read/noc` |
 
+The recent incident card renders a complete slow M.I.O. result in its own
+block, labelled `model_proposed_unverified` and advisory only. It never merges
+that text into observed facts, Edge's decision, or the fast M.I.O. assessment.
+Queued and terminal states carry status only; an expired recent snapshot does
+not display slow-result text.
+
 What has no copy -- the Edge probe result (it carries the package digest and
 free-text reasons), the Knowledge Lite store, the route ledger, the model
 store, the Core reserve record, the remote consent -- is still read directly
