@@ -185,6 +185,7 @@ def test_full_node_context_refuses_invalid_caller_deadline(deadline):
 
 
 def test_full_node_context_caps_transport_to_caller_deadline(monkeypatch):
+    _contract()
     from azazel_nexus_runtime import knowledge_egress
 
     peer = client(registry(443, deadline_seconds=60), enabled=True,
