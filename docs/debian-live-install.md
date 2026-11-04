@@ -614,20 +614,23 @@ release-digest signature is not verified: its key is not a Nexus trust
 anchor. MIO's pinned commit must be fetchable from its GitHub repository for a
 standard remote wheelhouse build; a local clean checkout at that exact commit
 can be passed with `--mio-source` while the commit remains unpublished.
-The current main pin remains MIO `9fedb01bc9936531407a5181aa8fa5553ec19d55`.
-Draft [MIO PR #41](https://github.com/01rabbit/Azazel-MIO/pull/41) adds a
-source-build-only local version `0.1.0+git.c31c244`, based on reviewed MIO
-commit `c31c2442899e778f1c49e5becd739c59ef8f1092`. Its exact candidate source
-commit is `b441d431532507387fb81f1e03e31fd1aea57b68`; the generated wheel is
-`azazel_mio-0.1.0+git.c31c244-py3-none-any.whl`, SHA-256
+At the 2026-11-04 evidence cut, Nexus main pins MIO source
+`b441d431532507387fb81f1e03e31fd1aea57b68`, version
+`0.1.0+git.c31c244`. MIO PR #41 merged this source as
+`e4a0e504bae91153f3dcb8105f8658ff80d4e884`; later MIO PR #39 was docs-only and
+advanced MIO main to `4d92b4451a3bf1ec44eb7215ebadb0fd05879c1d` without changing
+`pyproject.toml`, `src/`, or `tests/`. Nexus keeps the exact b441 source pin for
+artifact traceability rather than floating to main.
+
+The pinned wheel is `azazel_mio-0.1.0+git.c31c244-py3-none-any.whl`, SHA-256
 `584bbc7fe1874b2ad2045c99d83ccbf3cd96aefc5de1910fbfc4c2ebd7ac6148`,
-reproduced by the target Debian CPython 3.13 builder using a Git archive with
+reproduced by the Debian CPython 3.13 builder from the exact Git archive with
 `tar.umask=0022`, setuptools 84.0.0, `SOURCE_DATE_EPOCH=315532800`, and process
-umask 022. This Nexus candidate changes the
-optional MIO extra only; it does not change Nexus's own `0.0.1.dev0` version or
-CORE dependencies. It depends on MIO PR #41 and is not yet merged; target Debian
-CPython 3.13 offline wheelhouse installation and process validation must pass
-before these proposed locks can be treated as accepted Nexus package inputs.
+umask 022. Nexus PR #400 merged the optional MIO pin and offline locks to main
+`365748f2daa860b3f87947c3798ca453075d1399`; Nexus remains `0.0.1.dev0`, with no
+CORE dependency change. PR #400's offline build and fixed-process evidence
+validates these software inputs only; it is not a release, deployment, or
+production model-admission claim.
 `build_offline_bundle.py`, `verify`, `recheck` and `install` refuse a
 wheelhouse or bundle that lacks any locked wheel. The two Nexus wheels are
 recorded by the hash this build produced; their reproducibility across
