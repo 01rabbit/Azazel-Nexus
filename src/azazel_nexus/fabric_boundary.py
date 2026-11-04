@@ -114,6 +114,10 @@ __all__ = [
     "project_reviewed_topology",
     "project_hardware_inventory",
     "project_tested_tuple",
+    "KnowledgeContextUnavailable",
+    "KnowledgeContextInvalid",
+    "validate_knowledge_context_request",
+    "validate_knowledge_context_response",
 ]
 
 
@@ -195,6 +199,63 @@ def _import_fabric() -> tuple[Any | None, str]:
     except ImportError as exc:
         return None, f"azazel_fabric is not installed ({exc})"
     return azazel_fabric, ""
+
+
+class KnowledgeContextUnavailable(Exception):
+    """The pinned optional Fabric release does not expose Knowledge Context v1."""
+
+
+class KnowledgeContextInvalid(ValueError):
+    """Fabric rejected a Knowledge Context v1 payload or correlation."""
+
+
+def validate_knowledge_context_request(payload: dict) -> Any:
+    """Validate with Fabric's semantic request model, or fail as unavailable.
+
+    The new contract is developed separately from the currently released pin.
+    Until Nexus adopts a released Fabric tag containing it, this optional path
+    stays unavailable; CORE and the existing capability projection still work.
+    """
+    if _import_fabric()[0] is None:
+        raise KnowledgeContextUnavailable("pinned Fabric is unavailable")
+    try:
+        from azazel_fabric.knowledge_context import (  # noqa: PLC0415
+            KnowledgeContextRequestV1,
+        )
+    except ImportError as exc:
+        raise KnowledgeContextUnavailable(
+            "pinned Fabric does not provide Knowledge Context v1"
+        ) from exc
+    try:
+        return KnowledgeContextRequestV1.model_validate(payload)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise KnowledgeContextInvalid("Fabric refused Knowledge Context request") from exc
+
+
+def validate_knowledge_context_response(request: Any, payload: dict) -> Any:
+    """Validate and correlate a response through Fabric's exact v1 models."""
+    if _import_fabric()[0] is None:
+        raise KnowledgeContextUnavailable("pinned Fabric is unavailable")
+    try:
+        from azazel_fabric.knowledge_context import (  # noqa: PLC0415
+            KnowledgeContextRequestV1,
+            KnowledgeContextResponseV1,
+            assert_response_correlates,
+        )
+    except ImportError as exc:
+        raise KnowledgeContextUnavailable(
+            "pinned Fabric does not provide Knowledge Context v1"
+        ) from exc
+    try:
+        if type(request) is not KnowledgeContextRequestV1:
+            raise TypeError
+        response = KnowledgeContextResponseV1.model_validate(payload)
+        assert_response_correlates(request, response)
+        return response
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise KnowledgeContextInvalid(
+            "Fabric refused or could not correlate Knowledge Context response"
+        ) from exc
 
 
 def _missing_planned() -> tuple[str, ...]:

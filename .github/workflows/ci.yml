@@ -1122,3 +1122,32 @@ jobs:
             echo "a Fabric-dependent test skipped on the job that installs Fabric" >&2
             exit 1
           fi
+
+  knowledge-context-candidate:
+    name: Knowledge Context against the reviewed Fabric candidate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The product extra remains pinned to its accepted release tag. This
+      # isolated job exercises the Draft contract at one immutable source SHA;
+      # it does not change the supported or bundled Nexus dependency pin.
+      - name: Install the exact Fabric Draft head
+        run: python -m pip install 'azazel-fabric @ git+https://github.com/01rabbit/Azazel-Fabric.git@50494cf769978abdbad21626a130d6525c83135d'
+
+      - name: Install Nexus test/runtime packages
+        run: python -m pip install -e '.[dev]' -e ./runtime
+
+      - name: Run the contract/security adapter tests without skips
+        run: |
+          python -m pytest tests/unit/test_knowledge_context_adapter.py -q -rs | tee /tmp/knowledge-context.txt
+          if grep -qE '[0-9]+ skipped' /tmp/knowledge-context.txt; then
+            echo "Knowledge Context tests skipped with the exact candidate installed" >&2
+            exit 1
+          fi

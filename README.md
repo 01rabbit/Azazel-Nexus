@@ -158,6 +158,7 @@ This division is intentional. It keeps the authority to change the field boundar
 **Contracts and release**
 
 - [契約表](docs/contract-table.md) — Nexus と Edge・Fabric・Knowledge・UI・M.I.O. の間の契約を、形式・認証・失敗時の挙動・実装・試験・CPU 間の確認で一覧にしたもの。
+- [Knowledge Context consumer candidate](docs/knowledge-context-consumer.md) — Fabric の独立意味契約と Nexus の任意署名 envelope の Draft 状態、未接続条件を記録する。
 - [Contract ownership](docs/contract-ownership.md) · [Implementation specification](docs/IMPLEMENTATION_SPEC.md) · [Support matrix](docs/support-matrix.md) · [Update channel](docs/update-channel.md) · [Inheritance ledger](docs/inheritance-ledger.md).
 
 **Plan**
