@@ -25,10 +25,23 @@ from azazel_nexus.knowledge_peer import (
     prepare_query,
     read_context,
 )
+from azazel_nexus.knowledge_context_adapter import (
+    KnowledgeContextRefused,
+    make_request,
+    read_signed_response,
+)
+from azazel_nexus.fabric_boundary import (
+    KnowledgeContextInvalid,
+    KnowledgeContextUnavailable,
+    canonical_knowledge_context_request,
+)
 from azazel_nexus.lite_service import KnowledgeReading, LiteReading, knowledge_context
 from azazel_nexus.sanitizer import PrivacyClass, SanitizerPolicy
 
 from .inference_egress import InferenceRefused, spki_pin, tls_context
+
+_KNOWLEDGE_CONTEXT_PATH = "/v1/knowledge-context"
+_MAX_KNOWLEDGE_CONTEXT_REQUEST_BYTES = 64 * 1024
 
 
 class KnowledgeClient:
@@ -46,10 +59,23 @@ class KnowledgeClient:
         peer_id: str,
         ca_certificate: str,
         identities: Mapping[str, tuple[str, str]],
+        knowledge_context_enabled: bool = False,
+        knowledge_context_max_ttl_seconds: int | None = None,
         utc_now: Callable[[], str] | None = None,
     ):
+        if type(knowledge_context_enabled) is not bool:
+            raise ValueError("Knowledge Context enablement must be an explicit boolean")
+        if knowledge_context_max_ttl_seconds is not None and (
+            type(knowledge_context_max_ttl_seconds) is not int
+            or knowledge_context_max_ttl_seconds < 1
+        ):
+            raise ValueError("Knowledge Context maximum TTL must be a positive integer")
+        if knowledge_context_enabled and knowledge_context_max_ttl_seconds is None:
+            raise ValueError("enabled Knowledge Context requires an explicit maximum TTL")
         self.registry = registry
         self.peer_id = peer_id
+        self.knowledge_context_enabled = knowledge_context_enabled
+        self.knowledge_context_max_ttl_seconds = knowledge_context_max_ttl_seconds
         self.utc_now = utc_now or (lambda: datetime.now(UTC).isoformat())
         self.context = None
         self.slots = threading.BoundedSemaphore(1)
@@ -126,7 +152,88 @@ class KnowledgeClient:
             self.slots.release()
 
     def _post(self, peer, suffix: str, body: bytes, deadline: float) -> bytes:
+        return self._post_path(peer, f"{peer.endpoint.path_for()}{suffix}", body, deadline)
+
+    def request_context(
+        self,
+        *,
+        frame: Mapping,
+        privacy_class: PrivacyClass,
+        policy: SanitizerPolicy,
+        mission: str,
+        alias_key: bytes,
+    ):
+        """Query the Fabric v1 endpoint only when commissioned configuration enables it.
+
+        This operation remains outside MIO's pure core and shares the commissioned
+        peer registry, mTLS identity, SPKI pin, deadline and concurrency budget.
+        It returns a Fabric-validated advisory response or one fixed refusal.
+        """
+        if self.knowledge_context_enabled is not True:
+            raise KnowledgeContextRefused("full-node Knowledge Context is disabled")
+        if self.registry is None or self.context is None:
+            raise KnowledgeContextRefused("commissioned Knowledge peer is unavailable")
+        max_ttl_seconds = self.knowledge_context_max_ttl_seconds
+        if type(max_ttl_seconds) is not int or max_ttl_seconds < 1:
+            raise KnowledgeContextRefused("Knowledge Context TTL is not commissioned")
+        if not self.slots.acquire(blocking=False):
+            raise KnowledgeContextRefused("Knowledge peer queue is full")
+        try:
+            peer = self.registry.resolve(self.peer_id, now=self.utc_now())
+            if PrivacyClass.P0_PUBLIC not in peer.endpoint.allowed_privacy_classes:
+                raise KnowledgeContextRefused(
+                    "commissioned peer does not allow P0-public context"
+                )
+            request = make_request(
+                frame,
+                privacy_class=privacy_class,
+                policy=policy,
+                mission=mission,
+                alias_key=alias_key,
+                requested_at=self.utc_now(),
+            )
+            body = canonical_knowledge_context_request(request)
+            limit = min(
+                peer.endpoint.max_request_bytes,
+                _MAX_KNOWLEDGE_CONTEXT_REQUEST_BYTES,
+            )
+            if len(body) > limit:
+                raise KnowledgeContextRefused("Knowledge Context request is too large")
+            deadline = time.monotonic() + peer.endpoint.deadline_seconds
+            raw = self._post_path(peer, _KNOWLEDGE_CONTEXT_PATH, body, deadline)
+            # Refuse a response if commissioning was revoked or expired in flight.
+            self.registry.resolve(self.peer_id, now=self.utc_now())
+            return read_signed_response(
+                raw,
+                request=request,
+                registry=self.registry,
+                peer_id=self.peer_id,
+                now=self.utc_now(),
+                max_ttl_seconds=max_ttl_seconds,
+            )
+        except (
+            KnowledgeRefused,
+            KnowledgeContextRefused,
+            KnowledgeContextInvalid,
+            KnowledgeContextUnavailable,
+            InferenceRefused,
+            OSError,
+            ValueError,
+        ) as exc:
+            raise KnowledgeContextRefused(
+                "Knowledge Context peer refused or unavailable"
+            ) from exc
+        finally:
+            self.slots.release()
+
+    def _post_path(self, peer, path: str, body: bytes, deadline: float) -> bytes:
         endpoint = peer.endpoint
+        if (
+            not isinstance(path, str)
+            or not path.startswith("/")
+            or any(char in path for char in "\r\n?#")
+        ):
+            raise KnowledgeRefused("invalid Knowledge path")
         if len(body) > endpoint.max_request_bytes:
             raise KnowledgeRefused("request size exceeded")
 
@@ -152,7 +259,7 @@ class KnowledgeClient:
                 ):
                     raise KnowledgeRefused("TLS identity refused")
                 request = (
-                    f"POST {endpoint.path_for()}{suffix} HTTP/1.1\r\n"
+                    f"POST {path} HTTP/1.1\r\n"
                     f"Host: {endpoint.host}\r\nContent-Type: application/json\r\n"
                     f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
                 ).encode("ascii")

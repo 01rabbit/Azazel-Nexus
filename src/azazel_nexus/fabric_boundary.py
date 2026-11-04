@@ -116,6 +116,7 @@ __all__ = [
     "project_tested_tuple",
     "KnowledgeContextUnavailable",
     "KnowledgeContextInvalid",
+    "canonical_knowledge_context_request",
     "validate_knowledge_context_request",
     "validate_knowledge_context_response",
 ]
@@ -207,6 +208,29 @@ class KnowledgeContextUnavailable(Exception):
 
 class KnowledgeContextInvalid(ValueError):
     """Fabric rejected a Knowledge Context v1 payload or correlation."""
+
+
+def canonical_knowledge_context_request(request: Any) -> bytes:
+    """Serialize one exact Fabric v1 request with Fabric's canonical encoder."""
+    if _import_fabric()[0] is None:
+        raise KnowledgeContextUnavailable("pinned Fabric is unavailable")
+    try:
+        from azazel_fabric.knowledge_context import (  # noqa: PLC0415
+            KnowledgeContextRequestV1,
+            canonical_knowledge_context_bytes,
+        )
+    except ImportError as exc:
+        raise KnowledgeContextUnavailable(
+            "pinned Fabric does not provide Knowledge Context v1"
+        ) from exc
+    if type(request) is not KnowledgeContextRequestV1:
+        raise KnowledgeContextInvalid("Fabric refused Knowledge Context request")
+    try:
+        return canonical_knowledge_context_bytes(request)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise KnowledgeContextInvalid(
+            "Fabric could not canonicalize Knowledge Context request"
+        ) from exc
 
 
 def validate_knowledge_context_request(payload: dict) -> Any:
