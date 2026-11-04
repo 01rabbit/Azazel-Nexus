@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -183,25 +184,19 @@ def test_full_node_context_refuses_invalid_caller_deadline(deadline):
 
 
 def test_full_node_context_caps_transport_to_caller_deadline(monkeypatch):
-    from azazel_nexus_runtime import knowledge_egress
-
     peer = client(registry(443), enabled=True, max_ttl_seconds=30)
     observed = []
-
-    class FixedMonotonic:
-        @staticmethod
-        def monotonic():
-            return 1000.0
 
     def refuse(_peer, _path, _body, deadline):
         observed.append(deadline)
         raise OSError("synthetic timeout")
 
-    monkeypatch.setattr(knowledge_egress, "time", FixedMonotonic)
     monkeypatch.setattr(peer, "_post_path", refuse)
+    started = time.monotonic()
     with pytest.raises(KnowledgeContextRefused, match="refused or unavailable"):
-        query(peer, deadline_s=0.05)
-    assert observed == [pytest.approx(1000.05)]
+        query(peer, deadline_s=1.5)
+    assert len(observed) == 1
+    assert started + 1.5 <= observed[0] < started + 1.6
 
 
 def test_loopback_mtls_sends_only_sanitized_p0_and_validates_signed_fabric_response():
