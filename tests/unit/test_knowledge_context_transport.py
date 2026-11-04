@@ -39,7 +39,7 @@ POLICY = SanitizerPolicy.from_mapping(
 TLS = Path(__file__).resolve().parents[1] / "fixtures" / "tls"
 
 
-def registry(port: int) -> KnowledgeRegistry:
+def registry(port: int, *, deadline_seconds: int = 3) -> KnowledgeRegistry:
     endpoint = ProviderRecord(
         provider_id="knowledge-node-1",
         host="fetch.azazel.test",
@@ -50,7 +50,7 @@ def registry(port: int) -> KnowledgeRegistry:
         model_id="knowledge-v1",
         max_request_bytes=4096,
         max_response_bytes=8192,
-        deadline_seconds=3,
+        deadline_seconds=deadline_seconds,
         allowed_privacy_classes=(PrivacyClass.P0_PUBLIC,),
     )
     peer = KnowledgePeer(
@@ -184,7 +184,8 @@ def test_full_node_context_refuses_invalid_caller_deadline(deadline):
 
 
 def test_full_node_context_caps_transport_to_caller_deadline(monkeypatch):
-    peer = client(registry(443), enabled=True, max_ttl_seconds=30)
+    peer = client(registry(443, deadline_seconds=60), enabled=True,
+                  max_ttl_seconds=30)
     observed = []
 
     def refuse(_peer, _path, _body, deadline):
@@ -194,9 +195,9 @@ def test_full_node_context_caps_transport_to_caller_deadline(monkeypatch):
     monkeypatch.setattr(peer, "_post_path", refuse)
     started = time.monotonic()
     with pytest.raises(KnowledgeContextRefused, match="refused or unavailable"):
-        query(peer, deadline_s=1.5)
+        query(peer, deadline_s=30)
     assert len(observed) == 1
-    assert started + 1.5 <= observed[0] < started + 1.6
+    assert started + 30 <= observed[0] < started + 31
 
 
 def test_loopback_mtls_sends_only_sanitized_p0_and_validates_signed_fabric_response():
