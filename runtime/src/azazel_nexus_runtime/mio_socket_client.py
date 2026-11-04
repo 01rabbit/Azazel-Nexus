@@ -148,15 +148,23 @@ class LocalSocketClient:
         except Exception:
             return stale
 
-    def assess(self, frame, *, deadline_s: float) -> dict:
+    def assess(self, frame, *, deadline_s: float,
+               fabric_knowledge_context_response: dict | None = None) -> dict:
         """Call the model-free service verb; this does not read model admission."""
         self.last_slow_analysis = {"state": "closed", "usage": "unknown"}
         if type(deadline_s) not in {int, float} or deadline_s <= 0:
             return fast_assessment_degraded("timeout")
         milliseconds = max(0, min(60_000, int(deadline_s * 1000)))
         try:
+            if fabric_knowledge_context_response is None:
+                payload = frame
+            elif type(fabric_knowledge_context_response) is dict:
+                payload = {"frame": frame,
+                           "fabric_knowledge_context_response": fabric_knowledge_context_response}
+            else:
+                return fast_assessment_degraded("rejected")
             result = _exchange("mio", "azmio", "mio.local.assess",
-                               {"deadline_ms": milliseconds}, payload=frame,
+                               {"deadline_ms": milliseconds}, payload=payload,
                                deadline_s=deadline_s)
         except TimeoutError:
             return fast_assessment_degraded("timeout")
