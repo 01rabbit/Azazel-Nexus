@@ -7,6 +7,7 @@ covers connect, both handshakes, negotiation and query; queue capacity is zero.
 
 from __future__ import annotations
 
+import math
 import secrets
 import socket
 import ssl
@@ -162,6 +163,7 @@ class KnowledgeClient:
         policy: SanitizerPolicy,
         mission: str,
         alias_key: bytes,
+        deadline_s: float | None = None,
     ):
         """Query the Fabric v1 endpoint only when commissioned configuration enables it.
 
@@ -173,6 +175,16 @@ class KnowledgeClient:
             raise KnowledgeContextRefused("full-node Knowledge Context is disabled")
         if self.registry is None or self.context is None:
             raise KnowledgeContextRefused("commissioned Knowledge peer is unavailable")
+        caller_deadline = None
+        if deadline_s is not None:
+            try:
+                valid_deadline = (type(deadline_s) in (int, float)
+                                  and math.isfinite(deadline_s) and deadline_s > 0)
+            except OverflowError:
+                valid_deadline = False
+            if not valid_deadline:
+                raise KnowledgeContextRefused("Knowledge Context deadline is invalid")
+            caller_deadline = time.monotonic() + float(deadline_s)
         max_ttl_seconds = self.knowledge_context_max_ttl_seconds
         if type(max_ttl_seconds) is not int or max_ttl_seconds < 1:
             raise KnowledgeContextRefused("Knowledge Context TTL is not commissioned")
@@ -200,6 +212,10 @@ class KnowledgeClient:
             if len(body) > limit:
                 raise KnowledgeContextRefused("Knowledge Context request is too large")
             deadline = time.monotonic() + peer.endpoint.deadline_seconds
+            if caller_deadline is not None:
+                deadline = min(deadline, caller_deadline)
+            if time.monotonic() >= deadline:
+                raise KnowledgeContextRefused("Knowledge Context deadline exceeded")
             raw = self._post_path(peer, _KNOWLEDGE_CONTEXT_PATH, body, deadline)
             # Refuse a response if commissioning was revoked or expired in flight.
             self.registry.resolve(self.peer_id, now=self.utc_now())

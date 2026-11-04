@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -86,13 +87,15 @@ def client(
     )
 
 
-def query(peer: KnowledgeClient, *, privacy: PrivacyClass = PrivacyClass.P0_PUBLIC):
+def query(peer: KnowledgeClient, *, privacy: PrivacyClass = PrivacyClass.P0_PUBLIC,
+          deadline_s: float | None = None):
     return peer.request_context(
         frame={"indicator": "203.0.113.9", "secret": "private-value"},
         privacy_class=privacy,
         policy=POLICY,
         mission="synthetic-interop-test",
         alias_key=b"test-only",
+        deadline_s=deadline_s,
     )
 
 
@@ -171,6 +174,29 @@ def test_full_node_context_is_disabled_without_explicit_configuration(monkeypatc
 def test_full_node_context_requires_exact_enable_flag_and_explicit_positive_ttl(enabled, ttl):
     with pytest.raises(ValueError):
         client(registry(443), enabled=enabled, max_ttl_seconds=ttl)
+
+
+@pytest.mark.parametrize("deadline", [0, -0.1, float("nan"), float("inf"), True, 10**1000])
+def test_full_node_context_refuses_invalid_caller_deadline(deadline):
+    peer = client(registry(443), enabled=True, max_ttl_seconds=30)
+    with pytest.raises(KnowledgeContextRefused, match="deadline is invalid"):
+        query(peer, deadline_s=deadline)
+
+
+def test_full_node_context_caps_transport_to_caller_deadline(monkeypatch):
+    peer = client(registry(443), enabled=True, max_ttl_seconds=30)
+    observed = []
+
+    def refuse(_peer, _path, _body, deadline):
+        observed.append((time.monotonic(), deadline))
+        raise OSError("synthetic timeout")
+
+    monkeypatch.setattr(peer, "_post_path", refuse)
+    with pytest.raises(KnowledgeContextRefused, match="refused or unavailable"):
+        query(peer, deadline_s=0.05)
+    assert len(observed) == 1
+    remaining = observed[0][1] - observed[0][0]
+    assert 0 < remaining <= 0.05
 
 
 def test_loopback_mtls_sends_only_sanitized_p0_and_validates_signed_fabric_response():
