@@ -2,10 +2,11 @@
 
 The semantic request/response belongs to Fabric's `knowledge-context/v1`
 profile. Nexus imports it only through `fabric_boundary`, where the import is
-deferred so CORE remains usable without the optional Fabric package. The
-currently supported product pin remains Fabric `v0.9.0rc5`; that tag does not
-contain this profile. Until a released Fabric pin provides it, the new adapter
-returns unavailable and the existing Lite/no-context behavior remains in use.
+deferred so CORE remains usable without the optional Fabric package. This candidate uses the exact published Fabric `v0.10.0` tag, which contains
+this profile as experimental functionality without a compatibility promise.
+The existing Nexus main remains on its prior pin until this PR is integrated.
+Even with the profile installed, the adapter is unavailable unless its explicit
+transport configuration is supplied; Knowledge Lite behavior is independent.
 
 The Nexus envelope is separate from the Fabric payload. It binds `key_id`,
 `issued_at`, `expires_at`, and the canonical response bytes under the

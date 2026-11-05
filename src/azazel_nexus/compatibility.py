@@ -373,8 +373,8 @@ FABRIC_ONLY_FIELDS: tuple[str, ...] = (
 
 
 def fabric_release_version(tag: object) -> str:
-    """A Nexus tuple's Fabric tag (``v0.9.0rc5``) as Fabric's version string
-    (``0.9.0rc5``, its ``__version__``). Exactly one leading ``v``; anything
+    """A Nexus tuple's Fabric tag (``v0.10.0``) as Fabric's version string
+    (``0.10.0``, its ``__version__``). Exactly one leading ``v``; anything
     else is refused rather than guessed."""
 
     if type(tag) is not str or not tag.startswith("v") or not tag[1:] or tag[1] == "v":

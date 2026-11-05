@@ -798,7 +798,7 @@ nothing in intake, detection or Edge's observe-only decisions.
   age to stale; that means stale observation, not proof the process stopped.
 - **Fabric presentation.** Production status calls `project_capability` with
   the same capability state and available set already displayed. It reports
-  `projected (v0.9.0rc5)`, `not available (extra not installed)` or
+  `projected (v0.10.0)`, `not available (extra not installed)` or
   `refused (projection_refused)`. Exception text is never rendered and the
   optional extra never determines capability or interrupts status. An
   unexpected failure in either the loop or the Fabric section (including an

@@ -38,7 +38,7 @@ def _claim(**overrides) -> StatusClaim:
     fields = dict(
         subject="azazel-nexus fabric pin",
         subject_scope=SubjectScope.THIS_REPOSITORY,
-        statement="this repository pins Azazel-Fabric at v0.9.0rc5",
+        statement="this repository pins Azazel-Fabric at v0.10.0",
         verification_state=VerificationState.VERIFIED,
         evidence_kind=EvidenceKind.LOCAL_MANIFEST,
         source_ref="pyproject.toml",

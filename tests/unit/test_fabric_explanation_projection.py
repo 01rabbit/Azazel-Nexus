@@ -77,7 +77,7 @@ def _stored(record):
                 "input_refs": [r["bundle_digest"]], "freshness": r["freshness"],
                 "statement": r["name"] + (f": {r['summary']}" if r["summary"] else "")}
                for r in record["knowledge_refs"]]
-    return {"fabric_version": "0.9.0rc5",
+    return {"fabric_version": "0.10.0",
             "claim_set": {"authority": "descriptive_only", "trace_id": record["incident_id"],
                           "claims": claims}}
 

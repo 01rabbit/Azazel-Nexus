@@ -41,7 +41,7 @@ def a_tuple(**overrides) -> TestedTuple:
         "toolchain_digest": TOOLCHAIN,
         "os_abi": "debian-13/linux-6.12",
         "architecture": ADMITTED_ARCHITECTURE,
-        "fabric_version": "v0.9.0rc5",
+        "fabric_version": "v0.10.0",
         "profile": ResourceProfile.LITE,
         "overlay_schema": "3",
         "security_epoch": 4,
@@ -59,7 +59,7 @@ def a_host(**overrides) -> HostFacts:
         "os_abi": "debian-13/linux-6.12",
         "architecture": ADMITTED_ARCHITECTURE,
         "cpu_features": frozenset({"avx2", "aes"}),
-        "fabric_version": "v0.9.0rc5",
+        "fabric_version": "v0.10.0",
         "fabric_features": frozenset({"mio_contracts", "extra"}),
         "schema_features": frozenset({"advisory_v2"}),
         "profile": ResourceProfile.LITE,
@@ -412,14 +412,14 @@ def test_fabric_shared_fields_speak_fabrics_vocabulary():
     shared = fabric_shared_fields(a_tuple(cpu_features=frozenset({"sse4", "avx2"})))
     assert shared["architecture"] == "amd64"
     assert shared["artifact_digest"] == COMPONENT
-    assert shared["fabric_version"] == "0.9.0rc5"
+    assert shared["fabric_version"] == "0.10.0"
     assert shared["cpu_features"] == ("avx2", "sse4")
     assert shared["overlay_schema_version"] == "3"
     assert set(shared) == {theirs for _, theirs in compatibility.FABRIC_SHARED_FIELDS}
     assert fabric_shared_fields(a_lab_tuple())["architecture"] == "arm64"
 
 
-@pytest.mark.parametrize("tag, version", [("v0.9.0rc5", "0.9.0rc5"), ("v0.9.0", "0.9.0")])
+@pytest.mark.parametrize("tag, version", [("v0.10.0", "0.10.0"), ("v0.9.0", "0.9.0")])
 def test_a_fabric_tag_maps_to_its_version(tag, version):
     assert fabric_release_version(tag) == version
 

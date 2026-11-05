@@ -131,7 +131,7 @@ Arm VM での受入（V1〜V3、main `7ef1702`）の結果を反映）。** #355
 | L29 | dpkg が読めないときの扱い | `DPKG_UNOBSERVED` として拒否（`select` 経由のすべての経路と `install.sh`、lab も同じ） | 現状維持／緩める | 導入先はすべて Debian なので、緩める理由は今は無い | #373 |
 | L30 | `install.sh` で SOABI を照合するか | 照合しない（実導入では AppArmor の wrapper 検査が `/usr/bin/python3.13` を固定している） | 照合する | 二重の確認 | #373 |
 | L31 | HG-01／HG-04 での capture の必須化と、core reserve の旧版記録 | capture を必須にした。measurement は v4、v1〜v3 は「読めるが受理しない」 | 現状維持 | 旧版の記録は受理されない | #374 |
-| L32 | Fabric の pin を移すときの手順 | pyproject、uv.lock、`FABRIC_PIN`、`SOURCE_BUILDS`、lock の hash を同時に更新する（試験がずれを拒否する） | 判断ではなく手順。rc6／v0.9.0 へ移す時期だけが判断 | pin の移行 | #357、[ADR-0001](adr/0001-fabric-pin.md) |
+| L32 | Fabric の pin を移すときの手順 | pyproject、uv.lock、`FABRIC_PIN`、`SOURCE_BUILDS`、lock の hash を同時に更新する（試験がずれを拒否する）。Nexus candidate #402 は正式版 `v0.10.0` を採用する | 判断ではなく手順。candidate treeの整合と試験が必要。releaseや配備とは別 | pin の移行 | #357、[ADR-0009](adr/0009-fabric-pin-v0-10-0.md) |
 
 ## 5. 件数
 

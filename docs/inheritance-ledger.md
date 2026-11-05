@@ -4,7 +4,7 @@ Status: **target contract**. This ledger records what Azazel-Nexus intends to
 inherit and on what evidence. It is not a claim that any entry is implemented
 in this repository. It carries a package (`pyproject.toml`,
 `src/azazel_nexus/`) with a deliberately empty required-dependency list, a unit
-suite, and an exact **Azazel-Fabric pin as an optional extra** (`v0.9.0rc5`,
+suite, and an exact **Azazel-Fabric pin as an optional extra** (`v0.10.0`,
 ADR-0001), consumed through one boundary module. One mapping is attested by
 that boundary — capability/mode publication; every other contract mapping
 remains a design assertion awaiting a conformance attestation, not verified
@@ -100,7 +100,7 @@ is not a `CORE` path.
 
 So both the **pin policy** (an exact tag, never a branch or a development
 commit) and the **optionality** are inherited. Fabric is declared as the
-`fabric` extra, pinned to `v0.9.0rc5`, and consumed through the single boundary
+`fabric` extra, pinned to `v0.10.0`, and consumed through the single boundary
 module `azazel_nexus.fabric_boundary` — see [ADR-0001](adr/0001-fabric-pin.md)
 for the decision and its alternatives. Azazel-Boot, which carries the same
 `CORE` doctrine, reached the same shape in its ADR-0004.

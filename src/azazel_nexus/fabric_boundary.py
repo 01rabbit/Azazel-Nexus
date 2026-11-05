@@ -142,7 +142,7 @@ class IdentityUnavailable(Exception):
 #: `azazel_nexus.status` now reports them as `unknown` and points at Fabric's
 #: `docs/release-compatibility.md`, which holds the answer (#23).
 #: `tests/unit/test_status_claims.py` keeps the retired phrasing out.
-FABRIC_PIN = "v0.9.0rc5"
+FABRIC_PIN = "v0.10.0"
 
 #: What this module needs to produce a projection at all.
 REQUIRED_FABRIC_MODULES = ("azazel_fabric.view", "azazel_fabric.schema.mode",

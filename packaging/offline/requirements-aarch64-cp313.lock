@@ -29,10 +29,10 @@
 # annotated_types-0.8.0-py3-none-any.whl
 annotated-types==0.8.0 \
     --hash=sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0
-# azazel_fabric-0.9.0rc5-py3-none-any.whl
-# built from https://github.com/01rabbit/Azazel-Fabric.git v0.9.0rc5 = 450d9502884ba533653210056a6fb85012b96b84
-azazel-fabric==0.9.0rc5 \
-    --hash=sha256:5eb6593ee6824400bc5a00c3e5c799abb2f88def6273a2486c8b88959c908eda
+# azazel_fabric-0.10.0-py3-none-any.whl
+# built from https://github.com/01rabbit/Azazel-Fabric.git v0.10.0 = 397fcce7a87ca7ab1a5e84bc196c44d70c404907
+azazel-fabric==0.10.0 \
+    --hash=sha256:b22356fd672cd60471606d3a7b73ccdba99091e680fedd854381a29d76e21424
 # azazel_mio-0.1.0.dev20261105+gite639a65-py3-none-any.whl
 # built from https://github.com/01rabbit/Azazel-MIO.git commit 1ba191b4daa8b3edd8bcd6ee6517a1b31a982c85
 # reproduced from exact source archive on CPython 3.13.18, setuptools 84.0.0, SOURCE_DATE_EPOCH=315532800, umask 022 (linux/arm64); wheel is platform independent

@@ -75,7 +75,7 @@ __all__ = [
     "parse_interaction",
 ]
 
-#: Fabric's `EnvironmentEvent` schema version (Azazel-Fabric v0.9.0rc5).
+#: Fabric's `EnvironmentEvent` schema version (Azazel-Fabric v0.10.0).
 SCHEMA_VERSION = "environment-event/v0.1"
 #: The only event type a decoy reports.
 EVENT_TYPE = "interaction"

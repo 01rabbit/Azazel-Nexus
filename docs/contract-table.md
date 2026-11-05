@@ -39,7 +39,7 @@ Nexus のローカルか）を決める文書で、この表はそれと重な�
 | E1 | Edge の観測の取り込み | Edge Core → Nexus（intake） | Unix socket、1 接続 1 行の JSON（Edge `rust_event_engine_v1` の封筒、`azazel-edge/forward-stats/v1`） | 本番の経路（observe-only のみ受理） |
 | E2 | Edge の判断の説明と表示 | intake の台帳 → 説明器 → status・UI | `azazel-nexus/incident-explain-status/v1`、`azazel-nexus/recent-incidents/v1` | 本番の経路（表示は常に「Edge would」） |
 | E3 | Edge package の検証・発行元署名・失効・floor | Edge の packager → Nexus | `contract/azazel-edge-core/pin.json`、`azazel-nexus/edge-probe/v2`、署名 domain `azazel-nexus/edge-package-manifest/v1` | 検証は本番の経路。署名は実装済みで、Edge 側が未署名のため未使用 |
-| F1 | Fabric の pin | Fabric → Nexus（依存） | `FABRIC_PIN` `v0.9.0rc5`（optional extra） | 採用 |
+| F1 | Fabric の pin | Fabric → Nexus（依存） | `FABRIC_PIN` `v0.10.0`（optional extra） | 採用 |
 | F2 | 能力と mode の公開 | Nexus → Fabric の型 | `schema.mode.ModeState`、`view.status.StatusView` | 本番の経路（`azazel-nexus status`） |
 | F3 | Edge の証拠の参照 | Nexus → Fabric の型 | `schema.evidence.EvidenceRef` | 試験のみ |
 | F4 | 説明の claim | Nexus → Fabric の型 | `mio_contracts.ClaimSet`、`Claim` | 説明 ledger の中だけに保存（送らない・表示しない） |
@@ -102,7 +102,7 @@ Nexus のローカルか）を決める文書で、この表はそれと重な�
 | 項目 | 内容 |
 | --- | --- |
 | 方向 | Nexus が Fabric の型へ射影する。Fabric から何かを受け取る経路は無い。Fabric を import してよいのは `src/azazel_nexus/fabric_boundary.py` だけ（`tests/unit/test_boundary_static.py`） |
-| 形式（pin） | `FABRIC_PIN = "v0.9.0rc5"`。`pyproject.toml` の optional extra `fabric` と `uv.lock`。CORE は Fabric 無しで動く（[ADR-0001](adr/0001-fabric-pin.md)）。オフライン wheelhouse は tag と commit の対応と wheel の hash で固定（[ADR-0004](adr/0004-fabric-in-offline-wheelhouse.md)） |
+| 形式（pin） | `FABRIC_PIN = "v0.10.0"`。`pyproject.toml` の optional extra `fabric` と `uv.lock`。CORE は Fabric 無しで動く（[ADR-0001](adr/0001-fabric-pin.md)）。オフライン wheelhouse は tag と commit の対応と wheel の hash で固定（[ADR-0004](adr/0004-fabric-in-offline-wheelhouse.md)） |
 | 形式（射影） | F2 `project_capability`（`ModeState`・`StatusView`、本番の `azazel-nexus status` が呼ぶ）。F3 `project_edge_evidence`（`EvidenceRef`、本番の呼出し元なし）。F4 `project_explanation`（`ClaimSet`、Edge の判断は `deterministic_core` で、遷移から運んだ証拠の digest を `EvidenceRef`（`edge-core`、trace は incident id）として引用し、参照切れの理由 `evidence_not_stored`・`evidence_retention_elapsed` を limitations に書く。ローカル回答は、記録した候補・順位と（モデルが書いたときは）モデルの説明文を claim にし、埋め込み照合とモデルは `local_model`（`model_ref` 付き）、キーワード照合は `deterministic_core`（固定 banner は claim にしない）、各 `KnowledgeRef` は `knowledge_advisory`。説明器が ledger に保存するだけ）。F5 `project_tested_tuple`・`check_tested_tuple`（`TestedCompatibilityTuple`、[ADR-0006](adr/0006-tested-tuple-fabric-and-arm-lab.md)）。F6 `InterfaceIdentity`・`resolve_interface_assignment` ほか provisioning の型 |
 | 認証と署名 | Fabric の release 署名は Nexus が検証しない（commit と hash の固定のみ。[オーナー判断 H8](owner-decisions.md#2-優先度の高いもの)） |
 | 失敗時 | 射影は `available=False` と理由を返すだけで、呼出し元を止めず、能力や権限を変えない。版が pin と違えば unavailable。例外は commissioned activation で、pin どおりの Fabric が無ければ拒否する（ADR-0004） |
