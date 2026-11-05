@@ -864,7 +864,9 @@ def test_the_pass_scope_and_tripwire_share_one_unit_set():
     from azazel_nexus_runtime.activation_markers import GRANTABLE_UNITS
     assert activation_pass.UNIT_SCOPE is GRANTABLE_UNITS
     assert GRANTABLE_UNITS == frozenset(EDGE_SCOPE + DECOY_UNITS) | {
-        "azazel-mio-referenced.service", "azazel-auditd-loop.service"}
+        "azazel-mio-referenced.service", "azazel-auditd-loop.service",
+        # Optional service; installation alone cannot grant or start it.
+        "azazel-knowledge-contextd.service"}
     assert not hasattr(activation_pass, "P4_UNIT_SCOPE")
     import ast
     source = Path(activated.__file__).read_text()

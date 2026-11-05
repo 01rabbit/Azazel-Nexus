@@ -305,6 +305,9 @@ def test_the_current_generation_allowlist_and_grantable_set_are_unchanged():
         "azazel-decoy-netd.service", "azazel-decoy-nsd.service", "azazel-decoyd.service",
         "azazel-edge-core.service", "azazel-edge-intaked.service",
         "azazel-edge-probed.service", "azazel-incident-explaind.service",
+        # The optional Knowledge egress is grantable only through the same
+        # explicit, signed activation policy; its installer preset stays off.
+        "azazel-knowledge-contextd.service",
         "azazel-knowledge-lited.service", "azazel-mio-entryd.service",
         "azazel-mio-referenced.service",
     })

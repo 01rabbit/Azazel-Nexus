@@ -394,6 +394,9 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
         "/var/lib/azazel/run/remote",
         "/var/lib/azazel/run/knowledge",
         "/var/lib/azazel/run/knowledge-read",
+        # Dedicated egress socket; only the client principal receives its
+        # group, never the operator group or either Knowledge writer.
+        "/var/lib/azazel/run/knowledge-context",
         # The read-only UI's login code (U5): a file, not a socket, that the
         # operator group reads.
         "/var/lib/azazel/run/ui-login",
@@ -404,7 +407,8 @@ def test_service_socket_directories_are_setgid_for_operator_group_inheritance():
             "audit", "edge-intake", "incident-explain", "knowledge", "mio", "units", "noc")),
     }
     dedicated = {"knowledge-read": "azknowledge-read", "edge-intake": "azedge", "decoy-intake": "azdecoy",
-                 "audit-submit": "azaudit-submit", "mio-advise": "azmio-advise"}
+                 "audit-submit": "azaudit-submit", "mio-advise": "azmio-advise",
+                 "knowledge-context": "azknowledge-context-client"}
     for spec in socket_dirs.values():
         if spec.path == "/var/lib/azazel/run/ui-read":
             assert (spec.mode, spec.owner, spec.group) == (0o711, "root", "root")
@@ -447,7 +451,7 @@ def test_every_declared_daemon_socket_has_an_installed_daemon_owned_leaf():
         "fetch": "azfetch", "mio-entry": "azmioentry", "mio-advise": "azmioentry", "mio": "azmio",
         "mio-reference": "azmioref",
         "remote": "azremote", "knowledge": "azknowledge", "knowledge-read": "azknowledge", "edge-intake": "azintake",
-        "decoy-intake": "azintake",
+        "decoy-intake": "azintake", "knowledge-context": "azknowledgeegress",
     }
     owners = {spec.path: spec.owner for spec in LAYOUT}
     assert set(runtime_paths._SOCKET_LEAVES) == set(expected_owner)

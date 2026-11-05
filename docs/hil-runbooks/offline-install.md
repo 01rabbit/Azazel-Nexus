@@ -174,7 +174,8 @@ installer masks `azazel-commissiond.service`, `azazel-auditd.service`,
 `azazel-edge-intaked.service`, `azazel-model-fetchd.service`,
 `azazel-mio-locald.service`, `azazel-mio-remoted.service`,
 `azazel-mio-entryd.service`, `azazel-mio-referenced.service`,
-`azazel-knowledge-lited.service`, `azazel-decoy-nsd.service`,
+`azazel-knowledge-lited.service`, `azazel-knowledge-contextd.service`,
+`azazel-decoy-nsd.service`,
 `azazel-decoy-netd.service` and `azazel-decoyd.service` — and only
 `azazel-activated.service` and `azazel-edge-probe-preflight.service`
 `enabled`. Cross-check the masked set against the installed
