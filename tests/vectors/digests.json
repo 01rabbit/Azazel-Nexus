@@ -191,7 +191,7 @@
       ]
     },
     "status.read_model": {
-      "sha256": "38c9ee96f9b19bcaa100485605d34b62978ab187be9fa15b7e58c372432f7e9b",
+      "sha256": "fa2b17df040ac61bf3d9e98952c047a341ca462d633644afe54bbccb8940543d",
       "covers": "status --json の read model（test_status_view の golden 10 場面）。float の時刻は除外し、その path を記録",
       "history": [
         {
@@ -211,6 +211,12 @@
           "sha256": "38c9ee96f9b19bcaa100485605d34b62978ab187be9fa15b7e58c372432f7e9b",
           "commit_note": "S-03・S-04 UI 用の読取経路と operator_view の status 節",
           "reason": "製品の意味を意図して変えた。ADR-0007 で read model に snapshot_reader（どの写しを読んだか）、運用者向け snapshot 4 節の source.leaf、版付きの operator_view 節（読取 adapter が集めた承認の門・catalog・導入・確認操作）を足した。既存の欄の値は変わっていない（--show で変更前と比べ、変化は追加だけであることを確認）"
+        },
+        {
+          "date": "2026-11-05",
+          "sha256": "fa2b17df040ac61bf3d9e98952c047a341ca462d633644afe54bbccb8940543d",
+          "commit_note": "#402 candidate reports the published Fabric v0.10.0 pin",
+          "reason": "The operator-facing status read model now names the candidate Fabric v0.10.0 pin instead of the superseded 0.9.0rc5 pin. This records the intentional version-label change only; cross-CPU and Python-matrix reproduction remains required before acceptance."
         }
       ]
     }

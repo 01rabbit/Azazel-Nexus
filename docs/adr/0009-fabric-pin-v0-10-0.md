@@ -42,6 +42,16 @@ and both platform locks. CORE remains usable without Fabric.
    release verification supports the selected tag; it does not introduce a
    Nexus trust-root policy.
 
+The offline wheelhouse also carries the MIO development wheel
+`azazel_mio-0.1.0.dev20261105+gite639a65-py3-none-any.whl`, built from exact
+source commit `e639a659991f370e9be4f6b9533e16c702912a09` and pinned in both
+target locks at SHA-256
+`2672b77909f15580215cf33c95d7bea0c863aeb45901231aca774e28f8682cce`. The
+optional `mio` source extra remains separately pinned to MIO commit
+`1ba191b4daa8b3edd8bcd6ee6517a1b31a982c85`; the offline wheel is a different,
+older exact artifact and must not be described as a build of that extra's
+source commit.
+
 ## Verification and limits
 
 The release digest and signature were verified against the tagged release in
