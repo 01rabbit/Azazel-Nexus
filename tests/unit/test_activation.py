@@ -23,6 +23,7 @@ import pytest
 from azazel_nexus.activation import (
     ACTIVATION_CONTROLLER_UNIT,
     ARTIFACT_TRANSPORT,
+    KNOWLEDGE_CONTEXT_TRANSPORT,
     LOCAL_MODEL_PROVIDER,
     REMOTE_INFERENCE_TRANSPORT,
     ActivationLease,
@@ -882,7 +883,8 @@ def test_the_fetch_service_is_the_unit_this_build_does_not_wire(tmp_path):
         "azazel-model-fetchd.service": ARTIFACT_TRANSPORT,
         "azazel-mio-locald.service": LOCAL_MODEL_PROVIDER,
         "azazel-mio-remoted.service": REMOTE_INFERENCE_TRANSPORT,
-    }, "the three capabilities are separate; none implies another"
+        "azazel-knowledge-contextd.service": KNOWLEDGE_CONTEXT_TRANSPORT,
+    }, "the transport capabilities are separate; none implies another"
     assert len(set(needing.values())) == len(needing), (
         "two units share a capability, so wiring one would grant the other"
     )

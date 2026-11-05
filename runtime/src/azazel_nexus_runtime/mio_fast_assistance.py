@@ -133,7 +133,10 @@ def fast_assistance(source: dict, *, deadline_s: float, knowledge_lookup=None,
         frame = MioSituationFrame.from_dict(payload)
     if time.monotonic() >= end:
         return fast_assessment_degraded("timeout")
-    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+    # Preserve the consumer clock's sub-second precision. Knowledge Context
+    # producers may legitimately sign a response generated later in this same
+    # second; truncating `now` would falsely classify it as future-dated.
+    now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     fabric_response = None
     if fabric_knowledge_context_response is not None:
         if type(fabric_knowledge_context_response) is not dict:

@@ -1,0 +1,158 @@
+"""Dedicated, optional broker for full-node Knowledge Context.
+
+This daemon is the only component that may hold a commissioned Knowledge
+peer client. It has no model, enforcement, or Knowledge store authority. The
+factory shipped here is deliberately uncommissioned; no files, credentials or
+environment switch can enable egress. Tests may inject an explicitly
+commissioned client and synthetic trust material.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import time
+from collections.abc import Callable, Mapping, Sequence
+from threading import BoundedSemaphore
+from typing import Any
+
+from azazel_nexus.audit import AuditLedger, AuditUnavailable
+from azazel_nexus.sanitizer import PrivacyClass, SanitizerPolicy
+
+from .knowledge_context_socket import MAX_CONTEXT_FRAME_BYTES, read_context_frame
+from .principal import PrincipalClass, PrincipalPolicy
+from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
+from .runtime_paths import knowledge_context_state_dir, socket_path
+from .serve import serve_forever
+from .systemd_notify import runtime_ready_callback
+
+__all__ = ["CONTEXT_VERB", "KnowledgeContextBroker", "main"]
+
+SOCKET_NAME = "knowledge-context"
+MAX_RESPONSE_BYTES = 48 * 1024
+CONTEXT_VERB = Verb(
+    "knowledge.context",
+    arguments=(Argument("deadline_ms", ArgumentKind.ORDINAL, maximum=10_000),),
+    admits=frozenset({PrincipalClass.SERVICE}),
+    accepts_payload=True,
+    payload_contract="bounded frame; broker constructs a P0-public request",
+)
+REGISTRY = VerbRegistry([CONTEXT_VERB])
+
+
+class KnowledgeContextBroker:
+    """One in-flight broker; disabled unless complete commissioning is injected."""
+
+    def __init__(
+        self,
+        *,
+        client: Any = None,
+        policy: SanitizerPolicy | None = None,
+        mission: str | None = None,
+        alias_key: bytes | None = None,
+        enabled: bool = False,
+        audit: Callable[[dict], Any] = lambda event: None,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if type(enabled) is not bool:
+            raise ValueError("Knowledge Context enablement must be explicit")
+        self._enabled = enabled
+        self._client = client
+        self._policy = policy
+        self._mission = mission
+        self._alias_key = alias_key
+        self._audit = audit
+        self._monotonic = monotonic
+        self._slot = BoundedSemaphore(1)
+        self._ready = (enabled is True and client is not None
+                       and isinstance(policy, SanitizerPolicy)
+                       and type(mission) is str and bool(mission)
+                       and type(alias_key) is bytes and len(alias_key) >= 32)
+
+    def handle(self, request) -> dict:
+        if getattr(getattr(request, "verb", None), "name", None) != CONTEXT_VERB.name:
+            return {"refusal": "unavailable"}
+        start = self._monotonic()
+        deadline_s = request.arguments["deadline_ms"] / 1000
+        try:
+            wire_frame = read_context_frame(request.payload.get("frame"))
+            if set(request.payload) != {"frame"} or not self._ready:
+                raise ValueError
+            # Do not let a local caller relabel P1/P2/P3 data as P0. locald
+            # sends only this explicit classification and one bounded public
+            # question; context arrays and all other fields stay local.
+            if (set(wire_frame) != {"privacy_class", "question"}
+                    or wire_frame["privacy_class"] != PrivacyClass.P0_PUBLIC.value
+                    or type(wire_frame["question"]) is not str
+                    or not wire_frame["question"]
+                    or len(wire_frame["question"]) > 2048):
+                raise ValueError
+            frame = {"question": wire_frame["question"]}
+            if not self._slot.acquire(blocking=False):
+                raise TimeoutError
+            try:
+                verified = self._client.request_context(
+                    frame=frame,
+                    privacy_class=PrivacyClass.P0_PUBLIC,
+                    policy=self._policy,
+                    mission=self._mission,
+                    alias_key=self._alias_key,
+                    deadline_s=deadline_s,
+                )
+            finally:
+                self._slot.release()
+            dump = getattr(verified, "model_dump", None)
+            response = dump(mode="json") if callable(dump) else verified
+            if type(response) is not dict:
+                raise ValueError
+            encoded = json.dumps(response, ensure_ascii=False, allow_nan=False,
+                                 separators=(",", ":")).encode("utf-8")
+            if not encoded or len(encoded) > MAX_RESPONSE_BYTES:
+                raise ValueError
+            self._audit({"event_type": "knowledge.context.completed",
+                         "outcome": "verified_advisory",
+                         "response_bytes": len(encoded),
+                         "elapsed_ms": min(10_000, int((self._monotonic() - start) * 1000))})
+            return {"response": response}
+        except TimeoutError:
+            outcome = "timeout"
+        except Exception:  # refusal details may include caller data; never export them
+            outcome = "unavailable"
+        try:
+            self._audit({"event_type": "knowledge.context.completed",
+                         "outcome": outcome,
+                         "elapsed_ms": min(10_000, int((self._monotonic() - start) * 1000))})
+        except Exception:
+            pass
+        return {"refusal": outcome}
+
+
+def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -> int:
+    """Run the disabled-by-default local endpoint; takes no command-line config."""
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv:
+        raise SystemExit("az-knowledge-contextd takes no arguments")
+    ledger = AuditLedger(knowledge_context_state_dir() / "context.jsonl")
+    try:
+        ledger.verify()
+        with ledger.path.open("a", encoding="utf-8"):
+            pass
+    except OSError as exc:
+        raise AuditUnavailable("Knowledge Context ledger unavailable") from exc
+    # The production commissioning factory remains intentionally absent until
+    # credential ownership, expiry, revocation and recovery are commissioned.
+    broker = KnowledgeContextBroker(audit=ledger.append)
+    return serve_forever(
+        path=socket_path(SOCKET_NAME), registry=REGISTRY,
+        policy=PrincipalPolicy.resolve(
+            operator_group="azknowledge-context-client",
+            service_accounts=("azmio",),
+        ),
+        audit=ledger.append, handler=broker.handle, stop=stop,
+        ready=ready if ready is not None else runtime_ready_callback(),
+    )
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

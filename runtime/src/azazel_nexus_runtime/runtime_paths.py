@@ -42,6 +42,7 @@ __all__ = [
     "lite_trust_root",
     "mio_local_state_dir",
     "mio_reference_state_dir",
+    "knowledge_context_state_dir",
     "mio_state_dir",
     "mio_status_path",
     "mission_pack_config",
@@ -73,6 +74,7 @@ _SOCKET_LEAVES = {
     "remote": "remote",
     "knowledge": "knowledge",
     "knowledge-read": "knowledge-read",
+    "knowledge-context": "knowledge-context",
     "edge-intake": "edge-intake",
     # The Deception Lite decoy's interactions (#196 P2), received by the
     # intake on a socket of its own: the decoy is never given Edge's.
@@ -86,6 +88,7 @@ _SOCKET_GROUPS = {
     "audit-submit": "azaudit-submit",
     "mio-advise": "azmio-advise",
     "knowledge-read": "azknowledge-read",
+    "knowledge-context": "azknowledge-context-client",
     "edge-intake": "azedge",
     "decoy-intake": "azdecoy",
 }
@@ -98,6 +101,7 @@ _STATE_LEAVES = {
     "commission": "commission",
     "watchdog": "watchdog",
     "fetch": "fetch",
+    "knowledge-context": "knowledge-context",
 }
 
 
@@ -193,6 +197,11 @@ def mio_reference_state_dir() -> Path:
 def knowledge_state_dir() -> Path:
     """Return the Knowledge Lite daemon's private state directory."""
     return state_dir() / _STATE_LEAVES["knowledge"]
+
+
+def knowledge_context_state_dir() -> Path:
+    """Return the dedicated full-node Context broker ledger leaf."""
+    return state_dir() / _STATE_LEAVES["knowledge-context"]
 
 
 def knowledge_store_root() -> Path:

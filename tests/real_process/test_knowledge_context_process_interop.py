@@ -9,11 +9,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import select
 import socket
 import ssl
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -25,6 +27,8 @@ from azazel_nexus.provider_registry import ProviderRecord
 from azazel_nexus.sanitizer import PrivacyClass, SanitizerPolicy
 from azazel_nexus.spki import spki_pin
 from azazel_nexus_runtime.knowledge_egress import KnowledgeClient
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _openssl(args: list[str], cwd: Path) -> None:
@@ -70,21 +74,40 @@ def _ready(process: subprocess.Popen[str], timeout: float = 30) -> dict:
             )
         readable, _, _ = select.select([process.stdout], [], [], 0.2)
         if readable:
-            return json.loads(process.stdout.readline())
+            line = process.stdout.readline()
+            if line:
+                return json.loads(line)
+            if process.poll() is not None:
+                raise AssertionError(
+                    f"Knowledge-side process exited rc={process.returncode}: "
+                    f"{process.stderr.read()[-2000:]}"
+                )
     raise AssertionError("Knowledge process readiness timeout")
 
 
-def test_nexus_client_interoperates_with_knowledge_mtls_process(tmp_path: Path):
+@pytest.fixture
+def service_accessible_root():
+    """Use a synthetic root traversable by the distinct service accounts."""
+    root = Path(tempfile.mkdtemp(prefix="n395-", dir="/tmp"))
+    root.chmod(0o755)
+    try:
+        yield root
+    finally:
+        shutil.rmtree(root)
+
+
+def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessible_root: Path):
     knowledge = Path(os.environ["KNOWLEDGE_TEST_SRC"]).resolve()
     server_script = knowledge / "tests/unit/_knowledge_context_mtls_server.py"
     assert server_script.is_file()
-    pki = _pki(tmp_path / "pki")
+    root = service_accessible_root
+    pki = _pki(root / "pki")
     pythonpath = os.pathsep.join(
         [str(knowledge / "src"), str(knowledge / "tests/unit"),
          os.environ.get("PYTHONPATH", "")]
     )
     server = subprocess.Popen(
-        [sys.executable, str(server_script), str(tmp_path / "knowledge-root"), str(pki)],
+        [sys.executable, str(server_script), str(root / "knowledge-root"), str(pki)],
         cwd=server_script.parent,
         env={**os.environ, "PYTHONPATH": pythonpath},
         stdin=subprocess.DEVNULL,
@@ -138,7 +161,7 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(tmp_path: Path):
             {
                 "version": "knowledge-process-test-1",
                 "remote_default": "deny",
-                "classes": {"P0-public": {"remote": "allow", "fields": ["ip"]}},
+                "classes": {"P0-public": {"remote": "allow", "fields": ["ip", "question"]}},
                 "aliases": [],
                 "redactions": ["secret"],
                 "limits": {"max_bytes": 2048},
@@ -159,6 +182,134 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(tmp_path: Path):
         assert response.snapshot.state == "partial"
         assert response.request_id and response.correlation_id
         assert "must-not-egress" not in response.model_dump_json()
+
+        # Exercise the service's ordinary AF-independent handler around the
+        # same production KnowledgeClient while its actual Knowledge peer is
+        # still running in a separate loopback process.
+        from types import SimpleNamespace
+        from azazel_nexus_runtime.knowledge_contextd import CONTEXT_VERB, KnowledgeContextBroker
+        broker = KnowledgeContextBroker(
+            client=client, policy=policy, mission="synthetic-process-test",
+            alias_key=b"p" * 32, enabled=True,
+        )
+        broker_reply = broker.handle(SimpleNamespace(
+            verb=CONTEXT_VERB, arguments={"deadline_ms": 8000},
+            payload={"frame": {"privacy_class": "P0-public",
+                               "question": "synthetic public context"}},
+        ))
+        assert broker_reply["response"]["authority"] == "advisory_only"
+        assert "must-not-egress" not in json.dumps(broker_reply)
+        from azazel_nexus_runtime.mio_fast_assistance import fast_assistance
+
+        producer_response = broker_reply["response"]
+        projected = fast_assistance(
+            {"request_id": "normal-process", "privacy_class": "P0-public",
+             "question": "synthetic public context", "context": []},
+            deadline_s=1.0,
+            fabric_knowledge_context_response=producer_response,
+        )
+        assert "fabric_knowledge_context_advisory" in projected, (
+            "MIO rejected signed producer response: "
+            f"snapshot={producer_response.get('snapshot')}; "
+            f"facts={len(producer_response.get('facts', []))}; "
+            f"subject_types={[item.get('subject', {}).get('entity_type') for item in producer_response.get('facts', [])]}; "
+            f"inferences={len(producer_response.get('inferences', []))}; "
+            f"unknowns={producer_response.get('unknowns')}; "
+            f"limitations={producer_response.get('limitations')}"
+        )
+
+        # Full normal path: three distinct child identities/processes for the
+        # Knowledge producer, its Nexus broker, and M.I.O. locald. The caller
+        # is the entry service and can only reach locald's declared socket.
+        import grp
+        import pwd
+
+        service_root = root / "service-root"
+        (service_root / "var/lib/azazel/run/knowledge-context").mkdir(parents=True)
+        (service_root / "var/lib/azazel/run/mio").mkdir(parents=True)
+        (service_root / "var/lib/azazel/state/knowledge-context").mkdir(parents=True)
+        egress = pwd.getpwnam("azknowledgeegress")
+        mio = pwd.getpwnam("azmio")
+        entry = pwd.getpwnam("azmioentry")
+        context_gid = grp.getgrnam("azknowledge-context-client").gr_gid
+        operator_gid = grp.getgrnam("azazel-operator").gr_gid
+        for directory, owner, group, mode in (
+            (service_root, 0, 0, 0o755),
+            (service_root / "var", 0, 0, 0o755),
+            (service_root / "var/lib", 0, 0, 0o755),
+            (service_root / "var/lib/azazel", 0, 0, 0o711),
+            (service_root / "var/lib/azazel/run", 0, 0, 0o711),
+            (service_root / "var/lib/azazel/run/knowledge-context", egress.pw_uid, context_gid, 0o2710),
+            (service_root / "var/lib/azazel/run/mio", mio.pw_uid, operator_gid, 0o2710),
+            (service_root / "var/lib/azazel/state/knowledge-context", egress.pw_uid, 0, 0o700),
+        ):
+            directory.chmod(mode)
+            os.chown(directory, owner, group)
+        os.chmod(pki, 0o750)
+        os.chown(pki, 0, egress.pw_gid)
+        for name in ("ca.pem", "nexus.pem", "nexus.key"):
+            path = pki / name
+            path.chmod(0o640 if name.endswith(".key") else 0o644)
+            os.chown(path, 0, egress.pw_gid)
+
+        test_env = {**os.environ, "AZAZEL_ROOT": str(service_root)}
+
+        def credentials(account, supplementary=()):
+            def apply():
+                os.setgroups(list(supplementary))
+                os.setgid(account.pw_gid)
+                os.setuid(account.pw_uid)
+            return apply
+
+        broker_process = subprocess.Popen(
+            [sys.executable, str(ROOT / "tests/real_process/_knowledge_context_broker_process.py"),
+             str(service_root), str(pki), str(ready["port"]), ready["public_key"],
+             spki_pin(server_der)], cwd=ROOT, env=test_env,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, preexec_fn=credentials(egress),
+        )
+        locald_process = None
+        try:
+            assert _ready(broker_process)["ready"] is True
+            locald_process = subprocess.Popen(
+                [sys.executable, str(ROOT / "tests/real_process/_mio_locald_context_process.py")],
+                cwd=ROOT, env=test_env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                preexec_fn=credentials(mio, (context_gid,)),
+            )
+            assert _ready(locald_process)["ready"] is True
+            caller = subprocess.run(
+                [sys.executable, "-c",
+                 "import json; from azazel_nexus_runtime.mio_socket_client import LocalSocketClient; "
+                 "c=LocalSocketClient(); r=c.assess({'request_id':'normal-process',"
+                 "'privacy_class':'P0-public','question':'synthetic public context',"
+                 "'context':[]}, deadline_s=10); print(json.dumps(r))"],
+                cwd=ROOT, env=test_env, capture_output=True, text=True, timeout=15,
+                preexec_fn=credentials(entry, (operator_gid,)),
+            )
+            assert caller.returncode == 0, caller.stderr[-2000:]
+            assessed = json.loads(caller.stdout)
+            advisory = assessed.get("fabric_knowledge_context_advisory")
+            assert type(advisory) is dict, (
+                "full-node response was not projected by MIO: "
+                f"knowledge={assessed.get('dependency_outcome', {}).get('knowledge')}; "
+                f"unknowns={assessed.get('unknowns')}"
+            )
+            assert advisory["authority"] == "advisory_only"
+            assert advisory["claim_status"] == "source_reported_unverified"
+            assert advisory["trust"] == "unverified_advisory_only"
+            # This aggregate status is AVAILABLE because the full-node advisory
+            # arrived; the separate Lite claim list must remain empty.
+            assert assessed["knowledge"] == []
+            assert assessed["observations"] == []
+            assert assessed["handoff"]["current_action"] is None
+            assert "must-not-egress" not in caller.stdout
+        finally:
+            for process in (locald_process, broker_process):
+                if process is not None and process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=10)
+                    assert process.returncode == 0
         assert server.poll() is None
     finally:
         if server.poll() is None:
@@ -174,7 +325,7 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(tmp_path: Path):
         if server.stderr:
             server.stderr.close()
     assert server.returncode == 0
-    assert (tmp_path / "knowledge-root/data/local.db").exists()
+    assert (root / "knowledge-root/data/local.db").exists()
     assert ready is not None
     with pytest.raises(OSError):
         socket.create_connection((ready["host"], ready["port"]), timeout=1).close()

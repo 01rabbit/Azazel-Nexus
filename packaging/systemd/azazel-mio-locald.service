@@ -18,7 +18,7 @@ Requires=azazel-activated.service
 [Service]
 Type=notify
 User=azmio
-SupplementaryGroups=azknowledge-read azmission-read
+SupplementaryGroups=azknowledge-read azmission-read azknowledge-context-client
 ExecStart=/usr/libexec/azazel/az-mio-locald
 RuntimeDirectory=azazel/mio
 RuntimeDirectoryMode=0750

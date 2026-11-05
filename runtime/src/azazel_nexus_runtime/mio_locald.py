@@ -7,7 +7,6 @@ caller supplied. Advisory bodies return to the caller, never to the ledger.
 
 from __future__ import annotations
 
-import json
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -44,8 +43,10 @@ from azazel_nexus.model_runtime import (
     resolve_runtime,
 )
 from azazel_nexus.reasoning_playbook import Library, technique_ids
+from azazel_nexus.sanitizer import PrivacyClass
 
 from .knowledge_client import KnowledgeUnavailable, lookup_context
+from .knowledge_context_socket import KnowledgeContextUnavailable, request_context
 from .mio_playbooks import PlaybookSelectionHolder
 from .principal import PrincipalClass, PrincipalPolicy
 from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
@@ -57,7 +58,6 @@ from .runtime_paths import (
 )
 from .serve import serve_forever
 from .systemd_notify import runtime_ready_callback
-from .transport import MAX_FRAME_BYTES
 
 __all__ = [
     "ACTIVATE_VERB",
@@ -130,9 +130,8 @@ REGISTRY = VerbRegistry([ACTIVATE_VERB, ADMISSION_VERB, INFER_VERB, FAST_ASSESS_
 def _read_assessment_payload(payload: Any) -> dict:
     """Read only the caller's ordinary M.I.O. frame.
 
-    Verified Knowledge Context must be acquired inside this service from its
-    commissioned local broker. A socket caller cannot supply an advisory and
-    label it verified.
+    Verified Knowledge Context is fetched internally from the local broker;
+    a socket caller cannot supply an advisory and label it verified.
     """
     if type(payload) is dict and "frame" in payload:
         if set(payload) != {"frame"}:
@@ -162,6 +161,17 @@ class ActivationReply:
 class KnowledgeLookup(Protocol):
     def __call__(self, technique_ids: tuple[str, ...], *,
                  deadline_s: float) -> Sequence[KnowledgeRef]: ...
+
+
+def _knowledge_context_query(frame: Any) -> dict | None:
+    """Select only an explicitly P0 public question for optional egress."""
+    if (type(frame) is not dict
+            or frame.get("privacy_class") != PrivacyClass.P0_PUBLIC.value):
+        return None
+    question = frame.get("question")
+    if type(question) is not str or not question or len(question) > 2048:
+        return None
+    return {"privacy_class": PrivacyClass.P0_PUBLIC.value, "question": question}
 
 
 class LocalRuntimeService:
@@ -246,11 +256,22 @@ class LocalRuntimeService:
             try:
                 from .mio_fast_assistance import fast_assistance, _frame
                 situation = _frame(frame)
+                fabric_context_response = None
+                context_query = _knowledge_context_query(frame)
+                if context_query is not None:
+                    try:
+                        fabric_context_response = request_context(
+                            context_query, deadline_s=min(KNOWLEDGE_MAX_S,
+                                max(0.0, request.arguments["deadline_ms"] / 1000
+                                    - DELIVERY_RESERVE_S)))
+                    except KnowledgeContextUnavailable:
+                        pass
                 result = fast_assistance(
                     frame, deadline_s=max(0.0, request.arguments["deadline_ms"] / 1000
                                           - DELIVERY_RESERVE_S),
                     knowledge_lookup=self._knowledge_lookup, knowledge_max_s=KNOWLEDGE_MAX_S,
-                    core_reserve_s=FAST_CORE_RESERVE_S, situation_frame=situation)
+                    core_reserve_s=FAST_CORE_RESERVE_S, situation_frame=situation,
+                    fabric_knowledge_context_response=fabric_context_response)
             except Exception:
                 from .mio_socket_client import fast_assessment_degraded
                 result = fast_assessment_degraded("unavailable")

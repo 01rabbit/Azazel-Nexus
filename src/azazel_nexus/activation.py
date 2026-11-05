@@ -58,6 +58,7 @@ __all__ = [
     "ARTIFACT_TRANSPORT",
     "LOCAL_MODEL_PROVIDER",
     "REMOTE_INFERENCE_TRANSPORT",
+    "KNOWLEDGE_CONTEXT_TRANSPORT",
     "ActivationLease",
     "EdgeBaselineState",
     "CORE_UNITS",
@@ -213,6 +214,11 @@ LOCAL_MODEL_PROVIDER = "local_model_provider"
 #: held by three accounts; a node that gained one must not be read as having
 #: gained another.
 REMOTE_INFERENCE_TRANSPORT = "remote_inference_transport"
+
+#: Optional Nexus-to-Knowledge P0 context transport. Until its dedicated
+#: commissioned loader is installed, it is intentionally absent from wired
+#: capabilities and its service remains withheld.
+KNOWLEDGE_CONTEXT_TRANSPORT = "knowledge_context_transport"
 
 
 #: The Deception Lite namespace unit (#196, design D1, option (a)). Run once;
@@ -379,6 +385,13 @@ CORE_UNITS = (
         # role, so no provider symbol resolves and no envelope verifies. Both
         # arrive as signed commissioning data, never as a change to this file.
         wiring=REMOTE_INFERENCE_TRANSPORT,
+    ),
+    UnitDefinition(
+        "azazel-knowledge-contextd.service",
+        UnitTier.SUPPORTING,
+        "azknowledgeegress",
+        "optional P0-only Knowledge context egress broker",
+        wiring=KNOWLEDGE_CONTEXT_TRANSPORT,
     ),
     UnitDefinition(
         "azazel-mio-entryd.service",

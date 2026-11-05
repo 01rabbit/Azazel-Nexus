@@ -75,6 +75,8 @@ groupadd --gid 20011 azedge
 groupadd --gid 20012 azincident-read
 groupadd --gid 20013 azaudit
 groupadd --gid 20014 azaudit-submit
+groupadd --gid 20015 azknowledgeegress
+groupadd --gid 20016 azknowledge-context-client
 useradd --uid 20001 --gid azknowledge --no-create-home --shell /usr/sbin/nologin azknowledge
 useradd --uid 20002 --gid azmio --no-create-home --shell /usr/sbin/nologin azmio
 useradd --uid 20003 --gid azmioentry --no-create-home --shell /usr/sbin/nologin azmioentry
@@ -83,7 +85,9 @@ useradd --uid 20009 --gid azexplain --no-create-home --shell /usr/sbin/nologin a
 useradd --uid 20010 --gid azintake --no-create-home --shell /usr/sbin/nologin azintake
 useradd --uid 20011 --gid azedge --no-create-home --shell /usr/sbin/nologin azedge
 useradd --uid 20013 --gid azaudit --no-create-home --shell /usr/sbin/nologin azaudit
+useradd --uid 20015 --gid azknowledgeegress --no-create-home --shell /usr/sbin/nologin azknowledgeegress
 usermod --append --groups azknowledge-read,azmission-read azmio
+usermod --append --groups azknowledge-context-client azmio
 usermod --append --groups azazel-operator azmioentry
 usermod --append --groups azazel-operator azoperator
 usermod --append --groups azmio-advise azexplain
@@ -91,6 +95,12 @@ usermod --append --groups azincident-read azintake
 
 cd "$SCRATCH_SRC"
 PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
+  tests/unit/test_knowledge_contextd.py \
+  tests/unit/test_runtime_hardening.py \
+  tests/unit/test_activation.py \
+  tests/unit/test_activation_policy.py \
+  tests/unit/test_activation_approval_v3.py \
+  tests/unit/test_bootstrap_tmpfiles_packaging.py \
   tests/unit/test_mio_fast_assistance.py \
   tests/unit/test_mio_reference.py \
   tests/unit/test_knowledge_lookup.py \

@@ -154,6 +154,7 @@ DAEMON_ACCOUNTS = tuple(dict.fromkeys((
     "azmioentry",
     "azmioref",
     "azremote",
+    "azknowledgeegress",
     "aznoc",
 )))
 

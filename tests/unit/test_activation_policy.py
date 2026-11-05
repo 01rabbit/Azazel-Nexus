@@ -66,7 +66,7 @@ def test_allowlist_is_code_fixed_to_the_loop_units():
     # bootstrap helper pair stays outside.
     assert ACTIVATION_UNIT_ALLOWLIST == tuple(sorted(
         SUPPORTING + ["azazel-edge-core.service", "azazel-mio-referenced.service",
-                      "azazel-auditd-loop.service"]))
+                      "azazel-auditd-loop.service", "azazel-knowledge-contextd.service"]))
     assert "azazel-mio-locald.service" not in ACTIVATION_UNIT_ALLOWLIST
     assert not {"azazel-auditd.service", "azazel-commissiond.service"} & set(
         ACTIVATION_UNIT_ALLOWLIST)

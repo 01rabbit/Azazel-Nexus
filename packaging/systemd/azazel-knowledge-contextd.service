@@ -1,0 +1,49 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# The dedicated optional Knowledge Context broker is separate from the M.I.O.
+# local runtime, remote inference, and artifact fetcher.
+# It may use network address families only after commissioning; IPAddressDeny=any remains in force and this package supplies no IPAddressAllow entry.
+# The local socket is restricted to M.I.O.
+# locald by its dedicated group.
+# It has no model, enforcement, or Knowledge store write access.
+
+[Unit]
+Description=Azazel-Nexus optional Knowledge Context egress broker
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/knowledge-context-consumer.md
+After=azazel-activated.service
+ConditionPathExists=/run/azazel-activation/granted/azazel-knowledge-contextd.service
+Requires=azazel-activated.service
+
+[Service]
+Type=notify
+User=azknowledgeegress
+ExecStart=/usr/libexec/azazel/az-knowledge-contextd
+LogRateLimitIntervalSec=30
+LogRateLimitBurst=30
+LogExtraFields=AZ_SERVICE=knowledge-context
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/azazel/state/knowledge-context
+ReadWritePaths=/var/lib/azazel/run/knowledge-context
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

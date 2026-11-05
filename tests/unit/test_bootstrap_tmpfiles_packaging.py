@@ -16,7 +16,7 @@ TMPFILES_RULE = PACKAGING / "tmpfiles.d" / "azazel-nexus-bootstrap.conf"
 EXPECTED_RULE = b"d /run/systemd/system.control :0755 :root :root - -\n"
 _ENTRYPOINTS = (
     "az-activated", "az-commissiond", "az-auditd", "az-auditd-loop", "az-watchdog",
-    "az-edge-probed", "az-edge-intaked", "az-incident-explaind", "az-model-fetchd", "az-mio-locald", "az-mio-remoted",
+    "az-edge-probed", "az-edge-intaked", "az-incident-explaind", "az-model-fetchd", "az-mio-locald", "az-mio-remoted", "az-knowledge-contextd",
     "az-mio-entryd", "az-mio-referenced", "az-knowledge-lited", "az-mio-identity",
     "az-decoy-netd", "az-decoyd", "az-units-observe", "az-noc-observe", "az-ui",
 )
@@ -126,6 +126,14 @@ def test_staged_install_copies_rule_without_running_tmpfiles(tmp_path):
     installed_rule = destdir / "usr/lib/tmpfiles.d/azazel-nexus-bootstrap.conf"
     assert installed_rule.read_bytes() == TMPFILES_RULE.read_bytes()
     assert not marker.exists(), "staged installation invoked systemd-tmpfiles"
+    installed_context_units = list(destdir.rglob("azazel-knowledge-contextd.service"))
+    assert len(installed_context_units) == 1
+    assert installed_context_units[0].read_bytes() == (
+        PACKAGING / "systemd/azazel-knowledge-contextd.service").read_bytes()
+    installed_presets = list(destdir.rglob("99-azazel-nexus.preset"))
+    assert len(installed_presets) == 1
+    assert "disable azazel-knowledge-contextd.service" in installed_presets[0].read_text()
+    assert "SERVICE-MANAGER STAGE NOT EXECUTED" in result.stdout
     profile = destdir / "etc/azazel/mio-profile"
     assert profile.is_dir() and profile.stat().st_mode & 0o777 == 0o700
     assert list(profile.iterdir()) == []
