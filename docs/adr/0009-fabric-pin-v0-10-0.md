@@ -48,10 +48,10 @@ source commit `1ba191b4daa8b3edd8bcd6ee6517a1b31a982c85` and pinned in both
 target locks at SHA-256
 `2672b77909f15580215cf33c95d7bea0c863aeb45901231aca774e28f8682cce`. The
 optional `mio` source extra remains separately pinned to MIO commit
-`1ba191b4daa8b3edd8bcd6ee6517a1b31a982c85`; the offline wheel is a different,
-offline wheel is an exact artifact from the same source commit as that extra;
-its `gite639a65` development-version suffix identifies the code baseline and
-is not the source commit used for this build.
+`1ba191b4daa8b3edd8bcd6ee6517a1b31a982c85`. The offline wheel is an exact
+artifact from that same source commit; its `gite639a65` development-version
+suffix identifies the code baseline, not the source commit used for this
+build.
 
 ## Verification and limits
 
