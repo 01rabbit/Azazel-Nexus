@@ -96,8 +96,12 @@ PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
   tests/unit/test_knowledge_lookup.py \
   tests/unit/test_real_knowledge_lite_fixture.py \
   tests/unit/test_incident_explain.py \
-  tests/real_process/test_knowledge_context_process_interop.py \
   tests/real_process/test_mio_process_integration.py
+
+# Keep the full-node listener subprocess separate from the tight 500 ms
+# service-path timing cases above. Both run under the same suite lock.
+PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
+  tests/real_process/test_knowledge_context_process_interop.py
 
 # Exercise the service's fixed degraded response with the shared package
 # absent. The positive adapter unit tests above intentionally need the wheel.
