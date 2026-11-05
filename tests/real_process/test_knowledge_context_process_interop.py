@@ -126,7 +126,7 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(tmp_path: Path):
         client = KnowledgeClient(
             registry=registry,
             peer_id=endpoint.provider_id,
-            ca_certificate=(pki / "ca.pem").read_text(),
+            ca_certificate=str(pki / "ca.pem"),
             identities={
                 "nexus-process-test": (str(pki / "nexus.pem"), str(pki / "nexus.key"))
             },
