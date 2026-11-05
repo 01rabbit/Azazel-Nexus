@@ -4,7 +4,7 @@ set -euo pipefail
 : "${NEXUS_SRC:?set NEXUS_SRC to this Nexus checkout}"
 : "${KNOWLEDGE_SRC:?set KNOWLEDGE_SRC to the fixed Knowledge checkout}"
 : "${MIO_WHEEL_DIR:?set MIO_WHEEL_DIR to the directory containing the pinned wheel}"
-: "${FABRIC_WHEEL_DIR:?set FABRIC_WHEEL_DIR to the directory containing the fixed Fabric v1 contract wheel}"
+: "${FABRIC_WHEEL_DIR:?set FABRIC_WHEEL_DIR to the wheel built from the exact official Fabric v0.10.0 tag}"
 : "${WHEELHOUSE:?set WHEELHOUSE to a compatible offline wheelhouse}"
 : "${SUITE_LOCK:?set SUITE_LOCK to the suite-lock.sh path}"
 : "${IMAGE:?set IMAGE to a cached Linux arm64 Python 3.12 image or digest}"

@@ -42,16 +42,18 @@ and both platform locks. CORE remains usable without Fabric.
    release verification supports the selected tag; it does not introduce a
    Nexus trust-root policy.
 
-The offline wheelhouse also carries the MIO development wheel
-`azazel_mio-0.1.0.dev20261105+gite639a65-py3-none-any.whl`, built from exact
-source commit `1ba191b4daa8b3edd8bcd6ee6517a1b31a982c85` and pinned in both
+The current candidate's MIO wheel is
+`azazel_mio-0.1.0.dev20261105+gitf5b0014-py3-none-any.whl`, built from exact
+source commit `ffac07cc9bf06d6904faa98001cfcfaea788bcf7` and pinned in both
 target locks at SHA-256
-`2672b77909f15580215cf33c95d7bea0c863aeb45901231aca774e28f8682cce`. The
-optional `mio` source extra remains separately pinned to MIO commit
-`1ba191b4daa8b3edd8bcd6ee6517a1b31a982c85`. The offline wheel is an exact
-artifact from that same source commit; its `gite639a65` development-version
-suffix identifies the code baseline, not the source commit used for this
-build.
+`0e20917e02c0ca650450ce17d734be7d164eb8ebbc050526aeeb0012a7be5eae`. The
+optional `mio` source extra resolves to the same immutable commit. The
+`gitf5b0014` version suffix identifies the implementation baseline; `ffac07…`
+is the source commit that carries this version metadata. The former
+`gite639a65` / `1ba191b…` artifact and hash are superseded and must not be used
+for this candidate. Reproduction uses `SOURCE_DATE_EPOCH=1793887544`, the
+timestamp of the exact MIO source commit; Fabric retains its separately pinned
+1980 epoch so its released wheel hash is unchanged.
 
 ## Verification and limits
 

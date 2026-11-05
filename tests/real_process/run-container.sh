@@ -7,8 +7,8 @@ from pathlib import Path
 import hashlib
 import re
 
-wheel = Path('/wheel/azazel_mio-0.1.0.dev20261105+gite639a65-py3-none-any.whl')
-fabric_wheel = Path('/fabric-wheel/azazel_fabric-0.9.0rc6.dev0-py3-none-any.whl')
+wheel = Path('/wheel/azazel_mio-0.1.0.dev20261105+gitf5b0014-py3-none-any.whl')
+fabric_wheel = Path('/fabric-wheel/azazel_fabric-0.10.0-py3-none-any.whl')
 locks = [
     Path('/src/packaging/offline/requirements-aarch64-cp313.lock'),
     Path('/src/packaging/offline/requirements-x86_64-cp313.lock'),
@@ -29,7 +29,7 @@ actual = hashlib.sha256(wheel.read_bytes()).hexdigest()
 if actual != expected:
     raise SystemExit('MIO wheel digest mismatch')
 print(f'verified MIO wheel digest against both Debian locks: {actual}')
-fabric_expected = 'f1fbcb671363f23390f2f461a4882d59921e522d21396a73e699f4e14493007d'
+fabric_expected = 'b22356fd672cd60471606d3a7b73ccdba99091e680fedd854381a29d76e21424'
 fabric_actual = hashlib.sha256(fabric_wheel.read_bytes()).hexdigest()
 if fabric_actual != fabric_expected:
     raise SystemExit('Fabric Knowledge Context contract wheel digest mismatch')
@@ -54,8 +54,8 @@ export KNOWLEDGE_TEST_SRC="$SCRATCH_KNOWLEDGE"
 export PYTHONPATH="$SCRATCH_KNOWLEDGE/src:$SCRATCH_KNOWLEDGE/tests/unit${PYTHONPATH:+:$PYTHONPATH}"
 python -m pip install --no-index --find-links=/wheels --find-links=/fabric-wheel \
   -e "${SCRATCH_SRC}[dev]" -e "$SCRATCH_SRC/runtime" \
-  /wheel/azazel_mio-0.1.0.dev20261105+gite639a65-py3-none-any.whl \
-  /fabric-wheel/azazel_fabric-0.9.0rc6.dev0-py3-none-any.whl \
+  /wheel/azazel_mio-0.1.0.dev20261105+gitf5b0014-py3-none-any.whl \
+  /fabric-wheel/azazel_fabric-0.10.0-py3-none-any.whl \
   fastapi uvicorn pydantic PyYAML idna PyNaCl httpx
 
 # The test's Linux SO_PEERCRED run uses these ordinary system identities. They

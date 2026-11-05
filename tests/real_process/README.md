@@ -52,8 +52,9 @@ DOCKER_CONTEXT=colima-rosetta SUITE_CONTEXT=rosetta \
 ```
 
 The container runner checks the MIO artifact against both Debian locks and
-checks the fixed Fabric Knowledge Context wheel digest before installing
-offline. It copies both source mounts into unique `/tmp` directories,
+checks the Fabric wheel built from the exact official `v0.10.0` tag before
+installing offline. That tagged package contains the Knowledge Context v1
+contract, which remains experimental. It copies both source mounts into unique `/tmp` directories,
 provisions only temporary container identities/groups, runs the Knowledge
 process test with the MIO process suite, then removes the shared MIO wheel and
 runs the degraded MIO phase. An exit trap removes only directories created for
