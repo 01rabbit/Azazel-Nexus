@@ -292,7 +292,11 @@ class KnowledgeClient:
                         raise KnowledgeRefused("headers too large")
                 head, response = buffer.split(b"\r\n\r\n", 1)
                 lines = head.split(b"\r\n")
-                if lines[0] != b"HTTP/1.1 200 OK":
+                # Knowledge's one-request-per-connection mTLS listener uses
+                # HTTP/1.0 with an explicit Content-Length and Connection: close.
+                # Keep the accepted status exact while supporting that bounded
+                # producer response alongside ordinary HTTP/1.1 peers.
+                if lines[0] not in (b"HTTP/1.1 200 OK", b"HTTP/1.0 200 OK"):
                     raise KnowledgeRefused("HTTP status refused")
                 headers = {}
                 for line in lines[1:]:
