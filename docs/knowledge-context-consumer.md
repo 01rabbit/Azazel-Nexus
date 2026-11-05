@@ -88,13 +88,13 @@ trust anchor or network allowance; those commissioning decisions remain open.
 ## Verification scope
 
 Unit tests cover caller injection refusal, P0 binding, payload bounds and the
-disabled default. The real-process test now starts locald, the broker, and
-Knowledge as separate processes with synthetic certificates and loopback
+disabled default. The isolated real-process test starts locald, the broker,
+and Knowledge as separate processes with synthetic certificates and loopback
 transport, and asserts the verified advisory response reaches ordinary
-FAST_ASSESS. Until that fixed-head test passes, it remains unverified. Even on
-success it establishes software interoperability only; it does not establish
-production credential lifecycle, systemd egress, hardware, release or
-deployment.
+FAST_ASSESS. The current candidate has passed this software test. The fixed
+head, repository identities, build artifacts and exact results are recorded
+in the #403 PR evidence. This does not establish production credential
+lifecycle, systemd egress, hardware, release or deployment.
 
 The candidate does not set a production dependency pin to an unreleased Fabric
 commit. Product packaging continues to use the accepted Fabric tag until the
