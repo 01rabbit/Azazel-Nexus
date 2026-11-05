@@ -33,7 +33,7 @@ fabric_expected = 'b22356fd672cd60471606d3a7b73ccdba99091e680fedd854381a29d76e21
 fabric_actual = hashlib.sha256(fabric_wheel.read_bytes()).hexdigest()
 if fabric_actual != fabric_expected:
     raise SystemExit('Fabric Knowledge Context contract wheel digest mismatch')
-print(f'verified fixed Fabric Knowledge Context wheel digest: {fabric_actual}')
+print(f'verified Fabric v0.10.0 tag-source test wheel digest: {fabric_actual}')
 PY
 
 SCRATCH_SRC=$(mktemp -d /tmp/nxs-real-process.XXXXXX)

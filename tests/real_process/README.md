@@ -51,10 +51,14 @@ DOCKER_CONTEXT=colima-rosetta SUITE_CONTEXT=rosetta \
   bash "$NEXUS_SRC/tests/real_process/run-docker.sh"
 ```
 
-The container runner checks the MIO artifact against both Debian locks and
-checks the Fabric wheel built from the exact official `v0.10.0` tag before
-installing offline. That tagged package contains the Knowledge Context v1
-contract, which remains experimental. It copies both source mounts into unique `/tmp` directories,
+The container runner checks the SHA-256 of the MIO #47 candidate wheel
+(`0e20917e02c0ca650450ce17d734be7d164eb8ebbc050526aeeb0012a7be5eae`) and
+the Fabric `v0.10.0` tag-source test wheel
+(`b22356fd672cd60471606d3a7b73ccdba99091e680fedd854381a29d76e21424`)
+before installing offline. The Fabric wheel was rebuilt from the exact signed
+release source commit; it is a local test artifact, not a published PyPI
+wheel. The tagged package contains the Knowledge Context v1 contract, which
+remains experimental. It copies both source mounts into unique `/tmp` directories,
 provisions only temporary container identities/groups, runs the Knowledge
 process test with the MIO process suite, then removes the shared MIO wheel and
 runs the degraded MIO phase. An exit trap removes only directories created for
