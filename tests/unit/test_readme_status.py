@@ -33,8 +33,9 @@ def _flat() -> str:
         "a correct bundle is imported offline by an operator and its claims served read-only",
         "**loopback-only.**",
         "External reachability, redirection and field engagement are **not demonstrated**",
-        "M.I.O. routing and commissioning control plane implemented; provider execution "
-        "unavailable pending hardware evidence and provider integration",
+        "The model-free `FAST_ASSESS` and deterministic reference path are available in the "
+        "current mainline; local or remote model execution remains separately gated by "
+        "commissioning, admission and hardware evidence.",
         "target-local preflight implemented",
         "**8 GiB target evidence pending**",
         "**do not increase the baseline node's authority**",
