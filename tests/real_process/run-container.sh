@@ -7,7 +7,7 @@ from pathlib import Path
 import hashlib
 import re
 
-wheel = Path('/wheel/azazel_mio-0.1.0+git.c31c244-py3-none-any.whl')
+wheel = Path('/wheel/azazel_mio-0.1.0.dev20261105+gite639a65-py3-none-any.whl')
 locks = [
     Path('/src/packaging/offline/requirements-aarch64-cp313.lock'),
     Path('/src/packaging/offline/requirements-x86_64-cp313.lock'),
@@ -40,7 +40,7 @@ cp -a /src/. "$SCRATCH_SRC/"
 chmod 0755 "$SCRATCH_SRC"
 rm -rf -- "$SCRATCH_SRC/.venv" "$SCRATCH_SRC/.pytest_cache" "$SCRATCH_SRC/runtime/.pytest_cache"
 python -m pip install --no-index --find-links=/wheels -e "${SCRATCH_SRC}[dev]" -e "$SCRATCH_SRC/runtime" \
-  /wheel/azazel_mio-0.1.0+git.c31c244-py3-none-any.whl
+  /wheel/azazel_mio-0.1.0.dev20261105+gite639a65-py3-none-any.whl
 
 # The test's Linux SO_PEERCRED run uses these ordinary system identities. They
 # exist only in this --rm container; the source tree's principal policy is

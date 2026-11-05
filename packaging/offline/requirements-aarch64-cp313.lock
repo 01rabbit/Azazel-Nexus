@@ -33,11 +33,11 @@ annotated-types==0.8.0 \
 # built from https://github.com/01rabbit/Azazel-Fabric.git v0.9.0rc5 = 450d9502884ba533653210056a6fb85012b96b84
 azazel-fabric==0.9.0rc5 \
     --hash=sha256:5eb6593ee6824400bc5a00c3e5c799abb2f88def6273a2486c8b88959c908eda
-# azazel_mio-0.1.0+git.c31c244-py3-none-any.whl
-# built from https://github.com/01rabbit/Azazel-MIO.git commit b441d431532507387fb81f1e03e31fd1aea57b68
-# reproduced from exact source archive on CPython 3.13.18, setuptools 84.0.0, SOURCE_DATE_EPOCH=315532800, umask 022 (linux/arm64 and linux/amd64)
-azazel-mio==0.1.0+git.c31c244 \
-    --hash=sha256:584bbc7fe1874b2ad2045c99d83ccbf3cd96aefc5de1910fbfc4c2ebd7ac6148
+# azazel_mio-0.1.0.dev20261105+gite639a65-py3-none-any.whl
+# built from https://github.com/01rabbit/Azazel-MIO.git commit 1ba191b4daa8b3edd8bcd6ee6517a1b31a982c85
+# reproduced from exact source archive on CPython 3.13.18, setuptools 84.0.0, SOURCE_DATE_EPOCH=315532800, umask 022 (linux/arm64); wheel is platform independent
+azazel-mio==0.1.0.dev20261105+gite639a65 \
+    --hash=sha256:2672b77909f15580215cf33c95d7bea0c863aeb45901231aca774e28f8682cce
 # dbus_next-0.2.3-py3-none-any.whl
 dbus-next==0.2.3 \
     --hash=sha256:58948f9aff9db08316734c0be2a120f6dc502124d9642f55e90ac82ffb16a18b
