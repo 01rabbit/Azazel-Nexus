@@ -212,7 +212,7 @@ def test_fabric_and_mio_are_optional_extras_and_not_core_dependencies():
         "src/azazel_nexus/fabric_boundary.py names a tag that nothing installs"
     )
     assert ("azazel-mio @ git+https://github.com/01rabbit/Azazel-MIO.git@"
-            "b441d431532507387fb81f1e03e31fd1aea57b68") in text
+            "1ba191b4daa8b3edd8bcd6ee6517a1b31a982c85") in text
 
 
 def test_the_fabric_observation_is_written_against_a_named_tag():

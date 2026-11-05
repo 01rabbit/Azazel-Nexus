@@ -44,13 +44,14 @@ and both platform locks. CORE remains usable without Fabric.
 
 The offline wheelhouse also carries the MIO development wheel
 `azazel_mio-0.1.0.dev20261105+gite639a65-py3-none-any.whl`, built from exact
-source commit `e639a659991f370e9be4f6b9533e16c702912a09` and pinned in both
+source commit `1ba191b4daa8b3edd8bcd6ee6517a1b31a982c85` and pinned in both
 target locks at SHA-256
 `2672b77909f15580215cf33c95d7bea0c863aeb45901231aca774e28f8682cce`. The
 optional `mio` source extra remains separately pinned to MIO commit
 `1ba191b4daa8b3edd8bcd6ee6517a1b31a982c85`; the offline wheel is a different,
-older exact artifact and must not be described as a build of that extra's
-source commit.
+offline wheel is an exact artifact from the same source commit as that extra;
+its `gite639a65` development-version suffix identifies the code baseline and
+is not the source commit used for this build.
 
 ## Verification and limits
 

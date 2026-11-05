@@ -92,7 +92,7 @@ SOURCE_BUILDS = {
     "azazel-mio": {
         "version": "0.1.0.dev20261105+gite639a65",
         "repository": "https://github.com/01rabbit/Azazel-MIO.git",
-        "commit": "e639a659991f370e9be4f6b9533e16c702912a09",
+        "commit": "1ba191b4daa8b3edd8bcd6ee6517a1b31a982c85",
     },
 }
 

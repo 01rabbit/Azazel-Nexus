@@ -365,7 +365,8 @@ def test_the_container_record_is_a_lab_container_record_with_the_locked_hashes()
     # This historical container record predates the current MIO source build.
     # Preserve it as evidence for the earlier wheelhouse; it does not claim an
     # offline install rehearsal for the separately verified MIO candidate.
-    assert set(lock) - recorded == {"azazel-mio==0.1.0.dev20261105+gite639a65"}
+    assert set(lock) - recorded == {
+        "azazel-fabric==0.10.0", "azazel-mio==0.1.0.dev20261105+gite639a65"}
     assert record["offline_container"]["install"]["observed_platform"] == {
         "platform_profile_id": "debian-13-arm64-cp313-lab", "purpose": "lab-software-verification"}
     refused = record["offline_container"]["production_uses_on_this_host"]["require_deployment_baseline"]
