@@ -149,3 +149,48 @@ class TelemetryChecks(TestCase):
         self.assertEqual(result["outcome"], "measurement_incomplete")
         self.assertIsNone(result["prompt_eval_tokens_per_s"])
         self.assertIsNone(result["decode_tokens_per_s"])
+
+    def test_exact_replay_uses_original_and_rejects_wrong_saved_body(self):
+        import hashlib
+        module = types.ModuleType("azazel_nexus_runtime.mio_serve")
+        module.MAX_REQUEST_BYTES = 65536
+        module.inference_document = lambda request: {"prompt": request}
+        saved = b'{"prompt":"original", "max_tokens":768}'
+        accepted = json.dumps({"requests": [{"method": "POST", "path": "/v1/chat/completions",
+                    "request_body_sha256": hashlib.sha256(saved).hexdigest()}]})
+        server = mock.Mock()
+        server._http.return_value = json.dumps({"usage": {"prompt_tokens": 5, "completion_tokens": 2},
+            "timings": {"prompt_n": 5, "prompt_ms": 1000,
+                        "predicted_n": 2, "predicted_ms": 1000}}).encode()
+        with mock.patch.dict(sys.modules, {"azazel_nexus_runtime.mio_serve": module}), \
+             mock.patch.dict(harness.os.environ, {"AZ_E2E_ACCEPTANCE_BODY": "/saved"}), \
+             mock.patch.object(Path, "read_text", return_value=accepted), \
+             mock.patch.object(Path, "read_bytes", return_value=saved), \
+             mock.patch.object(Path, "write_text"):
+            result = harness.run_observation(server, "different reconstruction", "/out", "/telemetry")
+        self.assertEqual(result["outcome"], "complete")
+        self.assertEqual(result["comparison"], "exact_body_replay")
+        self.assertEqual(result["excluded_keys"], [])
+        self.assertEqual(server._http.call_args.args[2], saved)
+        server.reset_mock()
+        with mock.patch.dict(sys.modules, {"azazel_nexus_runtime.mio_serve": module}), \
+             mock.patch.dict(harness.os.environ, {"AZ_E2E_ACCEPTANCE_BODY": "/saved"}), \
+             mock.patch.object(Path, "read_text", return_value=accepted), \
+             mock.patch.object(Path, "read_bytes", return_value=b'{"prompt":"modified"}'), \
+             mock.patch.object(Path, "write_text"):
+            result = harness.run_observation(server, "same", "/out", "/telemetry")
+        self.assertEqual(result["outcome"], "measurement_failed")
+        server._http.assert_not_called()
+
+    def test_missing_original_replay_fails_closed(self):
+        module = types.ModuleType("azazel_nexus_runtime.mio_serve")
+        module.MAX_REQUEST_BYTES = 65536
+        module.inference_document = lambda request: {"prompt": request}
+        server = mock.Mock()
+        with mock.patch.dict(sys.modules, {"azazel_nexus_runtime.mio_serve": module}), \
+             mock.patch.dict(harness.os.environ, {"AZ_E2E_ACCEPTANCE_BODY": "/missing"}), \
+             mock.patch.object(Path, "read_bytes", side_effect=FileNotFoundError), \
+             mock.patch.object(Path, "write_text"):
+            result = harness.run_observation(server, "text", "/out", "/telemetry")
+        self.assertEqual((result["outcome"], result["error"]), ("measurement_failed", "FileNotFoundError"))
+        server._http.assert_not_called()
