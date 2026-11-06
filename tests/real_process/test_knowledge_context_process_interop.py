@@ -263,6 +263,7 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
         assert unauthenticated.verify_mode == ssl.CERT_REQUIRED
         with socket.create_connection((ready["host"], ready["port"]), timeout=3) as raw:
             raw.settimeout(3)
+            rejection_reason = None
             try:
                 unauthenticated_socket = unauthenticated.wrap_socket(
                     raw, server_hostname="knowledge.test"
@@ -270,13 +271,13 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
                 with unauthenticated_socket:
                     unauthenticated_socket.sendall(probe)
                     unauthenticated_socket.recv(1)
-            except ssl.SSLError as rejection:
-                pass
+            except ssl.SSLError as exc:
+                rejection_reason = exc.reason
             else:
                 pytest.fail("TLS server accepted a client without a certificate")
-            assert rejection.reason == "TLSV13_ALERT_CERTIFICATE_REQUIRED", (
+            assert rejection_reason == "TLSV13_ALERT_CERTIFICATE_REQUIRED", (
                 "expected TLS 1.3 client-certificate rejection, got "
-                f"{rejection.reason}"
+                f"{rejection_reason}"
             )
 
         now = datetime.now(UTC)
