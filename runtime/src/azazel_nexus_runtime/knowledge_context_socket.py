@@ -84,7 +84,7 @@ def request_context(frame: dict, *, deadline_s: float) -> dict:
     except KnowledgeContextUnavailable:
         raise
     except (AuditUnavailable, OSError, KeyError, ValueError, TimeoutError,
-            SocketMisconfigured) as exc:
+            RecursionError, SocketMisconfigured) as exc:
         raise KnowledgeContextUnavailable("broker unavailable") from exc
     if (type(reply) is not dict or set(reply) != {"ok", "result"}
             or reply["ok"] is not True or type(reply["result"]) is not dict):

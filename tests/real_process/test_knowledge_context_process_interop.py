@@ -197,7 +197,7 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
         now = datetime.now(UTC)
         server_der = ssl.PEM_cert_to_DER_cert((pki / "server.pem").read_text())
         endpoint = ProviderRecord(
-            provider_id="knowledge-process",
+            provider_id="azazel-knowledge",
             host="knowledge.test",
             port=ready["port"],
             path_template="/knowledge/{model}",

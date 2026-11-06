@@ -86,9 +86,11 @@ class KnowledgeContextBroker:
             wire_frame = read_context_frame(request.payload.get("frame"))
             if set(request.payload) != {"frame"} or not self._ready:
                 raise ValueError
-            # Do not let a local caller relabel P1/P2/P3 data as P0. locald
-            # sends only this explicit classification and one bounded public
-            # question; context arrays and all other fields stay local.
+            # This required label is a caller assertion, not a content
+            # classifier. Production commissioning must restrict which
+            # trusted local inputs can make this assertion; the shipped
+            # factory has no egress client and cannot use it for network IO.
+            # Context arrays and all other fields stay local.
             if (set(wire_frame) != {"privacy_class", "question"}
                     or wire_frame["privacy_class"] != PrivacyClass.P0_PUBLIC.value
                     or type(wire_frame["question"]) is not str

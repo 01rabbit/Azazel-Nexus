@@ -22,7 +22,7 @@ from azazel_nexus_runtime.knowledge_egress import KnowledgeClient
 root, pki, port, public_hex, pin = sys.argv[1:]
 now = datetime.now(UTC)
 endpoint = ProviderRecord(
-    provider_id="knowledge-process", host="knowledge.test", port=int(port),
+    provider_id="azazel-knowledge", host="knowledge.test", port=int(port),
     path_template="/knowledge/{model}", certificate_pin=pin,
     client_identity="nexus-process-test", model_id="knowledge-v1",
     max_request_bytes=4096, max_response_bytes=8192, deadline_seconds=8,

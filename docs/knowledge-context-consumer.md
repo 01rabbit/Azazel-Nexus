@@ -17,7 +17,10 @@ resolves the provider key through Nexus's commissioning-bound signed Knowledge
 registry and requires `key_id` to equal that key's SHA-256 fingerprint. A
 maximum TTL has no default and must be explicitly supplied. Fabric validates
 the semantic request and response, including exact request/correlation/source
-binding and the advisory-only fact/inference model.
+binding and the advisory-only fact/inference model. Nexus also requires the
+signed `provider_id` claim to equal the commissioned peer ID. This binds the
+claim to the signer selected by Nexus; it does not prove that any Knowledge
+fact is true.
 
 The adapter accepts P0-public queries only, even if local policy allows a
 wider class. `KnowledgeClient.request_context()` opens an mTLS connection only
@@ -39,7 +42,12 @@ systemd egress allowance is supplied, so activation remains withheld.
 ## Process boundary
 
 Ordinary `mio.local.assess` requests still arrive at `azazel-mio-locald` over
-its existing AF_UNIX socket. Locald submits the bounded frame to the dedicated
+its existing AF_UNIX socket. The P0 label on an incoming question is a caller
+assertion, not proof that its content is public. The broker checks the label
+and applies the commissioned field allowlist and named redactions, but does
+not classify arbitrary free text. Production commissioning must restrict
+which trusted local inputs can set this label and which question fields can be
+sent; untrusted text must remain local. Locald submits the bounded frame to the dedicated
 `azazel-knowledge-contextd` broker over a second AF_UNIX socket. Only the
 `azmio` local runtime account is in the socket's client group. Locald keeps
 `PrivateNetwork=yes` and `IPAddressDeny=any`; `azremote` and its Provider
@@ -59,6 +67,8 @@ is preset disabled, requires its activation grant marker and is absent from
 Its unit retains `IPAddressDeny=any` and has no `IPAddressAllow` entry. Thus
 installation does not start it and this candidate cannot reach a Knowledge
 peer. The broker's default constructor is closed even if started manually.
+The new per-request audit ledger has no retention or disk quota in this
+candidate; production activation needs an explicit storage and retention policy.
 
 ## Commissioning and credentials
 

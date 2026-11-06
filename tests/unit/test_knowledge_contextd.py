@@ -140,6 +140,50 @@ def test_truncated_broker_reply_becomes_optional_context_unavailable(monkeypatch
         )
 
 
+def test_deeply_nested_broker_reply_becomes_optional_context_unavailable(monkeypatch):
+    from azazel_nexus_runtime import knowledge_context_socket
+    from azazel_nexus_runtime.transport import _HEADER
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect(self, _path):
+            pass
+
+        def sendall(self, _payload):
+            pass
+
+        def shutdown(self, _how):
+            pass
+
+        def recv(self, _size):
+            return b""
+
+    monkeypatch.setattr(knowledge_context_socket, "_service_uid", lambda: 20001)
+    monkeypatch.setattr(knowledge_context_socket, "_socket_gid", lambda: 20002)
+    monkeypatch.setattr(knowledge_context_socket, "verify_socket", lambda *_a, **_k: None)
+    monkeypatch.setattr(knowledge_context_socket, "peer_credentials",
+                        lambda _connection: (123, 20001, 20002))
+    monkeypatch.setattr(knowledge_context_socket.socket, "socket",
+                        lambda *_a, **_k: Connection())
+
+    body = b"[" * 1200 + b"null" + b"]" * 1200
+    reply_parts = iter((_HEADER.pack(len(body)), body))
+    monkeypatch.setattr(knowledge_context_socket, "_read_exact",
+                        lambda *_args, **_kwargs: next(reply_parts))
+    with pytest.raises(KnowledgeContextUnavailable):
+        knowledge_context_socket.request_context(
+            {"privacy_class": "P0-public", "question": "test"}, deadline_s=0.1,
+        )
+
+
 def test_late_knowledge_response_is_not_delivered():
     clock = [10.0]
 

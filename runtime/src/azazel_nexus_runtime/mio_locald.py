@@ -165,7 +165,7 @@ class KnowledgeLookup(Protocol):
 
 
 def _knowledge_context_query(frame: Any) -> dict | None:
-    """Select only an explicitly P0 public question for optional egress."""
+    """Forward a caller-classified P0 question; do not infer its classification."""
     if (type(frame) is not dict
             or frame.get("privacy_class") != PrivacyClass.P0_PUBLIC.value):
         return None
