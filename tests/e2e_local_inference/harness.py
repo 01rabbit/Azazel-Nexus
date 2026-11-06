@@ -114,6 +114,7 @@ class DiagnosticTelemetry:
         self.data = {"requests": [], "samples": [], "server": {}}
         self.done = threading.Event()
         self.thread = None
+        self.write_lock = threading.Lock()
 
     def safely(self, action, *args):
         try:
@@ -159,7 +160,10 @@ class DiagnosticTelemetry:
 
     def write(self):
         if self.directory:
-            (self.directory / "telemetry.json").write_text(json.dumps(self.data, indent=2))
+            with self.write_lock:
+                temporary = self.directory / "telemetry.json.pending"
+                temporary.write_text(json.dumps(self.data, indent=2))
+                os.replace(temporary, self.directory / "telemetry.json")
 
 
 class DirectLlamaFixture:
@@ -185,6 +189,11 @@ class DirectLlamaFixture:
                   "request_body_bytes": len(body), "phase": "connect",
                   "response_header_bytes": 0, "response_body_bytes": 0,
                   "sent_bytes": None, "status": None}
+        if method == "POST":
+            metric["request_body_sha256"] = hashlib.sha256(body).hexdigest()
+        if self.telemetry.directory:
+            self.telemetry.safely(self.telemetry.data["requests"].append, metric)
+            self.telemetry.safely(self.telemetry.write)
         try:
             return self._http_exchange(method, path, body, end, metric, start)
         except BaseException as exc:
@@ -193,7 +202,6 @@ class DirectLlamaFixture:
         finally:
             metric["elapsed_s"] = time.monotonic() - start
             if self.telemetry.directory:
-                self.telemetry.safely(self.telemetry.data["requests"].append, metric)
                 self.telemetry.safely(self.telemetry.write)
 
     def _http_exchange(self, method, path, body, end, metric, start):
@@ -215,6 +223,7 @@ class DirectLlamaFixture:
                 raise FixturePreHTTPRefusal("fixture UDS unavailable") from None
             metric["connect_s"] = time.monotonic() - start
             metric["phase"] = "send"
+            self.telemetry.safely(self.telemetry.write)
             header = (f"{method} {path} HTTP/1.1\r\nHost: localhost\r\n"
                       f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n"
                       "Connection: close\r\n\r\n").encode("ascii")
@@ -223,6 +232,7 @@ class DirectLlamaFixture:
             metric["sent_bytes"] = len(header) + len(body)
             metric["send_complete_s"] = time.monotonic() - start
             metric["phase"] = "headers"
+            self.telemetry.safely(self.telemetry.write)
             response_header = bytearray()
             while not response_header.endswith(b"\r\n\r\n"):
                 if len(response_header) >= MAX_HEADER_BYTES:
@@ -233,12 +243,16 @@ class DirectLlamaFixture:
                     raise LocalServerRefused("fixture HTTP headers incomplete")
                 response_header.extend(chunk)
                 metric["response_header_bytes"] = len(response_header)
+                if "first_header_byte_s" not in metric:
+                    metric["first_header_byte_s"] = time.monotonic() - start
+                    self.telemetry.safely(self.telemetry.write)
             metric["headers_complete_s"] = time.monotonic() - start
             metric["phase"] = "body"
             try:
                 lines = response_header.decode("ascii").split("\r\n")
                 version, status, *_ = lines[0].split(" ")
                 metric["status"] = status
+                self.telemetry.safely(self.telemetry.write)
                 if version not in ("HTTP/1.0", "HTTP/1.1") or status != "200":
                     raise ValueError
                 headers = {}
@@ -265,6 +279,7 @@ class DirectLlamaFixture:
                 metric["response_body_bytes"] = len(response)
                 if "first_body_byte_s" not in metric:
                     metric["first_body_byte_s"] = time.monotonic() - start
+                    self.telemetry.safely(self.telemetry.write)
             remaining()
             metric["body_complete_s"] = time.monotonic() - start
             metric["phase"] = "complete"
@@ -585,7 +600,7 @@ def crash_scenario(root, record, observed, sock):
 # GenerationLane -> pinned azazel_mio AssistantCore -> real llama-server path.
 # ---------------------------------------------------------------------------
 GENERATION_ID = "e2e-fixture-generation"
-GENERATION_SCENARIOS = ("generation", "generation_degraded")
+GENERATION_SCENARIOS = ("generation", "generation_degraded", "generation_observation")
 
 
 def fixture_generation_lane(server):
@@ -838,6 +853,101 @@ def generation_scenario(root, record, observed, privacy, *, degraded):
             logs.close()
 
 
+def observation_metrics(data, elapsed_s):
+    """Extract only numbers from a completed non-streaming response."""
+    usage = data.get("usage") or {}
+    timings = data.get("timings") or {}
+    if not isinstance(usage, dict) or not isinstance(timings, dict):
+        raise ValueError("invalid observation usage/timings")
+    numeric_timings = {key: value for key, value in timings.items()
+                       if type(value) in (int, float) and math.isfinite(value) and value >= 0}
+    def rate(count_key, ms_key):
+        count, ms = numeric_timings.get(count_key), numeric_timings.get(ms_key)
+        return count * 1000 / ms if count is not None and ms and ms > 0 else None
+    missing = (not all(key in numeric_timings for key in
+                       ("prompt_n", "prompt_ms", "predicted_n", "predicted_ms"))
+               or any(numeric_timings.get(key, 0) <= 0
+                      for key in ("prompt_ms", "predicted_ms"))
+               or any(type(usage.get(key)) is not int or usage[key] < 0
+                      for key in ("prompt_tokens", "completion_tokens")))
+    return {"outcome": "measurement_incomplete" if missing else "complete", "elapsed_s": elapsed_s,
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
+            "prompt_eval_tokens_per_s": rate("prompt_n", "prompt_ms"),
+            "decode_tokens_per_s": rate("predicted_n", "predicted_ms"),
+            "server_timings": timings}
+
+
+def run_observation(server, request, output, acceptance_telemetry):
+    """A separate 240s observation window, never an acceptance result."""
+    from azazel_nexus_runtime.mio_serve import MAX_REQUEST_BYTES, inference_document
+
+    started = time.monotonic()
+    result = {"outcome": "measurement_failed", "window_s": 240,
+              "acceptance": False}
+    try:
+        body = json.dumps(inference_document(request), ensure_ascii=False).encode("utf-8")
+        if len(body) > MAX_REQUEST_BYTES:
+            raise ValueError("observation request too large")
+        result["request_body_sha256"] = hashlib.sha256(body).hexdigest()
+        previous = json.loads(Path(acceptance_telemetry).read_text())
+        accepted_posts = [item for item in previous["requests"]
+                          if item.get("method") == "POST"
+                          and item.get("path") == "/v1/chat/completions"]
+        if not accepted_posts or accepted_posts[0].get("request_body_sha256") != result["request_body_sha256"]:
+            raise ValueError("observation request differs from acceptance")
+        result["matches_acceptance_request"] = True
+        data = json.loads(server._http("POST", "/v1/chat/completions", body, 240.0))
+        result.update(observation_metrics(data, time.monotonic() - started))
+    except Exception as exc:
+        result.update(elapsed_s=time.monotonic() - started, error=type(exc).__name__)
+    try:
+        Path(output).write_text(json.dumps(result, indent=2))
+    except OSError:
+        print("observation evidence write failed", file=sys.stderr)
+    return result
+
+
+def generation_observation_scenario(root, record, observed, privacy):
+    """Rebuild the same first AssistantCore request; run it outside acceptance."""
+    from azazel_nexus_runtime import mio_generation
+    from azazel_nexus import model_admission
+
+    class CaptureFirst:
+        def __init__(self):
+            self.request = None
+            self.ready = threading.Event()
+
+        def infer(self, request, deadline_s, **kwargs):
+            self.request = request
+            self.ready.set()
+            raise RuntimeError("capture only: observation is separate")
+
+        def stop(self):
+            pass
+
+    output = os.environ.get("AZ_E2E_OBSERVATION_PATH")
+    acceptance_telemetry = os.environ.get("AZ_E2E_ACCEPTANCE_TELEMETRY")
+    if not output or not acceptance_telemetry:
+        raise RuntimeError("observation output and acceptance telemetry paths are required")
+    assert mio_generation.GENERATION_ADMISSION_ENABLED is False
+    assert model_admission.LOCAL_MODEL_ADMISSION_ENABLED is False
+    capture = CaptureFirst()
+    lane, _ = fixture_generation_lane(capture)
+    try:
+        entry, _ = compose(root, record, observed, generation_lane=lane,
+                           generation_id=GENERATION_ID, local_route_admitted=False)
+        invoke(entry, privacy)
+        if not capture.ready.wait(30):
+            Path(output).write_text(json.dumps({"outcome": "measurement_failed",
+                "error": "request_capture_timeout", "acceptance": False}))
+            return
+        run_observation(observed.server, capture.request, output, acceptance_telemetry)
+    finally:
+        lane.cancel()
+
+
+
 def main():
     from azazel_nexus_runtime.mio_serve import LocalServer
 
@@ -874,6 +984,9 @@ def main():
     try:
         observed.start()
         assert observed.health(), "real llama-server did not become healthy"
+        if scenario == "generation_observation":
+            generation_observation_scenario(root, record, observed, privacy)
+            return
         if scenario in GENERATION_SCENARIOS:
             generation_scenario(root, record, observed, privacy,
                                 degraded=scenario == "generation_degraded")
