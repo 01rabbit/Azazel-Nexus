@@ -60,6 +60,15 @@ def _finite_json_float(value):
     return result
 
 
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('duplicate_json_key')
+        result[key] = value
+    return result
+
+
 class StructuredGenerationTransport:
     """Product-owned bounded AF_UNIX server -> MIO StructuredTransport."""
     def __init__(self, server, capability, *, deadline, cancelled, check, state=None):
@@ -115,7 +124,8 @@ class StructuredGenerationTransport:
         # Content failure is per job: the provider stays usable and is not stopped.
         try:
             value = json.loads(text, parse_constant=_reject_json_constant,
-                               parse_float=_finite_json_float)
+                               parse_float=_finite_json_float,
+                               object_pairs_hook=_unique_json_object)
         except (TypeError, ValueError, RecursionError):
             raise MioModelUnavailable('generation_content_invalid') from None
         if type(value) is not dict:

@@ -72,6 +72,17 @@ def setup(known=True, block=False, deadline_s=.5):
     return FixtureLane(capability=capability, server=server, deadline_s=deadline_s), source, frame
 
 
+def test_transport_rejects_nested_duplicate_json_keys():
+    from azazel_mio.model_adapter import MioModelUnavailable
+    lane, _, _ = setup()
+    lane.server.reply = '{"outer":{"x":1,"x":2}}'
+    transport = generation.StructuredGenerationTransport(
+        lane.server, lane.capability, deadline=time.monotonic() + 1,
+        cancelled=threading.Event(), check=lambda: True)
+    with pytest.raises(MioModelUnavailable):
+        transport('generate_hypotheses', 'fixture')
+
+
 def result(lane, source, frame):
     until = time.monotonic() + 2
     while time.monotonic() < until:

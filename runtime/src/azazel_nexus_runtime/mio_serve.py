@@ -79,6 +79,21 @@ class LocalInferenceResult:
     tokens_in: int | None
     tokens_out: int | None
     timings: dict[str, float]
+    finish_reason: str | None = None
+    context_integrity: str = 'unknown'
+
+
+def _response_integrity(data: dict) -> str:
+    """Read request-scoped truncation evidence; absence is not evidence of preservation."""
+    timings = data.get('timings', {})
+    if type(timings) is not dict:
+        raise ValueError('invalid timings')
+    values = [source['truncated'] for source in (data, timings) if 'truncated' in source]
+    if any(type(value) is not bool for value in values):
+        raise ValueError('invalid truncation flag')
+    if any(values):
+        return 'truncated'
+    return 'preserved' if values else 'unknown'
 
 
 def _deadline(seconds: float) -> float:
@@ -201,7 +216,13 @@ class LocalServer:
         raw = self._http("POST", "/v1/chat/completions", body, end)
         try:
             data = json.loads(raw)
-            text = data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            text = choice["message"]["content"]
+            finish_reason = choice.get('finish_reason')
+            if finish_reason is not None and (type(finish_reason) is not str
+                    or finish_reason not in ('stop', 'length', 'content_filter', 'tool_calls')):
+                raise ValueError
+            integrity = _response_integrity(data)
             usage = data.get("usage")
             tokens_in = tokens_out = None
             if usage is not None:
@@ -219,7 +240,8 @@ class LocalServer:
                     if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
                         raise ValueError
                     timings[key] = float(value)
-            return LocalInferenceResult(text, tokens_in, tokens_out, timings)
+            return LocalInferenceResult(text, tokens_in, tokens_out, timings,
+                                        finish_reason, integrity)
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
             raise LocalServerRefused("invalid inference response") from None
 

@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from azazel_nexus_runtime.mio_serve import (
@@ -111,6 +112,52 @@ def server(tmp_path):
 
 def request():
     return LocalInferenceRequest((('user', 'private fixture question'),), 32, 0)
+
+
+@pytest.mark.parametrize(('metadata', 'integrity'), [
+    ({}, 'unknown'),
+    ({'truncated': False}, 'preserved'),
+    ({'truncated': True}, 'truncated'),
+    ({'timings': {'truncated': True}}, 'truncated'),
+    ({'truncated': False, 'timings': {'truncated': True}}, 'truncated'),
+])
+def test_infer_extracts_request_integrity_without_inferring_it_from_stop(metadata, integrity):
+    handle = object.__new__(LocalServer)
+    handle._child = SimpleNamespace(alive=True)
+    handle.state = LifecycleState.SERVING
+    response = {'choices': [{'message': {'content': '{}'}, 'finish_reason': 'stop'}],
+                'usage': {'prompt_tokens': 12, 'completion_tokens': 7}, **metadata}
+    handle._http = lambda *args: json.dumps(response).encode()
+    result = handle.infer(request(), 1)
+    assert result.finish_reason == 'stop'
+    assert result.context_integrity == integrity
+    assert (result.tokens_in, result.tokens_out) == (12, 7)
+
+
+@pytest.mark.parametrize('bad', [0, 1, 'false', None])
+def test_infer_rejects_non_boolean_truncation_metadata(bad):
+    handle = object.__new__(LocalServer)
+    handle._child = SimpleNamespace(alive=True)
+    handle.state = LifecycleState.SERVING
+    response = {'choices': [{'message': {'content': '{}'}}],
+                'usage': {'prompt_tokens': 12, 'completion_tokens': 7},
+                'truncated': bad}
+    handle._http = lambda *args: json.dumps(response).encode()
+    with pytest.raises(LocalServerRefused):
+        handle.infer(request(), 1)
+
+
+@pytest.mark.parametrize('finish', [None, 'length', 'stop'])
+def test_infer_preserves_finish_reason_without_claiming_context_integrity(finish):
+    handle = object.__new__(LocalServer)
+    handle._child = SimpleNamespace(alive=True)
+    handle.state = LifecycleState.SERVING
+    response = {'choices': [{'message': {'content': '{}'}, 'finish_reason': finish}],
+                'usage': {'prompt_tokens': 12, 'completion_tokens': 7}}
+    handle._http = lambda *args: json.dumps(response).encode()
+    result = handle.infer(request(), 1)
+    assert result.finish_reason == finish
+    assert result.context_integrity == 'unknown'
 
 
 @pytest.mark.real_process
