@@ -655,8 +655,27 @@
     if (slow) {
       var slowNode = block("M.I.O. 非同期モデル提案（未検証・助言のみ）");
       add(slowNode, kv([["状態", slow.state], ["検証区分", slow.verification], ["使用量", slow.usage]]));
+      var budget = slow.budget;
+      if (budget) {
+        add(slowNode, kv([["生成予算", budget.outcome], ["資料の範囲", budget.coverage],
+          ["省略件数", budget.omitted_units], ["停止確認", ({pending:"停止確認待ち",confirmed:"停止確認済み",unconfirmed:"停止未確認",not_needed:"停止要求なし"})[budget.cleanup_state]],
+          ["後発の失効", budget.superseded ? "失効" : "なし"]]));
+        if (budget.outcome === "legacy_unverified") {
+          add(slowNode, el("p", "small", "旧記録・予算未確認。高速評価の静的助言を参照してください。"));
+        } else if (budget.outcome === "unsupported") {
+          add(slowNode, el("p", "small", "未対応の生成予算形式です。高速評価の静的助言を参照してください。"));
+        }
+        if (budget.coverage === "selected") {
+          add(slowNode, el("p", "small", "選択した根拠に基づく生成助言（未検証、一部資料省略）"));
+        }
+      } else if (slow.state === "complete") {
+        add(slowNode, el("p", "small", "旧記録・生成予算未確認。高速評価の静的助言を参照してください。"));
+      }
       add(slowNode, el("p", "small", "Edge の判断、説明台帳の記録、高速評価とは別の時間軸です。事実・判断・実行指示として扱わないでください。"));
-      if (slow.state === "complete" && slow.verification === "model_proposed_unverified") {
+      if (slow.state === "complete" && slow.verification === "model_proposed_unverified" &&
+          budget && budget.version === 1 && budget.outcome === "within_budget" &&
+          (budget.coverage === "intact" || budget.coverage === "selected") &&
+          budget.cleanup_state === "not_needed" && budget.superseded === false) {
         [["仮説（未検証）", slow.hypotheses], ["未確認事項", slow.unknowns], ["確認候補", slow.next_checks]]
           .forEach(function (entry) {
             if (Array.isArray(entry[1]) && entry[1].length) {

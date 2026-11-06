@@ -397,3 +397,15 @@ def explicit_fake_serving(monkeypatch):
     from admission_helpers import install_fake_serving
 
     install_fake_serving(monkeypatch)
+
+
+@pytest.mark.parametrize('finish',['future_reason',True,7])
+def test_unknown_finish_reason_remains_unconfirmed_completion(finish):
+    handle=object.__new__(LocalServer)
+    handle._child=SimpleNamespace(alive=True)
+    handle.state=LifecycleState.SERVING
+    response={'choices':[{'message':{'content':'{}'},'finish_reason':finish}],
+        'usage':{'prompt_tokens':12,'completion_tokens':7},'truncated':False}
+    handle._http=lambda *args:json.dumps(response).encode()
+    result=handle.infer(request(),1)
+    assert result.finish_reason is None and result.context_integrity=='preserved'

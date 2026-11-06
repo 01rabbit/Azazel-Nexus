@@ -146,11 +146,11 @@ refuses this optional store on restart without modifying the file or disabling
 the fast explainer, Knowledge lookup or Edge intake; status reports the slow
 result store as unavailable.
 
-GenerationLane state is process-local. After an explainer restart, an
+GenerationLane state is process-local. After an explainer restart, a legacy
 uncompleted durable receipt is polled again; if its original result has expired
 or been evicted, the lane records only `stale` and never starts the work again.
 A newer incident sequence or intake reset supersedes the earlier receipt. Only
-a complete, schema-validated response may add a sanitized
+a budget-v1 complete, schema-validated response may add a sanitized
 `model_proposed_unverified` advisory to the recent projection. Timeout, cancel,
 superseded, stale and other terminal outcomes carry status only; none can
 change Edge policy, fast assistance or admission.
@@ -176,21 +176,64 @@ product-model success or measured resource/latency claim is made. Production
 capability issuance, attested generation reserve accounting and the protected
 policy ceremony remain blocked on owner review of requirements 1–3 above.
 
-## Budget planner status
+## Opt-in generation budget and durable result status
 
-An isolated software planning seam models an exact token count, a supplied
-per-task input and output cap, context slack, one monotonic deadline and a
-post-work reserve. Its initial allocation rule reserves `max(0.5s, 10% of
-D)` and divides remaining provider time at 45:20:35, subject to the supplied
-minimum time for later tasks. The fixture slack is 32 tokens. A profile must
-supply meaningful output minima and conservative time reservations; the seam
-cannot derive these from character counts or authorize a model.
+`GenerationLane(budget_enabled=True)` connects the agreed MIO budget API when
+it is available. The older canonical MIO wheel has no such API and keeps the
+explicitly unbudgeted compatibility path. Production still has no generation
+issuer and both admission constants remain false. Budget failure never retries
+through the compatibility path.
 
-This is not yet connected to the generation lane, a fixed tokenizer, MIO's
-selection or the result readers. The existing lane's behavior above remains
-in effect; its current `complete` is not proof of budget compliance. A future
-complete result requires all three ordered tasks, verified input selection,
-usage and context integrity, and deadline and binding checks. Unconfirmed
-cleanup must remain distinguishable from the original outcome. G-4's provider
-stop guarantee remains unresolved. Fixture parameters and software tests are
-not measurements, production admission or an HG decision.
+The software fixture profile uses per-task output caps 768 / 384 / 512, with
+no automatic shrinking below those values, slack 32, and a positive 0.05s
+provider minimum per task. These are fixture configuration values, not measured
+performance or semantic sufficiency claims. All three schemas and MIO grounding
+must still pass. No production time profile or HG evidence is inferred from
+these values. The absolute 5s default / 30s maximum deadline starts at queue
+acceptance. `R=max(0.5s,10% of D)` reserves final work and task overhead; remaining
+provider time is divided 45:20:35 with later-task minimum reservations.
+Compile, count and validation time consume this same deadline.
+
+The admitted local server supplies `n_ctx` through `/props`. The final request
+is rendered through its `/apply-template` and counted through `/tokenize` using
+the same messages, effective compiled task schema, response format and absolute deadline. Invalid or missing
+counts/context or unavailable effective schemas refuse dispatch; character estimates are never used. The
+runtime/template tokenization tuple must be verified before real-model
+acceptance. Actual input usage must equal the exact pre-count, output usage
+must fit the cap, and explicit per-request `truncated=false` plus `finish_reason=stop`
+are required. Missing/invalid truncation telemetry is unknown; stop or usage
+alone cannot imply preservation. Unknown usage, incomplete output, malformed
+JSON, count mismatch or a failed second/third task prevents model publication.
+
+The private `generation_budget` v1 receipt records all three ordered tasks,
+including failed and unsent tasks. Readers share a CORE-only validator, reject
+unknown versions and missing new-format metadata, and compute overall coverage
+as the worst of upstream and all task coverage. Pre-projection slicing is
+recorded before constructing the slow frame; any such loss remains unknown.
+Selected material is labelled “選択した根拠に基づく生成助言（未検証、一部資料省略）”.
+Old complete records remain readable, but the current UI shows static advice
+and “旧記録・予算未確認”; it does not promote them to within-budget success.
+
+Results, cleanup and supersession are independent axes. A timeout can be
+terminal while cleanup is pending. The control worker does not join a blocked
+infer/stop worker. Dispatch closes immediately when stop is requested; no new
+work uses that lane. Cleanup may confirm only before the original deadline;
+failure, observation loss or deadline exhaustion permanently fences it.
+Late inference or stop cannot promote an unconfirmed result to complete.
+G-4's actual process/resource termination guarantee remains an independent,
+unresolved gate.
+
+The append-only result store writes at most one result, one cleanup revision
+and one superseded event per receipt in the original daily segment. It checks
+full bindings, duplicate revisions and monotonic transitions. Only pending
+cleanup keeps polling after a terminal result. Poll deadlines never extend;
+TTL/eviction or transport loss finalizes unconfirmed. Restart does not reset a
+monotonic deadline: persisted pending cleanup immediately becomes
+`restart_unconfirmed`. Cleanup failure is retained even after supersession.
+When invalidation precedes result arrival, the receipt-bound superseded event
+is saved first and the first real result has `result_state=superseded`. This
+preserves actual sent usage and pending cleanup instead of inventing an empty
+terminal result; queued receipt polling continues until a real result arrives.
+Cleanup still requires a saved pending result. Storage failure leaves the fast
+result available and reports slow storage unavailable. Public UI projections contain status and omission counts only,
+without handles, identifiers, prompt text or selection unit IDs.

@@ -24,6 +24,19 @@ MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_HEADER_BYTES = 16 * 1024
 
 
+def _decode_document(raw):
+    def pairs(items):
+        result = {}
+        for key,value in items:
+            if key in result:
+                raise ValueError('duplicate response key')
+            result[key] = value
+        return result
+    def constant(_):
+        raise ValueError('non-finite response value')
+    return json.loads(raw,object_pairs_hook=pairs,parse_constant=constant)
+
+
 class LocalServerRefused(SupervisorRefused):
     """A local process or its HTTP response failed, without carrying text."""
 
@@ -215,13 +228,12 @@ class LocalServer:
         began = time.monotonic()
         raw = self._http("POST", "/v1/chat/completions", body, end)
         try:
-            data = json.loads(raw)
+            data = _decode_document(raw)
             choice = data["choices"][0]
             text = choice["message"]["content"]
             finish_reason = choice.get('finish_reason')
-            if finish_reason is not None and (type(finish_reason) is not str
-                    or finish_reason not in ('stop', 'length', 'content_filter', 'tool_calls')):
-                raise ValueError
+            if type(finish_reason) is not str or finish_reason not in ('stop', 'length', 'content_filter', 'tool_calls'):
+                finish_reason = None
             integrity = _response_integrity(data)
             usage = data.get("usage")
             tokens_in = tokens_out = None
@@ -251,7 +263,7 @@ class LocalServer:
         if not self._child.alive or self.state is not LifecycleState.SERVING:
             raise LocalServerRefused("local server is not serving")
         try:
-            data = json.loads(self._http("GET", "/props", b"", end))
+            data = _decode_document(self._http("GET", "/props", b"", end))
             count = data['default_generation_settings']['n_ctx']
             if type(count) is not int or not 0 < count <= 2**31 - 1:
                 raise ValueError
@@ -261,7 +273,9 @@ class LocalServer:
 
     def tokenize_rendered(self, text: str, deadline_s: float) -> int:
         """Count an already template-rendered prompt; caller must prove rendering identity."""
-        end = _deadline(deadline_s)
+        return self._tokenize_rendered(text, _deadline(deadline_s))
+
+    def _tokenize_rendered(self, text: str, end: float) -> int:
         if not self._child.alive or self.state is not LifecycleState.SERVING:
             raise LocalServerRefused("local server is not serving")
         if type(text) is not str:
@@ -270,9 +284,9 @@ class LocalServer:
         if len(body) > MAX_REQUEST_BYTES:
             raise LocalServerRefused("request exceeds byte ceiling")
         try:
-            data = json.loads(self._http('POST', '/tokenize', body, end))
+            data = _decode_document(self._http('POST', '/tokenize', body, end))
             tokens = data['tokens']
-            if (type(tokens) is not list or len(tokens) > MAX_RESPONSE_BYTES // 2
+            if (type(tokens) is not list or not tokens or len(tokens) > MAX_RESPONSE_BYTES // 2
                     or any(type(token) is not int or token < 0 for token in tokens)):
                 raise ValueError
             return len(tokens)
@@ -293,14 +307,14 @@ class LocalServer:
         if len(body) > MAX_REQUEST_BYTES:
             raise LocalServerRefused("request exceeds byte ceiling")
         try:
-            data = json.loads(self._http('POST', '/apply-template', body, end))
+            data = _decode_document(self._http('POST', '/apply-template', body, end))
             prompt = data['prompt']
             if type(prompt) is not str:
                 raise ValueError
             remaining = end - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError('tokenization deadline exceeded')
-            return self.tokenize_rendered(prompt, remaining)
+            return self._tokenize_rendered(prompt, end)
         except (ValueError, KeyError, TypeError, RecursionError):
             raise LocalServerRefused("invalid rendered prompt") from None
 
@@ -315,7 +329,7 @@ class LocalServer:
         if len(body) > MAX_REQUEST_BYTES:
             raise LocalServerRefused("request exceeds byte ceiling")
         try:
-            data = json.loads(self._http("POST", "/v1/embeddings", body, end))['data']
+            data = _decode_document(self._http("POST", "/v1/embeddings", body, end))['data']
             if (type(data) is not list or len(data) != len(texts)
                     or any(type(item['index']) is not int for item in data)
                     or sorted(item['index'] for item in data) != list(range(len(texts)))):

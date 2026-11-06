@@ -103,7 +103,7 @@ def test_real_core_receives_fixture_structured_transport_and_actual_usage(known)
     assert value['frame_id'] == frame.frame_id and value['trace_id'] == frame.trace_id
     assert value['assistance']['frame_id'] == frame.frame_id
     assert generation.read_slow_analysis(value) == value
-    assert all(r.max_tokens == 768 for r in lane.server.requests)
+    assert [r.max_tokens for r in lane.server.requests] == list(generation.CAPS)
 
 
 def test_default_wrong_role_expired_and_unsealed_evidence_are_closed(monkeypatch):
@@ -587,3 +587,14 @@ def test_active_same_source_retry_after_stop_or_fence_is_terminal():
         assert pruned['state'] == 'degraded' and 'result_handle' not in pruned
     finally:
         server.release.set()
+
+
+def test_opt_in_with_older_canonical_mio_uses_explicit_legacy_compatibility():
+    lane,source,frame=setup()
+    lane.budget_enabled=True
+    value=result(lane,source,frame)
+    assert value['state']=='complete'
+    assert 'generation_budget' not in value
+    assert len(lane.server.requests)==3
+    from azazel_nexus.incident_explain import slow_analysis_projection
+    assert slow_analysis_projection(value)['budget']['outcome']=='legacy_unverified'

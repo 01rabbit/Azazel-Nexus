@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import math
 import os
 import queue
@@ -126,7 +127,7 @@ GENERATION_RESULT_SEGMENT_BYTES = 2 * 1024 * 1024
 GENERATION_RESULT_MAX_BYTES = 8 * 1024 * 1024
 
 
-def read_generation_event(value):
+def read_generation_event(value, *, history=False):
     """A separate durable record; never an amendment to either incident chain."""
     if type(value) is not dict:
         raise ValueError("generation_event_refused")
@@ -137,13 +138,26 @@ def read_generation_event(value):
         if set(value) != binding | {"event_type"}:
             raise ValueError("generation_event_refused")
     elif kind == "mio.generation.result":
-        if set(value) not in (binding | {"event_type", "state", "usage"},
-                              binding | {"event_type", "state", "usage", "assistance"}):
+        extra = {'budget_version','generation_budget'} if ('budget_version' in value or 'generation_budget' in value) else set()
+        if set(value) not in (binding | {"event_type", "state", "usage"} | extra,
+                              binding | {"event_type", "state", "usage", "assistance"} | extra):
             raise ValueError("generation_event_refused")
         if value.get("state") not in GENERATION_RESULT_STATES:
             raise ValueError("generation_event_refused")
         if value.get("usage") not in {"known", "unknown"}:
             raise ValueError("generation_event_refused")
+        if extra:
+            from azazel_nexus.generation_budget import read_budget
+            if type(value.get('budget_version')) is not int or type(value.get('generation_budget')) is not dict:
+                raise ValueError('generation_event_refused')
+            if value['budget_version'] != 1:
+                if not history or value['generation_budget'].get('version') != value['budget_version']:
+                    raise ValueError('generation_event_refused')
+            else:
+                read_budget(value['generation_budget'],state=value['state'],usage=value['usage'])
+                if value['state']=='complete':
+                    from azazel_nexus.generation_budget import validate_model_assistance
+                    validate_model_assistance(value.get('assistance'),value['frame_id'],value['trace_id'])
         if value["state"] == "complete":
             assistance = value.get("assistance")
             if (type(assistance) is not dict or assistance.get("schema_version") != "mio.assistance.v1"
@@ -166,6 +180,18 @@ def read_generation_event(value):
                     raise ValueError("generation_event_refused")
         elif "assistance" in value:
             raise ValueError("generation_event_refused")
+    elif kind == 'mio.generation.cleanup':
+        from azazel_nexus.generation_budget import CLEANUP_REASONS
+        if (set(value) != binding | {'event_type','cleanup_version','cleanup_revision','cleanup_state','cleanup_reason'}
+                or type(value['cleanup_version']) is not int or value['cleanup_version'] != 1
+                or type(value['cleanup_revision']) is not int or value['cleanup_revision'] != 1
+                or value['cleanup_state'] not in {'confirmed','unconfirmed'}
+                or value['cleanup_reason'] not in CLEANUP_REASONS
+                or (value['cleanup_state']=='confirmed') != (value['cleanup_reason']=='stop_confirmed')):
+            raise ValueError('generation_cleanup_refused')
+    elif kind == 'mio.generation.superseded':
+        if set(value) != binding | {'event_type'}:
+            raise ValueError('generation_superseded_refused')
     else:
         raise ValueError("generation_event_refused")
     ident, seq = value["incident_id"], value["incident_sequence"]
@@ -188,6 +214,51 @@ def read_generation_event(value):
     return json.loads(json.dumps(value, allow_nan=False))
 
 
+def fold_generation_events(events, *, allow_legacy_superseded=True):
+    """Validate full bindings and immutable, bounded per-job event transitions."""
+    receipts,terminal,cleanup,superseded = {},{},{},{}
+    binding = ('incident_id','incident_sequence','request_id','frame_id','trace_id','generation_id','result_handle')
+    for event in events:
+        handle,kind = event['result_handle'],event['event_type']
+        if kind == 'mio.generation.receipt':
+            old = receipts.get(handle)
+            if old is not None and old != event:
+                raise ValueError('generation_receipt_conflict')
+            receipts[handle] = event
+            continue
+        receipt = receipts.get(handle)
+        if receipt is None or any(receipt[k] != event[k] for k in binding):
+            raise ValueError('generation_event_unbound')
+        if kind == 'mio.generation.result':
+            old = terminal.get(handle)
+            if old is not None and old != event:
+                if (allow_legacy_superseded and 'budget_version' not in old
+                        and 'budget_version' not in event and event['state']=='superseded'
+                        and old['state']!='superseded' and handle not in superseded):
+                    superseded[handle] = event
+                    continue
+                raise ValueError('generation_result_duplicate')
+            terminal[handle] = event
+        elif kind == 'mio.generation.cleanup':
+            result = terminal.get(handle)
+            if (result is None or result.get('budget_version') != 1
+                    or result['generation_budget']['cleanup']['state'] != 'pending'):
+                raise ValueError('generation_cleanup_transition')
+            old = cleanup.get(handle)
+            if old is not None and old != event:
+                raise ValueError('generation_cleanup_revision_conflict')
+            cleanup[handle] = event
+        elif kind == 'mio.generation.superseded':
+            # Invalidation may precede result arrival; it binds to the receipt.
+            old = superseded.get(handle)
+            if old is not None and old != event:
+                raise ValueError('generation_superseded_duplicate')
+            superseded[handle] = event
+        else:
+            raise ValueError('generation_event_refused')
+    return receipts,terminal,cleanup,superseded
+
+
 class GenerationResultStore(DailySegments):
     """Private append-only event stream for slow M.I.O. receipts and results."""
     def __init__(self, root):
@@ -205,11 +276,27 @@ class GenerationResultStore(DailySegments):
 
     def append_event(self, value, *, segment_at=None):
         checked = read_generation_event(value)
+        existing = self.events()
+        if checked in existing:
+            return
+        if checked['event_type'] == 'mio.generation.result' and any(
+                row['event_type']=='mio.generation.result' and row['result_handle']==checked['result_handle'] for row in existing):
+            raise ValueError('generation_result_duplicate')
+        if checked['event_type'] != 'mio.generation.receipt' and not any(
+                row['event_type']=='mio.generation.receipt' and row['result_handle']==checked['result_handle'] for row in existing):
+            raise ValueError('generation_result_receipt_segment_missing')
+        fold_generation_events(existing + [checked])
+        if checked['event_type'] != 'mio.generation.receipt':
+            receipt = next(row for row in existing if row['event_type']=='mio.generation.receipt'
+                           and row['result_handle']==checked['result_handle'])
+            if segment_at is not None and self.path_at(self.bounded(segment_at)) != self.path_at(self.bounded(receipt['recorded_at'])):
+                raise ValueError('generation_receipt_segment_mismatch')
+            segment_at = receipt['recorded_at']
         path = self.path_at(self.bounded(
             checked["recorded_at"] if segment_at is None else segment_at))
         self.current = path
         self.retain()
-        if checked["event_type"] == "mio.generation.result" and not path.exists():
+        if checked["event_type"] != "mio.generation.receipt" and not path.exists():
             raise ValueError("generation_result_receipt_segment_missing")
         data = canonical(checked) + b"\n"
         if len(data) > 128 * 1024:
@@ -240,7 +327,7 @@ class GenerationResultStore(DailySegments):
                     raise ValueError("generation_result_line_refused")
                 value = json.loads(line.decode("utf-8"), object_pairs_hook=closed_pairs,
                                    parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
-                rows.append(read_generation_event(value))
+                rows.append(read_generation_event(value, history=True))
         return rows
 
 
@@ -307,6 +394,9 @@ class Explainer:
         self._generation_replay_required = False
         self._generation_receipts = {}
         self._generation_terminal = {}
+        self._generation_cleanup = {}
+        self._generation_superseded = {}
+        self._generation_cleanup_deadlines = {}
         self._generation_current = {}
         self.recent = []
         self.audit_severities = {}
@@ -451,40 +541,116 @@ class Explainer:
             projection = slow_analysis_projection(value)
         except ValueError:
             projection = {"state": "degraded", "usage": "unknown"}
+            if value.get('budget_version') not in (None,1):
+                projection['budget'] = dict(version=0,outcome='unsupported',coverage='unknown',
+                    cleanup_state='unconfirmed',superseded=False,omitted_units=0)
         for row in self.recent:
             if row["incident_id"] == receipt["incident_id"]:
                 explanation = dict(row["explanation"])
                 explanation["slow_analysis"] = projection
                 row["explanation"] = explanation
 
-    def _record_generation_terminal(self, receipt, value):
-        handle = receipt["result_handle"]
-        state = value.get("state") if type(value) is dict else None
+    def _generation_value(self, handle):
+        value = copy.deepcopy(self._generation_terminal.get(handle))
+        if value is None:
+            return {'state':'superseded' if handle in self._generation_superseded else 'queued','usage':'unknown'}
+        if value.get('budget_version') == 1:
+            from azazel_nexus.generation_budget import project_budget
+            meta = value['generation_budget']
+            cleanup = self._generation_cleanup.get(handle)
+            if cleanup is not None:
+                meta['cleanup'] = dict(state=cleanup['cleanup_state'],reason=cleanup['cleanup_reason'],remaining_ms=0)
+            if handle in self._generation_superseded:
+                meta['superseded'] = True
+            value['state'],value['generation_budget'] = project_budget(meta)
+            if value['state'] != 'complete':
+                value.pop('assistance',None)
+        elif handle in self._generation_superseded:
+            value.update(state='superseded',usage='unknown')
+            value.pop('assistance',None)
+        return value
+
+    def _cleanup_pending(self, handle):
+        value = self._generation_value(handle)
+        return value.get('budget_version') == 1 and value.get('generation_budget',{}).get('cleanup',{}).get('state') == 'pending'
+
+    def _record_generation_cleanup(self, receipt, state, reason):
+        handle = receipt['result_handle']
+        if not self._cleanup_pending(handle) or handle in self._generation_cleanup:
+            return
+        event = dict(event_type='mio.generation.cleanup',**self._generation_binding(receipt),
+            recorded_at=self.clock(),cleanup_version=1,cleanup_revision=1,
+            cleanup_state=state,cleanup_reason=reason)
+        if self._append_generation_event(event, segment_at=receipt['recorded_at']):
+            self._generation_cleanup[handle] = read_generation_event(event)
+            self._generation_cleanup_deadlines.pop(handle,None)
+            self._set_generation_projection(receipt,self._generation_value(handle))
+            return True
+        self._set_generation_projection(receipt,{'state':'degraded','usage':'unknown'})
+        return False
+
+    def _record_generation_superseded(self, receipt):
+        handle = receipt['result_handle']
+        if handle in self._generation_superseded:
+            return True
+        event = dict(event_type='mio.generation.superseded',**self._generation_binding(receipt),recorded_at=self.clock())
+        if self._append_generation_event(event,segment_at=receipt['recorded_at']):
+            self._generation_superseded[handle] = event
+            self._set_generation_projection(receipt,self._generation_value(handle))
+            return True
+        return False
+
+    def _record_generation_terminal(self, receipt, value, *, sent_at=None):
+        handle = receipt['result_handle']
+        if handle in self._generation_terminal:
+            if value.get('state') == 'superseded':
+                return self._record_generation_superseded(receipt)
+            if self._cleanup_pending(handle):
+                raw = value.get('generation_budget',{}).get('cleanup',{})
+                if raw.get('state') in ('confirmed','unconfirmed'):
+                    deadline = self._generation_cleanup_deadlines.get(handle,self.monotonic())
+                    if self.monotonic() >= deadline:
+                        return self._record_generation_cleanup(receipt,'unconfirmed','confirmation_deadline')
+                    return self._record_generation_cleanup(receipt,raw['state'],raw['reason'])
+            return
+        value = copy.deepcopy(value)
+        if handle in self._generation_superseded:
+            if value.get('budget_version') == 1:
+                from azazel_nexus.generation_budget import project_budget
+                meta = value['generation_budget']
+                meta['result_state'] = 'superseded'
+                meta['superseded'] = True
+                value['state'],value['generation_budget'] = project_budget(meta)
+            else:
+                value['state'] = 'superseded'
+            value.pop('assistance',None)
+        state = value.get('state') if type(value) is dict else None
         if state not in GENERATION_RESULT_STATES:
-            state = "degraded"
-        previous = self._generation_terminal.get(handle)
-        if previous is not None:
-            if previous["state"] == "superseded" or state != "superseded":
-                return
-        event = {"event_type": "mio.generation.result", **self._generation_binding(receipt),
-                 "state": state,
-                 "usage": value.get("usage", "unknown") if state == "complete" else "unknown",
-                 "recorded_at": self.clock()}
-        if state == "complete":
-            event["assistance"] = value.get("assistance")
+            state = 'degraded'
+        event = {'event_type':'mio.generation.result',**self._generation_binding(receipt),
+            'state':state,'usage':value.get('usage','unknown'),'recorded_at':self.clock()}
+        if 'generation_budget' in value or 'budget_version' in value:
+            event.update(budget_version=value.get('budget_version'),generation_budget=value.get('generation_budget'))
+        if state == 'complete':
+            event['assistance'] = value.get('assistance')
         try:
             checked = read_generation_event(event)
         except ValueError:
-            event = {"event_type": "mio.generation.result", **self._generation_binding(receipt),
-                     "state": "degraded", "usage": "unknown", "recorded_at": self.clock()}
-            checked = read_generation_event(event)
-        if not self._append_generation_event(checked, segment_at=receipt["recorded_at"]):
+            checked = read_generation_event({'event_type':'mio.generation.result',
+                **self._generation_binding(receipt),'state':'degraded','usage':'unknown','recorded_at':self.clock()})
+        if not self._append_generation_event(checked,segment_at=receipt['recorded_at']):
+            self._set_generation_projection(receipt,{'state':'degraded','usage':'unknown'})
             return False
         self._generation_terminal[handle] = checked
-        self._set_generation_projection(receipt, checked)
+        if self._cleanup_pending(handle):
+            remaining = checked['generation_budget']['cleanup']['remaining_ms']/1000
+            start = self.monotonic() if sent_at is None else sent_at
+            deadline = min(self._generation_cleanup_deadlines.get(handle,float('inf')),start+remaining)
+            self._generation_cleanup_deadlines[handle] = deadline
+        self._set_generation_projection(receipt,self._generation_value(handle))
         return True
 
-    def _capture_generation_receipt(self, reply, transition, sequence):
+    def _capture_generation_receipt(self, reply, transition, sequence, *, sent_at=None):
         if self._generation_store_failed or self.generation_store is None or type(reply) is not dict:
             return
         raw = reply.get("slow_analysis")
@@ -527,65 +693,86 @@ class Explainer:
         if current is None or self._generation_receipts[current]["incident_sequence"] <= seq:
             self._generation_current[ident] = receipt["result_handle"]
         if value["state"] != "queued":
-            self._record_generation_terminal(receipt, value)
+            self._record_generation_terminal(receipt, value, sent_at=sent_at)
         else:
             self._set_generation_projection(receipt, {"state": "queued", "usage": "unknown"})
 
     def _restore_generation_results(self):
-        receipts, terminal, current = {}, {}, {}
-        for event in self.generation_store.events():
-            handle = event["result_handle"]
-            if event["event_type"] == "mio.generation.receipt":
-                old = receipts.get(handle)
-                if old is not None and self._generation_binding(old) != self._generation_binding(event):
-                    raise ValueError("generation_receipt_conflict")
-                receipts[handle] = event
-                ident = event["incident_id"]
-                if ident not in current or receipts[current[ident]]["incident_sequence"] <= event["incident_sequence"]:
-                    current[ident] = handle
-                continue
-            receipt = receipts.get(handle)
-            if (receipt is None or self._generation_binding(receipt) != self._generation_binding(event)):
-                raise ValueError("generation_result_unbound")
-            old = terminal.get(handle)
-            if old is not None and not (event["state"] == "superseded" and old["state"] != "superseded"):
-                raise ValueError("generation_result_duplicate")
-            terminal[handle] = event
-        self._generation_receipts, self._generation_terminal = receipts, terminal
+        receipts,terminal,cleanup,superseded = fold_generation_events(self.generation_store.events())
+        current = {}
+        for handle,event in receipts.items():
+            ident = event['incident_id']
+            if ident not in current or receipts[current[ident]]['incident_sequence'] <= event['incident_sequence']:
+                current[ident] = handle
+        self._generation_receipts,self._generation_terminal = receipts,terminal
+        self._generation_cleanup,self._generation_superseded = cleanup,superseded
+        self._generation_cleanup_deadlines = {}
         self._generation_current = current
-        for ident, handle in current.items():
-            receipt = receipts[handle]
-            self._set_generation_projection(
-                receipt, terminal.get(handle, {"state": "queued", "usage": "unknown"}))
+        for handle,receipt in receipts.items():
+            if self._cleanup_pending(handle):
+                self._record_generation_cleanup(receipt,'unconfirmed','restart_unconfirmed')
+        for ident,handle in current.items():
+            self._set_generation_projection(receipts[handle],self._generation_value(handle))
 
     def _supersede_generation_for_transition(self, ident, sequence):
-        for handle, receipt in tuple(self._generation_receipts.items()):
-            if receipt["incident_id"] != ident or receipt["incident_sequence"] >= sequence:
-                continue
-            previous = self._generation_terminal.get(handle)
-            if previous is not None and previous["state"] == "superseded":
-                continue
-            if not self._record_generation_terminal(
-                    receipt, {"state": "superseded", "usage": "unknown"}):
-                self._generation_replay_required = True
+        for handle,receipt in tuple(self._generation_receipts.items()):
+            if receipt['incident_id'] == ident and receipt['incident_sequence'] < sequence:
+                if not self._record_generation_superseded(receipt):
+                    self._generation_replay_required = True
 
     def _poll_generation_results(self):
         if self._generation_store_failed:
             return
-        for handle, receipt in tuple(self._generation_receipts.items()):
-            if handle in self._generation_terminal:
+        for handle,receipt in tuple(self._generation_receipts.items()):
+            pending = self._cleanup_pending(handle)
+            if handle in self._generation_terminal and not pending:
                 continue
+            sent_at = self.monotonic()
+            if pending and sent_at >= self._generation_cleanup_deadlines.get(handle,sent_at):
+                self._record_generation_cleanup(receipt,'unconfirmed','confirmation_deadline')
+                return
             try:
-                value = self.mio_result(receipt, deadline_s=0.05)
-            except Exception:  # noqa: BLE001 - transient poll failure retries on the next tick
+                value = self.mio_result(receipt,deadline_s=.05)
+            except Exception:
+                value = None
+            if value is None:
+                if pending:
+                    self._record_generation_cleanup(receipt,'unconfirmed','observation_lost')
                 return
-            if type(value) is not dict or value.get("state") in (None, "queued"):
+            if type(value) is not dict or value.get('state') in (None,'queued'):
+                if pending:
+                    self._record_generation_cleanup(receipt,'unconfirmed','observation_lost')
                 return
-            if any(value.get(key) != receipt.get(key) for key in
-                   ("result_handle", "generation_id", "frame_id", "trace_id")):
-                self._record_generation_terminal(receipt, {"state": "stale", "usage": "unknown"})
+            if any(value.get(key) != receipt.get(key) for key in ('result_handle','generation_id','frame_id','trace_id')):
+                if pending:
+                    self._record_generation_cleanup(receipt,'unconfirmed','observation_lost')
+                else:
+                    self._record_generation_terminal(receipt,{'state':'stale','usage':'unknown'})
+            elif pending:
+                try:
+                    from .mio_generation import read_slow_analysis
+                    checked = read_slow_analysis(value)
+                    if checked.get('budget_version') != 1:
+                        raise ValueError
+                    original = self._generation_terminal[handle]['generation_budget']
+                    updated = checked['generation_budget']
+                    immutable = set(original)-{'cleanup','outcome','reasons','superseded','result_state'}
+                    if (original['result_state'] != updated['result_state'] and original['result_state'] != 'superseded') or any(original[k] != updated[k] for k in immutable) or not set(original['reasons']).issubset(updated['reasons']) or set(updated['reasons'])-set(original['reasons'])-{'stop_unconfirmed'}:
+                        raise ValueError
+                    raw = updated['cleanup']
+                    if raw['state']=='pending':
+                        deadline = min(self._generation_cleanup_deadlines[handle],sent_at+raw['remaining_ms']/1000)
+                        self._generation_cleanup_deadlines[handle] = deadline
+                        if self.monotonic() >= deadline:
+                            self._record_generation_cleanup(receipt,'unconfirmed','confirmation_deadline')
+                    elif raw['state'] in ('confirmed','unconfirmed'):
+                        self._record_generation_terminal(receipt,checked,sent_at=sent_at)
+                    else:
+                        raise ValueError
+                except (KeyError,TypeError,ValueError):
+                    self._record_generation_cleanup(receipt,'unconfirmed','observation_lost')
             else:
-                self._record_generation_terminal(receipt, value)
+                self._record_generation_terminal(receipt,value,sent_at=sent_at)
             return
 
     def forward_audit(self, stopped):
@@ -702,6 +889,9 @@ class Explainer:
                 self._generation_store_failed = True
                 self._generation_receipts.clear()
                 self._generation_terminal.clear()
+                self._generation_cleanup.clear()
+                self._generation_superseded.clear()
+                self._generation_cleanup_deadlines.clear()
                 self._generation_current.clear()
                 self.refuse("storage_failed")
         self._future()
@@ -820,8 +1010,7 @@ class Explainer:
                             elif event["event_type"] == "edge.incident.reset":
                                 for handle, receipt in tuple(self._generation_receipts.items()):
                                     if handle not in self._generation_terminal or self._generation_terminal[handle]["state"] != "superseded":
-                                        if not self._record_generation_terminal(
-                                                receipt, {"state": "superseded", "usage": "unknown"}):
+                                        if not self._record_generation_superseded(receipt):
                                             self._generation_replay_required = True
                                 self.audit_severities.clear()
                                 for row in self.recent:
@@ -876,6 +1065,7 @@ class Explainer:
         mio = {"route": "unavailable", "outcome": "unavailable", "reason": "mio_unavailable", "text": None}
         self.mio_available = False
         try:
+            generation_sent_at = self.monotonic()
             reply = self.mio(frame)
         except Exception:  # noqa: BLE001 - transport failures have no public text
             codes.append("mio_unavailable")
@@ -883,7 +1073,7 @@ class Explainer:
             try:
                 mio = read_mio_reply(reply)
                 self.mio_available = True
-                self._capture_generation_receipt(reply, t, sequence)
+                self._capture_generation_receipt(reply, t, sequence, sent_at=generation_sent_at)
                 if mio["reason"] in {"mio_gated", "mio_handoff", "mio_local_non_advisory"}:
                     codes.append(mio["reason"])
                 elif mio["reason"].startswith("mio_handoff:"):

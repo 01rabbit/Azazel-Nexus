@@ -489,8 +489,9 @@ def test_slow_result_projection_is_unverified_bounded_and_identifier_free():
                   "unknowns": ["https://example.invalid/path/10.0.0.1"],
                   "next_checks": ["Check the approved change record."]}}
     projection = slow_analysis_projection(result)
-    assert projection["verification"] == "model_proposed_unverified"
-    assert projection["unknowns"] == ["Details withheld verify through an authorized source"]
+    assert projection['state'] == 'degraded'
+    assert projection['budget']['outcome'] == 'legacy_unverified'
+    assert 'hypotheses' not in projection and 'unknowns' not in projection
     assert not any(secret in json.dumps(projection) for secret in
                    ("generation-secret", "c" * 64, trace, ":frame"))
 

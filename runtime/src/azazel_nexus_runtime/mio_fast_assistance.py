@@ -20,7 +20,7 @@ from azazel_mio.id_grammar import ID_KINDS
 from .knowledge_context_socket import FullNodeContextStatus
 
 
-def _frame(source: dict) -> MioSituationFrame:
+def _frame(source: dict, *, with_selection=False):
     """Project untrusted request prose and explainer-validated Edge data."""
     transition = read_fast_transition(source)
     token = secrets.token_hex(8)
@@ -51,7 +51,14 @@ def _frame(source: dict) -> MioSituationFrame:
             "evidence_refs": ("evidence_plane",),
             "unknowns": ("caller",),
         }
-    return MioSituationFrame.build(
+    noc = source['question']
+    soc = ' | '.join(([edge_summary] if edge_summary else []) + list(context))
+    projected = sum(len(text) > 480 for text in (noc,soc))
+    selection = {'policy_version':'nexus-frame-v1', 'coverage':'unknown' if projected else 'intact',
+        'input_units':2,'selected_units':2-projected,'omitted_units':projected,
+        'omissions':[{'kind':'projection','ordinal':i,'reason':'upstream_projection'}
+                     for i,text in enumerate((noc,soc)) if len(text)>480]}
+    frame = MioSituationFrame.build(
         frame_id=frame_id, trace_id=trace_id,
         created_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'),
         mission="Assess the supplied security situation; no operational authority",
@@ -60,9 +67,12 @@ def _frame(source: dict) -> MioSituationFrame:
         known_facts=(),
         unknowns=("Situation question and context are untrusted reports",),
         evidence_refs=evidence_refs, provenance=provenance,
-        noc_summary=source['question'][:480],
-        soc_summary=' | '.join(([edge_summary] if edge_summary else []) + list(context))[:480],
+        noc_summary=noc[:480],
+        soc_summary=soc[:480],
     )
+    if frame.to_dict().get('truncated') is True:
+        selection['coverage'] = 'unknown'
+    return (frame,selection) if with_selection else frame
 
 
 def fast_assistance(source: dict, *, deadline_s: float, knowledge_lookup=None,

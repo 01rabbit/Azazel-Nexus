@@ -111,8 +111,9 @@ def test_slow_result_receipt_is_durable_before_poll_and_projected_once(tmp_path)
     assert events[1]["state"] == "complete"
     assert daemon.Explainer._generation_binding(events[0]) == daemon.Explainer._generation_binding(events[1])
     row = e.recent[0]["explanation"]["slow_analysis"]
-    assert row["state"] == "complete"
-    assert row["verification"] == "model_proposed_unverified"
+    assert row['state'] == 'degraded'
+    assert row['budget']['outcome'] == 'legacy_unverified'
+    assert 'hypotheses' not in row
     encoded = (tmp_path / "recent.json").read_text()
     assert all(secret not in encoded for secret in ("a" * 64, "generation-1", trace, ":frame"))
 
@@ -236,7 +237,9 @@ def test_new_edge_sequence_invalidates_completed_slow_projection(tmp_path):
     changed = {**t, "event_type": "edge.incident.updated", "count": t["count"] + 1,
                "last_update": t["last_update"] + 1}
     e.observe_transition(changed, sequence=2)
-    assert e._generation_terminal["b" * 64]["state"] == "superseded"
+    assert e._generation_terminal["b" * 64]["state"] == "complete"  # original result stays immutable
+    assert e._generation_value("b" * 64)["state"] == "superseded"
+    assert len(e._generation_superseded) == 1
     assert e.recent[0]["explanation"]["slow_analysis"] == {
         "state": "superseded", "usage": "unknown"}
 
@@ -258,7 +261,9 @@ def test_intake_reset_supersedes_pending_slow_result(tmp_path):
                                  {"state": "queued", "usage": "unknown"})
     append(e, {"event_type": "edge.incident.reset", "at": 1, "reason": "intake_started"})
     e.poll()
-    assert e._generation_terminal["d" * 64]["state"] == "superseded"
+    assert 'd' * 64 not in e._generation_terminal  # no invented result before runtime termination
+    assert 'd' * 64 in e._generation_superseded
+    assert e._generation_value('d' * 64)['state'] == 'superseded'
     assert e.recent[0]["explanation"]["slow_analysis"] == {
         "state": "superseded", "usage": "unknown"}
 
