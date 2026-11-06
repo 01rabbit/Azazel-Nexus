@@ -230,14 +230,14 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
         assert ready["ready"] is True and ready["pid"] == server.pid != os.getpid()
         assert ready["host"] == "127.0.0.1"
 
-        # A client without a certificate is rejected during TLS. TLS 1.3 can
-        # defer surfacing the peer alert until the first read, so observe both
-        # handshake and post-handshake I/O.
-        # This negative check isolates client authentication: server-certificate
-        # trust and hostname validation are covered by the positive client below.
-        unauthenticated = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        unauthenticated.check_hostname = False
-        unauthenticated.verify_mode = ssl.CERT_NONE
+        # Keep CA/hostname verification identical to the positive client; the
+        # only missing credential is the client certificate. TLS 1.3 may
+        # surface the server's certificate-required alert on the first read.
+        unauthenticated = ssl.create_default_context(cafile=str(pki / "ca.pem"))
+        unauthenticated.minimum_version = ssl.TLSVersion.TLSv1_3
+        unauthenticated.maximum_version = ssl.TLSVersion.TLSv1_3
+        assert unauthenticated.check_hostname is True
+        assert unauthenticated.verify_mode == ssl.CERT_REQUIRED
         with socket.create_connection((ready["host"], ready["port"]), timeout=3) as raw:
             try:
                 unauthenticated_socket = unauthenticated.wrap_socket(
@@ -250,10 +250,10 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
                     with pytest.raises(ssl.SSLError) as rejected_on_read:
                         unauthenticated_socket.recv(1)
                 rejection = rejected_on_read.value
-            assert rejection.reason in {
-                "TLSV13_ALERT_CERTIFICATE_REQUIRED",
-                "SSLV3_ALERT_HANDSHAKE_FAILURE",
-            }, f"unexpected no-client-certificate rejection: {rejection.reason}"
+            assert rejection.reason == "TLSV13_ALERT_CERTIFICATE_REQUIRED", (
+                "expected TLS 1.3 client-certificate rejection, got "
+                f"{rejection.reason}"
+            )
 
         now = datetime.now(UTC)
         server_der = ssl.PEM_cert_to_DER_cert((pki / "server.pem").read_text())
@@ -373,6 +373,7 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
         egress = pwd.getpwnam("azknowledgeegress")
         mio = pwd.getpwnam("azmio")
         entry = pwd.getpwnam("azmioentry")
+        operator = pwd.getpwnam("azoperator")
         context_gid = grp.getgrnam("azknowledge-context-client").gr_gid
         operator_gid = grp.getgrnam("azazel-operator").gr_gid
         advise_gid = grp.getgrnam("azmio-advise").gr_gid
@@ -447,14 +448,36 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
             assert broker_socket_stat.st_uid == egress.pw_uid
             assert broker_socket_stat.st_gid == context_gid
             assert stat.S_IMODE(broker_socket_stat.st_mode) == 0o660
+            assert operator.pw_uid != 0
+            assert operator.pw_uid != egress.pw_uid
+            assert operator.pw_gid != context_gid
 
             # A process outside the reviewed socket group receives kernel
-            # EACCES on connect to the real broker socket path.
+            # EACCES on connect to the real broker socket. The check asserts
+            # identity and filesystem modes, but does not claim which kernel
+            # permission check (directory search or socket write) denied it.
             refusal_code = """
 import errno, socket
 from pathlib import Path
 import os
 path = str(Path(os.environ['AZAZEL_ROOT']) / 'var/lib/azazel/run/knowledge-context/knowledge-context.sock')
+real_uid, effective_uid, saved_uid = os.getresuid()
+real_gid, effective_gid, saved_gid = os.getresgid()
+if 0 in (real_uid, effective_uid, saved_uid):
+    raise SystemExit('outsider unexpectedly has a root uid')
+if len({real_uid, effective_uid, saved_uid}) != 1:
+    raise SystemExit('outsider uid identities do not match')
+if len({real_gid, effective_gid, saved_gid}) != 1:
+    raise SystemExit('outsider gid identities do not match')
+if os.getgroups():
+    raise SystemExit('outsider unexpectedly has supplementary groups')
+capabilities = {}
+for line in Path('/proc/self/status').read_text().splitlines():
+    if line.startswith(('CapEff:', 'CapPrm:')):
+        name, value = line.split(':', 1)
+        capabilities[name] = int(value.strip(), 16)
+if capabilities != {'CapEff': 0, 'CapPrm': 0}:
+    raise SystemExit(f'outsider unexpectedly has capabilities: {capabilities}')
 client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 try:
     client.connect(path)
@@ -470,11 +493,14 @@ finally:
             refused = subprocess.run(
                 [sys.executable, "-B", "-c", refusal_code],
                 cwd=ROOT, env=test_env, capture_output=True, text=True, timeout=5,
-                preexec_fn=credentials(pwd.getpwnam("azoperator")),
+                preexec_fn=credentials(operator),
             )
             assert refused.returncode == 0, refused.stderr[-1000:]
             assert refused.stdout.strip() == "permission-denied"
+            assert broker_process.poll() is None
 
+            # The subsequent authorized MIO/entry request is the positive
+            # control against this same still-running broker socket/listener.
             locald_process = subprocess.Popen(
                 [sys.executable, str(ROOT / "tests/real_process/_mio_locald_context_process.py")],
                 cwd=ROOT, env=test_env, stdin=subprocess.DEVNULL,
