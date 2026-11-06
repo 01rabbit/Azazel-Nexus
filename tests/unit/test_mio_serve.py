@@ -114,6 +114,60 @@ def request():
     return LocalInferenceRequest((('user', 'private fixture question'),), 32, 0)
 
 
+def test_budget_server_reads_context_and_tokenizes_rendered_prompt():
+    handle = object.__new__(LocalServer)
+    handle._child = SimpleNamespace(alive=True)
+    handle.state = LifecycleState.SERVING
+    seen = []
+    def http(method, path, body, end):
+        seen.append((method, path, body))
+        if path == '/props':
+            return b'{"default_generation_settings":{"n_ctx":2048}}'
+        return b'{"tokens":[1,2,3]}'
+    handle._http = http
+    assert handle.context_limit(1) == 2048
+    assert handle.tokenize_rendered('rendered fixture', 1) == 3
+    assert json.loads(seen[1][2]) == {'content': 'rendered fixture', 'add_special': True}
+
+
+def test_count_chat_applies_template_and_shares_deadline(monkeypatch):
+    monkeypatch.setattr(time, 'monotonic', lambda: 5.)
+    handle = object.__new__(LocalServer)
+    handle._child = SimpleNamespace(alive=True)
+    handle.state = LifecycleState.SERVING
+    seen = []
+    def http(method, path, body, end):
+        seen.append((path, json.loads(body), end))
+        return (b'{"prompt":"rendered fixture"}' if path == '/apply-template'
+                else b'{"tokens":[1,2,3]}')
+    handle._http = http
+    assert handle.count_chat_tokens(request(), 1) == 3
+    assert [item[0] for item in seen] == ['/apply-template', '/tokenize']
+    assert seen[0][1]['messages'] == [{'role': 'user', 'content': 'private fixture question'}]
+    assert seen[1][1]['content'] == 'rendered fixture'
+    assert seen[0][2] == seen[1][2] == 6.
+
+
+@pytest.mark.parametrize('value', [None, True, 0, -1, '2048'])
+def test_budget_server_refuses_invalid_context_limit(value):
+    handle = object.__new__(LocalServer)
+    handle._child = SimpleNamespace(alive=True)
+    handle.state = LifecycleState.SERVING
+    handle._http = lambda *args: json.dumps({'default_generation_settings': {'n_ctx': value}}).encode()
+    with pytest.raises(LocalServerRefused):
+        handle.context_limit(1)
+
+
+@pytest.mark.parametrize('tokens', [None, [True], [-1], ['1'], {}])
+def test_budget_server_refuses_invalid_tokens(tokens):
+    handle = object.__new__(LocalServer)
+    handle._child = SimpleNamespace(alive=True)
+    handle.state = LifecycleState.SERVING
+    handle._http = lambda *args: json.dumps({'tokens': tokens}).encode()
+    with pytest.raises(LocalServerRefused):
+        handle.tokenize_rendered('fixture', 1)
+
+
 @pytest.mark.parametrize(('metadata', 'integrity'), [
     ({}, 'unknown'),
     ({'truncated': False}, 'preserved'),

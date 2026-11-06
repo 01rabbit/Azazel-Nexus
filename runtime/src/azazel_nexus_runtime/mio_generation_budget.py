@@ -173,3 +173,37 @@ class BudgetPlanner:
             raise BudgetRefused(BudgetReason.BUDGET_EXHAUSTED)
         self.next_task += 1
         self._planned = False
+
+
+def mio_budget_for_task(planner: BudgetPlanner, task: str, *, budget_type=None):
+    """Create the agreed MIO tuple without importing MIO in CORE-only environments.
+
+    The caller must keep the resulting callback inside the authorized provider
+    boundary. Planning, dispatch and result validation remain separate steps.
+    """
+    if (type(planner) is not BudgetPlanner or planner.next_task >= 3
+            or planner._planned or task != TASKS[planner.next_task]):
+        raise BudgetRefused(BudgetReason.BUDGET_EXHAUSTED)
+    if budget_type is None:
+        from azazel_mio.budget import GenerationBudget
+        budget_type = GenerationBudget
+    spec = planner.profile.tasks[planner.next_task]
+    input_limit = min(spec.input_limit,
+                      planner.profile.context_limit - spec.output_cap - planner.profile.slack)
+    if input_limit <= 0:
+        raise BudgetRefused(BudgetReason.BUDGET_EXHAUSTED)
+
+    def count_tokens(prompt):
+        try:
+            if type(prompt) is not str or planner.counter is None or planner.clock() >= planner.end:
+                return None
+            count = planner.counter(task, prompt)
+            if planner.clock() >= planner.end or not _integer(count):
+                return None
+            return count
+        except Exception:
+            return None
+
+    return budget_type(input_tokens=input_limit, output_tokens=spec.output_cap,
+                       context_limit=planner.profile.context_limit,
+                       safety_margin=planner.profile.slack, count_tokens=count_tokens)

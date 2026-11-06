@@ -3,7 +3,7 @@ import pytest
 
 from azazel_nexus_runtime.mio_generation_budget import (
     BudgetPlanner, BudgetProfile, BudgetReason, BudgetRefused, CleanupState,
-    settle_cleanup, TaskBudget, TASKS,
+    settle_cleanup, TaskBudget, TASKS, mio_budget_for_task,
 )
 
 
@@ -79,3 +79,15 @@ def test_cleanup_is_monotonic_and_confirmation_at_deadline_is_too_late():
     assert settle_cleanup(CleanupState.PENDING, 'restart_unconfirmed', now=1, end=10) is CleanupState.UNCONFIRMED
     with pytest.raises(ValueError):
         settle_cleanup(CleanupState.UNCONFIRMED, 'stop_confirmed', now=2, end=10)
+
+
+def test_mio_budget_tuple_uses_final_count_callback_without_importing_mio():
+    p = planner(counter=lambda task, prompt: 4 if prompt == 'exact' else None)
+    budget = mio_budget_for_task(p, TASKS[0], budget_type=lambda **kw: kw)
+    assert budget['input_tokens'] == 100
+    assert budget['output_tokens'] == 68
+    assert budget['context_limit'] == 200 and budget['safety_margin'] == 32
+    assert budget['count_tokens']('exact') == 4
+    assert budget['count_tokens']('unknown') is None
+    with pytest.raises(BudgetRefused):
+        mio_budget_for_task(p, TASKS[1], budget_type=lambda **kw: kw)

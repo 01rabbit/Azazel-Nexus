@@ -245,6 +245,65 @@ class LocalServer:
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
             raise LocalServerRefused("invalid inference response") from None
 
+    def context_limit(self, deadline_s: float) -> int:
+        """Read the running server's effective context through the admitted socket."""
+        end = _deadline(deadline_s)
+        if not self._child.alive or self.state is not LifecycleState.SERVING:
+            raise LocalServerRefused("local server is not serving")
+        try:
+            data = json.loads(self._http("GET", "/props", b"", end))
+            count = data['default_generation_settings']['n_ctx']
+            if type(count) is not int or not 0 < count <= 2**31 - 1:
+                raise ValueError
+            return count
+        except (ValueError, KeyError, TypeError, RecursionError):
+            raise LocalServerRefused("invalid context limit") from None
+
+    def tokenize_rendered(self, text: str, deadline_s: float) -> int:
+        """Count an already template-rendered prompt; caller must prove rendering identity."""
+        end = _deadline(deadline_s)
+        if not self._child.alive or self.state is not LifecycleState.SERVING:
+            raise LocalServerRefused("local server is not serving")
+        if type(text) is not str:
+            raise LocalServerRefused("invalid tokenization input")
+        body = json.dumps({'content': text, 'add_special': True}, ensure_ascii=False).encode('utf-8')
+        if len(body) > MAX_REQUEST_BYTES:
+            raise LocalServerRefused("request exceeds byte ceiling")
+        try:
+            data = json.loads(self._http('POST', '/tokenize', body, end))
+            tokens = data['tokens']
+            if (type(tokens) is not list or len(tokens) > MAX_RESPONSE_BYTES // 2
+                    or any(type(token) is not int or token < 0 for token in tokens)):
+                raise ValueError
+            return len(tokens)
+        except (ValueError, KeyError, TypeError, RecursionError):
+            raise LocalServerRefused("invalid tokenization response") from None
+
+    def count_chat_tokens(self, request: LocalInferenceRequest, deadline_s: float) -> int:
+        """Render and tokenize using this same server under one total deadline.
+
+        Callers must still establish that the admitted runtime's template and
+        tokenization settings match its chat-completion path before relying on
+        the count as exact.
+        """
+        end = _deadline(deadline_s)
+        if not self._child.alive or self.state is not LifecycleState.SERVING:
+            raise LocalServerRefused("local server is not serving")
+        body = json.dumps(inference_document(request), ensure_ascii=False).encode('utf-8')
+        if len(body) > MAX_REQUEST_BYTES:
+            raise LocalServerRefused("request exceeds byte ceiling")
+        try:
+            data = json.loads(self._http('POST', '/apply-template', body, end))
+            prompt = data['prompt']
+            if type(prompt) is not str:
+                raise ValueError
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('tokenization deadline exceeded')
+            return self.tokenize_rendered(prompt, remaining)
+        except (ValueError, KeyError, TypeError, RecursionError):
+            raise LocalServerRefused("invalid rendered prompt") from None
+
     def embed(self, texts, deadline_s):
         end = _deadline(deadline_s)
         if not self._child.alive or self.state is not LifecycleState.SERVING:
