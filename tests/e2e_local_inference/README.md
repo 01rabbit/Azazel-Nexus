@@ -113,7 +113,7 @@ HTTP request/response travels over AF_UNIX. This bypasses Nexus's production
 `LocalServer` startup/admission lifecycle **only inside this disposable test
 process**; production flags stay false. It proves model-wire interoperability
 for the fixture path, not that a Nexus production model can be admitted or
-started. The serving process writes stdout/stderr to `/dev/null`.
+started. The serving process writes stdout/stderr to `/dev/null` unless the diagnostic option below is set.
 
 **What is checked.**
 - `generation`: `slow_analysis` goes `queued` -> `complete`, with
@@ -131,8 +131,8 @@ started. The serving process writes stdout/stderr to `/dev/null`.
   not a timeout case.
 - In both: Edge reading and non-M.I.O. authority state are unchanged, and
   formatted Python root-logger messages and persisted files contain no
-  question, context, or response text. The serving process writes stdout and
-  stderr to `/dev/null`; the harness prints only counts, states and numbers.
+  question, context, or response text. The harness prints only counts, states and numbers; optional server logs may
+  contain server-provided content and must remain in local evidence.
 - The Nexus route remains the deterministic handoff in both cases: the fixture
   capability authorizes only the isolated slow GenerationLane job and does not
   admit the router's local advice provider. The model-free fast result and
@@ -156,3 +156,15 @@ are not production figures.
 Every child process has a 300-second outer deadline and always calls stop in
 `finally`. If a platform denies AF_UNIX binds, classify the run as an
 environment failure; never substitute a fake server and call it real evidence.
+
+## Optional diagnostic capture
+
+Set `AZ_E2E_TELEMETRY_DIR` to an existing writable evidence directory for the
+generation fixture. It records the child stdout/stderr and a JSON file with
+HTTP phase times and byte counts, process CPU/RSS samples, cgroup v2 files,
+argv, health and props. Capture is best effort and recording failures do not
+change the scenario result. These requests are non-streaming: the first body
+byte is not a token and a timeout before headers cannot establish TTFT or token
+speed. Cgroup files reflect what the container can see; hidden ancestor limits
+are not established. This does not extend the generation deadline or alter
+admission. The other local advisory scenarios use their existing server path.
