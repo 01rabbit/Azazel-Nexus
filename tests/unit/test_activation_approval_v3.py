@@ -563,15 +563,20 @@ def test_no_scope_was_widened():
 
     edge = "azazel-edge-core.service"
     # The two additions are the model-free reference service (§6.2, proposed
-    # 2026-10-28) and the loop's audit writer (§6, 2026-10-30, ADR 0008). No
-    # model host, enforcement, commissioning or exposure unit is added.
+    # 2026-10-28) and the loop's audit writer (§6, 2026-10-30, ADR 0008). The
+    # Knowledge broker remains marker-protected but cannot be granted until
+    # its commissioning loader and policy review exist.
     reference = "azazel-mio-referenced.service"
     audit = "azazel-auditd-loop.service"
     context = "azazel-knowledge-contextd.service"
-    assert set(ACTIVATION_UNIT_ALLOWLIST) == set(LOOP) | {edge, reference, audit, context}
-    assert POLICY_UNIT_SCOPE == frozenset(LOOP) | {edge, reference, audit, context}
+    assert set(ACTIVATION_UNIT_ALLOWLIST) == set(LOOP) | {edge, reference, audit}
+    assert context not in ACTIVATION_UNIT_ALLOWLIST
+    assert POLICY_UNIT_SCOPE == frozenset(LOOP) | {edge, reference, audit}
     # The exposure units are grantable only so #253 checks their files; no
     # policy names them and the library withholds their tier (unchanged).
     assert activation_markers.GRANTABLE_UNITS == (
-        frozenset(LOOP + EXPOSURE) | {edge, reference, audit, context})
+        frozenset(LOOP + EXPOSURE) | {edge, reference, audit})
+    assert context in activation_markers.NON_GRANTABLE_MARKER_UNITS
+    with pytest.raises(activation_markers.GrantMarkerRefused):
+        activation_markers.write_grant_markers([context])
     assert activation_markers.EXPOSURE_UNITS == set(EXPOSURE)

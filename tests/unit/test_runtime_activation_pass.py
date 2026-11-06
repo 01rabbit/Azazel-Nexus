@@ -864,9 +864,8 @@ def test_the_pass_scope_and_tripwire_share_one_unit_set():
     from azazel_nexus_runtime.activation_markers import GRANTABLE_UNITS
     assert activation_pass.UNIT_SCOPE is GRANTABLE_UNITS
     assert GRANTABLE_UNITS == frozenset(EDGE_SCOPE + DECOY_UNITS) | {
-        "azazel-mio-referenced.service", "azazel-auditd-loop.service",
-        # Optional service; installation alone cannot grant or start it.
-        "azazel-knowledge-contextd.service"}
+        "azazel-mio-referenced.service", "azazel-auditd-loop.service"}
+    assert "azazel-knowledge-contextd.service" not in GRANTABLE_UNITS
     assert not hasattr(activation_pass, "P4_UNIT_SCOPE")
     import ast
     source = Path(activated.__file__).read_text()
@@ -878,7 +877,8 @@ def test_markers_are_never_written_for_a_unit_this_phase_cannot_grant(tmp_path, 
     monkeypatch.setattr(activation_markers, "_OWNER", os.getuid())
     (tmp_path / "run/azazel-activation").mkdir(parents=True, mode=0o755)
     for unit in ("azazel-watchdog.service", "azazel-mio-locald.service",
-                 "azazel-auditd.service", "azazel-model-fetchd.service"):
+                 "azazel-auditd.service", "azazel-model-fetchd.service",
+                 "azazel-knowledge-contextd.service"):
         with pytest.raises(activation_markers.GrantMarkerRefused):
             activation_markers.write_grant_markers([unit], tmp_path)
     assert not (tmp_path / "run/azazel-activation/granted").exists()

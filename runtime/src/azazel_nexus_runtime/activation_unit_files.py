@@ -44,7 +44,12 @@ import stat
 
 from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
 
-from .activation_markers import EXPOSURE_UNITS, GRANTABLE_UNITS, grant_marker_path
+from .activation_markers import (
+    EXPOSURE_UNITS,
+    GRANTABLE_UNITS,
+    NON_GRANTABLE_MARKER_UNITS,
+    grant_marker_path,
+)
 from .bootstrap_systemd_profile import _DEBIAN13_V257_UNIT_PATH
 
 __all__ = [
@@ -183,7 +188,8 @@ def require_governed_unit_content(unit: str, data: bytes) -> None:
     section, must be exactly those of `hardening.render_unit` for the unit,
     and no `[Unit]` assignment may be empty (a reset). Fixed labels only.
     """
-    if (type(unit) is not str or unit not in GRANTABLE_UNITS
+    if (type(unit) is not str
+            or unit not in GRANTABLE_UNITS | NON_GRANTABLE_MARKER_UNITS
             or type(data) is not bytes):
         raise UnitContentRefused("unit scope refused")
     directives = _directives(_decode(data))

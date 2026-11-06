@@ -233,6 +233,18 @@ def test_content_outside_the_scope_or_undecodable_is_refused():
         require_governed_unit_content(EDGE, rendered_unit(INTAKE).encode())
 
 
+def test_knowledge_context_unit_stays_marker_guarded_but_is_not_grantable():
+    from azazel_nexus_runtime.activation_markers import (
+        GRANT_MARKER_UNITS,
+        GRANTABLE_UNITS,
+    )
+
+    context = "azazel-knowledge-contextd.service"
+    assert context in GRANT_MARKER_UNITS
+    assert context not in GRANTABLE_UNITS
+    require_governed_unit_content(context, rendered_unit(context).encode())
+
+
 def test_comments_and_other_settings_do_not_affect_the_content_check():
     """The hash and the operator's signature bind the rest of the file."""
     text = rendered_unit(INTAKE) + "# a comment\n; another\n"
