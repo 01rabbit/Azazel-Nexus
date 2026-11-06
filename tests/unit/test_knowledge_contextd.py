@@ -342,7 +342,6 @@ def test_ordinary_fast_assess_fetches_context_only_from_local_broker(monkeypatch
     broker_calls = []
     monkeypatch.setattr(mio_locald, "request_context",
                         lambda received, *, deadline_s: (broker_calls.append((received, deadline_s)), response)[1])
-    monkeypatch.setattr(mio_fast_assistance, "_frame", lambda raw: {"situation": "bounded"})
     projected = []
 
     def fast(_frame, **kwargs):
@@ -350,7 +349,11 @@ def test_ordinary_fast_assess_fetches_context_only_from_local_broker(monkeypatch
         return {"model_free": True}
 
     monkeypatch.setattr(mio_fast_assistance, "fast_assistance", fast)
-    lane = SimpleNamespace(submit=lambda *args: {"state": "closed", "usage": "unknown"})
+    submitted=[]
+    def submit(source,situation,generation,*,upstream_coverage,upstream_selection):
+        submitted.append((source,situation,upstream_coverage,upstream_selection))
+        return {"state":"closed","usage":"unknown"}
+    lane = SimpleNamespace(submit=submit)
     service = mio_locald.LocalRuntimeService(generation_lane=lane)
     request = SimpleNamespace(verb=mio_locald.FAST_ASSESS_VERB, payload=frame,
                               arguments={"deadline_ms": 1000})
@@ -359,6 +362,13 @@ def test_ordinary_fast_assess_fetches_context_only_from_local_broker(monkeypatch
         "privacy_class": "P0-public", "question": "synthetic public question"}
     assert 0 < broker_calls[0][1] <= mio_locald.KNOWLEDGE_MAX_S
     assert projected == [response]
+    assert len(submitted)==1 and submitted[0][0]==frame
+    from azazel_mio import MioSituationFrame
+    assert isinstance(submitted[0][1],MioSituationFrame)
+    assert submitted[0][1].to_dict()["noc_summary"]==frame["question"]
+    assert submitted[0][2]=="intact"
+    assert submitted[0][3]==dict(policy_version="nexus-frame-v1",coverage="intact",
+        input_units=2,selected_units=2,omitted_units=0,omissions=[])
     assert result["fast_assistance"] == {"model_free": True}
 
 

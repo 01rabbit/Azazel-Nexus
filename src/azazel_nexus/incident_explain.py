@@ -516,8 +516,10 @@ class Selection:
             del self.explained[next(iter(self.explained))]
 
 
-def _validate_slow_analysis(value):
-    """Mirror runtime mio_generation.read_slow_analysis admission checks.
+def validate_slow_analysis(value):
+    """Validate bounded slow-analysis metadata without optional runtime imports.
+
+    Public CORE contract: return None on success, raise ValueError on refusal.
 
     CORE cannot import the optional runtime. Unlike runtime normalization,
     malformed wire metadata refuses the reply instead of becoming closed.
@@ -577,7 +579,7 @@ def _validate_slow_analysis(value):
 def read_mio_reply(reply):
     """Closed entryd reply, with separately validated advice/reference body."""
     if type(reply) is dict and "slow_analysis" in reply:
-        _validate_slow_analysis(reply["slow_analysis"])
+        validate_slow_analysis(reply["slow_analysis"])
         reply = {key: value for key, value in reply.items() if key != "slow_analysis"}
     fast = None
     if type(reply) is dict and "fast_assistance" in reply:

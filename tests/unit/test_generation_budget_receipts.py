@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 import pytest
 from azazel_nexus.generation_budget import TASKS, CAPS, task_placeholder, read_budget, project_budget, selection_unknown
-from azazel_nexus.incident_explain import _validate_slow_analysis, slow_analysis_projection, build_recent_incident, build_recent_incidents
+from azazel_nexus.incident_explain import validate_slow_analysis, slow_analysis_projection, build_recent_incident, build_recent_incidents
 from azazel_nexus_runtime import incident_explaind as daemon
 
 
@@ -52,7 +52,7 @@ def live(meta=None):
 
 
 def test_core_reader_and_public_projection_without_runtime_dependency():
-    value=live();_validate_slow_analysis(value)
+    value=live();validate_slow_analysis(value)
     shown=slow_analysis_projection(value)
     assert shown['state']=='complete' and shown['budget']['coverage']=='intact'
     assert shown['unknowns']==['Details withheld verify through an authorized source']
@@ -81,9 +81,9 @@ def test_forged_success_rejected(change):
 
 def test_missing_metadata_cannot_downgrade_new_result_to_legacy():
     value=live();del value['generation_budget']
-    with pytest.raises(ValueError): _validate_slow_analysis(value)
+    with pytest.raises(ValueError): validate_slow_analysis(value)
     value=live();value['generation_budget']['version']=2
-    with pytest.raises(ValueError): _validate_slow_analysis(value)
+    with pytest.raises(ValueError): validate_slow_analysis(value)
 
 
 def test_selected_survives_later_intact_and_upstream_unknown_prevents_complete():
@@ -184,22 +184,40 @@ def test_cleanup_requires_pending_result_full_binding_and_correct_segment(tmp_pa
     assert len(e.generation_store.events())==2
 
 
-def test_core_only_process_can_read_budget_without_runtime_installed(tmp_path):
+@pytest.mark.parametrize('isolated_core',[True,False],ids=['core-without-site-packages','current-installation'])
+def test_core_reader_in_isolated_and_current_installation(tmp_path,isolated_core):
+    import importlib.util
     import os
     import subprocess
     import sys
     from pathlib import Path
     core=Path(__file__).resolve().parents[2]/'src'
-    paths=[str(core)]+[p for p in os.environ.get('PYTHONPATH','').split(os.pathsep) if p.endswith('/deps')]
-    code='''import importlib.util,json
-assert importlib.util.find_spec("azazel_nexus_runtime") is None
-from azazel_nexus.incident_explain import slow_analysis_projection
+    code='''import importlib.util,json,sys
+payload=json.loads(sys.stdin.read())
+if payload["isolated_core"]:
+    assert importlib.util.find_spec("azazel_nexus_runtime") is None
+    assert importlib.util.find_spec("azazel_mio") is None
+    assert importlib.util.find_spec("azazel_fabric") is None
+else:
+    assert (importlib.util.find_spec("azazel_fabric") is not None)==payload["fabric_available"]
+    if payload["fabric_available"]:
+        import azazel_fabric
+from azazel_nexus.incident_explain import validate_slow_analysis,slow_analysis_projection
 from azazel_nexus.generation_budget import read_budget
-value=json.loads(__import__("sys").stdin.read())
-assert slow_analysis_projection(value)["budget"]["outcome"] == "within_budget"
+value=payload["value"]
+validate_slow_analysis(value)
+read_budget(value["generation_budget"],state=value["state"],usage=value["usage"])
+assert slow_analysis_projection(value)["budget"]["outcome"]=="within_budget"
+assert not any(name==root or name.startswith(root+".") for name in sys.modules
+               for root in ("azazel_nexus_runtime","azazel_mio"))
 '''
-    proc=subprocess.run([sys.executable,'-c',code],input=json.dumps(live()),text=True,
-        cwd=tmp_path,env={**os.environ,'PYTHONPATH':os.pathsep.join(paths)},capture_output=True)
+    payload=dict(value=live(),isolated_core=isolated_core,
+        fabric_available=importlib.util.find_spec('azazel_fabric') is not None)
+    # -S removes installed/editable finders, not just PYTHONPATH entries.
+    flags=['-S'] if isolated_core else []
+    env={**os.environ,'PYTHONPATH':str(core)} if isolated_core else dict(os.environ)
+    proc=subprocess.run([sys.executable,*flags,'-c',code],input=json.dumps(payload),text=True,
+        cwd=tmp_path,env=env,capture_output=True)
     assert proc.returncode==0,proc.stderr
 
 
@@ -355,7 +373,7 @@ def test_r4_reader_rejects_time_profile_and_tuple_counterexamples(change):
 def test_stage7_reader_refuses_minimum_policy_and_context_contradictions(change):
     value=live();change(value['generation_budget'])
     value['generation_budget']['elapsed_ms']=2 if value['generation_budget']['tasks'][0]['allocated_ms']==1 else 50
-    with pytest.raises(ValueError):_validate_slow_analysis(value)
+    with pytest.raises(ValueError):validate_slow_analysis(value)
     with pytest.raises(ValueError):slow_analysis_projection(value)
 
 

@@ -657,9 +657,9 @@ class GenerationLane:
 
 def read_slow_analysis(value):
     """Use the same dependency-free reader as CORE; malformed slow data is closed."""
-    from azazel_nexus.incident_explain import _validate_slow_analysis
+    from azazel_nexus.incident_explain import validate_slow_analysis
     try:
-        _validate_slow_analysis(value)
+        validate_slow_analysis(value)
         return copy.deepcopy(value)
     except Exception:
         return {'state':'closed','usage':'unknown'}
