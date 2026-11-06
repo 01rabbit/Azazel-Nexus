@@ -41,7 +41,9 @@ image, and Docker context through environment variables:
 
 ```sh
 NEXUS_SRC=/path/to/nexus-shared-mio-adapter \
+NEXUS_EXPECTED_HEAD=<full-40-character-commit> \
 KNOWLEDGE_SRC=/path/to/knowledge-context-producer \
+KNOWLEDGE_EXPECTED_HEAD=<full-40-character-commit> \
 MIO_WHEEL_DIR=/path/to/directory/with/verified-wheel \
 FABRIC_WHEEL_DIR=/path/to/directory/with/fixed-knowledge-context-wheel \
 WHEELHOUSE=/path/to/offline/linux-arm64-py312-wheelhouse \
@@ -51,7 +53,9 @@ DOCKER_CONTEXT=colima-rosetta SUITE_CONTEXT=rosetta \
   bash "$NEXUS_SRC/tests/real_process/run-docker.sh"
 ```
 
-The container runner checks the SHA-256 of the MIO #47 candidate wheel
+Before starting Docker, the wrapper requires clean Nexus and Knowledge source
+trees and compares each checkout's full HEAD to the supplied commit. The
+container runner checks the SHA-256 of the MIO #47 candidate wheel
 (`0e20917e02c0ca650450ce17d734be7d164eb8ebbc050526aeeb0012a7be5eae`) and
 the Fabric `v0.10.0` tag-source test wheel
 (`b22356fd672cd60471606d3a7b73ccdba99091e680fedd854381a29d76e21424`)

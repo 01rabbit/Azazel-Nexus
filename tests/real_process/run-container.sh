@@ -2,6 +2,11 @@
 set -euo pipefail
 umask 022
 
+: "${NEXUS_EXPECTED_HEAD:?fixed Nexus source commit required by run-docker.sh}"
+: "${KNOWLEDGE_EXPECTED_HEAD:?fixed Knowledge source commit required by run-docker.sh}"
+printf 'fixed source heads: Nexus=%s Knowledge=%s\n' \
+  "$NEXUS_EXPECTED_HEAD" "$KNOWLEDGE_EXPECTED_HEAD"
+
 python -B - <<'PY'
 from pathlib import Path
 import hashlib
