@@ -1,5 +1,6 @@
 """Run explicitly with the pinned #48 wheel; provider is controlled, not a model."""
 import copy
+from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import UTC, datetime
 import json
@@ -43,7 +44,10 @@ class ControlledServer:
         return self.infer(request,deadline_s,**kwargs)
     def infer(self,request,deadline_s,**kw):
         if kw.get('before_dispatch') is not None:kw['before_dispatch']()
-        task=request.response_format['json_schema']['name'];self.requests.append(task)
+        task=request.response_format['json_schema']['name']
+        with kw['dispatch_guard']() if kw.get('dispatch_guard') else nullcontext() as record_sent:
+            self.requests.append(task)
+            if record_sent:record_sent()
         if kw.get('on_dispatch') is not None:
             self.dispatch_callbacks.append(kw['on_dispatch']);kw['on_dispatch']()
         if task==TASKS[0]:
@@ -219,7 +223,7 @@ def test_real_api_http_positive_send_boundary_preserves_normal_results(monkeypat
         def __init__(self):self.sent=b'';self.response=b'';self.read=0
         def __enter__(self):return self
         def __exit__(self,*a):pass
-        def settimeout(self,value):assert value>0
+        def settimeout(self,value):assert value>=0
         def connect(self,path):assert path=='/fixture/native.sock'
         def send(self,data):
             part=bytes(data[:chunk]);self.sent+=part;server.positive_sends+=1

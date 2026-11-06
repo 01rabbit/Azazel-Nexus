@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 import math
 import socket
+import select
+from contextlib import nullcontext
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -398,7 +400,7 @@ class LocalServer:
             raise TokenCountUnknown('native_count_unknown') from None
 
     def infer_native(self, request, deadline_s, *, prepared, expected_tuple,
-                     allow_unknown_usage=True, on_dispatch=None, before_dispatch=None):
+                     allow_unknown_usage=True, on_dispatch=None, before_dispatch=None, dispatch_guard=None):
         end=_deadline(deadline_s)
         if (type(prepared) is not NativePrompt or prepared.request_digest!=request_digest(request)
                 or prepared.tuple_id!=expected_tuple['tuple_id']
@@ -417,6 +419,7 @@ class LocalServer:
         began=time.monotonic()
         kwargs={} if on_dispatch is None else {'on_dispatch':on_dispatch}
         if before_dispatch is not None:kwargs['before_dispatch']=before_dispatch
+        if dispatch_guard is not None:kwargs['dispatch_guard']=dispatch_guard
         raw=self._http('POST','/completion',body,end,**kwargs)
         try:
             result=native_result(_decode_document(raw),(time.monotonic()-began)*1000)
@@ -447,7 +450,7 @@ class LocalServer:
         except (ValueError, KeyError, TypeError, RecursionError):
             raise LocalServerRefused("invalid embedding response") from None
 
-    def _http(self, method: str, path: str, body: bytes, end: float, *, on_dispatch=None, before_dispatch=None) -> bytes:
+    def _http(self, method: str, path: str, body: bytes, end: float, *, on_dispatch=None, before_dispatch=None, dispatch_guard=None) -> bytes:
         self._check_admission()
 
         def remaining() -> float:
@@ -469,12 +472,22 @@ class LocalServer:
             payload=memoryview(head+body)
             sent=0
             while sent<len(payload):
-                peer.settimeout(remaining())
-                count=peer.send(payload[sent:])
-                if type(count) is not int or count<=0:
-                    raise LocalServerRefused('HTTP send made no progress')
-                first=sent==0
-                sent+=count
+                # The accounting/freeze gate never covers a blocking socket wait.
+                peer.settimeout(0 if dispatch_guard is not None else remaining())
+                try:
+                    with dispatch_guard() if dispatch_guard is not None else nullcontext() as record_sent:
+                        remaining()
+                        count=peer.send(payload[sent:])
+                        if type(count) is not int or count<=0:
+                            raise LocalServerRefused('HTTP send made no progress')
+                        first=sent==0
+                        sent+=count
+                        if first and record_sent is not None:
+                            record_sent()
+                except BlockingIOError:
+                    if not select.select([], [peer], [], remaining())[1]:
+                        raise TimeoutError('local HTTP write deadline exceeded')
+                    continue
                 if first and on_dispatch is not None:
                     on_dispatch()
             header = bytearray()

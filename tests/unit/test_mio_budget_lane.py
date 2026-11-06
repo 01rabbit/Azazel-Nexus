@@ -1,5 +1,6 @@
 """Budget path with a mocked agreed MIO API and controlled local transport."""
 import copy
+from contextlib import nullcontext
 import json
 import sys
 import threading
@@ -54,7 +55,9 @@ class Server:
         return self.infer(request,deadline_s,**kwargs)
     def infer(self, request, deadline_s, **kw):
         if kw.get('before_dispatch') is not None:kw['before_dispatch']()
-        self.requests.append((request, deadline_s))
+        with kw['dispatch_guard']() if kw.get('dispatch_guard') else nullcontext() as record_sent:
+            self.requests.append((request, deadline_s))
+            if record_sent:record_sent()
         if kw.get('on_dispatch') is not None:kw['on_dispatch']()
         self.entered.set()
         if self.block:
@@ -240,8 +243,9 @@ def test_stop_confirmed_before_global_deadline_preserves_timeout_and_prior_usage
 def test_provider_failure_records_dispatched_call_even_without_usage(make):
     lane,server,source,frame=make()
     def unavailable(request,deadline_s,**kw):
+        with kw['dispatch_guard']() as record_sent:
+            server.requests.append((request,deadline_s));record_sent()
         kw['on_dispatch']()
-        server.requests.append((request,deadline_s))
         raise OSError('private fixture message')
     server.infer=unavailable
     value=terminal(lane,source,frame)
@@ -471,7 +475,8 @@ def test_cancel_after_positive_send_preserves_sent_count_and_usage(make):
     lane,server,source,frame=make()
     def infer(request,deadline_s,**kw):
         kw['before_dispatch']()
-        server.requests.append((request,deadline_s))  # controlled positive transport send
+        with kw['dispatch_guard']() as record_sent:
+            server.requests.append((request,deadline_s));record_sent()  # controlled positive transport send
         lane._active['reason']='cancelled';lane._active['cancelled'].set()
         kw['on_dispatch']()  # cancellation cannot erase a positive send
         return LocalInferenceResult('{}',12,7,{},'stop','preserved')
@@ -485,7 +490,9 @@ def test_second_call_postsend_failure_retains_first_call_usage(make):
     lane,server,source,frame=make();original=server.infer
     def infer(request,deadline_s,**kw):
         if server.requests:
-            kw['before_dispatch']();server.requests.append((request,deadline_s));kw['on_dispatch']()
+            with kw['dispatch_guard']() as record_sent:
+                server.requests.append((request,deadline_s));record_sent()
+            kw['on_dispatch']()
             raise TimeoutError('fixture after positive send')
         return original(request,deadline_s,**kw)
     server.infer=infer
@@ -494,3 +501,143 @@ def test_second_call_postsend_failure_retains_first_call_usage(make):
     assert meta['tasks'][0]['actual_usage']==dict(tokens_in=12,tokens_out=7)
     assert meta['tasks'][1]['dispatched'] and meta['tasks'][1]['actual_usage'] is None
     assert meta['primary_outcome']=='deadline_exceeded'
+
+
+@pytest.mark.parametrize(('order','target'),[('sent_first',1),('sent_first',2),('freeze_first',1),('fence_first',1)])
+def test_nonblocking_send_accounting_is_ordered_with_real_controller_freeze(make,monkeypatch,order,target):
+    """No network: actual native HTTP method + nonblocking Peer and controller."""
+    from pathlib import Path
+    from types import MethodType
+    from azazel_nexus_runtime import mio_serve, mio_budget_session
+    entered=threading.Event();release=threading.Event();notified=[];peers=[]
+    base=mio_budget_session.BudgetSession
+    class Session(base):
+        def invoke_budgeted(self,task,prompt,on_dispatch):
+            ordinal=TASKS.index(task)+1
+            def notify():
+                if order=='sent_first' and ordinal==target:
+                    entered.set();assert release.wait(2)
+                on_dispatch();notified.append(ordinal)
+            return super().invoke_budgeted(task,prompt,notify)
+    monkeypatch.setattr(mio_budget_session,'BudgetSession',Session)
+    lane,server,source,frame=make(deadline=1.5)
+    server.socket_path=Path('/fixture/native.sock');server._check_admission=lambda:None
+    server._verified_tuple=lambda end:server.verified_tuple(1)
+    server._http=MethodType(mio_serve.LocalServer._http,server)
+    server.infer_native=MethodType(mio_serve.LocalServer.infer_native,server)
+    raw=json.dumps(dict(content='{}',truncated=False,stop=True,stop_type='eos',tokens_evaluated=12,tokens_predicted=7)).encode()
+    response=b'HTTP/1.1 200 OK\r\nContent-Length: '+str(len(raw)).encode()+b'\r\n\r\n'+raw
+    class Peer:
+        def __init__(self):self.index=len(peers)+1;peers.append(self);self.sent=0;self.read=0;self.attempts=0
+        def __enter__(self):return self
+        def __exit__(self,*a):pass
+        def connect(self,path):assert path=='/fixture/native.sock'
+        def settimeout(self,value):self.timeout=value
+        def send(self,data):
+            assert self.timeout==0  # never block the freeze/accounting gate
+            self.attempts+=1
+            if order in ('freeze_first','fence_first') and self.index==target and self.attempts==1:raise BlockingIOError()
+            count=min(7,len(data)) if self.index==target else len(data)
+            self.sent+=count;return count
+        def recv(self,size):data=response[self.read:self.read+size];self.read+=len(data);return data
+    def writable(_r,w,_x,timeout):
+        entered.set()
+        if order=='fence_first':
+            with lane._lock:lane._fenced=True
+        else:assert release.wait(2)
+        return [],w,[]
+    monkeypatch.setattr(mio_serve.socket,'socket',lambda *a:Peer())
+    monkeypatch.setattr(mio_serve.select,'select',writable)
+    try:
+        value=terminal(lane,source,frame)
+        assert entered.is_set() and not release.is_set()  # control did not wait for notify/write readiness
+        meta=value['generation_budget'];expected=target if order=='sent_first' else 0
+        assert value['state'] in (('cancelled',) if order=='fence_first' else ('timeout','degraded'))
+        assert meta['job_calls']==expected
+        assert sum(p.sent for p in peers)>0 if expected else sum(p.sent for p in peers)==0
+        if target==2:assert meta['tasks'][0]['actual_usage']==dict(tokens_in=12,tokens_out=7)
+        assert not meta['core_complete']
+        release.set()
+        until=time.monotonic()+1
+        while order=='sent_first' and target not in notified and time.monotonic()<until:time.sleep(.002)
+        assert notified==list(range(1,expected+1))
+        saved=lane.poll(value['result_handle'],'fixture',frame.trace_id)
+        assert saved['generation_budget']['job_calls']==expected and saved['state']!='complete'
+        if target==2:assert saved['generation_budget']['tasks'][0]['actual_usage']==dict(tokens_in=12,tokens_out=7)
+    finally:release.set()
+
+
+@pytest.mark.parametrize(('fault','cleanup'),[('version','not_needed'),('profile','pending'),('oversized','unconfirmed'),('version_complete','not_needed'),('version_closed','not_needed')])
+def test_malformed_metadata_repair_round_trips_known_usage_through_client_and_store(make,monkeypatch,tmp_path,fault,cleanup):
+    from azazel_nexus_runtime import mio_generation, mio_socket_client, incident_explaind
+    lane,server,source,_=make();server.integrity='preserved' if fault=='version_complete' else 'truncated'
+    count=3 if fault=='version_complete' else 1
+    trace='mio-0123456789abcdef-1';frame=NS(frame_id=trace+':frame',trace_id=trace)
+    original=lane._execute
+    def corrupted(job):
+        value=original(job);session=job['budget_session']
+        if fault=='version_closed':
+            session.note_failure('admission_closed','admission_closed')
+            value=session.snapshot('closed','admission_closed')
+        assert mio_generation.read_slow_analysis(value)['usage']=='known'
+        if cleanup=='pending':session.cleanup=dict(state='pending',reason=None,remaining_ms=100)
+        elif cleanup=='unconfirmed':session.cleanup=dict(state='unconfirmed',reason='observation_lost',remaining_ms=0)
+        if fault.startswith('version'):value['generation_budget']['version']=99
+        elif fault=='profile':
+            value['generation_budget']['profile']['configured_context_limit']=None
+            session.verified_tuple=None  # immutable accounting basis still holds the verified source
+        else:value['generation_budget']['reasons']=['x'*150000]
+        assert mio_generation.read_slow_analysis(value)==dict(state='closed',usage='unknown')
+        session.frozen=copy.deepcopy(value)
+        return value
+    lane._execute=corrupted
+    value=terminal(lane,source,frame)
+    checked=mio_generation.read_slow_analysis(value)
+    assert checked['state']=='degraded' and checked['usage']=='known'
+    meta=checked['generation_budget']
+    assert meta['version']==1 and meta['job_calls']==count and meta['verified_tuple'] is not None
+    assert meta['primary_outcome']==('output_invalid' if count==3 else 'runtime_truncated') and 'malformed' in meta['reasons']
+    assert meta['tasks'][0]['actual_usage']==dict(tokens_in=12,tokens_out=7)
+    assert meta['cleanup']['state']==cleanup and not meta['core_complete'] and 'assistance' not in checked
+    monkeypatch.setattr(mio_socket_client,'_exchange',lambda *_a,**_k:json.loads(json.dumps(dict(outcome='generation_result',slow_analysis=checked))))
+    delivered=mio_socket_client.LocalSocketClient().generation_result(checked)
+    assert delivered==checked and delivered['calls'][0]['usage']==dict(tokens_in=12,tokens_out=7)
+    e=incident_explaind.Explainer(incidents=tmp_path/'incidents',state=tmp_path/'state',status_path=tmp_path/'status',clock=lambda:0.,monotonic=lambda:0.)
+    e.generation_store=incident_explaind.GenerationResultStore(tmp_path);e.generation_store.prepare(0)
+    receipt=dict(event_type='mio.generation.receipt',incident_id='inc-0123456789abcdef',incident_sequence=1,
+        request_id='inc-0123456789abcdef:1',frame_id=frame.frame_id,trace_id=trace,generation_id='fixture',result_handle=value['result_handle'],recorded_at=0)
+    assert e._append_generation_event(receipt)
+    e._generation_receipts[receipt['result_handle']]=receipt;e._generation_current[receipt['incident_id']]=receipt['result_handle']
+    assert e._record_generation_terminal(receipt,delivered,sent_at=0.)
+    e._restore_generation_results()
+    restored=e._generation_value(receipt['result_handle'])
+    assert restored['usage']=='known' and restored['generation_budget']['job_calls']==count
+    read_budget(restored['generation_budget'],state=restored['state'],usage=restored['usage'])
+    stored=next(row for row in e.generation_store.events() if row['event_type']=='mio.generation.result')
+    assert stored['generation_budget']['tasks'][0]['actual_usage']==dict(tokens_in=12,tokens_out=7)
+    assert restored['generation_budget']['tasks'][0]['actual_usage']==dict(tokens_in=12,tokens_out=7)
+    assert restored['generation_budget']['primary_outcome']==meta['primary_outcome']
+    assert all(t['actual_usage']==dict(tokens_in=12,tokens_out=7) for t in restored['generation_budget']['tasks'][:count])
+    if cleanup=='pending':assert restored['generation_budget']['cleanup']['reason']=='restart_unconfirmed'
+    else:assert restored['generation_budget']['cleanup']['state']==cleanup
+    assert restored['state']=='degraded' and 'assistance' not in restored
+
+
+@pytest.mark.parametrize('unknown',['model_bound','server_tuple'])
+def test_zero_send_metadata_repair_keeps_unknowns_closed_without_inventing_context(make,unknown):
+    from dataclasses import replace
+    from azazel_nexus_runtime.mio_generation import read_slow_analysis
+    lane,server,source,frame=make()
+    if unknown=='model_bound':lane.capability=replace(lane.capability,model_context_limit=None)
+    else:server.verified_tuple=lambda *_:None
+    original=lane._execute
+    def corrupt(job):
+        value=original(job);assert read_slow_analysis(value)['state']=='degraded'
+        value['generation_budget']['version']=99;job['budget_session'].frozen=copy.deepcopy(value)
+        return value
+    lane._execute=corrupt
+    value=read_slow_analysis(terminal(lane,source,frame))
+    assert value['state']=='degraded' and value['usage']=='unknown'
+    assert value['generation_budget']['job_calls']==0 and not server.requests
+    assert value['generation_budget']['primary_outcome']=='token_count_unknown'
+    assert all(t['context_limit'] is None for t in value['generation_budget']['tasks'])

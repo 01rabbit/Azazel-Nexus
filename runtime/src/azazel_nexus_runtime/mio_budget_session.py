@@ -1,13 +1,14 @@
 """Product-owned budget execution; MIO owns semantic compilation and grounding."""
 from __future__ import annotations
 import copy
+from contextlib import contextmanager
 import json
 import math
 import threading
 import time
 from azazel_nexus.generation_budget import (TASKS, CAPS, coverage, task_placeholder,
     selection_unknown, project_budget, integer, validate_selection, validate_model_assistance,
-    MIO_REASON_OUTCOMES, COORDINATOR_DISPOSITIONS, validate_verified_tuple, effective_context_limit, context_integer)
+    MIO_REASON_OUTCOMES, COORDINATOR_DISPOSITIONS, validate_verified_tuple, effective_context_limit, context_integer, validate_profile, read_budget, REASONS, OUTCOMES)
 from .mio_generation_budget import (BudgetPlanner, BudgetProfile, TaskBudget,
     BudgetRefused, BudgetReason, mio_budget_for_task)
 from .mio_serve import LocalInferenceRequest, NativePrompt, TokenCountUnknown
@@ -23,6 +24,7 @@ class BudgetSession:
         self.reason = None
         self.failures = []
         self.verified_tuple = None
+        self._accounting_basis = None
         self.prepared = {}
         settings = lane.budget_settings
         configured=getattr(lane.capability,'model_context_limit',None)
@@ -108,6 +110,7 @@ class BudgetSession:
             self.planner = BudgetPlanner(profile, submitted=self.started,
                 deadline_s=self.lane.deadline_s, counter=counter, clock=time.monotonic,settings=settings,verified_context_limit=verified['context_limit'],
                 configured_context_limit=self.profile_metadata['configured_context_limit'])
+            self._accounting_basis=(copy.deepcopy(self.verified_tuple),copy.deepcopy(self.profile_metadata))
         except Exception:
             self.reject('count_unknown', 'token_count_unknown')
 
@@ -170,23 +173,30 @@ class BudgetSession:
                     self.reject('cancelled','cancelled')
                 if not callable(on_dispatch):
                     self.reject('dispatch_tracking_unavailable','output_invalid')
+        def record_sent():
+            # Called inside the nonblocking send gate, before freeze can snapshot.
+            if record['dispatched'] or self.frozen is not None:
+                self.reject('send_notification_conflict','output_invalid')
+            record['dispatched'] = True
+            self.calls.append(call)
+        @contextmanager
+        def dispatch_guard():
+            # Same lock order as terminal publication; serialize lane fence too.
+            with self.lock,self.lane._lock:
+                before_dispatch()
+                yield record_sent
         def dispatch():
-            # Truth after the first positive socket.send: never revoke a sent fact
-            # because a deadline/cancel arrived between send and this callback.
-            with self.lock:
-                if record['dispatched'] or self.frozen is not None:
-                    self.reject('send_notification_conflict','output_invalid')
-                record['dispatched'] = True
-                self.calls.append(call)
-                try:
-                    on_dispatch()
-                except Exception:
-                    self.reject('send_notification_conflict','output_invalid')
+            # MIO notification is outside the gate: a slow callback cannot hold
+            # terminalization, and freeze cannot erase the already recorded send.
+            try:
+                on_dispatch()
+            except Exception:
+                self.reject('send_notification_conflict','output_invalid')
         try:
             cached=self.prepared.get(task)
             if cached is None or cached[0]!=prompt:raise TokenCountUnknown('native_count_unknown')
             result = self.lane.server.infer_native(request,
-                deadline_s=max(.000001,self.call_end-time.monotonic()),allow_unknown_usage=True,on_dispatch=dispatch,before_dispatch=before_dispatch,
+                deadline_s=max(.000001,self.call_end-time.monotonic()),allow_unknown_usage=True,on_dispatch=dispatch,before_dispatch=before_dispatch,dispatch_guard=dispatch_guard,
                 prepared=cached[1],expected_tuple=self.verified_tuple)
             with self.lock:
                 if self.frozen is not None:
@@ -340,4 +350,38 @@ class BudgetSession:
                 status['usage']='known'
             if projected=='complete':
                 status['assistance']=self.assistance
+            return status
+
+
+    def failure_snapshot(self):
+        """Rebuild failed v1 metadata from accounting, never from the faulty wire value."""
+        with self.lock:
+            safe=BudgetSession(self.lane,self.job,None)
+            basis=self._accounting_basis
+            if basis is None and self.verified_tuple is not None:
+                basis=(self.verified_tuple,self.profile_metadata)
+            if basis is not None:
+                verified,profile=copy.deepcopy(basis)
+                validate_verified_tuple(verified)
+                validate_profile(profile)
+                context=(None if profile['configured_context_limit'] is None else
+                    effective_context_limit(verified['context_limit'],profile['configured_context_limit']))
+                safe.verified_tuple=verified
+                safe.profile_metadata=profile
+                for i,(task,cap) in enumerate(zip(safe.tasks if context is not None else (),profile['output_caps'])):
+                    task.update(context_limit=context,context_slack=profile['slack'],output_tokens_cap=cap,
+                        output_min=profile['output_mins'][i],input_limit=max(1,context-cap-profile['slack']) if context>cap+profile['slack'] else None)
+            if self.reason in REASONS and self.outcome in OUTCOMES:
+                safe.note_failure(self.reason,self.outcome)
+            safe.note_failure('malformed','output_invalid')
+            for i,call in enumerate(self.calls[:3]):
+                task=safe.tasks[i];task['dispatched']=True
+                actual=call.get('usage')
+                if (type(actual) is dict and set(actual)=={'tokens_in','tokens_out'}
+                        and all(integer(v) for v in actual.values())):
+                    task['actual_usage']=copy.deepcopy(actual)
+                safe.calls.append(dict(usage=task['actual_usage'],timings={}))
+            safe.cleanup=copy.deepcopy(self.cleanup)
+            status=safe.snapshot('degraded','output_invalid')
+            read_budget(status['generation_budget'],state=status['state'],usage=status['usage'])
             return status

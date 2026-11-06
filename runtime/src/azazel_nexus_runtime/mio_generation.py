@@ -638,23 +638,10 @@ class GenerationLane:
                         status = copy.deepcopy(session.frozen or status)
                     status['result_handle'] = job['handle']
                     # Retained output has the same hard byte/schema bound as the wire reader.
-                    if read_slow_analysis(status).get('state') == 'closed' and status['state'] != 'closed':
+                    if read_slow_analysis(status) == {'state':'closed','usage':'unknown'}:
                         if session is not None:
                             # Malformed new metadata cannot downgrade to an old-format result.
-                            from .mio_budget_session import BudgetSession
-                            from azazel_nexus.generation_budget import integer
-                            safe = BudgetSession(self,job,None)
-                            safe.reason,safe.outcome = 'malformed','output_invalid'
-                            for i,call in enumerate(session.calls[:3]):
-                                task = safe.tasks[i]
-                                task['dispatched'] = True
-                                actual = call.get('usage')
-                                if (type(actual) is dict and set(actual)=={'tokens_in','tokens_out'}
-                                        and all(integer(v) for v in actual.values())):
-                                    task['actual_usage'] = copy.deepcopy(actual)
-                                safe.calls.append({'usage':task['actual_usage'],'timings':{}})
-                            safe.cleanup = copy.deepcopy(session.cleanup)
-                            status = safe.snapshot('degraded','output_invalid')
+                            status = session.failure_snapshot()
                             session.frozen = copy.deepcopy(status)
                         else:
                             status = self._status('degraded', job['frame'], job['generation'],
