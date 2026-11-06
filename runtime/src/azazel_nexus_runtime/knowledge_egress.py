@@ -165,10 +165,13 @@ class KnowledgeClient:
         alias_key: bytes,
         deadline_s: float | None = None,
     ):
-        """Query the Fabric v1 endpoint only when commissioned configuration enables it.
+        """Query the Fabric v1 endpoint only when local configuration opts in.
 
         This operation remains outside MIO's pure core and shares the commissioned
         peer registry, mTLS identity, SPKI pin, deadline and concurrency budget.
+        `knowledge_context_enabled` is a local caller-supplied opt-in, not a
+        capability asserted by the signed peer registry. The deployed service
+        must source it only from reviewed local commissioning configuration.
         It returns a Fabric-validated advisory response or one fixed refusal.
         """
         if self.knowledge_context_enabled is not True:

@@ -19,13 +19,15 @@ request/correlation/source binding and the advisory-only fact/inference model.
 
 The adapter accepts P0-public queries only, even if local policy allows a
 wider class. `KnowledgeClient.request_context()` opens an mTLS connection only
-when explicitly called on a client with the opt-in flag, commissioned peer,
-client identity, CA and pin configured. Importing this module or installing the
-package does not connect, load commissioned state, install a trust anchor, or
-alter service startup. This PR adds no non-test caller for that method; the
-normal local broker composition is a separate #403 candidate. No commissioning
-state is added here. The response is a bounded advisory object; it cannot grant
-authority or alter Edge's deterministic decision path.
+when explicitly called on a client with the local opt-in flag, commissioned
+peer, client identity, CA and pin configured. The opt-in boolean is caller
+configuration; it is not a Context capability in the signed peer registry.
+Importing this module or installing the package does not connect, load
+commissioned state, install a trust anchor, or alter service startup. This PR
+adds no non-test caller for that method; the normal local broker composition is
+a separate #403 candidate. No commissioning state is added here. The response
+is a bounded advisory object; it cannot grant authority or alter Edge's
+deterministic decision path.
 
 Before an actual client is composed or a connection is enabled, the service
 owners still need to record and test:
