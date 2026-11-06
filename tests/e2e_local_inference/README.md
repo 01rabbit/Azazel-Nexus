@@ -3,9 +3,13 @@
 Run in the b11716 container with the repository mounted:
 
 ```sh
+python -m pip install -e '.[dev,mio]' -e ./runtime
 AZ_LLAMA_SERVER=/path/to/llama-server AZ_GGUF_DIR=/dir/with/gguf \
   PYTHONPATH=src:runtime/src python -m pytest -q tests/e2e_local_inference
 ```
+
+The `mio` extra resolves the exact source commit pinned in `pyproject.toml`; do
+not install MIO from a floating branch for this test.
 
 Without both variables, an executable server, and a supported candidate GGUF file, the suite
 skips. Once assets exist, missing implementation APIs and inference failures
@@ -75,6 +79,62 @@ state outside M.I.O. before/after answer, timeout, refusal, and crash. A test
 authority/expired-lease marker must stay byte-identical. This is evidence that
 the local path writes no authority state; it does not run the external Edge
 arbiter, which is not part of this repository.
+
+## MIO shared generation scenario (fixture-authorized lab evidence only)
+
+Everything above is the existing **local advisory** path: `mio.advise` ->
+router -> locald `_infer` -> `LocalServer`, which returns advice through
+`local_advisory`. The `generation` scenarios cover a different path, the **MIO
+shared generation result**: entryd's ordinary `mio.advise` fast-assess call ->
+`LocalRuntimeService` (`mio.local.assess`) -> `GenerationLane` -> the pinned
+`azazel_mio` `AssistantCore` -> the real `llama-server`. Its outcome is a
+`slow_analysis` receipt that is polled via `mio.local.generation.result`. It is
+not the advisory text returned by the router.
+
+**Fixture admission.** `GenerationLane` is closed in production. The scenario
+uses a test-only `GenerationLane` subclass that accepts one unsealed,
+test-only `GenerationCapability`. It does not set or patch
+`GENERATION_ADMISSION_ENABLED` or `LOCAL_MODEL_ADMISSION_ENABLED`, mints no
+production seal, and touches no HG/admission code. The scenario asserts both
+constants stay `False` and that the production `authorized()` still rejects the
+fixture capability. The printed receipt is labeled
+"FIXTURE-AUTHORIZED LAB EVIDENCE ONLY". It is not HG-05, HG, or production
+admission evidence.
+
+**Composition.** A small test adapter (`InProcessLocaldAdapter`) replaces only
+`entry.local` so the ordinary fast-assess and result calls reach
+`LocalRuntimeService.handle` directly. This stays **in-process** (service
+composition). It is not a production socket/process test: there are no
+azmio/azexplain accounts, no AF_UNIX service sockets and no peer-credential
+checks. The real `llama-server` remains a separate OS process.
+
+**What is checked.**
+- `generation`: `slow_analysis` goes `queued` -> `complete`, with
+  `generation_method == "model"`. The provider call count comes from a probe
+  around the real server; tokens and timings are recorded from the real
+  response. A response without usage stays `unknown` and is never invented.
+- `generation_degraded`: the real server is stopped before dispatch. The real
+  failure yields a typed `degraded` receipt with unknown usage and no
+  assistance. This is not a timeout case; no timeout path is tested here.
+- In both: Edge reading and non-M.I.O. authority state are unchanged, and
+  captured logs and persisted files contain no question, context, or response
+  text. The harness prints only counts, states and numbers.
+- The Nexus route remains the deterministic handoff in both cases: the fixture
+  capability authorizes only the isolated slow GenerationLane job and does not
+  admit the router's local advice provider. The model-free fast result and
+  model-backed slow receipt remain separate.
+
+The model is the smallest supported candidate GGUF present, chosen by the
+existing runner (no new selection and no download). The scenario was written
+against, but not yet run in, a specific environment: the tested environment
+(host, binary build, model file, resulting numbers) must be recorded by
+whoever runs it. Until then none of it is claimed as tested.
+
+**Unproven production gates.** This does not show that a production generation
+admission loader, sealed capability, HG-05 admission, real service sockets and
+accounts, or real-time latency under the 0.25 s fast budget behave correctly.
+The generation job runs asynchronously on a CPU-only server, so its timings
+are not production figures.
 
 Every child process has a 300-second outer deadline and always calls stop in
 `finally`. If a platform denies AF_UNIX binds, classify the run as an
