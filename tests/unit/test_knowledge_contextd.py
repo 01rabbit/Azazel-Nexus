@@ -97,6 +97,47 @@ def test_missing_egress_account_degrades_to_unavailable(monkeypatch):
         )
 
 
+@pytest.mark.parametrize("peer", [(0, 20001, 20002), (123, 20002, 20003)])
+def test_local_broker_client_refuses_invalid_pid_or_peer_uid(monkeypatch, peer):
+    from azazel_nexus_runtime import knowledge_context_socket
+
+    calls = []
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect(self, path):
+            calls.append(("connect", path))
+
+        def sendall(self, _payload):
+            calls.append(("sendall",))
+
+    def verify(path, *, expected_uid, expected_gid):
+        calls.append(("verify_socket", expected_uid, expected_gid))
+
+    monkeypatch.setattr(knowledge_context_socket, "_service_uid", lambda: 20001)
+    monkeypatch.setattr(knowledge_context_socket, "_socket_gid", lambda: 20002)
+    monkeypatch.setattr(knowledge_context_socket, "verify_socket", verify)
+    monkeypatch.setattr(knowledge_context_socket, "peer_credentials", lambda _conn: peer)
+    monkeypatch.setattr(knowledge_context_socket.socket, "socket",
+                        lambda *_a, **_k: Connection())
+
+    with pytest.raises(KnowledgeContextUnavailable, match="peer identity"):
+        knowledge_context_socket.request_context(
+            {"privacy_class": "P0-public", "question": "test"}, deadline_s=0.1,
+        )
+    assert calls[0] == ("verify_socket", 20001, 20002)
+    assert calls[1][0] == "connect"
+    assert all(call[0] != "sendall" for call in calls)
+
+
 def test_truncated_broker_reply_becomes_optional_context_unavailable(monkeypatch):
     from azazel_nexus.audit import AuditUnavailable
     from azazel_nexus_runtime import knowledge_context_socket

@@ -194,6 +194,14 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
         assert ready["ready"] is True and ready["pid"] == server.pid != os.getpid()
         assert ready["host"] == "127.0.0.1"
 
+        # An unauthenticated TLS peer reaches the real Knowledge listener but
+        # cannot complete its client-certificate handshake. No HTTP request is
+        # sent before this rejection.
+        unauthenticated = ssl.create_default_context(cafile=str(pki / "ca.pem"))
+        with socket.create_connection((ready["host"], ready["port"]), timeout=3) as raw:
+            with pytest.raises(OSError):
+                unauthenticated.wrap_socket(raw, server_hostname="knowledge.test")
+
         now = datetime.now(UTC)
         server_der = ssl.PEM_cert_to_DER_cert((pki / "server.pem").read_text())
         endpoint = ProviderRecord(
@@ -368,6 +376,30 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
         entryd_process = None
         try:
             assert _ready(broker_process)["ready"] is True
+
+            # A process outside the reviewed socket group cannot traverse the
+            # broker runtime directory, even with a syntactically valid P0
+            # frame. The refusal occurs before a request reaches the service.
+            refusal_code = """
+from azazel_nexus_runtime.knowledge_context_socket import (
+    request_context, KnowledgeContextUnavailable,
+)
+try:
+    request_context({'privacy_class': 'P0-public', 'question': 'synthetic'},
+                    deadline_s=1)
+except KnowledgeContextUnavailable:
+    print('refused')
+else:
+    raise SystemExit(2)
+"""
+            refused = subprocess.run(
+                [sys.executable, "-B", "-c", refusal_code],
+                cwd=ROOT, env=test_env, capture_output=True, text=True, timeout=5,
+                preexec_fn=credentials(pwd.getpwnam("azoperator")),
+            )
+            assert refused.returncode == 0, refused.stderr[-1000:]
+            assert refused.stdout.strip() == "refused"
+
             locald_process = subprocess.Popen(
                 [sys.executable, str(ROOT / "tests/real_process/_mio_locald_context_process.py")],
                 cwd=ROOT, env=test_env, stdin=subprocess.DEVNULL,
