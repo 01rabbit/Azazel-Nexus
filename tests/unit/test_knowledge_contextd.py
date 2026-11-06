@@ -265,6 +265,7 @@ def test_mio_assessment_caller_cannot_inject_verified_context():
 
 
 def test_ordinary_fast_assess_fetches_context_only_from_local_broker(monkeypatch):
+    pytest.importorskip("azazel_mio", reason="M.I.O. is an optional runtime extra")
     from azazel_nexus_runtime import mio_fast_assistance, mio_locald
 
     frame = {"request_id": "normal", "privacy_class": "P0-public",
@@ -295,6 +296,7 @@ def test_ordinary_fast_assess_fetches_context_only_from_local_broker(monkeypatch
 
 
 def test_ordinary_fast_assess_does_not_upgrade_mission_data_to_p0(monkeypatch):
+    pytest.importorskip("azazel_mio", reason="M.I.O. is an optional runtime extra")
     from azazel_nexus_runtime import mio_locald, mio_fast_assistance
 
     frame = {"request_id": "mission", "privacy_class": "P2-mission",
