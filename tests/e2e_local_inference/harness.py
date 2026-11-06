@@ -640,7 +640,16 @@ def generation_scenario(root, record, observed, privacy, *, degraded):
             assert (probe.infer_attempts == 1 and probe.pre_http_refusals == 1
                     and probe.other_errors == 0 and not probe.results)
         else:
-            assert final["state"] == "complete", final["state"]
+            observed_metrics = [{
+                "tokens_in": result.tokens_in,
+                "tokens_out": result.tokens_out,
+                "timings": result.timings,
+            } for result in probe.results]
+            assert final["state"] == "complete", (
+                f"state={final['state']} infer_attempts={probe.infer_attempts} "
+                f"pre_http_refusals={probe.pre_http_refusals} "
+                f"other_errors={probe.other_errors} completed_calls={observed_metrics}"
+            )
             assert final["assistance"]["generation_method"] == "model"
             assert probe.pre_http_refusals == 0 and probe.other_errors == 0
             assert probe.infer_attempts >= 1
