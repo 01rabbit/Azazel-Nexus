@@ -257,19 +257,29 @@ class LocalRuntimeService:
             try:
                 from .mio_fast_assistance import fast_assistance, _frame
                 situation = _frame(frame)
+                assessment_deadline = (time.monotonic()
+                                       + request.arguments["deadline_ms"] / 1000)
                 fabric_context_response = None
                 context_query = _knowledge_context_query(frame)
                 if context_query is not None:
+                    context_budget = max(
+                        0.0,
+                        assessment_deadline - time.monotonic()
+                        - DELIVERY_RESERVE_S - FAST_CORE_RESERVE_S,
+                    )
                     try:
-                        fabric_context_response = request_context(
-                            context_query, deadline_s=min(KNOWLEDGE_MAX_S,
-                                max(0.0, request.arguments["deadline_ms"] / 1000
-                                    - DELIVERY_RESERVE_S)))
+                        if context_budget > 0:
+                            fabric_context_response = request_context(
+                                context_query,
+                                deadline_s=min(KNOWLEDGE_MAX_S, context_budget),
+                            )
                     except KnowledgeContextUnavailable:
                         pass
                 result = fast_assistance(
-                    frame, deadline_s=max(0.0, request.arguments["deadline_ms"] / 1000
-                                          - DELIVERY_RESERVE_S),
+                    frame, deadline_s=max(
+                        0.0, assessment_deadline - time.monotonic()
+                        - DELIVERY_RESERVE_S,
+                    ),
                     knowledge_lookup=self._knowledge_lookup, knowledge_max_s=KNOWLEDGE_MAX_S,
                     core_reserve_s=FAST_CORE_RESERVE_S, situation_frame=situation,
                     fabric_knowledge_context_response=fabric_context_response)

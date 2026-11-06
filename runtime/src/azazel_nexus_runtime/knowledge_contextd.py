@@ -32,7 +32,11 @@ SOCKET_NAME = "knowledge-context"
 MAX_RESPONSE_BYTES = 48 * 1024
 CONTEXT_VERB = Verb(
     "knowledge.context",
-    arguments=(Argument("deadline_ms", ArgumentKind.ORDINAL, maximum=10_000),),
+    arguments=(
+        Argument("deadline_ms", ArgumentKind.ORDINAL, maximum=10_000),
+        Argument("deadline_monotonic_ns", ArgumentKind.ORDINAL,
+                 maximum=9_223_372_036_854_775_807),
+    ),
     admits=frozenset({PrincipalClass.SERVICE}),
     accepts_payload=True,
     payload_contract="bounded frame; broker constructs a P0-public request",
@@ -74,6 +78,10 @@ class KnowledgeContextBroker:
             return {"refusal": "unavailable"}
         start = self._monotonic()
         deadline_s = request.arguments["deadline_ms"] / 1000
+        deadline_monotonic = request.arguments["deadline_monotonic_ns"] / 1_000_000_000
+        deadline_s = min(deadline_s, deadline_monotonic - self._monotonic())
+        if deadline_s <= 0:
+            return {"refusal": "timeout"}
         try:
             wire_frame = read_context_frame(request.payload.get("frame"))
             if set(request.payload) != {"frame"} or not self._ready:
@@ -91,6 +99,10 @@ class KnowledgeContextBroker:
             if not self._slot.acquire(blocking=False):
                 raise TimeoutError
             try:
+                # Record the sanitized request attempt before any egress. A
+                # failed audit sink must keep the optional network path closed.
+                self._audit({"event_type": "knowledge.context.requested",
+                             "outcome": "attempted"})
                 verified = self._client.request_context(
                     frame=frame,
                     privacy_class=PrivacyClass.P0_PUBLIC,

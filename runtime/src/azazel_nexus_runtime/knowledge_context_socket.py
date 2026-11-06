@@ -49,14 +49,17 @@ def request_context(frame: dict, *, deadline_s: float) -> dict:
     if type(deadline_s) not in (int, float) or not 0 < deadline_s <= 10:
         raise KnowledgeContextUnavailable("deadline")
     frame = read_context_frame(frame)
+    deadline = time.monotonic() + deadline_s
     document = {"verb": "knowledge.context",
-                "arguments": {"deadline_ms": min(10_000, int(deadline_s * 1000))},
+                "arguments": {
+                    "deadline_ms": min(10_000, int(deadline_s * 1000)),
+                    "deadline_monotonic_ns": int(deadline * 1_000_000_000),
+                },
                 "event": {"frame": frame}}
     payload = json.dumps(document, ensure_ascii=False, allow_nan=False,
                          separators=(",", ":")).encode("utf-8")
     if len(payload) > MAX_FRAME_BYTES:
         raise KnowledgeContextUnavailable("request size")
-    deadline = time.monotonic() + deadline_s
     path = socket_path("knowledge-context")
     try:
         verify_socket(path, expected_uid=_service_uid(), expected_gid=_socket_gid())
@@ -78,7 +81,7 @@ def request_context(frame: dict, *, deadline_s: float) -> dict:
                 raise KnowledgeContextUnavailable("trailing response")
     except KnowledgeContextUnavailable:
         raise
-    except (OSError, ValueError, TimeoutError, SocketMisconfigured) as exc:
+    except (OSError, KeyError, ValueError, TimeoutError, SocketMisconfigured) as exc:
         raise KnowledgeContextUnavailable("broker unavailable") from exc
     if (type(reply) is not dict or set(reply) != {"ok", "result"}
             or reply["ok"] is not True or type(reply["result"]) is not dict):

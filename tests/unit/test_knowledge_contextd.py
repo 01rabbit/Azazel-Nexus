@@ -26,8 +26,14 @@ def _policy():
                            count_buckets=frozenset(), max_bytes=4096)
 
 
-def _request(payload=None, deadline_ms=500):
-    return SimpleNamespace(verb=CONTEXT_VERB, arguments={"deadline_ms": deadline_ms},
+def _request(payload=None, deadline_ms=500, deadline_monotonic_ns=None):
+    if deadline_monotonic_ns is None:
+        import time
+        deadline_monotonic_ns = int((time.monotonic() + deadline_ms / 1000)
+                                    * 1_000_000_000)
+    return SimpleNamespace(verb=CONTEXT_VERB, arguments={
+                               "deadline_ms": deadline_ms,
+                               "deadline_monotonic_ns": deadline_monotonic_ns},
                            payload=payload or {"frame": {
                                "privacy_class": "P0-public", "question": "public question"}})
 
@@ -45,6 +51,51 @@ def test_uncommissioned_broker_refuses_and_does_not_call_a_peer():
     assert events[-1]["outcome"] == "unavailable"
 
 
+def test_expired_queued_request_does_not_reach_knowledge():
+    class Forbidden:
+        def request_context(self, **kwargs):
+            pytest.fail("expired request reached Knowledge")
+
+    broker = KnowledgeContextBroker(
+        client=Forbidden(), policy=_policy(), mission="lab", alias_key=b"x" * 32,
+        enabled=True, monotonic=lambda: 20.0,
+    )
+    request = _request(deadline_ms=500, deadline_monotonic_ns=19_000_000_000)
+    assert broker.handle(request) == {"refusal": "timeout"}
+
+
+def test_audit_failure_prevents_knowledge_egress():
+    calls = []
+
+    class Client:
+        def request_context(self, **kwargs):
+            calls.append(kwargs)
+            return {"authority": "advisory_only"}
+
+    def broken_audit(_event):
+        raise OSError("synthetic audit failure")
+
+    broker = KnowledgeContextBroker(
+        client=Client(), policy=_policy(), mission="lab", alias_key=b"x" * 32,
+        enabled=True, audit=broken_audit,
+    )
+    assert broker.handle(_request()) == {"refusal": "unavailable"}
+    assert calls == []
+
+
+def test_missing_egress_account_degrades_to_unavailable(monkeypatch):
+    from azazel_nexus_runtime import knowledge_context_socket
+
+    def missing_account():
+        raise KeyError("synthetic absent account")
+
+    monkeypatch.setattr(knowledge_context_socket, "_service_uid", missing_account)
+    with pytest.raises(KnowledgeContextUnavailable):
+        knowledge_context_socket.request_context(
+            {"privacy_class": "P0-public", "question": "test"}, deadline_s=0.1,
+        )
+
+
 def test_commissioned_broker_hardcodes_p0_and_bounds_response():
     response = {"schema_version": "knowledge-context-response/v1", "authority": "advisory_only"}
     calls = []
@@ -59,7 +110,7 @@ def test_commissioned_broker_hardcodes_p0_and_bounds_response():
     assert broker.handle(_request()) == {"response": response}
     assert calls[0]["privacy_class"] is PrivacyClass.P0_PUBLIC
     assert calls[0]["frame"] == {"question": "public question"}
-    assert calls[0]["deadline_s"] == 0.5
+    assert calls[0]["deadline_s"] == pytest.approx(0.5, abs=0.001)
 
     class Oversized:
         def request_context(self, **kwargs):

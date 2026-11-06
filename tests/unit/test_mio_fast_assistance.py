@@ -162,7 +162,8 @@ def test_locald_passes_core_only_time_left_after_its_delivery_reserve(monkeypatc
         verb=mio_locald.FAST_ASSESS_VERB, arguments={"deadline_ms": 45}, payload=frame,
     ))
 
-    assert observed == [pytest.approx(0.025)]
+    assert len(observed) == 1
+    assert 0.024 < observed[0] <= 0.025
     assert reply["outcome"] == "assessed"
     assert reply["fast_assistance"] == {"assessment": "bounded"}
 
@@ -439,15 +440,25 @@ def test_normal_locald_assessment_requests_context_from_local_broker(monkeypatch
     }
     observed = {}
     from azazel_nexus_runtime import mio_fast_assistance
+    fast_calls = []
+    clock = [20.0]
+    monkeypatch.setattr(mio_locald.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(
         mio_fast_assistance,
         "fast_assistance",
-        lambda frame, **kwargs: observed.update(kwargs) or {"outcome": "synthetic"},
+        lambda frame, **kwargs: (
+            observed.update(kwargs), fast_calls.append(kwargs),
+            {"outcome": "synthetic"},
+        )[-1],
     )
     broker_calls = []
     monkeypatch.setattr(
         mio_locald, "request_context",
-        lambda frame, *, deadline_s: broker_calls.append((frame, deadline_s)) or response,
+        lambda frame, *, deadline_s: (
+            broker_calls.append((frame, deadline_s)),
+            clock.__setitem__(0, clock[0] + 0.2),
+            response,
+        )[-1],
     )
     service = mio_locald.LocalRuntimeService()
     reply = service.handle(SimpleNamespace(
@@ -459,6 +470,7 @@ def test_normal_locald_assessment_requests_context_from_local_broker(monkeypatch
     assert broker_calls and broker_calls[0][0] == {
         "privacy_class": "P0-public", "question": "synthetic public question"}
     assert 0 < broker_calls[0][1] <= mio_locald.KNOWLEDGE_MAX_S
+    assert fast_calls[0]["deadline_s"] == pytest.approx(0.28)
     assert reply["fast_assistance"] == {"outcome": "synthetic"}
 
 
