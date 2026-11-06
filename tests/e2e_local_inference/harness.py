@@ -514,39 +514,38 @@ class GenerationProbe:
     def infer(self, request, deadline_s, **kwargs):
         self.infer_attempts += 1
         started = time.monotonic()
-        prompt = "".join(message[1] for message in request.messages
-                         if type(message) is tuple and len(message) == 2
+        messages = getattr(request, "prompt_messages", ())
+        prompt = "".join(message[1] for message in messages
+                         if type(message) in (tuple, list) and len(message) == 2
                          and type(message[1]) is str)
-        response_format = request.response_format
+        response_format = getattr(request, "response_format", None)
         schema_name = (response_format.get("json_schema", {}).get("name")
                        if type(response_format) is dict else None)
         metric = {
             "attempt": self.infer_attempts,
             "task": schema_name if type(schema_name) is str else "unknown",
             "prompt_chars": len(prompt), "prompt_utf8_bytes": len(prompt.encode("utf-8")),
-            "max_tokens": request.max_tokens,
+            "max_tokens": getattr(request, "max_tokens", None),
             "deadline_s": round(float(deadline_s), 3),
         }
+        self.attempt_metrics.append(metric)
         try:
             result = self.server.infer(request, deadline_s, **kwargs)
         except FixturePreHTTPRefusal:
             self.pre_http_refusals += 1
             metric.update(elapsed_s=round(time.monotonic() - started),
                           outcome="pre_http_refusal")
-            self.attempt_metrics.append(metric)
             raise
         except Exception as exc:
             self.other_errors += 1
             self.other_error_types.append(type(exc).__name__)
             metric.update(elapsed_s=round(time.monotonic() - started),
                           outcome=type(exc).__name__)
-            self.attempt_metrics.append(metric)
             raise
         self.results.append(result)
         self.emitted_text.append(result.text)
         metric.update(elapsed_s=round(time.monotonic() - started), outcome="complete",
                       tokens_in=result.tokens_in, tokens_out=result.tokens_out)
-        self.attempt_metrics.append(metric)
         return result
 
     def stop(self):
