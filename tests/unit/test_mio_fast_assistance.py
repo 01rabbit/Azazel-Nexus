@@ -132,25 +132,17 @@ def test_local_socket_assess_preserves_failure_classes(monkeypatch):
     assert result["dependency_outcome"]["knowledge"] == "rejected"
 
 
-def test_local_socket_assess_wraps_optional_fabric_response_without_changing_frame(monkeypatch):
+def test_local_socket_assess_sends_only_the_untrusted_frame(monkeypatch):
     from azazel_nexus_runtime import mio_socket_client as client
 
     frame = _lite_frame()
-    response = {"schema_version": "knowledge-context-response/v1",
-                "authority": "advisory_only"}
     observed = {}
     monkeypatch.setattr(
         client, "_exchange",
         lambda *args, **kwargs: observed.update(kwargs) or {},
     )
-    result = client.LocalSocketClient().assess(
-        frame, deadline_s=0.2,
-        fabric_knowledge_context_response=response,
-    )
-    assert observed["payload"] == {
-        "frame": frame,
-        "fabric_knowledge_context_response": response,
-    }
+    result = client.LocalSocketClient().assess(frame, deadline_s=0.2)
+    assert observed["payload"] == frame
     assert result["dependency_outcome"]["knowledge"] == "rejected"
 
 
