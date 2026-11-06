@@ -56,7 +56,6 @@ cp -a /knowledge/. "$SCRATCH_KNOWLEDGE/"
 chmod 0755 "$SCRATCH_KNOWLEDGE"
 rm -rf -- "$SCRATCH_KNOWLEDGE/.venv" "$SCRATCH_KNOWLEDGE/.pytest_cache"
 export KNOWLEDGE_TEST_SRC="$SCRATCH_KNOWLEDGE"
-export PYTHONPATH="$SCRATCH_KNOWLEDGE/src:$SCRATCH_KNOWLEDGE/tests/unit${PYTHONPATH:+:$PYTHONPATH}"
 python -m pip install --no-index --find-links=/wheels --find-links=/fabric-wheel \
   -e "${SCRATCH_SRC}[dev]" -e "$SCRATCH_SRC/runtime" \
   /wheel/azazel_mio-0.1.0.dev20261105+gitf5b0014-py3-none-any.whl \
@@ -100,6 +99,8 @@ usermod --append --groups azincident-read azintake
 
 cd "$SCRATCH_SRC"
 PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
+  tests/unit/test_knowledge_context_adapter.py \
+  tests/unit/test_knowledge_context_transport.py \
   tests/unit/test_knowledge_contextd.py \
   tests/unit/test_runtime_hardening.py \
   tests/unit/test_activation.py \
