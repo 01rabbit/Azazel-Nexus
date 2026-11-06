@@ -166,6 +166,14 @@ class DiagnosticTelemetry:
                 os.replace(temporary, self.directory / "telemetry.json")
 
 
+def capture_acceptance_body(path, body):
+    """Optionally retain one synthetic fixture request, never overwrite evidence."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(body)
+
+
+
 class DirectLlamaFixture:
     """Start only the isolated test binary and speak HTTP over its AF_UNIX socket.
 
@@ -191,6 +199,9 @@ class DirectLlamaFixture:
                   "sent_bytes": None, "status": None}
         if method == "POST":
             metric["request_body_sha256"] = hashlib.sha256(body).hexdigest()
+            body_path = os.environ.get("AZ_E2E_ACCEPTANCE_BODY_CAPTURE")
+            if body_path:
+                self.telemetry.safely(capture_acceptance_body, body_path, body)
         if self.telemetry.directory:
             self.telemetry.safely(self.telemetry.data["requests"].append, metric)
             self.telemetry.safely(self.telemetry.write)
@@ -889,7 +900,16 @@ def run_observation(server, request, output, acceptance_telemetry):
         body = json.dumps(inference_document(request), ensure_ascii=False).encode("utf-8")
         if len(body) > MAX_REQUEST_BYTES:
             raise ValueError("observation request too large")
+        replay_path = os.environ.get("AZ_E2E_ACCEPTANCE_BODY")
+        if replay_path:
+            body = Path(replay_path).read_bytes()
+            if len(body) > MAX_REQUEST_BYTES:
+                raise ValueError("observation replay too large")
+            if type(json.loads(body)) is not dict:
+                raise ValueError("observation replay is not a request object")
         result["request_body_sha256"] = hashlib.sha256(body).hexdigest()
+        result["comparison"] = "exact_body_replay" if replay_path else "exact_reconstruction"
+        result["excluded_keys"] = []
         previous = json.loads(Path(acceptance_telemetry).read_text())
         accepted_posts = [item for item in previous["requests"]
                           if item.get("method") == "POST"

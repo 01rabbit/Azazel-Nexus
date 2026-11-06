@@ -196,3 +196,13 @@ usage, numeric server timings, prompt evaluation and decode rates when supplied
 by the server; missing values stay unknown. Neither the response text nor the
 prompt is written to this JSON. A successful probe cannot turn an acceptance
 failure into a pass; admission constants stay false.
+
+For an exact replay, a future synthetic fixture acceptance run can opt in to
+`AZ_E2E_ACCEPTANCE_BODY_CAPTURE=/path/to/new/private-file`: the first request
+body is saved without overwriting an existing file, mode 0600. Treat the file
+as sensitive prompt evidence. Set `AZ_E2E_ACCEPTANCE_BODY` to that file for
+observation; the probe validates the complete saved byte sequence against the
+acceptance telemetry SHA-256, then sends those exact bytes. `probe.json`
+records `comparison=exact_body_replay` and `excluded_keys=[]`. A missing or
+mismatched file fails closed. The diagnostic-8 acceptance run did not retain a
+body, so this option cannot reconstruct its request from the SHA-256 alone.
