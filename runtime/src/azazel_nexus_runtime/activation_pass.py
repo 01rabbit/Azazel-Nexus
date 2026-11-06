@@ -77,7 +77,10 @@ from azazel_nexus.observe_baseline import (
 )
 
 from .activation_high_water import HighWater
-from .activation_markers import GRANTABLE_UNITS
+from .activation_markers import (
+    GRANTABLE_UNITS,
+    MARKER_GUARDED_UNITS,
+)
 from .node_config import DeclaredNode
 
 __all__ = [
@@ -86,6 +89,7 @@ __all__ = [
     "PRODUCERS",
     "POLICY_UNIT_SCOPE",
     "UNIT_SCOPE",
+    "UNIT_CHECK_SCOPE",
     "PassInputs",
     "PassProducers",
     "collect_pass_inputs",
@@ -100,6 +104,11 @@ __all__ = [
 #: narrower: `ACTIVATION_UNIT_ALLOWLIST` cannot name the exposure units, so a
 #: lease never holds them, and the library withholds their tier anyway.
 UNIT_SCOPE = GRANTABLE_UNITS
+
+#: Units whose vendor file and loaded systemd definition must be verified
+#: before the pass can READY. Knowledge Context remains checked for its
+#: marker guard without becoming grantable or entering the policy scope.
+UNIT_CHECK_SCOPE = MARKER_GUARDED_UNITS
 
 #: The units a policy may name: the grantable set without the Deception Lite
 #: exposure units. The pass's own second check of a decoded policy, so that
@@ -146,10 +155,9 @@ class PassProducers:
     #: `measure_scoped_unit_files`: the scoped units' vendor file bytes,
     #: measured now and refused on any override or drop-in.
     unit_files: Callable[[list], dict]
-    #: `activation_loaded_units.verify_grantable_units` over every grantable
-    #: unit and the controller's D-Bus session: each file waits for its
-    #: marker, the manager is a reviewed profile and each unit is not loaded,
-    #: masked, or loaded as declared; raises otherwise.
+    #: `activation_loaded_units.verify_grantable_units` over every marker-
+    #: guarded unit (including the non-grantable Knowledge broker) and the
+    #: controller's D-Bus session; raises on any unit or manager drift.
     loaded_units: Callable[[list], None]
     #: `load_observe_baseline_approval` (keyword arguments).
     approval: Callable[..., ObserveBaselineApproval]
@@ -399,7 +407,7 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
         if floors is not None and generation.number < floors.generation:
             fail("epoch_high_water")
 
-    # 6b. Every grantable unit, in the policy or not (#251 H-1, M-3): its
+    # 6b. Every marker-guarded unit, grantable or not (#251 H-1, M-3): its
     #     file waits for its marker, the manager is a reviewed profile, and
     #     each unit is not loaded, masked, or loaded from the vendor file
     #     with no drop-in, its marker condition and the controller among its
@@ -407,7 +415,7 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
     #     definition, and READY releases its queued start whether or not
     #     this policy names it.
     def loaded_units():
-        producers.loaded_units(sorted(UNIT_SCOPE))
+        producers.loaded_units(sorted(UNIT_CHECK_SCOPE))
     attempt(("systemd_loaded_units",), loaded_units)
 
     # 7. The v2 approval, verified against the context above and the floors.

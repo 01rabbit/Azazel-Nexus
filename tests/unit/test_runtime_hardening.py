@@ -566,11 +566,16 @@ def test_condition_path_exists_is_present_exactly_on_the_marker_units():
     controller).
     """
     from azazel_nexus.activation import CORE_UNITS
-    from azazel_nexus_runtime.activation_markers import GRANTABLE_UNITS
+    from azazel_nexus_runtime.activation_markers import (
+        GRANTABLE_UNITS,
+        MARKER_GUARDED_UNITS,
+    )
+    from azazel_nexus_runtime.hardening import GRANT_MARKER_UNITS
 
     assert GRANT_LOOP_UNITS == {d.name for d in CORE_UNITS} - {
         "azazel-auditd.service", "azazel-commissiond.service"}
     assert GRANTABLE_UNITS < GRANT_LOOP_UNITS
+    assert MARKER_GUARDED_UNITS <= set(GRANT_MARKER_UNITS)
     for profile in ALL_PROFILES:
         if ACTIVATION_CONTROLLER_UNIT in profile.requires and profile.unit not in (
                 "azazel-auditd.service", "azazel-commissiond.service"):

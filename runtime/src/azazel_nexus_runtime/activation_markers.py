@@ -45,6 +45,7 @@ __all__ = [
     "EXPOSURE_UNITS",
     "GRANTABLE_UNITS",
     "NON_GRANTABLE_MARKER_UNITS",
+    "MARKER_GUARDED_UNITS",
     "GRANT_MARKER_DIRECTORY",
     "GrantMarkerRefused",
     "grant_marker_path",
@@ -89,6 +90,10 @@ NON_GRANTABLE_MARKER_UNITS = frozenset({
     # the dedicated commissioning loader and policy review exist.
     "azazel-knowledge-contextd.service",
 })
+
+#: Units whose files and loaded systemd definitions must be checked for the
+#: per-boot marker guard. This includes units the pass can never grant.
+MARKER_GUARDED_UNITS = GRANTABLE_UNITS | NON_GRANTABLE_MARKER_UNITS
 
 #: The Deception Lite exposure units (#196 §10, review n1), marked together
 #: or not at all. The same names as `activation.DECEPTION_EXPOSURE_UNITS` (a

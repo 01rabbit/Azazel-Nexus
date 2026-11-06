@@ -233,7 +233,7 @@ def test_content_outside_the_scope_or_undecodable_is_refused():
         require_governed_unit_content(EDGE, rendered_unit(INTAKE).encode())
 
 
-def test_knowledge_context_unit_stays_marker_guarded_but_is_not_grantable():
+def test_knowledge_context_unit_stays_marker_guarded_but_is_not_grantable(root):
     from azazel_nexus_runtime.activation_markers import (
         GRANT_MARKER_UNITS,
         GRANTABLE_UNITS,
@@ -243,6 +243,10 @@ def test_knowledge_context_unit_stays_marker_guarded_but_is_not_grantable():
     assert context in GRANT_MARKER_UNITS
     assert context not in GRANTABLE_UNITS
     require_governed_unit_content(context, rendered_unit(context).encode())
+    vendor = root / "usr/lib/systemd/system"
+    (vendor / context).write_text(rendered_unit(context))
+    (vendor / context).chmod(0o644)
+    require_grantable_unit_files([context])
 
 
 def test_comments_and_other_settings_do_not_affect_the_content_check():
