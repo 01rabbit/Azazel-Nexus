@@ -158,6 +158,15 @@ def test_signed_response_is_fabric_valid_correlated_and_advisory():
     assert parsed.facts[0].claim_class == "source_reported_fact"
 
 
+def test_signed_response_provider_id_matches_commissioned_peer():
+    req = request()
+    doc = response_payload(req)
+    doc["provider_id"] = "another-knowledge-peer"
+
+    with pytest.raises(KnowledgeContextRefused):
+        verify(signed(doc), req)
+
+
 @pytest.mark.parametrize(
     "changes",
     [

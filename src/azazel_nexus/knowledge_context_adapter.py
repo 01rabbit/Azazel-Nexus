@@ -162,6 +162,8 @@ def read_signed_response(
         if not issued <= current < expires or (expires - issued).total_seconds() > max_ttl_seconds:
             raise ValueError
         response = validate_knowledge_context_response(request, doc["payload"])
+        if response.provider_id != peer_id:
+            raise ValueError
         semantic_generated = _instant(response.generated_at.isoformat())
         semantic_expires = _instant(response.expires_at.isoformat())
         if (issued < semantic_generated or semantic_generated > current

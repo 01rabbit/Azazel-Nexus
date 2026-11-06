@@ -145,7 +145,7 @@ def _signed_answer(body: bytes, *, mode: str = "valid") -> bytes:
         "schema": ENVELOPE_SCHEMA,
         "key_id": KEY_ID,
         "issued_at": NOW,
-        "expires_at": "2026-11-04T12:00:30Z",
+        "expires_at": "2026-11-04T12:05:00Z",
         "payload": semantic,
     }
     if mode == "expired":
@@ -220,7 +220,9 @@ def test_loopback_mtls_sends_only_sanitized_p0_and_validates_signed_fabric_respo
 
     server = Server(responder=respond, certificate="server-fetch")
     peer_registry = registry(server.port)
-    peer = client(peer_registry, enabled=True, max_ttl_seconds=60)
+    # Keep both the signed envelope and semantic response at the commissioned
+    # five-minute maximum; the semantic expiry may not outlive its envelope.
+    peer = client(peer_registry, enabled=True, max_ttl_seconds=300)
     try:
         response = query(peer)
         assert response.authority == "advisory_only"
