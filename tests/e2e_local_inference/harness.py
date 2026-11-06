@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import signal
+import socket
+import subprocess
 import sys
 import time
 from dataclasses import replace
@@ -96,6 +99,168 @@ class ObservedServer:
             result = replace(result, text=faults[self.mode])
         self.emitted_text.append(result.text)
         return result
+
+
+class FixturePreHTTPRefusal(Exception):
+    """The test UDS connect failed before any HTTP request bytes were sent."""
+
+
+class DirectLlamaFixture:
+    """Start only the isolated test binary and speak HTTP over its AF_UNIX socket.
+
+    This does not call Nexus LocalServer/ServingProcess or alter their closed
+    admission gates. It exercises the real b11716 model wire from the
+    GenerationLane fixture, not production model admission or lifecycle.
+    """
+
+    def __init__(self, record, *, root: Path, socket_path: Path):
+        self.record, self.root, self.socket_path = record, root, socket_path
+        self.process = None
+
+    def _http(self, method: str, path: str, body: bytes, deadline_s: float) -> bytes:
+        from azazel_nexus_runtime.mio_serve import (
+            MAX_HEADER_BYTES, MAX_RESPONSE_BYTES, LocalServerRefused,
+        )
+
+        if type(deadline_s) not in (int, float) or deadline_s <= 0:
+            raise TimeoutError("fixture HTTP deadline elapsed")
+        end = time.monotonic() + deadline_s
+
+        def remaining() -> float:
+            value = end - time.monotonic()
+            if value <= 0:
+                raise TimeoutError("fixture HTTP deadline elapsed")
+            return value
+
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
+            peer.settimeout(remaining())
+            try:
+                peer.connect(str(self.socket_path))
+            except OSError:
+                raise FixturePreHTTPRefusal("fixture UDS unavailable") from None
+            header = (f"{method} {path} HTTP/1.1\r\nHost: localhost\r\n"
+                      f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n"
+                      "Connection: close\r\n\r\n").encode("ascii")
+            peer.settimeout(remaining())
+            peer.sendall(header + body)
+            response_header = bytearray()
+            while not response_header.endswith(b"\r\n\r\n"):
+                if len(response_header) >= MAX_HEADER_BYTES:
+                    raise LocalServerRefused("fixture HTTP headers exceed ceiling")
+                peer.settimeout(remaining())
+                chunk = peer.recv(1)
+                if not chunk:
+                    raise LocalServerRefused("fixture HTTP headers incomplete")
+                response_header.extend(chunk)
+            try:
+                lines = response_header.decode("ascii").split("\r\n")
+                version, status, *_ = lines[0].split(" ")
+                if version not in ("HTTP/1.0", "HTTP/1.1") or status != "200":
+                    raise ValueError
+                headers = {}
+                for line in lines[1:-2]:
+                    key, value = line.split(":", 1)
+                    key = key.lower()
+                    if key in headers:
+                        raise ValueError
+                    headers[key] = value.strip()
+                if "transfer-encoding" in headers:
+                    raise ValueError
+                length = int(headers["content-length"])
+                if not 0 <= length <= MAX_RESPONSE_BYTES:
+                    raise ValueError
+            except (ValueError, KeyError):
+                raise LocalServerRefused("fixture HTTP response refused") from None
+            response = bytearray()
+            while len(response) < length:
+                peer.settimeout(remaining())
+                chunk = peer.recv(min(65536, length - len(response)))
+                if not chunk:
+                    raise LocalServerRefused("fixture HTTP body incomplete")
+                response.extend(chunk)
+            remaining()
+            return bytes(response)
+
+    def start(self):
+        self.process = subprocess.Popen(
+            self.record.argv, executable=self.record.argv[0],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, env={"PATH": "/nonexistent", "LC_ALL": "C"},
+            cwd=str(self.root), close_fds=True, start_new_session=True,
+        )
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                raise RuntimeError("fixture model process exited during startup")
+            try:
+                if self.health():
+                    return
+            except (OSError, TimeoutError, ValueError, RuntimeError,
+                    FixturePreHTTPRefusal):
+                pass
+            time.sleep(0.1)
+        raise TimeoutError("fixture model process readiness deadline elapsed")
+
+    def health(self):
+        from azazel_nexus_runtime.mio_serve import LocalServerRefused
+
+        try:
+            value = json.loads(self._http("GET", "/health", b"", 1.0))
+            return type(value) is dict and value.get("status") == "ok"
+        except (OSError, TimeoutError, ValueError, LocalServerRefused,
+                FixturePreHTTPRefusal):
+            return False
+
+    def infer(self, request, deadline_s, *, allow_unknown_usage=False):
+        from azazel_nexus_runtime.mio_serve import (
+            MAX_REQUEST_BYTES, LocalInferenceResult, inference_document,
+        )
+
+        body = json.dumps(inference_document(request), ensure_ascii=False).encode("utf-8")
+        if len(body) > MAX_REQUEST_BYTES:
+            raise ValueError("fixture inference request too large")
+        began = time.monotonic()
+        data = json.loads(self._http("POST", "/v1/chat/completions", body, deadline_s))
+        try:
+            text = data["choices"][0]["message"]["content"]
+            usage = data.get("usage")
+            tokens_in = tokens_out = None
+            if usage is not None:
+                tokens_in, tokens_out = usage["prompt_tokens"], usage["completion_tokens"]
+                if (type(tokens_in) is not int or type(tokens_out) is not int
+                        or min(tokens_in, tokens_out) < 0):
+                    raise ValueError
+            elif not allow_unknown_usage:
+                raise ValueError
+            if type(text) is not str:
+                raise ValueError
+            timings = {"total_ms": (time.monotonic() - began) * 1000}
+            for key, value in data.get("timings", {}).items():
+                if key in ("prompt_n", "prompt_ms", "predicted_n", "predicted_ms",
+                           "predicted_per_second"):
+                    if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                        raise ValueError
+                    timings[key] = float(value)
+            return LocalInferenceResult(text, tokens_in, tokens_out, timings)
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+            raise ValueError("fixture model response invalid") from None
+
+    def stop(self):
+        process, self.process = self.process, None
+        if process is None:
+            return
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
 
 
 class NoRemote:
@@ -341,17 +506,11 @@ class GenerationProbe:
         self.emitted_text = []
 
     def infer(self, request, deadline_s, **kwargs):
-        from azazel_nexus_runtime.mio_serve import LocalServerRefused
-
         self.infer_attempts += 1
         try:
             result = self.server.infer(request, deadline_s, **kwargs)
-        except LocalServerRefused as exc:
-            if str(exc) == "local server is not serving":
-                # LocalServer checks serving state before opening its HTTP socket.
-                self.pre_http_refusals += 1
-            else:
-                self.other_errors += 1
+        except FixturePreHTTPRefusal:
+            self.pre_http_refusals += 1
             raise
         except Exception:
             self.other_errors += 1
@@ -537,11 +696,16 @@ def main():
     sock = root / "llama.sock"
     (root / "var/lib/azazel/state/mio").mkdir(parents=True)
     record = record_for(root, Path(binary), Path(model), sock)
-    observed = ObservedServer(LocalServer(
-        record, root=root, socket_path=sock, start_deadline_s=90,
-        budget=RestartBudget(generation=1, limit=1),
-        ledger=BudgetLedger(root / "var/lib/azazel/state/mio/restarts.json"),
-    ))
+    if scenario in GENERATION_SCENARIOS:
+        # Test-only direct process: production LocalServer admission stays closed.
+        provider = DirectLlamaFixture(record, root=root, socket_path=sock)
+    else:
+        provider = LocalServer(
+            record, root=root, socket_path=sock, start_deadline_s=90,
+            budget=RestartBudget(generation=1, limit=1),
+            ledger=BudgetLedger(root / "var/lib/azazel/state/mio/restarts.json"),
+        )
+    observed = ObservedServer(provider)
     before = edge_reading()
     authority = root / "var/lib/azazel/state/activation/e2e-authority.json"
     authority.parent.mkdir(parents=True)

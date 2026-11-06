@@ -107,21 +107,27 @@ admission evidence.
 `LocalRuntimeService.handle` directly. This stays **in-process** (service
 composition). It is not a production socket/process test: there are no
 azmio/azexplain accounts, no AF_UNIX service sockets and no peer-credential
-checks. The real `llama-server` remains a separate OS process.
+checks. For these generation cases only, `llama-server` is a separate test
+process launched by the harness from the fixed fixture argv, and its actual
+HTTP request/response travels over AF_UNIX. This bypasses Nexus's production
+`LocalServer` startup/admission lifecycle **only inside this disposable test
+process**; production flags stay false. It proves model-wire interoperability
+for the fixture path, not that a Nexus production model can be admitted or
+started. The serving process writes stdout/stderr to `/dev/null`.
 
 **What is checked.**
 - `generation`: `slow_analysis` goes `queued` -> `complete`, with
   `generation_method == "model"`. The probe records calls to the real
-  `LocalServer.infer` boundary; tokens and timings are recorded from successful
+  fixture AF_UNIX HTTP boundary; tokens and timings are recorded from successful
   real responses. A response without usage stays `unknown` and is never
   invented. This fixture lane has a 30-second deadline. A slow CPU model or
   constrained JSON response can time out/degrade; this scenario asserts
   completion and does not test that timeout outcome.
 - `generation_degraded`: the real server is stopped before inference dispatch.
-  `LocalServer.infer` refuses with "local server is not serving" before opening
-  its HTTP socket. The test records one pre-HTTP refusal and expects a typed
-  `degraded` receipt with unknown usage and no assistance. No provider HTTP call
-  or provider-side failure is claimed. This is not a timeout case.
+  `llama-server` is stopped before dispatch. The fixture records one failed
+  AF_UNIX request and expects a typed `degraded` receipt with unknown usage and
+  no assistance. No provider-side failure is claimed. This is not a timeout
+  case.
 - In both: Edge reading and non-M.I.O. authority state are unchanged, and
   formatted Python root-logger messages and persisted files contain no
   question, context, or response text. The serving process writes stdout and
