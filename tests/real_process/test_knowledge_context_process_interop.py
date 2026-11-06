@@ -346,13 +346,21 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
                 os.setuid(account.pw_uid)
             return apply
 
-        broker_process = subprocess.Popen(
-            [sys.executable, str(ROOT / "tests/real_process/_knowledge_context_broker_process.py"),
-             str(service_root), str(pki), str(ready["port"]), ready["public_key"],
-             spki_pin(server_der)], cwd=ROOT, env=test_env,
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, preexec_fn=credentials(egress),
-        )
+        broker_args = [
+            sys.executable,
+            str(ROOT / "tests/real_process/_knowledge_context_broker_process.py"),
+            str(service_root), str(pki), str(ready["port"]), ready["public_key"],
+            spki_pin(server_der),
+        ]
+
+        def start_broker():
+            return subprocess.Popen(
+                broker_args, cwd=ROOT, env=test_env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                preexec_fn=credentials(egress),
+            )
+
+        broker_process = start_broker()
         locald_process = None
         entryd_process = None
         try:
@@ -412,6 +420,30 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
             assert entry_reply["advisory_claim_status"] == "source_reported_unverified", entry_reply
             assert entry_reply["advisory_trust"] == "unverified_advisory_only", entry_reply
             assert entry_reply["handoff_action"] is None, entry_reply
+
+            # A stopped egress service must not leave its previous advisory in
+            # the ordinary path. Restarting the same isolated service should
+            # restore the route without changing caller identity or policy.
+            broker_process.terminate()
+            broker_process.wait(timeout=10)
+            assert broker_process.returncode == 0
+            degraded = _normal_entry_advisory(service_root)
+            assert degraded["advisory_authority"] is None, degraded
+            assert degraded["knowledge_status"] != "available", degraded
+            assert degraded["lite_claim_count"] == 0, degraded
+            assert degraded["observation_count"] == 0, degraded
+            assert degraded["handoff_action"] is None, degraded
+
+            broker_process = start_broker()
+            assert _ready(broker_process)["ready"] is True
+            recovered = _normal_entry_advisory(service_root)
+            assert recovered["knowledge_status"] == "available", recovered
+            assert recovered["advisory_authority"] == "advisory_only", recovered
+            assert recovered["advisory_claim_status"] == "source_reported_unverified", recovered
+            assert recovered["advisory_trust"] == "unverified_advisory_only", recovered
+            assert recovered["lite_claim_count"] == 0, recovered
+            assert recovered["observation_count"] == 0, recovered
+            assert recovered["handoff_action"] is None, recovered
         finally:
             for process in (entryd_process, locald_process, broker_process):
                 if process is not None and process.poll() is None:
