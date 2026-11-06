@@ -634,7 +634,9 @@ def generation_scenario(root, record, observed, privacy, *, degraded):
             final = entry.local.generation_result(queued)
         if degraded:
             assert final["state"] == "degraded", final["state"]
-            assert final["usage"] == "unknown" and "assistance" not in final
+            assert final["usage"] == "unknown"
+            assert final["assistance"]["generation_method"] == "static_reference"
+            assert final["calls"] == []
             assert (probe.infer_attempts == 1 and probe.pre_http_refusals == 1
                     and probe.other_errors == 0 and not probe.results)
         else:

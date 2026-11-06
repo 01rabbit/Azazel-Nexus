@@ -126,8 +126,9 @@ started. The serving process writes stdout/stderr to `/dev/null`.
 - `generation_degraded`: the real server is stopped before inference dispatch.
   `llama-server` is stopped before dispatch. The fixture records one failed
   AF_UNIX request and expects a typed `degraded` receipt with unknown usage and
-  no assistance. No provider-side failure is claimed. This is not a timeout
-  case.
+  an explicit model-free `static_reference` fallback, with no successful call
+  records. No model-generated text or provider-side failure is claimed. This is
+  not a timeout case.
 - In both: Edge reading and non-M.I.O. authority state are unchanged, and
   formatted Python root-logger messages and persisted files contain no
   question, context, or response text. The serving process writes stdout and
