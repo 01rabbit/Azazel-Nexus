@@ -15,6 +15,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -105,6 +106,62 @@ class FixturePreHTTPRefusal(Exception):
     """The test UDS connect failed before any HTTP request bytes were sent."""
 
 
+class DiagnosticTelemetry:
+    """Best-effort numeric diagnostics; never influence a scenario's verdict."""
+
+    def __init__(self, directory):
+        self.directory = Path(directory) if directory else None
+        self.data = {"requests": [], "samples": [], "server": {}}
+        self.done = threading.Event()
+        self.thread = None
+
+    def safely(self, action, *args):
+        try:
+            return action(*args)
+        except Exception:
+            return None
+
+    def sample(self, process):
+        sample = {"monotonic_s": time.monotonic(), "alive": process.poll() is None}
+        try:
+            stat = Path(f"/proc/{process.pid}/stat").read_text().rsplit(")", 1)[1].split()
+            ticks = os.sysconf("SC_CLK_TCK")
+            sample.update(utime_s=int(stat[11]) / ticks, stime_s=int(stat[12]) / ticks)
+            for line in Path(f"/proc/{process.pid}/status").read_text().splitlines():
+                key, _, value = line.partition(":")
+                if key in ("VmRSS", "VmHWM", "VmSwap"):
+                    sample[key + "_kib"] = int(value.split()[0])
+        except (OSError, ValueError, IndexError):
+            pass
+        for name in ("cpu.max", "cpu.stat", "memory.max", "memory.current", "memory.peak",
+                     "memory.swap.max", "memory.swap.current", "memory.events"):
+            try:
+                sample[name] = (Path("/sys/fs/cgroup") / name).read_text().strip()
+            except OSError:
+                pass
+        self.data["samples"].append(sample)
+
+    def start(self, process, argv):
+        self.data["server"]["argv"] = list(argv)
+        self.safely(self.sample, process)
+        def monitor():
+            while not self.done.wait(0.5):
+                self.safely(self.sample, process)
+        self.thread = threading.Thread(target=monitor, daemon=True)
+        self.thread.start()
+
+    def finish(self, process):
+        self.done.set()
+        if self.thread:
+            self.thread.join(timeout=1)
+        self.safely(self.sample, process)
+        self.safely(self.write)
+
+    def write(self):
+        if self.directory:
+            (self.directory / "telemetry.json").write_text(json.dumps(self.data, indent=2))
+
+
 class DirectLlamaFixture:
     """Start only the isolated test binary and speak HTTP over its AF_UNIX socket.
 
@@ -116,15 +173,33 @@ class DirectLlamaFixture:
     def __init__(self, record, *, root: Path, socket_path: Path):
         self.record, self.root, self.socket_path = record, root, socket_path
         self.process = None
+        self.telemetry = DiagnosticTelemetry(os.environ.get("AZ_E2E_TELEMETRY_DIR"))
+        self.log_files = []
 
     def _http(self, method: str, path: str, body: bytes, deadline_s: float) -> bytes:
-        from azazel_nexus_runtime.mio_serve import (
-            MAX_HEADER_BYTES, MAX_RESPONSE_BYTES, LocalServerRefused,
-        )
-
         if type(deadline_s) not in (int, float) or deadline_s <= 0:
             raise TimeoutError("fixture HTTP deadline elapsed")
         end = time.monotonic() + deadline_s
+        start = time.monotonic()
+        metric = {"method": method, "path": path, "deadline_s": deadline_s,
+                  "request_body_bytes": len(body), "phase": "connect",
+                  "response_header_bytes": 0, "response_body_bytes": 0,
+                  "sent_bytes": None, "status": None}
+        try:
+            return self._http_exchange(method, path, body, end, metric, start)
+        except BaseException as exc:
+            metric["error"] = type(exc).__name__
+            raise
+        finally:
+            metric["elapsed_s"] = time.monotonic() - start
+            if self.telemetry.directory:
+                self.telemetry.safely(self.telemetry.data["requests"].append, metric)
+                self.telemetry.safely(self.telemetry.write)
+
+    def _http_exchange(self, method, path, body, end, metric, start):
+        from azazel_nexus_runtime.mio_serve import (
+            MAX_HEADER_BYTES, MAX_RESPONSE_BYTES, LocalServerRefused,
+        )
 
         def remaining() -> float:
             value = end - time.monotonic()
@@ -138,11 +213,16 @@ class DirectLlamaFixture:
                 peer.connect(str(self.socket_path))
             except OSError:
                 raise FixturePreHTTPRefusal("fixture UDS unavailable") from None
+            metric["connect_s"] = time.monotonic() - start
+            metric["phase"] = "send"
             header = (f"{method} {path} HTTP/1.1\r\nHost: localhost\r\n"
                       f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n"
                       "Connection: close\r\n\r\n").encode("ascii")
             peer.settimeout(remaining())
             peer.sendall(header + body)
+            metric["sent_bytes"] = len(header) + len(body)
+            metric["send_complete_s"] = time.monotonic() - start
+            metric["phase"] = "headers"
             response_header = bytearray()
             while not response_header.endswith(b"\r\n\r\n"):
                 if len(response_header) >= MAX_HEADER_BYTES:
@@ -152,9 +232,13 @@ class DirectLlamaFixture:
                 if not chunk:
                     raise LocalServerRefused("fixture HTTP headers incomplete")
                 response_header.extend(chunk)
+                metric["response_header_bytes"] = len(response_header)
+            metric["headers_complete_s"] = time.monotonic() - start
+            metric["phase"] = "body"
             try:
                 lines = response_header.decode("ascii").split("\r\n")
                 version, status, *_ = lines[0].split(" ")
+                metric["status"] = status
                 if version not in ("HTTP/1.0", "HTTP/1.1") or status != "200":
                     raise ValueError
                 headers = {}
@@ -178,25 +262,49 @@ class DirectLlamaFixture:
                 if not chunk:
                     raise LocalServerRefused("fixture HTTP body incomplete")
                 response.extend(chunk)
+                metric["response_body_bytes"] = len(response)
+                if "first_body_byte_s" not in metric:
+                    metric["first_body_byte_s"] = time.monotonic() - start
             remaining()
+            metric["body_complete_s"] = time.monotonic() - start
+            metric["phase"] = "complete"
             return bytes(response)
 
     def start(self):
         executable = Path(self.record.argv[0])
         if executable.is_absolute():
             executable = self.root / executable.relative_to("/")
+        stdout = stderr = subprocess.DEVNULL
+        if self.telemetry.directory:
+            try:
+                stdout = (self.telemetry.directory / "llama-stdout.log").open("wb")
+                self.log_files.append(stdout)
+                stderr = (self.telemetry.directory / "llama-stderr.log").open("wb")
+                self.log_files.append(stderr)
+            except OSError:
+                for stream in self.log_files:
+                    stream.close()
+                self.log_files.clear()
+                stdout = stderr = subprocess.DEVNULL
         self.process = subprocess.Popen(
             self.record.argv, executable=str(executable),
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, env={"PATH": "/nonexistent", "LC_ALL": "C"},
+            stdin=subprocess.DEVNULL, stdout=stdout,
+            stderr=stderr, env={"PATH": "/nonexistent", "LC_ALL": "C"},
             cwd=str(self.root), close_fds=True, start_new_session=True,
         )
+        if self.telemetry.directory:
+            self.telemetry.safely(self.telemetry.start, self.process, self.record.argv)
         deadline = time.monotonic() + 90
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 raise RuntimeError("fixture model process exited during startup")
             try:
                 if self.health():
+                    if self.telemetry.directory:
+                        def capture_props():
+                            self.telemetry.data["server"]["props"] = json.loads(
+                                self._http("GET", "/props", b"", 1.0))
+                        self.telemetry.safely(capture_props)
                     return
             except (OSError, TimeoutError, ValueError, RuntimeError,
                     FixturePreHTTPRefusal):
@@ -209,6 +317,8 @@ class DirectLlamaFixture:
 
         try:
             value = json.loads(self._http("GET", "/health", b"", 1.0))
+            if self.telemetry.directory:
+                self.telemetry.safely(self.telemetry.data["server"].__setitem__, "health", value)
             return type(value) is dict and value.get("status") == "ok"
         except (OSError, TimeoutError, ValueError, LocalServerRefused,
                 FixturePreHTTPRefusal):
@@ -252,6 +362,8 @@ class DirectLlamaFixture:
         process, self.process = self.process, None
         if process is None:
             return
+        if self.telemetry.directory:
+            self.telemetry.safely(self.telemetry.finish, process)
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -264,6 +376,10 @@ class DirectLlamaFixture:
             except ProcessLookupError:
                 pass
             process.wait()
+        finally:
+            for stream in self.log_files:
+                self.telemetry.safely(stream.close)
+            self.log_files.clear()
 
 
 class NoRemote:
