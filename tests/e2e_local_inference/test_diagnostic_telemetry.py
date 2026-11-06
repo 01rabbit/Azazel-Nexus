@@ -72,3 +72,80 @@ class TelemetryChecks(TestCase):
         telemetry.sample(process)
         self.assertFalse(telemetry.data["samples"][0]["alive"])
         self.assertIsNone(telemetry.safely(lambda: 1 / 0))
+
+    def test_inflight_request_is_flushed_before_headers_arrive(self):
+        snapshots = []
+        server = harness.DirectLlamaFixture(None, root=Path("/"), socket_path=Path("/unused"))
+        server.telemetry.directory = Path("/unused")
+        server.telemetry.write = mock.Mock(side_effect=lambda: snapshots.append(
+            json.loads(json.dumps(server.telemetry.data))))
+        class WaitingSocket(FakeSocket):
+            def recv(self, count):
+                saved = snapshots[-1]["requests"][0]
+                self_test.assertEqual(saved["phase"], "headers")
+                self_test.assertEqual(saved["sent_bytes"], len(self.sent))
+                self_test.assertEqual(saved["response_header_bytes"], 0)
+                raise socket.timeout("waiting")
+        self_test = self
+        fake = WaitingSocket(b"")
+        module = types.ModuleType("azazel_nexus_runtime.mio_serve")
+        module.MAX_HEADER_BYTES, module.MAX_RESPONSE_BYTES = 8192, 65536
+        module.LocalServerRefused = type("LocalServerRefused", (Exception,), {})
+        with mock.patch.dict(sys.modules, {"azazel_nexus_runtime.mio_serve": module}), \
+             mock.patch.object(harness.socket, "socket", return_value=fake):
+            with self.assertRaises(TimeoutError):
+                server._http("POST", "/v1/chat/completions", b"{}", 1)
+        self.assertEqual(snapshots[-1]["requests"][0]["error"], "TimeoutError")
+
+    def test_observation_extracts_rates_and_window_is_separate(self):
+        module = types.ModuleType("azazel_nexus_runtime.mio_serve")
+        module.MAX_REQUEST_BYTES = 65536
+        module.inference_document = lambda request: {"messages": [request]}
+        request = "same fixture prompt"
+        body = json.dumps(module.inference_document(request), ensure_ascii=False).encode()
+        import hashlib
+        accepted = json.dumps({"requests": [{"method": "POST", "path": "/v1/chat/completions",
+                         "request_body_sha256": hashlib.sha256(body).hexdigest()}]})
+        response = {"usage": {"prompt_tokens": 10, "completion_tokens": 4},
+                    "timings": {"prompt_n": 10, "prompt_ms": 2000,
+                                "predicted_n": 4, "predicted_ms": 1000}}
+        server = mock.Mock()
+        server._http.return_value = json.dumps(response).encode()
+        with mock.patch.dict(sys.modules, {"azazel_nexus_runtime.mio_serve": module}), \
+             mock.patch.object(Path, "read_text", return_value=accepted), \
+             mock.patch.object(Path, "write_text") as write:
+            result = harness.run_observation(server, request, "/unused/out", "/unused/acceptance")
+        self.assertEqual(result["prompt_eval_tokens_per_s"], 5)
+        self.assertEqual(result["decode_tokens_per_s"], 4)
+        self.assertEqual((result["prompt_tokens"], result["completion_tokens"]), (10, 4))
+        self.assertFalse(result["acceptance"])
+        self.assertTrue(result["matches_acceptance_request"])
+        self.assertEqual(server._http.call_args.args[-1], 240.0)
+        self.assertEqual(json.loads(write.call_args.args[0])["server_timings"], response["timings"])
+
+    def test_observation_rejects_changed_prompt_and_records_timeout(self):
+        module = types.ModuleType("azazel_nexus_runtime.mio_serve")
+        module.MAX_REQUEST_BYTES = 65536
+        module.inference_document = lambda request: {"prompt": request}
+        import hashlib
+        body = json.dumps({"prompt": "same"}, ensure_ascii=False).encode()
+        accepted = json.dumps({"requests": [{"method": "POST", "path": "/v1/chat/completions",
+                         "request_body_sha256": hashlib.sha256(body).hexdigest()}]})
+        server = mock.Mock()
+        server._http.side_effect = TimeoutError("window expired")
+        with mock.patch.dict(sys.modules, {"azazel_nexus_runtime.mio_serve": module}), \
+             mock.patch.object(Path, "read_text", return_value=accepted), \
+             mock.patch.object(Path, "write_text"):
+            mismatch = harness.run_observation(server, "changed", "/unused/out", "/unused/acceptance")
+            server._http.assert_not_called()
+            timeout = harness.run_observation(server, "same", "/unused/out", "/unused/acceptance")
+        self.assertEqual((mismatch["outcome"], mismatch["error"]), ("measurement_failed", "ValueError"))
+        self.assertEqual((timeout["outcome"], timeout["error"]), ("measurement_failed", "TimeoutError"))
+        self.assertFalse(timeout["acceptance"])
+
+    def test_missing_timings_are_incomplete_not_success(self):
+        result = harness.observation_metrics({"usage": {"prompt_tokens": 5,
+                                                       "completion_tokens": 1}}, 3.0)
+        self.assertEqual(result["outcome"], "measurement_incomplete")
+        self.assertIsNone(result["prompt_eval_tokens_per_s"])
+        self.assertIsNone(result["decode_tokens_per_s"])

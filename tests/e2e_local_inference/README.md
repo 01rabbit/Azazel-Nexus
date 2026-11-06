@@ -168,3 +168,31 @@ byte is not a token and a timeout before headers cannot establish TTFT or token
 speed. Cgroup files reflect what the container can see; hidden ancestor limits
 are not established. This does not extend the generation deadline or alter
 admission. The other local advisory scenarios use their existing server path.
+
+## Separate observation probe (not acceptance)
+
+After the ordinary `generation` acceptance test has finished, the harness can
+run the independent `generation_observation` scenario. It rebuilds the first
+AssistantCore request using the same fixture and model, but intercepts that
+request before the provider is called. The probe checks its complete HTTP body
+SHA-256 against the first POST recorded by the acceptance test; a mismatch or
+missing acceptance record is a measurement failure and sends no probe request.
+It starts a separate llama-server with the same fixture argv, including two
+threads, and makes exactly one non-streaming request with a maximum 240-second
+observation window. The 240 seconds are a measurement ceiling, not the
+GenerationLane deadline or an acceptance criterion. Timeout or missing data
+must not be reported as a successful measurement.
+
+Run it inside the same isolated container configuration, after preserving the
+acceptance test's telemetry, using a fresh root and a **separate** existing
+writable telemetry directory for the probe (so acceptance logs are not
+replaced). Set `AZ_E2E_ACCEPTANCE_TELEMETRY` to the acceptance
+`telemetry.json`, `AZ_E2E_OBSERVATION_PATH` to the desired JSON report,
+`AZ_E2E_TELEMETRY_DIR` to the separate probe log directory, and `AZAZEL_ROOT`
+to the fresh root. Invoke `python tests/e2e_local_inference/harness.py
+ generation_observation P0-public <llama-server> <GGUF>` with the same assets
+and Python path as the acceptance test. The JSON reports elapsed time, token
+usage, numeric server timings, prompt evaluation and decode rates when supplied
+by the server; missing values stay unknown. Neither the response text nor the
+prompt is written to this JSON. A successful probe cannot turn an acceptance
+failure into a pass; admission constants stay false.
