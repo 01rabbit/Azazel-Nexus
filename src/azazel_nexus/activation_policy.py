@@ -61,8 +61,8 @@ ACTIVATION_POLICY_SCHEMA = "azazel-nexus/activation-policy/v1"
 #: `docs/activation-observe-baseline.md` §6.2; it runs no model) and the
 #: loop's audit writer `azazel-auditd-loop.service` (2026-10-30, ADR 0008:
 #: without it no Knowledge Lite import or trust change can be recorded on
-#: the ordinary path), and the optional Knowledge Context egress broker. The
-#: broker remains uncommissioned and absent from wired capabilities by default.
+#: the ordinary path). The optional Knowledge Context egress broker is
+#: deliberately excluded until its commissioning loader and policy review exist.
 #: The bootstrap helpers auditd and commissiond, watchdog,
 #: fetchd, locald and remoted stay excluded (§6.2) and cannot be named by a
 #: policy.
@@ -72,7 +72,6 @@ ACTIVATION_UNIT_ALLOWLIST = (
     "azazel-edge-intaked.service",
     "azazel-edge-probed.service",
     "azazel-incident-explaind.service",
-    "azazel-knowledge-contextd.service",
     "azazel-knowledge-lited.service",
     "azazel-mio-entryd.service",
     "azazel-mio-referenced.service",

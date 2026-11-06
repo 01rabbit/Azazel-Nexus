@@ -63,10 +63,11 @@ def test_allowlist_is_code_fixed_to_the_loop_units():
     # The model-free reference service (proposed 2026-10-28, §6.2) is the one
     # addition: it runs no model, so it is none of the excluded hosts.
     # The loop's audit writer (2026-10-30, ADR 0008) is the second; the
-    # bootstrap helper pair stays outside.
+    # egress broker and bootstrap helper pair stay outside.
     assert ACTIVATION_UNIT_ALLOWLIST == tuple(sorted(
         SUPPORTING + ["azazel-edge-core.service", "azazel-mio-referenced.service",
-                      "azazel-auditd-loop.service", "azazel-knowledge-contextd.service"]))
+                      "azazel-auditd-loop.service"]))
+    assert "azazel-knowledge-contextd.service" not in ACTIVATION_UNIT_ALLOWLIST
     assert "azazel-mio-locald.service" not in ACTIVATION_UNIT_ALLOWLIST
     assert not {"azazel-auditd.service", "azazel-commissiond.service"} & set(
         ACTIVATION_UNIT_ALLOWLIST)

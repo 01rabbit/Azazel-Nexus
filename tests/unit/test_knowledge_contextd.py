@@ -200,6 +200,22 @@ def test_late_knowledge_response_is_not_delivered():
     assert broker.handle(request) == {"refusal": "timeout"}
 
 
+def test_late_response_cannot_outlive_relative_deadline():
+    clock = [10.0]
+
+    class LateClient:
+        def request_context(self, **_kwargs):
+            clock[0] = 10.01
+            return {"authority": "advisory_only"}
+
+    broker = KnowledgeContextBroker(
+        client=LateClient(), policy=_policy(), mission="lab", alias_key=b"x" * 32,
+        enabled=True, monotonic=lambda: clock[0],
+    )
+    request = _request(deadline_ms=5, deadline_monotonic_ns=10_500_000_000)
+    assert broker.handle(request) == {"refusal": "timeout"}
+
+
 def test_broker_size_limit_matches_escaped_wire_encoding():
     class UnicodeClient:
         def request_context(self, **_kwargs):

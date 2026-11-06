@@ -77,9 +77,12 @@ class KnowledgeContextBroker:
         if getattr(getattr(request, "verb", None), "name", None) != CONTEXT_VERB.name:
             return {"refusal": "unavailable"}
         start = self._monotonic()
-        deadline_s = request.arguments["deadline_ms"] / 1000
+        deadline_ms = request.arguments["deadline_ms"]
         deadline_monotonic = request.arguments["deadline_monotonic_ns"] / 1_000_000_000
-        deadline_s = min(deadline_s, deadline_monotonic - self._monotonic())
+        # Honor both caller deadline representations. The absolute value is a
+        # local monotonic bound, not permission to extend deadline_ms.
+        deadline = min(start + deadline_ms / 1000, deadline_monotonic)
+        deadline_s = deadline - start
         if deadline_s <= 0:
             return {"refusal": "timeout"}
         try:
@@ -115,7 +118,7 @@ class KnowledgeContextBroker:
                 )
             finally:
                 self._slot.release()
-            if self._monotonic() >= deadline_monotonic:
+            if self._monotonic() >= deadline:
                 raise TimeoutError
             dump = getattr(verified, "model_dump", None)
             response = dump(mode="json") if callable(dump) else verified
