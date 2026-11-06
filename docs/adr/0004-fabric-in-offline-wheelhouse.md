@@ -1,6 +1,6 @@
 # ADR-0004 — Fabric is optional for CORE, required for commissioned activation, and carried in the offline wheelhouse
 
-Status: **accepted (2026-10-28)** · Successor to [ADR-0001](0001-fabric-pin.md)
+Status: **accepted (2026-10-28)** · Original release pin and hash superseded by [ADR-0009](0009-fabric-pin-v0-10-0.md) · Successor to [ADR-0001](0001-fabric-pin.md)
 (amends its packaging consequences; its decisions 1–5 stand) · Revises
 [`debian-live-install.md`](../debian-live-install.md) §Offline install bundle
 

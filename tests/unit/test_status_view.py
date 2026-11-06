@@ -206,7 +206,7 @@ def _absent(tmp_path, monkeypatch):
 
 def _loop(tmp_path, monkeypatch):
     """Every snapshot fresh; forwarder and decoy reported; chain broken."""
-    _base(tmp_path, monkeypatch, fabric="0.9.0rc5")
+    _base(tmp_path, monkeypatch, fabric="0.10.0")
     _snapshots(
         tmp_path,
         intake=_intake(NOW - 5, ledger_recovered=1,
@@ -756,7 +756,7 @@ def test_sources_name_schema_written_at_and_freshness(tmp_path, monkeypatch):
     assert audit["capacity"]["warning_reasons"] == ["chain_size", "filesystem_free"]
     assert audit["capacity"]["rate_limited_total"] == 6
     assert view["sections"]["fabric"] == {"status": "projected", "reason_code": None,
-                                          "version": "0.9.0rc5"}
+                                          "version": "0.10.0"}
     assert view["as_of"] == AS_OF and view["clock"]["status"] == "known"
 
 
@@ -814,7 +814,7 @@ def _changed(a, b):
     (lambda root, mp: _snapshots(root, intake=_intake(NOW - 1)), {"edge_loop"}),
     (lambda root, mp: _snapshots(root, recent=_recent(NOW - 1)), {"edge_loop"}),
     (lambda root, mp: _snapshots(root, audit=_audit(NOW - 1)), {"health", "next_actions"}),
-    (lambda root, mp: _fabric(mp, "0.9.0rc5"), {"fabric"}),
+    (lambda root, mp: _fabric(mp, "0.10.0"), {"fabric"}),
     # The measured envelope also enters the cognition axis's sentence (its
     # resource gate); that sentence names a document, so only the terminal has it.
     # The operator view (S-04) shows the same usable memory and the profile

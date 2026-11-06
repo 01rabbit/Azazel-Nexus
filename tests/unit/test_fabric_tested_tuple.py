@@ -140,7 +140,7 @@ def test_the_golden_tuple_as_a_fabric_model_conforms_too():
     [
         ("component_digest", "sha256:" + "9" * 64),
         ("adapter_digest", "sha256:" + "9" * 64),
-        ("fabric_version", "v0.9.0rc5"),
+        ("fabric_version", "v0.10.0"),
         ("os_abi", "debian-13/linux-6.12"),
         ("cpu_features", frozenset({"sse4_2"})),
         ("cpu_features", frozenset({"sse4_2", "avx2", "aes"})),

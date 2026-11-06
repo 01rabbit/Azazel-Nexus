@@ -2,7 +2,9 @@
 set -euo pipefail
 
 : "${NEXUS_SRC:?set NEXUS_SRC to this Nexus checkout}"
+: "${KNOWLEDGE_SRC:?set KNOWLEDGE_SRC to the fixed Knowledge checkout}"
 : "${MIO_WHEEL_DIR:?set MIO_WHEEL_DIR to the directory containing the pinned wheel}"
+: "${FABRIC_WHEEL_DIR:?set FABRIC_WHEEL_DIR to the wheel built from the exact official Fabric v0.10.0 tag}"
 : "${WHEELHOUSE:?set WHEELHOUSE to a compatible offline wheelhouse}"
 : "${SUITE_LOCK:?set SUITE_LOCK to the suite-lock.sh path}"
 : "${IMAGE:?set IMAGE to a cached Linux arm64 Python 3.12 image or digest}"
@@ -15,6 +17,8 @@ bash "$SUITE_LOCK" "$suite_context" docker --context "$docker_context" run --rm 
   --cap-drop=ALL --cap-add=CHOWN --cap-add=SETUID --cap-add=SETGID \
   --cap-add=DAC_OVERRIDE --cap-add=KILL --cpus=2 --memory=3g --pids-limit=192 \
   --mount "type=bind,src=$NEXUS_SRC,dst=/src,readonly" \
+  --mount "type=bind,src=$KNOWLEDGE_SRC,dst=/knowledge,readonly" \
   --mount "type=bind,src=$MIO_WHEEL_DIR,dst=/wheel,readonly" \
+  --mount "type=bind,src=$FABRIC_WHEEL_DIR,dst=/fabric-wheel,readonly" \
   --mount "type=bind,src=$WHEELHOUSE,dst=/wheels,readonly" \
   "$IMAGE" bash /src/tests/real_process/run-container.sh

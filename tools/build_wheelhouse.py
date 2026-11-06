@@ -84,15 +84,16 @@ BUNDLED_EXTRAS = ("fabric", "mio")
 #: table and both target locks together.
 SOURCE_BUILDS = {
     "azazel-fabric": {
-        "version": "0.9.0rc5",
+        "version": "0.10.0",
         "repository": "https://github.com/01rabbit/Azazel-Fabric.git",
-        "tag": "v0.9.0rc5",
-        "commit": "450d9502884ba533653210056a6fb85012b96b84",
+        "tag": "v0.10.0",
+        "commit": "397fcce7a87ca7ab1a5e84bc196c44d70c404907",
     },
     "azazel-mio": {
-        "version": "0.1.0+git.c31c244",
+        "version": "0.1.0.dev20261105+gitf5b0014",
         "repository": "https://github.com/01rabbit/Azazel-MIO.git",
-        "commit": "b441d431532507387fb81f1e03e31fd1aea57b68",
+        "commit": "ffac07cc9bf06d6904faa98001cfcfaea788bcf7",
+        "source_date_epoch": 1793887544,
     },
 }
 
@@ -199,21 +200,22 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _build_env() -> dict[str, str]:
+def _build_env(*, source_date_epoch: int = 315532800) -> dict[str, str]:
     """A fixed environment for every builder subprocess: no inherited PIP_* or config."""
 
     env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8",
            "PIP_CONFIG_FILE": os.devnull, "PIP_NO_INPUT": "1",
-           "SOURCE_DATE_EPOCH": "315532800"}
+           "SOURCE_DATE_EPOCH": str(source_date_epoch)}
     if "HOME" in os.environ:
         env["HOME"] = os.environ["HOME"]
     return env
 
 
-def _git_env() -> dict[str, str]:
+def _git_env(*, source_date_epoch: int = 315532800) -> dict[str, str]:
     """The builder environment, with no user or system git configuration and no prompt."""
 
-    return {**_build_env(), "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+    return {**_build_env(source_date_epoch=source_date_epoch),
+            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_TERMINAL_PROMPT": "0"}
 
 
@@ -357,7 +359,9 @@ def build_wheelhouse(root: Path, output: Path, *, python: str = sys.executable,
             source_checkout = mio_source if name == "azazel-mio" else None
             _run([*pip, "wheel", "--no-build-isolation", "--no-deps", "--no-index",
                   "-w", str(staging), str(fetch_source_build(
-                      name, scratch, source_checkout=source_checkout))])
+                      name, scratch, source_checkout=source_checkout))],
+                 env=_build_env(source_date_epoch=SOURCE_BUILDS[name].get(
+                     "source_date_epoch", 315532800)))
         from_source = sorted(set(p.name for p in staging.iterdir()) - set(downloaded))
 
         source_archive = scratch / "source.tar.gz"

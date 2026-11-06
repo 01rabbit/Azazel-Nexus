@@ -51,7 +51,7 @@ it.
 | The specification requires the isolation check on boot and before a redirect is eligible, and a separate `DeceptionLease` | `docs/IMPLEMENTATION_SPEC.md:794`, `:805` |
 | `HG-06` (the bridge refuses to forward) is `hardware-unverified` | `docs/hardware-gates.md:59` |
 
-### Azazel-Fabric (`v0.9.0rc5`, the Nexus pin)
+### Azazel-Fabric (`v0.10.0`, the Nexus pin)
 
 | fact | reference |
 | --- | --- |
@@ -791,7 +791,7 @@ would send it is still a later phase (§10), so in a real deployment nothing
 sends one yet.
 
 **The event** (`src/azazel_nexus/decoy_interaction.py`). A Fabric
-`EnvironmentEvent` (`environment-event/v0.1`, Azazel-Fabric `v0.9.0rc5`),
+`EnvironmentEvent` (`environment-event/v0.1`, Azazel-Fabric `v0.10.0`),
 narrower than Fabric's model. A decoy is the one Nexus component an attacker
 talks to, so the sender is given **no field it may fill freely**: every
 identifier is an exact match with a value the intake knows, or is replaced by

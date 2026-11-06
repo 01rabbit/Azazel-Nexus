@@ -74,7 +74,7 @@ baseline ready: no
 continuing regardless: audit, deterministic explanations, inventory and commissioning, local-only decoy observation, operator plane
 Integration broker (informational): CORE; Core deterministic; transport unavailable: Fabric#25
 
-fabric status view: projected (v0.9.0rc5)
+fabric status view: projected (v0.10.0)
 edge loop:
     intake: running
         last processed age: 35s; processed: 15; accepted: 12; storage_failed: False

@@ -57,6 +57,7 @@ from .runtime_paths import (
 )
 from .serve import serve_forever
 from .systemd_notify import runtime_ready_callback
+from .transport import MAX_FRAME_BYTES
 
 __all__ = [
     "ACTIVATE_VERB",
@@ -124,6 +125,20 @@ ADMISSION_VERB = Verb(
 #: model-free `azazel-mio-referenced.service` (`mio_referenced`), which runs
 #: on a node with no admitted model. This host serves only model verbs.
 REGISTRY = VerbRegistry([ACTIVATE_VERB, ADMISSION_VERB, INFER_VERB, FAST_ASSESS_VERB, GENERATION_RESULT_VERB])
+
+
+def _read_assessment_payload(payload: Any) -> dict:
+    """Read only the caller's ordinary M.I.O. frame.
+
+    Verified Knowledge Context must be acquired inside this service from its
+    commissioned local broker. A socket caller cannot supply an advisory and
+    label it verified.
+    """
+    if type(payload) is dict and "frame" in payload:
+        if set(payload) != {"frame"}:
+            raise FrameRefused("malformed_assessment_payload")
+        return read_frame(payload["frame"])
+    return read_frame(payload)
 
 
 @dataclass(frozen=True)
@@ -222,7 +237,7 @@ class LocalRuntimeService:
             return self._infer(request, audit=audit)
         if name == FAST_ASSESS_VERB.name:
             try:
-                frame = read_frame(request.payload)
+                frame = _read_assessment_payload(request.payload)
             except FrameRefused:
                 return {"outcome": "failed", "refusal": "malformed_frame"}
             # The shared package is an integration dependency, not a reason

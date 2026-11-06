@@ -1,0 +1,46 @@
+# Nexus Knowledge Context consumer candidate (#395)
+
+The semantic request/response belongs to Fabric's `knowledge-context/v1`
+profile. Nexus imports it only through `fabric_boundary`, where the import is
+deferred so CORE remains usable without the optional Fabric package. This candidate uses the exact published Fabric `v0.10.0` tag, which contains
+this profile as experimental functionality without a compatibility promise.
+The existing Nexus main remains on its prior pin until this PR is integrated.
+Even with the profile installed, the adapter is unavailable unless its explicit
+transport configuration is supplied; Knowledge Lite behavior is independent.
+
+The Nexus envelope is separate from the Fabric payload. It binds `key_id`,
+`issued_at`, `expires_at`, and the canonical response bytes under the
+`azazel-nexus/knowledge-context-envelope/v1` Ed25519 domain. Verification
+resolves the provider key through Nexus's existing commissioning-bound signed
+Knowledge registry and requires `key_id` to equal that key's SHA-256
+fingerprint. A maximum TTL has no default and must be explicitly supplied.
+Fabric validates the semantic request and response, including exact
+request/correlation/source binding and the advisory-only fact/inference model.
+
+The adapter accepts P0-public queries only, even if local policy allows a
+wider class. `KnowledgeClient.request_context()` opens an mTLS connection only
+when explicitly called on a client with the local opt-in flag, commissioned
+peer, client identity, CA and pin configured. The opt-in boolean is caller
+configuration; it is not a Context capability in the signed peer registry.
+Importing this module or installing the package does not connect, load
+commissioned state, install a trust anchor, or alter service startup. This PR
+adds no non-test caller for that method; the normal local broker composition is
+a separate #403 candidate. No commissioning state is added here. The response
+is a bounded advisory object; it cannot grant authority or alter Edge's
+deterministic decision path.
+
+Before an actual client is composed or a connection is enabled, the service
+owners still need to record and test:
+
+- the endpoint/CA/client-certificate provision owner and accepted trust anchor;
+- the signing-key registry owner and key identifier assignment;
+- certificate and signing-key validity, rotation approver and overlap period;
+- the numeric maximum response TTL;
+- the revocation authority and notification route; and
+- the disable and recovery procedure.
+
+The Draft-only CI job tests this code against Fabric source commit
+`50494cf769978abdbad21626a130d6525c83135d`. That is compatibility evidence for
+the candidate contract, not a production dependency pin or an authorization to
+connect. Product packaging continues to use the exact accepted Fabric tag
+until the usual version and offline-wheelhouse review updates it.

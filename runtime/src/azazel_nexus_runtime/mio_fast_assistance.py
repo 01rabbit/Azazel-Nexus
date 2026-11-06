@@ -10,7 +10,12 @@ from azazel_nexus.lite_import import KnowledgeRef, read_knowledge_refs
 from azazel_nexus.reasoning_playbook import technique_ids
 from azazel_nexus.incident_explain import FAST_TRANSITION_KIND, read_fast_transition
 
-from azazel_mio import AssistantCore, MioSituationFrame, KnowledgeLiteAdvisory
+from azazel_mio import (
+    AssistantCore,
+    FabricKnowledgeContextResponseAdvisory,
+    KnowledgeLiteAdvisory,
+    MioSituationFrame,
+)
 from azazel_mio.id_grammar import ID_KINDS
 
 
@@ -61,7 +66,8 @@ def _frame(source: dict) -> MioSituationFrame:
 
 def fast_assistance(source: dict, *, deadline_s: float, knowledge_lookup=None,
                     knowledge_max_s: float = 0.25, core_reserve_s: float = 0.025,
-                    situation_frame=None) -> dict:
+                    situation_frame=None,
+                    fabric_knowledge_context_response: dict | None = None) -> dict:
     """Read optional authenticated local context, then run the model-free core.
 
     The caller already reserves socket delivery time. Keep the existing 25ms fast-core budget
@@ -128,6 +134,14 @@ def fast_assistance(source: dict, *, deadline_s: float, knowledge_lookup=None,
     if time.monotonic() >= end:
         return fast_assessment_degraded("timeout")
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+    fabric_response = None
+    if fabric_knowledge_context_response is not None:
+        if type(fabric_knowledge_context_response) is not dict:
+            return fast_assessment_degraded("rejected")
+        fabric_response = FabricKnowledgeContextResponseAdvisory(
+            response=fabric_knowledge_context_response
+        )
     return AssistantCore(model=None).explain(
         frame, now=now, knowledge_attempted=attempted,
-        knowledge_lite_advisories=advisories).to_dict()
+        knowledge_lite_advisories=advisories,
+        fabric_knowledge_context_response=fabric_response).to_dict()

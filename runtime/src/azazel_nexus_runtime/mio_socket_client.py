@@ -149,7 +149,12 @@ class LocalSocketClient:
             return stale
 
     def assess(self, frame, *, deadline_s: float) -> dict:
-        """Call the model-free service verb; this does not read model admission."""
+        """Call the model-free service verb; this does not read model admission.
+
+        Only the untrusted situation frame crosses the socket. Verified
+        Knowledge Context is fetched by the service itself from its local
+        broker, never asserted by the caller.
+        """
         self.last_slow_analysis = {"state": "closed", "usage": "unknown"}
         if type(deadline_s) not in {int, float} or deadline_s <= 0:
             return fast_assessment_degraded("timeout")

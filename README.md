@@ -83,7 +83,7 @@ open.
 - **Evidence before interpretation.** Raw artifacts, normalized events, decisions, and enforcement results are correlated and retained with provenance.
 - **Least disclosure.** External cognition receives only data produced by a mission-specific sanitizer and never gets enforcement credentials or direct control-plane access.
 - **Self-contained first.** Knowledge Lite and Deception Lite are normal embedded capabilities, not external prerequisites. Full external nodes expand depth and endurance through explicit contracts and cannot expand the core node's authority.
-- **Fabric owns the shared contracts.** Nexus does not define a canonical form for any record that crosses a product boundary; it consumes Azazel-Fabric behind an exact release pin (`v0.9.0rc5`, ADR-0001) as an optional extra, through one boundary module.
+- **Fabric owns the shared contracts.** Nexus does not define a canonical form for any record that crosses a product boundary; it consumes Azazel-Fabric behind an exact release pin (`v0.10.0`, ADR-0001) as an optional extra, through one boundary module.
 - **Capacity is not capability.** RAM selects a resource envelope and nothing more. Capture, enforcement, and Deception additionally require commissioned interfaces, verified assets, and current trust — evaluated independently and intersected.
 - **Roles are confirmed, never inferred.** An interface gets a logical role only through read-only inventory plus explicit operator confirmation against a composite identity, never from an interface name, link state, or default route.
 - **Identity has one home.** Permanent MACs, serials, TPM identity and asset IDs live in the encrypted commissioning record and nowhere else — not the terminal, the journal, the audit or a report ([inventory confidentiality](docs/inventory-confidentiality.md)).
@@ -158,6 +158,7 @@ This division is intentional. It keeps the authority to change the field boundar
 **Contracts and release**
 
 - [契約表](docs/contract-table.md) — Nexus と Edge・Fabric・Knowledge・UI・M.I.O. の間の契約を、形式・認証・失敗時の挙動・実装・試験・CPU 間の確認で一覧にしたもの。
+- [Knowledge Context consumer candidate](docs/knowledge-context-consumer.md) — Fabric の独立意味契約と Nexus の任意署名 envelope の Draft 状態、未接続条件を記録する。
 - [Contract ownership](docs/contract-ownership.md) · [Implementation specification](docs/IMPLEMENTATION_SPEC.md) · [Support matrix](docs/support-matrix.md) · [Update channel](docs/update-channel.md) · [Inheritance ledger](docs/inheritance-ledger.md).
 
 **Plan**

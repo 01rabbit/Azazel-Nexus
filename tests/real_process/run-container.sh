@@ -7,7 +7,8 @@ from pathlib import Path
 import hashlib
 import re
 
-wheel = Path('/wheel/azazel_mio-0.1.0+git.c31c244-py3-none-any.whl')
+wheel = Path('/wheel/azazel_mio-0.1.0.dev20261105+gitf5b0014-py3-none-any.whl')
+fabric_wheel = Path('/fabric-wheel/azazel_fabric-0.10.0-py3-none-any.whl')
 locks = [
     Path('/src/packaging/offline/requirements-aarch64-cp313.lock'),
     Path('/src/packaging/offline/requirements-x86_64-cp313.lock'),
@@ -28,19 +29,34 @@ actual = hashlib.sha256(wheel.read_bytes()).hexdigest()
 if actual != expected:
     raise SystemExit('MIO wheel digest mismatch')
 print(f'verified MIO wheel digest against both Debian locks: {actual}')
+fabric_expected = 'b22356fd672cd60471606d3a7b73ccdba99091e680fedd854381a29d76e21424'
+fabric_actual = hashlib.sha256(fabric_wheel.read_bytes()).hexdigest()
+if fabric_actual != fabric_expected:
+    raise SystemExit('Fabric Knowledge Context contract wheel digest mismatch')
+print(f'verified fixed Fabric Knowledge Context wheel digest: {fabric_actual}')
 PY
 
 SCRATCH_SRC=$(mktemp -d /tmp/nxs-real-process.XXXXXX)
+SCRATCH_KNOWLEDGE=$(mktemp -d /tmp/knowledge-real-process.XXXXXX)
 cleanup() {
   rm -rf -- "$SCRATCH_SRC"
+  rm -rf -- "$SCRATCH_KNOWLEDGE"
 }
 trap cleanup EXIT
 
 cp -a /src/. "$SCRATCH_SRC/"
 chmod 0755 "$SCRATCH_SRC"
 rm -rf -- "$SCRATCH_SRC/.venv" "$SCRATCH_SRC/.pytest_cache" "$SCRATCH_SRC/runtime/.pytest_cache"
-python -m pip install --no-index --find-links=/wheels -e "${SCRATCH_SRC}[dev]" -e "$SCRATCH_SRC/runtime" \
-  /wheel/azazel_mio-0.1.0+git.c31c244-py3-none-any.whl
+cp -a /knowledge/. "$SCRATCH_KNOWLEDGE/"
+chmod 0755 "$SCRATCH_KNOWLEDGE"
+rm -rf -- "$SCRATCH_KNOWLEDGE/.venv" "$SCRATCH_KNOWLEDGE/.pytest_cache"
+export KNOWLEDGE_TEST_SRC="$SCRATCH_KNOWLEDGE"
+export PYTHONPATH="$SCRATCH_KNOWLEDGE/src:$SCRATCH_KNOWLEDGE/tests/unit${PYTHONPATH:+:$PYTHONPATH}"
+python -m pip install --no-index --find-links=/wheels --find-links=/fabric-wheel \
+  -e "${SCRATCH_SRC}[dev]" -e "$SCRATCH_SRC/runtime" \
+  /wheel/azazel_mio-0.1.0.dev20261105+gitf5b0014-py3-none-any.whl \
+  /fabric-wheel/azazel_fabric-0.10.0-py3-none-any.whl \
+  fastapi uvicorn pydantic PyYAML idna PyNaCl httpx
 
 # The test's Linux SO_PEERCRED run uses these ordinary system identities. They
 # exist only in this --rm container; the source tree's principal policy is
@@ -81,6 +97,11 @@ PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
   tests/unit/test_real_knowledge_lite_fixture.py \
   tests/unit/test_incident_explain.py \
   tests/real_process/test_mio_process_integration.py
+
+# Keep the full-node listener subprocess separate from the tight 500 ms
+# service-path timing cases above. Both run under the same suite lock.
+PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
+  tests/real_process/test_knowledge_context_process_interop.py
 
 # Exercise the service's fixed degraded response with the shared package
 # absent. The positive adapter unit tests above intentionally need the wheel.

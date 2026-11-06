@@ -1,4 +1,14 @@
-# Bounded M.I.O. service process test
+# Isolated M.I.O. and Knowledge process tests
+
+`test_knowledge_context_process_interop.py` exercises Nexus's actual
+`KnowledgeClient.request_context()` against the actual Knowledge app and mTLS
+listener in a separate child process. The test creates a temporary CA and
+client/server certificates, binds the Knowledge listener to loopback, sends
+only sanitizer-approved P0 data, and verifies the signed Fabric response,
+correlation, advisory-only authority and short expiry through Nexus's normal
+client verifier. Database, keys and server state are temporary. It does not
+wire the optional client into Nexus's normal service composition or configure
+production trust, credentials or network access.
 
 `test_mio_process_integration.py` is intentionally outside `tests/unit`: it
 needs Linux `SO_PEERCRED`, a root orchestrator only inside a disposable
@@ -31,7 +41,9 @@ image, and Docker context through environment variables:
 
 ```sh
 NEXUS_SRC=/path/to/nexus-shared-mio-adapter \
+KNOWLEDGE_SRC=/path/to/knowledge-context-producer \
 MIO_WHEEL_DIR=/path/to/directory/with/verified-wheel \
+FABRIC_WHEEL_DIR=/path/to/directory/with/fixed-knowledge-context-wheel \
 WHEELHOUSE=/path/to/offline/linux-arm64-py312-wheelhouse \
 SUITE_LOCK=/path/to/suite-lock.sh \
 IMAGE=sha256:cached-linux-arm64-python312-image \
@@ -39,15 +51,16 @@ DOCKER_CONTEXT=colima-rosetta SUITE_CONTEXT=rosetta \
   bash "$NEXUS_SRC/tests/real_process/run-docker.sh"
 ```
 
-The container runner checks the pinned MIO wheel digest before installing it
-offline, provisions only temporary container identities/groups, and copies
-the source mount into a unique `/tmp` directory created for that run. It
-installs and selects this process test plus the fast-assistance unit tests
-from that copy, then removes the shared MIO wheel and runs the degraded
-process phase. An exit trap removes only the created temporary source
-directory. All source and dependency mounts are read-only; the test container
-is removed after the run. Suite phases, including the no-wheel phase, are
-kept in `run-container.sh`.
+The container runner checks the MIO artifact against both Debian locks and
+checks the Fabric wheel built from the exact official `v0.10.0` tag before
+installing offline. That tagged package contains the Knowledge Context v1
+contract, which remains experimental. It copies both source mounts into unique `/tmp` directories,
+provisions only temporary container identities/groups, runs the Knowledge
+process test with the MIO process suite, then removes the shared MIO wheel and
+runs the degraded MIO phase. An exit trap removes only directories created for
+that run. All source and dependency mounts are read-only; the test container
+is removed after the run. Suite phases, including the no-wheel phase, are in
+`run-container.sh`.
 
 The fallback case starts only `mio_entryd` (no `mio_locald`, so its socket is
 absent) and sends one ordinary `mio.advise` request as `azexplain`. The reply
@@ -62,6 +75,8 @@ Separate synthetic producer-shaped rows are admitted with the suite test key.
 For the `synthetic-reader` case, Knowledge data is the producer-shaped fixture
 re-signed with the suite's test key and given a test-only description so the
 shared core can project the advisory. For the `knowledge-builder` case, the
-data is the real `build-lite` output described above. Neither proves live
-producer authentication or full-node interoperability. No model is admitted or
-invoked; it is not admission or HG evidence.
+data is the real `build-lite` output described above. Those Lite cases do not
+prove live producer authentication. The separate mTLS process test proves the
+bounded software client/listener interoperability path only; it is not
+production service composition, credential lifecycle, release, or deployment
+evidence. No model is admitted or invoked; it is not admission or HG evidence.

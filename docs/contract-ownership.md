@@ -4,7 +4,7 @@ Status: **target contract**. This document states where each record used by
 Azazel-Nexus is defined. It does not assert that Nexus implements any of them.
 It carries a package (`pyproject.toml`, `src/azazel_nexus/`) with a
 deliberately empty required-dependency list, a unit suite, and an exact
-**Azazel-Fabric pin as an optional extra** (`v0.9.0rc5`, ADR-0001), consumed
+**Azazel-Fabric pin as an optional extra** (`v0.10.0`, ADR-0001), consumed
 through one boundary module. One mapping is attested by that boundary —
 capability/mode publication, which production `azazel-nexus status` now calls
 (integrated loop I3). The Edge evidence pointer has a tested projection onto
@@ -71,7 +71,7 @@ overtaken.** `provisioning_contracts` and `mio_contracts` were absent at
 `v0.8.0` and are present from `v0.9.0rc1` onward. Azazel-Boot, which does pin
 Fabric, records that directly: its `PLANNED_FABRIC_MODULES` names both and its
 projection reports nothing missing at `v0.9.0rc1` (ADR-0007). Nexus now pins
-`v0.9.0rc5` (ADR-0001), where both are present. §3.3 records `mio_contracts` as
+`v0.10.0` (ADR-0001), where both are present. §3.3 records `mio_contracts` as
 **published, not adopted**: the one record Nexus produces in that family is an
 internal `ClaimSet` projection of its own explanation ledger, kept in that
 ledger and never sent (§3.3). §3.4 records `provisioning_contracts`. A module
@@ -134,7 +134,7 @@ trust decision that Fabric MUST NOT make.
 
 | Nexus usage | Owner | Fabric artifact | Status |
 | --- | --- | --- | --- |
-`mio_contracts` is present in the pinned `v0.9.0rc5` (and from `v0.9.0rc1`);
+`mio_contracts` is present in the pinned `v0.10.0` (and from `v0.9.0rc1`);
 it is **published, not adopted** (`docs/mio-dual-cognition.md`). Nexus's own
 frames (`azazel-nexus/sanitized-envelope/2`, `advisory_response`,
 `local_advisory`) keep their Nexus-local shapes and are not published as the
@@ -320,13 +320,13 @@ subsequent bootstrap work rather than as satisfied requirements:
 **Closed since this section was written.** The package layout, `pyproject.toml`
 and dependency manifest arrived with the Knowledge Lite consumer (#18), and the
 repository runs a unit suite rather than the documentation link check alone.
-The **Fabric pin** is now bound: `v0.9.0rc5` as the optional `fabric` extra,
+The **Fabric pin** is now bound: `v0.10.0` as the optional `fabric` extra,
 consumed through one boundary module ([ADR-0001](adr/0001-fabric-pin.md)).
 
 One §3.1 row is attested by that boundary — capability/mode publication through
 `ModeState` and `StatusView`, checked in `tests/unit/test_fabric_boundary.py`
 against the pinned models rather than asserted here. Since integrated-loop I3
-production status calls that projection and prints only `projected (v0.9.0rc5)`,
+production status calls that projection and prints only `projected (v0.10.0)`,
 `not available (extra not installed)` or `refused (projection_refused)`; an
 absent extra never changes the capability shown. The Edge evidence pointer
 (`project_edge_evidence`, I1) is tested against the pinned `EvidenceRef` but

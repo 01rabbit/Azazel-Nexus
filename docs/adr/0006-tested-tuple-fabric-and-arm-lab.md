@@ -17,7 +17,7 @@ other CPU when a tuple was built. ADR-0003 D1 kept that value and added
 and the Arm lab profile (`debian-13-arm64-cp313-lab`). The two statements of
 "which CPU is the baseline" were held equal only by a test.
 
-Fabric `v0.9.0rc5` publishes the same concept as
+Fabric `v0.10.0` publishes the same concept as
 `provisioning_contracts.TestedCompatibilityTuple`: a descriptive claim
 ("recording that a tuple was tested is not admitting it") whose
 `architecture` is Fabric's `Literal["amd64", "arm64"]`. Nexus could neither
@@ -78,7 +78,7 @@ The vocabulary, in one place each:
 | --- | --- | --- |
 | `component_digest` | `artifact_digest` | exact |
 | `adapter_digest` | `adapter_digest` | exact |
-| `fabric_version` (`v0.9.0rc5`, the tag) | `fabric_version` (`0.9.0rc5`, `__version__`) | exactly one leading `v` removed; anything else refused |
+| `fabric_version` (`v0.10.0`, the tag) | `fabric_version` (`0.10.0`, `__version__`) | exactly one leading `v` removed; anything else refused |
 | `os_abi` | `os_abi` | exact; no table relates the two spellings (see below) |
 | `architecture` `x86_64` / `aarch64` | `architecture` `amd64` / `arm64` | `platform_profile` kernel ↔ Fabric names |
 | `cpu_features` (set) | `cpu_features` (list) | same set; a repeated entry in the claim is refused |

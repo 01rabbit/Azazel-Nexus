@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 import copy
 import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -24,6 +25,37 @@ def test_adapter_uses_model_free_shared_assessment_without_querying_knowledge(mo
     assert result["knowledge"] == []
     assert result["dependency_outcome"]["knowledge"] == "not_queried"
     assert any("did not query Knowledge" in check for check in result["next_checks"])
+
+
+def test_adapter_projects_fabric_full_node_response_as_unverified_advisory():
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    as_of = (now - timedelta(seconds=10)).isoformat().replace("+00:00", "Z")
+    generated = (now - timedelta(seconds=5)).isoformat().replace("+00:00", "Z")
+    expires = (now + timedelta(seconds=30)).isoformat().replace("+00:00", "Z")
+    response = {
+        "schema_version": "knowledge-context-response/v1",
+        "request_id": "req-synthetic-1", "correlation_id": "corr-synthetic-1",
+        "source_product": "azazel_nexus", "source_ref": "nexus:synthetic-query",
+        "provider_id": "knowledge-node-1",
+        "snapshot": {"ref": "knowledge:snapshot-1", "state": "partial", "as_of": as_of},
+        "facts": [{"claim_class": "source_reported_fact", "fact_id": "fact-1",
+                   "subject": {"entity_type": "ip", "value": "8.8.8.8"},
+                   "predicate": "listed_by", "value": "A synthetic source reports this.",
+                   "provenance": ["knowledge:intel-index"]}],
+        "inferences": [], "unknowns": ["synthetic source freshness not provided"],
+        "limitations": ["synthetic test data"],
+        "generated_at": generated, "expires_at": expires,
+        "authority": "advisory_only",
+    }
+    result = adapter.fast_assistance(
+        _lite_frame(), deadline_s=0.2,
+        fabric_knowledge_context_response=response,
+    )
+    advisory = result["fabric_knowledge_context_advisory"]
+    assert advisory["claim_status"] == "source_reported_unverified"
+    assert advisory["authority"] == "advisory_only"
+    assert advisory["facts"][0]["value"] == "A synthetic source reports this."
+    assert result["knowledge"] == []
 
 
 def test_adapter_binds_explainer_incident_and_only_validated_refs():
@@ -94,10 +126,23 @@ def test_local_socket_assess_preserves_failure_classes(monkeypatch):
         monkeypatch.setattr(client, "_exchange", fail)
         result = client.LocalSocketClient().assess(frame, deadline_s=0.2)
         assert result["dependency_outcome"]["knowledge"] == expected
-
     monkeypatch.setattr(client, "_exchange", lambda *a, **k: {
         "outcome": "assessed", "fast_assistance": {"malformed": True}})
     result = client.LocalSocketClient().assess(frame, deadline_s=0.2)
+    assert result["dependency_outcome"]["knowledge"] == "rejected"
+
+
+def test_local_socket_assess_sends_only_the_untrusted_frame(monkeypatch):
+    from azazel_nexus_runtime import mio_socket_client as client
+
+    frame = _lite_frame()
+    observed = {}
+    monkeypatch.setattr(
+        client, "_exchange",
+        lambda *args, **kwargs: observed.update(kwargs) or {},
+    )
+    result = client.LocalSocketClient().assess(frame, deadline_s=0.2)
+    assert observed["payload"] == frame
     assert result["dependency_outcome"]["knowledge"] == "rejected"
 
 
@@ -364,6 +409,61 @@ def test_normal_locald_fast_assess_injects_authenticated_lookup():
     forged['knowledge'][0]['citation'] = 'unrelated'
     with pytest.raises(ValueError):
         read_fast_assistance(forged)
+
+
+def test_normal_locald_assessment_rejects_caller_supplied_fabric_response(monkeypatch):
+    from azazel_nexus_runtime import mio_locald
+
+    source = _lite_frame()
+    response = {
+        "schema_version": "knowledge-context-response/v1",
+        "request_id": "req-synthetic-1",
+        "correlation_id": "corr-synthetic-1",
+        "source_product": "azazel_nexus",
+        "source_ref": "nexus:synthetic-query",
+        "provider_id": "knowledge-node-1",
+        "snapshot": {"ref": "knowledge:snapshot-1", "state": "partial",
+                      "as_of": "2026-07-06T11:59:00Z"},
+        "facts": [{"claim_class": "source_reported_fact", "fact_id": "fact-1",
+                   "subject": {"entity_type": "host", "value": "host-1.example.com"},
+                   "predicate": "listed_by", "value": "A synthetic source reports this.",
+                   "provenance": ["knowledge:intel-index"]}],
+        "inferences": [], "unknowns": ["synthetic source freshness not provided"],
+        "limitations": ["synthetic test data"],
+        "generated_at": "2026-07-06T12:00:00Z",
+        "expires_at": "2026-07-06T12:00:30Z",
+        "authority": "advisory_only",
+    }
+    from azazel_nexus_runtime import mio_fast_assistance
+    monkeypatch.setattr(
+        mio_fast_assistance,
+        "fast_assistance",
+        lambda *args, **kwargs: pytest.fail("unverified caller response reached MIO"),
+    )
+    service = mio_locald.LocalRuntimeService()
+    reply = service.handle(SimpleNamespace(
+        verb=mio_locald.FAST_ASSESS_VERB,
+        arguments={"deadline_ms": 500},
+        payload={"frame": source,
+                 "fabric_knowledge_context_response": response},
+    ))
+    assert reply == {"outcome": "failed", "refusal": "malformed_frame"}
+
+
+def test_locald_rejects_unknown_keys_in_wrapped_assessment_payload(monkeypatch):
+    from azazel_nexus_runtime import mio_locald, mio_fast_assistance
+
+    monkeypatch.setattr(
+        mio_fast_assistance, "fast_assistance",
+        lambda *a, **k: pytest.fail("malformed assessment payload reached MIO"),
+    )
+    reply = mio_locald.LocalRuntimeService().handle(SimpleNamespace(
+        verb=mio_locald.FAST_ASSESS_VERB,
+        arguments={"deadline_ms": 500},
+        payload={"frame": _lite_frame(),
+                 "fabric_knowledge_context_response": {}, "extra": "refuse"},
+    ))
+    assert reply == {"outcome": "failed", "refusal": "malformed_frame"}
 
 
 def test_normal_locald_fast_assess_skips_lookup_without_a_budget(monkeypatch):
