@@ -135,7 +135,7 @@ def test_infer_extracts_request_integrity_without_inferring_it_from_stop(metadat
 
 
 @pytest.mark.parametrize('bad', [0, 1, 'false', None])
-def test_infer_rejects_non_boolean_truncation_metadata(bad):
+def test_infer_treats_non_boolean_truncation_metadata_as_unknown(bad):
     handle = object.__new__(LocalServer)
     handle._child = SimpleNamespace(alive=True)
     handle.state = LifecycleState.SERVING
@@ -143,8 +143,7 @@ def test_infer_rejects_non_boolean_truncation_metadata(bad):
                 'usage': {'prompt_tokens': 12, 'completion_tokens': 7},
                 'truncated': bad}
     handle._http = lambda *args: json.dumps(response).encode()
-    with pytest.raises(LocalServerRefused):
-        handle.infer(request(), 1)
+    assert handle.infer(request(), 1).context_integrity == 'unknown'
 
 
 @pytest.mark.parametrize('finish', [None, 'length', 'stop'])

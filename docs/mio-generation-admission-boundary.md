@@ -175,3 +175,22 @@ Knowledge preservation. Fixture assertions are software evidence only. No
 product-model success or measured resource/latency claim is made. Production
 capability issuance, attested generation reserve accounting and the protected
 policy ceremony remain blocked on owner review of requirements 1–3 above.
+
+## Budget planner status
+
+An isolated software planning seam models an exact token count, a supplied
+per-task input and output cap, context slack, one monotonic deadline and a
+post-work reserve. Its initial allocation rule reserves `max(0.5s, 10% of
+D)` and divides remaining provider time at 45:20:35, subject to the supplied
+minimum time for later tasks. The fixture slack is 32 tokens. A profile must
+supply meaningful output minima and conservative time reservations; the seam
+cannot derive these from character counts or authorize a model.
+
+This is not yet connected to the generation lane, a fixed tokenizer, MIO's
+selection or the result readers. The existing lane's behavior above remains
+in effect; its current `complete` is not proof of budget compliance. A future
+complete result requires all three ordered tasks, verified input selection,
+usage and context integrity, and deadline and binding checks. Unconfirmed
+cleanup must remain distinguishable from the original outcome. G-4's provider
+stop guarantee remains unresolved. Fixture parameters and software tests are
+not measurements, production admission or an HG decision.

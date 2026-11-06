@@ -89,11 +89,11 @@ def _response_integrity(data: dict) -> str:
     if type(timings) is not dict:
         raise ValueError('invalid timings')
     values = [source['truncated'] for source in (data, timings) if 'truncated' in source]
-    if any(type(value) is not bool for value in values):
-        raise ValueError('invalid truncation flag')
-    if any(values):
+    if any(value is True for value in values):
         return 'truncated'
-    return 'preserved' if values else 'unknown'
+    if values and all(value is False for value in values):
+        return 'preserved'
+    return 'unknown'
 
 
 def _deadline(seconds: float) -> float:
