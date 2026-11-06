@@ -108,7 +108,9 @@ class NoRemote:
         raise AssertionError("local-only E2E attempted remote inference")
 
 
-def compose(root: Path, record, observed, *, model_id="e2e-model", runtime_id="e2e-llama"):
+def compose(root: Path, record, observed, *, model_id="e2e-model", runtime_id="e2e-llama",
+            generation_lane=None, generation_id="uncommissioned",
+            local_route_admitted=True):
     """Compose the real A/B APIs using only trusted constructor injections."""
     from azazel_nexus_runtime.mio_entryd import MioEntryService
     from azazel_nexus_runtime.mio_locald import LocalRuntimeService
@@ -134,15 +136,19 @@ def compose(root: Path, record, observed, *, model_id="e2e-model", runtime_id="e
         staging=root / "var/lib/azazel/mio", reserve=reserve,
         admitted=lambda identity: identity == model_id,
         runtime=runtime, server=observed, model_id=model_id, runtime_id=runtime_id,
+        generation_lane=generation_lane, generation_id=generation_id,
     )
     router = MioRouter(local=local, remote=NoRemote())
     entry = MioEntryService(
         router=router, profile_reader=lambda: MioProfile.LOCAL_ONLY,
-        local_admitted=lambda: True,
+        local_admitted=lambda: local_route_admitted,
         predictions_reader=lambda: {Route.LOCAL: Prediction(
             Route.LOCAL.value, True, 100, 100, 100, False, "e2e fixture prediction",
         )},
     )
+    if generation_lane is not None:
+        # Test adapter only (in-process): entryd's ordinary fast-assess call -> locald service.
+        entry.local = InProcessLocaldAdapter(local)
     return entry, router
 
 
@@ -202,12 +208,13 @@ def assert_fallback(recorded):
     assert not any(e.get("outcome") == "answered" for e in terminals)
 
 
-def assert_no_content(root: Path, observed):
+def assert_no_content(root: Path, observed, extra=()):
     # Scan every persisted file except immutable runtime/model assets. This
     # catches service refusals as well as the verified route chain.
     needles = [QUESTION, CONTEXT, RESPONSE]
     needles.extend(result.text for result in observed.results if result.text)
     needles.extend(observed.emitted_text)
+    needles.extend(text for text in extra if text)
     paths = [p for p in root.rglob("*") if p.is_file() and not p.is_symlink()
              and p.suffix != ".model"]
     assert paths, "no persisted audit evidence"
@@ -284,6 +291,217 @@ def crash_scenario(root, record, observed, sock):
     assert not observed.health()
 
 
+# ---------------------------------------------------------------------------
+# Fixture-authorized MIO shared generation scenario (LAB EVIDENCE ONLY).
+#
+# Nothing here is HG or production admission evidence. GENERATION_ADMISSION_ENABLED
+# and LOCAL_MODEL_ADMISSION_ENABLED are never set or patched, no sealed
+# capability is minted, and production files/constants are unchanged. The
+# subclass below exists solely so a software test can exercise the real
+# GenerationLane -> pinned azazel_mio AssistantCore -> real llama-server path.
+# ---------------------------------------------------------------------------
+GENERATION_ID = "e2e-fixture-generation"
+GENERATION_SCENARIOS = ("generation", "generation_degraded")
+
+
+def fixture_generation_lane(server):
+    """A GenerationLane whose gate honours only an unsealed, test-only capability."""
+    from datetime import UTC, datetime, timedelta
+
+    from azazel_nexus_runtime.mio_generation import GenerationCapability, GenerationLane
+
+    class FixtureOnlyGenerationLane(GenerationLane):
+        """TEST-ONLY. The production gate (`authorized`) stays closed for this."""
+
+        def _authorized(self, generation_id):
+            cap = self.capability
+            return (type(cap) is GenerationCapability and cap._seal is None
+                    and cap.role == "generation" and cap.generation_id == generation_id
+                    and datetime.now(UTC) < datetime.fromisoformat(
+                        cap.expires_at.replace("Z", "+00:00")))
+
+    capability = GenerationCapability(
+        generation_id=GENERATION_ID, model_id=MODEL_ID, reserve_mib=512,
+        expires_at=(datetime.now(UTC) + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        recheck=lambda: True,
+    )
+    lane = FixtureOnlyGenerationLane(capability=capability, server=server, deadline_s=30.0)
+    return lane, capability
+
+
+class GenerationProbe:
+    """Record real provider calls/usage/timings; content is held only for leak scans."""
+
+    def __init__(self, server):
+        self.server = server
+        self.calls = 0
+        self.failures = 0
+        self.results = []
+        self.emitted_text = []
+
+    def infer(self, request, deadline_s, **kwargs):
+        self.calls += 1
+        try:
+            result = self.server.infer(request, deadline_s, **kwargs)
+        except Exception:
+            self.failures += 1
+            raise
+        self.results.append(result)
+        self.emitted_text.append(result.text)
+        return result
+
+    def stop(self):
+        return self.server.stop()
+
+
+class InProcessLocaldAdapter:
+    """Smallest test adapter: entryd's ordinary fast-assess call -> LocalRuntimeService.
+
+    This stays IN-PROCESS (service composition only). It is NOT a production
+    socket/process test: no azmio account, AF_UNIX service socket, or peer
+    credential check is exercised. Only llama-server is a separate OS process.
+    """
+
+    def __init__(self, service):
+        self.service = service
+        self.last_slow_analysis = {"state": "closed", "usage": "unknown"}
+
+    def _request(self, verb, arguments, payload=None):
+        from azazel_nexus_runtime.principal import Principal, PrincipalClass
+        from azazel_nexus_runtime.transport import Request
+
+        principal = Principal(os.getuid(), os.getgid(), os.getpid(),
+                              frozenset({PrincipalClass.SERVICE}))
+        return Request(verb=verb, arguments=verb.bind(arguments), payload=payload,
+                       principal=principal)
+
+    def assess(self, frame, *, deadline_s):
+        from azazel_nexus_runtime.mio_generation import read_slow_analysis
+        from azazel_nexus_runtime.mio_locald import FAST_ASSESS_VERB
+
+        reply = self.service.handle(self._request(
+            FAST_ASSESS_VERB, {"deadline_ms": max(1, min(60_000, int(deadline_s * 1000)))},
+            frame))
+        assert reply["outcome"] == "assessed", reply.get("outcome")
+        self.last_slow_analysis = read_slow_analysis(reply["slow_analysis"])
+        return reply["fast_assistance"]
+
+    def generation_result(self, receipt):
+        from azazel_nexus_runtime.mio_generation import read_slow_analysis
+        from azazel_nexus_runtime.mio_locald import GENERATION_RESULT_VERB
+
+        reply = self.service.handle(self._request(GENERATION_RESULT_VERB, {
+            key: receipt[key] for key in ("result_handle", "generation_id", "trace_id")}))
+        return read_slow_analysis(reply["slow_analysis"])
+
+
+class LogCapture:
+    """Collect log records so the scenario can prove none carry content."""
+
+    def __init__(self):
+        import logging
+
+        self.records = []
+        outer = self
+
+        class Handler(logging.Handler):
+            def emit(self, record):
+                outer.records.append(record.getMessage())
+
+        self.handler = Handler(level=logging.DEBUG)
+        self.root = logging.getLogger()
+        self.previous = self.root.level
+        self.root.addHandler(self.handler)
+        self.root.setLevel(logging.DEBUG)
+
+    def close(self):
+        self.root.removeHandler(self.handler)
+        self.root.setLevel(self.previous)
+
+
+def generation_scenario(root, record, observed, privacy, *, degraded):
+    from azazel_nexus_runtime import mio_generation
+    from azazel_nexus_runtime.mio_generation import authorized
+
+    from azazel_nexus import model_admission
+    from azazel_nexus.routing import Route
+
+    probe = GenerationProbe(observed.server)
+    lane, capability = fixture_generation_lane(probe)
+    # Production gate evidence: constants untouched, fixture capability not production-valid.
+    assert mio_generation.GENERATION_ADMISSION_ENABLED is False
+    assert model_admission.LOCAL_MODEL_ADMISSION_ENABLED is False
+    assert authorized(capability, GENERATION_ID) is False
+    before = edge_reading()
+    before_authority = authority_snapshot(root)
+    logs = LogCapture()
+    try:
+        entry, router = compose(root, record, observed,
+                                generation_lane=lane, generation_id=GENERATION_ID,
+                                local_route_admitted=False)
+        if degraded:
+            # Real failure: the actual llama-server process is gone before dispatch.
+            observed.stop()
+        reply = invoke(entry, privacy)
+        assert "fast_assistance" in reply
+        assert reply["fast_assistance"]["generation_method"] == "static_reference"
+        assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
+        queued = reply["slow_analysis"]
+        if degraded:
+            assert queued["state"] in {"queued", "degraded"}, queued["state"]
+        else:
+            assert queued["state"] == "queued", queued["state"]
+        final = queued
+        until = time.monotonic() + 90
+        while final["state"] == "queued" and time.monotonic() < until:
+            time.sleep(0.1)
+            final = entry.local.generation_result(queued)
+        if degraded:
+            assert final["state"] == "degraded", final["state"]
+            assert final["usage"] == "unknown" and "assistance" not in final
+            assert probe.calls == 1 and probe.failures == 1 and not probe.results
+        else:
+            assert final["state"] == "complete", final["state"]
+            assert final["assistance"]["generation_method"] == "model"
+            assert probe.failures == 0 and probe.calls >= 1
+            assert len(final["calls"]) == probe.calls == len(probe.results)
+            known = all(r.tokens_in is not None and r.tokens_out is not None
+                        for r in probe.results)
+            assert (final["usage"] == "known") is known
+            for call, result in zip(final["calls"], probe.results):
+                assert call["timings"].get("total_ms", -1) >= 0
+                if result.tokens_in is None or result.tokens_out is None:
+                    assert call["usage"] is None  # unknown stays unknown
+                else:
+                    assert call["usage"] == {"tokens_in": result.tokens_in,
+                                             "tokens_out": result.tokens_out}
+        assert_no_content(root, observed, probe.emitted_text)
+        needles = (QUESTION, CONTEXT, RESPONSE, *probe.emitted_text, *observed.emitted_text)
+        for message in logs.records:
+            for needle in needles:
+                assert not needle or needle not in message, "content reached logging"
+        assert edge_reading() == before
+        assert authority_snapshot(root) == before_authority
+        assert mio_generation.GENERATION_ADMISSION_ENABLED is False
+        assert model_admission.LOCAL_MODEL_ADMISSION_ENABLED is False
+        route_events = events(router)  # route chain still verifies
+        selected = [event for event in route_events
+                    if event.get("event_type") == "mio.route.selected"]
+        assert selected and selected[-1]["route"] == Route.DETERMINISTIC_HANDOFF.value
+        tokens_in = [r.tokens_in for r in probe.results] or "unknown"
+        tokens_out = [r.tokens_out for r in probe.results] or "unknown"
+        timings = [c["timings"].get("total_ms") for c in final.get("calls", [])]
+        # Numbers and labels only; never request or response content.
+        print("FIXTURE-AUTHORIZED LAB EVIDENCE ONLY (not HG, not production admission); "
+              "entryd->locald adapter is in-process, llama-server is a separate process: "
+              f"{'generation_degraded' if degraded else 'generation'}/{privacy} "
+              f"state={final['state']} provider_calls={probe.calls} failures={probe.failures} "
+              f"usage={final['usage']} tokens_in={tokens_in} tokens_out={tokens_out} "
+              f"total_ms={timings}")
+    finally:
+        logs.close()
+
+
 def main():
     from azazel_nexus_runtime.mio_serve import LocalServer
 
@@ -315,6 +533,10 @@ def main():
     try:
         observed.start()
         assert observed.health(), "real llama-server did not become healthy"
+        if scenario in GENERATION_SCENARIOS:
+            generation_scenario(root, record, observed, privacy,
+                                degraded=scenario == "generation_degraded")
+            return
         if scenario == "crash":
             crash_scenario(root, record, observed, sock)
         else:

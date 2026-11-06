@@ -38,3 +38,12 @@ def test_edge_authority_is_identical_after_answer_timeout_and_refusal(run_real):
 @pytest.mark.skipif(sys.platform != "linux", reason="crash PID observation uses Linux /proc")
 def test_real_crash_exhausts_persisted_restart_budget_and_fences(run_real):
     run_real("crash")
+
+
+def test_fixture_authorized_generation_lane_reaches_real_model_through_assistant_core(run_real):
+    """Lab fixture only: not HG or production admission evidence."""
+    run_real("generation")
+
+
+def test_fixture_authorized_generation_lane_degrades_when_real_server_is_gone(run_real):
+    run_real("generation_degraded")
