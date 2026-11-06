@@ -549,6 +549,146 @@ def test_recent_reader_accepts_not_queried_and_rejects_malformed_fast_assistance
         assert read_recent_incidents(json.dumps(forged).encode()) is None
 
 
+@pytest.mark.parametrize('case', ['complete', 'partial', 'stale', 'expired', 'unavailable', 'not_queried'])
+def test_full_node_state_survives_record_and_recent_snapshot(case):
+    from datetime import datetime, timedelta, timezone
+    from azazel_nexus.incident_explain import build_recent_incident, build_recent_incidents, read_recent_incidents
+    from azazel_nexus_runtime.mio_fast_assistance import fast_assistance
+    from azazel_nexus_runtime.knowledge_context_socket import FullNodeContextStatus
+    from test_mio_fast_assistance import _fabric_response, _lite_frame
+
+    kwargs = {}
+    if case in {'complete', 'partial', 'stale', 'expired'}:
+        response = _fabric_response('complete' if case == 'expired' else case)
+        if case == 'expired':
+            now = datetime.now(timezone.utc)
+            response['snapshot']['as_of'] = (now - timedelta(minutes=3)).isoformat().replace('+00:00', 'Z')
+            response['generated_at'] = (now - timedelta(minutes=2)).isoformat().replace('+00:00', 'Z')
+            response['expires_at'] = (now - timedelta(minutes=1)).isoformat().replace('+00:00', 'Z')
+        kwargs['fabric_knowledge_context_response'] = response
+    elif case == 'unavailable':
+        kwargs['full_node_context_status'] = FullNodeContextStatus.UNAVAILABLE
+    fast = fast_assistance(_lite_frame(), deadline_s=.5, **kwargs)
+    if case in {'complete', 'partial', 'stale'}:
+        # Validated untrusted source prose must not reach the UI snapshot.
+        fast['fabric_knowledge_context_advisory']['limitations'] = ['<script>private.example</script>']
+    transition_record = _record({'route': 'unavailable', 'outcome': 'unavailable',
+                                 'reason': 'mio_unavailable', 'text': None,
+                                 'fast_assistance': fast})
+    transition_record['technique_ids'] = ['T1110.003']
+    transition_record['incident_id'] = _t1110()['incident_id']
+    assert read_record(transition_record)['mio']['fast_assistance'] == fast
+    row = build_recent_incident(_t1110(), record=transition_record)
+    snapshot = build_recent_incidents([row], 1)
+    assert read_recent_incidents(json.dumps(snapshot).encode()) == snapshot
+    projected = snapshot['incidents'][0]['explanation']['fast_assistance']['full_node_context']
+    assert projected['outcome'] == case
+    assert projected['full_node_context_status'] == (
+        'received' if case in {'complete', 'partial', 'stale', 'expired'} else case)
+    if case in {'complete', 'partial', 'stale'}:
+        assert projected['snapshot_state'] == case
+        assert projected['source_kind'] == 'fabric_knowledge_context_response_v1'
+        assert projected['claim_status'] == 'source_reported_unverified'
+        assert projected['trust'] == 'unverified_advisory_only'
+        assert projected['generated_at'] and projected['expires_at']
+        assert len(projected['limitations']) == 2
+    else:
+        assert projected['snapshot_state'] is None and projected['limitations'] == []
+    assert '<script>' not in json.dumps(snapshot)
+    assert 'private.example' not in json.dumps(snapshot)
+
+    for key in projected:
+        forged = json.loads(json.dumps(snapshot))
+        del forged['incidents'][0]['explanation']['fast_assistance']['full_node_context'][key]
+        assert read_recent_incidents(json.dumps(forged).encode()) is None
+    forged = json.loads(json.dumps(snapshot))
+    forged['incidents'][0]['explanation']['fast_assistance']['full_node_context']['outcome'] = 'healthy'
+    assert read_recent_incidents(json.dumps(forged).encode()) is None
+
+
+@pytest.mark.parametrize('kind', ['updated', 'closed'])
+def test_new_transition_does_not_retain_previous_full_node_advisory(kind):
+    from azazel_nexus.incident_explain import build_recent_incident
+    from azazel_nexus_runtime.mio_fast_assistance import fast_assistance
+    from test_mio_fast_assistance import _fabric_response, _lite_frame
+
+    fast = fast_assistance(_lite_frame(), deadline_s=.5,
+                           fabric_knowledge_context_response=_fabric_response('partial'),
+                           knowledge_lookup=lambda *a, **k: (__import__('test_mio_fast_assistance')._lite_ref(),))
+    record = _record({'route': 'unavailable', 'outcome': 'unavailable',
+                      'reason': 'mio_unavailable', 'text': None, 'fast_assistance': fast})
+    t = _t1110()
+    record['incident_id'] = t['incident_id']
+    row = build_recent_incident(t, record=record)
+    previous = json.loads(json.dumps(row))
+    updated = dict(t, event_type='edge.incident.' + kind, most_severe=t['most_severe'])
+    if kind == 'closed':
+        updated['reason'] = 'idle'
+    next_row = build_recent_incident(updated, previous=row)
+    now = next_row['explanation']['fast_assistance']
+    assert now['full_node_context']['outcome'] == 'not_queried'
+    assert now['full_node_context']['snapshot_state'] is None
+    assert now['knowledge'] == previous['explanation']['fast_assistance']['knowledge']
+    assert 'KNOWLEDGE_CONTEXT_PARTIAL' not in now['unknowns']
+    assert row == previous
+
+
+def test_known_freshness_limitation_is_preserved_without_other_producer_prose():
+    from azazel_nexus.incident_explain import explanation_summary
+    from azazel_nexus_runtime.mio_fast_assistance import fast_assistance
+    from test_mio_fast_assistance import _fabric_response, _lite_frame
+    response = _fabric_response('partial')
+    response['limitations'] = ['source-level freshness deadlines are not included in this projection']
+    fast = fast_assistance(_lite_frame(), deadline_s=.5, fabric_knowledge_context_response=response)
+    fast['fabric_knowledge_context_advisory']['limitations'].append('private.example <script>')
+    record = _record({'route': 'unavailable', 'outcome': 'unavailable',
+                      'reason': 'mio_unavailable', 'text': None, 'fast_assistance': fast})
+    projection = explanation_summary(record)['fast_assistance']['full_node_context']
+    assert 'Source-level freshness deadlines are not included in this projection.' in projection['limitations']
+    assert 'private.example' not in json.dumps(projection)
+
+
+def test_new_unavailable_result_replaces_old_full_node_advisory():
+    from azazel_nexus.incident_explain import build_recent_incident, build_recent_incidents
+    from azazel_nexus_runtime.mio_fast_assistance import fast_assistance
+    from azazel_nexus_runtime.knowledge_context_socket import FullNodeContextStatus
+    from test_mio_fast_assistance import _fabric_response, _lite_frame
+    old = fast_assistance(_lite_frame(), deadline_s=.5, fabric_knowledge_context_response=_fabric_response('complete'))
+    failed = fast_assistance(_lite_frame(), deadline_s=.5,
+                             full_node_context_status=FullNodeContextStatus.UNAVAILABLE)
+    t = _t1110()
+    def record_for(fast):
+        r = _record({'route': 'unavailable', 'outcome': 'unavailable',
+                     'reason': 'mio_unavailable', 'text': None, 'fast_assistance': fast})
+        r['incident_id'] = t['incident_id']
+        return r
+    previous = build_recent_incident(t, record=record_for(old))
+    updated = dict(t, event_type='edge.incident.updated')
+    row = build_recent_incident(updated, previous=previous, record=record_for(failed))
+    snapshot = build_recent_incidents([row], 1)
+    full = snapshot['incidents'][0]['explanation']['fast_assistance']['full_node_context']
+    assert full['outcome'] == 'unavailable'
+    assert full['full_node_context_status'] == 'unavailable'
+    assert full['source_kind'] is None and full['snapshot_state'] is None
+    assert full['generated_at'] is None and full['expires_at'] is None
+    assert full['limitations'] == []
+
+
+@pytest.mark.parametrize(('field', 'value'), [
+    ('source_kind', 'untrusted_source'), ('snapshot_state', 'fresh'),
+    ('generated_at', '2026-99-01T00:00:00Z'), ('expires_at', '2020-01-01T00:00:00Z'),
+])
+def test_full_node_raw_reader_rejects_unknown_or_invalid_metadata(field, value):
+    from azazel_nexus.local_advisory import read_fast_assistance
+    from azazel_nexus_runtime.mio_fast_assistance import fast_assistance
+    from test_mio_fast_assistance import _fabric_response, _lite_frame
+    fast = fast_assistance(_lite_frame(), deadline_s=.5,
+                           fabric_knowledge_context_response=_fabric_response('partial'))
+    fast['fabric_knowledge_context_advisory'][field] = value
+    with pytest.raises(ValueError):
+        read_fast_assistance(fast)
+
+
 def test_fast_assistance_is_bound_to_incident_and_edge_sequence():
     pytest.importorskip("azazel_mio")
     from azazel_nexus.incident_explain import build_frame, read_mio_reply, read_record

@@ -71,6 +71,14 @@ is complete. If Lite is available while the full node is unavailable, the Lite
 result remains available and the full-node failure remains visible in the
 separate field. Older or degraded fast-assessment responses may omit the field.
 
+The incident snapshot and operator UI show a separate full-node status and,
+when an advisory is present, its source kind, unverified trust, snapshot state,
+generation and expiry times. Only fixed limitation messages are displayed;
+producer limitation text, subjects and opaque identifiers are withheld. An
+expired receipt is labelled expired in the UI even if its stored snapshot was
+previously current. A new incident transition does not reuse the earlier
+full-node receipt while its new explanation is pending.
+
 The ordinary P0 entry sends a `question`, not a typed IOC. The candidate
 Knowledge producer cannot normalize that type as an IOC and reports it as an
 unknown rather than asserting an exact match. This entry establishes bounded

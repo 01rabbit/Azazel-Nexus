@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import unicodedata
+from datetime import datetime
 from collections.abc import Mapping
 from ipaddress import IPv6Address
 
@@ -948,6 +949,12 @@ def read_fast_assistance(value):
                 require(re.fullmatch(
                     r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z',
                     advisory[key]) is not None)
+            try:
+                generated = datetime.fromisoformat(advisory['generated_at'].replace('Z', '+00:00'))
+                expires = datetime.fromisoformat(advisory['expires_at'].replace('Z', '+00:00'))
+            except ValueError:
+                raise ValueError('invalid_fast_assistance') from None
+            require(expires > generated)
             require(type(advisory['facts']) is list and len(advisory['facts']) <= 64)
             for item in advisory['facts']:
                 require(type(item) is dict and set(item) == {

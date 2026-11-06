@@ -1110,6 +1110,17 @@ def test_storage_is_a_table_and_direct_and_snapshot_cards_say_where_they_read():
     assert "この情報源" in reasons["access_permission_denied"]
 
 
+def test_full_node_panel_uses_text_nodes_and_shows_separate_bounded_metadata():
+    script = _code((STATIC / "app.js").read_text(encoding="utf-8"))
+    for fragment in ('fast.full_node_context', 'full.full_node_context_status', 'full.outcome',
+                     'full.source_kind', 'full.claim_status', 'full.trust', 'full.snapshot_state',
+                     'full.generated_at', 'full.expires_at', 'list(full.limitations)',
+                     'Date.parse(full.expires_at) <= Date.now()', 'fullOutcome = "expired"'):
+        assert fragment in script
+    assert 'node.textContent = String(text)' in script
+    assert 'innerHTML' not in script
+
+
 def test_citation_and_bundle_display_fields_are_labelled_and_never_healthy():
     """#362's citation display (freshness, citation_state) and Knowledge Lite's
     bundle reach the page through the label table, never as 未定義の語."""
