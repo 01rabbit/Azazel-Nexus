@@ -1,6 +1,7 @@
 """Dedicated Knowledge egress broker remains P0 and closed by default."""
 
 from pathlib import Path
+import struct
 import sys
 from types import SimpleNamespace
 
@@ -112,6 +113,10 @@ def test_truncated_broker_reply_becomes_optional_context_unavailable(monkeypatch
 
         def connect(self, _path):
             pass
+
+        def getsockopt(self, _level, _option, _length):
+            # Match the commissioned broker UID checked by request_context.
+            return struct.pack("3i", 123, 20001, 20002)
 
         def sendall(self, _payload):
             pass
