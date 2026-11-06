@@ -96,8 +96,9 @@ uses a test-only `GenerationLane` subclass that accepts one unsealed,
 test-only `GenerationCapability`. It does not set or patch
 `GENERATION_ADMISSION_ENABLED` or `LOCAL_MODEL_ADMISSION_ENABLED`, mints no
 production seal, and touches no HG/admission code. The scenario asserts both
-constants stay `False` and that the production `authorized()` still rejects the
-fixture capability. The printed receipt is labeled
+constants stay `False` and that production `authorized()` rejects this
+capability in the currently closed configuration. That assertion does not
+isolate seal validation from the closed feature flags. The printed receipt is labeled
 "FIXTURE-AUTHORIZED LAB EVIDENCE ONLY". It is not HG-05, HG, or production
 admission evidence.
 
@@ -110,19 +111,28 @@ checks. The real `llama-server` remains a separate OS process.
 
 **What is checked.**
 - `generation`: `slow_analysis` goes `queued` -> `complete`, with
-  `generation_method == "model"`. The provider call count comes from a probe
-  around the real server; tokens and timings are recorded from the real
-  response. A response without usage stays `unknown` and is never invented.
-- `generation_degraded`: the real server is stopped before dispatch. The real
-  failure yields a typed `degraded` receipt with unknown usage and no
-  assistance. This is not a timeout case; no timeout path is tested here.
+  `generation_method == "model"`. The probe records calls to the real
+  `LocalServer.infer` boundary; tokens and timings are recorded from successful
+  real responses. A response without usage stays `unknown` and is never
+  invented. This fixture lane has a 30-second deadline. A slow CPU model or
+  constrained JSON response can time out/degrade; this scenario asserts
+  completion and does not test that timeout outcome.
+- `generation_degraded`: the real server is stopped before inference dispatch.
+  `LocalServer.infer` refuses with "local server is not serving" before opening
+  its HTTP socket. The test records one pre-HTTP refusal and expects a typed
+  `degraded` receipt with unknown usage and no assistance. No provider HTTP call
+  or provider-side failure is claimed. This is not a timeout case.
 - In both: Edge reading and non-M.I.O. authority state are unchanged, and
-  captured logs and persisted files contain no question, context, or response
-  text. The harness prints only counts, states and numbers.
+  formatted Python root-logger messages and persisted files contain no
+  question, context, or response text. The serving process writes stdout and
+  stderr to `/dev/null`; the harness prints only counts, states and numbers.
 - The Nexus route remains the deterministic handoff in both cases: the fixture
   capability authorizes only the isolated slow GenerationLane job and does not
   admit the router's local advice provider. The model-free fast result and
-  model-backed slow receipt remain separate.
+  model-backed slow receipt remain separate. Because route admission is closed,
+  the fast result may be produced by entryd's existing model-free shared-core
+  fallback when locald is absent; this test does not attribute it to a separate
+  locald process.
 
 The model is the smallest supported candidate GGUF present, chosen by the
 existing runner (no new selection and no download). The scenario was written
