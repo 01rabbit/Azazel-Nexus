@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 import copy
+import json
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -312,6 +313,41 @@ def _fabric_response(state):
         'expires_at': instant(now + timedelta(seconds=30)),
         'authority': 'advisory_only',
     }
+
+
+@pytest.mark.parametrize('case', ['complete', 'partial', 'stale', 'expired', 'unavailable', 'not_queried'])
+def test_real_mio_full_node_output_survives_incident_projection(case):
+    from azazel_nexus.incident_explain import build_recent_incident, build_recent_incidents, read_recent_incidents
+    from azazel_nexus_runtime.knowledge_context_socket import FullNodeContextStatus
+    from test_incident_explain import _record, _t1110
+
+    kwargs = {}
+    if case in {'complete', 'partial', 'stale', 'expired'}:
+        response = _fabric_response('complete' if case == 'expired' else case)
+        if case == 'expired':
+            now = datetime.now(timezone.utc)
+            response['snapshot']['as_of'] = (now - timedelta(minutes=3)).isoformat().replace('+00:00', 'Z')
+            response['generated_at'] = (now - timedelta(minutes=2)).isoformat().replace('+00:00', 'Z')
+            response['expires_at'] = (now - timedelta(minutes=1)).isoformat().replace('+00:00', 'Z')
+        kwargs['fabric_knowledge_context_response'] = response
+    elif case == 'unavailable':
+        kwargs['full_node_context_status'] = FullNodeContextStatus.UNAVAILABLE
+    fast = read_fast_assistance(adapter.fast_assistance(_lite_frame(), deadline_s=.5, **kwargs))
+    record = _record({'route': 'unavailable', 'outcome': 'unavailable',
+                      'reason': 'mio_unavailable', 'text': None, 'fast_assistance': fast})
+    record['incident_id'] = _t1110()['incident_id']
+    row = build_recent_incident(_t1110(), record=record)
+    snapshot = build_recent_incidents([row], 1)
+    assert read_recent_incidents(json.dumps(snapshot).encode()) == snapshot
+    projected = snapshot['incidents'][0]['explanation']['fast_assistance']['full_node_context']
+    assert projected['outcome'] == case
+    assert projected['full_node_context_status'] == (
+        'received' if case in {'complete', 'partial', 'stale', 'expired'} else case)
+    if case in {'complete', 'partial', 'stale'}:
+        assert projected['snapshot_state'] == case
+        assert projected['source_kind'] == 'fabric_knowledge_context_response_v1'
+        assert projected['claim_status'] == 'source_reported_unverified'
+        assert projected['trust'] == 'unverified_advisory_only'
 
 
 @pytest.mark.parametrize(('snapshot_state', 'expected'), [

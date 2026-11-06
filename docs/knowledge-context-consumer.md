@@ -76,7 +76,9 @@ when an advisory is present, its source kind, unverified trust, snapshot state,
 generation and expiry times. Only fixed limitation messages are displayed;
 producer limitation text, subjects and opaque identifiers are withheld. An
 expired receipt is labelled expired in the UI even if its stored snapshot was
-previously current. A new incident transition does not reuse the earlier
+previously current. This display depends on the operator device's clock and is
+re-evaluated when the screen is redrawn; it is not an independent trusted-clock
+verification. A new incident transition does not reuse the earlier
 full-node receipt while its new explanation is pending.
 
 The ordinary P0 entry sends a `question`, not a typed IOC. The candidate

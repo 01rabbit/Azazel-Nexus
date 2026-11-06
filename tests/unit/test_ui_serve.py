@@ -1117,6 +1117,7 @@ def test_full_node_panel_uses_text_nodes_and_shows_separate_bounded_metadata():
                      'full.generated_at', 'full.expires_at', 'list(full.limitations)',
                      'Date.parse(full.expires_at) <= Date.now()', 'fullOutcome = "expired"'):
         assert fragment in script
+    assert '期限表示は端末時計に依存し、画面更新時に再評価します。' in script
     assert 'node.textContent = String(text)' in script
     assert 'innerHTML' not in script
 

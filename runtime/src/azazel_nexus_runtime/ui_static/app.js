@@ -635,6 +635,7 @@
         var fullNode = block("Knowledge フルノード（独立した助言）");
         var fullOutcome = full.outcome;
         if (full.expires_at && Date.parse(full.expires_at) <= Date.now()) { fullOutcome = "expired"; }
+        add(fullNode, el("p", "small", "期限表示は端末時計に依存し、画面更新時に再評価します。"));
         add(fullNode, kv([["照会状態", full.full_node_context_status], ["出典状態", fullOutcome],
           ["出典種別", full.source_kind], ["主張", full.claim_status], ["信頼区分", full.trust],
           ["snapshot状態", full.snapshot_state], ["生成時刻", full.generated_at], ["期限", full.expires_at]]));
