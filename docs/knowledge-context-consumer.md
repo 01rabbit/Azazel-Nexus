@@ -61,6 +61,22 @@ is one in-flight request with no queue or retry. A missing, disabled, expired,
 untrusted, oversized or late result becomes a fixed refusal; local FAST_ASSESS
 continues without external context. The response is advisory only.
 
+The Nexus fast-assessment response may carry the optional, Nexus-owned field
+`full_node_context_status`: `not_queried` means no broker request was made,
+`received` means the broker returned a response for M.I.O. to evaluate, and
+`unavailable` means an attempted broker request failed. This transport state
+is separate from the shared M.I.O. `dependency_outcome` and from Knowledge Lite.
+It does not assert that source claims are verified or that a received snapshot
+is complete. If Lite is available while the full node is unavailable, the Lite
+result remains available and the full-node failure remains visible in the
+separate field. Older or degraded fast-assessment responses may omit the field.
+
+The ordinary P0 entry sends a `question`, not a typed IOC. The candidate
+Knowledge producer cannot normalize that type as an IOC and reports it as an
+unknown rather than asserting an exact match. This entry establishes bounded
+question/unknown interoperability only; typed-IOC lookup requires a separate
+contract and must not reclassify restricted incident data as P0.
+
 The service uses the separate `azknowledgeegress` account. The installed unit
 is preset disabled, requires its activation grant marker and is absent from
 `wired_capabilities()` because no production commissioning loader exists yet.

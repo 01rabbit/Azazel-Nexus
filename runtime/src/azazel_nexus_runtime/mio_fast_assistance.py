@@ -17,6 +17,7 @@ from azazel_mio import (
     MioSituationFrame,
 )
 from azazel_mio.id_grammar import ID_KINDS
+from .knowledge_context_socket import FullNodeContextStatus
 
 
 def _frame(source: dict) -> MioSituationFrame:
@@ -67,7 +68,8 @@ def _frame(source: dict) -> MioSituationFrame:
 def fast_assistance(source: dict, *, deadline_s: float, knowledge_lookup=None,
                     knowledge_max_s: float = 0.25, core_reserve_s: float = 0.025,
                     situation_frame=None,
-                    fabric_knowledge_context_response: dict | None = None) -> dict:
+                    fabric_knowledge_context_response: dict | None = None,
+                    full_node_context_status: FullNodeContextStatus | None = None) -> dict:
     """Read optional authenticated local context, then run the model-free core.
 
     The caller already reserves socket delivery time. Keep the existing 25ms fast-core budget
@@ -75,6 +77,15 @@ def fast_assistance(source: dict, *, deadline_s: float, knowledge_lookup=None,
     This is a software budget, not a hardware latency guarantee.
     """
     from .mio_socket_client import fast_assessment_degraded
+    if full_node_context_status is None:
+        full_node_context_status = (FullNodeContextStatus.RECEIVED
+                                    if fabric_knowledge_context_response is not None
+                                    else FullNodeContextStatus.NOT_QUERIED)
+    if not isinstance(full_node_context_status, FullNodeContextStatus):
+        raise ValueError("invalid_full_node_context_status")
+    if (full_node_context_status is FullNodeContextStatus.RECEIVED) != (
+            fabric_knowledge_context_response is not None):
+        raise ValueError("inconsistent_full_node_context_status")
     if deadline_s <= 0:
         return fast_assessment_degraded("timeout")
     end = time.monotonic() + deadline_s
@@ -127,6 +138,9 @@ def fast_assistance(source: dict, *, deadline_s: float, knowledge_lookup=None,
                 failure = "unavailable"
             except Exception:
                 failure = "unavailable"
+    if (full_node_context_status is FullNodeContextStatus.UNAVAILABLE
+            and not advisories and not frame.knowledge_refs and failure is None):
+        failure = "unavailable"
     if failure:
         payload = frame.to_dict()
         payload['knowledge_status'] = failure
@@ -144,7 +158,10 @@ def fast_assistance(source: dict, *, deadline_s: float, knowledge_lookup=None,
         fabric_response = FabricKnowledgeContextResponseAdvisory(
             response=fabric_knowledge_context_response
         )
-    return AssistantCore(model=None).explain(
+    result = AssistantCore(model=None).explain(
         frame, now=now, knowledge_attempted=attempted,
         knowledge_lite_advisories=advisories,
         fabric_knowledge_context_response=fabric_response).to_dict()
+    # Nexus transport metadata is separate from the shared MIO output contract.
+    result["full_node_context_status"] = full_node_context_status.value
+    return result

@@ -141,11 +141,18 @@ print(json.dumps({
   "route": reply["route"],
   "state": fast["state"],
   "knowledge_status": fast["dependency_outcome"]["knowledge"],
+  "full_node_context_status": fast.get("full_node_context_status"),
   "lite_claim_count": len(fast["knowledge"]),
   "observation_count": len(fast["observations"]),
   "advisory_authority": advisory.get("authority") if advisory else None,
   "advisory_claim_status": advisory.get("claim_status") if advisory else None,
   "advisory_trust": advisory.get("trust") if advisory else None,
+  "snapshot_state": advisory.get("snapshot_state") if advisory else None,
+  "partial_warning": "KNOWLEDGE_CONTEXT_PARTIAL" in fast["unknowns"],
+  "partial_check": bool(fast["next_checks"]) and fast["next_checks"][0] ==
+    "Request an authorized current full-node Knowledge snapshot; this partial or stale advisory is not a complete current snapshot.",
+  "question_unknown_only": bool(advisory) and not advisory["facts"] and any(
+    "could not be normalized" in item for item in advisory["unknowns"]),
   "handoff_action": fast["handoff"]["current_action"] if fast.get("handoff") else None,
 }, sort_keys=True))
 '''
@@ -159,9 +166,10 @@ print(json.dumps({
     assert result.returncode == 0, (result.stdout + result.stderr)[-1000:]
     value = json.loads(result.stdout)
     assert set(value) == {
-        "route", "state", "knowledge_status", "lite_claim_count",
+        "route", "state", "knowledge_status", "full_node_context_status", "lite_claim_count",
         "observation_count", "advisory_authority", "advisory_claim_status",
-        "advisory_trust", "handoff_action",
+        "advisory_trust", "snapshot_state", "partial_warning", "partial_check",
+        "question_unknown_only", "handoff_action",
     }
     return value
 
@@ -562,8 +570,16 @@ finally:
             assert advisory["authority"] == "advisory_only"
             assert advisory["claim_status"] == "source_reported_unverified"
             assert advisory["trust"] == "unverified_advisory_only"
-            # This aggregate status is AVAILABLE because the full-node advisory
-            # arrived; the separate Lite claim list must remain empty.
+            assert assessed["dependency_outcome"]["knowledge"] == "unavailable"
+            assert assessed["full_node_context_status"] == "received"
+            assert advisory["snapshot_state"] == "partial"
+            assert "KNOWLEDGE_CONTEXT_PARTIAL" in assessed["unknowns"]
+            assert assessed["next_checks"][0] == (
+                "Request an authorized current full-node Knowledge snapshot; "
+                "this partial or stale advisory is not a complete current snapshot.")
+            # A question is not a typed IOC. No exact match is claimed.
+            assert advisory["facts"] == []
+            assert any("could not be normalized" in item for item in advisory["unknowns"])
             assert assessed["knowledge"] == []
             assert assessed["observations"] == []
             assert assessed["handoff"]["current_action"] is None
@@ -574,7 +590,12 @@ finally:
             # from the lower-level locald call above and preserves Knowledge
             # output as an unverified advisory.
             entry_reply = _normal_entry_advisory(service_root)
-            assert entry_reply["knowledge_status"] == "available", entry_reply
+            assert entry_reply["knowledge_status"] == "unavailable", entry_reply
+            assert entry_reply["full_node_context_status"] == "received", entry_reply
+            assert entry_reply["snapshot_state"] == "partial", entry_reply
+            assert entry_reply["partial_warning"] is True, entry_reply
+            assert entry_reply["partial_check"] is True, entry_reply
+            assert entry_reply["question_unknown_only"] is True, entry_reply
             assert entry_reply["lite_claim_count"] == 0, entry_reply
             assert entry_reply["observation_count"] == 0, entry_reply
             assert entry_reply["advisory_authority"] == "advisory_only", entry_reply
@@ -590,7 +611,8 @@ finally:
             assert broker_process.returncode == 0
             degraded = _normal_entry_advisory(service_root)
             assert degraded["advisory_authority"] is None, degraded
-            assert degraded["knowledge_status"] != "available", degraded
+            assert degraded["knowledge_status"] == "unavailable", degraded
+            assert degraded["full_node_context_status"] == "unavailable", degraded
             assert degraded["lite_claim_count"] == 0, degraded
             assert degraded["observation_count"] == 0, degraded
             assert degraded["handoff_action"] is None, degraded
@@ -598,7 +620,12 @@ finally:
             broker_process = start_broker()
             assert _ready(broker_process)["ready"] is True
             recovered = _normal_entry_advisory(service_root)
-            assert recovered["knowledge_status"] == "available", recovered
+            assert recovered["knowledge_status"] == "unavailable", recovered
+            assert recovered["full_node_context_status"] == "received", recovered
+            assert recovered["snapshot_state"] == "partial", recovered
+            assert recovered["partial_warning"] is True, recovered
+            assert recovered["partial_check"] is True, recovered
+            assert recovered["question_unknown_only"] is True, recovered
             assert recovered["advisory_authority"] == "advisory_only", recovered
             assert recovered["advisory_claim_status"] == "source_reported_unverified", recovered
             assert recovered["advisory_trust"] == "unverified_advisory_only", recovered
