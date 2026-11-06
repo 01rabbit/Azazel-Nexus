@@ -235,9 +235,9 @@ def test_content_outside_the_scope_or_undecodable_is_refused():
 
 def test_knowledge_context_unit_stays_marker_guarded_but_is_not_grantable(root):
     from azazel_nexus_runtime.activation_markers import (
-        GRANT_MARKER_UNITS,
         GRANTABLE_UNITS,
     )
+    from azazel_nexus_runtime.hardening import GRANT_MARKER_UNITS
 
     context = "azazel-knowledge-contextd.service"
     assert context in GRANT_MARKER_UNITS

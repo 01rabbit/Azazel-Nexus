@@ -21,7 +21,10 @@ from azazel_nexus.activation import CORE_UNITS
 from azazel_nexus.edge_package import EDGE_UNIT as _EDGE_UNIT
 from azazel_nexus.operator_snapshots import OBSERVED_UNITS
 
-from .activation_markers import GRANTABLE_UNITS, MARKER_GUARDED_UNITS
+from .activation_markers import (
+    MARKER_GUARDED_UNITS,
+    NON_GRANTABLE_MARKER_UNITS,
+)
 from .bootstrap_systemd_profile import observe_bootstrap_systemd_profile
 from .systemd_socket import FixedSystemBusSocket, SYSTEM_BUS_ADDRESS, require_supported_dbus_next
 from .units import UNIT_NAMES, UnitOperationFailed
@@ -132,11 +135,12 @@ class SystemdUnitCalls:
 
         # The activation reader needs the non-grantable Knowledge broker in
         # its verification scope. That does not give the controller authority
-        # to enable it: narrowing may mask any core unit, while widening stays
-        # limited to the grantable set.
+        # to enable it: narrowing may mask a core unit, while the newly added
+        # non-grantable marker-guarded units cannot be unmasked or enabled.
         if method == "MaskUnitFiles" and unit not in _CORE_UNIT_NAMES:
             raise UnitOperationFailed("the systemd client refused a non-core mask")
-        if method in {"UnmaskUnitFiles", "EnableUnitFiles"} and unit not in GRANTABLE_UNITS:
+        if (method in {"UnmaskUnitFiles", "EnableUnitFiles"}
+                and unit in NON_GRANTABLE_MARKER_UNITS):
             raise UnitOperationFailed("the systemd client refused a non-grantable unit")
 
         if method == "GetUnitFileState":
