@@ -311,6 +311,9 @@ LAYOUT = (
     PathSpec("/var/lib/azazel/run/remote", 0o2710,
              "remote inference transport socket leaf; entryd reaches it through the operator group",
              owner="azremote", group="azazel-operator"),
+    PathSpec("/var/lib/azazel/run/knowledge-context", 0o2710,
+             "full-node Knowledge broker socket; reachable only by the M.I.O. local client group",
+             owner="azknowledgeegress", group="azknowledge-context-client"),
     PathSpec("/var/lib/azazel/models/staging", 0o2750,
              "root-owned model staging; inherit the runtime read group", group="azmio"),
     PathSpec("/var/lib/azazel/models/store", 0o2750,
@@ -353,6 +356,10 @@ LAYOUT = (
     PathSpec(
         "/var/lib/azazel/state/knowledge", 0o700,
         "Knowledge Lite daemon refusal records", owner="azknowledge",
+    ),
+    PathSpec(
+        "/var/lib/azazel/state/knowledge-context", 0o700,
+        "full-node Knowledge broker outcome ledger", owner="azknowledgeegress",
     ),
     PathSpec(
         "/var/lib/azazel/run/mio-entry", 0o2710,

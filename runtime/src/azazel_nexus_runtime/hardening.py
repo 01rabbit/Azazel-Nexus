@@ -265,6 +265,10 @@ class ServiceProfile:
     #: reach arrive as a commissioning drop-in built from the signed Provider
     #: Registry, so shipping this unit ships a service that can reach nothing.
     is_inference_transport: bool = False
+    #: Dedicated Knowledge context client. This is a distinct authority from
+    #: artifact acquisition and remote inference; its shipped unit keeps
+    #: IPAddressDeny=any and has no static IPAddressAllow entry.
+    is_knowledge_context_transport: bool = False
     #: Whether this unit is the Deception Lite decoy (#196 P1, design D1).
     #:
     #: The fourth exemption kind, and the only one that **accepts** rather
@@ -370,7 +374,7 @@ class ServiceProfile:
                 "are unstated inherits whatever systemd's default is"
             )
         reaches_network = (self.is_artifact_fetcher or self.is_inference_transport
-                           or self.is_decoy_listener)
+                           or self.is_knowledge_context_transport or self.is_decoy_listener)
         forbidden = {"AF_PACKET"} | (
             set() if reaches_network else {"AF_INET", "AF_INET6"}
         )
@@ -396,6 +400,7 @@ class ServiceProfile:
                 ("artifact fetcher", self.is_artifact_fetcher),
                 ("model host", self.is_model_host),
                 ("inference transport", self.is_inference_transport),
+                ("Knowledge Context transport", self.is_knowledge_context_transport),
                 ("decoy listener", self.is_decoy_listener),
             )
             if held
@@ -689,7 +694,8 @@ class ServiceProfile:
                 f"{self.unit} is after and requires {UI_SOCKET} only, has no "
                 "grant marker and no [Install] section")
         if (self.is_artifact_fetcher or self.is_model_host
-                or self.is_inference_transport or self.is_decoy_listener):
+                or self.is_inference_transport or self.is_knowledge_context_transport
+                or self.is_decoy_listener):
             raise ValueError(f"{self.unit} holds no network role")
 
     def _check_verify_unit(self) -> None:
@@ -721,7 +727,8 @@ class ServiceProfile:
                 f"{self.unit} is after {DECOY_NETWORK_HELPER_UNIT}, requires "
                 "nothing and has no condition (no grant marker)")
         if (self.is_artifact_fetcher or self.is_model_host
-                or self.is_inference_transport or self.is_decoy_listener):
+                or self.is_inference_transport or self.is_knowledge_context_transport
+                or self.is_decoy_listener):
             raise ValueError(f"{self.unit} holds no network role")
 
     def _check_namespace_unit(self) -> None:
@@ -766,7 +773,8 @@ class ServiceProfile:
                 "sandbox, shared overrides and shared omissions"
             )
         if (self.is_artifact_fetcher or self.is_model_host
-                or self.is_inference_transport or self.is_decoy_listener):
+                or self.is_inference_transport or self.is_knowledge_context_transport
+                or self.is_decoy_listener):
             raise ValueError(f"{self.unit} holds no network role")
         # Where it runs from and what it is ordered against, fixed as well:
         # `ip` and nothing else, only the controller to wait for, and only
@@ -805,6 +813,7 @@ GRANT_MARKER_UNITS = (
     "azazel-mio-locald.service",
     "azazel-mio-referenced.service",
     "azazel-mio-remoted.service",
+    "azazel-knowledge-contextd.service",
     "azazel-model-fetchd.service",
     "azazel-watchdog.service",
 )
@@ -894,6 +903,7 @@ SYSTEM_ACCOUNTS = (
     "azmioentry",
     "azmioref",
     "azremote",
+    "azknowledgeegress",
     "azknowledge",
     "azdecoy",
     # The passive NOC observer (U3). Not a specification service account:
@@ -1374,7 +1384,8 @@ PROFILES: tuple[ServiceProfile, ...] = (
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         conditions=_grant_condition("azazel-mio-locald.service"),
         is_model_host=True,
-        supplementary_groups=("azknowledge-read", "azmission-read"),
+        supplementary_groups=("azknowledge-read", "azmission-read",
+                              "azknowledge-context-client"),
         # Its own runtime directory. The socket that could start a process is
         # not the socket everything else answers on.
         runtime_directory="azazel/mio",
@@ -1416,6 +1427,32 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "reviewed change to this package, never commissioned data: an "
             "endpoint is a fact about a deployment, and a binary is a thing "
             "that executes."
+        ),
+    ),
+    ServiceProfile(
+        unit="azazel-knowledge-contextd.service",
+        executable="/usr/libexec/azazel/az-knowledge-contextd",
+        account="azknowledgeegress",
+        description="Azazel-Nexus optional Knowledge Context egress broker",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/knowledge-context-consumer.md",
+        address_families=("AF_UNIX", "AF_INET", "AF_INET6"),
+        read_write_paths=("/var/lib/azazel/state/knowledge-context",
+                          "/var/lib/azazel/run/knowledge-context"),
+        after=(ACTIVATION_CONTROLLER_UNIT,),
+        requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition("azazel-knowledge-contextd.service"),
+        is_knowledge_context_transport=True,
+        extra=(("LogRateLimitIntervalSec", "30"),
+               ("LogRateLimitBurst", "30"),
+               ("LogExtraFields", "AZ_SERVICE=knowledge-context")),
+        rationale=(
+            "The dedicated optional Knowledge Context broker is separate from "
+            "the M.I.O. local runtime, remote inference, and artifact fetcher. "
+            "It may use network address families only after commissioning; "
+            "IPAddressDeny=any remains in force and this package supplies no "
+            "IPAddressAllow entry. The local socket is restricted to M.I.O. "
+            "locald by its dedicated group. It has no model, enforcement, or "
+            "Knowledge store write access."
         ),
     ),
     ServiceProfile(

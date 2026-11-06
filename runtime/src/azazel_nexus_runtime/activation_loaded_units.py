@@ -1,13 +1,13 @@
-"""What the running manager has loaded for the grantable units (#251 H-1, M-3).
+"""What the running manager loaded for marker-guarded units (#251 H-1, M-3).
 
 `docs/activation-observe-baseline.md` §8.2. `activation_unit_files` checks
 the files systemd would read; a manager that loaded a unit earlier in the
 boot (an enabled unit with a queued start job, before any daemon-reload)
 runs **its loaded definition**, not the file measured now, and the
 preflight mask does not reload it. READY would release such a job for any
-grantable unit, whether or not this pass's policy names it. So, before any
-grant, the pass checks **every** unit in `GRANTABLE_UNITS` and refuses
-unless:
+marker-guarded unit, whether or not this pass's policy names it. So, before
+any grant, the pass checks every grantable unit and the non-grantable
+Knowledge Context broker's start guard, refusing unless:
 
 * each one's vendor file, if present, passes the content check and has no
   override or drop-in (`require_grantable_unit_files`);
@@ -139,10 +139,12 @@ def verify_loaded_units(reader, units) -> None:
 
 
 def verify_grantable_units(reader, units) -> None:
-    """The pass's `systemd_loaded_units` producer over every grantable unit.
+    """The pass's `systemd_loaded_units` producer over its guarded-unit scope.
 
     The files first (content, overrides; an absent vendor file outside the
     policy is accepted), then the manager's profile and loaded definitions.
+    The scope may include non-grantable marker-guarded services for
+    verification; this does not widen the set the pass may grant.
     """
     try:
         require_grantable_unit_files(units)

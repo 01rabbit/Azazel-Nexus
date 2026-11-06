@@ -645,6 +645,33 @@ def test_loaded_unit_reads_only_fixed_properties_of_a_grantable_unit():
     ]
 
 
+def test_loaded_unit_reads_the_non_grantable_marker_guarded_context_broker():
+    from azazel_nexus_runtime.activation_markers import (
+        GRANTABLE_UNITS,
+        MARKER_GUARDED_UNITS,
+    )
+
+    context = "azazel-knowledge-contextd.service"
+    assert context in MARKER_GUARDED_UNITS
+    assert context not in GRANTABLE_UNITS
+    values = {
+        "Id": ("s", context),
+        "FragmentPath": ("s", f"/usr/lib/systemd/system/{context}"),
+        "Conditions": ("a(sbbsi)", [[
+            "ConditionPathExists", False, False,
+            f"/run/azazel-activation/granted/{context}", 0,
+        ]]),
+    }
+    calls = []
+    loaded = SystemdUnitCalls(_loaded_exchange(calls, values)).loaded_unit(context)
+    assert loaded["Id"] == context
+    assert loaded["Conditions"] == [tuple(values["Conditions"][1][0])]
+    assert calls[-1] == (
+        PROPERTIES_INTERFACE, "GetAll", "s", [UNIT_INTERFACE],
+        {"path": _unit_object_path(context)},
+    )
+
+
 def test_loaded_unit_reports_a_unit_the_manager_does_not_hold_as_none():
     calls = []
     assert SystemdUnitCalls(_loaded_exchange(calls, not_loaded=True)).loaded_unit(_INTAKE) is None
@@ -716,6 +743,48 @@ def test_bus_session_allows_loaded_unit_reads_only_on_grantable_unit_objects():
         with pytest.raises(UnitOperationFailed):
             session._exchange(PROPERTIES_INTERFACE, "GetAll", signature, body, path=path)
     assert bus.messages == []
+
+
+def test_bus_session_allows_context_broker_getall_but_not_sshd():
+    context = "azazel-knowledge-contextd.service"
+    reply = SimpleNamespace(message_type=1, signature="a{sv}", body=[{}])
+    bus = _BusStub(reply)
+    session = SystemdBusSession(
+        bus=bus, loop=_LoopStub(), previous_loop=None,
+        message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1),
+        message_factory=_MessageStub,
+    )
+    path = _unit_object_path(context)
+    session._exchange(PROPERTIES_INTERFACE, "GetAll", "s", [UNIT_INTERFACE], path=path)
+    assert len(bus.messages) == 1
+    assert bus.messages[0].path == path
+
+    with pytest.raises(UnitOperationFailed):
+        session._exchange(
+            PROPERTIES_INTERFACE, "GetAll", "s", [UNIT_INTERFACE],
+            path=_unit_object_path("sshd.service"),
+        )
+    assert len(bus.messages) == 1
+
+
+def test_context_broker_can_be_remasked_but_never_unmasked_or_enabled():
+    from azazel_nexus_runtime.activation_markers import GRANTABLE_UNITS
+
+    context = "azazel-knowledge-contextd.service"
+    assert context not in GRANTABLE_UNITS
+    calls = []
+
+    def exchange(interface, member, signature, body, **kwargs):
+        calls.append((interface, member, signature, list(body), kwargs))
+        return _Reply("a(sss)", [[]])
+
+    client = SystemdUnitCalls(exchange)
+    client("MaskUnitFiles", context)
+    assert calls[0][1] == "MaskUnitFiles"
+    for method in ("UnmaskUnitFiles", "EnableUnitFiles"):
+        with pytest.raises(UnitOperationFailed):
+            client(method, context)
+    assert len(calls) == 1
 
 
 def test_bus_session_sends_getall_of_the_unit_interface_for_a_grantable_unit():

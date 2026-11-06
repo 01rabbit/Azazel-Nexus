@@ -102,7 +102,8 @@ def test_every_daemon_server_is_found():
     # The daemons the U4 review named, plus every other socket server today.
     assert {"model_fetchd", "auditd", "watchdog", "commissiond"} <= found
     assert found == {"auditd", "commissiond", "knowledge_lited", "mio_entryd",
-                     "mio_locald", "mio_referenced", "model_fetchd", "watchdog"}
+                     "knowledge_contextd", "mio_locald", "mio_referenced",
+                     "model_fetchd", "watchdog"}
 
 
 def test_azui_is_refused_every_verb_at_every_daemon(accounts):

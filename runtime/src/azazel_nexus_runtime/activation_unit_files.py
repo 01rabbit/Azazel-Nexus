@@ -44,7 +44,12 @@ import stat
 
 from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
 
-from .activation_markers import EXPOSURE_UNITS, GRANTABLE_UNITS, grant_marker_path
+from .activation_markers import (
+    EXPOSURE_UNITS,
+    GRANTABLE_UNITS,
+    MARKER_GUARDED_UNITS,
+    grant_marker_path,
+)
 from .bootstrap_systemd_profile import _DEBIAN13_V257_UNIT_PATH
 
 __all__ = [
@@ -183,7 +188,7 @@ def require_governed_unit_content(unit: str, data: bytes) -> None:
     section, must be exactly those of `hardening.render_unit` for the unit,
     and no `[Unit]` assignment may be empty (a reset). Fixed labels only.
     """
-    if (type(unit) is not str or unit not in GRANTABLE_UNITS
+    if (type(unit) is not str or unit not in MARKER_GUARDED_UNITS
             or type(data) is not bytes):
         raise UnitContentRefused("unit scope refused")
     directives = _directives(_decode(data))
@@ -203,7 +208,7 @@ def require_governed_unit_content(unit: str, data: bytes) -> None:
         raise UnitContentRefused("unit file LSM profile differs from the declaration")
 
 
-def _scope(units, allowed=GRANTABLE_UNITS) -> tuple[str, ...]:
+def _scope(units, allowed=MARKER_GUARDED_UNITS) -> tuple[str, ...]:
     """The named units, each within `allowed`.
 
     Measurement takes the policy's scope (`ACTIVATION_UNIT_ALLOWLIST`); the
@@ -465,17 +470,19 @@ def require_watch_unit_files() -> dict[str, bytes]:
 
 
 def require_grantable_unit_files(units) -> None:
-    """The same checks over every grantable unit, policy or not (#251 H-1).
+    """Check grantable and explicitly non-grantable marker-guarded units.
 
     A unit outside this pass's policy is never granted, but if it is enabled
     with a start job queued, READY would release it unless it waits for its
-    marker. So every grantable unit's vendor file must pass
-    `require_governed_unit_content` and have no override or drop-in. A
+    marker. Every unit in the marker-guarded check scope's vendor file must
+    pass `require_governed_unit_content` and have no override or drop-in; the
+    non-grantable Knowledge broker is checked here but cannot receive a
+    marker from the pass. A
     vendor file that does not exist is accepted for a unit outside the
     policy scope: systemd has no definition to start (the scope itself is
     measured by `measure_scoped_unit_files`, where a missing file refuses).
     """
-    scope = _scope(units)
+    scope = _scope(units, allowed=MARKER_GUARDED_UNITS)
     require_no_unit_overrides(scope)
     try:
         fd = _open(UNIT_DIRECTORY, required=True)

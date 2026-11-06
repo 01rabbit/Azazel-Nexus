@@ -51,7 +51,7 @@ def test_adapter_projects_fabric_full_node_response_as_unverified_advisory():
         _lite_frame(), deadline_s=0.2,
         fabric_knowledge_context_response=response,
     )
-    advisory = result["fabric_knowledge_context_advisory"]
+    advisory = read_fast_assistance(result)["fabric_knowledge_context_advisory"]
     assert advisory["claim_status"] == "source_reported_unverified"
     assert advisory["authority"] == "advisory_only"
     assert advisory["facts"][0]["value"] == "A synthetic source reports this."
@@ -132,7 +132,7 @@ def test_local_socket_assess_preserves_failure_classes(monkeypatch):
     assert result["dependency_outcome"]["knowledge"] == "rejected"
 
 
-def test_local_socket_assess_sends_only_the_untrusted_frame(monkeypatch):
+def test_local_socket_assess_sends_only_the_ordinary_frame(monkeypatch):
     from azazel_nexus_runtime import mio_socket_client as client
 
     frame = _lite_frame()
@@ -141,7 +141,9 @@ def test_local_socket_assess_sends_only_the_untrusted_frame(monkeypatch):
         client, "_exchange",
         lambda *args, **kwargs: observed.update(kwargs) or {},
     )
-    result = client.LocalSocketClient().assess(frame, deadline_s=0.2)
+    result = client.LocalSocketClient().assess(
+        frame, deadline_s=0.2,
+    )
     assert observed["payload"] == frame
     assert result["dependency_outcome"]["knowledge"] == "rejected"
 
@@ -160,7 +162,8 @@ def test_locald_passes_core_only_time_left_after_its_delivery_reserve(monkeypatc
         verb=mio_locald.FAST_ASSESS_VERB, arguments={"deadline_ms": 45}, payload=frame,
     ))
 
-    assert observed == [pytest.approx(0.025)]
+    assert len(observed) == 1
+    assert 0.024 < observed[0] <= 0.025
     assert reply["outcome"] == "assessed"
     assert reply["fast_assistance"] == {"assessment": "bounded"}
 
@@ -411,10 +414,11 @@ def test_normal_locald_fast_assess_injects_authenticated_lookup():
         read_fast_assistance(forged)
 
 
-def test_normal_locald_assessment_rejects_caller_supplied_fabric_response(monkeypatch):
+def test_normal_locald_assessment_requests_context_from_local_broker(monkeypatch):
     from azazel_nexus_runtime import mio_locald
 
-    source = _lite_frame()
+    source = {"request_id": "p0-normal", "privacy_class": "P0-public",
+              "question": "synthetic public question", "context": []}
     response = {
         "schema_version": "knowledge-context-response/v1",
         "request_id": "req-synthetic-1",
@@ -434,18 +438,54 @@ def test_normal_locald_assessment_rejects_caller_supplied_fabric_response(monkey
         "expires_at": "2026-07-06T12:00:30Z",
         "authority": "advisory_only",
     }
+    observed = {}
     from azazel_nexus_runtime import mio_fast_assistance
+    fast_calls = []
+    clock = [20.0]
+    monkeypatch.setattr(mio_locald.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(
         mio_fast_assistance,
         "fast_assistance",
-        lambda *args, **kwargs: pytest.fail("unverified caller response reached MIO"),
+        lambda frame, **kwargs: (
+            observed.update(kwargs), fast_calls.append(kwargs),
+            {"outcome": "synthetic"},
+        )[-1],
+    )
+    broker_calls = []
+    monkeypatch.setattr(
+        mio_locald, "request_context",
+        lambda frame, *, deadline_s: (
+            broker_calls.append((frame, deadline_s)),
+            clock.__setitem__(0, clock[0] + 0.2),
+            response,
+        )[-1],
     )
     service = mio_locald.LocalRuntimeService()
     reply = service.handle(SimpleNamespace(
         verb=mio_locald.FAST_ASSESS_VERB,
         arguments={"deadline_ms": 500},
-        payload={"frame": source,
-                 "fabric_knowledge_context_response": response},
+        payload={"frame": source},
+    ))
+    assert observed["fabric_knowledge_context_response"] == response
+    assert broker_calls and broker_calls[0][0] == {
+        "privacy_class": "P0-public", "question": "synthetic public question"}
+    assert 0 < broker_calls[0][1] <= mio_locald.KNOWLEDGE_MAX_S
+    assert fast_calls[0]["deadline_s"] == pytest.approx(0.28)
+    assert reply["fast_assistance"] == {"outcome": "synthetic"}
+
+
+def test_normal_locald_rejects_caller_supplied_fabric_response(monkeypatch):
+    from azazel_nexus_runtime import mio_locald, mio_fast_assistance
+
+    monkeypatch.setattr(
+        mio_fast_assistance, "fast_assistance",
+        lambda *a, **k: pytest.fail("unverified caller response reached MIO"),
+    )
+    reply = mio_locald.LocalRuntimeService().handle(SimpleNamespace(
+        verb=mio_locald.FAST_ASSESS_VERB,
+        arguments={"deadline_ms": 500},
+        payload={"frame": _lite_frame(),
+                 "fabric_knowledge_context_response": {"authority": "advisory_only"}},
     ))
     assert reply == {"outcome": "failed", "refusal": "malformed_frame"}
 

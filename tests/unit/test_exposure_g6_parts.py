@@ -294,9 +294,8 @@ def test_the_profile_directory_is_the_installers():
     assert APPARMOR_DIRECTORY == installed == "/etc/apparmor.d"
 
 
-def test_the_current_generation_allowlist_and_grantable_set_are_unchanged():
-    """The section is in no generation of this build (the schema that carries
-    it is introduced in G6)."""
+def test_the_current_generation_allowlist_keeps_context_broker_ungrantable():
+    """The exposure section is absent and Knowledge Context stays ungrantable."""
 
     assert OBSERVE_BASELINE_SCHEMA == "azazel-nexus/observe-baseline-generation/v1"
     assert not set(ACTIVATION_UNIT_ALLOWLIST) & (EXPOSURE_UNITS | set(WATCH))

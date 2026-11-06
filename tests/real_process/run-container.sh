@@ -2,6 +2,11 @@
 set -euo pipefail
 umask 022
 
+: "${NEXUS_EXPECTED_HEAD:?fixed Nexus source commit required by run-docker.sh}"
+: "${KNOWLEDGE_EXPECTED_HEAD:?fixed Knowledge source commit required by run-docker.sh}"
+printf 'fixed source heads: Nexus=%s Knowledge=%s\n' \
+  "$NEXUS_EXPECTED_HEAD" "$KNOWLEDGE_EXPECTED_HEAD"
+
 python -B - <<'PY'
 from pathlib import Path
 import hashlib
@@ -33,7 +38,7 @@ fabric_expected = 'b22356fd672cd60471606d3a7b73ccdba99091e680fedd854381a29d76e21
 fabric_actual = hashlib.sha256(fabric_wheel.read_bytes()).hexdigest()
 if fabric_actual != fabric_expected:
     raise SystemExit('Fabric Knowledge Context contract wheel digest mismatch')
-print(f'verified fixed Fabric Knowledge Context wheel digest: {fabric_actual}')
+print(f'verified Fabric v0.10.0 tag-source test wheel digest: {fabric_actual}')
 PY
 
 SCRATCH_SRC=$(mktemp -d /tmp/nxs-real-process.XXXXXX)
@@ -51,7 +56,6 @@ cp -a /knowledge/. "$SCRATCH_KNOWLEDGE/"
 chmod 0755 "$SCRATCH_KNOWLEDGE"
 rm -rf -- "$SCRATCH_KNOWLEDGE/.venv" "$SCRATCH_KNOWLEDGE/.pytest_cache"
 export KNOWLEDGE_TEST_SRC="$SCRATCH_KNOWLEDGE"
-export PYTHONPATH="$SCRATCH_KNOWLEDGE/src:$SCRATCH_KNOWLEDGE/tests/unit${PYTHONPATH:+:$PYTHONPATH}"
 python -m pip install --no-index --find-links=/wheels --find-links=/fabric-wheel \
   -e "${SCRATCH_SRC}[dev]" -e "$SCRATCH_SRC/runtime" \
   /wheel/azazel_mio-0.1.0.dev20261105+gitf5b0014-py3-none-any.whl \
@@ -75,6 +79,8 @@ groupadd --gid 20011 azedge
 groupadd --gid 20012 azincident-read
 groupadd --gid 20013 azaudit
 groupadd --gid 20014 azaudit-submit
+groupadd --gid 20015 azknowledgeegress
+groupadd --gid 20016 azknowledge-context-client
 useradd --uid 20001 --gid azknowledge --no-create-home --shell /usr/sbin/nologin azknowledge
 useradd --uid 20002 --gid azmio --no-create-home --shell /usr/sbin/nologin azmio
 useradd --uid 20003 --gid azmioentry --no-create-home --shell /usr/sbin/nologin azmioentry
@@ -83,7 +89,9 @@ useradd --uid 20009 --gid azexplain --no-create-home --shell /usr/sbin/nologin a
 useradd --uid 20010 --gid azintake --no-create-home --shell /usr/sbin/nologin azintake
 useradd --uid 20011 --gid azedge --no-create-home --shell /usr/sbin/nologin azedge
 useradd --uid 20013 --gid azaudit --no-create-home --shell /usr/sbin/nologin azaudit
+useradd --uid 20015 --gid azknowledgeegress --no-create-home --shell /usr/sbin/nologin azknowledgeegress
 usermod --append --groups azknowledge-read,azmission-read azmio
+usermod --append --groups azknowledge-context-client azmio
 usermod --append --groups azazel-operator azmioentry
 usermod --append --groups azazel-operator azoperator
 usermod --append --groups azmio-advise azexplain
@@ -91,6 +99,14 @@ usermod --append --groups azincident-read azintake
 
 cd "$SCRATCH_SRC"
 PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
+  tests/unit/test_knowledge_context_adapter.py \
+  tests/unit/test_knowledge_context_transport.py \
+  tests/unit/test_knowledge_contextd.py \
+  tests/unit/test_runtime_hardening.py \
+  tests/unit/test_activation.py \
+  tests/unit/test_activation_policy.py \
+  tests/unit/test_activation_approval_v3.py \
+  tests/unit/test_bootstrap_tmpfiles_packaging.py \
   tests/unit/test_mio_fast_assistance.py \
   tests/unit/test_mio_reference.py \
   tests/unit/test_knowledge_lookup.py \
@@ -100,6 +116,7 @@ PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
 
 # Keep the full-node listener subprocess separate from the tight 500 ms
 # service-path timing cases above. Both run under the same suite lock.
+export NEXUS_REQUIRE_REAL_PROCESS=1
 PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
   tests/real_process/test_knowledge_context_process_interop.py
 

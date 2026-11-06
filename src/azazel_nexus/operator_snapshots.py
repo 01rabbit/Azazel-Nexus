@@ -293,6 +293,7 @@ OBSERVED_UNITS = (
     "azazel-edge-probe-preflight.service",
     "azazel-edge-probed.service",
     "azazel-incident-explaind.service",
+    "azazel-knowledge-contextd.service",
     "azazel-knowledge-lited.service",
     "azazel-mio-entryd.service",
     "azazel-mio-locald.service",

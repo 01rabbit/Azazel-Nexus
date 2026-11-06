@@ -134,7 +134,7 @@ def _signed_answer(body: bytes, *, mode: str = "valid") -> bytes:
         "unknowns": ["source-level freshness was not included"],
         "limitations": ["synthetic test data"],
         "generated_at": NOW,
-        "expires_at": "2026-11-04T12:05:00Z",
+        "expires_at": "2026-11-04T12:00:30Z",
         "authority": "advisory_only",
     }
     if mode == "wrong-request":

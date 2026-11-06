@@ -251,7 +251,7 @@ fi
 # The unit files name these. An installer that enabled a unit whose ExecStart
 # does not exist would "succeed" into a boot failure, which is later and on
 # someone else's hardware.
-for binary in az-activated az-commissiond az-auditd az-auditd-loop az-watchdog az-edge-intaked az-incident-explaind az-edge-probed az-model-fetchd az-mio-locald az-mio-identity az-mio-remoted az-mio-entryd az-mio-referenced az-knowledge-lited az-decoy-netd az-decoyd az-units-observe az-noc-observe az-ui; do
+for binary in az-activated az-commissiond az-auditd az-auditd-loop az-watchdog az-edge-intaked az-incident-explaind az-edge-probed az-model-fetchd az-mio-locald az-mio-identity az-mio-remoted az-knowledge-contextd az-mio-entryd az-mio-referenced az-knowledge-lited az-decoy-netd az-decoyd az-units-observe az-noc-observe az-ui; do
     if [ ! -x "$LIBEXEC/$binary" ]; then
         echo "refusing to install: $LIBEXEC/$binary is missing." >&2
         echo "Install azazel-nexus and azazel-nexus-runtime into the stable" >&2
@@ -277,7 +277,7 @@ fi
 # Non-login accounts with no shell and no home. Each daemon gets its own, so
 # that a fault in one does not run with another's access.
 if [ "$WITH_ACCOUNTS" = yes ]; then
-    for account in azcommission azaudit azwatch azprobe azintake azexplain azedge azfetch azmio azmioentry azmioref azremote azknowledge azdecoy aznoc azui; do
+    for account in azcommission azaudit azwatch azprobe azintake azexplain azedge azfetch azmio azmioentry azmioref azremote azknowledgeegress azknowledge azdecoy aznoc azui; do
         if ! getent passwd "$account" >/dev/null 2>&1; then
             # Each account's own group is relied on (azedge for the intake
             # socket, azknowledge for lite-trust), so it is made explicitly
@@ -294,6 +294,9 @@ if [ "$WITH_ACCOUNTS" = yes ]; then
     fi
     if ! getent group azknowledge-read >/dev/null 2>&1; then
         groupadd --system azknowledge-read
+    fi
+    if ! getent group azknowledge-context-client >/dev/null 2>&1; then
+        groupadd --system azknowledge-context-client
     fi
     if ! getent group azmission-read >/dev/null 2>&1; then
         groupadd --system azmission-read
@@ -428,6 +431,8 @@ make_owned_dir 2710 azmioref azazel-operator /var/lib/azazel/run/mio-reference
 make_owned_dir 2710 azremote azazel-operator /var/lib/azazel/run/remote
 make_owned_dir 2710 azknowledge azazel-operator /var/lib/azazel/run/knowledge
 make_owned_dir 2710 azknowledge azknowledge-read /var/lib/azazel/run/knowledge-read
+make_owned_dir 2710 azknowledgeegress azknowledge-context-client /var/lib/azazel/run/knowledge-context
+make_owned_dir 0700 azknowledgeegress root /var/lib/azazel/state/knowledge-context
 make_owned_dir 2750 azknowledge azazel-operator /var/lib/azazel/knowledge
 make_dir 0700 root /var/lib/azazel/secrets
 
@@ -458,6 +463,7 @@ install -m 0644 "$HERE"/systemd/azazel-edge-intaked.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-model-fetchd.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-mio-locald.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-mio-remoted.service "$UNIT_DIR"
+install -m 0644 "$HERE"/systemd/azazel-knowledge-contextd.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-mio-entryd.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-mio-referenced.service "$UNIT_DIR"
 install -m 0644 "$HERE"/systemd/azazel-knowledge-lited.service "$UNIT_DIR"
@@ -530,6 +536,7 @@ systemctl mask azazel-edge-intaked.service
 systemctl mask azazel-model-fetchd.service
 systemctl mask azazel-mio-locald.service
 systemctl mask azazel-mio-remoted.service
+systemctl mask azazel-knowledge-contextd.service
 systemctl mask azazel-mio-entryd.service
 systemctl mask azazel-mio-referenced.service
 systemctl mask azazel-knowledge-lited.service

@@ -17,10 +17,14 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
+from azazel_nexus.activation import CORE_UNITS
 from azazel_nexus.edge_package import EDGE_UNIT as _EDGE_UNIT
 from azazel_nexus.operator_snapshots import OBSERVED_UNITS
 
-from .activation_markers import GRANTABLE_UNITS
+from .activation_markers import (
+    MARKER_GUARDED_UNITS,
+    NON_GRANTABLE_MARKER_UNITS,
+)
 from .bootstrap_systemd_profile import observe_bootstrap_systemd_profile
 from .systemd_socket import FixedSystemBusSocket, SYSTEM_BUS_ADDRESS, require_supported_dbus_next
 from .units import UNIT_NAMES, UnitOperationFailed
@@ -40,6 +44,7 @@ _BUS_TIMEOUT_SECONDS = 10.0
 _SYSTEM_BUS_ADDRESS = SYSTEM_BUS_ADDRESS
 
 _UNITS = frozenset(UNIT_NAMES.values())
+_CORE_UNIT_NAMES = frozenset(definition.name for definition in CORE_UNITS)
 _ACTIVE_STATES = frozenset(
     {
         "active",
@@ -128,6 +133,16 @@ class SystemdUnitCalls:
                 "the systemd client refused a unit outside the fixed allowlist"
             )
 
+        # The activation reader needs the non-grantable Knowledge broker in
+        # its verification scope. That does not give the controller authority
+        # to enable it: narrowing may mask a core unit, while the newly added
+        # non-grantable marker-guarded units cannot be unmasked or enabled.
+        if method == "MaskUnitFiles" and unit not in _CORE_UNIT_NAMES:
+            raise UnitOperationFailed("the systemd client refused a non-core mask")
+        if (method in {"UnmaskUnitFiles", "EnableUnitFiles"}
+                and unit in NON_GRANTABLE_MARKER_UNITS):
+            raise UnitOperationFailed("the systemd client refused a non-grantable unit")
+
         if method == "GetUnitFileState":
             reply = self._exchange(MANAGER_INTERFACE, "GetUnitFileState", "s", [unit])
             value = self._one(reply, "s", "GetUnitFileState")
@@ -212,7 +227,7 @@ class SystemdUnitCalls:
         return reply.body
 
     def loaded_unit(self, unit: str) -> Optional[dict]:
-        """The manager's loaded definition of one grantable unit, or None.
+        """The manager's loaded definition of one marker-guarded unit, or None.
 
         Read-only: `GetUnit`, which never loads a unit, then one
         `Properties.GetAll` of the `Unit` interface (one snapshot, not reads
@@ -221,8 +236,10 @@ class SystemdUnitCalls:
         be queued for it; a later load reads the files the pass measured.
         Every kept value is type-checked and copied.
         """
-        if unit not in GRANTABLE_UNITS:
-            raise UnitOperationFailed("the systemd client refused a unit outside the grantable set")
+        if unit not in MARKER_GUARDED_UNITS:
+            raise UnitOperationFailed(
+                "the systemd client refused a unit outside the marker-guarded set"
+            )
         unit_reply = self._exchange(
             MANAGER_INTERFACE, "GetUnit", "s", [unit], allow_no_such_unit=True
         )
@@ -438,9 +455,10 @@ class SystemdBusSession:
                 raise UnitOperationFailed("the systemd client refused a call shape")
         elif member == "GetAll":
             # The pass's loaded-definition read: the Unit interface of a
-            # grantable unit's object, and nothing else.
+            # marker-guarded unit's object, and nothing else. This read-only
+            # scope does not widen Mask/Unmask/Enable authority.
             if (signature != "s" or list(body) != [UNIT_INTERFACE]
-                    or path not in {_unit_object_path(unit) for unit in GRANTABLE_UNITS}):
+                    or path not in {_unit_object_path(unit) for unit in MARKER_GUARDED_UNITS}):
                 raise UnitOperationFailed("the systemd client refused a property call")
         elif member != "Get" or signature != "ss":
             raise UnitOperationFailed("the systemd client refused a property call")

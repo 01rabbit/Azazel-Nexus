@@ -965,3 +965,20 @@ never selects the candidate or reaches an authority decision, and model output
 is still validated field by field. Situation quotes remain in
 `fields.cited_facts`, separate from model explanation fields.
 These are software contracts and unit-test results, not hardware evidence.
+
+### Optional full-node Knowledge Context
+
+Full-node context is a separate optional process path from Knowledge Lite.
+Ordinary FAST_ASSESS sends its bounded frame from locald to the dedicated
+`azazel-knowledge-contextd` AF_UNIX broker; callers cannot inject a verified
+response. The broker fixes the query privacy class to P0-public and delegates
+sanitization, mTLS, signature verification, expiry and request binding to the
+existing `KnowledgeClient` and Fabric adapter. An absent broker or any refusal
+leaves the local deterministic result available without full-node context.
+
+The broker unit is installed preset disabled, has no wired activation
+capability in this build, and has `IPAddressDeny=any` with no address
+allowance. Locald's AF_UNIX-only and `PrivateNetwork=yes` confinement is
+unchanged. Production commissioning, endpoint allowlisting, certificate
+ownership/rotation/revocation and live service operation remain unimplemented;
+see [the full-node consumer boundary](knowledge-context-consumer.md).

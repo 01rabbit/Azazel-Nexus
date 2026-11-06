@@ -861,10 +861,17 @@ def test_raising_the_high_water_is_recorded_as_a_floor_event(world):
 
 
 def test_the_pass_scope_and_tripwire_share_one_unit_set():
-    from azazel_nexus_runtime.activation_markers import GRANTABLE_UNITS
+    from azazel_nexus_runtime.activation_markers import (
+        GRANTABLE_UNITS,
+        MARKER_GUARDED_UNITS,
+        NON_GRANTABLE_MARKER_UNITS,
+    )
     assert activation_pass.UNIT_SCOPE is GRANTABLE_UNITS
+    assert activation_pass.UNIT_CHECK_SCOPE is MARKER_GUARDED_UNITS
+    assert activation_pass.UNIT_CHECK_SCOPE == GRANTABLE_UNITS | NON_GRANTABLE_MARKER_UNITS
     assert GRANTABLE_UNITS == frozenset(EDGE_SCOPE + DECOY_UNITS) | {
         "azazel-mio-referenced.service", "azazel-auditd-loop.service"}
+    assert "azazel-knowledge-contextd.service" not in GRANTABLE_UNITS
     assert not hasattr(activation_pass, "P4_UNIT_SCOPE")
     import ast
     source = Path(activated.__file__).read_text()
@@ -876,7 +883,8 @@ def test_markers_are_never_written_for_a_unit_this_phase_cannot_grant(tmp_path, 
     monkeypatch.setattr(activation_markers, "_OWNER", os.getuid())
     (tmp_path / "run/azazel-activation").mkdir(parents=True, mode=0o755)
     for unit in ("azazel-watchdog.service", "azazel-mio-locald.service",
-                 "azazel-auditd.service", "azazel-model-fetchd.service"):
+                 "azazel-auditd.service", "azazel-model-fetchd.service",
+                 "azazel-knowledge-contextd.service"):
         with pytest.raises(activation_markers.GrantMarkerRefused):
             activation_markers.write_grant_markers([unit], tmp_path)
     assert not (tmp_path / "run/azazel-activation/granted").exists()
@@ -1226,9 +1234,9 @@ def test_a_unit_not_loaded_or_masked_in_the_manager_is_accepted(world, loaded):
     assert sorted(world.run().granted) == list(SCOPE)
 
 
-def test_the_loaded_check_reads_every_grantable_unit_not_only_the_policy(world):
+def test_the_loaded_check_reads_every_marker_guarded_unit_not_only_the_policy(world):
     world.run()
-    assert world.systemd.reads == sorted(activation_markers.GRANTABLE_UNITS)
+    assert world.systemd.reads == sorted(activation_pass.UNIT_CHECK_SCOPE)
 
 
 def test_the_production_loaded_check_refuses_without_the_controller_session(monkeypatch):
@@ -1274,6 +1282,14 @@ def test_a_grantable_unit_outside_the_policy_loaded_not_as_declared_refuses(worl
     _assert_refused(world, world.run(), ["systemd_loaded_units"])
 
 
+def test_non_grantable_context_broker_still_requires_its_loaded_start_guard(world):
+    context = "azazel-knowledge-contextd.service"
+    assert context not in activation_pass.UNIT_SCOPE
+    assert context in activation_pass.UNIT_CHECK_SCOPE
+    world.systemd.loaded[context] = _loaded(context, Conditions=[])
+    _assert_refused(world, world.run(), ["systemd_loaded_units"])
+
+
 def test_a_policy_narrower_than_the_grantable_set_grants_only_its_units(
         tmp_path, monkeypatch):
     monkeypatch.setattr(activation_markers, "_OWNER", os.getuid())
@@ -1283,7 +1299,7 @@ def test_a_policy_narrower_than_the_grantable_set_grants_only_its_units(
     outcome = narrow.run()
     assert sorted(outcome.granted) == list(SCOPE[:2])
     assert narrow.markers() == list(SCOPE[:2])
-    assert narrow.systemd.reads == sorted(activation_markers.GRANTABLE_UNITS)
+    assert narrow.systemd.reads == sorted(activation_pass.UNIT_CHECK_SCOPE)
 
 
 @pytest.mark.parametrize("field", ["Requires", "After"])

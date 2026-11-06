@@ -235,7 +235,7 @@ def test_no_unit_but_the_artifact_fetcher_is_allowed_an_internet_family():
         allowed = set(families[0].split())
         assert "AF_PACKET" not in allowed
         if not (profile.is_artifact_fetcher or profile.is_inference_transport
-                or profile.is_decoy_listener):
+                or profile.is_knowledge_context_transport or profile.is_decoy_listener):
             assert allowed & {"AF_INET", "AF_INET6"} == set(), profile.unit
 
 
@@ -250,13 +250,30 @@ def test_exactly_one_profile_holds_each_network_role():
     transports = [p.unit for p in PROFILES if p.is_inference_transport]
     hosts = [p.unit for p in PROFILES if p.is_model_host]
     listeners = [p.unit for p in PROFILES if p.is_decoy_listener]
+    knowledge = [p.unit for p in PROFILES if p.is_knowledge_context_transport]
     assert fetchers == ["azazel-model-fetchd.service"]
     assert transports == ["azazel-mio-remoted.service"]
     assert hosts == ["azazel-mio-locald.service"]
     assert listeners == ["azazel-decoyd.service"]
-    assert len(set(fetchers + transports + hosts + listeners)) == 4, (
+    assert knowledge == ["azazel-knowledge-contextd.service"]
+    assert len(set(fetchers + transports + hosts + listeners + knowledge)) == 5, (
         "one unit holds two roles; the four acts are kept in four units"
     )
+
+
+def test_knowledge_context_network_role_is_separate_and_stays_egress_denied():
+    broker = next(p for p in PROFILES if p.is_knowledge_context_transport)
+    settings = _settings(broker.unit)
+    assert broker.account == "azknowledgeegress"
+    assert broker.account != "azremote"
+    assert broker.address_families == ("AF_UNIX", "AF_INET", "AF_INET6")
+    assert settings["IPAddressDeny"] == ["any"]
+    assert "IPAddressAllow" not in settings
+    assert settings["RestrictAddressFamilies"] == ["AF_UNIX AF_INET AF_INET6"]
+    assert "PrivateNetwork" not in settings
+    local = _settings("azazel-mio-locald.service")
+    assert local["RestrictAddressFamilies"] == ["AF_UNIX"]
+    assert local["PrivateNetwork"] == ["yes"]
 
 
 def test_the_artifact_fetcher_still_denies_every_address():
@@ -398,7 +415,8 @@ def test_every_unit_but_the_controller_has_an_empty_capability_bounding_set():
         elif profile.unit == "azazel-mio-entryd.service":
             assert settings["SupplementaryGroups"] == ["azazel-operator"]
         elif profile.unit == "azazel-mio-locald.service":
-            assert settings["SupplementaryGroups"] == ["azknowledge-read azmission-read"]
+            assert settings["SupplementaryGroups"] == [
+                "azknowledge-read azmission-read azknowledge-context-client"]
         elif profile.unit == "azazel-mio-referenced.service":
             # Verified playbooks only: no Knowledge, model or operator group.
             assert settings["SupplementaryGroups"] == ["azmission-read"]
@@ -531,6 +549,7 @@ GRANT_LOOP_UNITS = frozenset({
     "azazel-mio-locald.service",
     "azazel-mio-referenced.service",
     "azazel-mio-remoted.service",
+    "azazel-knowledge-contextd.service",
     "azazel-model-fetchd.service",
     "azazel-watchdog.service",
 })
@@ -547,11 +566,16 @@ def test_condition_path_exists_is_present_exactly_on_the_marker_units():
     controller).
     """
     from azazel_nexus.activation import CORE_UNITS
-    from azazel_nexus_runtime.activation_markers import GRANTABLE_UNITS
+    from azazel_nexus_runtime.activation_markers import (
+        GRANTABLE_UNITS,
+        MARKER_GUARDED_UNITS,
+    )
+    from azazel_nexus_runtime.hardening import GRANT_MARKER_UNITS
 
     assert GRANT_LOOP_UNITS == {d.name for d in CORE_UNITS} - {
         "azazel-auditd.service", "azazel-commissiond.service"}
     assert GRANTABLE_UNITS < GRANT_LOOP_UNITS
+    assert MARKER_GUARDED_UNITS <= set(GRANT_MARKER_UNITS)
     for profile in ALL_PROFILES:
         if ACTIVATION_CONTROLLER_UNIT in profile.requires and profile.unit not in (
                 "azazel-auditd.service", "azazel-commissiond.service"):
@@ -915,7 +939,8 @@ def test_entry_can_traverse_and_connect_to_provider_socket_leaves():
 
 def test_locald_optional_selection_reads_have_no_write_grant():
     settings = _settings("azazel-mio-locald.service")
-    assert settings["SupplementaryGroups"] == ["azknowledge-read azmission-read"]
+    assert settings["SupplementaryGroups"] == [
+        "azknowledge-read azmission-read azknowledge-context-client"]
     assert settings["ReadOnlyPaths"] == ["-/etc/azazel/model-admission", "-/etc/azazel/operator-trust",
                                          "-/var/lib/azazel/models", "-/etc/azazel/mission-pack.json",
                                          "-/data/azazel/mission-packs"]

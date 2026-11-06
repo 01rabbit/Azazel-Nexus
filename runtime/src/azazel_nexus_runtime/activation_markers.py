@@ -44,6 +44,8 @@ from typing import Iterable
 __all__ = [
     "EXPOSURE_UNITS",
     "GRANTABLE_UNITS",
+    "NON_GRANTABLE_MARKER_UNITS",
+    "MARKER_GUARDED_UNITS",
     "GRANT_MARKER_DIRECTORY",
     "GrantMarkerRefused",
     "grant_marker_path",
@@ -78,6 +80,20 @@ GRANTABLE_UNITS = frozenset({
     "azazel-mio-entryd.service",
     "azazel-mio-referenced.service",
 })
+
+#: Unit files in this set remain guarded by per-boot grant markers so that a
+#: queued/manual systemd start cannot bypass the activation controller. They
+#: are deliberately outside GRANTABLE_UNITS and the activation policy until
+#: the dedicated Knowledge commissioning loader and policy review exist.
+NON_GRANTABLE_MARKER_UNITS = frozenset({
+    # The unit needs the start guard but no pass may mint this marker until
+    # the dedicated commissioning loader and policy review exist.
+    "azazel-knowledge-contextd.service",
+})
+
+#: Units whose files and loaded systemd definitions must be checked for the
+#: per-boot marker guard. This includes units the pass can never grant.
+MARKER_GUARDED_UNITS = GRANTABLE_UNITS | NON_GRANTABLE_MARKER_UNITS
 
 #: The Deception Lite exposure units (#196 §10, review n1), marked together
 #: or not at all. The same names as `activation.DECEPTION_EXPOSURE_UNITS` (a

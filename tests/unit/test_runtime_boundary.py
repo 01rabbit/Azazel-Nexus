@@ -1233,6 +1233,7 @@ EXPECTED_SCRIPTS = (
     # The model-free playbook reference for the deterministic handoff.
     "az-mio-referenced",
     "az-knowledge-lited",
+    "az-knowledge-contextd",
     "az-mio-locald",
     "az-mio-remoted",
     "az-model-fetchd",

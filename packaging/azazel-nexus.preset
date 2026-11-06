@@ -29,6 +29,7 @@ disable azazel-incident-explaind.service
 disable azazel-model-fetchd.service
 disable azazel-mio-locald.service
 disable azazel-mio-remoted.service
+disable azazel-knowledge-contextd.service
 disable azazel-mio-entryd.service
 disable azazel-mio-referenced.service
 disable azazel-knowledge-lited.service

@@ -799,10 +799,12 @@ def read_fast_assistance(value):
         require(type(item) is str and 0 < len(item) <= cap)
         require(all(c.isprintable() or c in '\n\t' for c in item))
         item.encode('utf-8')
-    require(type(value) is dict and set(value) == {
+    required_keys = {
         'schema_version', 'trace_id', 'frame_id', 'generation_method', 'state',
         'dependency_outcome', 'observations', 'hypotheses', 'unknowns', 'next_checks',
-        'knowledge', 'handoff', 'reasoning_trace'})
+        'knowledge', 'handoff', 'reasoning_trace'}
+    require(type(value) is dict and set(value) in (
+        required_keys, required_keys | {'fabric_knowledge_context_advisory'}))
     require(value['schema_version'] == 'mio.assistance.v1')
     require(value['generation_method'] == 'static_reference')
     require(type(value['trace_id']) is str and re.fullmatch(r'mio-[0-9a-f]{16}-[0-9]{1,12}', value['trace_id']))
@@ -921,6 +923,56 @@ def read_fast_assistance(value):
                 bounded_text(slot['alternative_id'], 64)
                 require(type(slot['proposed_role']) is str and slot['proposed_role'] in {'hostile', 'benign', 'unresolved'}
                         and slot['verification'] == 'model_proposed_unverified')
+    if 'fabric_knowledge_context_advisory' in value:
+        advisory = value['fabric_knowledge_context_advisory']
+        if advisory is not None:
+            require(type(advisory) is dict and set(advisory) == {
+                'kind', 'source_kind', 'schema_version', 'claim_status', 'authority', 'trust',
+                'snapshot_state', 'generated_at', 'expires_at', 'facts', 'inferences',
+                'unknowns', 'limitations'})
+            require(advisory['kind'] == 'fabric_knowledge_context_response_advisory'
+                    and advisory['source_kind'] == 'fabric_knowledge_context_response_v1'
+                    and advisory['schema_version'] == 'knowledge-context-response/v1'
+                    and advisory['claim_status'] == 'source_reported_unverified'
+                    and advisory['authority'] == 'advisory_only'
+                    and advisory['trust'] == 'unverified_advisory_only'
+                    and advisory['snapshot_state'] in {'complete', 'partial', 'stale'})
+            for key in ('generated_at', 'expires_at'):
+                bounded_text(advisory[key], 40)
+                require(re.fullmatch(
+                    r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z',
+                    advisory[key]) is not None)
+            require(type(advisory['facts']) is list and len(advisory['facts']) <= 64)
+            for item in advisory['facts']:
+                require(type(item) is dict and set(item) == {
+                    'claim_class', 'fact_id', 'subject', 'predicate', 'value', 'provenance_count'})
+                require(item['claim_class'] == 'source_reported_fact')
+                for key, cap in (('fact_id', 128), ('predicate', 64), ('value', 512)):
+                    bounded_text(item[key], cap)
+                subject = item['subject']
+                require(type(subject) is dict and set(subject) == {'entity_type', 'value'})
+                bounded_text(subject['entity_type'], 64)
+                bounded_text(subject['value'], 256)
+                require(type(item['provenance_count']) is int and 0 < item['provenance_count'] <= 8)
+            require(type(advisory['inferences']) is list and len(advisory['inferences']) <= 32)
+            for item in advisory['inferences']:
+                require(type(item) is dict and set(item) == {
+                    'claim_class', 'inference_id', 'subject', 'statement', 'basis_fact_ids'})
+                require(item['claim_class'] == 'inference')
+                bounded_text(item['inference_id'], 128)
+                subject = item['subject']
+                require(type(subject) is dict and set(subject) == {'entity_type', 'value'})
+                bounded_text(subject['entity_type'], 64)
+                bounded_text(subject['value'], 256)
+                bounded_text(item['statement'], 512)
+                require(type(item['basis_fact_ids']) is list
+                        and 0 < len(item['basis_fact_ids']) <= 16)
+                for fact_id in item['basis_fact_ids']:
+                    bounded_text(fact_id, 128)
+            for key in ('unknowns', 'limitations'):
+                require(type(advisory[key]) is list and len(advisory[key]) <= 16)
+                for text_value in advisory[key]:
+                    bounded_text(text_value, 512)
     require(len(json.dumps(value, ensure_ascii=False).encode('utf-8')) <= DELIVERED_MAX_BYTES // 2)
     return value
 

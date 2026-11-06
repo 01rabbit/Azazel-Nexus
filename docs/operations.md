@@ -196,6 +196,17 @@ Setup never claims enforcement readiness. Edge retains decision and enforcement
 authority. See [Debian installation](debian-live-install.md) for installation
 prerequisites and [hardware gates](hardware-gates.md) for HG-05.
 
+### Full-node Knowledge Context broker
+
+The optional `azazel-knowledge-contextd.service` is shipped preset disabled
+and receives no activation grant in this build. It has no production peer
+commissioning loader, network address allowance, or live credential setup.
+Do not manually start it or add a systemd drop-in to enable egress. Installing
+the package only lays down the disabled unit, account and socket directory.
+See [the Knowledge Context consumer boundary](knowledge-context-consumer.md)
+for the AF_UNIX process split and the credential, expiry, revocation and
+recovery decisions still required before live connection work.
+
 ## 1. Resource envelopes
 
 Status: the resource envelopes and field behavior below are a **target contract**.
