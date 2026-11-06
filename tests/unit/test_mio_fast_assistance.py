@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 import copy
+import json
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -294,6 +295,170 @@ def _lite_ref(**changes):
                   as_of=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
                   citation='MITRE ATT&CK technique')
     return KnowledgeRef(**(values | changes))
+
+
+def _fabric_response(state):
+    now = datetime.now(timezone.utc)
+    instant = lambda value: value.isoformat().replace('+00:00', 'Z')
+    return {
+        'schema_version': 'knowledge-context-response/v1',
+        'request_id': 'req-synthetic-1', 'correlation_id': 'corr-synthetic-1',
+        'source_product': 'azazel_nexus', 'source_ref': 'nexus:synthetic-query',
+        'provider_id': 'knowledge-node-1',
+        'snapshot': {'ref': 'knowledge:snapshot-1', 'state': state,
+                     'as_of': instant(now - timedelta(seconds=10))},
+        'facts': [], 'inferences': [], 'unknowns': ['No exact fact was asserted.'],
+        'limitations': ['Synthetic input.'],
+        'generated_at': instant(now - timedelta(seconds=5)),
+        'expires_at': instant(now + timedelta(seconds=30)),
+        'authority': 'advisory_only',
+    }
+
+
+@pytest.mark.parametrize('case', ['complete', 'partial', 'stale', 'expired', 'unavailable', 'not_queried'])
+def test_real_mio_full_node_output_survives_incident_projection(case):
+    from azazel_nexus.incident_explain import build_recent_incident, build_recent_incidents, read_recent_incidents
+    from azazel_nexus_runtime.knowledge_context_socket import FullNodeContextStatus
+    from test_incident_explain import _record, _t1110
+
+    kwargs = {}
+    if case in {'complete', 'partial', 'stale', 'expired'}:
+        response = _fabric_response('complete' if case == 'expired' else case)
+        if case == 'expired':
+            now = datetime.now(timezone.utc)
+            response['snapshot']['as_of'] = (now - timedelta(minutes=3)).isoformat().replace('+00:00', 'Z')
+            response['generated_at'] = (now - timedelta(minutes=2)).isoformat().replace('+00:00', 'Z')
+            response['expires_at'] = (now - timedelta(minutes=1)).isoformat().replace('+00:00', 'Z')
+        kwargs['fabric_knowledge_context_response'] = response
+    elif case == 'unavailable':
+        kwargs['full_node_context_status'] = FullNodeContextStatus.UNAVAILABLE
+    fast = read_fast_assistance(adapter.fast_assistance(_lite_frame(), deadline_s=.5, **kwargs))
+    record = _record({'route': 'unavailable', 'outcome': 'unavailable',
+                      'reason': 'mio_unavailable', 'text': None, 'fast_assistance': fast})
+    record['incident_id'] = _t1110()['incident_id']
+    row = build_recent_incident(_t1110(), record=record)
+    snapshot = build_recent_incidents([row], 1)
+    assert read_recent_incidents(json.dumps(snapshot).encode()) == snapshot
+    projected = snapshot['incidents'][0]['explanation']['fast_assistance']['full_node_context']
+    assert projected['outcome'] == case
+    assert projected['full_node_context_status'] == (
+        'received' if case in {'complete', 'partial', 'stale', 'expired'} else case)
+    if case in {'complete', 'partial', 'stale'}:
+        assert projected['snapshot_state'] == case
+        assert projected['source_kind'] == 'fabric_knowledge_context_response_v1'
+        assert projected['claim_status'] == 'source_reported_unverified'
+        assert projected['trust'] == 'unverified_advisory_only'
+
+
+@pytest.mark.parametrize(('snapshot_state', 'expected'), [
+    ('partial', 'unavailable'), ('stale', 'unavailable'), ('complete', 'available'),
+])
+def test_full_node_snapshot_status_is_not_a_verified_or_complete_claim(snapshot_state, expected):
+    result = read_fast_assistance(adapter.fast_assistance(
+        _lite_frame(), deadline_s=.5,
+        fabric_knowledge_context_response=_fabric_response(snapshot_state)))
+    receipt = result['fabric_knowledge_context_advisory']
+    assert result['full_node_context_status'] == 'received'
+    assert result['dependency_outcome']['knowledge'] == expected
+    assert receipt['snapshot_state'] == snapshot_state
+    assert receipt['claim_status'] == 'source_reported_unverified'
+    assert receipt['trust'] == 'unverified_advisory_only'
+    assert receipt['authority'] == 'advisory_only'
+    assert result['knowledge'] == [] and result['observations'] == []
+    assert result['handoff']['current_action'] is None
+    if snapshot_state != 'complete':
+        assert f'KNOWLEDGE_CONTEXT_{snapshot_state.upper()}' in result['unknowns']
+        assert result['next_checks'][0] == (
+            'Request an authorized current full-node Knowledge snapshot; '
+            'this partial or stale advisory is not a complete current snapshot.')
+    else:
+        assert 'KNOWLEDGE_CONTEXT_PARTIAL' not in result['unknowns']
+        assert 'KNOWLEDGE_CONTEXT_STALE' not in result['unknowns']
+
+
+@pytest.mark.parametrize('snapshot_state', ['partial', 'stale'])
+def test_lite_success_does_not_hide_incomplete_full_node_snapshot(snapshot_state):
+    result = read_fast_assistance(adapter.fast_assistance(
+        _lite_frame(), deadline_s=.5, knowledge_lookup=lambda *a, **k: (_lite_ref(),),
+        fabric_knowledge_context_response=_fabric_response(snapshot_state)))
+    assert result['dependency_outcome']['knowledge'] == 'available'
+    assert result['full_node_context_status'] == 'received'
+    assert result['knowledge'][0]['source_kind'] == 'knowledge_lite'
+    assert result['fabric_knowledge_context_advisory']['snapshot_state'] == snapshot_state
+    assert f'KNOWLEDGE_CONTEXT_{snapshot_state.upper()}' in result['unknowns']
+
+
+@pytest.mark.parametrize(('lite', 'expected'), [
+    ('none', 'unavailable'), ('empty', 'unavailable'), ('available', 'available'),
+])
+def test_locald_broker_failure_is_separate_from_lite(monkeypatch, lite, expected):
+    from azazel_nexus_runtime import mio_locald
+    calls = []
+    def unavailable(frame, *, deadline_s):
+        calls.append((frame, deadline_s))
+        raise mio_locald.KnowledgeContextUnavailable('private peer text')
+    monkeypatch.setattr(mio_locald, 'request_context', unavailable)
+    lookup = {'none': None, 'empty': lambda *a, **k: (),
+              'available': lambda *a, **k: (_lite_ref(),)}[lite]
+    source = {**_lite_frame(), 'privacy_class': 'P0-public'}
+    reply = mio_locald.LocalRuntimeService(knowledge_lookup=lookup).handle(SimpleNamespace(
+        verb=mio_locald.FAST_ASSESS_VERB, arguments={'deadline_ms': 1000}, payload=source))
+    result = read_fast_assistance(reply['fast_assistance'])
+    assert len(calls) == 1 and calls[0][0]['privacy_class'] == 'P0-public'
+    assert 0 < calls[0][1] <= mio_locald.KNOWLEDGE_MAX_S
+    assert result['full_node_context_status'] == 'unavailable'
+    assert result['dependency_outcome']['knowledge'] == expected
+    assert len(result['knowledge']) == (1 if lite == 'available' else 0)
+    assert 'private peer text' not in str(reply)
+    assert 'fabric_knowledge_context_advisory' not in result
+
+
+def test_broker_failure_survives_socket_reader(monkeypatch):
+    from azazel_nexus_runtime import mio_locald, mio_socket_client
+    monkeypatch.setattr(mio_locald, 'request_context', lambda *a, **k: (
+        _ for _ in ()).throw(mio_locald.KnowledgeContextUnavailable('private')))
+    source = {**_lite_frame(), 'privacy_class': 'P0-public'}
+    reply = mio_locald.LocalRuntimeService().handle(SimpleNamespace(
+        verb=mio_locald.FAST_ASSESS_VERB, arguments={'deadline_ms': 1000}, payload=source))
+    monkeypatch.setattr(mio_socket_client, '_exchange', lambda *a, **k: reply)
+    result = mio_socket_client.LocalSocketClient().assess(source, deadline_s=.5)
+    assert result['full_node_context_status'] == 'unavailable'
+    assert result['dependency_outcome']['knowledge'] == 'unavailable'
+
+
+@pytest.mark.parametrize(('privacy', 'deadline_ms'), [
+    ('P3-restricted', 1000), ('P0-public', 44),
+])
+def test_full_node_not_queried_only_when_no_request_is_made(monkeypatch, privacy, deadline_ms):
+    from azazel_nexus_runtime import mio_locald
+    def forbidden(*args, **kwargs):
+        pytest.fail('broker must not be called')
+    monkeypatch.setattr(mio_locald, 'request_context', forbidden)
+    source = {**_lite_frame(), 'privacy_class': privacy}
+    reply = mio_locald.LocalRuntimeService().handle(SimpleNamespace(
+        verb=mio_locald.FAST_ASSESS_VERB, arguments={'deadline_ms': deadline_ms}, payload=source))
+    result = read_fast_assistance(reply['fast_assistance'])
+    assert result['full_node_context_status'] == 'not_queried'
+    assert result['dependency_outcome']['knowledge'] == 'not_queried'
+
+
+def test_full_node_status_reader_rejects_untrusted_or_contradictory_values():
+    result = adapter.fast_assistance(_lite_frame(), deadline_s=.5,
+        fabric_knowledge_context_response=_fabric_response('partial'))
+    assert read_fast_assistance(result) is result
+    for bad in ('timeout', 'private peer text', None, {}, True):
+        forged = copy.deepcopy(result)
+        forged['full_node_context_status'] = bad
+        with pytest.raises(ValueError):
+            read_fast_assistance(forged)
+    for bad in ('unavailable', 'not_queried'):
+        forged = copy.deepcopy(result)
+        forged['full_node_context_status'] = bad
+        with pytest.raises(ValueError):
+            read_fast_assistance(forged)
+    legacy = copy.deepcopy(result)
+    del legacy['full_node_context_status']
+    assert read_fast_assistance(legacy) is legacy
 
 
 def test_live_lite_claim_preserves_exact_metadata_and_same_frame(monkeypatch):

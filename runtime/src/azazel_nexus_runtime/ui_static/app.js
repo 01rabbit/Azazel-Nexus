@@ -630,6 +630,19 @@
       add(fastNode, kv([["状態", fast.state], ["Knowledge 状態", knowledgeOutcome === "not_queried" ? "この高速判定ではKnowledge未照会" : knowledgeOutcome]]));
       if ((fast.unknowns || []).length) { add(fastNode, el("p", "small", "未確認事項（状況文は未検証の報告です）："), list(fast.unknowns)); }
       if ((fast.next_checks || []).length) { add(fastNode, el("p", "small", "確認候補（助言のみ）："), list(fast.next_checks)); }
+      var full = fast.full_node_context;
+      if (full) {
+        var fullNode = block("Knowledge フルノード（独立した助言）");
+        var fullOutcome = full.outcome;
+        if (full.expires_at && Date.parse(full.expires_at) <= Date.now()) { fullOutcome = "expired"; }
+        add(fullNode, el("p", "small", "期限表示は端末時計に依存し、画面更新時に再評価します。"));
+        add(fullNode, kv([["照会状態", full.full_node_context_status], ["出典状態", fullOutcome],
+          ["出典種別", full.source_kind], ["主張", full.claim_status], ["信頼区分", full.trust],
+          ["snapshot状態", full.snapshot_state], ["生成時刻", full.generated_at], ["期限", full.expires_at]]));
+        if (fullOutcome === "expired") { add(fullNode, el("p", "small", "この助言は期限切れです。")); }
+        if ((full.limitations || []).length) { add(fullNode, el("p", "small", "制限："), list(full.limitations)); }
+        add(fastNode, fullNode);
+      }
       (fast.knowledge || []).forEach(function (item) {
         add(fastNode, el("p", "small", "Knowledge Lite・報告済み未検証の参照: " + text(item.technique_id) + " — " + text(item.name)));
         if (item.summary) { add(fastNode, el("p", "small", text(item.summary))); }

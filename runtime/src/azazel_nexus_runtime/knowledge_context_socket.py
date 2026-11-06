@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import socket
 import time
+from enum import Enum
 from typing import Any
 
 from .bootstrap_audit_client import (
@@ -26,6 +27,14 @@ MAX_CONTEXT_RESPONSE_BYTES = 48 * 1024
 
 class KnowledgeContextUnavailable(ValueError):
     """The optional local broker did not provide verified context."""
+
+
+class FullNodeContextStatus(str, Enum):
+    """Local broker transport state, independent of Lite and claim validity."""
+
+    NOT_QUERIED = "not_queried"
+    RECEIVED = "received"
+    UNAVAILABLE = "unavailable"
 
 
 def read_context_frame(value: Any) -> dict:

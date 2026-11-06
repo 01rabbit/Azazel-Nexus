@@ -47,7 +47,9 @@ from azazel_nexus.reasoning_playbook import Library, technique_ids
 from azazel_nexus.sanitizer import PrivacyClass
 
 from .knowledge_client import KnowledgeUnavailable, lookup_context
-from .knowledge_context_socket import KnowledgeContextUnavailable, request_context
+from .knowledge_context_socket import (
+    FullNodeContextStatus, KnowledgeContextUnavailable, request_context,
+)
 from .mio_playbooks import PlaybookSelectionHolder
 from .principal import PrincipalClass, PrincipalPolicy
 from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
@@ -260,6 +262,7 @@ class LocalRuntimeService:
                 assessment_deadline = (time.monotonic()
                                        + request.arguments["deadline_ms"] / 1000)
                 fabric_context_response = None
+                context_status = FullNodeContextStatus.NOT_QUERIED
                 context_query = _knowledge_context_query(frame)
                 if context_query is not None:
                     context_budget = max(
@@ -273,8 +276,9 @@ class LocalRuntimeService:
                                 context_query,
                                 deadline_s=min(KNOWLEDGE_MAX_S, context_budget),
                             )
+                            context_status = FullNodeContextStatus.RECEIVED
                     except KnowledgeContextUnavailable:
-                        pass
+                        context_status = FullNodeContextStatus.UNAVAILABLE
                 result = fast_assistance(
                     frame, deadline_s=max(
                         0.0, assessment_deadline - time.monotonic()
@@ -282,7 +286,8 @@ class LocalRuntimeService:
                     ),
                     knowledge_lookup=self._knowledge_lookup, knowledge_max_s=KNOWLEDGE_MAX_S,
                     core_reserve_s=FAST_CORE_RESERVE_S, situation_frame=situation,
-                    fabric_knowledge_context_response=fabric_context_response)
+                    fabric_knowledge_context_response=fabric_context_response,
+                    full_node_context_status=context_status)
             except Exception:
                 from .mio_socket_client import fast_assessment_degraded
                 result = fast_assessment_degraded("unavailable")

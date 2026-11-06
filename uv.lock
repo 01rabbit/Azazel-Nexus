@@ -21,8 +21,8 @@ dependencies = [
 
 [[package]]
 name = "azazel-mio"
-version = "0.1.0.dev20261105+gitf5b0014"
-source = { git = "https://github.com/01rabbit/Azazel-MIO.git?rev=ffac07cc9bf06d6904faa98001cfcfaea788bcf7#ffac07cc9bf06d6904faa98001cfcfaea788bcf7" }
+version = "0.1.0.dev20261106+gitbb6dcfd"
+source = { git = "https://github.com/01rabbit/Azazel-MIO.git?rev=a1807bf7abb08788b834ae038f7a8b46d09d0acc#a1807bf7abb08788b834ae038f7a8b46d09d0acc" }
 
 [[package]]
 name = "azazel-nexus"
@@ -44,7 +44,7 @@ mio = [
 [package.metadata]
 requires-dist = [
     { name = "azazel-fabric", marker = "extra == 'fabric'", git = "https://github.com/01rabbit/Azazel-Fabric.git?rev=v0.10.0" },
-    { name = "azazel-mio", marker = "extra == 'mio'", git = "https://github.com/01rabbit/Azazel-MIO.git?rev=ffac07cc9bf06d6904faa98001cfcfaea788bcf7" },
+    { name = "azazel-mio", marker = "extra == 'mio'", git = "https://github.com/01rabbit/Azazel-MIO.git?rev=a1807bf7abb08788b834ae038f7a8b46d09d0acc" },
     { name = "pynacl", marker = "extra == 'dev'", specifier = ">=1.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
 ]

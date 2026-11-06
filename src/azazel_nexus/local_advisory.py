@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import unicodedata
+from datetime import datetime
 from collections.abc import Mapping
 from ipaddress import IPv6Address
 
@@ -803,8 +804,12 @@ def read_fast_assistance(value):
         'schema_version', 'trace_id', 'frame_id', 'generation_method', 'state',
         'dependency_outcome', 'observations', 'hypotheses', 'unknowns', 'next_checks',
         'knowledge', 'handoff', 'reasoning_trace'}
-    require(type(value) is dict and set(value) in (
-        required_keys, required_keys | {'fabric_knowledge_context_advisory'}))
+    optional_keys = {'fabric_knowledge_context_advisory', 'full_node_context_status'}
+    require(type(value) is dict and required_keys <= set(value)
+            and set(value) <= required_keys | optional_keys)
+    if 'full_node_context_status' in value:
+        require(type(value['full_node_context_status']) is str
+                and value['full_node_context_status'] in {'not_queried', 'received', 'unavailable'})
     require(value['schema_version'] == 'mio.assistance.v1')
     require(value['generation_method'] == 'static_reference')
     require(type(value['trace_id']) is str and re.fullmatch(r'mio-[0-9a-f]{16}-[0-9]{1,12}', value['trace_id']))
@@ -926,6 +931,8 @@ def read_fast_assistance(value):
     if 'fabric_knowledge_context_advisory' in value:
         advisory = value['fabric_knowledge_context_advisory']
         if advisory is not None:
+            if 'full_node_context_status' in value:
+                require(value['full_node_context_status'] == 'received')
             require(type(advisory) is dict and set(advisory) == {
                 'kind', 'source_kind', 'schema_version', 'claim_status', 'authority', 'trust',
                 'snapshot_state', 'generated_at', 'expires_at', 'facts', 'inferences',
@@ -942,6 +949,12 @@ def read_fast_assistance(value):
                 require(re.fullmatch(
                     r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z',
                     advisory[key]) is not None)
+            try:
+                generated = datetime.fromisoformat(advisory['generated_at'].replace('Z', '+00:00'))
+                expires = datetime.fromisoformat(advisory['expires_at'].replace('Z', '+00:00'))
+            except ValueError:
+                raise ValueError('invalid_fast_assistance') from None
+            require(expires > generated)
             require(type(advisory['facts']) is list and len(advisory['facts']) <= 64)
             for item in advisory['facts']:
                 require(type(item) is dict and set(item) == {

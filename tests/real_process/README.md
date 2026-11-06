@@ -56,7 +56,7 @@ DOCKER_CONTEXT=colima-rosetta SUITE_CONTEXT=rosetta \
 Before starting Docker, the wrapper requires clean Nexus and Knowledge source
 trees and compares each checkout's full HEAD to the supplied commit. The
 container runner checks the SHA-256 of the MIO #47 candidate wheel
-(`0e20917e02c0ca650450ce17d734be7d164eb8ebbc050526aeeb0012a7be5eae`) and
+(`cb67a8c00f9011b0accd14a9901298d29dd0eb30b036e9af8c1ec5b5878356ff`) and
 the Fabric `v0.10.0` tag-source test wheel
 (`b22356fd672cd60471606d3a7b73ccdba99091e680fedd854381a29d76e21424`)
 before installing offline. The Fabric wheel was rebuilt from the exact signed

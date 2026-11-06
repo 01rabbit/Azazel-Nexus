@@ -6,6 +6,7 @@ import math
 import re
 import unicodedata
 from collections import deque
+from datetime import datetime
 
 from .explanation_claims import (
     EDGE_CLAIM_LIMITATION,
@@ -994,6 +995,15 @@ def build_recent_incident(transition, previous=None, record=None):
         if r["incident_id"] != t["incident_id"]:
             raise ValueError("recent_refused")
         explanation = explanation_summary(r)
+    elif previous and t["event_type"] in {"edge.incident.updated", "edge.incident.closed"}:
+        # A newly observed transition cannot inherit a previous full-node receipt.
+        fast = explanation.get("fast_assistance")
+        if type(fast) is dict and "full_node_context" in fast:
+            fast = dict(fast)
+            fast["full_node_context"] = _full_node_projection(None, "not_queried", "not_queried")
+            fast["unknowns"] = [x for x in fast["unknowns"] if not x.startswith("KNOWLEDGE_CONTEXT_")]
+            fast["next_checks"] = [x for x in fast["next_checks"] if x != FULL_NODE_INCOMPLETE_CHECK]
+            explanation = {**explanation, "fast_assistance": fast}
     if (record is None and previous and t["event_type"] == "edge.incident.updated"
             and t["most_severe"] < previous["most_severe"]):
         explanation = {"state": "pending", "route": "unavailable", "outcome": "unavailable",
@@ -1019,6 +1029,75 @@ CITATION_DISPLAY_FIELDS = ("bundle_digest_short", "generation", "freshness", "as
 CITATION_STATES = ("shown", "none", "withheld")
 #: The escaped JSON budget for one row's displayed citations.
 CITATION_DISPLAY_BYTES = 6 * 1024
+
+FULL_NODE_INCOMPLETE_CHECK = (
+    "Request an authorized current full-node Knowledge snapshot; this partial or stale advisory "
+    "is not a complete current snapshot."
+)
+FULL_NODE_LIMITATIONS = (
+    "Source reports are unverified and advisory only.",
+    "Producer limitations were reported; their text is withheld.",
+    "Source-level freshness deadlines are not included in this projection.",
+)
+FULL_NODE_FRESHNESS_LIMITATION = "source-level freshness deadlines are not included in this projection"
+
+
+def _full_node_projection(advisory, status, knowledge_outcome):
+    """Project only closed metadata; never copy source prose or subjects."""
+    result = {"full_node_context_status": status, "outcome": "not_queried",
+              "source_kind": None, "claim_status": None, "trust": None,
+              "snapshot_state": None, "generated_at": None, "expires_at": None,
+              "limitations": []}
+    if advisory is not None:
+        result.update(outcome=advisory["snapshot_state"],
+                      source_kind=advisory["source_kind"], claim_status=advisory["claim_status"],
+                      trust=advisory["trust"], snapshot_state=advisory["snapshot_state"],
+                      generated_at=advisory["generated_at"], expires_at=advisory["expires_at"],
+                      limitations=[FULL_NODE_LIMITATIONS[0]])
+        if FULL_NODE_FRESHNESS_LIMITATION in advisory["limitations"]:
+            result["limitations"].append(FULL_NODE_LIMITATIONS[2])
+        if any(item != FULL_NODE_FRESHNESS_LIMITATION for item in advisory["limitations"]):
+            result["limitations"].append(FULL_NODE_LIMITATIONS[1])
+    elif status == "unavailable":
+        result["outcome"] = "unavailable"
+    elif status == "received":
+        result["outcome"] = knowledge_outcome if knowledge_outcome in {"expired", "rejected"} else "unavailable"
+    elif status == "unknown":
+        result["outcome"] = "unknown"
+    return result
+
+
+def _read_full_node_projection(value):
+    _shape(value, ("full_node_context_status", "outcome", "source_kind", "claim_status", "trust",
+                   "snapshot_state", "generated_at", "expires_at", "limitations"))
+    status, outcome = value["full_node_context_status"], value["outcome"]
+    if type(status) is not str or status not in {"unknown", "not_queried", "received", "unavailable"}:
+        raise ValueError("recent_refused")
+    if type(outcome) is not str or outcome not in {"unknown", "not_queried", "unavailable", "rejected", "expired", "complete", "partial", "stale"}:
+        raise ValueError("recent_refused")
+    fields = ("source_kind", "claim_status", "trust", "snapshot_state", "generated_at", "expires_at")
+    if outcome in {"complete", "partial", "stale"}:
+        if (status not in {"received", "unknown"} or value["source_kind"] != "fabric_knowledge_context_response_v1"
+                or value["claim_status"] != "source_reported_unverified"
+                or value["trust"] != "unverified_advisory_only" or value["snapshot_state"] != outcome):
+            raise ValueError("recent_refused")
+        for key in ("generated_at", "expires_at"):
+            if type(value[key]) is not str or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z", value[key]):
+                raise ValueError("recent_refused")
+        if datetime.fromisoformat(value["expires_at"].replace("Z", "+00:00")) <= datetime.fromisoformat(value["generated_at"].replace("Z", "+00:00")):
+            raise ValueError("recent_refused")
+        if value["limitations"] not in ([FULL_NODE_LIMITATIONS[0]],
+                                         [FULL_NODE_LIMITATIONS[0], FULL_NODE_LIMITATIONS[1]],
+                                         [FULL_NODE_LIMITATIONS[0], FULL_NODE_LIMITATIONS[2]],
+                                         [FULL_NODE_LIMITATIONS[0], FULL_NODE_LIMITATIONS[2], FULL_NODE_LIMITATIONS[1]]):
+            raise ValueError("recent_refused")
+    else:
+        if any(value[k] is not None for k in fields) or value["limitations"] != []:
+            raise ValueError("recent_refused")
+        if (status, outcome) not in {("unknown", "unknown"), ("not_queried", "not_queried"),
+                                     ("unavailable", "unavailable"), ("received", "unavailable"),
+                                     ("received", "expired"), ("received", "rejected")}:
+            raise ValueError("recent_refused")
 
 
 def explanation_summary(record):
@@ -1076,6 +1155,11 @@ def explanation_summary(record):
             ],
             "dependency_outcome": fast.get("dependency_outcome", {}),
         }
+        advisory = fast.get("fabric_knowledge_context_advisory")
+        if "full_node_context_status" in fast or advisory is not None:
+            summary["fast_assistance"]["full_node_context"] = _full_node_projection(
+                advisory, fast.get("full_node_context_status", "unknown"),
+                fast["dependency_outcome"]["knowledge"])
     if omitted:
         summary["knowledge_refs_omitted"] = omitted
     return summary
@@ -1336,7 +1420,10 @@ def read_recent_incidents(raw):
                 _int(e["knowledge_refs_omitted"], 16 - len(refs), 1)
             if "fast_assistance" in e:
                 f = e["fast_assistance"]
-                _shape(f, ("state", "unknowns", "next_checks", "knowledge", "dependency_outcome"))
+                _shape(f, ("state", "unknowns", "next_checks", "knowledge", "dependency_outcome"),
+                       ("full_node_context",))
+                if "full_node_context" in f:
+                    _read_full_node_projection(f["full_node_context"])
                 if type(f["state"]) is not str or f["state"] not in MIO_ASSISTANCE_STATES:
                     return None
                 for key in ("unknowns", "next_checks"):
