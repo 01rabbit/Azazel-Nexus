@@ -266,7 +266,10 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
             alias_key=b"p" * 32, enabled=True,
         )
         broker_reply = broker.handle(SimpleNamespace(
-            verb=CONTEXT_VERB, arguments={"deadline_ms": 8000},
+            verb=CONTEXT_VERB, arguments={
+                "deadline_ms": 8000,
+                "deadline_monotonic_ns": int((time.monotonic() + 8) * 1_000_000_000),
+            },
             payload={"frame": {"privacy_class": "P0-public",
                                "question": "synthetic public context"}},
         ))
