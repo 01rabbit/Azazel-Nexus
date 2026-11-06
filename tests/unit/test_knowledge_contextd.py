@@ -96,6 +96,73 @@ def test_missing_egress_account_degrades_to_unavailable(monkeypatch):
         )
 
 
+def test_truncated_broker_reply_becomes_optional_context_unavailable(monkeypatch):
+    from azazel_nexus.audit import AuditUnavailable
+    from azazel_nexus_runtime import knowledge_context_socket
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect(self, _path):
+            pass
+
+        def sendall(self, _payload):
+            pass
+
+        def shutdown(self, _how):
+            pass
+
+    monkeypatch.setattr(knowledge_context_socket, "_service_uid", lambda: 20001)
+    monkeypatch.setattr(knowledge_context_socket, "_socket_gid", lambda: 20002)
+    monkeypatch.setattr(knowledge_context_socket, "verify_socket", lambda *_a, **_k: None)
+    monkeypatch.setattr(knowledge_context_socket.socket, "socket",
+                        lambda *_a, **_k: Connection())
+
+    def truncated(*_args, **_kwargs):
+        raise AuditUnavailable("synthetic truncated response")
+
+    monkeypatch.setattr(knowledge_context_socket, "_read_exact", truncated)
+    with pytest.raises(KnowledgeContextUnavailable):
+        knowledge_context_socket.request_context(
+            {"privacy_class": "P0-public", "question": "test"}, deadline_s=0.1,
+        )
+
+
+def test_late_knowledge_response_is_not_delivered():
+    clock = [10.0]
+
+    class LateClient:
+        def request_context(self, **_kwargs):
+            clock[0] = 10.01
+            return {"authority": "advisory_only"}
+
+    broker = KnowledgeContextBroker(
+        client=LateClient(), policy=_policy(), mission="lab", alias_key=b"x" * 32,
+        enabled=True, monotonic=lambda: clock[0],
+    )
+    request = _request(deadline_ms=500, deadline_monotonic_ns=10_005_000_000)
+    assert broker.handle(request) == {"refusal": "timeout"}
+
+
+def test_broker_size_limit_matches_escaped_wire_encoding():
+    class UnicodeClient:
+        def request_context(self, **_kwargs):
+            return {"text": "秘密" * 5_000}
+
+    broker = KnowledgeContextBroker(
+        client=UnicodeClient(), policy=_policy(), mission="lab", alias_key=b"x" * 32,
+        enabled=True,
+    )
+    assert broker.handle(_request()) == {"refusal": "unavailable"}
+
+
 def test_commissioned_broker_hardcodes_p0_and_bounds_response():
     response = {"schema_version": "knowledge-context-response/v1", "authority": "advisory_only"}
     calls = []

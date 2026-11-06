@@ -113,12 +113,17 @@ class KnowledgeContextBroker:
                 )
             finally:
                 self._slot.release()
+            if self._monotonic() >= deadline_monotonic:
+                raise TimeoutError
             dump = getattr(verified, "model_dump", None)
             response = dump(mode="json") if callable(dump) else verified
             if type(response) is not dict:
                 raise ValueError
-            encoded = json.dumps(response, ensure_ascii=False, allow_nan=False,
-                                 separators=(",", ":")).encode("utf-8")
+            encoded = json.dumps(
+                {"ok": True, "result": {"response": response}},
+                sort_keys=True, ensure_ascii=True, allow_nan=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
             if not encoded or len(encoded) > MAX_RESPONSE_BYTES:
                 raise ValueError
             self._audit({"event_type": "knowledge.context.completed",

@@ -13,7 +13,9 @@ import socket
 import time
 from typing import Any
 
-from .bootstrap_audit_client import _pairs, _read_exact, _set_remaining_timeout
+from .bootstrap_audit_client import (
+    AuditUnavailable, _pairs, _read_exact, _set_remaining_timeout,
+)
 from .principal import SocketMisconfigured, peer_credentials, verify_socket
 from .runtime_paths import socket_path
 from .transport import MAX_FRAME_BYTES, _HEADER
@@ -81,7 +83,8 @@ def request_context(frame: dict, *, deadline_s: float) -> dict:
                 raise KnowledgeContextUnavailable("trailing response")
     except KnowledgeContextUnavailable:
         raise
-    except (OSError, KeyError, ValueError, TimeoutError, SocketMisconfigured) as exc:
+    except (AuditUnavailable, OSError, KeyError, ValueError, TimeoutError,
+            SocketMisconfigured) as exc:
         raise KnowledgeContextUnavailable("broker unavailable") from exc
     if (type(reply) is not dict or set(reply) != {"ok", "result"}
             or reply["ok"] is not True or type(reply["result"]) is not dict):
