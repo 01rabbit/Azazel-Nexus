@@ -99,6 +99,7 @@ def test_missing_egress_account_degrades_to_unavailable(monkeypatch):
 
 @pytest.mark.parametrize("peer", [(0, 20001, 20002), (123, 20002, 20003)])
 def test_local_broker_client_refuses_invalid_pid_or_peer_uid(monkeypatch, peer):
+    """Exercise the policy branch with synthetic kernel peer credentials."""
     from azazel_nexus_runtime import knowledge_context_socket
 
     calls = []

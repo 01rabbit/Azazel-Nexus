@@ -32,6 +32,36 @@ from azazel_nexus_runtime.knowledge_egress import KnowledgeClient
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def _real_process_prerequisite_error() -> str | None:
+    """Keep this privileged integration suite explicit outside its container."""
+    if not sys.platform.startswith("linux"):
+        return "requires Linux AF_UNIX credentials and Linux account semantics"
+    if os.geteuid() != 0:
+        return "requires the isolated root container runner"
+    if not os.environ.get("KNOWLEDGE_TEST_SRC"):
+        return "KNOWLEDGE_TEST_SRC is not set by the isolated runner"
+    if shutil.which("openssl") is None:
+        return "openssl is required by the isolated runner"
+    import grp
+    import pwd
+
+    try:
+        for name in ("azknowledgeegress", "azmio", "azmioentry", "azoperator"):
+            pwd.getpwnam(name)
+        for name in ("azknowledge-context-client", "azazel-operator", "azmio-advise"):
+            grp.getgrnam(name)
+    except KeyError as exc:
+        return f"isolated runner identity is missing: {exc}"
+    return None
+
+
+_PREREQUISITE_ERROR = _real_process_prerequisite_error()
+pytestmark = pytest.mark.skipif(
+    _PREREQUISITE_ERROR is not None,
+    reason=_PREREQUISITE_ERROR or "isolated real-process prerequisites unavailable",
+)
+
+
 def _openssl(args: list[str], cwd: Path) -> None:
     subprocess.run(
         ["openssl", *args], cwd=cwd, check=True, capture_output=True, timeout=30
@@ -194,13 +224,21 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
         assert ready["ready"] is True and ready["pid"] == server.pid != os.getpid()
         assert ready["host"] == "127.0.0.1"
 
-        # An unauthenticated TLS peer reaches the real Knowledge listener but
-        # cannot complete its client-certificate handshake. No HTTP request is
-        # sent before this rejection.
+        # A client without a certificate is rejected during TLS. TLS 1.3 can
+        # defer surfacing the peer alert until the first read, so observe both
+        # handshake and post-handshake I/O.
         unauthenticated = ssl.create_default_context(cafile=str(pki / "ca.pem"))
         with socket.create_connection((ready["host"], ready["port"]), timeout=3) as raw:
-            with pytest.raises(OSError):
-                unauthenticated.wrap_socket(raw, server_hostname="knowledge.test")
+            try:
+                unauthenticated_socket = unauthenticated.wrap_socket(
+                    raw, server_hostname="knowledge.test"
+                )
+            except ssl.SSLError:
+                pass
+            else:
+                with unauthenticated_socket:
+                    with pytest.raises(ssl.SSLError):
+                        unauthenticated_socket.recv(1)
 
         now = datetime.now(UTC)
         server_der = ssl.PEM_cert_to_DER_cert((pki / "server.pem").read_text())
@@ -381,16 +419,20 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
             # broker runtime directory, even with a syntactically valid P0
             # frame. The refusal occurs before a request reaches the service.
             refusal_code = """
-from azazel_nexus_runtime.knowledge_context_socket import (
-    request_context, KnowledgeContextUnavailable,
-)
+import errno, socket
+from pathlib import Path
+path = str(Path(__import__('os').environ['AZAZEL_ROOT']) / 'var/lib/azazel/run/knowledge-context/knowledge-context.sock')
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 try:
-    request_context({'privacy_class': 'P0-public', 'question': 'synthetic'},
-                    deadline_s=1)
-except KnowledgeContextUnavailable:
-    print('refused')
+    client.connect(path)
+except PermissionError as exc:
+    if exc.errno != errno.EACCES:
+        raise
+    print('permission-denied')
 else:
     raise SystemExit(2)
+finally:
+    client.close()
 """
             refused = subprocess.run(
                 [sys.executable, "-B", "-c", refusal_code],
@@ -398,7 +440,7 @@ else:
                 preexec_fn=credentials(pwd.getpwnam("azoperator")),
             )
             assert refused.returncode == 0, refused.stderr[-1000:]
-            assert refused.stdout.strip() == "refused"
+            assert refused.stdout.strip() == "permission-denied"
 
             locald_process = subprocess.Popen(
                 [sys.executable, str(ROOT / "tests/real_process/_mio_locald_context_process.py")],
