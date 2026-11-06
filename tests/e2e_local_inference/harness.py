@@ -182,8 +182,11 @@ class DirectLlamaFixture:
             return bytes(response)
 
     def start(self):
+        executable = Path(self.record.argv[0])
+        if executable.is_absolute():
+            executable = self.root / executable.relative_to("/")
         self.process = subprocess.Popen(
-            self.record.argv, executable=self.record.argv[0],
+            self.record.argv, executable=str(executable),
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, env={"PATH": "/nonexistent", "LC_ALL": "C"},
             cwd=str(self.root), close_fds=True, start_new_session=True,
