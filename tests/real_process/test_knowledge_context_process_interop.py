@@ -243,8 +243,8 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
                 unauthenticated_socket = unauthenticated.wrap_socket(
                     raw, server_hostname="knowledge.test"
                 )
-            except ssl.SSLError as rejection:
-                pass
+            except ssl.SSLError as exc:
+                rejection = exc
             else:
                 with unauthenticated_socket:
                     with pytest.raises(ssl.SSLError) as rejected_on_read:
@@ -252,7 +252,6 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
                 rejection = rejected_on_read.value
             assert rejection.reason in {
                 "TLSV13_ALERT_CERTIFICATE_REQUIRED",
-                "TLSV1_ALERT_HANDSHAKE_FAILURE",
                 "SSLV3_ALERT_HANDSHAKE_FAILURE",
             }, f"unexpected no-client-certificate rejection: {rejection.reason}"
 
@@ -431,6 +430,13 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
         try:
             assert _ready(broker_process)["ready"] is True
             broker_dir = service_root / "var/lib/azazel/run/knowledge-context"
+            # The ancestors are fixture setup; keep them traversable so the
+            # negative identity is refused at the dedicated client-group leaf.
+            for parent in (
+                service_root / "var/lib/azazel",
+                service_root / "var/lib/azazel/run",
+            ):
+                assert stat.S_IMODE(parent.stat().st_mode) == 0o711
             broker_dir_stat = broker_dir.stat()
             assert broker_dir_stat.st_uid == egress.pw_uid
             assert broker_dir_stat.st_gid == context_gid
