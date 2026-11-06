@@ -148,23 +148,20 @@ class LocalSocketClient:
         except Exception:
             return stale
 
-    def assess(self, frame, *, deadline_s: float,
-               fabric_knowledge_context_response: dict | None = None) -> dict:
-        """Call the model-free service verb; this does not read model admission."""
+    def assess(self, frame, *, deadline_s: float) -> dict:
+        """Call the model-free service verb; this does not read model admission.
+
+        Only the untrusted situation frame crosses the socket. Verified
+        Knowledge Context is fetched by the service itself from its local
+        broker, never asserted by the caller.
+        """
         self.last_slow_analysis = {"state": "closed", "usage": "unknown"}
         if type(deadline_s) not in {int, float} or deadline_s <= 0:
             return fast_assessment_degraded("timeout")
         milliseconds = max(0, min(60_000, int(deadline_s * 1000)))
         try:
-            if fabric_knowledge_context_response is None:
-                payload = frame
-            elif type(fabric_knowledge_context_response) is dict:
-                payload = {"frame": frame,
-                           "fabric_knowledge_context_response": fabric_knowledge_context_response}
-            else:
-                return fast_assessment_degraded("rejected")
             result = _exchange("mio", "azmio", "mio.local.assess",
-                               {"deadline_ms": milliseconds}, payload=payload,
+                               {"deadline_ms": milliseconds}, payload=frame,
                                deadline_s=deadline_s)
         except TimeoutError:
             return fast_assessment_degraded("timeout")

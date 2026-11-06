@@ -127,30 +127,18 @@ ADMISSION_VERB = Verb(
 REGISTRY = VerbRegistry([ACTIVATE_VERB, ADMISSION_VERB, INFER_VERB, FAST_ASSESS_VERB, GENERATION_RESULT_VERB])
 
 
-def _read_assessment_payload(payload: Any) -> tuple[dict, dict | None]:
-    """Read the usual frame and an optional, bounded Fabric response.
+def _read_assessment_payload(payload: Any) -> dict:
+    """Read only the caller's ordinary M.I.O. frame.
 
-    The response remains untrusted advisory content. MIO performs its own
-    schema, freshness, redaction and no-action projection. The frame uses the
-    existing reader; the nested response cannot exceed the AF_UNIX message cap.
+    Verified Knowledge Context must be acquired inside this service from its
+    commissioned local broker. A socket caller cannot supply an advisory and
+    label it verified.
     """
     if type(payload) is dict and "frame" in payload:
-        if set(payload) != {"frame", "fabric_knowledge_context_response"}:
+        if set(payload) != {"frame"}:
             raise FrameRefused("malformed_assessment_payload")
-        frame = read_frame(payload["frame"])
-        response = payload["fabric_knowledge_context_response"]
-        if type(response) is not dict:
-            raise FrameRefused("malformed_assessment_payload")
-        try:
-            encoded = json.dumps(
-                response, ensure_ascii=False, allow_nan=False, separators=(",", ":")
-            ).encode("utf-8")
-        except (TypeError, ValueError, UnicodeError, RecursionError):
-            raise FrameRefused("malformed_assessment_payload") from None
-        if len(encoded) > MAX_FRAME_BYTES:
-            raise FrameRefused("malformed_assessment_payload")
-        return frame, response
-    return read_frame(payload), None
+        return read_frame(payload["frame"])
+    return read_frame(payload)
 
 
 @dataclass(frozen=True)
@@ -249,7 +237,7 @@ class LocalRuntimeService:
             return self._infer(request, audit=audit)
         if name == FAST_ASSESS_VERB.name:
             try:
-                frame, fabric_context_response = _read_assessment_payload(request.payload)
+                frame = _read_assessment_payload(request.payload)
             except FrameRefused:
                 return {"outcome": "failed", "refusal": "malformed_frame"}
             # The shared package is an integration dependency, not a reason
@@ -262,8 +250,7 @@ class LocalRuntimeService:
                     frame, deadline_s=max(0.0, request.arguments["deadline_ms"] / 1000
                                           - DELIVERY_RESERVE_S),
                     knowledge_lookup=self._knowledge_lookup, knowledge_max_s=KNOWLEDGE_MAX_S,
-                    core_reserve_s=FAST_CORE_RESERVE_S, situation_frame=situation,
-                    fabric_knowledge_context_response=fabric_context_response)
+                    core_reserve_s=FAST_CORE_RESERVE_S, situation_frame=situation)
             except Exception:
                 from .mio_socket_client import fast_assessment_degraded
                 result = fast_assessment_degraded("unavailable")

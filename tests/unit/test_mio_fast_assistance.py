@@ -419,7 +419,7 @@ def test_normal_locald_fast_assess_injects_authenticated_lookup():
         read_fast_assistance(forged)
 
 
-def test_normal_locald_assessment_forwards_bounded_fabric_response_to_mio(monkeypatch):
+def test_normal_locald_assessment_rejects_caller_supplied_fabric_response(monkeypatch):
     from azazel_nexus_runtime import mio_locald
 
     source = _lite_frame()
@@ -442,12 +442,11 @@ def test_normal_locald_assessment_forwards_bounded_fabric_response_to_mio(monkey
         "expires_at": "2026-07-06T12:00:30Z",
         "authority": "advisory_only",
     }
-    observed = {}
     from azazel_nexus_runtime import mio_fast_assistance
     monkeypatch.setattr(
         mio_fast_assistance,
         "fast_assistance",
-        lambda frame, **kwargs: observed.update(kwargs) or {"outcome": "synthetic"},
+        lambda *args, **kwargs: pytest.fail("unverified caller response reached MIO"),
     )
     service = mio_locald.LocalRuntimeService()
     reply = service.handle(SimpleNamespace(
@@ -456,8 +455,7 @@ def test_normal_locald_assessment_forwards_bounded_fabric_response_to_mio(monkey
         payload={"frame": source,
                  "fabric_knowledge_context_response": response},
     ))
-    assert observed["fabric_knowledge_context_response"] == response
-    assert reply["fast_assistance"] == {"outcome": "synthetic"}
+    assert reply == {"outcome": "failed", "refusal": "malformed_frame"}
 
 
 def test_locald_rejects_unknown_keys_in_wrapped_assessment_payload(monkeypatch):
