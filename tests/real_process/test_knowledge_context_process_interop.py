@@ -230,26 +230,50 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
         assert ready["ready"] is True and ready["pid"] == server.pid != os.getpid()
         assert ready["host"] == "127.0.0.1"
 
-        # Keep CA/hostname verification identical to the positive client; the
-        # only missing credential is the client certificate. TLS 1.3 may
-        # surface the server's certificate-required alert on the first read.
+        # Matched TLS 1.3 controls: same CA, hostname/SNI, timeout, protocol,
+        # and malformed probe. The positive adds only the client certificate.
+        # The malformed request line exercises the TLS listener without
+        # sending a valid Knowledge request to the application.
+        authenticated = ssl.create_default_context(cafile=str(pki / "ca.pem"))
+        authenticated.minimum_version = ssl.TLSVersion.TLSv1_3
+        authenticated.maximum_version = ssl.TLSVersion.TLSv1_3
+        authenticated.load_cert_chain(
+            certfile=str(pki / "nexus.pem"), keyfile=str(pki / "nexus.key")
+        )
+        assert authenticated.check_hostname is True
+        assert authenticated.verify_mode == ssl.CERT_REQUIRED
+        probe = b"X\r\n\r\n"
+        with socket.create_connection((ready["host"], ready["port"]), timeout=3) as raw:
+            raw.settimeout(3)
+            with authenticated.wrap_socket(raw, server_hostname="knowledge.test") as tls:
+                assert tls.version() == "TLSv1.3"
+                tls.sendall(probe)
+                status_line = tls.makefile("rb").readline(128)
+                assert status_line.startswith((b"HTTP/1.0 400 ", b"HTTP/1.1 400 ")), (
+                    f"expected HTTP 400 from authenticated TLS 1.3 control, got {status_line!r}"
+                )
+
+        # The only missing credential is the client certificate. TLS 1.3 may
+        # surface its alert during handshake, write, or read; all other
+        # failures (including EOF/reset) must fail this test.
         unauthenticated = ssl.create_default_context(cafile=str(pki / "ca.pem"))
         unauthenticated.minimum_version = ssl.TLSVersion.TLSv1_3
         unauthenticated.maximum_version = ssl.TLSVersion.TLSv1_3
         assert unauthenticated.check_hostname is True
         assert unauthenticated.verify_mode == ssl.CERT_REQUIRED
         with socket.create_connection((ready["host"], ready["port"]), timeout=3) as raw:
+            raw.settimeout(3)
             try:
                 unauthenticated_socket = unauthenticated.wrap_socket(
                     raw, server_hostname="knowledge.test"
                 )
-            except ssl.SSLError as exc:
-                rejection = exc
-            else:
                 with unauthenticated_socket:
-                    with pytest.raises(ssl.SSLError) as rejected_on_read:
-                        unauthenticated_socket.recv(1)
-                rejection = rejected_on_read.value
+                    unauthenticated_socket.sendall(probe)
+                    unauthenticated_socket.recv(1)
+            except ssl.SSLError as rejection:
+                pass
+            else:
+                pytest.fail("TLS server accepted a client without a certificate")
             assert rejection.reason == "TLSV13_ALERT_CERTIFICATE_REQUIRED", (
                 "expected TLS 1.3 client-certificate rejection, got "
                 f"{rejection.reason}"
