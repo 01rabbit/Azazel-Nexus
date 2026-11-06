@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from azazel_nexus_runtime.mio_serve import (
@@ -111,6 +112,105 @@ def server(tmp_path):
 
 def request():
     return LocalInferenceRequest((('user', 'private fixture question'),), 32, 0)
+
+
+def test_budget_server_reads_context_and_tokenizes_rendered_prompt():
+    handle = object.__new__(LocalServer)
+    handle._child = SimpleNamespace(alive=True)
+    handle.state = LifecycleState.SERVING
+    seen = []
+    def http(method, path, body, end):
+        seen.append((method, path, body))
+        if path == '/props':
+            return b'{"default_generation_settings":{"n_ctx":2048}}'
+        return b'{"tokens":[1,2,3]}'
+    handle._http = http
+    assert handle.context_limit(1) == 2048
+    assert handle.tokenize_rendered('rendered fixture', 1) == 3
+    assert json.loads(seen[1][2]) == {'content': 'rendered fixture', 'add_special': True}
+
+
+def test_count_chat_applies_template_and_shares_deadline(monkeypatch):
+    monkeypatch.setattr(time, 'monotonic', lambda: 5.)
+    handle = object.__new__(LocalServer)
+    handle._child = SimpleNamespace(alive=True)
+    handle.state = LifecycleState.SERVING
+    seen = []
+    def http(method, path, body, end):
+        seen.append((path, json.loads(body), end))
+        return (b'{"prompt":"rendered fixture"}' if path == '/apply-template'
+                else b'{"tokens":[1,2,3]}')
+    handle._http = http
+    assert handle.count_chat_tokens(request(), 1) == 3
+    assert [item[0] for item in seen] == ['/apply-template', '/tokenize']
+    assert seen[0][1]['messages'] == [{'role': 'user', 'content': 'private fixture question'}]
+    assert seen[1][1]['content'] == 'rendered fixture'
+    assert seen[0][2] == seen[1][2] == 6.
+
+
+@pytest.mark.parametrize('value', [None, True, 0, -1, '2048'])
+def test_budget_server_refuses_invalid_context_limit(value):
+    handle = object.__new__(LocalServer)
+    handle._child = SimpleNamespace(alive=True)
+    handle.state = LifecycleState.SERVING
+    handle._http = lambda *args: json.dumps({'default_generation_settings': {'n_ctx': value}}).encode()
+    with pytest.raises(LocalServerRefused):
+        handle.context_limit(1)
+
+
+@pytest.mark.parametrize('tokens', [None, [True], [-1], ['1'], {}])
+def test_budget_server_refuses_invalid_tokens(tokens):
+    handle = object.__new__(LocalServer)
+    handle._child = SimpleNamespace(alive=True)
+    handle.state = LifecycleState.SERVING
+    handle._http = lambda *args: json.dumps({'tokens': tokens}).encode()
+    with pytest.raises(LocalServerRefused):
+        handle.tokenize_rendered('fixture', 1)
+
+
+@pytest.mark.parametrize(('metadata', 'integrity'), [
+    ({}, 'unknown'),
+    ({'truncated': False}, 'preserved'),
+    ({'truncated': True}, 'truncated'),
+    ({'timings': {'truncated': True}}, 'truncated'),
+    ({'truncated': False, 'timings': {'truncated': True}}, 'truncated'),
+])
+def test_infer_extracts_request_integrity_without_inferring_it_from_stop(metadata, integrity):
+    handle = object.__new__(LocalServer)
+    handle._child = SimpleNamespace(alive=True)
+    handle.state = LifecycleState.SERVING
+    response = {'choices': [{'message': {'content': '{}'}, 'finish_reason': 'stop'}],
+                'usage': {'prompt_tokens': 12, 'completion_tokens': 7}, **metadata}
+    handle._http = lambda *args: json.dumps(response).encode()
+    result = handle.infer(request(), 1)
+    assert result.finish_reason == 'stop'
+    assert result.context_integrity == integrity
+    assert (result.tokens_in, result.tokens_out) == (12, 7)
+
+
+@pytest.mark.parametrize('bad', [0, 1, 'false', None])
+def test_infer_treats_non_boolean_truncation_metadata_as_unknown(bad):
+    handle = object.__new__(LocalServer)
+    handle._child = SimpleNamespace(alive=True)
+    handle.state = LifecycleState.SERVING
+    response = {'choices': [{'message': {'content': '{}'}}],
+                'usage': {'prompt_tokens': 12, 'completion_tokens': 7},
+                'truncated': bad}
+    handle._http = lambda *args: json.dumps(response).encode()
+    assert handle.infer(request(), 1).context_integrity == 'unknown'
+
+
+@pytest.mark.parametrize('finish', [None, 'length', 'stop'])
+def test_infer_preserves_finish_reason_without_claiming_context_integrity(finish):
+    handle = object.__new__(LocalServer)
+    handle._child = SimpleNamespace(alive=True)
+    handle.state = LifecycleState.SERVING
+    response = {'choices': [{'message': {'content': '{}'}, 'finish_reason': finish}],
+                'usage': {'prompt_tokens': 12, 'completion_tokens': 7}}
+    handle._http = lambda *args: json.dumps(response).encode()
+    result = handle.infer(request(), 1)
+    assert result.finish_reason == finish
+    assert result.context_integrity == 'unknown'
 
 
 @pytest.mark.real_process
@@ -261,8 +361,9 @@ def _wire_handle(monkeypatch, response):
         def connect(self, path):
             assert path == '/tmp/test.sock'
 
-        def sendall(self, data):
-            self.sent += data
+        def send(self, data):
+            self.sent += bytes(data)
+            return len(data)
 
         def recv(self, size):
             data = response[self.read:self.read + size]
@@ -297,3 +398,163 @@ def explicit_fake_serving(monkeypatch):
     from admission_helpers import install_fake_serving
 
     install_fake_serving(monkeypatch)
+
+
+@pytest.mark.parametrize('finish',['future_reason',True,7])
+def test_unknown_finish_reason_remains_unconfirmed_completion(finish):
+    handle=object.__new__(LocalServer)
+    handle._child=SimpleNamespace(alive=True)
+    handle.state=LifecycleState.SERVING
+    response={'choices':[{'message':{'content':'{}'},'finish_reason':finish}],
+        'usage':{'prompt_tokens':12,'completion_tokens':7},'truncated':False}
+    handle._http=lambda *args:json.dumps(response).encode()
+    result=handle.infer(request(),1)
+    assert result.finish_reason is None and result.context_integrity=='preserved'
+
+
+@pytest.mark.real_process
+def test_dispatch_notification_is_once_after_request_gates(server):
+    handle=server();handle.start();notified=[]
+    handle.infer(request(),1,on_dispatch=lambda:notified.append('sent'))
+    assert notified==['sent']
+    with pytest.raises(LocalServerRefused):
+        handle.infer(LocalInferenceRequest((('user','\u0000'*60000),)),1,on_dispatch=lambda:notified.append('oversized'))
+    assert notified==['sent']
+    handle.stop()
+    with pytest.raises(LocalServerRefused):handle.infer(request(),1,on_dispatch=lambda:notified.append('stopped'))
+    assert notified==['sent']
+
+
+def native_handle():
+    handle=object.__new__(LocalServer)
+    handle._child=SimpleNamespace(alive=True);handle.state=LifecycleState.SERVING
+    props=dict(model_alias='fixture',model_path='/fixture/model.gguf',model_ftype='Q4',
+        chat_template='fixture-template',bos_token='BOS',eos_token='EOS',build_info='fixture-build',
+        default_generation_settings={'n_ctx':2048})
+    return handle,props
+
+
+def test_native_count_and_completion_use_identical_tokens_and_primary_integrity_fields():
+    handle,props=native_handle();seen=[];notified=[]
+    def http(method,path,body,end,**kw):
+        seen.append((path,body))
+        if kw.get('on_dispatch'):kw['on_dispatch']()
+        if path=='/props':return json.dumps(props).encode()
+        if path=='/apply-template':return b'{"prompt":"rendered"}'
+        if path=='/tokenize':return b'{"tokens":[1,2,3]}'
+        return b'{"content":"{}","stop":true,"stop_type":"eos","truncated":false,"tokens_evaluated":3,"tokens_predicted":2,"timings":{"prompt_n":3,"predicted_n":2}}'
+    handle._http=http
+    req=LocalInferenceRequest((('user','fixture'),),32,response_format={'type':'json_schema','json_schema':{'schema':{'type':'object'}}})
+    verified=handle.verified_tuple(1)
+    prepared=handle.prepare_native(req,1,expected_tuple=verified)
+    result=handle.infer_native(req,1,prepared=prepared,expected_tuple=verified,on_dispatch=lambda:notified.append(1))
+    body=json.loads(next(body for path,body in seen if path=='/completion'))
+    assert body['prompt']==[1,2,3] and body['n_predict']==32
+    assert '/v1/chat/completions' not in [path for path,_ in seen]
+    assert (result.tokens_in,result.tokens_out,result.finish_reason,result.context_integrity)==(3,2,'stop','preserved')
+    assert notified==[1]
+
+
+@pytest.mark.parametrize('flag',[None,0,1,'false'])
+def test_native_invalid_or_missing_truncated_remains_unknown(flag):
+    from azazel_nexus_runtime.mio_serve import native_result
+    value=dict(content='{}',stop=True,stop_type='eos',tokens_evaluated=3,tokens_predicted=2)
+    if flag is not None:value['truncated']=flag
+    assert native_result(value,1).context_integrity=='unknown'
+
+
+def test_tuple_change_during_count_rejects_before_dispatch():
+    from azazel_nexus_runtime.mio_serve import TokenCountUnknown
+    handle,props=native_handle();seen=[]
+    def http(method,path,body,end,**kw):
+        seen.append(path)
+        if path=='/props':return json.dumps(props).encode()
+        if path=='/apply-template':return b'{"prompt":"rendered"}'
+        props['model_path']='/fixture/changed.gguf'
+        return b'{"tokens":[1,2,3]}'
+    handle._http=http;verified=handle.verified_tuple(1)
+    with pytest.raises(TokenCountUnknown):handle.prepare_native(request(),1,expected_tuple=verified)
+    assert '/completion' not in seen
+
+
+def test_verified_tuple_requires_model_tokenizer_template_and_context():
+    from azazel_nexus_runtime.mio_serve import TokenCountUnknown
+    handle,props=native_handle();props.pop('bos_token')
+    handle._http=lambda *args:json.dumps(props).encode()
+    with pytest.raises(TokenCountUnknown):handle.verified_tuple(1)
+
+
+@pytest.mark.parametrize('bad',[None,True,-1,3.0,'3'])
+def test_native_usage_requires_strict_counts_without_timings_inference(bad):
+    from azazel_nexus_runtime.mio_serve import native_result
+    value=dict(content='{}',truncated=False,stop=True,stop_type='eos',tokens_evaluated=bad,
+        tokens_predicted=2,timings={'prompt_n':3,'predicted_n':2})
+    result=native_result(value,1)
+    assert (result.tokens_in,result.tokens_out)==(None,None)
+    assert result.context_integrity=='preserved'
+
+
+def test_native_top_level_truncated_is_primary_and_stop_does_not_infer_it():
+    from azazel_nexus_runtime.mio_serve import native_result
+    value=dict(content='{}',truncated=True,stop=True,stop_type='eos',tokens_evaluated=3,
+        tokens_predicted=2,timings={'truncated':False})
+    assert native_result(value,1).context_integrity=='truncated'
+    value.pop('truncated')
+    assert native_result(value,1).context_integrity=='unknown'
+
+
+def test_tuple_change_after_count_refuses_before_completion_notification():
+    from azazel_nexus_runtime.mio_serve import TokenCountUnknown,NativePrompt,request_digest
+    handle,props=native_handle();seen=[]
+    def http(method,path,body,end,**kw):
+        seen.append(path)
+        if kw.get('on_dispatch'):kw['on_dispatch']()
+        if path=='/props':return json.dumps(props).encode()
+        return b'{"content":"{}","truncated":false,"stop":true,"stop_type":"eos","tokens_evaluated":3,"tokens_predicted":2}'
+    handle._http=http
+    req=LocalInferenceRequest((('user','fixture'),),32,response_format={'type':'json_schema','json_schema':{'schema':{'type':'object'}}})
+    verified=handle.verified_tuple(1)
+    prepared=NativePrompt((1,2,3),request_digest(req),verified['tuple_id'])
+    props['build_info']='changed-build'
+    with pytest.raises(TokenCountUnknown):handle.infer_native(req,1,prepared=prepared,expected_tuple=verified,on_dispatch=lambda:seen.append('sent'))
+    assert seen==['/props','/props']
+
+
+@pytest.mark.parametrize('scenario',['presend_expiry','postsend_expiry','partial_failure','zero_send_failure','response_failure'])
+def test_notification_follows_positive_send_and_survives_later_failure(monkeypatch,scenario):
+    import azazel_nexus_runtime.mio_serve as module
+    handle,peer=_wire_handle(monkeypatch,b'')
+    clock=SimpleNamespace(now=0.)
+    monkeypatch.setattr(module.time,'monotonic',lambda:clock.now)
+    events=[];original=peer.send
+    def send(data):
+        events.append('send')
+        if scenario=='zero_send_failure' or (scenario=='partial_failure' and peer.sent):
+            raise OSError('fixture send failed')
+        count=original(data[:7] if scenario=='partial_failure' else data)
+        return count
+    peer.send=send
+    def gate():
+        events.append('gate')
+        if scenario=='presend_expiry':clock.now=1.
+    def notified():
+        assert peer.sent  # positive bytes precede notification, including partial send
+        events.append('notified')
+        if scenario=='postsend_expiry':clock.now=1.
+    with pytest.raises((TimeoutError,OSError,LocalServerRefused)):
+        handle._http('POST','/completion',b'{}',1.,before_dispatch=gate,on_dispatch=notified)
+    expected=0 if scenario in ('presend_expiry','zero_send_failure') else 1
+    assert events.count('notified')==expected
+    assert bool(peer.sent)==bool(expected)
+    if expected:assert events.index('send')<events.index('notified')
+    if scenario=='partial_failure':assert len(peer.sent)==7
+
+
+def test_fragmented_success_notifies_once_and_preserves_request_and_response(monkeypatch):
+    handle,peer=_wire_handle(monkeypatch,b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}')
+    original=peer.send;notified=[]
+    peer.send=lambda data:original(data[:7])
+    assert handle._http('POST','/completion',b'{}',time.monotonic()+1,
+        on_dispatch=lambda:notified.append(len(peer.sent)))==b'{}'
+    assert notified==[7]
+    assert peer.sent.startswith(b'POST /completion HTTP/1.1\r\n') and peer.sent.endswith(b'\r\n\r\n{}')

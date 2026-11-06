@@ -258,7 +258,7 @@ class LocalRuntimeService:
             # degradation at this boundary when it is absent or broken.
             try:
                 from .mio_fast_assistance import fast_assistance, _frame
-                situation = _frame(frame)
+                situation, slow_selection = _frame(frame, with_selection=True)
                 assessment_deadline = (time.monotonic()
                                        + request.arguments["deadline_ms"] / 1000)
                 fabric_context_response = None
@@ -293,7 +293,8 @@ class LocalRuntimeService:
                 result = fast_assessment_degraded("unavailable")
             slow = {"state": "closed", "usage": "unknown"}
             try:
-                slow = self._generation_lane.submit(frame, situation, self._generation_id)
+                slow = self._generation_lane.submit(frame, situation, self._generation_id,
+                    upstream_coverage=slow_selection['coverage'], upstream_selection=slow_selection)
             except Exception:
                 pass
             return {"outcome": "assessed", "fast_assistance": result, "slow_analysis": slow}

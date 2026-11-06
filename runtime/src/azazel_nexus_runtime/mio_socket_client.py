@@ -127,7 +127,11 @@ class LocalSocketClient:
         return _probe("mio", min(PROBE_MAX_S, deadline_s))
 
     def generation_result(self, receipt, *, deadline_s=PROBE_MAX_S):
-        """Poll explicit original binding; never modify the current fast assessment."""
+        """Poll original binding, validating budget v1 via the shared CORE reader.
+
+        Legacy receipts remain retrievable; only the projection may label their
+        complete result as old and budget-unverified.
+        """
         stale = {"state": "stale", "usage": "unknown"}
         try:
             from .mio_generation import read_slow_analysis

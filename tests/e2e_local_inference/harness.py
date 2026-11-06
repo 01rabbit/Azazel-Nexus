@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import signal
+import socket
+import subprocess
 import sys
+import threading
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -98,6 +102,312 @@ class ObservedServer:
         return result
 
 
+class FixturePreHTTPRefusal(Exception):
+    """The test UDS connect failed before any HTTP request bytes were sent."""
+
+
+class DiagnosticTelemetry:
+    """Best-effort numeric diagnostics; never influence a scenario's verdict."""
+
+    def __init__(self, directory):
+        self.directory = Path(directory) if directory else None
+        self.data = {"requests": [], "samples": [], "server": {}}
+        self.done = threading.Event()
+        self.thread = None
+        self.write_lock = threading.Lock()
+
+    def safely(self, action, *args):
+        try:
+            return action(*args)
+        except Exception:
+            return None
+
+    def sample(self, process):
+        sample = {"monotonic_s": time.monotonic(), "alive": process.poll() is None}
+        try:
+            stat = Path(f"/proc/{process.pid}/stat").read_text().rsplit(")", 1)[1].split()
+            ticks = os.sysconf("SC_CLK_TCK")
+            sample.update(utime_s=int(stat[11]) / ticks, stime_s=int(stat[12]) / ticks)
+            for line in Path(f"/proc/{process.pid}/status").read_text().splitlines():
+                key, _, value = line.partition(":")
+                if key in ("VmRSS", "VmHWM", "VmSwap"):
+                    sample[key + "_kib"] = int(value.split()[0])
+        except (OSError, ValueError, IndexError):
+            pass
+        for name in ("cpu.max", "cpu.stat", "memory.max", "memory.current", "memory.peak",
+                     "memory.swap.max", "memory.swap.current", "memory.events"):
+            try:
+                sample[name] = (Path("/sys/fs/cgroup") / name).read_text().strip()
+            except OSError:
+                pass
+        self.data["samples"].append(sample)
+
+    def start(self, process, argv):
+        self.data["server"]["argv"] = list(argv)
+        self.safely(self.sample, process)
+        def monitor():
+            while not self.done.wait(0.5):
+                self.safely(self.sample, process)
+        self.thread = threading.Thread(target=monitor, daemon=True)
+        self.thread.start()
+
+    def finish(self, process):
+        self.done.set()
+        if self.thread:
+            self.thread.join(timeout=1)
+        self.safely(self.sample, process)
+        self.safely(self.write)
+
+    def write(self):
+        if self.directory:
+            with self.write_lock:
+                temporary = self.directory / "telemetry.json.pending"
+                temporary.write_text(json.dumps(self.data, indent=2))
+                os.replace(temporary, self.directory / "telemetry.json")
+
+
+def capture_acceptance_body(path, body):
+    """Optionally retain one synthetic fixture request, never overwrite evidence."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(body)
+
+
+
+class DirectLlamaFixture:
+    """Start only the isolated test binary and speak HTTP over its AF_UNIX socket.
+
+    This does not call Nexus LocalServer/ServingProcess or alter their closed
+    admission gates. It exercises the real b11716 model wire from the
+    GenerationLane fixture, not production model admission or lifecycle.
+    """
+
+    def __init__(self, record, *, root: Path, socket_path: Path):
+        self.record, self.root, self.socket_path = record, root, socket_path
+        self.process = None
+        self.telemetry = DiagnosticTelemetry(os.environ.get("AZ_E2E_TELEMETRY_DIR"))
+        self.log_files = []
+
+    def _http(self, method: str, path: str, body: bytes, deadline_s: float) -> bytes:
+        if type(deadline_s) not in (int, float) or deadline_s <= 0:
+            raise TimeoutError("fixture HTTP deadline elapsed")
+        end = time.monotonic() + deadline_s
+        start = time.monotonic()
+        metric = {"method": method, "path": path, "deadline_s": deadline_s,
+                  "request_body_bytes": len(body), "phase": "connect",
+                  "response_header_bytes": 0, "response_body_bytes": 0,
+                  "sent_bytes": None, "status": None}
+        if method == "POST":
+            metric["request_body_sha256"] = hashlib.sha256(body).hexdigest()
+            body_path = os.environ.get("AZ_E2E_ACCEPTANCE_BODY_CAPTURE")
+            if body_path:
+                self.telemetry.safely(capture_acceptance_body, body_path, body)
+        if self.telemetry.directory:
+            self.telemetry.safely(self.telemetry.data["requests"].append, metric)
+            self.telemetry.safely(self.telemetry.write)
+        try:
+            return self._http_exchange(method, path, body, end, metric, start)
+        except BaseException as exc:
+            metric["error"] = type(exc).__name__
+            raise
+        finally:
+            metric["elapsed_s"] = time.monotonic() - start
+            if self.telemetry.directory:
+                self.telemetry.safely(self.telemetry.write)
+
+    def _http_exchange(self, method, path, body, end, metric, start):
+        from azazel_nexus_runtime.mio_serve import (
+            MAX_HEADER_BYTES, MAX_RESPONSE_BYTES, LocalServerRefused,
+        )
+
+        def remaining() -> float:
+            value = end - time.monotonic()
+            if value <= 0:
+                raise TimeoutError("fixture HTTP deadline elapsed")
+            return value
+
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
+            peer.settimeout(remaining())
+            try:
+                peer.connect(str(self.socket_path))
+            except OSError:
+                raise FixturePreHTTPRefusal("fixture UDS unavailable") from None
+            metric["connect_s"] = time.monotonic() - start
+            metric["phase"] = "send"
+            self.telemetry.safely(self.telemetry.write)
+            header = (f"{method} {path} HTTP/1.1\r\nHost: localhost\r\n"
+                      f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n"
+                      "Connection: close\r\n\r\n").encode("ascii")
+            peer.settimeout(remaining())
+            peer.sendall(header + body)
+            metric["sent_bytes"] = len(header) + len(body)
+            metric["send_complete_s"] = time.monotonic() - start
+            metric["phase"] = "headers"
+            self.telemetry.safely(self.telemetry.write)
+            response_header = bytearray()
+            while not response_header.endswith(b"\r\n\r\n"):
+                if len(response_header) >= MAX_HEADER_BYTES:
+                    raise LocalServerRefused("fixture HTTP headers exceed ceiling")
+                peer.settimeout(remaining())
+                chunk = peer.recv(1)
+                if not chunk:
+                    raise LocalServerRefused("fixture HTTP headers incomplete")
+                response_header.extend(chunk)
+                metric["response_header_bytes"] = len(response_header)
+                if "first_header_byte_s" not in metric:
+                    metric["first_header_byte_s"] = time.monotonic() - start
+                    self.telemetry.safely(self.telemetry.write)
+            metric["headers_complete_s"] = time.monotonic() - start
+            metric["phase"] = "body"
+            try:
+                lines = response_header.decode("ascii").split("\r\n")
+                version, status, *_ = lines[0].split(" ")
+                metric["status"] = status
+                self.telemetry.safely(self.telemetry.write)
+                if version not in ("HTTP/1.0", "HTTP/1.1") or status != "200":
+                    raise ValueError
+                headers = {}
+                for line in lines[1:-2]:
+                    key, value = line.split(":", 1)
+                    key = key.lower()
+                    if key in headers:
+                        raise ValueError
+                    headers[key] = value.strip()
+                if "transfer-encoding" in headers:
+                    raise ValueError
+                length = int(headers["content-length"])
+                if not 0 <= length <= MAX_RESPONSE_BYTES:
+                    raise ValueError
+            except (ValueError, KeyError):
+                raise LocalServerRefused("fixture HTTP response refused") from None
+            response = bytearray()
+            while len(response) < length:
+                peer.settimeout(remaining())
+                chunk = peer.recv(min(65536, length - len(response)))
+                if not chunk:
+                    raise LocalServerRefused("fixture HTTP body incomplete")
+                response.extend(chunk)
+                metric["response_body_bytes"] = len(response)
+                if "first_body_byte_s" not in metric:
+                    metric["first_body_byte_s"] = time.monotonic() - start
+                    self.telemetry.safely(self.telemetry.write)
+            remaining()
+            metric["body_complete_s"] = time.monotonic() - start
+            metric["phase"] = "complete"
+            return bytes(response)
+
+    def start(self):
+        executable = Path(self.record.argv[0])
+        if executable.is_absolute():
+            executable = self.root / executable.relative_to("/")
+        stdout = stderr = subprocess.DEVNULL
+        if self.telemetry.directory:
+            try:
+                stdout = (self.telemetry.directory / "llama-stdout.log").open("wb")
+                self.log_files.append(stdout)
+                stderr = (self.telemetry.directory / "llama-stderr.log").open("wb")
+                self.log_files.append(stderr)
+            except OSError:
+                for stream in self.log_files:
+                    stream.close()
+                self.log_files.clear()
+                stdout = stderr = subprocess.DEVNULL
+        self.process = subprocess.Popen(
+            self.record.argv, executable=str(executable),
+            stdin=subprocess.DEVNULL, stdout=stdout,
+            stderr=stderr, env={"PATH": "/nonexistent", "LC_ALL": "C"},
+            cwd=str(self.root), close_fds=True, start_new_session=True,
+        )
+        if self.telemetry.directory:
+            self.telemetry.safely(self.telemetry.start, self.process, self.record.argv)
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                raise RuntimeError("fixture model process exited during startup")
+            try:
+                if self.health():
+                    if self.telemetry.directory:
+                        def capture_props():
+                            self.telemetry.data["server"]["props"] = json.loads(
+                                self._http("GET", "/props", b"", 1.0))
+                        self.telemetry.safely(capture_props)
+                    return
+            except (OSError, TimeoutError, ValueError, RuntimeError,
+                    FixturePreHTTPRefusal):
+                pass
+            time.sleep(0.1)
+        raise TimeoutError("fixture model process readiness deadline elapsed")
+
+    def health(self):
+        from azazel_nexus_runtime.mio_serve import LocalServerRefused
+
+        try:
+            value = json.loads(self._http("GET", "/health", b"", 1.0))
+            if self.telemetry.directory:
+                self.telemetry.safely(self.telemetry.data["server"].__setitem__, "health", value)
+            return type(value) is dict and value.get("status") == "ok"
+        except (OSError, TimeoutError, ValueError, LocalServerRefused,
+                FixturePreHTTPRefusal):
+            return False
+
+    def infer(self, request, deadline_s, *, allow_unknown_usage=False):
+        from azazel_nexus_runtime.mio_serve import (
+            MAX_REQUEST_BYTES, LocalInferenceResult, inference_document,
+        )
+
+        body = json.dumps(inference_document(request), ensure_ascii=False).encode("utf-8")
+        if len(body) > MAX_REQUEST_BYTES:
+            raise ValueError("fixture inference request too large")
+        began = time.monotonic()
+        data = json.loads(self._http("POST", "/v1/chat/completions", body, deadline_s))
+        try:
+            text = data["choices"][0]["message"]["content"]
+            usage = data.get("usage")
+            tokens_in = tokens_out = None
+            if usage is not None:
+                tokens_in, tokens_out = usage["prompt_tokens"], usage["completion_tokens"]
+                if (type(tokens_in) is not int or type(tokens_out) is not int
+                        or min(tokens_in, tokens_out) < 0):
+                    raise ValueError
+            elif not allow_unknown_usage:
+                raise ValueError
+            if type(text) is not str:
+                raise ValueError
+            timings = {"total_ms": (time.monotonic() - began) * 1000}
+            for key, value in data.get("timings", {}).items():
+                if key in ("prompt_n", "prompt_ms", "predicted_n", "predicted_ms",
+                           "predicted_per_second"):
+                    if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                        raise ValueError
+                    timings[key] = float(value)
+            return LocalInferenceResult(text, tokens_in, tokens_out, timings)
+        except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+            raise ValueError("fixture model response invalid") from None
+
+    def stop(self):
+        process, self.process = self.process, None
+        if process is None:
+            return
+        if self.telemetry.directory:
+            self.telemetry.safely(self.telemetry.finish, process)
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+        finally:
+            for stream in self.log_files:
+                self.telemetry.safely(stream.close)
+            self.log_files.clear()
+
+
 class NoRemote:
     """Fail loudly if a local-only scenario dispatches remote content."""
 
@@ -108,7 +418,9 @@ class NoRemote:
         raise AssertionError("local-only E2E attempted remote inference")
 
 
-def compose(root: Path, record, observed, *, model_id="e2e-model", runtime_id="e2e-llama"):
+def compose(root: Path, record, observed, *, model_id="e2e-model", runtime_id="e2e-llama",
+            generation_lane=None, generation_id="uncommissioned",
+            local_route_admitted=True):
     """Compose the real A/B APIs using only trusted constructor injections."""
     from azazel_nexus_runtime.mio_entryd import MioEntryService
     from azazel_nexus_runtime.mio_locald import LocalRuntimeService
@@ -134,15 +446,19 @@ def compose(root: Path, record, observed, *, model_id="e2e-model", runtime_id="e
         staging=root / "var/lib/azazel/mio", reserve=reserve,
         admitted=lambda identity: identity == model_id,
         runtime=runtime, server=observed, model_id=model_id, runtime_id=runtime_id,
+        generation_lane=generation_lane, generation_id=generation_id,
     )
     router = MioRouter(local=local, remote=NoRemote())
     entry = MioEntryService(
         router=router, profile_reader=lambda: MioProfile.LOCAL_ONLY,
-        local_admitted=lambda: True,
+        local_admitted=lambda: local_route_admitted,
         predictions_reader=lambda: {Route.LOCAL: Prediction(
             Route.LOCAL.value, True, 100, 100, 100, False, "e2e fixture prediction",
         )},
     )
+    if generation_lane is not None:
+        # Test adapter only (in-process): entryd's ordinary fast-assess call -> locald service.
+        entry.local = InProcessLocaldAdapter(local)
     return entry, router
 
 
@@ -202,12 +518,13 @@ def assert_fallback(recorded):
     assert not any(e.get("outcome") == "answered" for e in terminals)
 
 
-def assert_no_content(root: Path, observed):
+def assert_no_content(root: Path, observed, extra=()):
     # Scan every persisted file except immutable runtime/model assets. This
     # catches service refusals as well as the verified route chain.
     needles = [QUESTION, CONTEXT, RESPONSE]
     needles.extend(result.text for result in observed.results if result.text)
     needles.extend(observed.emitted_text)
+    needles.extend(text for text in extra if text)
     paths = [p for p in root.rglob("*") if p.is_file() and not p.is_symlink()
              and p.suffix != ".model"]
     assert paths, "no persisted audit evidence"
@@ -284,6 +601,374 @@ def crash_scenario(root, record, observed, sock):
     assert not observed.health()
 
 
+# ---------------------------------------------------------------------------
+# Fixture-authorized MIO shared generation scenario (LAB EVIDENCE ONLY).
+#
+# Nothing here is HG or production admission evidence. GENERATION_ADMISSION_ENABLED
+# and LOCAL_MODEL_ADMISSION_ENABLED are never set or patched, no sealed
+# capability is minted, and production files/constants are unchanged. The
+# subclass below exists solely so a software test can exercise the real
+# GenerationLane -> pinned azazel_mio AssistantCore -> real llama-server path.
+# ---------------------------------------------------------------------------
+GENERATION_ID = "e2e-fixture-generation"
+GENERATION_SCENARIOS = ("generation", "generation_degraded", "generation_observation")
+
+
+def fixture_generation_lane(server):
+    """A GenerationLane whose gate honours only an unsealed, test-only capability."""
+    from datetime import UTC, datetime, timedelta
+
+    from azazel_nexus_runtime.mio_generation import GenerationCapability, GenerationLane
+
+    class FixtureOnlyGenerationLane(GenerationLane):
+        """TEST-ONLY. The production gate (`authorized`) stays closed for this."""
+
+        def _authorized(self, generation_id):
+            cap = self.capability
+            return (type(cap) is GenerationCapability and cap._seal is None
+                    and cap.role == "generation" and cap.generation_id == generation_id
+                    and datetime.now(UTC) < datetime.fromisoformat(
+                        cap.expires_at.replace("Z", "+00:00")))
+
+    capability = GenerationCapability(
+        generation_id=GENERATION_ID, model_id=MODEL_ID, reserve_mib=512,
+        expires_at=(datetime.now(UTC) + timedelta(minutes=10)).isoformat().replace("+00:00", "Z"),
+        recheck=lambda: True,
+        model_context_limit=2048,  # fixed fixture model/configuration ceiling, not production evidence
+    )
+    lane = FixtureOnlyGenerationLane(capability=capability, server=server, deadline_s=30.0)
+    return lane, capability
+
+
+class GenerationProbe:
+    """Record infer-boundary attempts/results; content is held only for leak scans."""
+
+    def __init__(self, server):
+        self.server = server
+        self.infer_attempts = 0
+        self.pre_http_refusals = 0
+        self.other_errors = 0
+        self.other_error_types = []
+        self.results = []
+        self.emitted_text = []
+        # Safe per-attempt diagnostics only: never retain or print prompt/response text.
+        self.attempt_metrics = []
+
+    def infer(self, request, deadline_s, **kwargs):
+        self.infer_attempts += 1
+        started = time.monotonic()
+        messages = getattr(request, "prompt_messages", ())
+        prompt = "".join(message[1] for message in messages
+                         if type(message) in (tuple, list) and len(message) == 2
+                         and type(message[1]) is str)
+        response_format = getattr(request, "response_format", None)
+        schema_name = (response_format.get("json_schema", {}).get("name")
+                       if type(response_format) is dict else None)
+        metric = {
+            "attempt": self.infer_attempts,
+            "task": schema_name if type(schema_name) is str else "unknown",
+            "prompt_chars": len(prompt), "prompt_utf8_bytes": len(prompt.encode("utf-8")),
+            "max_tokens": getattr(request, "max_tokens", None),
+            "deadline_s": round(float(deadline_s), 3),
+        }
+        self.attempt_metrics.append(metric)
+        try:
+            result = self.server.infer(request, deadline_s, **kwargs)
+        except FixturePreHTTPRefusal:
+            self.pre_http_refusals += 1
+            metric.update(elapsed_s=round(time.monotonic() - started),
+                          outcome="pre_http_refusal")
+            raise
+        except Exception as exc:
+            self.other_errors += 1
+            self.other_error_types.append(type(exc).__name__)
+            metric.update(elapsed_s=round(time.monotonic() - started),
+                          outcome=type(exc).__name__)
+            raise
+        self.results.append(result)
+        self.emitted_text.append(result.text)
+        metric.update(elapsed_s=round(time.monotonic() - started), outcome="complete",
+                      tokens_in=result.tokens_in, tokens_out=result.tokens_out)
+        return result
+
+    def stop(self):
+        return self.server.stop()
+
+
+class InProcessLocaldAdapter:
+    """Smallest test adapter: entryd's ordinary fast-assess call -> LocalRuntimeService.
+
+    This stays IN-PROCESS (service composition only). It is NOT a production
+    socket/process test: no azmio account, AF_UNIX service socket, or peer
+    credential check is exercised. Only llama-server is a separate OS process.
+    """
+
+    def __init__(self, service):
+        self.service = service
+        self.last_slow_analysis = {"state": "closed", "usage": "unknown"}
+
+    def observe(self, *, deadline_s):
+        """Report this fixture's boundary accurately: local execution is not admitted."""
+        return "local_not_admitted" if deadline_s > 0 else "local_unavailable"
+
+    def _request(self, verb, arguments, payload=None):
+        from azazel_nexus_runtime.principal import Principal, PrincipalClass
+        from azazel_nexus_runtime.transport import Request
+
+        principal = Principal(os.getuid(), os.getgid(), os.getpid(),
+                              frozenset({PrincipalClass.SERVICE}))
+        return Request(verb=verb, arguments=verb.bind(arguments), payload=payload,
+                       principal=principal)
+
+    def assess(self, frame, *, deadline_s):
+        from azazel_nexus_runtime.mio_generation import read_slow_analysis
+        from azazel_nexus_runtime.mio_locald import FAST_ASSESS_VERB
+
+        reply = self.service.handle(self._request(
+            FAST_ASSESS_VERB, {"deadline_ms": max(1, min(60_000, int(deadline_s * 1000)))},
+            frame))
+        assert reply["outcome"] == "assessed", reply.get("outcome")
+        self.last_slow_analysis = read_slow_analysis(reply["slow_analysis"])
+        return reply["fast_assistance"]
+
+    def generation_result(self, receipt):
+        from azazel_nexus_runtime.mio_generation import read_slow_analysis
+        from azazel_nexus_runtime.mio_locald import GENERATION_RESULT_VERB
+
+        reply = self.service.handle(self._request(GENERATION_RESULT_VERB, {
+            key: receipt[key] for key in ("result_handle", "generation_id", "trace_id")}))
+        return read_slow_analysis(reply["slow_analysis"])
+
+
+class LogCapture:
+    """Collect log records so the scenario can prove none carry content."""
+
+    def __init__(self):
+        import logging
+
+        self.records = []
+        outer = self
+
+        class Handler(logging.Handler):
+            def emit(self, record):
+                outer.records.append(self.format(record))
+
+        self.handler = Handler(level=logging.DEBUG)
+        self.root = logging.getLogger()
+        self.previous = self.root.level
+        self.root.addHandler(self.handler)
+        self.root.setLevel(logging.DEBUG)
+
+    def close(self):
+        self.root.removeHandler(self.handler)
+        self.root.setLevel(self.previous)
+
+
+def generation_scenario(root, record, observed, privacy, *, degraded):
+    from azazel_nexus_runtime import mio_generation
+    from azazel_nexus_runtime.mio_generation import authorized
+
+    from azazel_nexus import model_admission
+    from azazel_nexus.routing import Route
+
+    probe = GenerationProbe(observed.server)
+    lane, capability = fixture_generation_lane(probe)
+    # Production gate evidence: constants untouched, fixture capability not production-valid.
+    assert mio_generation.GENERATION_ADMISSION_ENABLED is False
+    assert model_admission.LOCAL_MODEL_ADMISSION_ENABLED is False
+    assert authorized(capability, GENERATION_ID) is False
+    before = edge_reading()
+    before_authority = authority_snapshot(root)
+    logs = LogCapture()
+    try:
+        entry, router = compose(root, record, observed,
+                                generation_lane=lane, generation_id=GENERATION_ID,
+                                local_route_admitted=False)
+        if degraded:
+            # Real failure: the actual llama-server process is gone before dispatch.
+            observed.stop()
+        reply = invoke(entry, privacy)
+        assert "fast_assistance" in reply
+        assert reply["fast_assistance"]["generation_method"] == "static_reference"
+        assert reply["route"] == Route.DETERMINISTIC_HANDOFF.value
+        queued = reply["slow_analysis"]
+        if degraded:
+            assert queued["state"] in {"queued", "degraded"}, queued["state"]
+        else:
+            assert queued["state"] == "queued", queued["state"]
+        final = queued
+        until = time.monotonic() + 90
+        while final["state"] == "queued" and time.monotonic() < until:
+            time.sleep(0.1)
+            final = entry.local.generation_result(queued)
+        if degraded:
+            assert final["state"] == "degraded", final["state"]
+            assert final["usage"] == "unknown"
+            assert final["assistance"]["generation_method"] == "static_reference"
+            assert final["calls"] == []
+            assert (probe.infer_attempts == 1 and probe.pre_http_refusals == 1
+                    and probe.other_errors == 0 and not probe.results)
+        else:
+            observed_metrics = [{
+                "tokens_in": result.tokens_in,
+                "tokens_out": result.tokens_out,
+                "timings": result.timings,
+            } for result in probe.results]
+            assert final["state"] == "complete", (
+                f"state={final['state']} infer_attempts={probe.infer_attempts} "
+                f"pre_http_refusals={probe.pre_http_refusals} "
+                f"other_errors={probe.other_errors} error_types={probe.other_error_types} "
+                f"completed_calls={observed_metrics} attempts={probe.attempt_metrics}"
+            )
+            assert final["assistance"]["generation_method"] == "model"
+            assert probe.pre_http_refusals == 0 and probe.other_errors == 0
+            assert probe.infer_attempts >= 1
+            assert len(final["calls"]) == probe.infer_attempts == len(probe.results)
+            known = all(r.tokens_in is not None and r.tokens_out is not None
+                        for r in probe.results)
+            assert (final["usage"] == "known") is known
+            for call, result in zip(final["calls"], probe.results):
+                assert call["timings"].get("total_ms", -1) >= 0
+                if result.tokens_in is None or result.tokens_out is None:
+                    assert call["usage"] is None  # unknown stays unknown
+                else:
+                    assert call["usage"] == {"tokens_in": result.tokens_in,
+                                             "tokens_out": result.tokens_out}
+        assert_no_content(root, observed, probe.emitted_text)
+        needles = (QUESTION, CONTEXT, RESPONSE, *probe.emitted_text, *observed.emitted_text)
+        for message in logs.records:
+            for needle in needles:
+                assert not needle or needle not in message, "content reached logging"
+        assert edge_reading() == before
+        assert authority_snapshot(root) == before_authority
+        assert mio_generation.GENERATION_ADMISSION_ENABLED is False
+        assert model_admission.LOCAL_MODEL_ADMISSION_ENABLED is False
+        route_events = events(router)  # route chain still verifies
+        selected = [event for event in route_events
+                    if event.get("event_type") == "mio.route.selected"]
+        assert selected and selected[-1]["route"] == Route.DETERMINISTIC_HANDOFF.value
+        tokens_in = [r.tokens_in for r in probe.results] or "unknown"
+        tokens_out = [r.tokens_out for r in probe.results] or "unknown"
+        timings = [c["timings"].get("total_ms") for c in final.get("calls", [])]
+        # Numbers and labels only; never request or response content.
+        print("FIXTURE-AUTHORIZED LAB EVIDENCE ONLY (not HG, not production admission); "
+              "entryd->locald adapter is in-process, llama-server is a separate process: "
+              f"{'generation_degraded' if degraded else 'generation'}/{privacy} "
+              f"state={final['state']} infer_attempts={probe.infer_attempts} "
+              f"pre_http_refusals={probe.pre_http_refusals} other_errors={probe.other_errors} "
+              f"usage={final['usage']} tokens_in={tokens_in} tokens_out={tokens_out} "
+              f"total_ms={timings}")
+    finally:
+        try:
+            lane.cancel()
+        finally:
+            logs.close()
+
+
+def observation_metrics(data, elapsed_s):
+    """Extract only numbers from a completed non-streaming response."""
+    usage = data.get("usage") or {}
+    timings = data.get("timings") or {}
+    if not isinstance(usage, dict) or not isinstance(timings, dict):
+        raise ValueError("invalid observation usage/timings")
+    numeric_timings = {key: value for key, value in timings.items()
+                       if type(value) in (int, float) and math.isfinite(value) and value >= 0}
+    def rate(count_key, ms_key):
+        count, ms = numeric_timings.get(count_key), numeric_timings.get(ms_key)
+        return count * 1000 / ms if count is not None and ms and ms > 0 else None
+    missing = (not all(key in numeric_timings for key in
+                       ("prompt_n", "prompt_ms", "predicted_n", "predicted_ms"))
+               or any(numeric_timings.get(key, 0) <= 0
+                      for key in ("prompt_ms", "predicted_ms"))
+               or any(type(usage.get(key)) is not int or usage[key] < 0
+                      for key in ("prompt_tokens", "completion_tokens")))
+    return {"outcome": "measurement_incomplete" if missing else "complete", "elapsed_s": elapsed_s,
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
+            "prompt_eval_tokens_per_s": rate("prompt_n", "prompt_ms"),
+            "decode_tokens_per_s": rate("predicted_n", "predicted_ms"),
+            "server_timings": timings}
+
+
+def run_observation(server, request, output, acceptance_telemetry):
+    """A separate 240s observation window, never an acceptance result."""
+    from azazel_nexus_runtime.mio_serve import MAX_REQUEST_BYTES, inference_document
+
+    started = time.monotonic()
+    result = {"outcome": "measurement_failed", "window_s": 240,
+              "acceptance": False}
+    try:
+        body = json.dumps(inference_document(request), ensure_ascii=False).encode("utf-8")
+        if len(body) > MAX_REQUEST_BYTES:
+            raise ValueError("observation request too large")
+        replay_path = os.environ.get("AZ_E2E_ACCEPTANCE_BODY")
+        if replay_path:
+            body = Path(replay_path).read_bytes()
+            if len(body) > MAX_REQUEST_BYTES:
+                raise ValueError("observation replay too large")
+            if type(json.loads(body)) is not dict:
+                raise ValueError("observation replay is not a request object")
+        result["request_body_sha256"] = hashlib.sha256(body).hexdigest()
+        result["comparison"] = "exact_body_replay" if replay_path else "exact_reconstruction"
+        result["excluded_keys"] = []
+        previous = json.loads(Path(acceptance_telemetry).read_text())
+        accepted_posts = [item for item in previous["requests"]
+                          if item.get("method") == "POST"
+                          and item.get("path") == "/v1/chat/completions"]
+        if not accepted_posts or accepted_posts[0].get("request_body_sha256") != result["request_body_sha256"]:
+            raise ValueError("observation request differs from acceptance")
+        result["matches_acceptance_request"] = True
+        data = json.loads(server._http("POST", "/v1/chat/completions", body, 240.0))
+        result.update(observation_metrics(data, time.monotonic() - started))
+    except Exception as exc:
+        result.update(elapsed_s=time.monotonic() - started, error=type(exc).__name__)
+    try:
+        Path(output).write_text(json.dumps(result, indent=2))
+    except OSError:
+        print("observation evidence write failed", file=sys.stderr)
+    return result
+
+
+def generation_observation_scenario(root, record, observed, privacy):
+    """Rebuild the same first AssistantCore request; run it outside acceptance."""
+    from azazel_nexus_runtime import mio_generation
+    from azazel_nexus import model_admission
+
+    class CaptureFirst:
+        def __init__(self):
+            self.request = None
+            self.ready = threading.Event()
+
+        def infer(self, request, deadline_s, **kwargs):
+            self.request = request
+            self.ready.set()
+            raise RuntimeError("capture only: observation is separate")
+
+        def stop(self):
+            pass
+
+    output = os.environ.get("AZ_E2E_OBSERVATION_PATH")
+    acceptance_telemetry = os.environ.get("AZ_E2E_ACCEPTANCE_TELEMETRY")
+    if not output or not acceptance_telemetry:
+        raise RuntimeError("observation output and acceptance telemetry paths are required")
+    assert mio_generation.GENERATION_ADMISSION_ENABLED is False
+    assert model_admission.LOCAL_MODEL_ADMISSION_ENABLED is False
+    capture = CaptureFirst()
+    lane, _ = fixture_generation_lane(capture)
+    try:
+        entry, _ = compose(root, record, observed, generation_lane=lane,
+                           generation_id=GENERATION_ID, local_route_admitted=False)
+        invoke(entry, privacy)
+        if not capture.ready.wait(30):
+            Path(output).write_text(json.dumps({"outcome": "measurement_failed",
+                "error": "request_capture_timeout", "acceptance": False}))
+            return
+        run_observation(observed.server, capture.request, output, acceptance_telemetry)
+    finally:
+        lane.cancel()
+
+
+
 def main():
     from azazel_nexus_runtime.mio_serve import LocalServer
 
@@ -299,11 +984,16 @@ def main():
     sock = root / "llama.sock"
     (root / "var/lib/azazel/state/mio").mkdir(parents=True)
     record = record_for(root, Path(binary), Path(model), sock)
-    observed = ObservedServer(LocalServer(
-        record, root=root, socket_path=sock, start_deadline_s=90,
-        budget=RestartBudget(generation=1, limit=1),
-        ledger=BudgetLedger(root / "var/lib/azazel/state/mio/restarts.json"),
-    ))
+    if scenario in GENERATION_SCENARIOS:
+        # Test-only direct process: production LocalServer admission stays closed.
+        provider = DirectLlamaFixture(record, root=root, socket_path=sock)
+    else:
+        provider = LocalServer(
+            record, root=root, socket_path=sock, start_deadline_s=90,
+            budget=RestartBudget(generation=1, limit=1),
+            ledger=BudgetLedger(root / "var/lib/azazel/state/mio/restarts.json"),
+        )
+    observed = ObservedServer(provider)
     before = edge_reading()
     authority = root / "var/lib/azazel/state/activation/e2e-authority.json"
     authority.parent.mkdir(parents=True)
@@ -315,6 +1005,13 @@ def main():
     try:
         observed.start()
         assert observed.health(), "real llama-server did not become healthy"
+        if scenario == "generation_observation":
+            generation_observation_scenario(root, record, observed, privacy)
+            return
+        if scenario in GENERATION_SCENARIOS:
+            generation_scenario(root, record, observed, privacy,
+                                degraded=scenario == "generation_degraded")
+            return
         if scenario == "crash":
             crash_scenario(root, record, observed, sock)
         else:

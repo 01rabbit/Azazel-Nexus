@@ -45,7 +45,12 @@ def run_real(real_assets):
                 **os.environ,
                 "AZAZEL_ROOT": temporary,
                 "PYTHONDONTWRITEBYTECODE": "1",
-                "PYTHONPATH": os.pathsep.join((str(repo / "src"), str(repo / "runtime/src"))),
+                # Keep explicit offline --target installs (for example the exact
+                # pinned MIO wheel under /tmp/deps) visible in the child process.
+                "PYTHONPATH": os.pathsep.join(filter(None, (
+                    os.environ.get("PYTHONPATH", ""),
+                    str(repo / "src"), str(repo / "runtime/src"),
+                ))),
             }
             with subprocess.Popen(
                 [sys.executable, str(Path(__file__).with_name("harness.py")),

@@ -516,8 +516,10 @@ class Selection:
             del self.explained[next(iter(self.explained))]
 
 
-def _validate_slow_analysis(value):
-    """Mirror runtime mio_generation.read_slow_analysis admission checks.
+def validate_slow_analysis(value):
+    """Validate bounded slow-analysis metadata without optional runtime imports.
+
+    Public CORE contract: return None on success, raise ValueError on refusal.
 
     CORE cannot import the optional runtime. Unlike runtime normalization,
     malformed wire metadata refuses the reply instead of becoming closed.
@@ -526,7 +528,7 @@ def _validate_slow_analysis(value):
     try:
         if (type(value) is not dict or len(json.dumps(value, allow_nan=False).encode()) > 128 * 1024
                 or set(value) - {'state', 'usage', 'generation_id', 'frame_id', 'trace_id',
-                                 'assistance', 'calls', 'origin', 'result_handle'}
+                                 'assistance', 'calls', 'origin', 'result_handle', 'budget_version', 'generation_budget'}
                 or value['state'] not in {'closed', 'degraded', 'queued', 'queue_full',
                                           'complete', 'timeout', 'cancelled', 'superseded', 'stale'}
                 or value['usage'] not in {'known', 'unknown'}):
@@ -557,6 +559,18 @@ def _validate_slow_analysis(value):
                 raise ValueError("mio_reply_refused")
         if value['usage'] == 'known' and (not calls or any(c['usage'] is None for c in calls)):
             raise ValueError("mio_reply_refused")
+        if 'budget_version' in value or 'generation_budget' in value:
+            from .generation_budget import read_budget
+            if type(value.get('budget_version')) is not int or value['budget_version'] != 1:
+                raise ValueError('mio_reply_refused')
+            read_budget(value.get('generation_budget'), state=value['state'], usage=value['usage'])
+            meta = value['generation_budget']
+            sent = [task for task in meta['tasks'] if task['dispatched']]
+            if len(calls) != len(sent) or any(call['usage'] != task['actual_usage'] for call,task in zip(calls,sent)):
+                raise ValueError('mio_reply_refused')
+            if value['state'] == 'complete':
+                from .generation_budget import validate_model_assistance
+                validate_model_assistance(value.get('assistance'),value['frame_id'],value['trace_id'])
         return
     except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
         raise ValueError("mio_reply_refused") from None
@@ -565,7 +579,7 @@ def _validate_slow_analysis(value):
 def read_mio_reply(reply):
     """Closed entryd reply, with separately validated advice/reference body."""
     if type(reply) is dict and "slow_analysis" in reply:
-        _validate_slow_analysis(reply["slow_analysis"])
+        validate_slow_analysis(reply["slow_analysis"])
         reply = {key: value for key, value in reply.items() if key != "slow_analysis"}
     fast = None
     if type(reply) is dict and "fast_assistance" in reply:
@@ -1202,8 +1216,25 @@ def slow_analysis_projection(value):
     if type(value) is not dict or value.get("state") not in SLOW_RESULT_STATES:
         raise ValueError("slow_result_refused")
     state = value["state"]
+    public_budget = None
+    if 'generation_budget' in value or 'budget_version' in value:
+        from .generation_budget import read_budget
+        if value.get('budget_version') != 1:
+            raise ValueError('slow_result_refused')
+        meta = read_budget(value.get('generation_budget'), state=state, usage=value.get('usage'))
+        if state=='complete':
+            from .generation_budget import validate_model_assistance
+            validate_model_assistance(value.get('assistance'),value.get('frame_id'),value.get('trace_id'))
+        public_budget = {'version':1, 'outcome':meta['outcome'], 'coverage':meta['coverage'],
+            'cleanup_state':meta['cleanup']['state'], 'superseded':meta['superseded'],
+            'omitted_units':meta['upstream_selection']['omitted_units']+sum(t['selection']['omitted_units'] for t in meta['tasks']),
+            'reasons':list(meta['reasons']), 'coordinator_disposition':meta.get('coordinator_disposition')}
+    elif state == 'complete':
+        return {'state':'degraded','usage':'unknown','budget':{
+            'version':0,'outcome':'legacy_unverified','coverage':'unknown',
+            'cleanup_state':'not_needed','superseded':False,'omitted_units':0}}
     if state != "complete":
-        return {"state": state, "usage": "unknown"}
+        return {"state": state, "usage": "unknown", **({"budget":public_budget} if public_budget else {})}
     if value.get("usage") not in {"known", "unknown"}:
         raise ValueError("slow_result_refused")
     assistance = value.get("assistance")
@@ -1227,7 +1258,7 @@ def slow_analysis_projection(value):
         arrays[key] = [_public_model_text(item) for item in values[:8]]
     return {"state": "complete", "usage": value.get("usage", "unknown"),
             "verification": "model_proposed_unverified", "hypotheses": hypotheses,
-            **arrays}
+            **arrays, **({"budget":public_budget} if public_budget else {})}
 
 
 def _summary_banners():
@@ -1469,6 +1500,10 @@ def read_recent_incidents(raw):
                     return None
                 if slow.get("usage") not in {"known", "unknown"}:
                     return None
+                if 'budget' in slow:
+                    from .generation_budget import validate_public_budget
+                    validate_public_budget(slow['budget'],state=slow['state'])
+                    slow = {k:v for k,v in slow.items() if k != 'budget'}
                 if slow["state"] == "complete":
                     if set(slow) != {"state", "usage", "verification", "hypotheses",
                                      "unknowns", "next_checks"}:

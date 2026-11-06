@@ -716,3 +716,15 @@ def test_discarded_temporal_tail_invalidates_whole_reply(as_of):
         _lite_frame(), deadline_s=.2, knowledge_lookup=lambda *a, **k: prefix + tail))
     assert result['knowledge'] == []
     assert result['dependency_outcome']['knowledge'] == 'unavailable'
+
+
+def test_slow_selection_records_loss_before_projection_without_changing_fast_frame():
+    source = _lite_frame('x' * 600)
+    frame, selection = adapter._frame(source, with_selection=True)
+    assert selection['coverage'] == 'unknown'
+    assert selection['omitted_units'] >= 1
+    assert selection['omissions'][0]['reason'] == 'upstream_projection'
+    assert len(frame.to_dict()['noc_summary']) == 480
+    ordinary = adapter._frame(source)
+    assert ordinary.to_dict()['noc_summary'] == frame.to_dict()['noc_summary']
+    assert 'x' * 20 not in str(selection)

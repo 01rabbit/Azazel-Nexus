@@ -72,6 +72,17 @@ def setup(known=True, block=False, deadline_s=.5):
     return FixtureLane(capability=capability, server=server, deadline_s=deadline_s), source, frame
 
 
+def test_transport_rejects_nested_duplicate_json_keys():
+    from azazel_mio.model_adapter import MioModelUnavailable
+    lane, _, _ = setup()
+    lane.server.reply = '{"outer":{"x":1,"x":2}}'
+    transport = generation.StructuredGenerationTransport(
+        lane.server, lane.capability, deadline=time.monotonic() + 1,
+        cancelled=threading.Event(), check=lambda: True)
+    with pytest.raises(MioModelUnavailable):
+        transport('generate_hypotheses', 'fixture')
+
+
 def result(lane, source, frame):
     until = time.monotonic() + 2
     while time.monotonic() < until:
@@ -92,7 +103,7 @@ def test_real_core_receives_fixture_structured_transport_and_actual_usage(known)
     assert value['frame_id'] == frame.frame_id and value['trace_id'] == frame.trace_id
     assert value['assistance']['frame_id'] == frame.frame_id
     assert generation.read_slow_analysis(value) == value
-    assert all(r.max_tokens == 768 for r in lane.server.requests)
+    assert [r.max_tokens for r in lane.server.requests] == list(generation.CAPS)
 
 
 def test_default_wrong_role_expired_and_unsealed_evidence_are_closed(monkeypatch):
@@ -576,3 +587,16 @@ def test_active_same_source_retry_after_stop_or_fence_is_terminal():
         assert pruned['state'] == 'degraded' and 'result_handle' not in pruned
     finally:
         server.release.set()
+
+
+def test_budget_enabled_old_api_is_unsent_count_unknown_not_legacy_bypass(monkeypatch):
+    import azazel_mio
+    monkeypatch.setattr(azazel_mio,'budget',None,raising=False)
+    lane,source,frame=setup()
+    lane.budget_enabled=True
+    value=result(lane,source,frame)
+    assert value['state']=='degraded'
+    assert value['generation_budget']['outcome']=='token_count_unknown'
+    assert not lane.server.requests
+    from azazel_nexus.incident_explain import slow_analysis_projection
+    assert slow_analysis_projection(value)['budget']['outcome']=='token_count_unknown'

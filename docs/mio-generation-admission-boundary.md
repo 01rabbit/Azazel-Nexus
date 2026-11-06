@@ -65,8 +65,8 @@ reviewed contract must define all of the following:
 
 The software seam runs after fast assessment in normal `mio.local.assess`.
 It creates one bounded worker only after authorization, with one pending slot,
-a five-second default deadline (hard maximum thirty seconds), 768 output tokens
-per structured task, and sixteen retained results. Exact repeated source polls
+a five-second default deadline (hard maximum thirty seconds), an output ceiling
+of 768 tokens per structured task (budget opt-in caps below), and sixteen retained results. Exact repeated source polls
 the result; a changed report with the same request ID supersedes old work. A
 worker deadline watcher stops the owned supervised server only while a provider
 request is in flight (timeout, cancel or supersession, while it is in flight); after
@@ -146,11 +146,11 @@ refuses this optional store on restart without modifying the file or disabling
 the fast explainer, Knowledge lookup or Edge intake; status reports the slow
 result store as unavailable.
 
-GenerationLane state is process-local. After an explainer restart, an
+GenerationLane state is process-local. After an explainer restart, a legacy
 uncompleted durable receipt is polled again; if its original result has expired
 or been evicted, the lane records only `stale` and never starts the work again.
 A newer incident sequence or intake reset supersedes the earlier receipt. Only
-a complete, schema-validated response may add a sanitized
+a budget-v1 complete, schema-validated response may add a sanitized
 `model_proposed_unverified` advisory to the recent projection. Timeout, cancel,
 superseded, stale and other terminal outcomes carry status only; none can
 change Edge policy, fast assistance or admission.
@@ -175,3 +175,123 @@ Knowledge preservation. Fixture assertions are software evidence only. No
 product-model success or measured resource/latency claim is made. Production
 capability issuance, attested generation reserve accounting and the protected
 policy ceremony remain blocked on owner review of requirements 1–3 above.
+
+## Opt-in generation budget and durable result status
+
+`GenerationLane(budget_enabled=True)` connects the agreed MIO budget API when
+it is available. With budget enabled, a missing or older API refuses all sends
+with `count_unknown`; it never routes to the unbudgeted transport. The older
+compatibility path exists only when budget is disabled. Production still has no generation
+issuer and both admission constants remain false. Budget failure never retries
+through the compatibility path.
+
+The software fixture profile uses per-task output caps 768 / 384 / 512, with
+no automatic shrinking below those values, slack 32, and a positive 0.05s
+provider minimum per task. These are fixture configuration values, not measured
+performance or semantic sufficiency claims. All three schemas and MIO grounding
+must still pass. No production time profile or HG evidence is inferred from
+these values. The absolute 5s default / 30s maximum deadline starts at queue
+acceptance. `R=max(0.5s,10% of D)` reserves final work and task overhead; remaining
+provider time is divided 45:20:35 with later-task minimum reservations. The sum
+of provider allocations cannot exceed D-R, even when earlier calls return early.
+R, weights, slack and provider minimums are explicit `BudgetSettings` values,
+independent of admission/HG and recorded separately from server identity.
+For the adopted `fixture-v1` identity these values are fixed: 10%, 500ms,
+45:20:35, slack32, and 50ms per call. Runtime and CORE readers share the same
+policy validation; a self-declared weaker reserve, different weights/slack or
+minimum is refused. A different policy needs a separately accepted profile.
+Readers also require each complete call's allocation to meet the recorded
+minimum. Per-task output caps can still be supplied explicitly within the
+existing ceiling.
+Compile, count and validation time consume this same deadline.
+
+The authenticated local server supplies model alias, model file/type identity,
+BOS/EOS tokenizer identifiers, chat template, runtime build and `n_ctx` through
+`/props`. Their hashes and a self-consistent tuple digest are private receipt
+metadata. They identify the serving instance's declarations, not a new content
+attestation; existing held-descriptor admission remains authoritative. The tuple
+must exist and remain identical before/after counting and before dispatch.
+A future authorized loader must also populate `GenerationCapability.model_context_limit`
+from the verified model record corresponding to its model ID. No loader or issuer
+is added here. The effective plan limit is `C=min(/props n_ctx, model_context_limit)`;
+that configured bound is recorded in `profile.configured_context_limit` separately
+from the server tuple. Both planner and reader enforce the min. Missing/invalid
+model bounds refuse all budgeted sends with `count_unknown`. The fixed test
+harness declares its 2048-token fixture bound; this is not production evidence.
+Missing or changing fields refuse the next send with `count_unknown`.
+
+The final request is rendered through that server's `/apply-template` and
+counted through `/tokenize`. Budgeted inference sends the exact returned token
+IDs to native `/completion`, together with the effective JSON schema, output
+cap and remaining deadline. This removes any assumption that a separately
+rendered count equals the OpenAI chat endpoint's internal prompt. There are no
+character estimates, additional inference probes or unbudgeted retries.
+Native per-request boolean `truncated` is the sole integrity signal: false is
+preserved, true is truncated, missing/invalid is unknown. `tokens_evaluated` and
+`tokens_predicted` are strict actual usage; native timings remain bounded
+telemetry. The OpenAI-compatible response lacks these primary fields and caused
+the earlier small-input `stop` / unknown result. Stop or matching usage never
+implies preserved integrity. Actual input usage must equal the exact pre-count,
+output usage must fit the cap, and explicit preserved integrity plus confirmed
+stop are required. Unknown usage, incomplete output, malformed JSON, count
+mismatch or a failed second/third task prevents model publication.
+
+The private `generation_budget` v1 receipt records all three ordered tasks,
+including failed and unsent tasks. A complete receipt requires its verified tuple
+and full profile, effective C=min(server,configured model bound), I+O+S <= C, consistent schema/policy versions, positive per-call
+allocations, elapsed time within each allocation and the final reserve, and
+allocation totals within D-R. Failed receipts retain honest partial/unknown
+fields and elapsed overruns; they cannot become complete. Readers share a CORE-only validator, reject
+unknown versions and missing new-format metadata, and compute overall coverage
+as the worst of upstream and all task coverage. Pre-projection slicing is
+recorded before constructing the slow frame; any such loss remains unknown.
+Selected material is labelled “選択した根拠に基づく生成助言（未検証、一部資料省略）”.
+Old complete records remain readable, but the current UI shows static advice
+and “旧記録・予算未確認”; it does not promote them to within-budget success.
+
+The first failure remains `primary_outcome`; bounded unique `reasons` append
+later cancellation, revocation, timeout or cleanup facts. `terminal_outcome`
+records the control decision without replacing that first cause.
+Results, cleanup and supersession are independent axes. A timeout can be
+terminal while cleanup is pending. The control worker does not join a blocked
+infer/stop worker. Dispatch closes immediately when stop is requested; no new
+work uses that lane. Cleanup may confirm only before the original deadline;
+failure, observation loss or deadline exhaustion permanently fences it.
+Late inference or stop cannot promote an unconfirmed result to complete.
+G-4's actual process/resource termination guarantee remains an independent,
+unresolved gate.
+
+The append-only result store writes at most one result, one cleanup revision
+and one superseded event per receipt in the original daily segment. It checks
+full bindings, duplicate revisions and monotonic transitions. Only pending
+cleanup keeps polling after a terminal result. Poll deadlines never extend;
+TTL/eviction or transport loss finalizes unconfirmed. Restart does not reset a
+monotonic deadline: persisted pending cleanup immediately becomes
+`restart_unconfirmed`. Cleanup failure is retained even after supersession.
+When invalidation precedes result arrival, the receipt-bound superseded event
+is saved first and the first real result has `result_state=superseded`. This
+preserves actual sent usage and pending cleanup instead of inventing an empty
+terminal result; queued receipt polling continues until a real result arrives.
+Cleanup still requires a saved pending result. Storage failure leaves the fast
+result available and reports slow storage unavailable. Public UI projections contain status and omission counts only,
+without handles, identifiers, prompt text or selection unit IDs.
+
+### MIO #48 dispatch notification contract
+
+A budgeted transport implements `invoke_budgeted(task,prompt,on_dispatch)`.
+All authorization, cancellation, fit and deadline refusal gates run before
+sending, including a product-only `before_dispatch` check at the HTTP boundary.
+The transport uses bounded socket sends and calls `on_dispatch()` synchronously
+once after its first positive send return. It never notifies a known unsent
+request. A partial request followed by send/deadline/response failure remains
+sent-and-failed; it is not rolled back to zero. The post-send accounting callback
+does not re-run a deadline/cancel gate that could erase those positive bytes.
+Any previously known usage remains in the receipt; a failed call's unavailable
+usage is unknown. Normal successful request payloads, native integrity extraction,
+three-task validation and the absolute deadline remain the same. Missing or duplicate notifications
+are closed failures (`dispatch_tracking_unavailable` / `send_notification_conflict`),
+not successful model answers. A late notification cannot change a saved receipt.
+The private and public budget projections retain these closed reasons and keep
+`coordinator_disposition` separate from the original failure. The #48 candidate
+wheel is used for isolated connection tests; the consumer dependency pin is
+unchanged by this work.

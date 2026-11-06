@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 import math
 import socket
+import select
+from contextlib import nullcontext
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -22,6 +24,19 @@ from .mio_supervisor import ServingProcess, SupervisorRefused
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_HEADER_BYTES = 16 * 1024
+
+
+def _decode_document(raw):
+    def pairs(items):
+        result = {}
+        for key,value in items:
+            if key in result:
+                raise ValueError('duplicate response key')
+            result[key] = value
+        return result
+    def constant(_):
+        raise ValueError('non-finite response value')
+    return json.loads(raw,object_pairs_hook=pairs,parse_constant=constant)
 
 
 class LocalServerRefused(SupervisorRefused):
@@ -79,6 +94,63 @@ class LocalInferenceResult:
     tokens_in: int | None
     tokens_out: int | None
     timings: dict[str, float]
+    finish_reason: str | None = None
+    context_integrity: str = 'unknown'
+
+
+@dataclass(frozen=True)
+class NativePrompt:
+    tokens: tuple[int,...] = field(repr=False)
+    request_digest: str
+    tuple_id: str
+
+
+class TokenCountUnknown(LocalServerRefused):
+    pass
+
+
+def request_digest(request):
+    from azazel_nexus.generation_budget import canonical_digest
+    return canonical_digest(inference_document(request))
+
+
+def native_result(data, elapsed_ms):
+    if type(data) is not dict or type(data.get('content')) is not str:
+        raise LocalServerRefused('invalid native content')
+    integrity = ('preserved' if data.get('truncated') is False else
+                 'truncated' if data.get('truncated') is True else 'unknown')
+    tokens_in,tokens_out = data.get('tokens_evaluated'),data.get('tokens_predicted')
+    if any(type(v) is not int or v<0 for v in (tokens_in,tokens_out)):
+        tokens_in=tokens_out=None
+    stop=data.get('stop_type')
+    finish=('stop' if data.get('stop') is True and stop in ('eos','word') else
+            'length' if stop=='limit' else None)
+    if stop is None:
+        if data.get('stopped_limit') is True:finish='length'
+        elif data.get('stop') is True and (data.get('stopped_eos') is True or data.get('stopped_word') is True):finish='stop'
+    raw=data.get('timings',{})
+    if type(raw) is not dict:raise LocalServerRefused('invalid native timings')
+    timings={'total_ms':elapsed_ms}
+    for key in ('prompt_n','prompt_ms','predicted_n','predicted_ms','predicted_per_second'):
+        if key in raw:
+            v=raw[key]
+            if type(v) not in (int,float) or not math.isfinite(v) or v<0:
+                raise LocalServerRefused('invalid native timings')
+            timings[key]=v
+    return LocalInferenceResult(data['content'],tokens_in,tokens_out,timings,finish,integrity)
+
+
+def _response_integrity(data: dict) -> str:
+    """Read request-scoped truncation evidence; absence is not evidence of preservation."""
+    timings = data.get('timings', {})
+    if type(timings) is not dict:
+        raise ValueError('invalid timings')
+    values = [source['truncated'] for source in (data, timings) if 'truncated' in source]
+    if any(value is True for value in values):
+        return 'truncated'
+    if values and all(value is False for value in values):
+        return 'preserved'
+    return 'unknown'
 
 
 def _deadline(seconds: float) -> float:
@@ -190,7 +262,7 @@ class LocalServer:
             return False
 
     def infer(self, request: LocalInferenceRequest, deadline_s: float, *,
-              allow_unknown_usage: bool = False) -> LocalInferenceResult:
+              allow_unknown_usage: bool = False, on_dispatch: Callable[[], None] | None = None) -> LocalInferenceResult:
         end = _deadline(deadline_s)
         if not self._child.alive or self.state is not LifecycleState.SERVING:
             raise LocalServerRefused("local server is not serving")
@@ -198,10 +270,18 @@ class LocalServer:
         if len(body) > MAX_REQUEST_BYTES:
             raise LocalServerRefused("request exceeds byte ceiling")
         began = time.monotonic()
-        raw = self._http("POST", "/v1/chat/completions", body, end)
+        if on_dispatch is None:
+            raw = self._http("POST", "/v1/chat/completions", body, end)
+        else:
+            raw = self._http("POST", "/v1/chat/completions", body, end, on_dispatch=on_dispatch)
         try:
-            data = json.loads(raw)
-            text = data["choices"][0]["message"]["content"]
+            data = _decode_document(raw)
+            choice = data["choices"][0]
+            text = choice["message"]["content"]
+            finish_reason = choice.get('finish_reason')
+            if type(finish_reason) is not str or finish_reason not in ('stop', 'length', 'content_filter', 'tool_calls'):
+                finish_reason = None
+            integrity = _response_integrity(data)
             usage = data.get("usage")
             tokens_in = tokens_out = None
             if usage is not None:
@@ -219,9 +299,134 @@ class LocalServer:
                     if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
                         raise ValueError
                     timings[key] = float(value)
-            return LocalInferenceResult(text, tokens_in, tokens_out, timings)
+            return LocalInferenceResult(text, tokens_in, tokens_out, timings,
+                                        finish_reason, integrity)
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
             raise LocalServerRefused("invalid inference response") from None
+
+    def context_limit(self, deadline_s: float) -> int:
+        """Read the running server's effective context through the admitted socket."""
+        end = _deadline(deadline_s)
+        if not self._child.alive or self.state is not LifecycleState.SERVING:
+            raise LocalServerRefused("local server is not serving")
+        try:
+            data = _decode_document(self._http("GET", "/props", b"", end))
+            count = data['default_generation_settings']['n_ctx']
+            if type(count) is not int or not 0 < count <= 2**31 - 1:
+                raise ValueError
+            return count
+        except (ValueError, KeyError, TypeError, RecursionError):
+            raise LocalServerRefused("invalid context limit") from None
+
+    def tokenize_rendered(self, text: str, deadline_s: float) -> int:
+        """Count an already template-rendered prompt; caller must prove rendering identity."""
+        return self._tokenize_rendered(text, _deadline(deadline_s))
+
+    def _tokenize_rendered(self, text: str, end: float) -> int:
+        if not self._child.alive or self.state is not LifecycleState.SERVING:
+            raise LocalServerRefused("local server is not serving")
+        if type(text) is not str:
+            raise LocalServerRefused("invalid tokenization input")
+        body = json.dumps({'content': text, 'add_special': True}, ensure_ascii=False).encode('utf-8')
+        if len(body) > MAX_REQUEST_BYTES:
+            raise LocalServerRefused("request exceeds byte ceiling")
+        try:
+            data = _decode_document(self._http('POST', '/tokenize', body, end))
+            tokens = data['tokens']
+            if (type(tokens) is not list or not tokens or len(tokens) > MAX_RESPONSE_BYTES // 2
+                    or any(type(token) is not int or token < 0 for token in tokens)):
+                raise ValueError
+            return len(tokens)
+        except (ValueError, KeyError, TypeError, RecursionError):
+            raise LocalServerRefused("invalid tokenization response") from None
+
+    def count_chat_tokens(self, request: LocalInferenceRequest, deadline_s: float) -> int:
+        """Render and tokenize using this same server under one total deadline.
+
+        Callers must still establish that the admitted runtime's template and
+        tokenization settings match its chat-completion path before relying on
+        the count as exact.
+        """
+        end = _deadline(deadline_s)
+        if not self._child.alive or self.state is not LifecycleState.SERVING:
+            raise LocalServerRefused("local server is not serving")
+        body = json.dumps(inference_document(request), ensure_ascii=False).encode('utf-8')
+        if len(body) > MAX_REQUEST_BYTES:
+            raise LocalServerRefused("request exceeds byte ceiling")
+        try:
+            data = _decode_document(self._http('POST', '/apply-template', body, end))
+            prompt = data['prompt']
+            if type(prompt) is not str:
+                raise ValueError
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('tokenization deadline exceeded')
+            return self._tokenize_rendered(prompt, end)
+        except (ValueError, KeyError, TypeError, RecursionError):
+            raise LocalServerRefused("invalid rendered prompt") from None
+
+    def _verified_tuple(self, end):
+        from azazel_nexus.generation_budget import verified_tuple_from_props
+        if not self._child.alive or self.state is not LifecycleState.SERVING:
+            raise TokenCountUnknown('server_tuple_unavailable')
+        try:
+            props=_decode_document(self._http('GET','/props',b'',end))
+            return verified_tuple_from_props(props)
+        except TimeoutError:
+            raise
+        except (KeyError,TypeError,ValueError,RecursionError,LocalServerRefused,OSError):
+            raise TokenCountUnknown('server_tuple_unavailable') from None
+
+    def verified_tuple(self, deadline_s):
+        return self._verified_tuple(_deadline(deadline_s))
+
+    def prepare_native(self, request, deadline_s, *, expected_tuple):
+        end=_deadline(deadline_s)
+        try:
+            if self._verified_tuple(end)!=expected_tuple:raise TokenCountUnknown('server_tuple_changed')
+            body=json.dumps(inference_document(request),ensure_ascii=False).encode()
+            if len(body)>MAX_REQUEST_BYTES:raise TokenCountUnknown('request_ceiling')
+            prompt=_decode_document(self._http('POST','/apply-template',body,end))['prompt']
+            if type(prompt) is not str:raise TokenCountUnknown('template_unknown')
+            body=json.dumps({'content':prompt,'add_special':True},ensure_ascii=False).encode()
+            if len(body)>MAX_REQUEST_BYTES:raise TokenCountUnknown('request_ceiling')
+            tokens=_decode_document(self._http('POST','/tokenize',body,end))['tokens']
+            if (type(tokens) is not list or not tokens or len(tokens)>MAX_RESPONSE_BYTES//2
+                    or any(type(v) is not int or v<0 for v in tokens)):
+                raise TokenCountUnknown('tokens_unknown')
+            if self._verified_tuple(end)!=expected_tuple:raise TokenCountUnknown('server_tuple_changed')
+            return NativePrompt(tuple(tokens),request_digest(request),expected_tuple['tuple_id'])
+        except (KeyError,TypeError,ValueError,RecursionError,LocalServerRefused):
+            raise TokenCountUnknown('native_count_unknown') from None
+
+    def infer_native(self, request, deadline_s, *, prepared, expected_tuple,
+                     allow_unknown_usage=True, on_dispatch=None, before_dispatch=None, dispatch_guard=None):
+        end=_deadline(deadline_s)
+        if (type(prepared) is not NativePrompt or prepared.request_digest!=request_digest(request)
+                or prepared.tuple_id!=expected_tuple['tuple_id']
+                or self._verified_tuple(end)!=expected_tuple):
+            raise TokenCountUnknown('server_tuple_changed')
+        if not prepared.tokens or any(type(v) is not int or v<0 for v in prepared.tokens):
+            raise TokenCountUnknown('native_count_unknown')
+        try:
+            schema=request.response_format['json_schema']['schema']
+            if type(schema) is not dict:raise ValueError
+        except (KeyError,TypeError,ValueError):
+            raise LocalServerRefused('native_schema_unknown') from None
+        body=json.dumps(dict(prompt=list(prepared.tokens),n_predict=request.max_tokens,
+            temperature=request.temperature,stream=False,cache_prompt=False,json_schema=schema),ensure_ascii=False).encode()
+        if len(body)>MAX_REQUEST_BYTES:raise LocalServerRefused('request exceeds byte ceiling')
+        began=time.monotonic()
+        kwargs={} if on_dispatch is None else {'on_dispatch':on_dispatch}
+        if before_dispatch is not None:kwargs['before_dispatch']=before_dispatch
+        if dispatch_guard is not None:kwargs['dispatch_guard']=dispatch_guard
+        raw=self._http('POST','/completion',body,end,**kwargs)
+        try:
+            result=native_result(_decode_document(raw),(time.monotonic()-began)*1000)
+            if not allow_unknown_usage and result.tokens_in is None:raise ValueError
+            return result
+        except (KeyError,TypeError,ValueError,RecursionError):
+            raise LocalServerRefused('invalid native response') from None
 
     def embed(self, texts, deadline_s):
         end = _deadline(deadline_s)
@@ -234,7 +439,7 @@ class LocalServer:
         if len(body) > MAX_REQUEST_BYTES:
             raise LocalServerRefused("request exceeds byte ceiling")
         try:
-            data = json.loads(self._http("POST", "/v1/embeddings", body, end))['data']
+            data = _decode_document(self._http("POST", "/v1/embeddings", body, end))['data']
             if (type(data) is not list or len(data) != len(texts)
                     or any(type(item['index']) is not int for item in data)
                     or sorted(item['index'] for item in data) != list(range(len(texts)))):
@@ -245,7 +450,7 @@ class LocalServer:
         except (ValueError, KeyError, TypeError, RecursionError):
             raise LocalServerRefused("invalid embedding response") from None
 
-    def _http(self, method: str, path: str, body: bytes, end: float) -> bytes:
+    def _http(self, method: str, path: str, body: bytes, end: float, *, on_dispatch=None, before_dispatch=None, dispatch_guard=None) -> bytes:
         self._check_admission()
 
         def remaining() -> float:
@@ -261,7 +466,30 @@ class LocalServer:
                     f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n"
                     "Connection: close\r\n\r\n").encode("ascii")
             peer.settimeout(remaining())
-            peer.sendall(head + body)
+            self._check_admission()
+            if before_dispatch is not None:
+                before_dispatch()
+            payload=memoryview(head+body)
+            sent=0
+            while sent<len(payload):
+                # The accounting/freeze gate never covers a blocking socket wait.
+                peer.settimeout(0 if dispatch_guard is not None else remaining())
+                try:
+                    with dispatch_guard() if dispatch_guard is not None else nullcontext() as record_sent:
+                        remaining()
+                        count=peer.send(payload[sent:])
+                        if type(count) is not int or count<=0:
+                            raise LocalServerRefused('HTTP send made no progress')
+                        first=sent==0
+                        sent+=count
+                        if first and record_sent is not None:
+                            record_sent()
+                except BlockingIOError:
+                    if not select.select([], [peer], [], remaining())[1]:
+                        raise TimeoutError('local HTTP write deadline exceeded')
+                    continue
+                if first and on_dispatch is not None:
+                    on_dispatch()
             header = bytearray()
             while not header.endswith(b"\r\n\r\n"):
                 if len(header) >= MAX_HEADER_BYTES:
