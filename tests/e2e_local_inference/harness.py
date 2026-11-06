@@ -490,7 +490,7 @@ def fixture_generation_lane(server):
 
     capability = GenerationCapability(
         generation_id=GENERATION_ID, model_id=MODEL_ID, reserve_mib=512,
-        expires_at=(datetime.now(UTC) + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        expires_at=(datetime.now(UTC) + timedelta(minutes=10)).isoformat().replace("+00:00", "Z"),
         recheck=lambda: True,
     )
     lane = FixtureOnlyGenerationLane(capability=capability, server=server, deadline_s=30.0)
