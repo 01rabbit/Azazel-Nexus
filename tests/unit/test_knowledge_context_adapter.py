@@ -172,7 +172,7 @@ def test_unknown_key_future_issue_and_ttl_extension_are_refused(changes):
         "schema": ENVELOPE_SCHEMA,
         "key_id": KEY_ID,
         "issued_at": NOW,
-        "expires_at": "2026-11-04T12:04:00Z",
+        "expires_at": "2026-11-04T12:05:00Z",
         "payload": response_payload(req),
     }
     envelope.update(changes)
@@ -213,6 +213,6 @@ def test_missing_commissioned_key_map_and_ttl_are_refused():
 def test_semantic_expiry_cannot_outlive_signed_envelope():
     req = request()
     doc = response_payload(req)
-    doc["expires_at"] = "2026-11-04T12:06:00Z"
+    doc["expires_at"] = "2026-11-04T12:05:00Z"
     with pytest.raises(KnowledgeContextRefused):
         verify(signed(doc, expires_at="2026-11-04T12:04:00Z"), req)
