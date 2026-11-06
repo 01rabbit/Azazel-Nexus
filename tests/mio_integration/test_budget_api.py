@@ -42,9 +42,10 @@ class ControlledServer:
         if self.verified_tuple(deadline_s)!=expected_tuple:raise TokenCountUnknown('changed')
         return self.infer(request,deadline_s,**kwargs)
     def infer(self,request,deadline_s,**kw):
+        if kw.get('before_dispatch') is not None:kw['before_dispatch']()
+        task=request.response_format['json_schema']['name'];self.requests.append(task)
         if kw.get('on_dispatch') is not None:
             self.dispatch_callbacks.append(kw['on_dispatch']);kw['on_dispatch']()
-        task=request.response_format['json_schema']['name'];self.requests.append(task)
         if task==TASKS[0]:
             def h(i,slot):
                 return dict(hypothesis_id='h'+str(i),hypothesis_alternative_id=slot,
@@ -65,7 +66,7 @@ def inputs():
         created_at=datetime.now(UTC).isoformat().replace('+00:00','Z'),mission='Review activity',
         current_defensive_state='OBSERVE',threat_level='UNKNOWN',known_facts=('event',),
         unknowns=('unknown',),contradictions=('counterexample',),evidence_refs=('ev:ssh:1',))
-    cap=GenerationCapability('api-fixture','fixture-model','2099-01-01T00:00:00Z',1,lambda:True)
+    cap=GenerationCapability('api-fixture','fixture-model','2099-01-01T00:00:00Z',1,lambda:True,model_context_limit=4096)
     return frame,cap
 
 
@@ -197,3 +198,60 @@ def test_compile_budget_rejection_keeps_observed_exact_count_in_unsent_receipt()
     assert task['count_kind']=='exact' and task['input_tokens_bound']==1522
     assert task['context_limit']==2048 and task['output_tokens_cap']==768 and task['context_slack']==32
     assert value['generation_budget']['primary_outcome']=='budget_exhausted'
+
+
+@pytest.mark.parametrize('chunk',[7,1000000])
+def test_real_api_http_positive_send_boundary_preserves_normal_results(monkeypatch,chunk):
+    """Actual product HTTP/native methods, in-memory socket, no model/process/network."""
+    from pathlib import Path
+    from azazel_nexus_runtime import mio_serve
+    class WireServer(ControlledServer):
+        _http=mio_serve.LocalServer._http
+        def __init__(self):
+            super().__init__();self.socket_path=Path('/fixture/native.sock');self.payloads=[];self.positive_sends=0
+        def _check_admission(self):pass  # explicit controlled fixture, not production authorization
+        def _verified_tuple(self,end):return self.verified_tuple(end)
+        def infer_native(self,request,deadline_s,**kw):
+            self.current_request=request
+            return mio_serve.LocalServer.infer_native(self,request,deadline_s,**kw)
+    server=WireServer()
+    class Peer:
+        def __init__(self):self.sent=b'';self.response=b'';self.read=0
+        def __enter__(self):return self
+        def __exit__(self,*a):pass
+        def settimeout(self,value):assert value>0
+        def connect(self,path):assert path=='/fixture/native.sock'
+        def send(self,data):
+            part=bytes(data[:chunk]);self.sent+=part;server.positive_sends+=1
+            if b'\r\n\r\n' in self.sent:
+                head,body=self.sent.split(b'\r\n\r\n',1)
+                size=int(next(line.split(b':')[1] for line in head.split(b'\r\n') if line.startswith(b'Content-Length:')))
+                if len(body)==size:
+                    server.payloads.append(json.loads(body))
+                    result=ControlledServer.infer(server,server.current_request,1)
+                    raw=json.dumps(dict(content=result.text,stop=True,stop_type='eos',truncated=False,
+                        tokens_evaluated=12,tokens_predicted=7,timings={'prompt_n':12,'predicted_n':7})).encode()
+                    self.response=b'HTTP/1.1 200 OK\r\nContent-Length: '+str(len(raw)).encode()+b'\r\n\r\n'+raw
+            return len(part)
+        def recv(self,size):
+            data=self.response[self.read:self.read+size];self.read+=len(data);return data
+    monkeypatch.setattr(mio_serve.socket,'socket',lambda *a:Peer())
+    lane,server,value=run(server);meta=value['generation_budget']
+    assert value['state']=='complete' and meta['job_calls']==3 and meta['coverage']=='intact'
+    assert len(server.payloads)==3 and server.requests==list(TASKS)
+    assert all(p['prompt']==list(range(12)) for p in server.payloads)
+    assert [p['n_predict'] for p in server.payloads]==[768,384,512]
+    assert all(t['actual_usage']==dict(tokens_in=12,tokens_out=7) and t['context_integrity']=='preserved'
+        and t['finish_reason']=='stop' and t['validated'] for t in meta['tasks'])
+    assert server.positive_sends>=3
+
+
+def test_current_harness_declares_explicit_fixture_context_without_production_admission():
+    import importlib.util
+    from pathlib import Path
+    from azazel_nexus_runtime.mio_generation import authorized
+    spec=importlib.util.spec_from_file_location('budget_fixture_harness',Path(__file__).parents[1]/'e2e_local_inference/harness.py')
+    harness=importlib.util.module_from_spec(spec);spec.loader.exec_module(harness)
+    lane,cap=harness.fixture_generation_lane(None)
+    assert cap.model_context_limit==2048 and not lane.budget_enabled
+    assert authorized(cap,harness.GENERATION_ID) is False

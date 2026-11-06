@@ -106,6 +106,8 @@ def read_budget(value, *, state=None, usage=None):
         verified=value.get('verified_tuple')
         if profile is not None:validate_profile(profile)
         if verified is not None:validate_verified_tuple(verified)
+        configured=None if profile is None else profile['configured_context_limit']
+        context=None if verified is None or configured is None else effective_context_limit(verified['context_limit'],configured)
         terminal=value.get('terminal_outcome',value['primary_outcome'])
         if terminal not in OUTCOMES:raise ValueError
         validate_selection(value['upstream_selection'])
@@ -138,9 +140,10 @@ def read_budget(value, *, state=None, usage=None):
             if task['finish_reason'] is not None and task['finish_reason'] not in {'stop','length','content_filter','tool_calls'}:
                 raise ValueError
             if profile is not None:
+                if task['allocated_ms'] is not None and task['allocated_ms']<profile['minimum_provider_ms'][i]:raise ValueError
                 for field,expected in (('output_tokens_cap',profile['output_caps'][i]),('output_min',profile['output_mins'][i]),('context_slack',profile['slack'])):
                     if task[field] is not None and task[field]!=expected:raise ValueError
-            if verified is not None and task['context_limit'] is not None and task['context_limit']!=verified['context_limit']:
+            if task['context_limit'] is not None and task['context_limit']!=context:
                 raise ValueError
             if all(task[k] is not None for k in ('input_limit','output_tokens_cap','context_slack','context_limit')) and task['input_limit']+task['output_tokens_cap']+task['context_slack']>task['context_limit']:
                 raise ValueError
@@ -152,8 +155,11 @@ def read_budget(value, *, state=None, usage=None):
                 unsent = True
                 if actual is not None or task['finish_reason'] is not None or task['validated']:
                     raise ValueError
-            elif unsent:
+            elif unsent or context is None:
                 raise ValueError
+        if profile is not None:
+            reserve=max(profile['minimum_reserve_ms'],value['deadline_ms']*profile['reserve_fraction'])
+            if sum(t['allocated_ms'] or 0 for t in value['tasks'])>max(0,value['deadline_ms']-reserve)+1e-6:raise ValueError
         if value['job_calls'] != sum(t['dispatched'] for t in value['tasks']) or value['coverage'] != coverage(value['upstream_coverage'], value['tasks']):
             raise ValueError
         projected = ('degraded' if cleanup['state'] == 'unconfirmed' else
@@ -165,10 +171,10 @@ def read_budget(value, *, state=None, usage=None):
         if value['outcome'] != expected_outcome or (projected == 'complete') != (value['outcome'] == 'within_budget'):
             raise ValueError
         if value['result_state'] == 'complete':
-            if profile is None or verified is None or profile['template_version'] is None:raise ValueError
+            if profile is None or verified is None or context is None or profile['template_version'] is None:raise ValueError
             reserve=max(profile['minimum_reserve_ms'],value['deadline_ms']*profile['reserve_fraction'])
             if (value['elapsed_ms']>=value['deadline_ms']-reserve/2
-                    or any(t['allocated_ms'] is None or t['allocated_ms']<=0 or t['elapsed_ms']>t['allocated_ms'] for t in value['tasks'])
+                    or any(t['allocated_ms'] is None or t['allocated_ms']<minimum or t['elapsed_ms']>t['allocated_ms'] for t,minimum in zip(value['tasks'],profile['minimum_provider_ms']))
                     or sum(t['allocated_ms'] for t in value['tasks'])>value['deadline_ms']-reserve+1e-6
                     or sum(t['elapsed_ms'] for t in value['tasks'])>value['elapsed_ms']+1e-6
                     or any(t['selection']['policy_version']!=profile['template_version'] for t in value['tasks'])):
@@ -295,7 +301,7 @@ def validate_verified_tuple(value):
 SELECTION_VERSIONS=frozenset({'1.6.0','fixture-v1','transport-fixture-v1'})
 
 def validate_profile(value):
-    keys={'version','origin','reserve_fraction','minimum_reserve_ms','weights','slack','output_caps','output_mins','minimum_provider_ms','template_version'}
+    keys={'version','origin','reserve_fraction','minimum_reserve_ms','weights','slack','output_caps','output_mins','minimum_provider_ms','template_version','configured_context_limit'}
     if (type(value) is not dict or set(value)!=keys or type(value['version']) is not int or value['version']!=1
             or value['origin']!='fixture' or not number(value['reserve_fraction']) or not 0<value['reserve_fraction']<1
             or not number(value['minimum_reserve_ms']) or value['minimum_reserve_ms']<=0 or not integer(value['slack'])
@@ -303,6 +309,37 @@ def validate_profile(value):
             or any(not integer(v) or v<=0 for v in value['weights'])
             or any(not integer(o) or not integer(m) or not 0<m<=o<=768 for o,m in zip(value['output_caps'],value['output_mins']))
             or any(not number(v) or v<=0 for v in value['minimum_provider_ms'])
-            or value['template_version'] not in (None,*SELECTION_VERSIONS)):
+            or value['template_version'] not in (None,*SELECTION_VERSIONS)
+            or (value['configured_context_limit'] is not None and not context_integer(value['configured_context_limit']))):
         raise ValueError('generation_profile_refused')
+    validate_fixture_policy(value['reserve_fraction'],value['minimum_reserve_ms'],value['weights'],value['slack'],value['minimum_provider_ms'])
     return value
+
+
+# fixture-v1 is an adopted policy, not a self-described way to weaken a receipt.
+FIXTURE_RESERVE_FRACTION=.1
+FIXTURE_MINIMUM_RESERVE_MS=500.
+FIXTURE_WEIGHTS=(45,20,35)
+FIXTURE_SLACK=32
+FIXTURE_MINIMUM_PROVIDER_MS=(50.,50.,50.)
+
+
+def validate_fixture_policy(fraction,reserve,weights,slack,minimums):
+    if (not number(fraction) or fraction!=FIXTURE_RESERVE_FRACTION
+            or not number(reserve) or reserve!=FIXTURE_MINIMUM_RESERVE_MS
+            or type(weights) not in (tuple,list) or len(weights)!=3
+            or any(type(v) is not int for v in weights) or tuple(weights)!=FIXTURE_WEIGHTS
+            or type(slack) is not int or slack!=FIXTURE_SLACK
+            or type(minimums) not in (tuple,list) or len(minimums)!=3
+            or any(not number(v) for v in minimums) or tuple(minimums)!=FIXTURE_MINIMUM_PROVIDER_MS):
+        raise ValueError('generation_fixture_policy_refused')
+
+
+def context_integer(value):
+    return type(value) is int and 0<value<=2**31-1
+
+
+def effective_context_limit(verified_context_limit,configured_context_limit):
+    if not context_integer(verified_context_limit) or not context_integer(configured_context_limit):
+        raise ValueError('generation_context_unknown')
+    return min(verified_context_limit,configured_context_limit)

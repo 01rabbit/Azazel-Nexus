@@ -9,9 +9,12 @@ import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable
+from azazel_nexus.generation_budget import (effective_context_limit,validate_fixture_policy,
+    FIXTURE_RESERVE_FRACTION,FIXTURE_MINIMUM_RESERVE_MS,FIXTURE_WEIGHTS,
+    FIXTURE_SLACK,FIXTURE_MINIMUM_PROVIDER_MS)
 
 TASKS = ('generate_hypotheses', 'identify_evidence_gaps', 'recommend')
-WEIGHTS = (45, 20, 35)
+WEIGHTS = FIXTURE_WEIGHTS
 
 
 class BudgetReason(str, Enum):
@@ -58,11 +61,11 @@ def _number(value, *, minimum=0):
 
 @dataclass(frozen=True)
 class BudgetSettings:
-    reserve_fraction: float = .1
-    minimum_reserve_ms: float = 500.
+    reserve_fraction: float = FIXTURE_RESERVE_FRACTION
+    minimum_reserve_ms: float = FIXTURE_MINIMUM_RESERVE_MS
     weights: tuple[int,int,int] = WEIGHTS
-    slack: int = 32
-    minimum_provider_ms: tuple[float,float,float] = (50.,50.,50.)
+    slack: int = FIXTURE_SLACK
+    minimum_provider_ms: tuple[float,float,float] = FIXTURE_MINIMUM_PROVIDER_MS
 
     def __post_init__(self):
         if (not _number(self.reserve_fraction) or not 0<self.reserve_fraction<1
@@ -73,6 +76,7 @@ class BudgetSettings:
                 or type(self.minimum_provider_ms) is not tuple or len(self.minimum_provider_ms)!=3
                 or any(not _number(v) or v<=0 for v in self.minimum_provider_ms)):
             raise ValueError('invalid_budget_settings')
+        validate_fixture_policy(self.reserve_fraction,self.minimum_reserve_ms,self.weights,self.slack,self.minimum_provider_ms)
 
     def reserve(self, seconds):
         return max(self.minimum_reserve_ms/1000,seconds*self.reserve_fraction)
@@ -102,7 +106,7 @@ class BudgetProfile:
     profile_id: str
     context_limit: int
     tasks: tuple[TaskBudget, TaskBudget, TaskBudget]
-    slack: int = 32
+    slack: int = FIXTURE_SLACK
     origin: str = 'fixture'
 
     def __post_init__(self):
@@ -143,13 +147,19 @@ class BudgetPlanner:
     schema injection. Counter absence/failure is refusal, never a character guess.
     """
     def __init__(self, profile: BudgetProfile, *, submitted: float, deadline_s: float,
-                 counter: Callable[[str, str], int] | None, clock: Callable[[], float], settings=None):
+                 counter: Callable[[str, str], int] | None, clock: Callable[[], float],
+                 verified_context_limit, configured_context_limit, settings=None):
         if (type(profile) is not BudgetProfile or not _number(submitted)
                 or not _number(deadline_s) or not 0 < deadline_s <= 30):
             raise ValueError('invalid_budget_deadline')
         self.profile = profile
         self.end = submitted + deadline_s
         self.settings = settings if settings is not None else BudgetSettings()
+        if (type(self.settings) is not BudgetSettings
+                or profile.context_limit!=effective_context_limit(verified_context_limit,configured_context_limit)
+                or profile.slack!=self.settings.slack
+                or any(task.minimum_provider_s!=minimum/1000 for task,minimum in zip(profile.tasks,self.settings.minimum_provider_ms))):
+            raise ValueError('invalid_budget_profile_context_or_policy')
         self.reserve = self.settings.reserve(deadline_s)
         self.allocated_total = 0.
         self.provider_cap = max(0.,deadline_s-self.reserve)

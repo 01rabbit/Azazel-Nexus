@@ -634,6 +634,7 @@ def fixture_generation_lane(server):
         generation_id=GENERATION_ID, model_id=MODEL_ID, reserve_mib=512,
         expires_at=(datetime.now(UTC) + timedelta(minutes=10)).isoformat().replace("+00:00", "Z"),
         recheck=lambda: True,
+        model_context_limit=2048,  # fixed fixture model/configuration ceiling, not production evidence
     )
     lane = FixtureOnlyGenerationLane(capability=capability, server=server, deadline_s=30.0)
     return lane, capability

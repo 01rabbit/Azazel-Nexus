@@ -34,6 +34,7 @@ class GenerationCapability:
     recheck: object = field(repr=False)
     role: str = 'generation'
     _seal: object = field(default=None, repr=False)
+    model_context_limit: int | None = None  # loader supplies the verified model record's bound
 
 
 def authorized(value, generation_id):

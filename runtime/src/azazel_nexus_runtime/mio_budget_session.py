@@ -7,7 +7,7 @@ import threading
 import time
 from azazel_nexus.generation_budget import (TASKS, CAPS, coverage, task_placeholder,
     selection_unknown, project_budget, integer, validate_selection, validate_model_assistance,
-    MIO_REASON_OUTCOMES, COORDINATOR_DISPOSITIONS, validate_verified_tuple)
+    MIO_REASON_OUTCOMES, COORDINATOR_DISPOSITIONS, validate_verified_tuple, effective_context_limit, context_integer)
 from .mio_generation_budget import (BudgetPlanner, BudgetProfile, TaskBudget,
     BudgetRefused, BudgetReason, mio_budget_for_task)
 from .mio_serve import LocalInferenceRequest, NativePrompt, TokenCountUnknown
@@ -25,10 +25,13 @@ class BudgetSession:
         self.verified_tuple = None
         self.prepared = {}
         settings = lane.budget_settings
+        configured=getattr(lane.capability,'model_context_limit',None)
+        configured=configured if context_integer(configured) else None
         self.profile_metadata = dict(version=1,origin='fixture',reserve_fraction=settings.reserve_fraction,
             minimum_reserve_ms=settings.minimum_reserve_ms,weights=list(settings.weights),slack=settings.slack,
             output_caps=list(lane.output_caps),output_mins=list(lane.output_caps),
-            minimum_provider_ms=list(settings.minimum_provider_ms),template_version=None)
+            minimum_provider_ms=list(settings.minimum_provider_ms),template_version=None,
+            configured_context_limit=configured)
         self.mio_reason = None
         self.coordinator_disposition = None
         self.outcome = None
@@ -80,7 +83,7 @@ class BudgetSession:
             verified=self._provider_read(lambda:self.lane.server.verified_tuple(self.read_remaining()))
             validate_verified_tuple(verified)
             self.verified_tuple=copy.deepcopy(verified)
-            context=verified['context_limit']
+            context=effective_context_limit(verified['context_limit'],self.profile_metadata['configured_context_limit'])
             settings=self.lane.budget_settings
             specs=tuple(TaskBudget(t,max(1,context-cap-settings.slack),cap,cap,minimum/1000)
                 for t,cap,minimum in zip(TASKS,self.lane.output_caps,settings.minimum_provider_ms))
@@ -103,7 +106,8 @@ class BudgetSession:
                             self.tasks[TASKS.index(task)].update(count_kind='exact',input_tokens_bound=count)
                 return count
             self.planner = BudgetPlanner(profile, submitted=self.started,
-                deadline_s=self.lane.deadline_s, counter=counter, clock=time.monotonic,settings=settings)
+                deadline_s=self.lane.deadline_s, counter=counter, clock=time.monotonic,settings=settings,verified_context_limit=verified['context_limit'],
+                configured_context_limit=self.profile_metadata['configured_context_limit'])
         except Exception:
             self.reject('count_unknown', 'token_count_unknown')
 
@@ -159,26 +163,30 @@ class BudgetSession:
             self.current_started = began
             self.call_end = min(began + allocation.provider_seconds, self.job['end'])
             call = {'usage':None,'timings':{}}
-        def dispatch():
+        def before_dispatch():
             with self.lock:
-                if (record['dispatched'] or self.frozen is not None):
-                    self.reject('send_notification_conflict','output_invalid')
-                if (self.job['cancelled'].is_set() or self.lane._stopped or self.lane._fenced
-                        or not self.lane._authorized(self.job['generation']) or time.monotonic() >= self.call_end):
+                if (self.frozen is not None or self.job['cancelled'].is_set() or self.lane._stopped or self.lane._fenced
+                        or not self.lane._authorized(self.job['generation']) or time.monotonic()>=self.call_end):
                     self.reject('cancelled','cancelled')
                 if not callable(on_dispatch):
                     self.reject('dispatch_tracking_unavailable','output_invalid')
+        def dispatch():
+            # Truth after the first positive socket.send: never revoke a sent fact
+            # because a deadline/cancel arrived between send and this callback.
+            with self.lock:
+                if record['dispatched'] or self.frozen is not None:
+                    self.reject('send_notification_conflict','output_invalid')
+                record['dispatched'] = True
+                self.calls.append(call)
                 try:
                     on_dispatch()
                 except Exception:
                     self.reject('send_notification_conflict','output_invalid')
-                record['dispatched'] = True
-                self.calls.append(call)
         try:
             cached=self.prepared.get(task)
             if cached is None or cached[0]!=prompt:raise TokenCountUnknown('native_count_unknown')
             result = self.lane.server.infer_native(request,
-                deadline_s=max(.000001,self.call_end-time.monotonic()),allow_unknown_usage=True,on_dispatch=dispatch,
+                deadline_s=max(.000001,self.call_end-time.monotonic()),allow_unknown_usage=True,on_dispatch=dispatch,before_dispatch=before_dispatch,
                 prepared=cached[1],expected_tuple=self.verified_tuple)
             with self.lock:
                 if self.frozen is not None:

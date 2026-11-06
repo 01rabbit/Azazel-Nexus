@@ -398,7 +398,7 @@ class LocalServer:
             raise TokenCountUnknown('native_count_unknown') from None
 
     def infer_native(self, request, deadline_s, *, prepared, expected_tuple,
-                     allow_unknown_usage=True, on_dispatch=None):
+                     allow_unknown_usage=True, on_dispatch=None, before_dispatch=None):
         end=_deadline(deadline_s)
         if (type(prepared) is not NativePrompt or prepared.request_digest!=request_digest(request)
                 or prepared.tuple_id!=expected_tuple['tuple_id']
@@ -416,6 +416,7 @@ class LocalServer:
         if len(body)>MAX_REQUEST_BYTES:raise LocalServerRefused('request exceeds byte ceiling')
         began=time.monotonic()
         kwargs={} if on_dispatch is None else {'on_dispatch':on_dispatch}
+        if before_dispatch is not None:kwargs['before_dispatch']=before_dispatch
         raw=self._http('POST','/completion',body,end,**kwargs)
         try:
             result=native_result(_decode_document(raw),(time.monotonic()-began)*1000)
@@ -446,7 +447,7 @@ class LocalServer:
         except (ValueError, KeyError, TypeError, RecursionError):
             raise LocalServerRefused("invalid embedding response") from None
 
-    def _http(self, method: str, path: str, body: bytes, end: float, *, on_dispatch=None) -> bytes:
+    def _http(self, method: str, path: str, body: bytes, end: float, *, on_dispatch=None, before_dispatch=None) -> bytes:
         self._check_admission()
 
         def remaining() -> float:
@@ -463,10 +464,19 @@ class LocalServer:
                     "Connection: close\r\n\r\n").encode("ascii")
             peer.settimeout(remaining())
             self._check_admission()
-            if on_dispatch is not None:
-                on_dispatch()
-            peer.settimeout(remaining())
-            peer.sendall(head + body)
+            if before_dispatch is not None:
+                before_dispatch()
+            payload=memoryview(head+body)
+            sent=0
+            while sent<len(payload):
+                peer.settimeout(remaining())
+                count=peer.send(payload[sent:])
+                if type(count) is not int or count<=0:
+                    raise LocalServerRefused('HTTP send made no progress')
+                first=sent==0
+                sent+=count
+                if first and on_dispatch is not None:
+                    on_dispatch()
             header = bytearray()
             while not header.endswith(b"\r\n\r\n"):
                 if len(header) >= MAX_HEADER_BYTES:

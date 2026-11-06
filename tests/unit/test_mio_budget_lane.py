@@ -53,8 +53,9 @@ class Server:
         if self.verified_tuple(deadline_s)!=expected_tuple:raise TokenCountUnknown('changed')
         return self.infer(request,deadline_s,**kwargs)
     def infer(self, request, deadline_s, **kw):
-        if kw.get('on_dispatch') is not None:kw['on_dispatch']()
+        if kw.get('before_dispatch') is not None:kw['before_dispatch']()
         self.requests.append((request, deadline_s))
+        if kw.get('on_dispatch') is not None:kw['on_dispatch']()
         self.entered.set()
         if self.block:
             self.release.wait(5)
@@ -121,7 +122,7 @@ def make(monkeypatch):
     lanes=[]
     def create(deadline=5):
         server=Server()
-        lane=Lane(capability=GenerationCapability('fixture','fixture','2099-01-01T00:00:00Z',1,lambda:True),
+        lane=Lane(capability=GenerationCapability('fixture','fixture','2099-01-01T00:00:00Z',1,lambda:True,model_context_limit=4096),
             server=server,deadline_s=deadline,budget_enabled=True)
         frame=NS(frame_id='trace:frame',trace_id='trace')
         source={'request_id':'fixture'}
@@ -432,3 +433,64 @@ def test_primary_reason_and_bounded_followup_sequence_are_independent():
     for reason in ['cancelled','admission_closed','timeout']*20:session.note_failure(reason,reason)
     assert session.reason=='truncated' and session.outcome=='runtime_truncated'
     assert session.failures==['truncated','cancelled','admission_closed','timeout']
+
+
+@pytest.mark.parametrize(('verified','configured'),[(8192,2048),(2048,8192)])
+def test_lane_plans_with_minimum_context_and_preserves_three_task_results(make,verified,configured):
+    from dataclasses import replace
+    lane,server,source,frame=make();server.context=verified
+    lane.capability=replace(lane.capability,model_context_limit=configured)
+    value=terminal(lane,source,frame);meta=value['generation_budget']
+    assert value['state']=='complete' and meta['job_calls']==3
+    assert meta['verified_tuple']['context_limit']==verified
+    assert meta['profile']['configured_context_limit']==configured
+    assert all(t['context_limit']==2048 and t['actual_usage']==dict(tokens_in=12,tokens_out=7)
+        and t['finish_reason']=='stop' and t['context_integrity']=='preserved' for t in meta['tasks'])
+
+
+@pytest.mark.parametrize('limit',[None,True,0,-1,2048.0,2**32])
+def test_unknown_capability_context_is_unsent_count_unknown(make,limit):
+    from dataclasses import replace
+    lane,server,source,frame=make();lane.capability=replace(lane.capability,model_context_limit=limit)
+    value=terminal(lane,source,frame)
+    assert value['generation_budget']['primary_outcome']=='token_count_unknown'
+    assert value['generation_budget']['job_calls']==0 and not server.requests and not server.counts
+
+
+def test_model_bound_prevents_dispatch_even_when_server_context_is_larger(make):
+    from dataclasses import replace
+    lane,server,source,frame=make();server.context=8192
+    lane.capability=replace(lane.capability,model_context_limit=2048)
+    server.count_chat_tokens=lambda *_:1522
+    value=terminal(lane,source,frame);meta=value['generation_budget']
+    assert meta['primary_outcome']=='budget_exhausted' and meta['job_calls']==0 and not server.requests
+    assert meta['tasks'][0]['context_limit']==2048 and meta['tasks'][0]['input_limit']==1248
+
+
+def test_cancel_after_positive_send_preserves_sent_count_and_usage(make):
+    lane,server,source,frame=make()
+    def infer(request,deadline_s,**kw):
+        kw['before_dispatch']()
+        server.requests.append((request,deadline_s))  # controlled positive transport send
+        lane._active['reason']='cancelled';lane._active['cancelled'].set()
+        kw['on_dispatch']()  # cancellation cannot erase a positive send
+        return LocalInferenceResult('{}',12,7,{},'stop','preserved')
+    server.infer=infer
+    value=terminal(lane,source,frame);meta=value['generation_budget']
+    assert value['state']=='cancelled' and meta['job_calls']==1
+    assert meta['tasks'][0]['actual_usage']==dict(tokens_in=12,tokens_out=7)
+
+
+def test_second_call_postsend_failure_retains_first_call_usage(make):
+    lane,server,source,frame=make();original=server.infer
+    def infer(request,deadline_s,**kw):
+        if server.requests:
+            kw['before_dispatch']();server.requests.append((request,deadline_s));kw['on_dispatch']()
+            raise TimeoutError('fixture after positive send')
+        return original(request,deadline_s,**kw)
+    server.infer=infer
+    value=terminal(lane,source,frame);meta=value['generation_budget']
+    assert meta['job_calls']==2 and len(server.requests)==2
+    assert meta['tasks'][0]['actual_usage']==dict(tokens_in=12,tokens_out=7)
+    assert meta['tasks'][1]['dispatched'] and meta['tasks'][1]['actual_usage'] is None
+    assert meta['primary_outcome']=='deadline_exceeded'

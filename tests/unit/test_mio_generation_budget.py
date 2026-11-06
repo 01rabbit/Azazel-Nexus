@@ -9,12 +9,12 @@ from azazel_nexus_runtime.mio_generation_budget import (
 
 def profile(context=200, input_limit=100):
     return BudgetProfile('fixture-only', context, tuple(
-        TaskBudget(name, input_limit, 68, 40, .1) for name in TASKS))
+        TaskBudget(name, input_limit, 68, 40, .05) for name in TASKS))
 
 
 def planner(counter=lambda task, prompt: 100, clock=lambda: 0., context=200):
     return BudgetPlanner(profile(context), submitted=0, deadline_s=30,
-                         counter=counter, clock=clock)
+                         counter=counter, clock=clock,verified_context_limit=context,configured_context_limit=context)
 
 
 def test_exact_context_boundary_and_task_allocations():
@@ -68,7 +68,7 @@ def test_unknown_counter_and_order_do_not_dispatch():
 
 def test_profile_rejects_boolean_and_caps_above_existing_limit():
     with pytest.raises(ValueError):
-        TaskBudget(TASKS[0], True, 68, 40, .1)
+        TaskBudget(TASKS[0], True, 68, 40, .05)
     with pytest.raises(ValueError):
         TaskBudget(TASKS[0], 100, 769, 40, .1)
 
@@ -91,3 +91,29 @@ def test_mio_budget_tuple_uses_final_count_callback_without_importing_mio():
     assert budget['count_tokens']('unknown') is None
     with pytest.raises(BudgetRefused):
         mio_budget_for_task(p, TASKS[1], budget_type=lambda **kw: kw)
+
+
+@pytest.mark.parametrize(('verified','configured'),[(8192,2048),(2048,8192)])
+def test_planner_context_is_minimum_of_verified_and_configured_limits(verified,configured):
+    p=BudgetPlanner(profile(2048),submitted=0,deadline_s=30,counter=lambda *_:100,clock=lambda:0.,
+        verified_context_limit=verified,configured_context_limit=configured)
+    assert p.plan(TASKS[0],'fixture').context_limit==2048
+    with pytest.raises(ValueError):
+        BudgetPlanner(profile(8192),submitted=0,deadline_s=30,counter=lambda *_:100,clock=lambda:0.,
+            verified_context_limit=verified,configured_context_limit=configured)
+
+
+@pytest.mark.parametrize('limit',[None,True,0,-1,2048.0])
+def test_planner_refuses_unknown_context_bound(limit):
+    with pytest.raises(ValueError):
+        BudgetPlanner(profile(2048),submitted=0,deadline_s=30,counter=lambda *_:100,clock=lambda:0.,
+            verified_context_limit=8192,configured_context_limit=limit)
+
+
+@pytest.mark.parametrize('change',[
+    {'reserve_fraction':.00001},{'minimum_reserve_ms':.001},{'weights':(1,1,1)},
+    {'slack':0},{'minimum_provider_ms':(1.,1.,1.)},
+])
+def test_runtime_refuses_self_declared_fixture_policy_weakening(change):
+    from azazel_nexus_runtime.mio_generation_budget import BudgetSettings
+    with pytest.raises(ValueError):BudgetSettings(**change)

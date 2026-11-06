@@ -361,8 +361,9 @@ def _wire_handle(monkeypatch, response):
         def connect(self, path):
             assert path == '/tmp/test.sock'
 
-        def sendall(self, data):
-            self.sent += data
+        def send(self, data):
+            self.sent += bytes(data)
+            return len(data)
 
         def recv(self, size):
             data = response[self.read:self.read + size]
@@ -517,3 +518,43 @@ def test_tuple_change_after_count_refuses_before_completion_notification():
     props['build_info']='changed-build'
     with pytest.raises(TokenCountUnknown):handle.infer_native(req,1,prepared=prepared,expected_tuple=verified,on_dispatch=lambda:seen.append('sent'))
     assert seen==['/props','/props']
+
+
+@pytest.mark.parametrize('scenario',['presend_expiry','postsend_expiry','partial_failure','zero_send_failure','response_failure'])
+def test_notification_follows_positive_send_and_survives_later_failure(monkeypatch,scenario):
+    import azazel_nexus_runtime.mio_serve as module
+    handle,peer=_wire_handle(monkeypatch,b'')
+    clock=SimpleNamespace(now=0.)
+    monkeypatch.setattr(module.time,'monotonic',lambda:clock.now)
+    events=[];original=peer.send
+    def send(data):
+        events.append('send')
+        if scenario=='zero_send_failure' or (scenario=='partial_failure' and peer.sent):
+            raise OSError('fixture send failed')
+        count=original(data[:7] if scenario=='partial_failure' else data)
+        return count
+    peer.send=send
+    def gate():
+        events.append('gate')
+        if scenario=='presend_expiry':clock.now=1.
+    def notified():
+        assert peer.sent  # positive bytes precede notification, including partial send
+        events.append('notified')
+        if scenario=='postsend_expiry':clock.now=1.
+    with pytest.raises((TimeoutError,OSError,LocalServerRefused)):
+        handle._http('POST','/completion',b'{}',1.,before_dispatch=gate,on_dispatch=notified)
+    expected=0 if scenario in ('presend_expiry','zero_send_failure') else 1
+    assert events.count('notified')==expected
+    assert bool(peer.sent)==bool(expected)
+    if expected:assert events.index('send')<events.index('notified')
+    if scenario=='partial_failure':assert len(peer.sent)==7
+
+
+def test_fragmented_success_notifies_once_and_preserves_request_and_response(monkeypatch):
+    handle,peer=_wire_handle(monkeypatch,b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}')
+    original=peer.send;notified=[]
+    peer.send=lambda data:original(data[:7])
+    assert handle._http('POST','/completion',b'{}',time.monotonic()+1,
+        on_dispatch=lambda:notified.append(len(peer.sent)))==b'{}'
+    assert notified==[7]
+    assert peer.sent.startswith(b'POST /completion HTTP/1.1\r\n') and peer.sent.endswith(b'\r\n\r\n{}')

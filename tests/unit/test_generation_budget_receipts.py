@@ -31,7 +31,7 @@ def metadata(*, complete=True, pending=False):
         model_ftype='fixture',chat_template='fixture',bos_token='BOS',eos_token='EOS',build_info='fixture',
         default_generation_settings={'n_ctx':4096}))
     value['profile']=dict(version=1,origin='fixture',reserve_fraction=.1,minimum_reserve_ms=500.,weights=[45,20,35],
-        slack=32,output_caps=list(CAPS),output_mins=list(CAPS),minimum_provider_ms=[50.,50.,50.],template_version='fixture-v1')
+        slack=32,output_caps=list(CAPS),output_mins=list(CAPS),minimum_provider_ms=[50.,50.,50.],template_version='fixture-v1',configured_context_limit=4096)
     return value
 
 
@@ -341,3 +341,37 @@ def test_early_supersession_keeps_polling_until_real_result_and_cleanup(tmp_path
 def test_r4_reader_rejects_time_profile_and_tuple_counterexamples(change):
     value=metadata();change(value)
     with pytest.raises(ValueError):read_budget(value,state='complete',usage='known')
+
+
+@pytest.mark.parametrize('change',[
+    lambda m:[t.update(allocated_ms=1,elapsed_ms=.5) for t in m['tasks']],
+    lambda m:m['profile'].update(reserve_fraction=.00001,minimum_reserve_ms=.001),
+    lambda m:m['profile'].update(weights=[1,1,1]),
+    lambda m:m['profile'].update(slack=0),
+    lambda m:m['profile'].update(minimum_provider_ms=[1,1,1]),
+    lambda m:m['profile'].update(configured_context_limit=None),
+    lambda m:m['profile'].update(configured_context_limit=2048),
+])
+def test_stage7_reader_refuses_minimum_policy_and_context_contradictions(change):
+    value=live();change(value['generation_budget'])
+    value['generation_budget']['elapsed_ms']=2 if value['generation_budget']['tasks'][0]['allocated_ms']==1 else 50
+    with pytest.raises(ValueError):_validate_slow_analysis(value)
+    with pytest.raises(ValueError):slow_analysis_projection(value)
+
+
+@pytest.mark.parametrize(('verified','configured'),[(8192,2048),(2048,8192)])
+def test_reader_accepts_context_minimum_from_two_known_limits(verified,configured):
+    from azazel_nexus.generation_budget import canonical_digest
+    value=metadata();v=value['verified_tuple'];v['context_limit']=verified
+    v['tuple_id']=canonical_digest({k:x for k,x in v.items() if k!='tuple_id'})
+    value['profile']['configured_context_limit']=configured
+    for task in value['tasks']:
+        task['context_limit']=2048
+        task['input_limit']=2048-task['output_tokens_cap']-task['context_slack']
+    assert read_budget(value,state='complete',usage='known')['tasks'][0]['context_limit']==2048
+
+
+@pytest.mark.parametrize('allocation',[1,5000])
+def test_failed_receipt_cannot_claim_impossible_allocations(allocation):
+    value=metadata(complete=False);value['tasks'][0]['allocated_ms']=allocation
+    with pytest.raises(ValueError):read_budget(value,state='timeout',usage='known')
