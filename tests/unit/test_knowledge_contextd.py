@@ -127,8 +127,17 @@ def test_local_broker_client_refuses_invalid_pid_or_peer_uid(monkeypatch, peer):
     monkeypatch.setattr(knowledge_context_socket, "_socket_gid", lambda: 20002)
     monkeypatch.setattr(knowledge_context_socket, "verify_socket", verify)
     monkeypatch.setattr(knowledge_context_socket, "peer_credentials", lambda _conn: peer)
-    monkeypatch.setattr(knowledge_context_socket.socket, "socket",
-                        lambda *_a, **_k: Connection())
+    socket_module = knowledge_context_socket.socket
+    monkeypatch.setattr(
+        knowledge_context_socket,
+        "socket",
+        SimpleNamespace(
+            socket=lambda *_a, **_k: Connection(),
+            AF_UNIX=socket_module.AF_UNIX,
+            SOCK_STREAM=socket_module.SOCK_STREAM,
+            SHUT_WR=socket_module.SHUT_WR,
+        ),
+    )
 
     with pytest.raises(KnowledgeContextUnavailable, match="peer identity"):
         knowledge_context_socket.request_context(

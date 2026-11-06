@@ -56,6 +56,12 @@ def _real_process_prerequisite_error() -> str | None:
 
 
 _PREREQUISITE_ERROR = _real_process_prerequisite_error()
+_REQUIRE_REAL_PROCESS = os.environ.get("NEXUS_REQUIRE_REAL_PROCESS") == "1"
+if _REQUIRE_REAL_PROCESS and _PREREQUISITE_ERROR is not None:
+    raise RuntimeError(
+        "required isolated real-process runner is misconfigured: "
+        f"{_PREREQUISITE_ERROR}"
+    )
 pytestmark = pytest.mark.skipif(
     _PREREQUISITE_ERROR is not None,
     reason=_PREREQUISITE_ERROR or "isolated real-process prerequisites unavailable",
@@ -227,18 +233,28 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
         # A client without a certificate is rejected during TLS. TLS 1.3 can
         # defer surfacing the peer alert until the first read, so observe both
         # handshake and post-handshake I/O.
-        unauthenticated = ssl.create_default_context(cafile=str(pki / "ca.pem"))
+        # This negative check isolates client authentication: server-certificate
+        # trust and hostname validation are covered by the positive client below.
+        unauthenticated = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        unauthenticated.check_hostname = False
+        unauthenticated.verify_mode = ssl.CERT_NONE
         with socket.create_connection((ready["host"], ready["port"]), timeout=3) as raw:
             try:
                 unauthenticated_socket = unauthenticated.wrap_socket(
                     raw, server_hostname="knowledge.test"
                 )
-            except ssl.SSLError:
+            except ssl.SSLError as rejection:
                 pass
             else:
                 with unauthenticated_socket:
-                    with pytest.raises(ssl.SSLError):
+                    with pytest.raises(ssl.SSLError) as rejected_on_read:
                         unauthenticated_socket.recv(1)
+                rejection = rejected_on_read.value
+            assert rejection.reason in {
+                "TLSV13_ALERT_CERTIFICATE_REQUIRED",
+                "TLSV1_ALERT_HANDSHAKE_FAILURE",
+                "SSLV3_ALERT_HANDSHAKE_FAILURE",
+            }, f"unexpected no-client-certificate rejection: {rejection.reason}"
 
         now = datetime.now(UTC)
         server_der = ssl.PEM_cert_to_DER_cert((pki / "server.pem").read_text())
@@ -414,14 +430,25 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
         entryd_process = None
         try:
             assert _ready(broker_process)["ready"] is True
+            broker_dir = service_root / "var/lib/azazel/run/knowledge-context"
+            broker_dir_stat = broker_dir.stat()
+            assert broker_dir_stat.st_uid == egress.pw_uid
+            assert broker_dir_stat.st_gid == context_gid
+            assert stat.S_IMODE(broker_dir_stat.st_mode) == 0o2710
+            broker_socket = broker_dir / "knowledge-context.sock"
+            broker_socket_stat = broker_socket.lstat()
+            assert stat.S_ISSOCK(broker_socket_stat.st_mode)
+            assert broker_socket_stat.st_uid == egress.pw_uid
+            assert broker_socket_stat.st_gid == context_gid
+            assert stat.S_IMODE(broker_socket_stat.st_mode) == 0o660
 
-            # A process outside the reviewed socket group cannot traverse the
-            # broker runtime directory, even with a syntactically valid P0
-            # frame. The refusal occurs before a request reaches the service.
+            # A process outside the reviewed socket group receives kernel
+            # EACCES on connect to the real broker socket path.
             refusal_code = """
 import errno, socket
 from pathlib import Path
-path = str(Path(__import__('os').environ['AZAZEL_ROOT']) / 'var/lib/azazel/run/knowledge-context/knowledge-context.sock')
+import os
+path = str(Path(os.environ['AZAZEL_ROOT']) / 'var/lib/azazel/run/knowledge-context/knowledge-context.sock')
 client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 try:
     client.connect(path)

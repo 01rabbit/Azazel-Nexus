@@ -116,6 +116,7 @@ PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
 
 # Keep the full-node listener subprocess separate from the tight 500 ms
 # service-path timing cases above. Both run under the same suite lock.
+export NEXUS_REQUIRE_REAL_PROCESS=1
 PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
   tests/real_process/test_knowledge_context_process_interop.py
 
