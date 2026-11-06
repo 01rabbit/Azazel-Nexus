@@ -505,6 +505,7 @@ class GenerationProbe:
         self.infer_attempts = 0
         self.pre_http_refusals = 0
         self.other_errors = 0
+        self.other_error_types = []
         self.results = []
         self.emitted_text = []
 
@@ -515,8 +516,9 @@ class GenerationProbe:
         except FixturePreHTTPRefusal:
             self.pre_http_refusals += 1
             raise
-        except Exception:
+        except Exception as exc:
             self.other_errors += 1
+            self.other_error_types.append(type(exc).__name__)
             raise
         self.results.append(result)
         self.emitted_text.append(result.text)
@@ -648,7 +650,8 @@ def generation_scenario(root, record, observed, privacy, *, degraded):
             assert final["state"] == "complete", (
                 f"state={final['state']} infer_attempts={probe.infer_attempts} "
                 f"pre_http_refusals={probe.pre_http_refusals} "
-                f"other_errors={probe.other_errors} completed_calls={observed_metrics}"
+                f"other_errors={probe.other_errors} error_types={probe.other_error_types} "
+                f"completed_calls={observed_metrics}"
             )
             assert final["assistance"]["generation_method"] == "model"
             assert probe.pre_http_refusals == 0 and probe.other_errors == 0
