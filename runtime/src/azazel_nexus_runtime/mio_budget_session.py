@@ -6,7 +6,8 @@ import math
 import threading
 import time
 from azazel_nexus.generation_budget import (TASKS, CAPS, coverage, task_placeholder,
-    selection_unknown, project_budget, integer, validate_selection, validate_model_assistance)
+    selection_unknown, project_budget, integer, validate_selection, validate_model_assistance,
+    MIO_REASON_OUTCOMES, COORDINATOR_DISPOSITIONS)
 from .mio_generation_budget import (BudgetPlanner, BudgetProfile, TaskBudget,
     BudgetRefused, BudgetReason, mio_budget_for_task)
 from .mio_serve import LocalInferenceRequest
@@ -20,6 +21,8 @@ class BudgetSession:
         self.tasks = [task_placeholder(task) for task in TASKS]
         self.planner = None
         self.reason = None
+        self.mio_reason = None
+        self.coordinator_disposition = None
         self.outcome = None
         self.core_complete = False
         self.started = job['submitted']
@@ -69,11 +72,19 @@ class BudgetSession:
             specs = tuple(TaskBudget(t, max(1, context - cap - 32), cap, cap, .05)
                           for t, cap in zip(TASKS, self.lane.output_caps))
             profile = BudgetProfile('fixture-v1', context, specs)
+            for record,spec in zip(self.tasks,specs):
+                record.update(input_limit=spec.input_limit,output_tokens_cap=spec.output_cap,
+                    output_min=spec.output_min,context_limit=context,context_slack=profile.slack)
             def counter(task, prompt):
                 if not self.lane._authorized(self.job['generation']) or self.job['cancelled'].is_set():
                     return None
                 request = self.request(task, prompt)
-                return self._provider_read(lambda:self.lane.server.count_chat_tokens(request,self.read_remaining()))
+                count = self._provider_read(lambda:self.lane.server.count_chat_tokens(request,self.read_remaining()))
+                if integer(count):
+                    with self.lock:
+                        if self.frozen is None:
+                            self.tasks[TASKS.index(task)].update(count_kind='exact',input_tokens_bound=count)
+                return count
             self.planner = BudgetPlanner(profile, submitted=self.started,
                 deadline_s=self.lane.deadline_s, counter=counter, clock=time.monotonic)
         except Exception:
@@ -93,7 +104,9 @@ class BudgetSession:
         try:
             return mio_budget_for_task(self.planner, task, budget_type=self.api.GenerationBudget)
         except BudgetRefused as exc:
-            self.reject(exc.reason.value, 'token_count_unknown' if exc.reason is BudgetReason.COUNT_UNKNOWN else 'budget_exhausted')
+            reason = 'count_unknown' if exc.reason is BudgetReason.COUNT_UNKNOWN else 'budget_exhausted'
+            self.reason,self.outcome = reason,MIO_REASON_OUTCOMES[reason]
+            raise self.api.BudgetError(reason,'adapter_budget_gate') from None
 
     def usage_for_task(self, task):
         with self.lock:
@@ -101,6 +114,9 @@ class BudgetSession:
             return None if usage is None else dict(input_tokens=usage['tokens_in'], output_tokens=usage['tokens_out'])
 
     def __call__(self, task, prompt):
+        self.reject('dispatch_tracking_unavailable','output_invalid')
+
+    def invoke_budgeted(self, task, prompt, on_dispatch):
         from .mio_generation import _reject_json_constant, _finite_json_float, _unique_json_object
         if self.reason is not None:
             self.reject(self.reason, self.outcome)
@@ -125,15 +141,30 @@ class BudgetSession:
             began = time.monotonic()
             self.current_started = began
             self.call_end = min(began + allocation.provider_seconds, self.job['end'])
-            record['dispatched'] = True
             call = {'usage':None,'timings':{}}
-            self.calls.append(call)
+        def dispatch():
+            with self.lock:
+                if (record['dispatched'] or self.frozen is not None):
+                    self.reject('send_notification_conflict','output_invalid')
+                if (self.job['cancelled'].is_set() or self.lane._stopped or self.lane._fenced
+                        or not self.lane._authorized(self.job['generation']) or time.monotonic() >= self.call_end):
+                    self.reject('cancelled','cancelled')
+                if not callable(on_dispatch):
+                    self.reject('dispatch_tracking_unavailable','output_invalid')
+                try:
+                    on_dispatch()
+                except Exception:
+                    self.reject('send_notification_conflict','output_invalid')
+                record['dispatched'] = True
+                self.calls.append(call)
         try:
             result = self.lane.server.infer(request,
-                deadline_s=max(.000001,self.call_end-time.monotonic()), allow_unknown_usage=True)
+                deadline_s=max(.000001,self.call_end-time.monotonic()), allow_unknown_usage=True,on_dispatch=dispatch)
             with self.lock:
                 if self.frozen is not None:
                     return self.reject('timeout','deadline_exceeded')
+                if not record['dispatched']:
+                    self.reject('dispatch_tracking_unavailable','output_invalid')
                 usage = (dict(tokens_in=result.tokens_in,tokens_out=result.tokens_out)
                          if integer(result.tokens_in) and integer(result.tokens_out) else None)
                 record['actual_usage'] = usage
@@ -185,6 +216,16 @@ class BudgetSession:
         """Validate MIO's separate receipt before promoting any generated text."""
         receipt = getattr(assistance, 'generation_receipt', None)
         try:
+            if not isinstance(receipt,self.api.GenerationOutcome):
+                raise ValueError
+            raw_reason = receipt.reason
+            self.mio_reason = raw_reason if raw_reason in MIO_REASON_OUTCOMES else ('malformed' if raw_reason is not None else None)
+            disposition = receipt.coordinator_disposition
+            if disposition is not None and disposition not in COORDINATOR_DISPOSITIONS:
+                raise ValueError
+            self.coordinator_disposition = disposition
+            if self.mio_reason is not None and self.reason is None:
+                self.reason,self.outcome = self.mio_reason,MIO_REASON_OUTCOMES[self.mio_reason]
             if (receipt is None or set(receipt.calls_sent) != set(TASKS) or set(receipt.task_results) != set(TASKS)
                     or set(receipt.usage) != set(TASKS) or set(receipt.selections) - set(TASKS)):
                 raise ValueError
@@ -200,7 +241,7 @@ class BudgetSession:
                 raw = receipt.selections.get(task)
                 if raw is None:
                     continue
-                if (raw.coverage not in ('full','selected') or type(raw.kept) is not tuple
+                if (not isinstance(raw,self.api.PromptSelection) or raw.coverage not in ('full','selected') or type(raw.kept) is not tuple
                         or type(raw.dropped) is not tuple or len(raw.kept)+len(raw.dropped)>4096
                         or any(type(unit) is not str for unit in raw.kept)
                         or len(set(raw.kept))!=len(raw.kept) or type(raw.template_version) is not str
@@ -225,10 +266,7 @@ class BudgetSession:
                 inherited = sel['coverage']
                 record['validated'] = receipt.task_results.get(task) == 'validated'
             public = assistance.to_dict()
-            if receipt.reason is not None and self.reason is None:
-                self.reason = receipt.reason if receipt.reason in ('budget_exhausted','count_unknown','malformed','task_plan_unsupported') else 'malformed'
-                self.outcome = {'count_unknown':'token_count_unknown','malformed':'output_invalid'}.get(self.reason,'budget_exhausted')
-            self.core_complete = (receipt.state == 'complete' and receipt.reason is None
+            self.core_complete = (receipt.state == 'complete' and receipt.reason is None and self.reason is None
                 and public.get('state') == 'complete' and public.get('generation_method') == 'model'
                 and all(t['dispatched'] and t['validated'] for t in self.tasks))
             if self.core_complete:
@@ -245,6 +283,8 @@ class BudgetSession:
         with self.lock:
             elapsed = max(0,(time.monotonic()-self.started)*1000)
             reasons = [] if self.reason is None else [self.reason]
+            if self.mio_reason is not None and self.mio_reason not in reasons:
+                reasons.append(self.mio_reason)
             tasks = copy.deepcopy(self.tasks)
             if self.in_flight and self.current_started is not None:
                 sent = [t for t in tasks if t['dispatched']]
@@ -256,7 +296,7 @@ class BudgetSession:
                 upstream_selection=copy.deepcopy(self.job.get('upstream_selection',selection_unknown())), elapsed_ms=elapsed,
                 deadline_ms=self.lane.deadline_s*1000,result_state=state,primary_outcome=outcome,
                 superseded=False,cleanup=copy.deepcopy(self.cleanup),job_calls=sum(t['dispatched'] for t in tasks),
-                tasks=tasks,core_complete=self.core_complete)
+                tasks=tasks,core_complete=self.core_complete,coordinator_disposition=self.coordinator_disposition)
             projected, meta = project_budget(meta)
             status = self.lane._status(projected,self.job['frame'],self.job['generation'],
                 result_handle=self.job['handle'],budget_version=1,generation_budget=meta,calls=copy.deepcopy(self.calls))

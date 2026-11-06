@@ -589,7 +589,9 @@ def test_active_same_source_retry_after_stop_or_fence_is_terminal():
         server.release.set()
 
 
-def test_opt_in_with_older_canonical_mio_uses_explicit_legacy_compatibility():
+def test_opt_in_with_older_canonical_mio_uses_explicit_legacy_compatibility(monkeypatch):
+    import azazel_mio
+    monkeypatch.setattr(azazel_mio,'budget',None,raising=False)
     lane,source,frame=setup()
     lane.budget_enabled=True
     value=result(lane,source,frame)

@@ -38,6 +38,7 @@ class Server:
         task=request.response_format['json_schema']['name']
         return None if task==self.fail_task else 12
     def infer(self, request, deadline_s, **kw):
+        if kw.get('on_dispatch') is not None:kw['on_dispatch']()
         self.requests.append((request, deadline_s))
         self.entered.set()
         if self.block:
@@ -57,6 +58,11 @@ def make(monkeypatch):
     mio=ModuleType('azazel_mio')
     api=ModuleType('azazel_mio.budget')
     api.GenerationBudget=lambda **kw:NS(**kw)
+    api.GenerationOutcome=NS
+    api.PromptSelection=NS
+    class BudgetError(ValueError):
+        def __init__(self,reason,detail):self.reason=reason;self.detail=detail
+    api.BudgetError=BudgetError
     model=ModuleType('azazel_mio.model_adapter')
     model.MioModelUnavailable=type('MioModelUnavailable',(ValueError,),{})
     schema=ModuleType('azazel_mio.model_schema')
@@ -78,14 +84,16 @@ def make(monkeypatch):
                     selected=self.model.job['source'].get('selected_first') and task==TASKS[0]
                     selections[task]=NS(coverage='selected' if selected else 'full',kept=('core',),
                         dropped=(('optional','optional_detail'),) if selected else (),token_count=count,template_version='fixture-v1')
-                    calls[task]=1
-                    self.model(task,'fixture')
+                    def on_dispatch():
+                        if calls[task]:raise RuntimeError('duplicate notification')
+                        calls[task]=1
+                    self.model.invoke_budgeted(task,'fixture',on_dispatch)
                     results[task]='validated'
                 except Exception:
                     break
             receipt=NS(state='complete' if all(v=='validated' for v in results.values()) else 'failed',
                 task_results=results,calls_sent=calls,selections=selections,reason=reason,
-                usage={t:self.model.usage_for_task(t) for t in TASKS})
+                usage={t:self.model.usage_for_task(t) for t in TASKS},coordinator_disposition=None)
             data=dict(schema_version='mio.assistance.v1',state='complete',generation_method='model',
                 frame_id=frame.frame_id,trace_id=frame.trace_id,hypotheses=[dict(verification='model_proposed_unverified',statement='Benign report'),
                 dict(verification='model_proposed_unverified',statement='Unresolved report')],unknowns=[],next_checks=[])
@@ -214,6 +222,7 @@ def test_stop_confirmed_before_global_deadline_preserves_timeout_and_prior_usage
 def test_provider_failure_records_dispatched_call_even_without_usage(make):
     lane,server,source,frame=make()
     def unavailable(request,deadline_s,**kw):
+        kw['on_dispatch']()
         server.requests.append((request,deadline_s))
         raise OSError('private fixture message')
     server.infer=unavailable

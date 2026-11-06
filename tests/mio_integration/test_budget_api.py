@@ -1,0 +1,184 @@
+"""Run explicitly with the pinned #48 wheel; provider is controlled, not a model."""
+import copy
+from dataclasses import asdict
+from datetime import UTC, datetime
+import json
+import threading
+import time
+from types import SimpleNamespace as NS
+
+import pytest
+from azazel_mio import MioSituationFrame
+from azazel_mio import budget as api
+from azazel_nexus.generation_budget import TASKS, MIO_REASON_OUTCOMES
+from azazel_nexus.incident_explain import slow_analysis_projection
+from azazel_nexus_runtime import mio_budget_session as session_module
+from azazel_nexus_runtime.mio_budget_session import BudgetSession
+from azazel_nexus_runtime.mio_generation import GenerationCapability, GenerationLane
+from azazel_nexus_runtime.mio_serve import LocalInferenceResult
+
+
+class FixtureLane(GenerationLane):
+    def _authorized(self,generation):return generation=='api-fixture'
+
+
+class ControlledServer:
+    def __init__(self):self.requests=[];self.stopped=False;self.dispatch_callbacks=[]
+    def context_limit(self,deadline_s):return 4096
+    def count_chat_tokens(self,request,deadline_s):return 12
+    def infer(self,request,deadline_s,**kw):
+        if kw.get('on_dispatch') is not None:
+            self.dispatch_callbacks.append(kw['on_dispatch']);kw['on_dispatch']()
+        task=request.response_format['json_schema']['name'];self.requests.append(task)
+        if task==TASKS[0]:
+            def h(i,slot):
+                return dict(hypothesis_id='h'+str(i),hypothesis_alternative_id=slot,
+                    statement='possible',status='proposed',supporting_evidence_refs=['ev:ssh:1'],
+                    contradicting_evidence_refs=[],assumptions=[],falsification_conditions=['different observation'],
+                    expected_observations=[],missing_evidence=[])
+            value={'hypotheses':[h(1,'hostile_activity'),h(2,'benign_activity')]}
+        elif task==TASKS[1]:value={'evidence_gaps':[]}
+        else:value=dict(summary='uncertain',recommended_action='OBSERVE',rationale='review',
+            evidence_refs=['ev:ssh:1'],limitations=['unverified'])
+        return LocalInferenceResult(json.dumps(value),12,7,{},'stop','preserved')
+    def stop(self):self.stopped=True
+
+
+def inputs():
+    trace='mio-0123456789abcdef-1'
+    frame=MioSituationFrame.build(frame_id=trace+':frame',trace_id=trace,
+        created_at=datetime.now(UTC).isoformat().replace('+00:00','Z'),mission='Review activity',
+        current_defensive_state='OBSERVE',threat_level='UNKNOWN',known_facts=('event',),
+        unknowns=('unknown',),contradictions=('counterexample',),evidence_refs=('ev:ssh:1',))
+    cap=GenerationCapability('api-fixture','fixture-model','2099-01-01T00:00:00Z',1,lambda:True)
+    return frame,cap
+
+
+def run(server=None):
+    frame,cap=inputs();server=server or ControlledServer()
+    lane=FixtureLane(capability=cap,server=server,deadline_s=5,budget_enabled=True)
+    first=lane.submit({'request_id':'api-fixture'},frame,'api-fixture',upstream_coverage='intact')
+    until=time.monotonic()+2
+    while time.monotonic()<until:
+        value=lane.poll(first['result_handle'],'api-fixture',frame.trace_id)
+        if value['state']!='queued':return lane,server,value
+        time.sleep(.002)
+    pytest.fail('real MIO fixture did not terminate')
+
+
+def test_real_assistant_core_receipt_and_actual_dispatch_are_aligned():
+    lane,server,value=run()
+    assert value['state']=='complete',value
+    assert server.requests==list(TASKS)
+    assert value['generation_budget']['job_calls']==3
+    assert value['generation_budget']['core_complete']
+    assert value['generation_budget']['coordinator_disposition'] is None
+    assert all(t['validated'] for t in value['generation_budget']['tasks'])
+
+
+@pytest.mark.parametrize(('fault','reason'),[('missing','dispatch_tracking_unavailable'),('duplicate','send_notification_conflict')])
+def test_notification_contract_violations_fail_closed_preserving_actual_usage(monkeypatch,fault,reason):
+    captured=[]
+    class FaultSession(BudgetSession):
+        def invoke_budgeted(self,task,prompt,on_dispatch):
+            def notify():
+                if fault=='missing':return
+                on_dispatch()
+                try:on_dispatch()
+                except RuntimeError:pass
+            return super().invoke_budgeted(task,prompt,notify)
+        def finish(self,assistance):
+            captured.append(assistance.generation_receipt)
+            return super().finish(assistance)
+    monkeypatch.setattr(session_module,'BudgetSession',FaultSession)
+    lane,server,value=run()
+    assert value['state']=='degraded',value
+    assert server.requests==[TASKS[0]]
+    assert value['generation_budget']['job_calls']==1
+    assert value['generation_budget']['tasks'][0]['actual_usage']=={'tokens_in':12,'tokens_out':7}
+    assert reason in value['generation_budget']['reasons']
+    assert reason in slow_analysis_projection(value)['budget']['reasons']
+    assert captured[0].reason==reason
+    assert captured[0].calls_sent[TASKS[0]]==(0 if fault=='missing' else 1)
+
+
+def test_late_notification_is_rejected_without_mutating_finished_receipts(monkeypatch):
+    callbacks=[];receipts=[]
+    class CaptureSession(BudgetSession):
+        def invoke_budgeted(self,task,prompt,on_dispatch):
+            callbacks.append(on_dispatch)
+            return super().invoke_budgeted(task,prompt,on_dispatch)
+        def finish(self,assistance):
+            receipts.append(assistance.generation_receipt)
+            return super().finish(assistance)
+    monkeypatch.setattr(session_module,'BudgetSession',CaptureSession)
+    lane,server,value=run()
+    assert value['state']=='complete',value
+    before=asdict(receipts[0]);saved=copy.deepcopy(value)
+    for callback in callbacks+server.dispatch_callbacks:
+        with pytest.raises(RuntimeError):callback()
+    assert server.requests==list(TASKS)
+    assert asdict(receipts[0])==before
+    assert lane.poll(value['result_handle'],'api-fixture',value['trace_id'])==saved
+
+
+def test_predispatch_gate_refusal_does_not_notify_or_send(monkeypatch):
+    notified=[];receipts=[]
+    class CancelSession(BudgetSession):
+        def invoke_budgeted(self,task,prompt,on_dispatch):
+            self.job['cancelled'].set()
+            def notify():notified.append(task);on_dispatch()
+            return super().invoke_budgeted(task,prompt,notify)
+        def finish(self,assistance):receipts.append(assistance.generation_receipt);return super().finish(assistance)
+    monkeypatch.setattr(session_module,'BudgetSession',CancelSession)
+    lane,server,value=run()
+    assert value['state']=='cancelled',value
+    assert not notified and not server.requests
+    assert value['generation_budget']['job_calls']==0
+    if receipts:assert sum(receipts[0].calls_sent.values())==0
+
+
+@pytest.mark.parametrize('reason',sorted(MIO_REASON_OUTCOMES))
+def test_closed_mio_reason_is_retained_in_private_and_public_receipt(reason):
+    frame,cap=inputs();lane=FixtureLane(capability=cap,server=ControlledServer(),budget_enabled=True)
+    start=time.monotonic()
+    job=dict(submitted=start,end=start+5,frame=frame,generation='api-fixture',handle='a'*64,
+        upstream_coverage='unknown',source={'request_id':'fixture'},cancelled=threading.Event())
+    session=BudgetSession(lane,job,api)
+    receipt=api.GenerationOutcome('failed',dict.fromkeys(TASKS,'not_started'),dict.fromkeys(TASKS,0),
+        dict.fromkeys(TASKS,None),reason,{},coordinator_disposition='cancelled')
+    session.finish(NS(generation_receipt=receipt,to_dict=lambda:dict(state='error_fallback',generation_method='static_reference')))
+    state={'cancelled':'cancelled','superseded':'superseded','stale':'stale'}.get(session.outcome,'degraded')
+    value=session.snapshot(state,session.outcome)
+    assert value['generation_budget']['primary_outcome']==MIO_REASON_OUTCOMES[reason]
+    assert value['generation_budget']['reasons']==[reason]
+    shown=slow_analysis_projection(value)
+    assert shown['budget']['reasons']==[reason]
+    assert shown['budget']['coordinator_disposition']=='cancelled'
+
+
+def test_provider_presend_refusal_is_zero_in_both_adapter_and_mio(monkeypatch):
+    receipts=[]
+    class CaptureSession(BudgetSession):
+        def finish(self,assistance):receipts.append(assistance.generation_receipt);return super().finish(assistance)
+    monkeypatch.setattr(session_module,'BudgetSession',CaptureSession)
+    server=ControlledServer()
+    def refuse(*args,**kwargs):raise OSError('fixture pre-send refusal')
+    server.infer=refuse
+    lane,server,value=run(server)
+    assert value['generation_budget']['job_calls']==0
+    assert not server.requests
+    assert receipts and sum(receipts[0].calls_sent.values())==0
+    assert value['generation_budget']['primary_outcome']=='provider_unavailable'
+
+
+def test_compile_budget_rejection_keeps_observed_exact_count_in_unsent_receipt():
+    server=ControlledServer()
+    server.context_limit=lambda deadline_s:2048
+    server.count_chat_tokens=lambda request,deadline_s:1522
+    lane,server,value=run(server)
+    assert not server.requests and value['generation_budget']['job_calls']==0
+    task=value['generation_budget']['tasks'][0]
+    assert task['count_kind']=='exact' and task['input_tokens_bound']==1522
+    assert task['context_limit']==2048 and task['output_tokens_cap']==768 and task['context_slack']==32
+    assert value['generation_budget']['primary_outcome']=='budget_exhausted'

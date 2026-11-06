@@ -218,7 +218,7 @@ class LocalServer:
             return False
 
     def infer(self, request: LocalInferenceRequest, deadline_s: float, *,
-              allow_unknown_usage: bool = False) -> LocalInferenceResult:
+              allow_unknown_usage: bool = False, on_dispatch: Callable[[], None] | None = None) -> LocalInferenceResult:
         end = _deadline(deadline_s)
         if not self._child.alive or self.state is not LifecycleState.SERVING:
             raise LocalServerRefused("local server is not serving")
@@ -226,7 +226,10 @@ class LocalServer:
         if len(body) > MAX_REQUEST_BYTES:
             raise LocalServerRefused("request exceeds byte ceiling")
         began = time.monotonic()
-        raw = self._http("POST", "/v1/chat/completions", body, end)
+        if on_dispatch is None:
+            raw = self._http("POST", "/v1/chat/completions", body, end)
+        else:
+            raw = self._http("POST", "/v1/chat/completions", body, end, on_dispatch=on_dispatch)
         try:
             data = _decode_document(raw)
             choice = data["choices"][0]
@@ -340,7 +343,7 @@ class LocalServer:
         except (ValueError, KeyError, TypeError, RecursionError):
             raise LocalServerRefused("invalid embedding response") from None
 
-    def _http(self, method: str, path: str, body: bytes, end: float) -> bytes:
+    def _http(self, method: str, path: str, body: bytes, end: float, *, on_dispatch=None) -> bytes:
         self._check_admission()
 
         def remaining() -> float:
@@ -355,6 +358,10 @@ class LocalServer:
             head = (f"{method} {path} HTTP/1.1\r\nHost: localhost\r\n"
                     f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n"
                     "Connection: close\r\n\r\n").encode("ascii")
+            peer.settimeout(remaining())
+            self._check_admission()
+            if on_dispatch is not None:
+                on_dispatch()
             peer.settimeout(remaining())
             peer.sendall(head + body)
             header = bytearray()

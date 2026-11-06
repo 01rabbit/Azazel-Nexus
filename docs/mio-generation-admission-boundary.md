@@ -237,3 +237,17 @@ terminal result; queued receipt polling continues until a real result arrives.
 Cleanup still requires a saved pending result. Storage failure leaves the fast
 result available and reports slow storage unavailable. Public UI projections contain status and omission counts only,
 without handles, identifiers, prompt text or selection unit IDs.
+
+### MIO #48 dispatch notification contract
+
+A budgeted transport implements `invoke_budgeted(task,prompt,on_dispatch)`.
+After authorization, cancellation, fit and deadline gates pass, the adapter
+calls `on_dispatch()` synchronously once immediately before provider invocation.
+Pre-send refusal has zero sent calls; a provider failure after notification
+retains one sent call and any known usage. Missing or duplicate notifications
+are closed failures (`dispatch_tracking_unavailable` / `send_notification_conflict`),
+not successful model answers. A late notification cannot change a saved receipt.
+The private and public budget projections retain these closed reasons and keep
+`coordinator_disposition` separate from the original failure. The #48 candidate
+wheel is used for isolated connection tests; the consumer dependency pin is
+unchanged by this work.

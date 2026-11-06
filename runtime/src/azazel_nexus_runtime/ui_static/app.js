@@ -659,7 +659,8 @@
       if (budget) {
         add(slowNode, kv([["生成予算", budget.outcome], ["資料の範囲", budget.coverage],
           ["省略件数", budget.omitted_units], ["停止確認", ({pending:"停止確認待ち",confirmed:"停止確認済み",unconfirmed:"停止未確認",not_needed:"停止要求なし"})[budget.cleanup_state]],
-          ["後発の失効", budget.superseded ? "失効" : "なし"]]));
+          ["後発の失効", budget.superseded ? "失効" : "なし"],
+          ["縮退理由", (budget.reasons || []).join(", ")], ["生成周期", budget.coordinator_disposition]]));
         if (budget.outcome === "legacy_unverified") {
           add(slowNode, el("p", "small", "旧記録・予算未確認。高速評価の静的助言を参照してください。"));
         } else if (budget.outcome === "unsupported") {

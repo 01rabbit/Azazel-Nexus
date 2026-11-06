@@ -409,3 +409,16 @@ def test_unknown_finish_reason_remains_unconfirmed_completion(finish):
     handle._http=lambda *args:json.dumps(response).encode()
     result=handle.infer(request(),1)
     assert result.finish_reason is None and result.context_integrity=='preserved'
+
+
+@pytest.mark.real_process
+def test_dispatch_notification_is_once_after_request_gates(server):
+    handle=server();handle.start();notified=[]
+    handle.infer(request(),1,on_dispatch=lambda:notified.append('sent'))
+    assert notified==['sent']
+    with pytest.raises(LocalServerRefused):
+        handle.infer(LocalInferenceRequest((('user','\u0000'*60000),)),1,on_dispatch=lambda:notified.append('oversized'))
+    assert notified==['sent']
+    handle.stop()
+    with pytest.raises(LocalServerRefused):handle.infer(request(),1,on_dispatch=lambda:notified.append('stopped'))
+    assert notified==['sent']

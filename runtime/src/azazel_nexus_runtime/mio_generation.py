@@ -524,9 +524,13 @@ class GenerationLane:
             self._update_budget_cleanup(job, 'unconfirmed', 'confirmation_deadline')
         threading.Thread(target=expire, daemon=True, name='mio-budget-cleanup').start()
 
-    def _execute_budget(self, job, core_type, api):
+    def _make_budget_session(self, job, api):
+        """Product default; isolated transport fixtures may override this constructor seam."""
         from .mio_budget_session import BudgetSession
-        session = BudgetSession(self, job, api)
+        return BudgetSession(self,job,api)
+
+    def _execute_budget(self, job, core_type, api):
+        session = self._make_budget_session(job,api)
         job['budget_session'] = session
         def work():
             try:
@@ -581,7 +585,8 @@ class GenerationLane:
                     session.reason,session.outcome='count_unknown','token_count_unknown'
                     state,outcome='degraded','token_count_unknown'
                 elif failure:
-                    state,outcome=('timeout' if failure=='timeout' else 'degraded'),session.outcome
+                    state = {'deadline_exceeded':'timeout','cancelled':'cancelled','superseded':'superseded','stale':'stale','admission_closed':'closed'}.get(session.outcome,'degraded')
+                    outcome=session.outcome
                 elif session.core_complete and session.remaining() > max(.5,self.deadline_s*.1)/2:
                     state,outcome='complete','within_budget'
                 else:

@@ -12,7 +12,21 @@ OUTCOMES = frozenset({'within_budget', 'budget_exhausted', 'token_count_unknown'
     'runtime_truncated', 'truncation_unknown', 'output_incomplete', 'token_usage_unknown',
     'output_invalid', 'deadline_exceeded', 'stop_unconfirmed', 'admission_closed',
     'provider_unavailable', 'model_unavailable', 'cancelled', 'superseded', 'stale'})
-REASONS = OUTCOMES | {'count_unknown', 'truncated', 'timeout', 'malformed', 'task_plan_unsupported'}
+MIO_REASON_OUTCOMES = {
+    'budget_exhausted':'budget_exhausted', 'count_unknown':'token_count_unknown',
+    'malformed':'output_invalid', 'task_plan_unsupported':'budget_exhausted',
+    'dispatch_tracking_unavailable':'output_invalid', 'send_notification_conflict':'output_invalid',
+    'insufficient_evidence':'output_invalid', 'validation_rejected':'output_invalid',
+    'dependency_unavailable':'provider_unavailable', 'error_fallback':'output_invalid',
+    'operator_cancelled':'cancelled', 'stale_superseded':'superseded',
+    'cancelled':'cancelled', 'superseded':'superseded', 'backpressure':'model_unavailable',
+    'in_flight_duplicate':'model_unavailable', 'pre_restart':'stale',
+    'unknown_or_evicted':'stale', 'ticket_mismatch':'stale', 'already_completed':'stale',
+    'unknown':'output_invalid',
+}
+COORDINATOR_DISPOSITIONS = frozenset({'current','cancelled','superseded','backpressure',
+    'in_flight_duplicate','pre_restart','unknown_or_evicted','ticket_mismatch','already_completed','unknown'})
+REASONS = OUTCOMES | set(MIO_REASON_OUTCOMES) | {'truncated','timeout'}
 CLEANUP_REASONS = {'stop_confirmed', 'stop_failed', 'confirmation_deadline',
                    'observation_lost', 'restart_unconfirmed'}
 
@@ -73,7 +87,7 @@ def read_budget(value, *, state=None, usage=None):
         keys = {'version','profile_id','outcome','reasons','coverage','upstream_coverage',
                 'elapsed_ms','deadline_ms','result_state','primary_outcome','superseded',
                 'cleanup','job_calls','tasks','core_complete','upstream_selection'}
-        if (type(value) is not dict or set(value) != keys or type(value['version']) is not int
+        if (type(value) is not dict or set(value) not in (keys, keys|{'coordinator_disposition'}) or type(value['version']) is not int
                 or value['version'] != 1 or value['profile_id'] != 'fixture-v1'
                 or value['outcome'] not in OUTCOMES or value['primary_outcome'] not in OUTCOMES
                 or value['result_state'] not in {'complete','degraded','timeout','cancelled','superseded','closed','stale'}
@@ -85,6 +99,8 @@ def read_budget(value, *, state=None, usage=None):
                 or not number(value['elapsed_ms']) or not number(value['deadline_ms'])
                 or not 0 < value['deadline_ms'] <= 30000 or not integer(value['job_calls'])
                 or type(value['tasks']) is not list or len(value['tasks']) != 3):
+            raise ValueError
+        if value.get('coordinator_disposition') is not None and value['coordinator_disposition'] not in COORDINATOR_DISPOSITIONS:
             raise ValueError
         validate_selection(value['upstream_selection'])
         if value['upstream_selection']['coverage'] != value['upstream_coverage']:
@@ -138,6 +154,7 @@ def read_budget(value, *, state=None, usage=None):
         if value['result_state'] == 'complete':
             if (value['primary_outcome'] != 'within_budget' or not value['core_complete'] or value['coverage'] == 'unknown' or value['reasons']
                     or cleanup['state'] != 'not_needed' or value['elapsed_ms'] >= value['deadline_ms']
+                    or value.get('coordinator_disposition') not in (None,'current')
                     or usage not in (None, 'known')):
                 raise ValueError
             for task in value['tasks']:
@@ -175,7 +192,8 @@ def project_budget(value):
 
 
 def validate_public_budget(value, *, state=None):
-    if (type(value) is not dict or set(value) != {'version','outcome','coverage','cleanup_state','superseded','omitted_units'}
+    if (type(value) is not dict or not {'version','outcome','coverage','cleanup_state','superseded','omitted_units'} <= set(value)
+            or set(value)-{'version','outcome','coverage','cleanup_state','superseded','omitted_units','reasons','coordinator_disposition'}
             or type(value['version']) is not int or value['version'] not in (0,1)
             or value['coverage'] not in COVERAGES or type(value['superseded']) is not bool
             or value['cleanup_state'] not in {'not_needed','pending','confirmed','unconfirmed'}
@@ -183,12 +201,16 @@ def validate_public_budget(value, *, state=None):
             or (value['version']==0 and value['outcome'] not in {'legacy_unverified','unsupported'})
             or (value['version']==1 and value['outcome'] not in OUTCOMES)):
         raise ValueError('generation_public_budget_refused')
+    if (type(value.get('reasons',[])) is not list or len(value.get('reasons',[]))>16
+            or any(type(r) is not str or r not in REASONS for r in value.get('reasons',[]))
+            or (value.get('coordinator_disposition') is not None and value['coordinator_disposition'] not in COORDINATOR_DISPOSITIONS)):
+        raise ValueError('generation_public_budget_refused')
     if value['coverage']=='intact' and value['omitted_units']:
         raise ValueError('generation_public_budget_refused')
     if state is not None:
         if (state=='complete') != (value['version']==1 and value['outcome']=='within_budget'):
             raise ValueError('generation_public_budget_refused')
-        if state=='complete' and (value['coverage']=='unknown' or value['cleanup_state']!='not_needed' or value['superseded']):
+        if state=='complete' and (value['coverage']=='unknown' or value['cleanup_state']!='not_needed' or value['superseded'] or value.get('reasons',[]) or value.get('coordinator_disposition') not in (None,'current')):
             raise ValueError('generation_public_budget_refused')
         if value['cleanup_state']=='unconfirmed' and value['version']==1 and (state!='degraded' or value['outcome']!='stop_unconfirmed'):
             raise ValueError('generation_public_budget_refused')
