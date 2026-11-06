@@ -330,21 +330,31 @@ def fixture_generation_lane(server):
 
 
 class GenerationProbe:
-    """Record real provider calls/usage/timings; content is held only for leak scans."""
+    """Record infer-boundary attempts/results; content is held only for leak scans."""
 
     def __init__(self, server):
         self.server = server
-        self.calls = 0
-        self.failures = 0
+        self.infer_attempts = 0
+        self.pre_http_refusals = 0
+        self.other_errors = 0
         self.results = []
         self.emitted_text = []
 
     def infer(self, request, deadline_s, **kwargs):
-        self.calls += 1
+        from azazel_nexus_runtime.mio_serve import LocalServerRefused
+
+        self.infer_attempts += 1
         try:
             result = self.server.infer(request, deadline_s, **kwargs)
+        except LocalServerRefused as exc:
+            if str(exc) == "local server is not serving":
+                # LocalServer checks serving state before opening its HTTP socket.
+                self.pre_http_refusals += 1
+            else:
+                self.other_errors += 1
+            raise
         except Exception:
-            self.failures += 1
+            self.other_errors += 1
             raise
         self.results.append(result)
         self.emitted_text.append(result.text)
@@ -365,6 +375,10 @@ class InProcessLocaldAdapter:
     def __init__(self, service):
         self.service = service
         self.last_slow_analysis = {"state": "closed", "usage": "unknown"}
+
+    def observe(self, *, deadline_s):
+        """Report this fixture's boundary accurately: local execution is not admitted."""
+        return "local_not_admitted" if deadline_s > 0 else "local_unavailable"
 
     def _request(self, verb, arguments, payload=None):
         from azazel_nexus_runtime.principal import Principal, PrincipalClass
@@ -406,7 +420,7 @@ class LogCapture:
 
         class Handler(logging.Handler):
             def emit(self, record):
-                outer.records.append(record.getMessage())
+                outer.records.append(self.format(record))
 
         self.handler = Handler(level=logging.DEBUG)
         self.root = logging.getLogger()
@@ -459,12 +473,14 @@ def generation_scenario(root, record, observed, privacy, *, degraded):
         if degraded:
             assert final["state"] == "degraded", final["state"]
             assert final["usage"] == "unknown" and "assistance" not in final
-            assert probe.calls == 1 and probe.failures == 1 and not probe.results
+            assert (probe.infer_attempts == 1 and probe.pre_http_refusals == 1
+                    and probe.other_errors == 0 and not probe.results)
         else:
             assert final["state"] == "complete", final["state"]
             assert final["assistance"]["generation_method"] == "model"
-            assert probe.failures == 0 and probe.calls >= 1
-            assert len(final["calls"]) == probe.calls == len(probe.results)
+            assert probe.pre_http_refusals == 0 and probe.other_errors == 0
+            assert probe.infer_attempts >= 1
+            assert len(final["calls"]) == probe.infer_attempts == len(probe.results)
             known = all(r.tokens_in is not None and r.tokens_out is not None
                         for r in probe.results)
             assert (final["usage"] == "known") is known
@@ -495,11 +511,15 @@ def generation_scenario(root, record, observed, privacy, *, degraded):
         print("FIXTURE-AUTHORIZED LAB EVIDENCE ONLY (not HG, not production admission); "
               "entryd->locald adapter is in-process, llama-server is a separate process: "
               f"{'generation_degraded' if degraded else 'generation'}/{privacy} "
-              f"state={final['state']} provider_calls={probe.calls} failures={probe.failures} "
+              f"state={final['state']} infer_attempts={probe.infer_attempts} "
+              f"pre_http_refusals={probe.pre_http_refusals} other_errors={probe.other_errors} "
               f"usage={final['usage']} tokens_in={tokens_in} tokens_out={tokens_out} "
               f"total_ms={timings}")
     finally:
-        logs.close()
+        try:
+            lane.cancel()
+        finally:
+            logs.close()
 
 
 def main():
