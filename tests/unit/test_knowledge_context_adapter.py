@@ -208,3 +208,11 @@ def test_missing_commissioned_key_map_and_ttl_are_refused():
         read_signed_response(raw, request=req, registry=commissioned_registry(),
                              peer_id="knowledge-node-1", now=NOW,
                              max_ttl_seconds=0)
+
+
+def test_semantic_expiry_cannot_outlive_commissioned_maximum_ttl():
+    req = request()
+    doc = response_payload(req)
+    doc["expires_at"] = "2026-11-04T12:06:00Z"
+    with pytest.raises(KnowledgeContextRefused):
+        verify(signed(doc, expires_at="2026-11-04T12:04:00Z"), req)

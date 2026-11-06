@@ -164,7 +164,8 @@ def read_signed_response(
         response = validate_knowledge_context_response(request, doc["payload"])
         semantic_generated = _instant(response.generated_at.isoformat())
         semantic_expires = _instant(response.expires_at.isoformat())
-        if issued < semantic_generated or expires > semantic_expires:
+        if (issued < semantic_generated or expires > semantic_expires
+                or (semantic_expires - semantic_generated).total_seconds() > max_ttl_seconds):
             raise ValueError
         return response
     except (ImportError, TypeError, ValueError, KeyError, UnicodeError,
