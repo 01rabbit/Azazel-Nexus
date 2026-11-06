@@ -107,7 +107,7 @@ def response_payload(req):
     }
 
 
-def signed(doc, *, key_id=KEY_ID, issued_at=NOW, expires_at="2026-11-04T12:04:00Z"):
+def signed(doc, *, key_id=KEY_ID, issued_at=NOW, expires_at="2026-11-04T12:05:00Z"):
     envelope = {
         "schema": ENVELOPE_SCHEMA,
         "key_id": key_id,
@@ -210,7 +210,7 @@ def test_missing_commissioned_key_map_and_ttl_are_refused():
                              max_ttl_seconds=0)
 
 
-def test_semantic_expiry_cannot_outlive_commissioned_maximum_ttl():
+def test_semantic_expiry_cannot_outlive_signed_envelope():
     req = request()
     doc = response_payload(req)
     doc["expires_at"] = "2026-11-04T12:06:00Z"
