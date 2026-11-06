@@ -39,14 +39,14 @@ POLICY = SanitizerPolicy.from_mapping({
 })
 
 
-def request(privacy=PrivacyClass.P0_PUBLIC):
+def request(privacy=PrivacyClass.P0_PUBLIC, *, requested_at=NOW):
     return make_request(
         {"indicator": "203.0.113.9", "secret": "must-not-leave"},
         privacy_class=privacy,
         policy=POLICY,
         mission="unit-test",
         alias_key=b"test-only",
-        requested_at=NOW,
+        requested_at=requested_at,
     )
 
 
@@ -216,3 +216,16 @@ def test_semantic_expiry_cannot_outlive_signed_envelope():
     doc["expires_at"] = "2026-11-04T12:05:00Z"
     with pytest.raises(KnowledgeContextRefused):
         verify(signed(doc, expires_at="2026-11-04T12:04:00Z"), req)
+
+
+def test_stale_semantic_response_refused_inside_fresh_signed_envelope():
+    req = request(requested_at="2026-11-04T11:00:00Z")
+    doc = response_payload(req)
+    doc["snapshot"]["as_of"] = "2026-11-04T11:54:00Z"
+    doc["generated_at"] = "2026-11-04T11:55:00Z"
+    doc["expires_at"] = "2026-11-04T11:59:30Z"
+    with pytest.raises(KnowledgeContextRefused):
+        verify(signed(
+            doc, issued_at="2026-11-04T11:59:00Z",
+            expires_at="2026-11-04T12:04:00Z",
+        ), req)
