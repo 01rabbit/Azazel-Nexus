@@ -37,6 +37,21 @@ class Server:
         self.counts.append(request)
         task=request.response_format['json_schema']['name']
         return None if task==self.fail_task else 12
+    def verified_tuple(self,deadline_s):
+        from azazel_nexus.generation_budget import verified_tuple_from_props
+        return verified_tuple_from_props(dict(model_alias='fixture',model_path='/fixture/model.gguf',
+            model_ftype='fixture',chat_template='fixture',bos_token='BOS',eos_token='EOS',build_info='fixture',
+            default_generation_settings={'n_ctx':self.context}))
+    def prepare_native(self,request,deadline_s,*,expected_tuple):
+        from azazel_nexus_runtime.mio_serve import NativePrompt,TokenCountUnknown,request_digest
+        if self.verified_tuple(deadline_s)!=expected_tuple:raise TokenCountUnknown('changed')
+        count=self.count_chat_tokens(request,deadline_s)
+        if type(count) is not int or count<1:raise TokenCountUnknown('unknown')
+        return NativePrompt(tuple(range(count)),request_digest(request),expected_tuple['tuple_id'])
+    def infer_native(self,request,deadline_s,*,prepared,expected_tuple,**kwargs):
+        from azazel_nexus_runtime.mio_serve import TokenCountUnknown
+        if self.verified_tuple(deadline_s)!=expected_tuple:raise TokenCountUnknown('changed')
+        return self.infer(request,deadline_s,**kwargs)
     def infer(self, request, deadline_s, **kw):
         if kw.get('on_dispatch') is not None:kw['on_dispatch']()
         self.requests.append((request, deadline_s))
@@ -90,6 +105,8 @@ def make(monkeypatch):
                     self.model.invoke_budgeted(task,'fixture',on_dispatch)
                     results[task]='validated'
                 except Exception:
+                    if self.model.job['source'].get('supersede_after_failure'):
+                        self.model.job['reason']='superseded';self.model.job['cancelled'].set()
                     break
             receipt=NS(state='complete' if all(v=='validated' for v in results.values()) else 'failed',
                 task_results=results,calls_sent=calls,selections=selections,reason=reason,
@@ -378,3 +395,40 @@ def test_tokenizer_timeout_keeps_count_unknown_but_stops_owned_provider(make):
     assert not server.requests and value['generation_budget']['job_calls']==0
     assert server.stopped.is_set() and lane._stopped
     assert value['generation_budget']['cleanup']['state'] in ('pending','confirmed')
+
+
+def test_later_supersession_does_not_erase_primary_truncation(make):
+    lane,server,source,frame=make();server.integrity='truncated'
+    value=terminal(lane,{**source,'supersede_after_failure':True},frame)
+    assert value['state']=='superseded'
+    assert value['generation_budget']['primary_outcome']=='runtime_truncated'
+    assert value['generation_budget']['outcome']=='superseded'
+    assert value['generation_budget']['reasons'][:2]==['truncated','superseded']
+    assert value['generation_budget']['tasks'][0]['actual_usage']=={'tokens_in':12,'tokens_out':7}
+
+
+@pytest.mark.parametrize('moment',['initial','after_first'])
+def test_missing_or_changed_tuple_refuses_new_dispatch_and_retains_sent_usage(make,moment):
+    lane,server,source,frame=make()
+    if moment=='initial':
+        server.verified_tuple=lambda *_:None
+    else:
+        original=server.infer
+        def change(*a,**kw):
+            result=original(*a,**kw);server.context=8192;return result
+        server.infer=change
+    value=terminal(lane,source,frame);meta=value['generation_budget']
+    assert value['state']=='degraded' and meta['primary_outcome']=='token_count_unknown'
+    assert meta['job_calls']==(0 if moment=='initial' else 1)
+    assert len(server.requests)==meta['job_calls']
+    if moment=='after_first':assert meta['tasks'][0]['actual_usage']==dict(tokens_in=12,tokens_out=7)
+
+
+def test_primary_reason_and_bounded_followup_sequence_are_independent():
+    from azazel_nexus_runtime.mio_budget_session import BudgetSession
+    session=object.__new__(BudgetSession)
+    session.lock=threading.RLock();session.reason=None;session.outcome=None;session.failures=[]
+    session.note_failure('truncated','runtime_truncated')
+    for reason in ['cancelled','admission_closed','timeout']*20:session.note_failure(reason,reason)
+    assert session.reason=='truncated' and session.outcome=='runtime_truncated'
+    assert session.failures==['truncated','cancelled','admission_closed','timeout']

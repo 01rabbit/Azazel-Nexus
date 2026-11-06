@@ -65,8 +65,8 @@ reviewed contract must define all of the following:
 
 The software seam runs after fast assessment in normal `mio.local.assess`.
 It creates one bounded worker only after authorization, with one pending slot,
-a five-second default deadline (hard maximum thirty seconds), 768 output tokens
-per structured task, and sixteen retained results. Exact repeated source polls
+a five-second default deadline (hard maximum thirty seconds), an output ceiling
+of 768 tokens per structured task (budget opt-in caps below), and sixteen retained results. Exact repeated source polls
 the result; a changed report with the same request ID supersedes old work. A
 worker deadline watcher stops the owned supervised server only while a provider
 request is in flight (timeout, cancel or supersession, while it is in flight); after
@@ -179,8 +179,9 @@ policy ceremony remain blocked on owner review of requirements 1–3 above.
 ## Opt-in generation budget and durable result status
 
 `GenerationLane(budget_enabled=True)` connects the agreed MIO budget API when
-it is available. The older canonical MIO wheel has no such API and keeps the
-explicitly unbudgeted compatibility path. Production still has no generation
+it is available. With budget enabled, a missing or older API refuses all sends
+with `count_unknown`; it never routes to the unbudgeted transport. The older
+compatibility path exists only when budget is disabled. Production still has no generation
 issuer and both admission constants remain false. Budget failure never retries
 through the compatibility path.
 
@@ -191,22 +192,42 @@ performance or semantic sufficiency claims. All three schemas and MIO grounding
 must still pass. No production time profile or HG evidence is inferred from
 these values. The absolute 5s default / 30s maximum deadline starts at queue
 acceptance. `R=max(0.5s,10% of D)` reserves final work and task overhead; remaining
-provider time is divided 45:20:35 with later-task minimum reservations.
+provider time is divided 45:20:35 with later-task minimum reservations. The sum
+of provider allocations cannot exceed D-R, even when earlier calls return early.
+R, weights, slack and provider minimums are explicit `BudgetSettings` values,
+independent of admission/HG and recorded separately from server identity.
 Compile, count and validation time consume this same deadline.
 
-The admitted local server supplies `n_ctx` through `/props`. The final request
-is rendered through its `/apply-template` and counted through `/tokenize` using
-the same messages, effective compiled task schema, response format and absolute deadline. Invalid or missing
-counts/context or unavailable effective schemas refuse dispatch; character estimates are never used. The
-runtime/template tokenization tuple must be verified before real-model
-acceptance. Actual input usage must equal the exact pre-count, output usage
-must fit the cap, and explicit per-request `truncated=false` plus `finish_reason=stop`
-are required. Missing/invalid truncation telemetry is unknown; stop or usage
-alone cannot imply preservation. Unknown usage, incomplete output, malformed
-JSON, count mismatch or a failed second/third task prevents model publication.
+The authenticated local server supplies model alias, model file/type identity,
+BOS/EOS tokenizer identifiers, chat template, runtime build and `n_ctx` through
+`/props`. Their hashes and a self-consistent tuple digest are private receipt
+metadata. They identify the serving instance's declarations, not a new content
+attestation; existing held-descriptor admission remains authoritative. The tuple
+must exist and remain identical before/after counting and before dispatch.
+Missing or changing fields refuse the next send with `count_unknown`.
+
+The final request is rendered through that server's `/apply-template` and
+counted through `/tokenize`. Budgeted inference sends the exact returned token
+IDs to native `/completion`, together with the effective JSON schema, output
+cap and remaining deadline. This removes any assumption that a separately
+rendered count equals the OpenAI chat endpoint's internal prompt. There are no
+character estimates, additional inference probes or unbudgeted retries.
+Native per-request boolean `truncated` is the sole integrity signal: false is
+preserved, true is truncated, missing/invalid is unknown. `tokens_evaluated` and
+`tokens_predicted` are strict actual usage; native timings remain bounded
+telemetry. The OpenAI-compatible response lacks these primary fields and caused
+the earlier small-input `stop` / unknown result. Stop or matching usage never
+implies preserved integrity. Actual input usage must equal the exact pre-count,
+output usage must fit the cap, and explicit preserved integrity plus confirmed
+stop are required. Unknown usage, incomplete output, malformed JSON, count
+mismatch or a failed second/third task prevents model publication.
 
 The private `generation_budget` v1 receipt records all three ordered tasks,
-including failed and unsent tasks. Readers share a CORE-only validator, reject
+including failed and unsent tasks. A complete receipt requires its verified tuple
+and full profile, I+O+S <= C, consistent schema/policy versions, positive per-call
+allocations, elapsed time within each allocation and the final reserve, and
+allocation totals within D-R. Failed receipts retain honest partial/unknown
+fields and elapsed overruns; they cannot become complete. Readers share a CORE-only validator, reject
 unknown versions and missing new-format metadata, and compute overall coverage
 as the worst of upstream and all task coverage. Pre-projection slicing is
 recorded before constructing the slow frame; any such loss remains unknown.
@@ -214,6 +235,9 @@ Selected material is labelled “選択した根拠に基づく生成助言（�
 Old complete records remain readable, but the current UI shows static advice
 and “旧記録・予算未確認”; it does not promote them to within-budget success.
 
+The first failure remains `primary_outcome`; bounded unique `reasons` append
+later cancellation, revocation, timeout or cleanup facts. `terminal_outcome`
+records the control decision without replacing that first cause.
 Results, cleanup and supersession are independent axes. A timeout can be
 terminal while cleanup is pending. The control worker does not join a blocked
 infer/stop worker. Dispatch closes immediately when stop is requested; no new

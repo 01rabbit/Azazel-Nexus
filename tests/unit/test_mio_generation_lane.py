@@ -589,14 +589,14 @@ def test_active_same_source_retry_after_stop_or_fence_is_terminal():
         server.release.set()
 
 
-def test_opt_in_with_older_canonical_mio_uses_explicit_legacy_compatibility(monkeypatch):
+def test_budget_enabled_old_api_is_unsent_count_unknown_not_legacy_bypass(monkeypatch):
     import azazel_mio
     monkeypatch.setattr(azazel_mio,'budget',None,raising=False)
     lane,source,frame=setup()
     lane.budget_enabled=True
     value=result(lane,source,frame)
-    assert value['state']=='complete'
-    assert 'generation_budget' not in value
-    assert len(lane.server.requests)==3
+    assert value['state']=='degraded'
+    assert value['generation_budget']['outcome']=='token_count_unknown'
+    assert not lane.server.requests
     from azazel_nexus.incident_explain import slow_analysis_projection
-    assert slow_analysis_projection(value)['budget']['outcome']=='legacy_unverified'
+    assert slow_analysis_projection(value)['budget']['outcome']=='token_count_unknown'

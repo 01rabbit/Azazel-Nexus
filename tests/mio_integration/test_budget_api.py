@@ -26,6 +26,21 @@ class ControlledServer:
     def __init__(self):self.requests=[];self.stopped=False;self.dispatch_callbacks=[]
     def context_limit(self,deadline_s):return 4096
     def count_chat_tokens(self,request,deadline_s):return 12
+    def verified_tuple(self,deadline_s):
+        from azazel_nexus.generation_budget import verified_tuple_from_props
+        return verified_tuple_from_props(dict(model_alias='fixture',model_path='/fixture/model.gguf',
+            model_ftype='fixture',chat_template='fixture',bos_token='BOS',eos_token='EOS',build_info='fixture',
+            default_generation_settings={'n_ctx':self.context_limit(deadline_s)}))
+    def prepare_native(self,request,deadline_s,*,expected_tuple):
+        from azazel_nexus_runtime.mio_serve import NativePrompt,TokenCountUnknown,request_digest
+        if self.verified_tuple(deadline_s)!=expected_tuple:raise TokenCountUnknown('changed')
+        count=self.count_chat_tokens(request,deadline_s)
+        if type(count) is not int or count<1:raise TokenCountUnknown('unknown')
+        return NativePrompt(tuple(range(count)),request_digest(request),expected_tuple['tuple_id'])
+    def infer_native(self,request,deadline_s,*,prepared,expected_tuple,**kwargs):
+        from azazel_nexus_runtime.mio_serve import TokenCountUnknown
+        if self.verified_tuple(deadline_s)!=expected_tuple:raise TokenCountUnknown('changed')
+        return self.infer(request,deadline_s,**kwargs)
     def infer(self,request,deadline_s,**kw):
         if kw.get('on_dispatch') is not None:
             self.dispatch_callbacks.append(kw['on_dispatch']);kw['on_dispatch']()

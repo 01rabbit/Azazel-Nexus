@@ -1,7 +1,7 @@
 """Pure budget planning seam; it does not grant model admission or perform I/O.
 
 The profile and exact counter must be tied by the caller to the admitted runtime,
-model, tokenizer and chat template. This seam is not yet connected to MIO.
+model, tokenizer and chat template. The product session connects this seam to the opt-in MIO budget API.
 """
 from __future__ import annotations
 
@@ -57,8 +57,30 @@ def _number(value, *, minimum=0):
 
 
 @dataclass(frozen=True)
+class BudgetSettings:
+    reserve_fraction: float = .1
+    minimum_reserve_ms: float = 500.
+    weights: tuple[int,int,int] = WEIGHTS
+    slack: int = 32
+    minimum_provider_ms: tuple[float,float,float] = (50.,50.,50.)
+
+    def __post_init__(self):
+        if (not _number(self.reserve_fraction) or not 0<self.reserve_fraction<1
+                or not _number(self.minimum_reserve_ms) or self.minimum_reserve_ms<=0
+                or type(self.weights) is not tuple or len(self.weights)!=3
+                or any(not _integer(v,minimum=1) for v in self.weights)
+                or not _integer(self.slack)
+                or type(self.minimum_provider_ms) is not tuple or len(self.minimum_provider_ms)!=3
+                or any(not _number(v) or v<=0 for v in self.minimum_provider_ms)):
+            raise ValueError('invalid_budget_settings')
+
+    def reserve(self, seconds):
+        return max(self.minimum_reserve_ms/1000,seconds*self.reserve_fraction)
+
+
+@dataclass(frozen=True)
 class TaskBudget:
-    """Tuple offered to a future MIO compiler; no profile values are invented here."""
+    """Tuple offered to the MIO compiler; profile values are explicit."""
     task: str
     input_limit: int
     output_cap: int
@@ -107,7 +129,7 @@ class Allocation:
 
 @dataclass(frozen=True)
 class SelectionReceipt:
-    """MIO hook return boundary; validation and connection remain future work."""
+    """MIO hook selection shape; runtime validates the concrete receipt."""
     coverage: str
     input_units: int
     selected_units: int
@@ -121,13 +143,16 @@ class BudgetPlanner:
     schema injection. Counter absence/failure is refusal, never a character guess.
     """
     def __init__(self, profile: BudgetProfile, *, submitted: float, deadline_s: float,
-                 counter: Callable[[str, str], int] | None, clock: Callable[[], float]):
+                 counter: Callable[[str, str], int] | None, clock: Callable[[], float], settings=None):
         if (type(profile) is not BudgetProfile or not _number(submitted)
                 or not _number(deadline_s) or not 0 < deadline_s <= 30):
             raise ValueError('invalid_budget_deadline')
         self.profile = profile
         self.end = submitted + deadline_s
-        self.reserve = max(.5, deadline_s * .1)
+        self.settings = settings if settings is not None else BudgetSettings()
+        self.reserve = self.settings.reserve(deadline_s)
+        self.allocated_total = 0.
+        self.provider_cap = max(0.,deadline_s-self.reserve)
         self.counter = counter
         self.clock = clock
         self.next_task = 0
@@ -156,8 +181,8 @@ class BudgetPlanner:
         spec = self.profile.tasks[idx]
         # R/2 is held for final processing; R/6 for each remaining task.
         remaining_reserve = self.reserve / 2 + self.reserve * (3 - idx) / 6
-        available = self.end - now - remaining_reserve
-        weighted = available * WEIGHTS[idx] / sum(WEIGHTS[idx:])
+        available = min(self.end-now-remaining_reserve,self.provider_cap-self.allocated_total)
+        weighted = available * self.settings.weights[idx] / sum(self.settings.weights[idx:])
         future_minimum = sum(item.minimum_provider_s for item in self.profile.tasks[idx + 1:])
         allocation = min(weighted, available - future_minimum)
         if (count > spec.input_limit
@@ -165,6 +190,7 @@ class BudgetPlanner:
                 or allocation < spec.minimum_provider_s):
             raise BudgetRefused(BudgetReason.BUDGET_EXHAUSTED)
         self._planned = True
+        self.allocated_total += allocation
         return Allocation(task, count, spec.input_limit, spec.output_cap,
                           self.profile.context_limit, self.profile.slack, allocation)
 

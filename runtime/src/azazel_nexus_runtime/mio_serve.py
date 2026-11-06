@@ -96,6 +96,48 @@ class LocalInferenceResult:
     context_integrity: str = 'unknown'
 
 
+@dataclass(frozen=True)
+class NativePrompt:
+    tokens: tuple[int,...] = field(repr=False)
+    request_digest: str
+    tuple_id: str
+
+
+class TokenCountUnknown(LocalServerRefused):
+    pass
+
+
+def request_digest(request):
+    from azazel_nexus.generation_budget import canonical_digest
+    return canonical_digest(inference_document(request))
+
+
+def native_result(data, elapsed_ms):
+    if type(data) is not dict or type(data.get('content')) is not str:
+        raise LocalServerRefused('invalid native content')
+    integrity = ('preserved' if data.get('truncated') is False else
+                 'truncated' if data.get('truncated') is True else 'unknown')
+    tokens_in,tokens_out = data.get('tokens_evaluated'),data.get('tokens_predicted')
+    if any(type(v) is not int or v<0 for v in (tokens_in,tokens_out)):
+        tokens_in=tokens_out=None
+    stop=data.get('stop_type')
+    finish=('stop' if data.get('stop') is True and stop in ('eos','word') else
+            'length' if stop=='limit' else None)
+    if stop is None:
+        if data.get('stopped_limit') is True:finish='length'
+        elif data.get('stop') is True and (data.get('stopped_eos') is True or data.get('stopped_word') is True):finish='stop'
+    raw=data.get('timings',{})
+    if type(raw) is not dict:raise LocalServerRefused('invalid native timings')
+    timings={'total_ms':elapsed_ms}
+    for key in ('prompt_n','prompt_ms','predicted_n','predicted_ms','predicted_per_second'):
+        if key in raw:
+            v=raw[key]
+            if type(v) not in (int,float) or not math.isfinite(v) or v<0:
+                raise LocalServerRefused('invalid native timings')
+            timings[key]=v
+    return LocalInferenceResult(data['content'],tokens_in,tokens_out,timings,finish,integrity)
+
+
 def _response_integrity(data: dict) -> str:
     """Read request-scoped truncation evidence; absence is not evidence of preservation."""
     timings = data.get('timings', {})
@@ -320,6 +362,67 @@ class LocalServer:
             return self._tokenize_rendered(prompt, end)
         except (ValueError, KeyError, TypeError, RecursionError):
             raise LocalServerRefused("invalid rendered prompt") from None
+
+    def _verified_tuple(self, end):
+        from azazel_nexus.generation_budget import verified_tuple_from_props
+        if not self._child.alive or self.state is not LifecycleState.SERVING:
+            raise TokenCountUnknown('server_tuple_unavailable')
+        try:
+            props=_decode_document(self._http('GET','/props',b'',end))
+            return verified_tuple_from_props(props)
+        except TimeoutError:
+            raise
+        except (KeyError,TypeError,ValueError,RecursionError,LocalServerRefused,OSError):
+            raise TokenCountUnknown('server_tuple_unavailable') from None
+
+    def verified_tuple(self, deadline_s):
+        return self._verified_tuple(_deadline(deadline_s))
+
+    def prepare_native(self, request, deadline_s, *, expected_tuple):
+        end=_deadline(deadline_s)
+        try:
+            if self._verified_tuple(end)!=expected_tuple:raise TokenCountUnknown('server_tuple_changed')
+            body=json.dumps(inference_document(request),ensure_ascii=False).encode()
+            if len(body)>MAX_REQUEST_BYTES:raise TokenCountUnknown('request_ceiling')
+            prompt=_decode_document(self._http('POST','/apply-template',body,end))['prompt']
+            if type(prompt) is not str:raise TokenCountUnknown('template_unknown')
+            body=json.dumps({'content':prompt,'add_special':True},ensure_ascii=False).encode()
+            if len(body)>MAX_REQUEST_BYTES:raise TokenCountUnknown('request_ceiling')
+            tokens=_decode_document(self._http('POST','/tokenize',body,end))['tokens']
+            if (type(tokens) is not list or not tokens or len(tokens)>MAX_RESPONSE_BYTES//2
+                    or any(type(v) is not int or v<0 for v in tokens)):
+                raise TokenCountUnknown('tokens_unknown')
+            if self._verified_tuple(end)!=expected_tuple:raise TokenCountUnknown('server_tuple_changed')
+            return NativePrompt(tuple(tokens),request_digest(request),expected_tuple['tuple_id'])
+        except (KeyError,TypeError,ValueError,RecursionError,LocalServerRefused):
+            raise TokenCountUnknown('native_count_unknown') from None
+
+    def infer_native(self, request, deadline_s, *, prepared, expected_tuple,
+                     allow_unknown_usage=True, on_dispatch=None):
+        end=_deadline(deadline_s)
+        if (type(prepared) is not NativePrompt or prepared.request_digest!=request_digest(request)
+                or prepared.tuple_id!=expected_tuple['tuple_id']
+                or self._verified_tuple(end)!=expected_tuple):
+            raise TokenCountUnknown('server_tuple_changed')
+        if not prepared.tokens or any(type(v) is not int or v<0 for v in prepared.tokens):
+            raise TokenCountUnknown('native_count_unknown')
+        try:
+            schema=request.response_format['json_schema']['schema']
+            if type(schema) is not dict:raise ValueError
+        except (KeyError,TypeError,ValueError):
+            raise LocalServerRefused('native_schema_unknown') from None
+        body=json.dumps(dict(prompt=list(prepared.tokens),n_predict=request.max_tokens,
+            temperature=request.temperature,stream=False,cache_prompt=False,json_schema=schema),ensure_ascii=False).encode()
+        if len(body)>MAX_REQUEST_BYTES:raise LocalServerRefused('request exceeds byte ceiling')
+        began=time.monotonic()
+        kwargs={} if on_dispatch is None else {'on_dispatch':on_dispatch}
+        raw=self._http('POST','/completion',body,end,**kwargs)
+        try:
+            result=native_result(_decode_document(raw),(time.monotonic()-began)*1000)
+            if not allow_unknown_usage and result.tokens_in is None:raise ValueError
+            return result
+        except (KeyError,TypeError,ValueError,RecursionError):
+            raise LocalServerRefused('invalid native response') from None
 
     def embed(self, texts, deadline_s):
         end = _deadline(deadline_s)

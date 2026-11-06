@@ -87,7 +87,7 @@ def read_budget(value, *, state=None, usage=None):
         keys = {'version','profile_id','outcome','reasons','coverage','upstream_coverage',
                 'elapsed_ms','deadline_ms','result_state','primary_outcome','superseded',
                 'cleanup','job_calls','tasks','core_complete','upstream_selection'}
-        if (type(value) is not dict or set(value) not in (keys, keys|{'coordinator_disposition'}) or type(value['version']) is not int
+        if (type(value) is not dict or not keys<=set(value) or set(value)-keys-{'coordinator_disposition','verified_tuple','profile','terminal_outcome'} or type(value['version']) is not int
                 or value['version'] != 1 or value['profile_id'] != 'fixture-v1'
                 or value['outcome'] not in OUTCOMES or value['primary_outcome'] not in OUTCOMES
                 or value['result_state'] not in {'complete','degraded','timeout','cancelled','superseded','closed','stale'}
@@ -102,6 +102,12 @@ def read_budget(value, *, state=None, usage=None):
             raise ValueError
         if value.get('coordinator_disposition') is not None and value['coordinator_disposition'] not in COORDINATOR_DISPOSITIONS:
             raise ValueError
+        profile=value.get('profile')
+        verified=value.get('verified_tuple')
+        if profile is not None:validate_profile(profile)
+        if verified is not None:validate_verified_tuple(verified)
+        terminal=value.get('terminal_outcome',value['primary_outcome'])
+        if terminal not in OUTCOMES:raise ValueError
         validate_selection(value['upstream_selection'])
         if value['upstream_selection']['coverage'] != value['upstream_coverage']:
             raise ValueError
@@ -131,6 +137,13 @@ def read_budget(value, *, state=None, usage=None):
                 raise ValueError
             if task['finish_reason'] is not None and task['finish_reason'] not in {'stop','length','content_filter','tool_calls'}:
                 raise ValueError
+            if profile is not None:
+                for field,expected in (('output_tokens_cap',profile['output_caps'][i]),('output_min',profile['output_mins'][i]),('context_slack',profile['slack'])):
+                    if task[field] is not None and task[field]!=expected:raise ValueError
+            if verified is not None and task['context_limit'] is not None and task['context_limit']!=verified['context_limit']:
+                raise ValueError
+            if all(task[k] is not None for k in ('input_limit','output_tokens_cap','context_slack','context_limit')) and task['input_limit']+task['output_tokens_cap']+task['context_slack']>task['context_limit']:
+                raise ValueError
             validate_selection(task['selection'])
             actual = task['actual_usage']
             if actual is not None and (type(actual) is not dict or set(actual) != {'tokens_in','tokens_out'} or any(not integer(v) for v in actual.values())):
@@ -148,10 +161,18 @@ def read_budget(value, *, state=None, usage=None):
         if state is not None and state != projected:
             raise ValueError
         expected_outcome = ('stop_unconfirmed' if cleanup['state'] == 'unconfirmed' else
-                            'superseded' if value['superseded'] else value['primary_outcome'])
+                            'superseded' if value['superseded'] else terminal)
         if value['outcome'] != expected_outcome or (projected == 'complete') != (value['outcome'] == 'within_budget'):
             raise ValueError
         if value['result_state'] == 'complete':
+            if profile is None or verified is None or profile['template_version'] is None:raise ValueError
+            reserve=max(profile['minimum_reserve_ms'],value['deadline_ms']*profile['reserve_fraction'])
+            if (value['elapsed_ms']>=value['deadline_ms']-reserve/2
+                    or any(t['allocated_ms'] is None or t['allocated_ms']<=0 or t['elapsed_ms']>t['allocated_ms'] for t in value['tasks'])
+                    or sum(t['allocated_ms'] for t in value['tasks'])>value['deadline_ms']-reserve+1e-6
+                    or sum(t['elapsed_ms'] for t in value['tasks'])>value['elapsed_ms']+1e-6
+                    or any(t['selection']['policy_version']!=profile['template_version'] for t in value['tasks'])):
+                raise ValueError
             if (value['primary_outcome'] != 'within_budget' or not value['core_complete'] or value['coverage'] == 'unknown' or value['reasons']
                     or cleanup['state'] != 'not_needed' or value['elapsed_ms'] >= value['deadline_ms']
                     or value.get('coordinator_disposition') not in (None,'current')
@@ -186,7 +207,7 @@ def project_budget(value):
         value['outcome'] = 'superseded'
         state = 'superseded'
     else:
-        value['outcome'] = value['primary_outcome']
+        value['outcome'] = value.get('terminal_outcome',value['primary_outcome'])
         state = value['result_state']
     return state, value
 
@@ -233,3 +254,55 @@ def validate_model_assistance(value, frame_id, trace_id):
         if (type(value.get(key)) is not list or len(value[key])>limit
                 or any(type(v) is not str or not 0<len(v)<=480 for v in value[key])):
             raise ValueError('generation_assistance_refused')
+
+
+def canonical_digest(value):
+    import hashlib
+    return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+
+
+def verified_tuple_from_props(props):
+    """Identifiers declared by the authenticated serving instance, never public text."""
+    try:
+        fields=('model_alias','model_path','model_ftype','chat_template','bos_token','eos_token','build_info')
+        if type(props) is not dict or any(type(props.get(k)) is not str or not 0<len(props[k])<=65536 for k in fields):
+            raise ValueError
+        context=props['default_generation_settings']['n_ctx']
+        if not integer(context) or not 0<context<=2**31-1:raise ValueError
+        file_id=canonical_digest([props['model_path'],props['model_ftype']])
+        result=dict(version=1,model_id=canonical_digest(props['model_alias']),model_file_id=file_id,
+            tokenizer_id=canonical_digest([file_id,props['bos_token'],props['eos_token']]),
+            template_id=canonical_digest(props['chat_template']),runtime_id=canonical_digest(props['build_info']),
+            context_limit=context)
+        result['tuple_id']=canonical_digest(result)
+        return result
+    except (KeyError,TypeError,ValueError,OverflowError):
+        raise ValueError('verified_tuple_unknown') from None
+
+
+def validate_verified_tuple(value):
+    import re
+    keys={'version','model_id','model_file_id','tokenizer_id','template_id','runtime_id','context_limit','tuple_id'}
+    if (type(value) is not dict or set(value)!=keys or type(value['version']) is not int or value['version']!=1
+            or not integer(value['context_limit']) or not 0<value['context_limit']<=2**31-1
+            or any(type(value[k]) is not str or re.fullmatch('[0-9a-f]{64}',value[k]) is None
+                   for k in keys-{'version','context_limit'})
+            or value['tuple_id']!=canonical_digest({k:v for k,v in value.items() if k!='tuple_id'})):
+        raise ValueError('verified_tuple_refused')
+    return value
+
+
+SELECTION_VERSIONS=frozenset({'1.6.0','fixture-v1','transport-fixture-v1'})
+
+def validate_profile(value):
+    keys={'version','origin','reserve_fraction','minimum_reserve_ms','weights','slack','output_caps','output_mins','minimum_provider_ms','template_version'}
+    if (type(value) is not dict or set(value)!=keys or type(value['version']) is not int or value['version']!=1
+            or value['origin']!='fixture' or not number(value['reserve_fraction']) or not 0<value['reserve_fraction']<1
+            or not number(value['minimum_reserve_ms']) or value['minimum_reserve_ms']<=0 or not integer(value['slack'])
+            or any(type(value[k]) is not list or len(value[k])!=3 for k in ('weights','output_caps','output_mins','minimum_provider_ms'))
+            or any(not integer(v) or v<=0 for v in value['weights'])
+            or any(not integer(o) or not integer(m) or not 0<m<=o<=768 for o,m in zip(value['output_caps'],value['output_mins']))
+            or any(not number(v) or v<=0 for v in value['minimum_provider_ms'])
+            or value['template_version'] not in (None,*SELECTION_VERSIONS)):
+        raise ValueError('generation_profile_refused')
+    return value

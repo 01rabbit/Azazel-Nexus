@@ -422,3 +422,98 @@ def test_dispatch_notification_is_once_after_request_gates(server):
     handle.stop()
     with pytest.raises(LocalServerRefused):handle.infer(request(),1,on_dispatch=lambda:notified.append('stopped'))
     assert notified==['sent']
+
+
+def native_handle():
+    handle=object.__new__(LocalServer)
+    handle._child=SimpleNamespace(alive=True);handle.state=LifecycleState.SERVING
+    props=dict(model_alias='fixture',model_path='/fixture/model.gguf',model_ftype='Q4',
+        chat_template='fixture-template',bos_token='BOS',eos_token='EOS',build_info='fixture-build',
+        default_generation_settings={'n_ctx':2048})
+    return handle,props
+
+
+def test_native_count_and_completion_use_identical_tokens_and_primary_integrity_fields():
+    handle,props=native_handle();seen=[];notified=[]
+    def http(method,path,body,end,**kw):
+        seen.append((path,body))
+        if kw.get('on_dispatch'):kw['on_dispatch']()
+        if path=='/props':return json.dumps(props).encode()
+        if path=='/apply-template':return b'{"prompt":"rendered"}'
+        if path=='/tokenize':return b'{"tokens":[1,2,3]}'
+        return b'{"content":"{}","stop":true,"stop_type":"eos","truncated":false,"tokens_evaluated":3,"tokens_predicted":2,"timings":{"prompt_n":3,"predicted_n":2}}'
+    handle._http=http
+    req=LocalInferenceRequest((('user','fixture'),),32,response_format={'type':'json_schema','json_schema':{'schema':{'type':'object'}}})
+    verified=handle.verified_tuple(1)
+    prepared=handle.prepare_native(req,1,expected_tuple=verified)
+    result=handle.infer_native(req,1,prepared=prepared,expected_tuple=verified,on_dispatch=lambda:notified.append(1))
+    body=json.loads(next(body for path,body in seen if path=='/completion'))
+    assert body['prompt']==[1,2,3] and body['n_predict']==32
+    assert '/v1/chat/completions' not in [path for path,_ in seen]
+    assert (result.tokens_in,result.tokens_out,result.finish_reason,result.context_integrity)==(3,2,'stop','preserved')
+    assert notified==[1]
+
+
+@pytest.mark.parametrize('flag',[None,0,1,'false'])
+def test_native_invalid_or_missing_truncated_remains_unknown(flag):
+    from azazel_nexus_runtime.mio_serve import native_result
+    value=dict(content='{}',stop=True,stop_type='eos',tokens_evaluated=3,tokens_predicted=2)
+    if flag is not None:value['truncated']=flag
+    assert native_result(value,1).context_integrity=='unknown'
+
+
+def test_tuple_change_during_count_rejects_before_dispatch():
+    from azazel_nexus_runtime.mio_serve import TokenCountUnknown
+    handle,props=native_handle();seen=[]
+    def http(method,path,body,end,**kw):
+        seen.append(path)
+        if path=='/props':return json.dumps(props).encode()
+        if path=='/apply-template':return b'{"prompt":"rendered"}'
+        props['model_path']='/fixture/changed.gguf'
+        return b'{"tokens":[1,2,3]}'
+    handle._http=http;verified=handle.verified_tuple(1)
+    with pytest.raises(TokenCountUnknown):handle.prepare_native(request(),1,expected_tuple=verified)
+    assert '/completion' not in seen
+
+
+def test_verified_tuple_requires_model_tokenizer_template_and_context():
+    from azazel_nexus_runtime.mio_serve import TokenCountUnknown
+    handle,props=native_handle();props.pop('bos_token')
+    handle._http=lambda *args:json.dumps(props).encode()
+    with pytest.raises(TokenCountUnknown):handle.verified_tuple(1)
+
+
+@pytest.mark.parametrize('bad',[None,True,-1,3.0,'3'])
+def test_native_usage_requires_strict_counts_without_timings_inference(bad):
+    from azazel_nexus_runtime.mio_serve import native_result
+    value=dict(content='{}',truncated=False,stop=True,stop_type='eos',tokens_evaluated=bad,
+        tokens_predicted=2,timings={'prompt_n':3,'predicted_n':2})
+    result=native_result(value,1)
+    assert (result.tokens_in,result.tokens_out)==(None,None)
+    assert result.context_integrity=='preserved'
+
+
+def test_native_top_level_truncated_is_primary_and_stop_does_not_infer_it():
+    from azazel_nexus_runtime.mio_serve import native_result
+    value=dict(content='{}',truncated=True,stop=True,stop_type='eos',tokens_evaluated=3,
+        tokens_predicted=2,timings={'truncated':False})
+    assert native_result(value,1).context_integrity=='truncated'
+    value.pop('truncated')
+    assert native_result(value,1).context_integrity=='unknown'
+
+
+def test_tuple_change_after_count_refuses_before_completion_notification():
+    from azazel_nexus_runtime.mio_serve import TokenCountUnknown,NativePrompt,request_digest
+    handle,props=native_handle();seen=[]
+    def http(method,path,body,end,**kw):
+        seen.append(path)
+        if kw.get('on_dispatch'):kw['on_dispatch']()
+        if path=='/props':return json.dumps(props).encode()
+        return b'{"content":"{}","truncated":false,"stop":true,"stop_type":"eos","tokens_evaluated":3,"tokens_predicted":2}'
+    handle._http=http
+    req=LocalInferenceRequest((('user','fixture'),),32,response_format={'type':'json_schema','json_schema':{'schema':{'type':'object'}}})
+    verified=handle.verified_tuple(1)
+    prepared=NativePrompt((1,2,3),request_digest(req),verified['tuple_id'])
+    props['build_info']='changed-build'
+    with pytest.raises(TokenCountUnknown):handle.infer_native(req,1,prepared=prepared,expected_tuple=verified,on_dispatch=lambda:seen.append('sent'))
+    assert seen==['/props','/props']

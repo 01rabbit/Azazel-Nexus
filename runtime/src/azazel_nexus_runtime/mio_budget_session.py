@@ -7,10 +7,10 @@ import threading
 import time
 from azazel_nexus.generation_budget import (TASKS, CAPS, coverage, task_placeholder,
     selection_unknown, project_budget, integer, validate_selection, validate_model_assistance,
-    MIO_REASON_OUTCOMES, COORDINATOR_DISPOSITIONS)
+    MIO_REASON_OUTCOMES, COORDINATOR_DISPOSITIONS, validate_verified_tuple)
 from .mio_generation_budget import (BudgetPlanner, BudgetProfile, TaskBudget,
     BudgetRefused, BudgetReason, mio_budget_for_task)
-from .mio_serve import LocalInferenceRequest
+from .mio_serve import LocalInferenceRequest, NativePrompt, TokenCountUnknown
 
 
 class BudgetSession:
@@ -21,6 +21,14 @@ class BudgetSession:
         self.tasks = [task_placeholder(task) for task in TASKS]
         self.planner = None
         self.reason = None
+        self.failures = []
+        self.verified_tuple = None
+        self.prepared = {}
+        settings = lane.budget_settings
+        self.profile_metadata = dict(version=1,origin='fixture',reserve_fraction=settings.reserve_fraction,
+            minimum_reserve_ms=settings.minimum_reserve_ms,weights=list(settings.weights),slack=settings.slack,
+            output_caps=list(lane.output_caps),output_mins=list(lane.output_caps),
+            minimum_provider_ms=list(settings.minimum_provider_ms),template_version=None)
         self.mio_reason = None
         self.coordinator_disposition = None
         self.outcome = None
@@ -36,25 +44,28 @@ class BudgetSession:
         self.assistance = None
         self.calls = []
 
+    def note_failure(self, reason, outcome):
+        with self.lock:
+            if reason not in self.failures and len(self.failures)<14:self.failures.append(reason)
+            if self.reason is None:self.reason,self.outcome=reason,outcome
+
     def reject(self, reason, outcome):
         from azazel_mio.model_adapter import MioModelUnavailable
-        with self.lock:
-            if self.reason is None:
-                self.reason, self.outcome = reason, outcome
+        self.note_failure(reason,outcome)
         raise MioModelUnavailable(reason)
 
     def remaining(self):
         return self.job['end'] - time.monotonic()
 
     def read_remaining(self):
-        return self.remaining()-max(.5,self.lane.deadline_s*.1)/2
+        return self.remaining()-self.lane.budget_settings.reserve(self.lane.deadline_s)/2
 
     def _provider_read(self, operation):
         with self.lock:
             if self.frozen is not None or self.lane._stopped or self.lane._fenced or self.read_remaining()<=0:
                 raise ValueError('generation_closed')
             self.in_flight = True
-            self.call_end = self.job['end']-max(.5,self.lane.deadline_s*.1)/2
+            self.call_end = self.job['end']-self.lane.budget_settings.reserve(self.lane.deadline_s)/2
         try:
             return operation()
         except TimeoutError:
@@ -66,27 +77,33 @@ class BudgetSession:
 
     def initialize(self):
         try:
-            context = self._provider_read(lambda:self.lane.server.context_limit(self.read_remaining()))
-            if type(context) is not int or context <= 0:
-                raise ValueError
-            specs = tuple(TaskBudget(t, max(1, context - cap - 32), cap, cap, .05)
-                          for t, cap in zip(TASKS, self.lane.output_caps))
-            profile = BudgetProfile('fixture-v1', context, specs)
+            verified=self._provider_read(lambda:self.lane.server.verified_tuple(self.read_remaining()))
+            validate_verified_tuple(verified)
+            self.verified_tuple=copy.deepcopy(verified)
+            context=verified['context_limit']
+            settings=self.lane.budget_settings
+            specs=tuple(TaskBudget(t,max(1,context-cap-settings.slack),cap,cap,minimum/1000)
+                for t,cap,minimum in zip(TASKS,self.lane.output_caps,settings.minimum_provider_ms))
+            profile=BudgetProfile('fixture-v1',context,specs,slack=settings.slack)
             for record,spec in zip(self.tasks,specs):
-                record.update(input_limit=spec.input_limit,output_tokens_cap=spec.output_cap,
-                    output_min=spec.output_min,context_limit=context,context_slack=profile.slack)
+                record.update(input_limit=spec.input_limit if spec.input_limit+spec.output_cap+profile.slack<=context else None,
+                    output_tokens_cap=spec.output_cap,output_min=spec.output_min,context_limit=context,context_slack=profile.slack)
             def counter(task, prompt):
                 if not self.lane._authorized(self.job['generation']) or self.job['cancelled'].is_set():
                     return None
                 request = self.request(task, prompt)
-                count = self._provider_read(lambda:self.lane.server.count_chat_tokens(request,self.read_remaining()))
+                prepared=self._provider_read(lambda:self.lane.server.prepare_native(request,self.read_remaining(),expected_tuple=self.verified_tuple))
+                if type(prepared) is not NativePrompt or prepared.tuple_id!=self.verified_tuple['tuple_id']:
+                    raise TokenCountUnknown('native_tuple_unknown')
+                count=len(prepared.tokens)
+                self.prepared[task]=(prompt,prepared)
                 if integer(count):
                     with self.lock:
                         if self.frozen is None:
                             self.tasks[TASKS.index(task)].update(count_kind='exact',input_tokens_bound=count)
                 return count
             self.planner = BudgetPlanner(profile, submitted=self.started,
-                deadline_s=self.lane.deadline_s, counter=counter, clock=time.monotonic)
+                deadline_s=self.lane.deadline_s, counter=counter, clock=time.monotonic,settings=settings)
         except Exception:
             self.reject('count_unknown', 'token_count_unknown')
 
@@ -105,7 +122,7 @@ class BudgetSession:
             return mio_budget_for_task(self.planner, task, budget_type=self.api.GenerationBudget)
         except BudgetRefused as exc:
             reason = 'count_unknown' if exc.reason is BudgetReason.COUNT_UNKNOWN else 'budget_exhausted'
-            self.reason,self.outcome = reason,MIO_REASON_OUTCOMES[reason]
+            self.note_failure(reason,MIO_REASON_OUTCOMES[reason])
             raise self.api.BudgetError(reason,'adapter_budget_gate') from None
 
     def usage_for_task(self, task):
@@ -158,8 +175,11 @@ class BudgetSession:
                 record['dispatched'] = True
                 self.calls.append(call)
         try:
-            result = self.lane.server.infer(request,
-                deadline_s=max(.000001,self.call_end-time.monotonic()), allow_unknown_usage=True,on_dispatch=dispatch)
+            cached=self.prepared.get(task)
+            if cached is None or cached[0]!=prompt:raise TokenCountUnknown('native_count_unknown')
+            result = self.lane.server.infer_native(request,
+                deadline_s=max(.000001,self.call_end-time.monotonic()),allow_unknown_usage=True,on_dispatch=dispatch,
+                prepared=cached[1],expected_tuple=self.verified_tuple)
             with self.lock:
                 if self.frozen is not None:
                     return self.reject('timeout','deadline_exceeded')
@@ -200,11 +220,16 @@ class BudgetSession:
                 self.reject('malformed','output_invalid')
             self.planner.completed(task)
             return value
+        except TokenCountUnknown:
+            self.reject('count_unknown','token_count_unknown')
         except TimeoutError:
+            if not record['dispatched']:
+                self.needs_stop=True
+                self.reject('count_unknown','token_count_unknown')
             self.reject('timeout','deadline_exceeded')
         except Exception:
             if self.reason is None:
-                self.reason, self.outcome = 'provider_unavailable','provider_unavailable'
+                self.note_failure('provider_unavailable','provider_unavailable')
             raise
         finally:
             with self.lock:
@@ -225,7 +250,7 @@ class BudgetSession:
                 raise ValueError
             self.coordinator_disposition = disposition
             if self.mio_reason is not None and self.reason is None:
-                self.reason,self.outcome = self.mio_reason,MIO_REASON_OUTCOMES[self.mio_reason]
+                self.note_failure(self.mio_reason,MIO_REASON_OUTCOMES[self.mio_reason])
             if (receipt is None or set(receipt.calls_sent) != set(TASKS) or set(receipt.task_results) != set(TASKS)
                     or set(receipt.usage) != set(TASKS) or set(receipt.selections) - set(TASKS)):
                 raise ValueError
@@ -262,6 +287,7 @@ class BudgetSession:
                     input_units=len(raw.kept)+len(omitted), selected_units=len(raw.kept),
                     omitted_units=len(omitted), omissions=omitted)
                 validate_selection(sel)
+                if self.profile_metadata['template_version'] is None:self.profile_metadata['template_version']=raw.template_version
                 record['selection'] = sel
                 inherited = sel['coverage']
                 record['validated'] = receipt.task_results.get(task) == 'validated'
@@ -273,16 +299,17 @@ class BudgetSession:
                 validate_model_assistance(public,self.job['frame'].frame_id,self.job['frame'].trace_id)
                 self.assistance = public
             elif self.reason is None:
-                self.reason,self.outcome = 'malformed','output_invalid'
+                self.note_failure('malformed','output_invalid')
         except Exception:
             self.core_complete = False
             if self.reason is None:
-                self.reason,self.outcome = 'malformed','output_invalid'
+                self.note_failure('malformed','output_invalid')
 
     def snapshot(self, state, outcome):
         with self.lock:
             elapsed = max(0,(time.monotonic()-self.started)*1000)
-            reasons = [] if self.reason is None else [self.reason]
+            reasons = list(self.failures)
+            if self.reason is not None and self.reason not in reasons:reasons.insert(0,self.reason)
             if self.mio_reason is not None and self.mio_reason not in reasons:
                 reasons.append(self.mio_reason)
             tasks = copy.deepcopy(self.tasks)
@@ -294,7 +321,8 @@ class BudgetSession:
                 coverage=coverage(self.job.get('upstream_coverage','unknown'),tasks),
                 upstream_coverage=self.job.get('upstream_coverage','unknown'),
                 upstream_selection=copy.deepcopy(self.job.get('upstream_selection',selection_unknown())), elapsed_ms=elapsed,
-                deadline_ms=self.lane.deadline_s*1000,result_state=state,primary_outcome=outcome,
+                deadline_ms=self.lane.deadline_s*1000,result_state=state,primary_outcome=self.outcome or outcome,terminal_outcome=outcome,
+                verified_tuple=copy.deepcopy(self.verified_tuple),profile=copy.deepcopy(self.profile_metadata),
                 superseded=False,cleanup=copy.deepcopy(self.cleanup),job_calls=sum(t['dispatched'] for t in tasks),
                 tasks=tasks,core_complete=self.core_complete,coordinator_disposition=self.coordinator_disposition)
             projected, meta = project_budget(meta)

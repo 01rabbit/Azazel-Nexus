@@ -18,7 +18,7 @@ def metadata(*, complete=True, pending=False):
             finish_reason='stop',context_integrity='preserved',validated=complete,
             selection=dict(policy_version='fixture-v1',coverage='intact',input_units=1,
                 selected_units=1,omitted_units=0,omissions=[]))
-    return dict(version=1,profile_id='fixture-v1',outcome='within_budget' if complete else 'deadline_exceeded',
+    value = dict(version=1,profile_id='fixture-v1',outcome='within_budget' if complete else 'deadline_exceeded',
         reasons=[] if complete else ['timeout'],coverage='intact' if complete else 'unknown',upstream_coverage='intact',
         upstream_selection=dict(policy_version='nexus-frame-v1',coverage='intact',input_units=2,
             selected_units=2,omitted_units=0,omissions=[]),
@@ -26,6 +26,14 @@ def metadata(*, complete=True, pending=False):
         primary_outcome='within_budget' if complete else 'deadline_exceeded',superseded=False,
         cleanup=dict(state='pending' if pending else 'not_needed',reason=None,remaining_ms=1000 if pending else 0),
         job_calls=3 if complete else 1,tasks=tasks,core_complete=complete)
+    from azazel_nexus.generation_budget import verified_tuple_from_props
+    value['verified_tuple']=verified_tuple_from_props(dict(model_alias='fixture',model_path='/fixture/model.gguf',
+        model_ftype='fixture',chat_template='fixture',bos_token='BOS',eos_token='EOS',build_info='fixture',
+        default_generation_settings={'n_ctx':4096}))
+    value['profile']=dict(version=1,origin='fixture',reserve_fraction=.1,minimum_reserve_ms=500.,weights=[45,20,35],
+        slack=32,output_caps=list(CAPS),output_mins=list(CAPS),minimum_provider_ms=[50.,50.,50.],template_version='fixture-v1')
+    return value
+
 
 
 def live(meta=None):
@@ -317,3 +325,19 @@ def test_early_supersession_keeps_polling_until_real_result_and_cleanup(tmp_path
     assert e._generation_value(handle)['generation_budget']['superseded']
     e._restore_generation_results()
     assert e._generation_value(handle)['generation_budget']['outcome']=='stop_unconfirmed'
+
+
+@pytest.mark.parametrize('change',[
+    lambda m:m['tasks'][0].update(allocated_ms=1,elapsed_ms=1000),
+    lambda m:m['tasks'][0].update(allocated_ms=None),
+    lambda m:m['tasks'][0].update(output_tokens_cap=7,output_min=1),
+    lambda m:m.update(elapsed_ms=4999),
+    lambda m:m['tasks'][1].update(context_limit=8192),
+    lambda m:m['tasks'][1]['selection'].update(policy_version='unknown-template'),
+    lambda m:m.pop('verified_tuple'),
+    lambda m:m['tasks'][0].update(input_limit=4000),
+    lambda m:[t.update(allocated_ms=2000) for t in m['tasks']],
+])
+def test_r4_reader_rejects_time_profile_and_tuple_counterexamples(change):
+    value=metadata();change(value)
+    with pytest.raises(ValueError):read_budget(value,state='complete',usage='known')

@@ -24,7 +24,7 @@ def test_exact_context_boundary_and_task_allocations():
     assert first.provider_seconds == pytest.approx(12.15)
     p.completed(TASKS[0])
     second = p.plan(TASKS[1], 'prompt')
-    assert second.provider_seconds == pytest.approx((30 - 2.5) * 20 / 55)
+    assert second.provider_seconds == pytest.approx(5.4)
     p.completed(TASKS[1])
     assert p.plan(TASKS[2], 'prompt').task == TASKS[2]
     p.completed(TASKS[2])

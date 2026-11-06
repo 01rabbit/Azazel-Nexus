@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 
 from azazel_nexus import model_admission
 from azazel_nexus.generation_budget import CAPS, read_budget, project_budget
+from .mio_generation_budget import BudgetSettings
 
 GENERATION_ADMISSION_ENABLED = False
 _SEAL = object()
@@ -155,7 +156,7 @@ class GenerationLane:
     configurable TTL: three hundred seconds), with sixteen retained records.
     """
     def __init__(self, *, capability=None, server=None, deadline_s=5.0, result_ttl_s=60.0,
-                 budget_enabled=False, output_caps=CAPS):
+                 budget_enabled=False, output_caps=CAPS, budget_settings=None):
         if type(deadline_s) not in (int, float) or not math.isfinite(deadline_s) or not 0 < deadline_s <= 30:
             raise ValueError('invalid_generation_deadline')
         if type(result_ttl_s) not in (int, float) or not math.isfinite(result_ttl_s) or not 0 < result_ttl_s <= 300:
@@ -163,6 +164,8 @@ class GenerationLane:
         if (type(budget_enabled) is not bool or type(output_caps) is not tuple or len(output_caps) != 3
                 or any(type(cap) is not int or not 1 <= cap <= 768 for cap in output_caps)):
             raise ValueError('invalid_generation_profile')
+        self.budget_settings = budget_settings if budget_settings is not None else BudgetSettings()
+        if type(self.budget_settings) is not BudgetSettings:raise ValueError('invalid_budget_settings')
         self.budget_enabled, self.output_caps = budget_enabled, output_caps
         self.result_ttl_s = result_ttl_s
         self._receipts = {}
@@ -193,7 +196,7 @@ class GenerationLane:
             generation=generation_id,handle=None,upstream_coverage=upstream_coverage,
             upstream_selection=upstream_selection)
         session = BudgetSession(self,job,None)
-        session.reason,session.outcome = outcome,outcome
+        session.note_failure(outcome,outcome)
         value = session.snapshot(state,outcome)
         value.pop('result_handle',None)
         return value
@@ -360,7 +363,7 @@ class GenerationLane:
                 if budget:
                     from .mio_budget_session import BudgetSession
                     session = BudgetSession(self,pending,None)
-                    session.reason,session.outcome = 'model_unavailable','model_unavailable'
+                    session.note_failure('model_unavailable','model_unavailable')
                     record['status'] = session.snapshot('degraded','model_unavailable')
                 else:
                     record['status'] = self._status('degraded', pending['frame'], pending['generation'],
@@ -389,20 +392,22 @@ class GenerationLane:
 
     def _execute(self, job):
         """Run one job. The provider is stopped only while one of its requests is in flight."""
-        from azazel_mio import AssistantCore
         if self.budget_enabled:
-            api = None
             try:
-                from azazel_mio import budget as candidate
+                from azazel_mio import AssistantCore
+                from azazel_mio import budget as api
                 import inspect
-                supported = 'generation_budget' in inspect.signature(AssistantCore.explain).parameters
-                if supported and hasattr(candidate, 'GenerationBudget'):
-                    api = candidate
-            except (ImportError, AttributeError, ValueError):
-                pass  # explicitly unbudgeted compatibility with older MIO only
-            if api is not None:
-                # Never catch a budget-path refusal here and retry unbudgeted.
-                return self._execute_budget(job, AssistantCore, api)
+                if ('generation_budget' not in inspect.signature(AssistantCore.explain).parameters
+                        or any(not hasattr(api,name) for name in ('GenerationBudget','GenerationOutcome','PromptSelection','BudgetError'))):
+                    raise ImportError('budget_api_unavailable')
+            except (ImportError,AttributeError,ValueError):
+                session=self._make_budget_session(job,None)
+                job['budget_session']=session
+                session.note_failure('count_unknown','token_count_unknown')
+                session.frozen=session.snapshot('degraded','token_count_unknown')
+                return copy.deepcopy(session.frozen)
+            return self._execute_budget(job,AssistantCore,api)
+        from azazel_mio import AssistantCore
         if self._fenced or self._stopped:
             return self._status('degraded', job['frame'], job['generation'])
         if job['cancelled'].is_set() or time.monotonic() >= job['end']:
@@ -546,14 +551,17 @@ class GenerationLane:
             except Exception:
                 with session.lock:
                     if session.reason is None:
-                        session.reason,session.outcome='malformed','output_invalid'
+                        session.note_failure('malformed','output_invalid')
             finally:
                 session.done.set()
-        if time.monotonic() >= job['end'] or job['cancelled'].is_set():
-            session.reason,session.outcome='timeout','deadline_exceeded'
+        if job['cancelled'].is_set():
+            session.note_failure(job['reason'],job['reason'])
+            session.done.set()
+        elif time.monotonic() >= job['end']:
+            session.note_failure('timeout','deadline_exceeded')
             session.done.set()
         elif self._stopped or self._fenced:
-            session.reason,session.outcome='model_unavailable','model_unavailable'
+            session.note_failure('model_unavailable','model_unavailable')
             session.done.set()
         else:
             threading.Thread(target=work, daemon=True,name='mio-budget-infer').start()
@@ -564,33 +572,33 @@ class GenerationLane:
                 revoked = not self._authorized(job['generation'])
                 cancelled = job['cancelled'].is_set()
                 done = session.done.is_set()
-                reserve_exhausted = not done and now >= job['end']-max(.5,self.deadline_s*.1)/2
+                reserve_exhausted = not done and now >= job['end']-self.budget_settings.reserve(self.deadline_s)/2
                 in_flight = session.in_flight
                 failure = session.reason
                 needs_stop = session.needs_stop
             if expired or revoked or cancelled or done or reserve_exhausted or needs_stop:
                 if revoked:
-                    session.reason,session.outcome='admission_closed','admission_closed'
+                    session.note_failure('admission_closed','admission_closed')
                     state,outcome='closed','admission_closed'
                 elif cancelled:
-                    session.reason,session.outcome=job['reason'],job['reason']
+                    session.note_failure(job['reason'],job['reason'])
                     state,outcome=job['reason'],job['reason']
                 elif expired:
-                    session.reason,session.outcome='timeout','deadline_exceeded'
+                    session.note_failure('timeout','deadline_exceeded')
                     state,outcome='timeout','deadline_exceeded'
                 elif reserve_exhausted:
-                    session.reason,session.outcome='budget_exhausted','budget_exhausted'
+                    session.note_failure('budget_exhausted','budget_exhausted')
                     state,outcome='degraded','budget_exhausted'
                 elif needs_stop and failure is None:
-                    session.reason,session.outcome='count_unknown','token_count_unknown'
+                    session.note_failure('count_unknown','token_count_unknown')
                     state,outcome='degraded','token_count_unknown'
                 elif failure:
                     state = {'deadline_exceeded':'timeout','cancelled':'cancelled','superseded':'superseded','stale':'stale','admission_closed':'closed'}.get(session.outcome,'degraded')
                     outcome=session.outcome
-                elif session.core_complete and session.remaining() > max(.5,self.deadline_s*.1)/2:
+                elif session.core_complete and session.remaining() > self.budget_settings.reserve(self.deadline_s)/2:
                     state,outcome='complete','within_budget'
                 else:
-                    session.reason,session.outcome='budget_exhausted','budget_exhausted'
+                    session.note_failure('budget_exhausted','budget_exhausted')
                     state,outcome='degraded','budget_exhausted'
                 if in_flight or needs_stop or (failure in ('provider_unavailable','timeout') and any(t['dispatched'] for t in session.tasks)):
                     self._start_budget_stop(job)
@@ -600,11 +608,11 @@ class GenerationLane:
                 with session.lock:
                     if state=='complete' and (session.assistance.get('frame_id') != job['frame'].frame_id
                             or session.assistance.get('trace_id') != job['frame'].trace_id):
-                        session.reason='malformed'
+                        session.note_failure('malformed','output_invalid')
                         state,outcome='degraded','output_invalid'
                     status = session.snapshot(state,outcome)
                     if state=='complete' and status['generation_budget']['coverage']=='unknown':
-                        session.reason='truncation_unknown'
+                        session.note_failure('truncation_unknown','truncation_unknown')
                         status=session.snapshot('degraded','truncation_unknown')
                     session.frozen = copy.deepcopy(status)
                 return status
