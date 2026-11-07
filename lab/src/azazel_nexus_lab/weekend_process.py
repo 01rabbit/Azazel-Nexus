@@ -15,12 +15,22 @@ import time
 REPO = Path(__file__).resolve().parents[3]
 
 
-def require_container(*, root=True):
+def require_container(*, root=True, ui_network=False):
     if not (sys.platform.startswith('linux') and Path('/.dockerenv').is_file()
             and (not root or os.geteuid() == 0)):
         raise RuntimeError('requires the disposable Linux root container; host execution forbidden')
     interfaces = {p.name for p in Path('/sys/class/net').iterdir()}
-    if interfaces != {'lo'}:
+    if ui_network:
+        # Host launcher must independently verify an existing, empty Docker
+        # internal bridge. This lab-only option never changes a product gate.
+        routes = Path('/proc/net/route').read_text().splitlines()[1:]
+        v6 = Path('/proc/net/ipv6_route').read_text().splitlines()
+        if (interfaces != {'lo', 'eth0'}
+                or any(r.split()[1] == '00000000' for r in routes)
+                or any(r.split()[0] == '0' * 32 and r.split()[1] == '00' for r in v6
+                       if r.split()[-1] != 'lo')):
+            raise RuntimeError('UI lab requires internal bridge with no default route')
+    elif interfaces != {'lo'}:
         raise RuntimeError('requires --network=none; only loopback may exist')
 
 
@@ -96,8 +106,8 @@ def noc_event():
     return event
 
 
-def run_pair(output: Path, *, snapshot='complete'):
-    require_container()
+def run_pair(output: Path, *, snapshot='complete', on_ready=None, ui_network=False):
+    require_container(ui_network=ui_network)
     import grp
     import pwd
     import pytest
@@ -120,6 +130,8 @@ def run_pair(output: Path, *, snapshot='complete'):
         input_classification='P0 is authored synthetic public text; P3 is the Edge producer frame',
         recipe_sha256=_digest(Path(__file__)), model_sends=0)
     receipt['model_send_scope'] = 'no model process or provider configured; actual slow replies must remain closed'
+    if ui_network:
+        receipt['network'] = 'preexisting_internal_bridge_no_default_route'
 
     def launch(role, argv, user=None, groups=(), env=None):
         child = subprocess.Popen(argv, cwd=REPO, env=env or runtime_env,
@@ -185,7 +197,7 @@ def run_pair(output: Path, *, snapshot='complete'):
         runtime_env = {**os.environ, 'AZAZEL_ROOT': str(root)}
         server = launch('knowledge', [sys.executable, '-B', '-m', 'azazel_nexus_lab.weekend_knowledge',
             '--root', str(root / 'knowledge-root'), '--pki', str(pki), '--snapshot', snapshot,
-            '--ingress', str(ingress)])
+            '--ingress', str(ingress), *(['--ui-network'] if ui_network else [])])
         knowledge_ready = ready(server)
         assert knowledge_ready['host'] == '127.0.0.1' and knowledge_ready['pid'] == server.pid
         pki.chmod(0o750)
@@ -203,6 +215,8 @@ def run_pair(output: Path, *, snapshot='complete'):
         broker_args = [sys.executable, '-B', '-m', 'azazel_nexus_lab.weekend_broker', str(root),
             str(pki), str(knowledge_ready['port']), knowledge_ready['public_key'],
             spki_pin(ssl.PEM_cert_to_DER_cert((pki / 'server.pem').read_text()))]
+        if ui_network:
+            broker_args.append('--ui-network')
         broker = launch('broker', broker_args, 'azknowledgeegress')
         assert ready(broker)['ready']
         for role, user, groups, module, opts in (
@@ -381,6 +395,10 @@ def run_pair(output: Path, *, snapshot='complete'):
                 'trace_id': incident['mio']['fast_assistance']['trace_id']}
         receipt['handoff_files'] = receipt['handoffs']['SOC1']['files']
         (output / 'paired.json').write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + '\n')
+        if on_ready is not None:
+            # Keep this exact process chain alive during the browser reservation.
+            # Failure/STOP still enters the same bounded finally cleanup below.
+            on_ready(receipt, children)
         return receipt
     finally:
         (output / 'paired-attempt.json').write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + '\n')

@@ -74,9 +74,10 @@ def main(argv=None):
     parser.add_argument('--pki', type=Path, required=True)
     parser.add_argument('--snapshot', choices=('complete', 'partial'), required=True)
     parser.add_argument('--ingress', type=Path, required=True)
+    parser.add_argument('--ui-network', action='store_true', help='reserved internal bridge; no default route')
     args = parser.parse_args(argv)
     from azazel_nexus_lab.weekend_process import require_container
-    require_container()
+    require_container(ui_network=args.ui_network)
     from _knowledge_context_mtls_server import _Signer
     from _api_support import build_app
     from azazel_knowledge.core.clock import SystemClock

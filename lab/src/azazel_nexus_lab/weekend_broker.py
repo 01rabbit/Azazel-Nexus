@@ -8,6 +8,13 @@ import sys
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+import argparse
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--ui-network', action='store_true', help='reserved internal bridge; no default route')
+for name in ('root', 'pki', 'port', 'public_hex', 'pin'):
+    parser.add_argument(name)
+args = parser.parse_args()
 
 from azazel_nexus.knowledge_peer import KnowledgePeer, KnowledgeRegistry
 from azazel_nexus.provider_registry import ProviderRecord
@@ -21,8 +28,8 @@ from azazel_nexus_runtime.knowledge_egress import KnowledgeClient
 
 
 from azazel_nexus_lab.weekend_process import require_container
-require_container(root=False)
-root, pki, port, public_hex, pin = sys.argv[1:]
+require_container(root=False, ui_network=args.ui_network)
+root, pki, port, public_hex, pin = (getattr(args, name) for name in ('root', 'pki', 'port', 'public_hex', 'pin'))
 now = datetime.now(UTC)
 endpoint = ProviderRecord(
     provider_id="azazel-knowledge", host="knowledge.test", port=int(port),
