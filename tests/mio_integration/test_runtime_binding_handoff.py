@@ -821,45 +821,31 @@ def test_r13_long_label_substrings_through_real_receipt(root, tmp_path, text):
     assert b'prefixTokenSuffix' not in path.read_bytes()
 
 
-@pytest.mark.parametrize('text,expected', [
-    ('check auth status h1', 'check auth status h'),
-    ('pin the route h1', 'pin the route h'),
-    ('pass the check h1', 'pass the check h'),
-    ('key observation h1', 'key observation h'),
+@pytest.mark.parametrize('text', [
+    'pwd syntheticvalue h1',
+    'pwd syntheticvalue; status: good',
+    'auth syntheticvalue confirmed',
+    'pin_status: syntheticvalue',
+    'user.auth.name: syntheticvalue',
+    'pass-mode: syntheticvalue',
+    'my otp value: syntheticvalue',
+    'my_key_name: syntheticvalue',
+    'hint,pwd,status: syntheticvalue',
+    'pin_status: v', 'user.auth.name: v', 'pass-mode: v',
+    'my otp value: v', 'my_key_name: v', 'hint,pwd,status: v',
 ])
-def test_r13_natural_short_alias_prose_through_real_receipt(root, tmp_path, text, expected):
+def test_r14_short_aliases_withhold_without_value_context(root, tmp_path, text):
+    assert incident_explain._public_secret_text(text)
     _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
     assert metadata['completeness'] == 'complete'
     recent, path = project(root, tmp_path, frame, value, metadata)
-    assert recent['incidents'][0]['explanation']['slow_analysis']['hypotheses'][0] == expected
-    assert expected.encode() in path.read_bytes()
-    assert check_export(root, recent, available=True)['hypotheses'][0] == expected
+    fixed = 'Details withheld verify through an authorized source'
+    assert recent['incidents'][0]['explanation']['slow_analysis']['hypotheses'] == [fixed, 'possible']
+    assert check_export(root, recent, available=True)['hypotheses'][0] == fixed
     files = handoff.encode_files(package(root, now=time.time()))
-    assert json.loads(files['handoff.json'])['ai_assessment']['slow_advisory']['hypotheses'][0] == expected
-    assert expected.encode() in files['handoff.ja.md']
-
-
-@pytest.mark.parametrize('text,expected', [
-    ('pin_status: syntheticvalue', 'pinstatus syntheticvalue'),
-    ('user.auth.name: syntheticvalue', 'userauthname syntheticvalue'),
-    ('pass-mode: syntheticvalue', 'passmode syntheticvalue'),
-    ('my otp value: syntheticvalue', 'my otp value syntheticvalue'),
-    ('my_key_name: syntheticvalue', 'mykeyname syntheticvalue'),
-    ('hint,pwd,status: syntheticvalue', 'hintpwdstatus syntheticvalue'),
-])
-def test_r13_short_alias_requires_its_own_immediate_value(root, tmp_path, text, expected):
-    # R13-L1 explicitly narrows the old W8 rule: another key element between
-    # the short alias and operator does not make that alias a secret key.
-    assert not incident_explain._public_secret_text(text)
-    _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
-    assert metadata['completeness'] == 'complete'
-    recent, path = project(root, tmp_path, frame, value, metadata)
-    assert recent['incidents'][0]['explanation']['slow_analysis']['hypotheses'][0] == expected
-    assert check_export(root, recent, available=True)['hypotheses'][0] == expected
-    files = handoff.encode_files(package(root, now=time.time()))
-    assert expected.encode() in path.read_bytes()
-    assert json.loads(files['handoff.json'])['ai_assessment']['slow_advisory']['hypotheses'][0] == expected
-    assert expected.encode() in files['handoff.ja.md']
+    assert json.loads(files['handoff.json'])['ai_assessment']['slow_advisory']['hypotheses'][0] == fixed
+    assert fixed.encode() in files['handoff.ja.md']
+    assert all(b'syntheticvalue' not in data for data in [path.read_bytes(), *files.values()])
 
 
 @pytest.mark.parametrize('alias', ['pass', 'pwd', 'pin', 'auth', 'otp', 'key'])
@@ -884,8 +870,8 @@ def test_r13_short_alias_value_forms_through_real_receipt(root, tmp_path, alias,
 @pytest.mark.parametrize('alias', ['pass', 'pwd', 'pin', 'auth', 'otp', 'key'])
 @pytest.mark.parametrize('suffix', [' abcdefg', ' status h1', ' observation h1',
                                    '_status: normal', '-mode=normal', ''])
-def test_r13_short_alias_context_boundary(alias, suffix):
-    assert not incident_explain._public_secret_text(alias + suffix)
+def test_r14_short_aliases_are_sensitive_without_value_context(alias, suffix):
+    assert incident_explain._public_secret_text(alias + suffix)
 
 
 @pytest.mark.parametrize('text', ['prefixTokenSuffix', 'prefixPasswdSuffix',

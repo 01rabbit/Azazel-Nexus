@@ -1212,14 +1212,6 @@ _FRAGMENT_SECRET_ELEMENTS = _SHORT_SECRET_ELEMENTS | frozenset({
 _MAX_SECRET_ELEMENT_LENGTH = max(map(len, _FRAGMENT_SECRET_ELEMENTS))
 _KEY_VALUE = re.compile(r"([\w.-]+)[\"']?\s*[:=]\s*\S+")
 _SECRET_KEY_SEPARATOR = re.compile(r"[^A-Za-z0-9]+")
-# Retain offsets into normalized prose: the skeleton deliberately erases the
-# distinction between whitespace, punctuation and assignment operators.
-_PUBLIC_KEY_ELEMENTS = re.compile(r"[A-Za-z0-9]+")
-# Closing quotes/brackets belong to a wrapped key (R11/R12), not to its value.
-_PUBLIC_KEY_ASSIGNMENT = re.compile(r"[\"')\]}>」』】〕〉》]*\s*[:=]")
-# A whitespace key/value pair ends at the value. Trailing prose (e.g.
-# 'key observation h1') is not such a pair, even if its next word is long.
-_PUBLIC_KEY_SPACE_VALUE = re.compile(r"\s+[A-Za-z0-9]{8,}\s*\Z")
 _MODEL_TEXT_WITHHELD = "Details withheld verify through an authorized source"
 
 
@@ -1232,33 +1224,26 @@ def _secret_skeleton(value):
 
 
 def _public_secret_text(normalized):
-    normalized = unicodedata.normalize("NFKC", normalized)
-    normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Cf")
     skeleton = _secret_skeleton(normalized)
     # Long labels are sensitive substrings regardless of key/value context.
     if _PUBLIC_SECRET_KEY_LABEL.search(skeleton):
         return True
-    elements = list(_PUBLIC_KEY_ELEMENTS.finditer(normalized))
-    for start, match in enumerate(elements):
-        element = match[0].lower()
-        tail = normalized[match.end():]
-        if element in _SHORT_SECRET_ELEMENTS and (
-                _PUBLIC_KEY_ASSIGNMENT.match(tail) or _PUBLIC_KEY_SPACE_VALUE.fullmatch(tail)):
+    elements = [element.lower() for element in skeleton.split("|") if element]
+    for start, element in enumerate(elements):
+        # Short aliases are sensitive whole elements in every context.
+        if element in _SHORT_SECRET_ELEMENTS:
             return True
         # Only consecutive 1-2 character fragments may form an obscured label.
         # Do not join across longer elements or scan beyond the longest label.
         joined = ""
         for fragment in elements[start:]:
-            if not 1 <= len(fragment[0]) <= 2:
+            if not 1 <= len(fragment) <= 2:
                 break
-            joined += fragment[0].lower()
+            joined += fragment
             if len(joined) > _MAX_SECRET_ELEMENT_LENGTH:
                 break
             if joined in _FRAGMENT_SECRET_ELEMENTS:
-                tail = normalized[fragment.end():]
-                if joined not in _SHORT_SECRET_ELEMENTS or (
-                        _PUBLIC_KEY_ASSIGNMENT.match(tail) or _PUBLIC_KEY_SPACE_VALUE.fullmatch(tail)):
-                    return True
+                return True
     return False
 
 
