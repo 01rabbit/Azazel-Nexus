@@ -96,6 +96,8 @@ def test_real_assistant_core_receipt_and_actual_dispatch_are_aligned():
     assert all(t['validated'] for t in value['generation_budget']['tasks'])
     assert lane._receipts[value['result_handle']]['frame_unknowns']['u1'] == 'unknown'
     assert 'frame_unknowns' not in value
+    assert lane._receipts[value['result_handle']]['unknown_origins']['u1'] == 'frame'
+    assert 'unknown_origins' not in value
 
 
 def test_later_task_selection_is_accounted_in_product_receipt():

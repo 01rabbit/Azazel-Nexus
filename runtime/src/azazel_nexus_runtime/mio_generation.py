@@ -779,6 +779,7 @@ class GenerationLane:
                         record = self._receipts[job['handle']]
                         if session is not None:
                             record['frame_unknowns'] = copy.deepcopy(session.frame_unknowns)
+                            record['unknown_origins'] = copy.deepcopy(session.unknown_origins)
                         record['status'] = copy.deepcopy(status)
                         status = self._public_record(record)
                         record['status'] = copy.deepcopy(status)
