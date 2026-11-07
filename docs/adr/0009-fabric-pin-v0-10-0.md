@@ -43,12 +43,12 @@ and both platform locks. CORE remains usable without Fabric.
    Nexus trust-root policy.
 
 The current candidate's MIO wheel is
-`azazel_mio-0.1.0.dev20261106+gitbb6dcfd-py3-none-any.whl`, built from exact
-source commit `a1807bf7abb08788b834ae038f7a8b46d09d0acc` and pinned in both
+`azazel_mio-0.1.0.dev20261107+gited860f2-py3-none-any.whl`, built from exact
+source commit `989dd959a635b5877814bd2912639676308cf999` and pinned in both
 target locks at SHA-256
-`cb67a8c00f9011b0accd14a9901298d29dd0eb30b036e9af8c1ec5b5878356ff`. The
+`a99fdc1bb15484581b41cb1bd22914b4d1e1f452499278b5f42902daacc2a3cb`. The
 optional `mio` source extra resolves to the same immutable commit. The
-`gitbb6dcfd` version suffix identifies the implementation baseline; `a1807bf…`
+`gited860f2` version suffix identifies the implementation baseline; `989dd959…`
 is the source commit that carries this version metadata. The former
 `gite639a65` / `1ba191b…` artifact and hash are superseded and must not be used
 for this candidate. Reproduction uses `SOURCE_DATE_EPOCH=1793887544`, the
