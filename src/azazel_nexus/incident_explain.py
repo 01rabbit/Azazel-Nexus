@@ -34,6 +34,7 @@ from .local_advisory import (
 )
 from .route_selection import RequestOutcome, TerminalEvent
 from .sanitizer import PrivacyClass
+from .model_text import allowed_model_text
 
 MAX_PENDING = 64
 MAX_PER_MINUTE = 6
@@ -1186,34 +1187,63 @@ SLOW_RESULT_STATES = frozenset({"queued", "complete", "degraded", "timeout", "ca
 _SECRET_KEY_LABEL = re.compile(r"(?i)(pass(word|wd|phrase)?|pwd|secret|token|api[_-]?key|credential|bearer|cookie|private[_-]?key)")
 _IDENTIFIER_SECRET_WORD = re.compile(r"(?i)\b(?:password|passwd|passphrase|secret|credential|api[_ -]?key|access[_ -]?key|private[_ -]?key|bearer|token|cookie)\b")
 _PUBLIC_SECRET_LABELS = (
-    r"password|passwd|passphrase|passcode|pwd|secret|token|api[_ -]?key|"
+    r"password|passwd|passphrase|passcode|secret|token|api[_ -]?key|"
     r"credential|bearer|cookie|private[_ -]?key|access[_ -]?key|secret[_ -]?key|"
-    r"session[_ -]?(?:id|key|token)|auth|client[_ -]?secret|refresh[_ -]?token|otp|pin"
+    r"session[_ -]?(?:id|key|token)|client[_ -]?secret|refresh[_ -]?token"
 )
-_PUBLIC_SECRET_KEY_LABEL = re.compile(r"(?i)(?:" + _PUBLIC_SECRET_LABELS + r"|(?:^|[_.-])pass$)")
+_PUBLIC_SECRET_KEY_LABEL = re.compile(r"(?i)(?:" + _PUBLIC_SECRET_LABELS + r")")
 _PUBLIC_SECRET_WORD = re.compile(r"(?i)\b(?:" + _PUBLIC_SECRET_LABELS + r")\b")
+_SHORT_SECRET_ELEMENTS = frozenset({"pin", "auth", "pass", "otp", "key", "pwd"})
 _KEY_VALUE = re.compile(r"([\w.-]+)[\"']?\s*[:=]\s*\S+")
+_PUBLIC_KEY_VALUE = re.compile(r"([^:=\r\n]+?)\s*[:=]\s*\S+")
+_MODEL_TEXT_WITHHELD = "Details withheld verify through an authorized source"
+
+
+def _secret_skeleton(value):
+    # No Unicode category enumeration: every non-ASCII separator disappears.
+    return re.sub(r"[^A-Za-z0-9=:]", "", value)
+
+
+def _public_secret_text(normalized):
+    skeleton = _secret_skeleton(normalized)
+    # Long labels retain the existing substring policy. Short aliases are
+    # whole key elements only, never substrings of spinning/author/compass.
+    if (_PUBLIC_SECRET_WORD.search(normalized)
+            or _PUBLIC_SECRET_WORD.search(skeleton)
+            or any(_PUBLIC_SECRET_KEY_LABEL.search(match[1])
+                   or match[1].lower() in _SHORT_SECRET_ELEMENTS
+                   for match in _KEY_VALUE.finditer(skeleton))):
+        return True
+    for match in _PUBLIC_KEY_VALUE.finditer(normalized):
+        key = match[1]
+        if _PUBLIC_SECRET_KEY_LABEL.search(_secret_skeleton(key)):
+            return True
+        if any(_secret_skeleton(element).lower() in _SHORT_SECRET_ELEMENTS
+               for element in re.split(r"[_\-.\s]+", key)):
+            return True
+    return False
+
+
+def guard_public_model_text(value, *, _identifier=False):
+    """Privacy guard shared by library projection and the recent.json writer."""
+    if type(value) is not str or not value:
+        raise ValueError("slow_result_refused")
+    normalized = unicodedata.normalize("NFKC", value)
+    # Closed ASCII metadata retains its old policy (ev:auth:1 is an ID).
+    secret = (any(_SECRET_KEY_LABEL.search(match[1]) for match in _KEY_VALUE.finditer(normalized))
+              or _IDENTIFIER_SECRET_WORD.search(normalized)) if _identifier else _public_secret_text(normalized)
+    if (secret or (not _identifier and not allowed_model_text(normalized))
+            or any(ch in normalized for ch in "/\\⁄∕∖⧸⧹﹨")
+            or re.search(r"\b[A-Za-z0-9_-]{32,}\b", normalized)
+            or re.search(r"://|(?:^|\s)//|[\w.+-]+@[\w.-]+|\b\d+(?:\.\d+){3}\b", normalized)
+            or re.search(r"(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.]*", normalized)):
+        return _MODEL_TEXT_WITHHELD
+    return normalized
 
 
 def _public_model_text(value, *, _identifier=False):
     """Bound optional model prose before the read-only operator projection."""
-    if type(value) is not str or not value:
-        raise ValueError("slow_result_refused")
-    normalized = unicodedata.normalize("NFKC", "".join(
-        char for char in value if unicodedata.category(char) != "Cf"))
-    # Closed ASCII metadata keeps its existing guard: e.g. ev:auth:1 is an
-    # evidence ID, not a free-form credential label. Only the ID caller opts in.
-    key_labels = _SECRET_KEY_LABEL if _identifier else _PUBLIC_SECRET_KEY_LABEL
-    secret_words = _IDENTIFIER_SECRET_WORD if _identifier else _PUBLIC_SECRET_WORD
-    # The MIO frame excludes network addresses, but a generated response is
-    # still untrusted. Withhold any address/path-like string at this boundary.
-    if (any(ch in normalized for ch in "/\\⁄∕∖⧸⧹﹨")
-            or any(key_labels.search(match[1]) for match in _KEY_VALUE.finditer(normalized))
-            or secret_words.search(normalized)
-            or re.search(r"\b[A-Za-z0-9_-]{32,}\b", normalized)
-            or re.search(r"://|(?:^|\s)//|[\w.+-]+@[\w.-]+|\b\d+(?:\.\d+){3}\b", normalized)
-            or re.search(r"(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.]*", normalized)):
-        return "Details withheld verify through an authorized source"
+    normalized = guard_public_model_text(value, _identifier=_identifier)
     words = []
     current = []
     for char in normalized:

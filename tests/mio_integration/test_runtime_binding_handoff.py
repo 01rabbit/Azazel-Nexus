@@ -351,6 +351,10 @@ def test_normalized_unambiguous_member_still_exports(root, tmp_path, text):
     'possible h\u200c1', 'possible \ufeffh1', 'possible h1\u202e',
     'possible h\u20661', 'possible h\u093e1', 'possible ｈ\u0301１',
     'possible h1\u200b\u0301', 'possible a\u0301 h1', 'possible a\u200b\u0301 h1',
+    'possible u\u3164999', 'possible u\u115f999', 'possible u\u1160999',
+    'possible ev\u3164:ssh:999', 'possible u\u20dd999', 'possible h1\u20dd',
+    'possible h1\ue000', 'possible h1\u0378', 'possible h1\ufe0f',
+    'possible h1\U000e0100', 'possible h1\x00', 'possible h1\U000e0061',
 ])
 def test_format_and_combining_id_marks_withhold_real_receipt(root, tmp_path, text):
     _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
@@ -361,11 +365,11 @@ def test_format_and_combining_id_marks_withhold_real_receipt(root, tmp_path, tex
 
 
 @pytest.mark.parametrize('text', ['possible \u200b h1', 'possible \u0301 h1'])
-def test_marks_separated_from_id_characters_keep_complete_receipt(root, tmp_path, text):
+def test_unsupported_marks_anywhere_withhold_complete_receipt(root, tmp_path, text):
     _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
-    assert metadata['completeness'] == 'complete'
+    assert metadata['completeness'] == 'partial'
     recent, _ = project(root, tmp_path, frame, value, metadata)
-    check_export(root, recent, available=True)
+    check_export(root, recent, available=False)
 
 
 def test_auth_evidence_id_still_displays_and_exports(root, tmp_path, monkeypatch):
@@ -453,6 +457,11 @@ def test_saved_ref_deadlines_are_independently_checked(root, tmp_path, mutation)
     'my_auth=syntheticvalue', 'my_refresh_token=syntheticvalue',
     'my_otp=syntheticvalue', 'my_pin=syntheticvalue',
     'user_pass=syntheticvalue', 'PASS: syntheticvalue', 'passcode: syntheticvalue',
+    'pin: syntheticvalue', 'auth: syntheticvalue', 'otp: syntheticvalue', 'key: syntheticvalue',
+    'pin_status: syntheticvalue', 'user.auth.name: syntheticvalue',
+    'pass-mode: syntheticvalue', 'my otp value: syntheticvalue',
+    'my_key_name: syntheticvalue', 'p!wd: syntheticvalue', 'p,w;d: syntheticvalue',
+    'p\"wd: syntheticvalue', 'p a s s w o r d: syntheticvalue',
 ])
 def test_secret_key_value_prose_is_wholly_withheld(root, tmp_path, text):
     fixed = 'Details withheld verify through an authorized source'
@@ -461,14 +470,22 @@ def test_secret_key_value_prose_is_wholly_withheld(root, tmp_path, text):
     recent, _ = project(root, tmp_path, frame, value, metadata)
     shown = recent['incidents'][0]['explanation']['slow_analysis']
     assert shown['hypotheses'][0] == fixed
-    advisory = check_export(root, recent, available=True)
-    assert advisory['hypotheses'][0] == fixed
+    # '=' is outside the explicit repertoire; ':' remains allowed. The
+    # tighter manifest closes exports with '=', independently of privacy.
+    available = '=' not in text
+    assert metadata['completeness'] == ('complete' if available else 'partial')
+    advisory = check_export(root, recent, available=available)
+    if available:
+        assert advisory['hypotheses'][0] == fixed
     assert 'syntheticvalue' not in json.dumps(recent)
     assert all(b'syntheticvalue' not in data for data in handoff.encode_files(package(root, now=time.time())).values())
 
 
 @pytest.mark.parametrize('text', ['p\u200bwd=syntheticvalue', 'my_ac\u200ccess_key=syntheticvalue',
-                                  'client\ufeffSecret: syntheticvalue', 'PA\u202eSS: syntheticvalue'])
+                                  'client\ufeffSecret: syntheticvalue', 'PA\u202eSS: syntheticvalue',
+                                  'p\u3164wd=syntheticvalue', 'p\u115fwd=syntheticvalue',
+                                  'p\u1160wd=syntheticvalue', 'p\u20ddwd=syntheticvalue',
+                                  'p\ufe0fwd=syntheticvalue', 'p\u0301wd=syntheticvalue'])
 def test_format_obscured_secret_is_removed_before_public_projection(root, tmp_path, text):
     fixed = 'Details withheld verify through an authorized source'
     assert incident_explain._public_model_text(text) == fixed
@@ -484,7 +501,9 @@ def test_format_obscured_secret_is_removed_before_public_projection(root, tmp_pa
 
 @pytest.mark.parametrize('text,expected', [('compass: north', 'compass north'),
     ('bypass: allowed', 'bypass allowed'), ('passive: yes', 'passive yes'),
-    ('passing: normal', 'passing normal')])
+    ('passing: normal', 'passing normal'), ('spinning: normal', 'spinning normal'),
+    ('author: Alice', 'author Alice'), ('author_name: Alice', 'authorname Alice'),
+    ('keynote: normal', 'keynote normal'), ('adoption: normal', 'adoption normal')])
 def test_ordinary_words_containing_pass_remain_visible(root, tmp_path, text, expected):
     assert incident_explain._public_model_text(text) == expected
     _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
@@ -495,3 +514,65 @@ def test_ordinary_words_containing_pass_remain_visible(root, tmp_path, text, exp
     files = handoff.encode_files(package(root, now=time.time()))
     assert expected.encode() in files['handoff.json']
     assert expected.encode() in files['handoff.ja.md']
+
+
+@pytest.mark.parametrize('text', [
+    '仮説を確認してください。 (h1)', 'ネットワークの遅延を確認。 ev:ssh:1',
+    'ひらがな・カタカナ・漢字「観測」', '可能性： ｈ１。',
+    'か\u3099くせつを確認。 h1',
+])
+def test_allowlisted_japanese_and_normalized_members_export(root, tmp_path, text):
+    _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
+    assert metadata['completeness'] == 'complete'
+    recent, _ = project(root, tmp_path, frame, value, metadata)
+    shown = recent['incidents'][0]['explanation']['slow_analysis']['hypotheses'][0]
+    assert shown != 'Details withheld verify through an authorized source'
+    check_export(root, recent, available=True)
+
+
+@pytest.mark.parametrize('mark', ['\u3164', '\u20dd', '\ufe0f', '\u0301'])
+@pytest.mark.parametrize('field', ['hypotheses', 'unknowns', 'next_checks'])
+def test_recent_writer_guards_each_field_independently_of_binding(root, tmp_path, mark, field):
+    # Start with a real complete receipt and valid binding. Inject only at the
+    # in-memory public write seam to prove the writer itself guards all fields.
+    _, frame, _, value, metadata = execute(tmp_path)
+    recent, path = project(root, tmp_path, frame, value, metadata)
+    recent['incidents'][0]['explanation']['slow_analysis'][field] = [f'p{mark}wd=syntheticvalue']
+    explainer = incident_explaind.Explainer(incidents=tmp_path/'writer-incidents',
+        state=tmp_path/'writer-state', status_path=path.with_name('status.json'), clock=time.time)
+    explainer.prepare()
+    explainer.recent = recent['incidents']
+    explainer.recent_status()
+    saved = path.read_bytes()
+    assert b'syntheticvalue' not in saved
+    reread = incident_explain.read_recent_incidents(saved)
+    assert reread is not None
+    slow = reread['incidents'][0]['explanation']['slow_analysis']
+    assert slow[field] == ['Details withheld verify through an authorized source']
+    assert slow['binding']['completeness'] == 'complete'
+    check_export(root, reread, available=True)
+    assert all(b'syntheticvalue' not in data for data in handoff.encode_files(package(root, now=time.time())).values())
+
+
+@pytest.mark.parametrize('mark', ['\u3164', '\u20dd', '\ufe0f', '!', ',', ' ', '\ue000'])
+def test_secret_skeleton_is_independent_of_character_allowlist(mark):
+    import unicodedata
+    text = unicodedata.normalize('NFKC', f'p{mark}wd=syntheticvalue')
+    assert incident_explain._public_secret_text(text)
+
+
+@pytest.mark.parametrize('text', ['h1\ud800', 'h1\udfff', 'h1\u0378', 'h1\ue000',
+                                  'h1\n', 'h1\t', 'h1\u3099', 'h1\u309a'])
+def test_unsupported_codepoints_never_claim_exhaustive_references(text):
+    from azazel_nexus_runtime.mio_advisory_manifest import references
+    assert references({'statement': text}) == (set(), set(), True)
+    assert incident_explain._public_model_text(text) == 'Details withheld verify through an authorized source'
+
+
+def test_nfkc_composed_secret_letter_is_withheld_by_repertoire():
+    import unicodedata
+    text = 'p\u0301wd=syntheticvalue'
+    # NFKC composes p + acute; the specified ASCII skeleton loses that letter.
+    # The independent allowlist must therefore reject this whole model text.
+    assert incident_explain._secret_skeleton(unicodedata.normalize('NFKC', text)) == 'wd=syntheticvalue'
+    assert incident_explain.guard_public_model_text(text) == 'Details withheld verify through an authorized source'

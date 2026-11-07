@@ -26,7 +26,7 @@ from azazel_nexus.incident_explain import (
     record_evidence,
     build_recent_incident, build_recent_incidents, read_recent_incidents, explanation_summary,
     SHOWN_STATES, closed_pairs, read_control, read_retention_boundary, read_mio_reply, read_record, read_transition, read_pending,
-    slow_analysis_projection,
+    slow_analysis_projection, guard_public_model_text,
 )
 from azazel_nexus.lite_import import read_knowledge_refs
 from azazel_nexus.store_dirs import fsync_directory, store_directory
@@ -471,7 +471,16 @@ class Explainer:
             setattr(self, name, getattr(self, name) + n)
 
     def recent_status(self):
-        value = build_recent_incidents(self.recent, self.clock())
+        # Guard at the actual public file/UI write boundary as well as during
+        # library projection. Never rely on partial binding to hide model text.
+        rows = copy.deepcopy(self.recent)
+        for row in rows:
+            slow = row.get("explanation", {}).get("slow_analysis", {})
+            if slow.get("state") == "complete":
+                for field in ("hypotheses", "unknowns", "next_checks"):
+                    if type(slow.get(field)) is list:
+                        slow[field] = [guard_public_model_text(text) for text in slow[field]]
+        value = build_recent_incidents(rows, self.clock())
         now = self.monotonic()
         # Rewrite unchanged rows every 20 s so a quiet node is not shown stale.
         if now - self._recent_at < 5 or (value["incidents"] == self._recent_value
