@@ -748,3 +748,11 @@ def test_report_units_are_not_partially_sent_and_addresses_refuse_generation():
     source['context'] = [{'kind': 'operator_report', 'text': 'synthetic 10.20.30.40'}]
     frame, selection = adapter._frame(read_frame(source), with_selection=True)
     assert frame.truncated and selection['coverage'] == 'unknown'
+
+
+@pytest.mark.parametrize('address', ['１０.０.０.１', '２００１：ｄｂ８：：１', '::ffff:192.0.2.1'])
+def test_normalized_address_in_report_refuses_whole_unit(address):
+    source = _lite_frame('synthetic question')
+    source['context'] = [{'kind': 'operator_report', 'text': 'unverified synthetic ' + address}]
+    frame, selection = adapter._frame(read_frame(source), with_selection=True)
+    assert frame.truncated and selection['coverage'] == 'unknown'

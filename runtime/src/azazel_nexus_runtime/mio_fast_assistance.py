@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import secrets
 import time
+import unicodedata
 from dataclasses import asdict
 
 from azazel_nexus.lite_import import KnowledgeRef, read_knowledge_refs
@@ -70,8 +71,11 @@ def _frame(source: dict, *, with_selection=False):
     # source is not an authorization to expose addresses in a prompt.
     raw_context = any(item['kind'] in {'event', 'raw_event', 'edge_event'}
                       or item['kind'].startswith('raw_') for item in context)
-    excluded = [len(noc) > 480 or bool(_IPV4.search(noc) or _IPV6.search(noc)),
-                len(soc) > 480 or raw_context or bool(_IPV4.search(soc) or _IPV6.search(soc))]
+    def contains_address(text):
+        inspected = unicodedata.normalize('NFKC', text)
+        return bool(_IPV4.search(inspected) or _IPV6.search(inspected))
+    excluded = [len(noc) > 480 or contains_address(noc),
+                len(soc) > 480 or raw_context or contains_address(soc)]
     projected = sum(excluded)
     selection = {'policy_version':'nexus-frame-v1', 'coverage':'unknown' if projected else 'intact',
         'input_units':2,'selected_units':2-projected,'omitted_units':projected,

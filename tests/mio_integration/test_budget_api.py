@@ -96,6 +96,67 @@ def test_real_assistant_core_receipt_and_actual_dispatch_are_aligned():
     assert all(t['validated'] for t in value['generation_budget']['tasks'])
 
 
+def test_rejected_revision_supersedes_active_with_real_core():
+    from dataclasses import replace
+    class BlockingServer(ControlledServer):
+        def __init__(self):
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+        def infer(self, request, deadline_s, **kw):
+            result = super().infer(request, deadline_s, **kw)
+            self.entered.set()
+            assert self.release.wait(2)
+            return result
+        def stop(self):
+            from azazel_nexus_runtime.mio_supervisor import StopResult, StopState
+            self.release.set()
+            return StopResult(StopState.CONFIRMED, 'fixture_stop_confirmed')
+    frame, cap = inputs()
+    server = BlockingServer()
+    lane = FixtureLane(capability=cap, server=server, deadline_s=5, budget_enabled=True)
+    first = lane.submit({'request_id': 'same', 'revision': 1}, frame, cap.generation_id, upstream_coverage='intact')
+    try:
+        assert server.entered.wait(2)
+        other = lane.submit({'request_id': 'other'}, frame, cap.generation_id, upstream_coverage='intact')
+        bad = replace(frame, truncated=True)
+        new = lane.submit({'request_id': 'same', 'revision': 2}, bad, cap.generation_id, upstream_coverage='unknown')
+        assert new['generation_budget']['primary_outcome'] == 'budget_exhausted'
+        assert new['generation_budget']['job_calls'] == 0
+        assert lane._active['cancelled'].is_set()
+        assert lane._pending['handle'] == other['result_handle'] and not lane._pending['cancelled'].is_set()
+    finally:
+        server.release.set()
+    until = time.monotonic() + 2
+    while time.monotonic() < until:
+        old = lane.poll(first['result_handle'], cap.generation_id, frame.trace_id)
+        if old['state'] != 'queued':
+            break
+        time.sleep(.002)
+    assert old['state'] == 'superseded'
+    meta = old['generation_budget']
+    assert meta['primary_outcome'] == 'cancelled' and 'superseded' in meta['reasons']
+    assert meta['job_calls'] == 1
+    assert meta['tasks'][0]['actual_usage'] == {'tokens_in': 12, 'tokens_out': 7}
+
+
+@pytest.mark.parametrize('address', ['１０.０.０.１', '２００１：ｄｂ８：：１', '::ffff:192.0.2.1'])
+def test_normalized_address_report_has_zero_dispatches(address):
+    from azazel_nexus.local_advisory import read_frame
+    from azazel_nexus_runtime.mio_fast_assistance import _frame
+    source = read_frame({'request_id': 'privacy-fixture', 'privacy_class': 'P3-restricted',
+                         'question': 'Review synthetic report', 'context': [
+                             {'kind': 'operator_report', 'text': 'unverified ' + address}]})
+    frame, selection = _frame(source, with_selection=True)
+    _, cap = inputs()
+    server = ControlledServer()
+    lane = FixtureLane(capability=cap, server=server, deadline_s=5, budget_enabled=True)
+    result = lane.submit(source, frame, cap.generation_id, upstream_coverage=selection['coverage'],
+                         upstream_selection=selection)
+    assert frame.truncated and result['generation_budget']['primary_outcome'] == 'budget_exhausted'
+    assert result['generation_budget']['job_calls'] == 0 and server.requests == []
+
+
 @pytest.mark.parametrize(('fault','reason'),[('missing','dispatch_tracking_unavailable'),('duplicate','send_notification_conflict')])
 def test_notification_contract_violations_fail_closed_preserving_actual_usage(monkeypatch,fault,reason):
     captured=[]

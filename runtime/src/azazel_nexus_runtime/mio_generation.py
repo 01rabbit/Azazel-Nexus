@@ -298,6 +298,38 @@ class GenerationLane:
         if self.server is None:
             return self._decline('degraded',frame,generation_id,'model_unavailable',upstream_coverage,upstream_selection)
         if self.budget_enabled and getattr(frame, 'truncated', False):
+            # A rejected revision still invalidates older work for this request.
+            # Do this under the same lock and using the ordinary cancellation
+            # path so in-flight usage and the superseded receipt survive.
+            with self._lock:
+                for job in (self._active, self._pending):
+                    if job and job['source']['request_id'] == source['request_id']:
+                        job['rejected_revision_supersession'] = True
+                        session = job.get('budget_session')
+                        if session is not None:
+                            # Preserve an earlier failure, otherwise record the
+                            # cancellation before the worker observes the event.
+                            session.note_failure('cancelled', 'cancelled')
+                        self._cancel(job, 'superseded')
+                        if job is self._pending and job.get('budget_session') is None:
+                            # A pending job has no control worker to create its
+                            # budget receipt. It has sent nothing, but retains
+                            # the same primary/terminal cancellation axes.
+                            from .mio_budget_session import BudgetSession
+                            from azazel_nexus.generation_budget import project_budget
+                            session = BudgetSession(self, job, None)
+                            session.note_failure('cancelled', 'cancelled')
+                            session.note_failure('superseded', 'cancelled')
+                            status = session.snapshot('cancelled', 'cancelled')
+                            meta = status['generation_budget']
+                            meta['superseded'] = True
+                            status['state'], status['generation_budget'] = project_budget(meta)
+                            job['terminal_status'] = status
+                            record = self._receipts.get(job['handle'])
+                            if record is not None:
+                                record['status'] = copy.deepcopy(status)
+                if self._pending and self._pending['cancelled'].is_set():
+                    self._pending = None
             return self._decline('degraded',frame,generation_id,'budget_exhausted',upstream_coverage,upstream_selection)
         fingerprint = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
         key = (generation_id, fingerprint)
@@ -643,6 +675,8 @@ class GenerationLane:
             finally:
                 session.done.set()
         if job['cancelled'].is_set():
+            if job.get('rejected_revision_supersession'):
+                session.note_failure('cancelled', 'cancelled')
             session.note_failure(job['reason'],job['reason'])
             session.done.set()
         elif time.monotonic() >= job['end']:
@@ -672,6 +706,8 @@ class GenerationLane:
                     session.note_failure('admission_closed','admission_closed')
                     state,outcome='closed','admission_closed'
                 elif cancelled:
+                    if job.get('rejected_revision_supersession'):
+                        session.note_failure('cancelled', 'cancelled')
                     session.note_failure(job['reason'],job['reason'])
                     state,outcome=job['reason'],job['reason']
                 elif expired:
