@@ -299,37 +299,34 @@ class GenerationLane:
             return self._decline('degraded',frame,generation_id,'model_unavailable',upstream_coverage,upstream_selection)
         if self.budget_enabled and getattr(frame, 'truncated', False):
             # A rejected revision still invalidates older work for this request.
-            # Do this under the same lock and using the ordinary cancellation
-            # path so in-flight usage and the superseded receipt survive.
+            # Mark and cancel under the lane lock, but never acquire a session
+            # lock here: dispatch and terminal publication take session first.
+            pending_receipts = []
             with self._lock:
                 for job in (self._active, self._pending):
                     if job and job['source']['request_id'] == source['request_id']:
                         job['rejected_revision_supersession'] = True
-                        session = job.get('budget_session')
-                        if session is not None:
-                            # Preserve an earlier failure, otherwise record the
-                            # cancellation before the worker observes the event.
-                            session.note_failure('cancelled', 'cancelled')
                         self._cancel(job, 'superseded')
                         if job is self._pending and job.get('budget_session') is None:
-                            # A pending job has no control worker to create its
-                            # budget receipt. It has sent nothing, but retains
-                            # the same primary/terminal cancellation axes.
-                            from .mio_budget_session import BudgetSession
-                            from azazel_nexus.generation_budget import project_budget
-                            session = BudgetSession(self, job, None)
-                            session.note_failure('cancelled', 'cancelled')
-                            session.note_failure('superseded', 'cancelled')
-                            status = session.snapshot('cancelled', 'cancelled')
-                            meta = status['generation_budget']
-                            meta['superseded'] = True
-                            status['state'], status['generation_budget'] = project_budget(meta)
-                            job['terminal_status'] = status
-                            record = self._receipts.get(job['handle'])
-                            if record is not None:
-                                record['status'] = copy.deepcopy(status)
+                            pending_receipts.append(job)
                 if self._pending and self._pending['cancelled'].is_set():
                     self._pending = None
+            for job in pending_receipts:
+                # Detached pending work cannot acquire a worker or dispatch.
+                from .mio_budget_session import BudgetSession
+                from azazel_nexus.generation_budget import project_budget
+                session = BudgetSession(self, job, None)
+                session.note_failure('cancelled', 'cancelled')
+                session.note_failure('superseded', 'cancelled')
+                status = session.snapshot('cancelled', 'cancelled')
+                meta = status['generation_budget']
+                meta['superseded'] = True
+                status['state'], status['generation_budget'] = project_budget(meta)
+                with self._lock:
+                    job['terminal_status'] = status
+                    record = self._receipts.get(job['handle'])
+                    if record is not None:
+                        record['status'] = copy.deepcopy(status)
             return self._decline('degraded',frame,generation_id,'budget_exhausted',upstream_coverage,upstream_selection)
         fingerprint = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
         key = (generation_id, fingerprint)
