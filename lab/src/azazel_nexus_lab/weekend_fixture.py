@@ -29,6 +29,22 @@ def fixture_lane(repo, server, *, short=False):
     return _fixture_support(repo).fixture_lane(repo, server, short=short)
 
 
+def submit_product_fixture(repo, server, source):
+    """Drive the product budget path with a validated synthetic fixture input.
+
+    The caller owns the fixture server and polls the returned lane. This uses
+    only the existing unsealed test capability; production admission is closed.
+    """
+    from azazel_nexus.local_advisory import read_frame
+    from azazel_nexus_runtime.mio_fast_assistance import _frame
+    source = read_frame(source)
+    frame, selection = _frame(source, with_selection=True)
+    lane, cap = fixture_lane(repo, server, short=False)
+    first = lane.submit(source, frame, cap.generation_id,
+                        upstream_coverage=selection['coverage'], upstream_selection=selection)
+    return lane, cap, frame, first
+
+
 def production_control(cap, server, frame):
     repo = Path(__file__).resolve().parents[3]
     return _fixture_support(repo).production_control(cap, server, frame)

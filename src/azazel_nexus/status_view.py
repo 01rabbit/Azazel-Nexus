@@ -774,7 +774,7 @@ def _explainer_extra(value, snapshot):
     _require(value["recovery_hint"] in (None, RECOVERY_HINT))
 
 
-def _recent_extra(value, snapshot):
+def _recent_extra(value, snapshot, now=None):
     from .edge_intake import ACTIONS
     from .incident_explain import (
         CITATION_STATES, CODES, CONTENT_KINDS, LEGACY_HANDOFF, POLICY_REASONS, SHOWN_STATES,
@@ -811,6 +811,13 @@ def _recent_extra(value, snapshot):
         _require(type(omitted) is int and 1 <= omitted <= 16)
         copy = _pick(row, INCIDENT_FIELDS)
         copy["explanation"] = _pick(explanation, EXPLANATION_FIELDS)
+        if "slow_analysis" in explanation:
+            # Re-run the strict recent reader before forwarding this bounded projection.
+            from .incident_explain import read_recent_incidents
+            _require(read_recent_incidents(json.dumps(value).encode()) == value)
+            from .incident_explain import public_slow_analysis
+            slow = public_slow_analysis(explanation["slow_analysis"], row["incident_id"], now)
+            copy["explanation"]["slow_analysis"] = slow
         copy["explanation"]["knowledge_refs"] = [
             _knowledge_ref(ref) for ref in explanation["knowledge_refs"]]
         copy["edge_decision"] = {"kind": "would", "action": row["edge_would"],
@@ -860,7 +867,7 @@ def _edge_loop(now, reader: str = "operator") -> dict:
                                     extra=_explainer_extra,
                                     flags=("chain_broken", "storage_failed")),
             "recent": _component(raw["recent"], now, LOOP_STALE_S, RECENT_FIELDS,
-                                 schema=RECENT_SCHEMA, extra=_recent_extra),
+                                 schema=RECENT_SCHEMA, extra=lambda value, snapshot: _recent_extra(value, snapshot, now)),
             "content_labels": dict(CONTENT_LABELS),
         }
     except Exception:  # noqa: BLE001 - presentation only; status continues

@@ -852,3 +852,24 @@ def test_r389b_concurrent_ui_copy_writes_and_removals_never_interleave(tmp_path,
     for thread in threads:
         thread.join()
     assert overlaps == []
+
+
+def test_slow_ui_renders_dispatch_and_fence_fields():
+    script = (REPO / "runtime/src/azazel_nexus_runtime/ui_static/app.js").read_text()
+    assert 'budget.dispatch.forEach' in script
+    assert 'budget.fence_state' in script
+    assert '送信済み' in script and '未送信' in script
+
+
+def test_slow_ui_renders_binding_withhold_reason_and_recovery_in_native_card():
+    script = (REPO / 'runtime/src/azazel_nexus_runtime/ui_static/app.js').read_text()
+    card = script[script.index('var slow = ex.slow_analysis;'):script.index('var refs = block("参照根拠")')]
+    for field in ('reason_code', 'reason_ja', 'incident_id', 'request_id', 'frame_id',
+                  'template_version', 'created_at', 'expires_at', 'completeness',
+                  'hypothesis_ids', 'advisory_refs', 'evidence_refs', 'valid_until'):
+        assert 'slow.' + field in card or 'binding.' + field in card or 'ref.' + field in card
+    assert 'var recovery = slow.recovery;' in card
+    assert '((binding || recovery || {}).unknowns || []).forEach' in card
+    assert 'unknown.id' in card and 'unknown.origin' in card and 'unknown.status' in card
+    assert 'add(node, slowNode)' in card
+    assert 'innerHTML' not in card

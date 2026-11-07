@@ -367,7 +367,7 @@ def test_ordinary_fast_assess_fetches_context_only_from_local_broker(monkeypatch
     assert isinstance(submitted[0][1],MioSituationFrame)
     assert submitted[0][1].to_dict()["noc_summary"]==frame["question"]
     assert submitted[0][2]=="intact"
-    assert submitted[0][3]==dict(policy_version="nexus-frame-v1",coverage="intact",
+    assert submitted[0][3]==dict(policy_version="nexus-frame-v2",coverage="intact",
         input_units=2,selected_units=2,omitted_units=0,omissions=[])
     assert result["fast_assistance"] == {"model_free": True}
 

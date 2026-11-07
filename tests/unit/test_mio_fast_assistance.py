@@ -728,3 +728,45 @@ def test_slow_selection_records_loss_before_projection_without_changing_fast_fra
     ordinary = adapter._frame(source)
     assert ordinary.to_dict()['noc_summary'] == frame.to_dict()['noc_summary']
     assert 'x' * 20 not in str(selection)
+
+
+def test_slow_selection_counts_duplicate_edge_display_units():
+    from azazel_nexus.generation_budget import validate_selection
+    from azazel_nexus.incident_explain import build_frame, pending_entry
+    from test_incident_explain import transition
+
+    source = read_frame(build_frame(pending_entry(transition()), 17))
+    frame, selection = adapter._frame(source, with_selection=True)
+    validate_selection(selection)
+    assert selection['coverage'] == 'selected'
+    assert selection['omitted_units'] == 2
+    assert [item['reason'] for item in selection['omissions']] == ['duplicate', 'duplicate']
+    assert frame.evidence_refs and not frame.truncated
+
+
+def test_report_units_are_not_partially_sent_and_addresses_refuse_generation():
+    source = _lite_frame('synthetic question')
+    source['context'] = [{'kind': 'operator_report', 'text': 'first unverified report'},
+                         {'kind': 'operator_report', 'text': 'contradictory unverified report'}]
+    frame, selection = adapter._frame(read_frame(source), with_selection=True)
+    assert selection['coverage'] == 'intact'
+    assert 'first unverified report' in frame.soc_summary
+    assert 'contradictory unverified report' in frame.soc_summary
+    assert not frame.truncated
+    source['context'].append({'kind': 'operator_report', 'text': 'x' * 480})
+    frame, selection = adapter._frame(read_frame(source), with_selection=True)
+    assert frame.truncated and selection['coverage'] == 'unknown'
+    source['context'] = [{'kind': 'raw_event', 'text': 'unparsed event body'}]
+    frame, selection = adapter._frame(read_frame(source), with_selection=True)
+    assert frame.truncated and selection['coverage'] == 'unknown'
+    source['context'] = [{'kind': 'operator_report', 'text': 'synthetic 10.20.30.40'}]
+    frame, selection = adapter._frame(read_frame(source), with_selection=True)
+    assert frame.truncated and selection['coverage'] == 'unknown'
+
+
+@pytest.mark.parametrize('address', ['１０.０.０.１', '２００１：ｄｂ８：：１', '::ffff:192.0.2.1'])
+def test_normalized_address_in_report_refuses_whole_unit(address):
+    source = _lite_frame('synthetic question')
+    source['context'] = [{'kind': 'operator_report', 'text': 'unverified synthetic ' + address}]
+    frame, selection = adapter._frame(read_frame(source), with_selection=True)
+    assert frame.truncated and selection['coverage'] == 'unknown'

@@ -163,6 +163,57 @@ def test_three_tasks_use_counts_caps_and_shared_deadline(make):
     assert sum(t['elapsed_ms'] for t in meta['tasks'])<meta['deadline_ms']
 
 
+def test_truncated_upstream_frame_is_budget_exhausted_before_dispatch(make):
+    lane, server, source, frame = make()
+    frame.truncated = True
+    result = lane.submit(source, frame, 'fixture', upstream_coverage='unknown')
+    assert result['state'] == 'degraded'
+    assert result['generation_budget']['primary_outcome'] == 'budget_exhausted'
+    assert result['generation_budget']['job_calls'] == 0
+    assert not server.requests and not server.counts
+
+
+def test_rejected_revision_supersedes_pending_request(make):
+    lane, server, source, frame = make()
+    server.block = True
+    active = lane.submit({'request_id': 'other'}, frame, 'fixture', upstream_coverage='intact')
+    assert server.entered.wait(2)
+    pending = lane.submit({**source, 'revision': 1}, frame, 'fixture', upstream_coverage='intact')
+    bad = NS(frame_id=frame.frame_id, trace_id=frame.trace_id, truncated=True)
+    rejected = lane.submit({**source, 'revision': 2}, bad, 'fixture', upstream_coverage='unknown')
+    assert rejected['generation_budget']['job_calls'] == 0
+    assert not lane._active['cancelled'].is_set()
+    assert lane._active['handle'] == active['result_handle']
+    assert lane._pending is None
+    old = lane.poll(pending['result_handle'], 'fixture', frame.trace_id)
+    assert old['state'] == 'superseded'
+    meta = read_budget(old['generation_budget'], state=old['state'], usage=old['usage'])
+    assert meta['primary_outcome'] == 'cancelled' and 'superseded' in meta['reasons']
+    assert meta['job_calls'] == 0
+
+
+def test_rejected_revision_does_not_replace_prior_failure(make):
+    lane, server, source, frame = make()
+    server.block = True
+    first = lane.submit({**source, 'revision': 1}, frame, 'fixture', upstream_coverage='intact')
+    assert server.entered.wait(2)
+    lane._active['budget_session'].note_failure('truncated', 'runtime_truncated')
+    bad = NS(frame_id=frame.frame_id, trace_id=frame.trace_id, truncated=True)
+    lane.submit({**source, 'revision': 2}, bad, 'fixture', upstream_coverage='unknown')
+    server.release.set()
+    until = time.monotonic() + 2
+    while time.monotonic() < until:
+        old = lane.poll(first['result_handle'], 'fixture', frame.trace_id)
+        if old['state'] != 'queued':
+            break
+        time.sleep(.002)
+    assert old['state'] == 'superseded'
+    meta = old['generation_budget']
+    assert meta['primary_outcome'] == 'runtime_truncated'
+    assert meta['reasons'][0] == 'truncated' and 'superseded' in meta['reasons']
+    assert meta['job_calls'] == 1
+
+
 def test_second_count_unknown_preserves_first_usage_and_unsent_tasks(make):
     lane,server,source,frame=make();server.fail_task=TASKS[1]
     value=terminal(lane,source,frame)

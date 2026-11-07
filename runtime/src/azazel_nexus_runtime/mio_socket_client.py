@@ -126,20 +126,26 @@ class LocalSocketClient:
     def observe(self, *, deadline_s: float = PROBE_MAX_S) -> str:
         return _probe("mio", min(PROBE_MAX_S, deadline_s))
 
-    def generation_result(self, receipt, *, deadline_s=PROBE_MAX_S):
+    def generation_result(self, receipt, *, deadline_s=PROBE_MAX_S, caller_epoch=None):
         """Poll original binding, validating budget v1 via the shared CORE reader.
 
         Legacy receipts remain retrievable; only the projection may label their
         complete result as old and budget-unverified.
         """
         stale = {"state": "stale", "usage": "unknown"}
+        self.last_generation_metadata = None
         try:
             from .mio_generation import read_slow_analysis
             receipt = read_slow_analysis(receipt)
             arguments = {key: receipt[key] for key in
                          ('result_handle', 'generation_id', 'trace_id')}
-            reply = _exchange("mio", "azmio", "mio.local.generation.result", arguments,
+            verb = 'mio.local.generation.result'
+            if caller_epoch is not None:
+                arguments['caller_epoch'] = caller_epoch
+            reply = _exchange("mio", "azmio", verb, arguments,
                               deadline_s=min(PROBE_MAX_S, deadline_s))
+            if caller_epoch is not None:
+                self.last_generation_metadata = reply.pop('generation_metadata', None)
             value = read_slow_analysis(reply['slow_analysis'])
             if reply.get('outcome') != 'generation_result':
                 return stale
@@ -152,20 +158,27 @@ class LocalSocketClient:
         except Exception:
             return stale
 
-    def assess(self, frame, *, deadline_s: float) -> dict:
+    def assess(self, frame, *, deadline_s: float, caller_epoch=None) -> dict:
         """Call model-free assessment without asserting a verified context.
 
         Only the caller's situation frame crosses the socket. Knowledge
         Context is obtained by the service itself from its local broker.
         """
         self.last_slow_analysis = {"state": "closed", "usage": "unknown"}
+        self.last_generation_metadata = None
         if type(deadline_s) not in {int, float} or deadline_s <= 0:
             return fast_assessment_degraded("timeout")
         milliseconds = max(0, min(60_000, int(deadline_s * 1000)))
         try:
-            result = _exchange("mio", "azmio", "mio.local.assess",
-                               {"deadline_ms": milliseconds}, payload=frame,
+            arguments = {"deadline_ms": milliseconds}
+            verb = 'mio.local.assess'
+            if caller_epoch is not None:
+                arguments['caller_epoch'] = caller_epoch
+            result = _exchange("mio", "azmio", verb,
+                               arguments, payload=frame,
                                deadline_s=deadline_s)
+            if caller_epoch is not None:
+                self.last_generation_metadata = result.pop('generation_metadata', None)
         except TimeoutError:
             return fast_assessment_degraded("timeout")
         except ServiceRefused:

@@ -72,6 +72,7 @@
 
 状態: なし（理由: `recent_snapshot_stale`）
 Edge の判断、説明台帳の記録、M.I.O. 高速評価とは別の時間軸です。
+保留理由: `recent_snapshot_stale` — 状態記録が古いため、助言の表示を保留しました。
 結果の表示なし（`recent_snapshot_stale`）。
 
 ## 6. 業務影響

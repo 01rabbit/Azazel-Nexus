@@ -655,12 +655,43 @@
     if (slow) {
       var slowNode = block("M.I.O. 非同期モデル提案（未検証・助言のみ）");
       add(slowNode, kv([["状態", slow.state], ["検証区分", slow.verification], ["使用量", slow.usage]]));
+      if (slow.reason_code) {
+        add(slowNode, kv([["保留理由", slow.reason_code]]), el("p", "small", slow.reason_ja));
+      }
+      var binding = slow.binding;
+      if (binding) {
+        var bindingNode = block("対応情報（助言のみ・内容の事実性を保証しない）");
+        add(bindingNode, kv([["provenance_version", binding.provenance_version],
+          ["incident_id", binding.incident_id], ["request_id", binding.request_id], ["frame_id", binding.frame_id],
+          ["template_version", binding.template_version], ["created_at", binding.created_at],
+          ["expires_at", binding.expires_at], ["completeness", binding.completeness],
+          ["hypothesis_ids", (binding.hypothesis_ids || []).join(", ")],
+          ["advisory_refs", (binding.advisory_refs || []).join(", ")]]));
+        (binding.evidence_refs || []).forEach(function (ref) {
+          add(bindingNode, kv([["evidence_ref", ref.id], ["source", ref.source], ["trust", ref.trust],
+            ["freshness", ref.freshness], ["observed_at", ref.observed_at], ["valid_until", ref.valid_until]]));
+        });
+        add(slowNode, bindingNode);
+      }
+      var recovery = slow.recovery;
+      if (recovery) { add(slowNode, kv([["復元状態", recovery.status]])); }
+      ((binding || recovery || {}).unknowns || []).forEach(function (unknown) {
+        add(slowNode, kv([["unknown ID", unknown.id], ["origin", unknown.origin],
+          ["category", unknown.category], ["status", unknown.status]]));
+      });
       var budget = slow.budget;
       if (budget) {
         add(slowNode, kv([["生成予算", budget.outcome], ["資料の範囲", budget.coverage],
           ["省略件数", budget.omitted_units], ["停止確認", ({pending:"停止確認待ち",confirmed:"停止確認済み",unconfirmed:"停止未確認",not_needed:"停止要求なし"})[budget.cleanup_state]],
           ["後発の失効", budget.superseded ? "失効" : "なし"],
           ["縮退理由", (budget.reasons || []).join(", ")], ["生成周期", budget.coordinator_disposition]]));
+        if (budget.dispatch) {
+          add(slowNode, kv([["送信数", budget.dispatch.filter(function (t) { return t.dispatched; }).length + " / " + budget.dispatch.length],
+            ["fence 状態", budget.fence_state]]));
+          budget.dispatch.forEach(function (t) {
+            add(slowNode, el("p", "small", text(t.task) + ": " + (t.dispatched ? "送信済み" : "未送信")));
+          });
+        }
         if (budget.outcome === "legacy_unverified") {
           add(slowNode, el("p", "small", "旧記録・予算未確認。高速評価の静的助言を参照してください。"));
         } else if (budget.outcome === "unsupported") {

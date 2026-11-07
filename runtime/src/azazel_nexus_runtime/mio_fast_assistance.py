@@ -9,6 +9,7 @@ from dataclasses import asdict
 from azazel_nexus.lite_import import KnowledgeRef, read_knowledge_refs
 from azazel_nexus.reasoning_playbook import technique_ids
 from azazel_nexus.incident_explain import FAST_TRANSITION_KIND, read_fast_transition
+from azazel_nexus.handoff import contains_network_address
 
 from azazel_mio import (
     AssistantCore,
@@ -29,8 +30,7 @@ def _frame(source: dict, *, with_selection=False):
     frame_id = f"{trace_id}:frame"
     if not ID_KINDS["trace_id"](trace_id) or not ID_KINDS["frame_id"](frame_id):
         raise ValueError("invalid_frame_correlation")
-    context = tuple(item['text'] for item in source['context']
-                    if item['kind'] != FAST_TRANSITION_KIND)
+    context = tuple(item for item in source['context'] if item['kind'] != FAST_TRANSITION_KIND)
     evidence_refs = ()
     provenance = {"unknowns": ("caller",)}
     edge_summary = ""
@@ -51,13 +51,36 @@ def _frame(source: dict, *, with_selection=False):
             "evidence_refs": ("evidence_plane",),
             "unknowns": ("caller",),
         }
+    # Only omit the exact display projections generated from this transition;
+    # other prose, including contradictory reports, remains mandatory.
+    duplicates = set()
+    if transition is not None:
+        duplicates = {
+            ('edge_alert', f"incident={transition['incident_id']}; signature={transition['attack_type']}; "
+             f"category={transition['category']}; protocol={transition['protocol']}; "
+             f"destination_port={transition['target_port']}; severity={transition['most_severe']}; count={transition['count']}"),
+            ('edge_decision', f"Edge would {transition['edge_would']}; policy_reason={transition['policy_reason']}"),
+        }
+    duplicate_count = sum((item['kind'], item['text']) in duplicates for item in context)
+    selected_context = [item['text'] for item in context if (item['kind'], item['text']) not in duplicates]
     noc = source['question']
-    soc = ' | '.join(([edge_summary] if edge_summary else []) + list(context))
-    projected = sum(len(text) > 480 for text in (noc,soc))
-    selection = {'policy_version':'nexus-frame-v1', 'coverage':'unknown' if projected else 'intact',
-        'input_units':2,'selected_units':2-projected,'omitted_units':projected,
+    if transition is not None:
+        noc += ' | Edge signature (unverified report): ' + transition['attack_type']
+    soc = ' | '.join(([edge_summary] if edge_summary else []) + selected_context)
+    # Refuse address-bearing prose as a whole for the model lane; the Edge
+    # source is not an authorization to expose addresses in a prompt.
+    raw_context = any(item['kind'] in {'event', 'raw_event', 'edge_event'}
+                      or item['kind'].startswith('raw_') for item in context)
+    excluded = [len(noc) > 480 or contains_network_address(noc),
+                len(soc) > 480 or raw_context or contains_network_address(soc)]
+    projected = sum(excluded)
+    selection = {'policy_version':'nexus-frame-v2',
+        'coverage':'unknown' if projected else 'selected' if duplicate_count else 'intact',
+        'input_units':2+duplicate_count,'selected_units':2-projected,'omitted_units':projected+duplicate_count,
         'omissions':[{'kind':'projection','ordinal':i,'reason':'upstream_projection'}
-                     for i,text in enumerate((noc,soc)) if len(text)>480]}
+                     for i,omit in enumerate(excluded) if omit]
+                    + [{'kind':'projection','ordinal':2+i,'reason':'duplicate'}
+                       for i in range(duplicate_count)]}
     frame = MioSituationFrame.build(
         frame_id=frame_id, trace_id=trace_id,
         created_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'),
@@ -67,8 +90,11 @@ def _frame(source: dict, *, with_selection=False):
         known_facts=(),
         unknowns=("Situation question and context are untrusted reports",),
         evidence_refs=evidence_refs, provenance=provenance,
+        # Preserve the fast model-free projection. The budgeted lane refuses
+        # input_truncated frames before any provider dispatch.
         noc_summary=noc[:480],
         soc_summary=soc[:480],
+        input_truncated=bool(projected),
     )
     if frame.to_dict().get('truncated') is True:
         selection['coverage'] = 'unknown'

@@ -34,6 +34,7 @@ from .local_advisory import (
 )
 from .route_selection import RequestOutcome, TerminalEvent
 from .sanitizer import PrivacyClass
+from .model_text import allowed_model_text
 
 MAX_PENDING = 64
 MAX_PER_MINUTE = 6
@@ -1182,18 +1183,90 @@ def explanation_summary(record):
 SLOW_RESULT_STATES = frozenset({"queued", "complete", "degraded", "timeout", "cancelled",
                                 "superseded", "stale", "closed"})
 
+# Keep the ID-only metadata/export guard independent of prose key syntax.
+_SECRET_KEY_LABEL = re.compile(r"(?i)(pass(word|wd|phrase)?|pwd|secret|token|api[_-]?key|credential|bearer|cookie|private[_-]?key)")
+_IDENTIFIER_SECRET_WORD = re.compile(r"(?i)\b(?:password|passwd|passphrase|secret|credential|api[_ -]?key|access[_ -]?key|private[_ -]?key|bearer|token|cookie)\b")
+_PUBLIC_SECRET_LABELS = (
+    r"password|passwd|passphrase|passcode|secret|token|api[_ -]?key|"
+    r"credential|bearer|cookie|private[_ -]?key|access[_ -]?key|secret[_ -]?key|"
+    r"session[_ -]?(?:id|key|token)|client[_ -]?secret|refresh[_ -]?token"
+)
+# Long labels retain substring checks on the boundary-preserving skeleton.
+# The shorter aliases below are checked only as complete key elements.
+_PUBLIC_SECRET_KEY_LABEL = re.compile(
+    r"(?i)(?:password|passwd|passphrase|passcode|secret|token|api\|?key|credential|bearer|cookie|"
+    r"private\|?key|access\|?key|session\|?(?:id|key|token)|"
+    r"client\|?secret|refresh\|?token)"
+)
+_PUBLIC_SECRET_WORD = re.compile(r"(?i)\b(?:" + _PUBLIC_SECRET_LABELS + r")\b")
+_SHORT_SECRET_ELEMENTS = frozenset({
+    "pin", "auth", "pass", "otp", "key", "pwd",
+})
+# Keep the W8 bounded-fragment guard for both short and long labels.
+_FRAGMENT_SECRET_ELEMENTS = _SHORT_SECRET_ELEMENTS | frozenset({
+    "password", "passwd", "passphrase", "passcode", "secret", "credential",
+    "token", "bearer", "cookie", "apikey", "accesskey", "secretkey",
+    "privatekey", "clientsecret", "refreshtoken", "sessionid", "sessionkey",
+    "sessiontoken",
+})
+_MAX_SECRET_ELEMENT_LENGTH = max(map(len, _FRAGMENT_SECRET_ELEMENTS))
+_KEY_VALUE = re.compile(r"([\w.-]+)[\"']?\s*[:=]\s*\S+")
+_SECRET_KEY_SEPARATOR = re.compile(r"[^A-Za-z0-9]+")
+_MODEL_TEXT_WITHHELD = "Details withheld verify through an authorized source"
 
-def _public_model_text(value):
-    """Bound optional model prose before the read-only operator projection."""
+
+def _secret_skeleton(value):
+    # NFKC precedes Cf removal: invisible splits in a key must join, while
+    # every remaining non-ASCII-alphanumeric character preserves a boundary.
+    normalized = unicodedata.normalize("NFKC", value)
+    normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Cf")
+    return _SECRET_KEY_SEPARATOR.sub("|", normalized)
+
+
+def _public_secret_text(normalized):
+    skeleton = _secret_skeleton(normalized)
+    # Long labels are sensitive substrings regardless of key/value context.
+    if _PUBLIC_SECRET_KEY_LABEL.search(skeleton):
+        return True
+    elements = [element.lower() for element in skeleton.split("|") if element]
+    for start, element in enumerate(elements):
+        # Short aliases are sensitive whole elements in every context.
+        if element in _SHORT_SECRET_ELEMENTS:
+            return True
+        # Only consecutive 1-2 character fragments may form an obscured label.
+        # Do not join across longer elements or scan beyond the longest label.
+        joined = ""
+        for fragment in elements[start:]:
+            if not 1 <= len(fragment) <= 2:
+                break
+            joined += fragment
+            if len(joined) > _MAX_SECRET_ELEMENT_LENGTH:
+                break
+            if joined in _FRAGMENT_SECRET_ELEMENTS:
+                return True
+    return False
+
+
+def guard_public_model_text(value, *, _identifier=False):
+    """Privacy guard shared by library projection and the recent.json writer."""
     if type(value) is not str or not value:
         raise ValueError("slow_result_refused")
     normalized = unicodedata.normalize("NFKC", value)
-    # The MIO frame excludes network addresses, but a generated response is
-    # still untrusted. Withhold any address/path-like string at this boundary.
-    if (any(ch in normalized for ch in "/\\⁄∕∖⧸⧹﹨")
+    # Closed ASCII metadata retains its old policy (ev:auth:1 is an ID).
+    secret = (any(_SECRET_KEY_LABEL.search(match[1]) for match in _KEY_VALUE.finditer(normalized))
+              or _IDENTIFIER_SECRET_WORD.search(normalized)) if _identifier else _public_secret_text(normalized)
+    if (secret or (not _identifier and not allowed_model_text(normalized))
+            or any(ch in normalized for ch in "/\\⁄∕∖⧸⧹﹨")
+            or re.search(r"\b[A-Za-z0-9_-]{32,}\b", normalized)
             or re.search(r"://|(?:^|\s)//|[\w.+-]+@[\w.-]+|\b\d+(?:\.\d+){3}\b", normalized)
             or re.search(r"(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.]*", normalized)):
-        return "Details withheld verify through an authorized source"
+        return _MODEL_TEXT_WITHHELD
+    return normalized
+
+
+def _public_model_text(value, *, _identifier=False):
+    """Bound optional model prose before the read-only operator projection."""
+    normalized = guard_public_model_text(value, _identifier=_identifier)
     words = []
     current = []
     for char in normalized:
@@ -1208,7 +1281,200 @@ def _public_model_text(value):
     if current:
         words.append("".join(current[:32]))
     text = "".join(words).strip()
-    return text[:240] or "Details withheld verify through an authorized source"
+    text = text[:240] or "Details withheld verify through an authorized source"
+    # Removing punctuation can create a long secret label (to,ken -> token).
+    # Keep the in-memory/checkpoint projection safe, not only the recent writer.
+    return text if _identifier else guard_public_model_text(text)
+
+
+def handoff_ref_freshness(ref, now):
+    """Re-evaluate saved source deadlines; a saved current flag is not a lease."""
+    observed, until = ref.get("observed_at"), ref.get("valid_until")
+    if ref.get("freshness") == "revoked":
+        return "revoked"
+    if (any(type(x) not in (int, float) or not math.isfinite(x) for x in (observed, until, now))
+            or not observed < until or observed > now):
+        return "unknown"
+    if now >= until:
+        return "expired"
+    return ref.get("freshness") if ref.get("freshness") in {"current", "expired"} else "unknown"
+
+
+def valid_handoff_binding(binding, incident_id, now):
+    """Check a non-secret receipt projection; IDs never establish content or trust."""
+    try:
+        keys = {"provenance_version", "incident_id", "request_id", "frame_id", "template_version", "created_at", "expires_at", "unknowns", "evidence_refs", "hypothesis_ids", "advisory_refs"}
+        if type(binding) is not dict or set(binding) != keys | {"completeness"} or binding["completeness"] != "complete" or type(binding["provenance_version"]) is not int or binding["provenance_version"] != 1:
+            return False
+        if binding["incident_id"] != incident_id or not re.fullmatch(r"inc-[0-9a-f]{16}", incident_id):
+            return False
+        match = re.fullmatch(re.escape(incident_id) + r":([1-9][0-9]{0,11})", binding["request_id"])
+        if not match or int(match[1]) > MIO_TRACE_SEQUENCE_MAX or binding["frame_id"] != f"mio-{incident_id[4:]}-{match[1]}:frame":
+            return False
+        if binding["template_version"] not in {"1.6.0", "1.7.0", "1.8.0", "1.9.0"}:
+            return False
+        a, b = binding["created_at"], binding["expires_at"]
+        if any(type(x) not in (int, float) or not math.isfinite(x) for x in (a, b, now)) or not a <= now < b or not a < b:
+            return False
+        unknowns, refs = binding["unknowns"], binding["evidence_refs"]
+        if type(unknowns) is not list or len(unknowns) > 24 or type(refs) is not list or not 0 < len(refs) <= 32:
+            return False
+        ids = set()
+        for item in unknowns:
+            if type(item) is not dict or set(item) != {"id", "origin", "category", "status"}:
+                return False
+            ident = item["id"]
+            origin = ("frame" if re.fullmatch(r"u[1-9][0-9]{0,2}", ident) else
+                      "fixed_projection" if re.fullmatch(r"ux:(identity|success|baseline|impact)", ident) else
+                      "model_asserted" if re.fullmatch(r"um:[1-9][0-9]{0,2}", ident) else None)
+            if (not origin or item["origin"] != origin or ident in ids or
+                    not re.fullmatch(r"[a-z][a-z0-9_]{0,31}", item["category"]) or
+                    item["status"] not in {"unresolved", "unavailable_after_restart"}):
+                return False
+            ids.add(ident)
+        ids = set()
+        for item in refs:
+            if type(item) is not dict or set(item) != {"id", "source", "trust", "freshness", "observed_at", "valid_until"}:
+                return False
+            for key in ("id", "source"):
+                val = item[key]
+                if type(val) is not str or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", val) or re.search(r"(?i)password|secret|credential|token|api[_-]?key|bearer", val) or re.search(r"[A-Za-z0-9_-]{32,}", val):
+                    return False
+            if (item["id"] in ids or item["trust"] != "verified"
+                    or handoff_ref_freshness(item, now) != "current" or b > item["valid_until"]):
+                return False
+            ids.add(item["id"])
+        hypotheses = binding["hypothesis_ids"]
+        if (type(hypotheses) is not list or len(hypotheses) > 4
+                or any(type(x) is not str or not re.fullmatch(r"h[1-9][0-9]{0,2}", x) for x in hypotheses)
+                or len(set(hypotheses)) != len(hypotheses)):
+            return False
+        refs_used = binding["advisory_refs"]
+        if type(refs_used) is not list or not 0 < len(refs_used) <= 128:
+            return False
+        unknown_ids = {item["id"] for item in unknowns}
+        for ref in refs_used:
+            if type(ref) is not str:
+                return False
+            if re.fullmatch(r"h[0-9]+", ref):
+                if ref not in hypotheses:
+                    return False
+            elif re.fullmatch(r"(?:u[0-9]+|ux:.*|um:.*)", ref):
+                if ref not in unknown_ids or any(item["id"] == ref and item["status"] != "unresolved" for item in unknowns):
+                    return False
+            elif ref not in ids:
+                return False
+        return True
+    except (TypeError, ValueError, KeyError, OverflowError):
+        return False
+
+
+def valid_handoff_advisory(slow, incident_id, now):
+    """Check the runtime's reference manifest before exporting sanitized prose."""
+    return valid_handoff_binding(slow.get("binding"), incident_id, now)
+
+
+SLOW_WITHHOLD_REASONS = {
+    "no_current_slow_result": "表示できる現在の助言結果がありません。生成状態と予算結果の理由を確認してください。",
+    "recent_snapshot_stale": "状態記録が古いため、助言の表示を保留しました。",
+    "binding_unverified": "助言と根拠の対応情報が欠落または不完全なため、助言の表示を保留しました。",
+    "incident_mismatch": "助言の対応先がこのインシデントと一致しないため、表示を保留しました。",
+    "template_unknown": "対応情報のテンプレート版を確認できないため、助言の表示を保留しました。",
+    "binding_expired": "助言と根拠の対応情報が期限切れのため、表示を保留しました。",
+    "source_unverified": "参照元の信頼性または現在の有効性を確認できないため、助言の表示を保留しました。",
+    "unavailable_after_restart": "再起動後は未確認事項の本文を復元できません。unknown のまま助言の表示を保留しています。",
+}
+
+
+def _public_binding_identifier(value):
+    # Metadata is not model prose. Preserve IDs, but apply the same secret,
+    # address and path guard before exposing a previously private identifier.
+    from .handoff import detect, public_binding_id
+    return (type(value) is str and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", value))
+            and not _SECRET_KEY_LABEL.search(value)
+            and _public_model_text(value, _identifier=True) != "Details withheld verify through an authorized source"
+            and not [code for code in detect(value) if code != "host_port" or not public_binding_id(value)])
+
+
+def public_unknown_metadata(items):
+    """Closed ID-only unknowns, also usable without a live advisory binding."""
+    if type(items) is not list or len(items) > 24:
+        raise ValueError("unknown_metadata_refused")
+    seen = set()
+    for item in items:
+        if type(item) is not dict or set(item) != {"id", "origin", "category", "status"}:
+            raise ValueError("unknown_metadata_refused")
+        ident = item["id"]
+        origin = ("frame" if type(ident) is str and re.fullmatch(r"u[1-9][0-9]{0,2}", ident) else
+                  "model_asserted" if type(ident) is str and re.fullmatch(r"um:[1-9][0-9]{0,2}", ident) else
+                  "fixed_projection" if type(ident) is str and ident in
+                  {"ux:identity", "ux:success", "ux:baseline", "ux:impact"} else None)
+        if (not origin or item["origin"] != origin or ident in seen
+                or not _public_binding_identifier(item["category"])
+                or not re.fullmatch(r"[a-z][a-z0-9_]{0,31}", item["category"])
+                or item["status"] not in ("unresolved", "unavailable_after_restart")):
+            raise ValueError("unknown_metadata_refused")
+        seen.add(ident)
+    return [dict(item) for item in items]
+
+
+def _binding_withhold_reason(binding, incident_id, now):
+    # Diagnostics do not grant acceptance: the unchanged v1 validator runs first.
+    if type(binding) is not dict:
+        return "binding_unverified"
+    if binding.get("incident_id", incident_id) != incident_id:
+        return "incident_mismatch"
+    if type(binding.get("template_version")) is str and binding["template_version"] not in {"1.6.0", "1.7.0", "1.8.0", "1.9.0"}:
+        return "template_unknown"
+    try:
+        expiry = binding.get("expires_at")
+        if all(type(x) in (int, float) and math.isfinite(x) for x in (expiry, now)) and now >= expiry:
+            return "binding_expired"
+        refs = binding.get("evidence_refs")
+        if type(refs) is list and any(type(ref) is dict and (
+                ref.get("trust") != "verified" or handoff_ref_freshness(ref, now) != "current") for ref in refs):
+            return "source_unverified"
+    except (TypeError, ValueError, OverflowError):
+        pass  # Invalid metadata must not make the diagnostic path fail open or crash.
+    return "binding_unverified"
+
+
+def public_slow_analysis(slow, incident_id, now):
+    """One fail-closed read/export view; never copy unchecked binding metadata."""
+    result = dict(slow)
+    if slow.get("state") == "complete":
+        binding = slow.get("binding")
+        valid = valid_handoff_advisory(slow, incident_id, now)
+        if valid:
+            try:
+                public_unknown_metadata(binding["unknowns"])
+                valid = all(_public_binding_identifier(ref[key])
+                            for ref in binding["evidence_refs"] for key in ("id", "source"))
+            except ValueError:
+                valid = False
+        if valid:
+            # All fields passed the closed v1 schema plus the public secret guard.
+            result["binding"] = json.loads(json.dumps(binding))
+            result["provenance_summary"] = {
+                "unknowns": [{"origin": item["origin"], "status": item["status"]} for item in binding["unknowns"]],
+                "verified_current_sources": len(binding["evidence_refs"])}
+            return result
+        result = {"state": "degraded", "usage": "unknown"}
+        code = _binding_withhold_reason(binding, incident_id, now)
+    elif "recovery" in slow:
+        recovery = slow["recovery"]
+        if (type(recovery) is not dict or set(recovery) != {"status", "unknowns"}
+                or recovery["status"] != "unavailable_after_restart"):
+            raise ValueError("recovery_refused")
+        unknowns = public_unknown_metadata(recovery["unknowns"])
+        if any(item["status"] != "unavailable_after_restart" for item in unknowns):
+            raise ValueError("recovery_refused")
+        result["recovery"] = {"status": "unavailable_after_restart", "unknowns": unknowns}
+        code = "unavailable_after_restart"
+    else:
+        code = "no_current_slow_result"
+    result.update(reason_code=code, reason_ja=SLOW_WITHHOLD_REASONS[code])
+    return result
 
 
 def slow_analysis_projection(value):
@@ -1228,7 +1494,9 @@ def slow_analysis_projection(value):
         public_budget = {'version':1, 'outcome':meta['outcome'], 'coverage':meta['coverage'],
             'cleanup_state':meta['cleanup']['state'], 'superseded':meta['superseded'],
             'omitted_units':meta['upstream_selection']['omitted_units']+sum(t['selection']['omitted_units'] for t in meta['tasks']),
-            'reasons':list(meta['reasons']), 'coordinator_disposition':meta.get('coordinator_disposition')}
+            'reasons':list(meta['reasons']), 'coordinator_disposition':meta.get('coordinator_disposition'),
+            'dispatch':[{'task':t['task'], 'dispatched':t['dispatched']} for t in meta['tasks']],
+            'fence_state':'unknown'}
     elif state == 'complete':
         return {'state':'degraded','usage':'unknown','budget':{
             'version':0,'outcome':'legacy_unverified','coverage':'unknown',
@@ -1504,8 +1772,13 @@ def read_recent_incidents(raw):
                     from .generation_budget import validate_public_budget
                     validate_public_budget(slow['budget'],state=slow['state'])
                     slow = {k:v for k,v in slow.items() if k != 'budget'}
+                if "recovery" in slow:
+                    if slow["state"] == "complete":
+                        return None
+                    public_slow_analysis(slow, row["incident_id"], None)
+                    slow = {k: v for k, v in slow.items() if k != "recovery"}
                 if slow["state"] == "complete":
-                    if set(slow) != {"state", "usage", "verification", "hypotheses",
+                    if set(slow) - {"binding"} != {"state", "usage", "verification", "hypotheses",
                                      "unknowns", "next_checks"}:
                         return None
                     if (slow["verification"] != "model_proposed_unverified"

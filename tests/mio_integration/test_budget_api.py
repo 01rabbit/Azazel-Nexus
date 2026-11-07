@@ -94,6 +94,188 @@ def test_real_assistant_core_receipt_and_actual_dispatch_are_aligned():
     assert value['generation_budget']['core_complete']
     assert value['generation_budget']['coordinator_disposition'] is None
     assert all(t['validated'] for t in value['generation_budget']['tasks'])
+    assert lane._receipts[value['result_handle']]['frame_unknowns']['u1'] == 'unknown'
+    assert 'frame_unknowns' not in value
+    assert lane._receipts[value['result_handle']]['unknown_origins']['u1'] == 'frame'
+    assert 'unknown_origins' not in value
+
+
+def test_later_task_selection_is_accounted_in_product_receipt():
+    _, _, value = run()
+    tasks = value['generation_budget']['tasks']
+    assert tasks[0]['selection']['coverage'] == 'intact'
+    for task in tasks[1:]:
+        selection = task['selection']
+        assert selection['coverage'] == 'selected'
+        assert selection['omitted_units'] > 0
+        assert selection['selected_units'] + selection['omitted_units'] == selection['input_units']
+        assert len(selection['omissions']) == selection['omitted_units']
+
+
+def test_rejected_revision_supersedes_active_with_real_core():
+    from dataclasses import replace
+    class BlockingServer(ControlledServer):
+        def __init__(self):
+            super().__init__()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+        def infer(self, request, deadline_s, **kw):
+            result = super().infer(request, deadline_s, **kw)
+            self.entered.set()
+            assert self.release.wait(2)
+            return result
+        def stop(self):
+            from azazel_nexus_runtime.mio_supervisor import StopResult, StopState
+            self.release.set()
+            return StopResult(StopState.CONFIRMED, 'fixture_stop_confirmed')
+    frame, cap = inputs()
+    server = BlockingServer()
+    lane = FixtureLane(capability=cap, server=server, deadline_s=5, budget_enabled=True)
+    first = lane.submit({'request_id': 'same', 'revision': 1}, frame, cap.generation_id, upstream_coverage='intact')
+    try:
+        assert server.entered.wait(2)
+        other = lane.submit({'request_id': 'other'}, frame, cap.generation_id, upstream_coverage='intact')
+        bad = replace(frame, truncated=True)
+        new = lane.submit({'request_id': 'same', 'revision': 2}, bad, cap.generation_id, upstream_coverage='unknown')
+        assert new['generation_budget']['primary_outcome'] == 'budget_exhausted'
+        assert new['generation_budget']['job_calls'] == 0
+        assert lane._active['cancelled'].is_set()
+        assert lane._pending['handle'] == other['result_handle'] and not lane._pending['cancelled'].is_set()
+    finally:
+        server.release.set()
+    until = time.monotonic() + 2
+    while time.monotonic() < until:
+        old = lane.poll(first['result_handle'], cap.generation_id, frame.trace_id)
+        if old['state'] != 'queued':
+            break
+        time.sleep(.002)
+    assert old['state'] == 'superseded'
+    meta = old['generation_budget']
+    assert meta['primary_outcome'] == 'cancelled' and 'superseded' in meta['reasons']
+    assert meta['job_calls'] == 1
+    assert meta['tasks'][0]['actual_usage'] == {'tokens_in': 12, 'tokens_out': 7}
+
+
+def test_rejected_revision_does_not_reverse_dispatch_lock_order():
+    from dataclasses import replace
+    entered, release = threading.Event(), threading.Event()
+    class ScheduledServer(ControlledServer):
+        def infer(self, request, deadline_s, **kw):
+            entered.set()
+            assert release.wait(8)
+            return super().infer(request, deadline_s, **kw)
+        def stop(self):
+            from azazel_nexus_runtime.mio_supervisor import StopResult, StopState
+            release.set()
+            return StopResult(StopState.CONFIRMED, 'fixture_stop_confirmed')
+    frame, cap = inputs()
+    server = ScheduledServer()
+    lane = FixtureLane(capability=cap, server=server, deadline_s=5, budget_enabled=True)
+    first = lane.submit({'request_id': 'same', 'revision': 1}, frame, cap.generation_id, upstream_coverage='intact')
+    assert entered.wait(2)
+    job = lane._active
+    other = lane.submit({'request_id': 'other'}, frame, cap.generation_id, upstream_coverage='intact')
+    done = threading.Event()
+    results = []
+    def reject():
+        results.append(lane.submit({'request_id': 'same', 'revision': 2}, replace(frame, truncated=True),
+                                   cap.generation_id, upstream_coverage='unknown'))
+        done.set()
+    thread = threading.Thread(target=reject, daemon=True)
+    try:
+        # Both real boundaries hold session before lane. Holding session across
+        # the original deadline makes a lane->session inversion deterministic.
+        with job['budget_session'].lock:
+            thread.start()
+            assert done.wait(2)
+            assert job['cancelled'].is_set()
+            assert lane._pending['handle'] == other['result_handle']
+            assert not lane._pending['cancelled'].is_set()
+            with lane._lock:
+                assert lane._active is job
+            remaining = job['end'] - time.monotonic()
+            if remaining > 0:
+                threading.Event().wait(remaining + .05)
+        release.set()
+        thread.join(2)
+        until = time.monotonic() + 2
+        while time.monotonic() < until:
+            old = lane.poll(first['result_handle'], cap.generation_id, frame.trace_id)
+            if old['state'] != 'queued':
+                break
+            time.sleep(.002)
+        # Cleanup can no longer be confirmed once the held lock crosses the
+        # original deadline. Preserve that public degradation and both axes.
+        assert old['state'] == 'degraded'
+        assert old['generation_budget']['outcome'] == 'stop_unconfirmed'
+        assert old['generation_budget']['primary_outcome'] == 'cancelled'
+        assert old['generation_budget']['terminal_outcome'] == 'superseded'
+        assert results[0]['generation_budget']['primary_outcome'] == 'budget_exhausted'
+        assert results[0]['generation_budget']['job_calls'] == 0
+        assert server.requests == []
+    finally:
+        release.set()
+
+
+def test_rejected_revision_during_terminal_publication_does_not_deadlock():
+    from dataclasses import replace
+    entered, release = threading.Event(), threading.Event()
+    frame, cap = inputs()
+    server = ControlledServer()
+    lane = FixtureLane(capability=cap, server=server, deadline_s=5, budget_enabled=True)
+    class PublicationLock:
+        def __init__(self, lock): self.lock = lock
+        def __enter__(self):
+            job = lane._active
+            session = job.get('budget_session') if job else None
+            if threading.current_thread() is lane._worker and session and session.frozen is not None:
+                entered.set()
+                assert release.wait(3)
+            self.lock.acquire()
+            return self
+        def __exit__(self, *args): self.lock.release()
+    lane._lock = PublicationLock(lane._lock)
+    first = lane.submit({'request_id': 'same', 'revision': 1}, frame, cap.generation_id, upstream_coverage='intact')
+    try:
+        assert entered.wait(2)
+        results = []
+        done = threading.Event()
+        def reject():
+            results.append(lane.submit({'request_id': 'same', 'revision': 2}, replace(frame, truncated=True),
+                                       cap.generation_id, upstream_coverage='unknown'))
+            done.set()
+        threading.Thread(target=reject, daemon=True).start()
+        assert done.wait(2)
+        result = results[0]
+        assert result['generation_budget']['primary_outcome'] == 'budget_exhausted'
+        assert result['generation_budget']['job_calls'] == 0
+    finally:
+        release.set()
+    until = time.monotonic() + 2
+    while time.monotonic() < until:
+        old = lane.poll(first['result_handle'], cap.generation_id, frame.trace_id)
+        if old['state'] != 'queued':
+            break
+        time.sleep(.002)
+    assert old['state'] == 'complete'
+    assert server.requests == list(TASKS)
+
+
+@pytest.mark.parametrize('address', ['１０.０.０.１', '２００１：ｄｂ８：：１', '::ffff:192.0.2.1'])
+def test_normalized_address_report_has_zero_dispatches(address):
+    from azazel_nexus.local_advisory import read_frame
+    from azazel_nexus_runtime.mio_fast_assistance import _frame
+    source = read_frame({'request_id': 'privacy-fixture', 'privacy_class': 'P3-restricted',
+                         'question': 'Review synthetic report', 'context': [
+                             {'kind': 'operator_report', 'text': 'unverified ' + address}]})
+    frame, selection = _frame(source, with_selection=True)
+    _, cap = inputs()
+    server = ControlledServer()
+    lane = FixtureLane(capability=cap, server=server, deadline_s=5, budget_enabled=True)
+    result = lane.submit(source, frame, cap.generation_id, upstream_coverage=selection['coverage'],
+                         upstream_selection=selection)
+    assert frame.truncated and result['generation_budget']['primary_outcome'] == 'budget_exhausted'
+    assert result['generation_budget']['job_calls'] == 0 and server.requests == []
 
 
 @pytest.mark.parametrize(('fault','reason'),[('missing','dispatch_tracking_unavailable'),('duplicate','send_notification_conflict')])
@@ -241,7 +423,8 @@ def test_real_api_http_positive_send_boundary_preserves_normal_results(monkeypat
             data=self.response[self.read:self.read+size];self.read+=len(data);return data
     monkeypatch.setattr(mio_serve.socket,'socket',lambda *a:Peer())
     lane,server,value=run(server);meta=value['generation_budget']
-    assert value['state']=='complete' and meta['job_calls']==3 and meta['coverage']=='intact'
+    assert value['state']=='complete' and meta['job_calls']==3 and meta['coverage']=='selected'
+    assert sum(t['selection']['omitted_units'] for t in meta['tasks']) > 0
     assert len(server.payloads)==3 and server.requests==list(TASKS)
     assert all(p['prompt']==list(range(12)) for p in server.payloads)
     assert [p['n_predict'] for p in server.payloads]==[768,384,512]

@@ -61,6 +61,32 @@ def test_core_reader_and_public_projection_without_runtime_dependency():
     assert slow_analysis_projection(legacy)['budget']['outcome']=='legacy_unverified'
 
 
+@pytest.mark.parametrize('text', ['password: syntheticvalue', 'Bearer syntheticvalue',
+                                  'api_key=syntheticvalue', 'A' * 40])
+def test_public_advisory_withholds_secret_shaped_model_text(text):
+    value = live()
+    value['assistance']['hypotheses'][0]['statement'] = text
+    shown = slow_analysis_projection(value)
+    assert shown['hypotheses'][0] == 'Details withheld verify through an authorized source'
+    assert text not in json.dumps(shown)
+
+
+@pytest.mark.parametrize(('version', 'accepted'), [
+    ('1.6.0', True), ('1.7.0', True), ('1.8.0', True), ('1.9.0', True), ('2.0.0', False),
+    ('1.7', False), ('1.7.0-extra', False),
+])
+def test_template_version_allowlist_keeps_old_receipts_and_rejects_unknown(version, accepted):
+    meta = metadata()
+    meta['profile']['template_version'] = version
+    for task in meta['tasks']:
+        task['selection']['policy_version'] = version
+    if accepted:
+        assert read_budget(meta, state='complete', usage='known')['profile']['template_version'] == version
+    else:
+        with pytest.raises(ValueError):
+            read_budget(meta, state='complete', usage='known')
+
+
 @pytest.mark.parametrize('change',[
     lambda m:m.update(version=2), lambda m:m.update(coverage='selected'),
     lambda m:m['tasks'].reverse(), lambda m:m['tasks'].__setitem__(1,copy.deepcopy(m['tasks'][0])),
@@ -393,3 +419,38 @@ def test_reader_accepts_context_minimum_from_two_known_limits(verified,configure
 def test_failed_receipt_cannot_claim_impossible_allocations(allocation):
     value=metadata(complete=False);value['tasks'][0]['allocated_ms']=allocation
     with pytest.raises(ValueError):read_budget(value,state='timeout',usage='known')
+
+
+def test_public_dispatch_is_bounded_and_does_not_claim_fence_observation():
+    from azazel_nexus.generation_budget import validate_public_budget
+    meta = metadata(complete=False, pending=True)
+    meta['cleanup'] = dict(state='unconfirmed', reason='observation_lost', remaining_ms=0)
+    _, meta = project_budget(meta)
+    shown = slow_analysis_projection(live(meta))
+    budget = shown['budget']
+    assert budget['fence_state'] == 'unknown'
+    assert [t['dispatched'] for t in budget['dispatch']] == [True, False, False]
+    validate_public_budget(budget, state='degraded')
+    for key, value in [('fence_state', True), ('dispatch', [{'task':'secret', 'dispatched':False}])]:
+        bad = copy.deepcopy(budget)
+        bad[key] = value
+        with pytest.raises(ValueError):
+            validate_public_budget(bad, state='degraded')
+
+
+@pytest.mark.parametrize('sent', [0, 1, 2, 3])
+def test_degraded_public_dispatch_allows_each_sent_prefix(sent):
+    from azazel_nexus.generation_budget import TASKS, validate_public_budget
+    budget = dict(version=1, outcome='deadline_exceeded', coverage='unknown',
+                  cleanup_state='not_needed', superseded=False, omitted_units=0,
+                  fence_state='unknown', dispatch=[
+                      dict(task=task, dispatched=i < sent) for i, task in enumerate(TASKS)])
+    validate_public_budget(budget, state='degraded')
+
+
+def test_legacy_complete_projection_without_dispatch_remains_valid():
+    from azazel_nexus.generation_budget import validate_public_budget
+    budget = slow_analysis_projection(live())['budget']
+    budget.pop('dispatch')
+    budget.pop('fence_state')
+    validate_public_budget(budget, state='complete')

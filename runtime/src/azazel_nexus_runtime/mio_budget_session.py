@@ -48,6 +48,15 @@ class BudgetSession:
         self.done = threading.Event()
         self.assistance = None
         self.calls = []
+        # Private material follows the lifetime of the local receipt, not the
+        # wire-visible budget schema.
+        self.frame_unknowns = {}
+        self.unknown_origins = {}
+        self.manifest = {}
+        self.source_manifest = []
+        self.broker_results = ()  # Only a verified caller adapter may populate this seam.
+        self._structured_refs, self._prose_refs = set(), set()
+        self._invalid_refs = False
 
     def note_failure(self, reason, outcome):
         with self.lock:
@@ -181,6 +190,15 @@ class BudgetSession:
             self.calls.append(call)
         @contextmanager
         def dispatch_guard():
+            # Disk I/O is outside the deadline/session gate. A freeze or epoch
+            # change during fsync is rechecked before the nonblocking send.
+            if self.lane._journal is not None:
+                try:
+                    from azazel_mio import playbook
+                    self.lane._journal.intent(self.job['source']['request_id'], task,
+                        getattr(playbook, 'PROMPT_TEMPLATE_VERSION', 'unknown'))
+                except (OSError, ValueError, KeyError):
+                    self.reject('stop_unconfirmed', 'stop_unconfirmed')
             # Same lock order as terminal publication; serialize lane fence too.
             with self.lock,self.lane._lock:
                 before_dispatch()
@@ -198,6 +216,11 @@ class BudgetSession:
             result = self.lane.server.infer_native(request,
                 deadline_s=max(.000001,self.call_end-time.monotonic()),allow_unknown_usage=True,on_dispatch=dispatch,before_dispatch=before_dispatch,dispatch_guard=dispatch_guard,
                 prepared=cached[1],expected_tuple=self.verified_tuple)
+            if self.lane._journal is not None and record['dispatched']:
+                try:
+                    self.lane._journal.received(self.job['source']['request_id'])
+                except (OSError, ValueError, KeyError):
+                    self.reject('stop_unconfirmed', 'stop_unconfirmed')
             with self.lock:
                 if self.frozen is not None:
                     return self.reject('timeout','deadline_exceeded')
@@ -236,6 +259,14 @@ class BudgetSession:
                     raise ValueError
             except Exception:
                 self.reject('malformed','output_invalid')
+            try:
+                from .mio_advisory_manifest import references
+                structured, prose, invalid = references(value)
+                self._structured_refs.update(structured)
+                self._prose_refs.update(prose)
+                self._invalid_refs |= invalid
+            except (ImportError, AttributeError, TypeError, ValueError, RecursionError):
+                self._invalid_refs = True
             self.planner.completed(task)
             return value
         except TokenCountUnknown:
@@ -261,6 +292,8 @@ class BudgetSession:
         try:
             if not isinstance(receipt,self.api.GenerationOutcome):
                 raise ValueError
+            self.frame_unknowns = copy.deepcopy(getattr(receipt, 'frame_unknowns', {}))
+            self.unknown_origins = copy.deepcopy(getattr(receipt, 'unknown_origins', {}))
             raw_reason = receipt.reason
             self.mio_reason = raw_reason if raw_reason in MIO_REASON_OUTCOMES else ('malformed' if raw_reason is not None else None)
             disposition = receipt.coordinator_disposition
@@ -315,6 +348,20 @@ class BudgetSession:
                 and all(t['dispatched'] and t['validated'] for t in self.tasks))
             if self.core_complete:
                 validate_model_assistance(public,self.job['frame'].frame_id,self.job['frame'].trace_id)
+                try:
+                    from .mio_advisory_manifest import finish_manifest, source_manifest
+                    self.manifest = finish_manifest(public, self.frame_unknowns,
+                        self._structured_refs, self._prose_refs, self._invalid_refs)
+                    self.source_manifest = source_manifest(self.job['frame'], self.frame_unknowns, self.broker_results)
+                    if len(self.source_manifest) > 32:
+                        self.manifest['completeness'] = 'partial'
+                    self.source_manifest = self.source_manifest[:32]
+                except (ImportError, AttributeError, KeyError, TypeError, ValueError):
+                    # An unavailable manifest withholds advice. It does not
+                    # reinterpret already validated generation accounting.
+                    self.manifest = dict(hypothesis_ids=[], advisory_refs=[],
+                        completeness='partial', unlisted_prose_ids=bool(self._prose_refs - self._structured_refs))
+                    self.source_manifest = []
                 self.assistance = public
             elif self.reason is None:
                 self.note_failure('malformed','output_invalid')

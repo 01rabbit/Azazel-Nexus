@@ -26,7 +26,7 @@ from azazel_nexus.incident_explain import (
     record_evidence,
     build_recent_incident, build_recent_incidents, read_recent_incidents, explanation_summary,
     SHOWN_STATES, closed_pairs, read_control, read_retention_boundary, read_mio_reply, read_record, read_transition, read_pending,
-    slow_analysis_projection,
+    slow_analysis_projection, guard_public_model_text,
 )
 from azazel_nexus.lite_import import read_knowledge_refs
 from azazel_nexus.store_dirs import fsync_directory, store_directory
@@ -341,23 +341,45 @@ ADVISE_DEADLINE_MS = REFERENCE_DEADLINE_MS
 ADVISE_CALLER_MARGIN_MS = 250
 
 
-def advise(frame):
+def advise(frame, *, caller_epoch=None, private_metadata=None):
     """One `mio.advise`; the caller waits strictly longer than entry's deadline."""
-    return _exchange(
-        "mio-advise", "azmioentry", "mio.advise", {"deadline_ms": ADVISE_DEADLINE_MS},
+    if private_metadata is not None:
+        private_metadata.clear()
+    arguments = {"deadline_ms": ADVISE_DEADLINE_MS}
+    if caller_epoch is not None:
+        arguments['caller_epoch'] = caller_epoch
+    reply = _exchange(
+        "mio-advise", "azmioentry", "mio.advise", arguments,
         payload=frame, deadline_s=(ADVISE_DEADLINE_MS + ADVISE_CALLER_MARGIN_MS) / 1000)
+    if caller_epoch is not None:
+        metadata = reply.pop('generation_metadata', None)
+        if private_metadata is not None:
+            private_metadata.clear()
+            if type(metadata) is dict:
+                private_metadata.update(metadata)
+    return reply
 
 
-def poll_generation_result(receipt, *, deadline_s=0.05):
+def poll_generation_result(receipt, *, deadline_s=0.05, caller_epoch=None, private_metadata=None):
     """Relay a bound result poll through entryd's explainer-only socket."""
     stale = {"state": "stale", "usage": "unknown"}
+    if private_metadata is not None:
+        private_metadata.clear()
     try:
         arguments = {key: receipt[key] for key in
                      ("result_handle", "generation_id", "frame_id", "trace_id")}
         arguments["deadline_ms"] = max(1, min(50, int(deadline_s * 1000)))
+        if caller_epoch is not None:
+            arguments['caller_epoch'] = caller_epoch
         response = _exchange(
             "mio-advise", "azmioentry", "mio.generation.result", arguments,
             deadline_s=deadline_s)
+        if caller_epoch is not None:
+            metadata = response.pop('generation_metadata', None)
+            if private_metadata is not None:
+                private_metadata.clear()
+                if type(metadata) is dict:
+                    private_metadata.update(metadata)
         if type(response) is not dict or set(response) != {"outcome", "slow_analysis"}:
             return None
         from .mio_generation import read_slow_analysis
@@ -385,8 +407,17 @@ class Explainer:
         self.ui_status = UiCopy(ui_status_path, name="az-incident-explaind")
         self.ui_recent = UiCopy(ui_recent_path, name="az-incident-explaind")
         self.clock, self.monotonic = clock, monotonic
-        self.mio = mio or advise
-        self.mio_result = mio_result or poll_generation_result
+        from .mio_generation_journal import new_epoch
+        self.restart_epoch = new_epoch()
+        self._generation_private = None
+        self._generation_metadata = {}
+        self._generation_bindings = {}
+        self._generation_restart_unknown = set()
+        self._generation_recovered = set()
+        self.mio = mio or (lambda frame: advise(frame, caller_epoch=self.restart_epoch,
+                                               private_metadata=self._generation_metadata))
+        self.mio_result = mio_result or (lambda receipt, **kw: poll_generation_result(receipt,
+            caller_epoch=self.restart_epoch, private_metadata=self._generation_metadata, **kw))
         self.knowledge = knowledge or (lambda ids: lookup_context(ids, deadline_s=KNOWLEDGE_MAX_S))
         self.store_limits = store_limits or {}
         self.generation_store = None
@@ -440,7 +471,16 @@ class Explainer:
             setattr(self, name, getattr(self, name) + n)
 
     def recent_status(self):
-        value = build_recent_incidents(self.recent, self.clock())
+        # Guard at the actual public file/UI write boundary as well as during
+        # library projection. Never rely on partial binding to hide model text.
+        rows = copy.deepcopy(self.recent)
+        for row in rows:
+            slow = row.get("explanation", {}).get("slow_analysis", {})
+            if slow.get("state") == "complete":
+                for field in ("hypotheses", "unknowns", "next_checks"):
+                    if type(slow.get(field)) is list:
+                        slow[field] = [guard_public_model_text(text) for text in slow[field]]
+        value = build_recent_incidents(rows, self.clock())
         now = self.monotonic()
         # Rewrite unchanged rows every 20 s so a quiet node is not shown stale.
         if now - self._recent_at < 5 or (value["incidents"] == self._recent_value
@@ -544,6 +584,31 @@ class Explainer:
             if value.get('budget_version') not in (None,1):
                 projection['budget'] = dict(version=0,outcome='unsupported',coverage='unknown',
                     cleanup_state='unconfirmed',superseded=False,omitted_units=0)
+        if handle in self._generation_restart_unknown and 'budget' not in projection:
+            projection = dict(state='degraded', usage='unknown', budget=dict(
+                version=1, outcome='stop_unconfirmed', coverage='unknown', cleanup_state='unconfirmed',
+                superseded=handle in self._generation_superseded, omitted_units=0,
+                reasons=['stop_unconfirmed']))
+        binding = self._generation_bindings.get(handle)
+        if projection.get('state') == 'complete' and binding is not None:
+            if binding['created_at'] <= self.clock() < binding['expires_at']:
+                from azazel_nexus import incident_explain as contract
+                if hasattr(contract, 'valid_handoff_binding'):
+                    projection['binding'] = copy.deepcopy(binding)
+                else:
+                    # Mixed A/base library cannot read B's new projection.
+                    projection = {'state': 'degraded', 'usage': 'unknown'}
+        if (projection.get('state') != 'complete' and (
+                handle in self._generation_recovered or handle in self._generation_restart_unknown
+                or value.get('generation_budget', {}).get('cleanup', {}).get('reason') == 'restart_unconfirmed')):
+            from azazel_nexus.incident_explain import public_unknown_metadata
+            unknowns = []
+            try:
+                observation = self._private_generation_journal().observation(receipt['request_id'])
+                unknowns = public_unknown_metadata(observation['unknowns'])
+            except (OSError, ValueError, KeyError, TypeError):
+                pass  # Report unavailability even when the ID-only sidecar is unreadable.
+            projection['recovery'] = dict(status='unavailable_after_restart', unknowns=unknowns)
         for row in self.recent:
             if row["incident_id"] == receipt["incident_id"]:
                 explanation = dict(row["explanation"])
@@ -551,6 +616,8 @@ class Explainer:
                 row["explanation"] = explanation
 
     def _generation_value(self, handle):
+        if handle in self._generation_restart_unknown:
+            return {'state': 'degraded', 'usage': 'unknown'}
         value = copy.deepcopy(self._generation_terminal.get(handle))
         if value is None:
             return {'state':'superseded' if handle in self._generation_superseded else 'queued','usage':'unknown'}
@@ -569,6 +636,43 @@ class Explainer:
             value.update(state='superseded',usage='unknown')
             value.pop('assistance',None)
         return value
+
+    def _private_generation_journal(self):
+        if self._generation_private is None:
+            from .mio_generation_journal import GenerationJournal
+            self._generation_private = GenerationJournal(Path(self.state) / 'mio-generation-private')
+        return self._generation_private
+
+    def _capture_private_binding(self, receipt):
+        """Copy the budget caller's body-free manifest after receipt identity checks."""
+        raw = self._generation_metadata
+        try:
+            if (raw.get('epoch') != self.restart_epoch or raw.get('handle') != receipt['result_handle']
+                    or any(raw.get(k) != receipt[k] for k in ('request_id', 'frame_id', 'generation_id'))
+                    or raw.get('template_version') not in {'1.6.0', '1.7.0', '1.8.0', '1.9.0'}):
+                return
+            created, expires = raw['created_at'], raw['expires_at']
+            if (any(type(t) not in (int, float) or not math.isfinite(t) for t in (created, expires))
+                    or not created <= self.clock() < expires or expires-created > 300):
+                return
+            from .mio_generation_journal import unknown_metadata
+            unknowns = raw['unknowns']
+            if (type(unknowns) is not list or len(unknowns) > 24
+                    or unknown_metadata([u['id'] for u in unknowns]) != unknowns):
+                return
+            private = self._private_generation_journal()
+            if private.seen(receipt['request_id']):
+                private.remember_unknowns(receipt['request_id'], [u['id'] for u in unknowns])
+            self._generation_bindings[receipt['result_handle']] = dict(
+                provenance_version=1, incident_id=receipt['incident_id'], request_id=receipt['request_id'],
+                frame_id=receipt['frame_id'], template_version=raw['template_version'],
+                created_at=created, expires_at=expires, unknowns=copy.deepcopy(unknowns),
+                evidence_refs=copy.deepcopy(raw.get('evidence_refs', [])),
+                hypothesis_ids=copy.deepcopy(raw.get('hypothesis_ids', [])),
+                advisory_refs=copy.deepcopy(raw.get('advisory_refs', [])),
+                completeness=raw.get('completeness', 'partial'))
+        except (OSError, KeyError, TypeError, ValueError):
+            return
 
     def _cleanup_pending(self, handle):
         value = self._generation_value(handle)
@@ -602,6 +706,8 @@ class Explainer:
 
     def _record_generation_terminal(self, receipt, value, *, sent_at=None):
         handle = receipt['result_handle']
+        if handle in self._generation_restart_unknown:
+            return False  # permanent, including direct late callbacks
         if handle in self._generation_terminal:
             if value.get('state') == 'superseded':
                 return self._record_generation_superseded(receipt)
@@ -638,7 +744,18 @@ class Explainer:
         except ValueError:
             checked = read_generation_event({'event_type':'mio.generation.result',
                 **self._generation_binding(receipt),'state':'degraded','usage':'unknown','recorded_at':self.clock()})
-        if not self._append_generation_event(checked,segment_at=receipt['recorded_at']):
+        durable = checked
+        if checked.get('budget_version') == 1 and checked['state'] == 'complete':
+            # Model bodies remain only in this process. Preserve accounting in
+            # the durable receipt, with an explicitly unconfirmed restart view.
+            from .mio_generation_journal import restored_status
+            restored = restored_status(checked['generation_budget'], dict(
+                generation_id=receipt['generation_id'], frame_id=receipt['frame_id'],
+                trace_id=receipt['trace_id'], handle=handle))
+            durable = {**checked, 'state': restored['state'], 'usage': restored['usage'],
+                       'generation_budget': restored['generation_budget']}
+            durable.pop('assistance', None)
+        if not self._append_generation_event(durable,segment_at=receipt['recorded_at']):
             self._set_generation_projection(receipt,{'state':'degraded','usage':'unknown'})
             return False
         self._generation_terminal[handle] = checked
@@ -685,6 +802,18 @@ class Explainer:
                 return
             receipt = existing
         else:
+            try:
+                private = self._private_generation_journal()
+                if private.seen(receipt['request_id']):
+                    observation = private.observation(receipt['request_id'])
+                    if observation.get('epoch') != self.restart_epoch or observation.get('handle') != receipt['result_handle']:
+                        self._generation_restart_unknown.add(receipt['result_handle'])
+                else:
+                    from types import SimpleNamespace
+                    private.reserve(receipt['request_id'], receipt['result_handle'], receipt['generation_id'],
+                        SimpleNamespace(frame_id=receipt['frame_id'], trace_id=receipt['trace_id']), self.restart_epoch, 60)
+            except (OSError, ValueError, KeyError):
+                self._generation_restart_unknown.add(receipt['result_handle'])
             # Durable receipt first: polling never starts for an unrecorded job.
             if not self._append_generation_event(receipt):
                 return
@@ -692,6 +821,10 @@ class Explainer:
         current = self._generation_current.get(ident)
         if current is None or self._generation_receipts[current]["incident_sequence"] <= seq:
             self._generation_current[ident] = receipt["result_handle"]
+        self._capture_private_binding(receipt)
+        if receipt['result_handle'] in self._generation_restart_unknown:
+            self._set_generation_projection(receipt, self._generation_value(receipt['result_handle']))
+            return
         if value["state"] != "queued":
             self._record_generation_terminal(receipt, value, sent_at=sent_at)
         else:
@@ -708,7 +841,22 @@ class Explainer:
         self._generation_cleanup,self._generation_superseded = cleanup,superseded
         self._generation_cleanup_deadlines = {}
         self._generation_current = current
+        self._generation_recovered.update(receipts)
         for handle,receipt in receipts.items():
+            if handle not in terminal:
+                # A receipt without a result is never re-adopted after restart,
+                # including legacy receipts without an epoch sidecar.
+                self._generation_restart_unknown.add(handle)
+                try:
+                    private = self._private_generation_journal()
+                    if not private.seen(receipt['request_id']):
+                        from types import SimpleNamespace
+                        private.reserve(receipt['request_id'], handle, receipt['generation_id'],
+                            SimpleNamespace(frame_id=receipt['frame_id'], trace_id=receipt['trace_id']),
+                            'unavailable-before-restart', 60)
+                    private.fence(receipt['request_id'], 'stale_epoch', restart_epoch=self.restart_epoch)
+                except (OSError, ValueError, KeyError):
+                    pass  # absence/corruption also leaves the receipt unknown
             if self._cleanup_pending(handle):
                 self._record_generation_cleanup(receipt,'unconfirmed','restart_unconfirmed')
         for ident,handle in current.items():
@@ -724,6 +872,8 @@ class Explainer:
         if self._generation_store_failed:
             return
         for handle,receipt in tuple(self._generation_receipts.items()):
+            if handle in self._generation_restart_unknown:
+                continue
             pending = self._cleanup_pending(handle)
             if handle in self._generation_terminal and not pending:
                 continue
@@ -772,6 +922,7 @@ class Explainer:
                 except (KeyError,TypeError,ValueError):
                     self._record_generation_cleanup(receipt,'unconfirmed','observation_lost')
             else:
+                self._capture_private_binding(receipt)
                 self._record_generation_terminal(receipt,value,sent_at=sent_at)
             return
 

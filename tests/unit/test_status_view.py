@@ -1550,3 +1550,25 @@ def test_without_a_snapshot_a_recent_record_still_counts(tmp_path, monkeypatch):
     mio = _mio_view(tmp_path, monkeypatch, recorded_at="2026-09-20T04:01:00+00:00")
     assert (mio["status"], mio["reason_code"]) == ("recorded", None)
     assert mio["liveness"]["evidence"] == "route_ledger_record"
+
+
+def test_recent_view_preserves_checked_slow_projection():
+    from azazel_nexus.status_view import _recent_extra
+    recent = _recent(NOW - 2)
+    slow = {'state': 'degraded', 'usage': 'unknown', 'budget': {
+        'version': 1, 'outcome': 'stop_unconfirmed', 'coverage': 'unknown',
+        'cleanup_state': 'unconfirmed', 'superseded': False, 'omitted_units': 0,
+        'reasons': ['timeout', 'stop_unconfirmed'], 'fence_state': 'unknown',
+        'dispatch': [{'task': 'generate_hypotheses', 'dispatched': True},
+                     {'task': 'identify_evidence_gaps', 'dispatched': False},
+                     {'task': 'recommend', 'dispatched': False}]}}
+    recent['incidents'][0]['explanation']['slow_analysis'] = slow
+    snapshot = {}
+    _recent_extra(recent, snapshot)
+    from azazel_nexus.incident_explain import SLOW_WITHHOLD_REASONS
+    assert snapshot['incidents'][0]['explanation']['slow_analysis'] == {
+        **slow, 'reason_code': 'no_current_slow_result',
+        'reason_ja': SLOW_WITHHOLD_REASONS['no_current_slow_result']}
+    slow['budget']['reasons'].append('private payload')
+    with pytest.raises(Exception):
+        _recent_extra(recent, {})

@@ -118,7 +118,8 @@ def test_slow_result_receipt_is_durable_before_poll_and_projected_once(tmp_path)
     assert all(secret not in encoded for secret in ("a" * 64, "generation-1", trace, ":frame"))
 
     restarted = make(tmp_path, mio_result=lambda *_a, **_k: pytest.fail("terminal result polled twice"))
-    assert restarted.recent[0]["explanation"]["slow_analysis"] == row
+    assert restarted.recent[0]["explanation"]["slow_analysis"] == {
+        **row, "recovery": {"status": "unavailable_after_restart", "unknowns": []}}
     assert [event["event_type"] for event in restarted.generation_store.events()] == [
         "mio.generation.receipt", "mio.generation.result"]
 

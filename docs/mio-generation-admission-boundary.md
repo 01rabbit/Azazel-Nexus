@@ -295,3 +295,77 @@ The private and public budget projections retain these closed reasons and keep
 `coordinator_disposition` separate from the original failure. The #48 candidate
 wheel is used for isolated connection tests; the consumer dependency pin is
 unchanged by this work.
+
+For this weekend's budgeted Nexus caller through `mio_generation`, later tasks
+receive bounded IDs and classifications for prior report and gap content. This
+scope does not guarantee ID-only inputs for the shared MIO API when callers use
+`references` or `knowledge`; that path remains open work. Public incident views
+show the validated task dispatch flags and report fence state as `unknown`, since
+a cleanup observation alone does not establish the current lane fence. No raw
+receipt or provider payload is exported.
+
+### Incident-bound handoff and restart
+
+The budgeted runtime journals request and dispatch accounting and unknown IDs,
+without persisting model, prompt, source or unknown bodies. After a restart or
+caller epoch mismatch, an unconfirmed result cannot become complete; retained
+terminal accounting does not restore the model text. The recent projection's
+v1 binding requires the original incident, request, frame and lifetime, the
+template version, unknown IDs and origins, verified/current evidence references,
+receipt-verified hypothesis IDs and a complete advisory reference manifest.
+Consumers withhold advice when that binding is missing or invalid. ID membership
+does not independently verify a source or the meaning of a statement. The
+budget caller is the authority for source metadata: frame references and frame
+unknown IDs come from the authenticated Edge-to-Nexus local caller path and are
+labelled `source=frame`, `trust=verified` as a caller assertion. Their observation
+age must be less than the original receipt lifetime. Broker references require
+explicit adapter-verified trust and an observed timestamp; missing metadata is
+unverified/unknown, and only explicit revocation information yields revoked.
+The current budget caller configures no broker; its adapter seam does not turn
+raw request or model trust claims into verified sources.
+Each binding evidence reference carries non-secret `observed_at` and
+`valid_until` timestamps (observation plus the original receipt TTL). The binding
+`expires_at` is the minimum of the receipt expiry and all known source deadlines;
+this never extends or changes the receipt itself. Readers re-evaluate each source
+deadline on every display/export, including a saved recent snapshot: at or after
+`valid_until`, freshness is expired and advice is withheld. Missing/invalid times
+also withhold; a saved `freshness=current` flag cannot renew a source.
+
+Runtime extracts structured IDs from validated assistance and each raw task
+response, and scans prose with MIO's ID grammar before display sanitization.
+Prose uses the same NFKC normalization as public text. Reference-like tokens with
+ambiguous boundaries or joined/malformed IDs make completeness partial rather
+than silently disappearing. Separate IDs with whitespace or punctuation; Japanese text directly adjoining an ID (for example, `仮説h1を確認`) remains partial.
+Compatibility spellings such as `h¹`, `𝐡1` and `ｈ１` use membership after NFKC: known IDs are accepted and unknown IDs remain partial.
+The prose repertoire includes ASCII `% & + / * # @ ~ ^ | < > = $`; independent secret/path privacy guards still apply.
+Secret-labelled keys in `key=value` or `key: value`
+prose cause the entire string, including its value, to become fixed withheld text.
+After NFKC and format-control (Cf) removal, every non-ASCII-alphanumeric character (Unicode-wide `[^A-Za-z0-9]`) separates key elements, including Japanese punctuation. The secret-check skeleton preserves each run of boundaries as `|`, including `=` and `:`; it never deletes them to join adjacent words. Long secret labels (including `passwd`, `passphrase`, `passcode`, and `token`) match substrings within key elements regardless of value context. Only `pass`, `pwd`, `pin`, `auth`, `otp`, and `key` are short aliases: they match whole elements regardless of assignment operators, value length, or following prose. This also withholds compound labels such as `pin_status`, `user.auth.name`, and `my otp value`, including their entire values. Consecutive fragments of one or two characters are joined for exact alias checks (for example, `hint,p,w;d: value`); longer elements stop this scan. Joined aliases need no value context. Ordinary prose such as `check auth status h1`, `pin the route h1`, `pass the check h1`, and `key observation h1` may consequently be withheld; this known conservative behavior is deferred for separate work. Ordinary words such as `spinning`, `author`, `compass`, `bypass`, and `passive` do not match a short alias by substring. The writer rechecks the projected text, so a long label created by punctuation removal is withheld too. Chained keys are checked before any prose sanitization. The independent character repertoire guard still rejects format controls in public prose.
+`hypothesis_ids` comes from validated hypothesis provenance; `advisory_refs`
+contains the structured reference set, including unknown and gap references.
+An ID occurring only in prose is excluded and sets private
+`unlisted_prose_ids=true` and public `completeness=partial`. Only
+`completeness=complete` is displayable; missing completeness also withholds.
+A referenced model unknown without its live body, unavailable extraction, or
+an oversized manifest also withholds. Bodies are never added to binding or
+journal. Unknown IDs marked unavailable after restart cannot authorize advice.
+These checks establish membership, not semantic truth or model quality.
+Template 1.9.0 is accepted; the Nexus MIO dependency pin is unchanged and does
+not identify the advice3 candidate wheel.
+
+The native incident card, status JSON and handoff JSON/Markdown retain the
+validated non-secret binding: incident/request/frame IDs, template version,
+original timestamps, completeness, ID-only unknown origin/category/status,
+source trust/freshness/deadlines and hypothesis/advisory reference IDs. These
+fields remain advisory metadata, never operator actions or proof of facts.
+The public metadata guard also rejects secret-like, address and encoded values;
+fixed reference IDs are handled as typed IDs, not arbitrary host:port strings.
+Withheld results expose a fixed `reason_code` and Japanese `reason_ja`.
+Missing and partial bindings both use `binding_unverified`; expired bindings,
+incident mismatch, unknown templates and unverified sources have specific codes.
+
+After recovery, a non-complete slow projection may carry the closed
+`recovery` object with `status=unavailable_after_restart` and ID-only `unknowns`.
+It does not fabricate a complete binding or restore unknown bodies. Readers
+reject recovery metadata on complete results. Receipt accounting, terminal
+reasons, original TTLs and the permanent restart fence are unchanged.

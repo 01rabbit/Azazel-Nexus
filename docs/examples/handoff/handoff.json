@@ -57,6 +57,7 @@
       "hypotheses": [],
       "next_checks": [],
       "reason_code": "recent_snapshot_stale",
+      "reason_ja": "状態記録が古いため、助言の表示を保留しました。",
       "status": "unavailable",
       "unknowns": [],
       "verification": "model_proposed_unverified"
