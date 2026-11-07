@@ -61,8 +61,18 @@ def test_core_reader_and_public_projection_without_runtime_dependency():
     assert slow_analysis_projection(legacy)['budget']['outcome']=='legacy_unverified'
 
 
+@pytest.mark.parametrize('text', ['password: syntheticvalue', 'Bearer syntheticvalue',
+                                  'api_key=syntheticvalue', 'A' * 40])
+def test_public_advisory_withholds_secret_shaped_model_text(text):
+    value = live()
+    value['assistance']['hypotheses'][0]['statement'] = text
+    shown = slow_analysis_projection(value)
+    assert shown['hypotheses'][0] == 'Details withheld verify through an authorized source'
+    assert text not in json.dumps(shown)
+
+
 @pytest.mark.parametrize(('version', 'accepted'), [
-    ('1.6.0', True), ('1.7.0', True), ('1.8.0', True), ('1.9.0', False),
+    ('1.6.0', True), ('1.7.0', True), ('1.8.0', True), ('1.9.0', True), ('2.0.0', False),
     ('1.7', False), ('1.7.0-extra', False),
 ])
 def test_template_version_allowlist_keeps_old_receipts_and_rejects_unknown(version, accepted):

@@ -1191,6 +1191,8 @@ def _public_model_text(value):
     # The MIO frame excludes network addresses, but a generated response is
     # still untrusted. Withhold any address/path-like string at this boundary.
     if (any(ch in normalized for ch in "/\\⁄∕∖⧸⧹﹨")
+            or re.search(r"(?i)\b(?:password|passwd|passphrase|secret|credential|api[_ -]?key|access[_ -]?key|private[_ -]?key|bearer|token|cookie)\b", normalized)
+            or re.search(r"\b[A-Za-z0-9_-]{32,}\b", normalized)
             or re.search(r"://|(?:^|\s)//|[\w.+-]+@[\w.-]+|\b\d+(?:\.\d+){3}\b", normalized)
             or re.search(r"(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.]*", normalized)):
         return "Details withheld verify through an authorized source"
@@ -1209,6 +1211,79 @@ def _public_model_text(value):
         words.append("".join(current[:32]))
     text = "".join(words).strip()
     return text[:240] or "Details withheld verify through an authorized source"
+
+
+def valid_handoff_binding(binding, incident_id, now):
+    """Check a non-secret receipt projection; IDs never establish content or trust."""
+    try:
+        keys = {"provenance_version", "incident_id", "request_id", "frame_id", "template_version", "created_at", "expires_at", "unknowns", "evidence_refs", "hypothesis_ids", "advisory_refs"}
+        if type(binding) is not dict or set(binding) != keys or type(binding["provenance_version"]) is not int or binding["provenance_version"] != 1:
+            return False
+        if binding["incident_id"] != incident_id or not re.fullmatch(r"inc-[0-9a-f]{16}", incident_id):
+            return False
+        match = re.fullmatch(re.escape(incident_id) + r":([1-9][0-9]{0,11})", binding["request_id"])
+        if not match or int(match[1]) > MIO_TRACE_SEQUENCE_MAX or binding["frame_id"] != f"mio-{incident_id[4:]}-{match[1]}:frame":
+            return False
+        if binding["template_version"] not in {"1.6.0", "1.7.0", "1.8.0", "1.9.0"}:
+            return False
+        a, b = binding["created_at"], binding["expires_at"]
+        if any(type(x) not in (int, float) or not math.isfinite(x) for x in (a, b, now)) or not a <= now < b or not a < b:
+            return False
+        unknowns, refs = binding["unknowns"], binding["evidence_refs"]
+        if type(unknowns) is not list or len(unknowns) > 24 or type(refs) is not list or not 0 < len(refs) <= 32:
+            return False
+        ids = set()
+        for item in unknowns:
+            if type(item) is not dict or set(item) != {"id", "origin", "category", "status"}:
+                return False
+            ident = item["id"]
+            origin = ("frame" if re.fullmatch(r"u[1-9][0-9]{0,2}", ident) else
+                      "fixed_projection" if re.fullmatch(r"ux:(identity|success|baseline|impact)", ident) else
+                      "model_asserted" if re.fullmatch(r"um:[1-9][0-9]{0,2}", ident) else None)
+            if (not origin or item["origin"] != origin or ident in ids or
+                    not re.fullmatch(r"[a-z][a-z0-9_]{0,31}", item["category"]) or
+                    item["status"] not in {"unresolved", "unavailable_after_restart"}):
+                return False
+            ids.add(ident)
+        ids = set()
+        for item in refs:
+            if type(item) is not dict or set(item) != {"id", "source", "trust", "freshness"}:
+                return False
+            for key in ("id", "source"):
+                val = item[key]
+                if type(val) is not str or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", val) or re.search(r"(?i)password|secret|credential|token|api[_-]?key|bearer", val) or re.search(r"[A-Za-z0-9_-]{32,}", val):
+                    return False
+            if item["id"] in ids or item["trust"] != "verified" or item["freshness"] != "current":
+                return False
+            ids.add(item["id"])
+        hypotheses = binding["hypothesis_ids"]
+        if (type(hypotheses) is not list or len(hypotheses) > 4
+                or any(type(x) is not str or not re.fullmatch(r"h[1-9][0-9]{0,2}", x) for x in hypotheses)
+                or len(set(hypotheses)) != len(hypotheses)):
+            return False
+        refs_used = binding["advisory_refs"]
+        if type(refs_used) is not list or not 0 < len(refs_used) <= 128:
+            return False
+        unknown_ids = {item["id"] for item in unknowns}
+        for ref in refs_used:
+            if type(ref) is not str:
+                return False
+            if re.fullmatch(r"h[0-9]+", ref):
+                if ref not in hypotheses:
+                    return False
+            elif re.fullmatch(r"(?:u[0-9]+|ux:.*|um:.*)", ref):
+                if ref not in unknown_ids:
+                    return False
+            elif ref not in ids:
+                return False
+        return True
+    except (TypeError, ValueError, KeyError, OverflowError):
+        return False
+
+
+def valid_handoff_advisory(slow, incident_id, now):
+    """Check the runtime's reference manifest before exporting sanitized prose."""
+    return valid_handoff_binding(slow.get("binding"), incident_id, now)
 
 
 def slow_analysis_projection(value):
@@ -1507,7 +1582,7 @@ def read_recent_incidents(raw):
                     validate_public_budget(slow['budget'],state=slow['state'])
                     slow = {k:v for k,v in slow.items() if k != 'budget'}
                 if slow["state"] == "complete":
-                    if set(slow) != {"state", "usage", "verification", "hypotheses",
+                    if set(slow) - {"binding"} != {"state", "usage", "verification", "hypotheses",
                                      "unknowns", "next_checks"}:
                         return None
                     if (slow["verification"] != "model_proposed_unverified"

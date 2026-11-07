@@ -768,7 +768,7 @@ def build_package(incident_id: str, *, now: float, principal: str, root=None,
     execution = _execution(transitions, row, intake)
     evidence = _evidence(transitions, ledger_status, ledger_code)
     ai = _ai(explanations, explanation_code, row, snaps["mio_status_snapshot"], CONTENT_LABELS,
-             hide, recent_fresh)
+             hide, recent_fresh, now)
     operator = _operator(audit, window_from, now, hide)
     impact = _impact(snaps["noc_status_snapshot"], execution)
     loop = _loop(snaps)
@@ -1057,7 +1057,7 @@ def _text_of(value, fixed, hide) -> tuple[Optional[str], str]:
     return None, "withheld"
 
 
-def _ai(explanations, explanation_code, row, mio, labels, hide, recent_fresh=None) -> dict:
+def _ai(explanations, explanation_code, row, mio, labels, hide, recent_fresh=None, now=None) -> dict:
     from .explanation_claims import PROVENANCE_FIELD
     from .incident_explain import content_kind
 
@@ -1083,6 +1083,11 @@ def _ai(explanations, explanation_code, row, mio, labels, hide, recent_fresh=Non
             if "budget" in slow:
                 slow_advisory["budget"] = dict(slow["budget"])
         if type(slow) is dict and slow.get("state") == "complete":
+            from .incident_explain import valid_handoff_advisory
+            if not valid_handoff_advisory(slow, row["incident_id"], now):
+                slow_advisory["reason_code"] = "binding_unverified"
+                slow = None
+        if type(slow) is dict and slow.get("state") == "complete":
             # `read_recent_incidents` already checked this closed, sanitized
             # projection. Keep it separate from the immutable explanation
             # record and from the deterministic/fast assessment.
@@ -1093,6 +1098,11 @@ def _ai(explanations, explanation_code, row, mio, labels, hide, recent_fresh=Non
                 "hypotheses": list(slow["hypotheses"]),
                 "unknowns": list(slow["unknowns"]),
                 "next_checks": list(slow["next_checks"]),
+                "provenance_summary": {
+                    "unknowns": [{"origin": item["origin"], "status": item["status"]}
+                                 for item in slow["binding"]["unknowns"]],
+                    "verified_current_sources": len(slow["binding"]["evidence_refs"]),
+                },
             }
             if "budget" in slow:
                 slow_advisory["budget"] = dict(slow["budget"])
@@ -1392,7 +1402,8 @@ def _unconfirmed(p) -> list:
     slow_advisory = p["ai_assessment"].get("slow_advisory", {})
     items.append("ai_advice_unverified" if (
         any(e["labelled_ai_output"] for e in explanations)
-        or slow_advisory.get("status") == "available")
+        or slow_advisory.get("status") == "available"
+        or slow_advisory.get("reason_code") == "binding_unverified")
                  else "no_ai_answer")
     occurrence = p["time"]["occurrence"]["status"]
     items.append("occurrence_time_untrusted" if occurrence == "untrusted"

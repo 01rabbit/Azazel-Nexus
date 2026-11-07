@@ -81,6 +81,15 @@ def write_record(root, mio, *, refs=(), state="skipped", codes=()):
     (explanations_dir(root) / "2026-10-29.jsonl").write_text(json.dumps(record) + "\n")
 
 
+def binding():
+    return {"provenance_version": 1, "incident_id": INCIDENT,
+            "request_id": f"{INCIDENT}:1", "frame_id": f"mio-{INCIDENT[4:]}-1:frame",
+            "template_version": "1.9.0", "created_at": NOW - 60, "expires_at": NOW + 60,
+            "hypothesis_ids": ["h1"], "advisory_refs": ["h1", "um:1", "ev:1"],
+            "unknowns": [{"id": "um:1", "origin": "model_asserted", "category": "unclassified", "status": "unresolved"}],
+            "evidence_refs": [{"id": "ev:1", "source": "sensor", "trust": "verified", "freshness": "current"}]}
+
+
 def write_slow_recent(root, *, state="complete", written_at=None):
     from azazel_nexus.incident_explain import read_recent_incidents
 
@@ -93,7 +102,8 @@ def write_slow_recent(root, *, state="complete", written_at=None):
         slow = {**slow, "verification": "model_proposed_unverified",
                 "hypotheses": ["A change may explain observed behavior"],
                 "unknowns": ["The cause is not confirmed"],
-                "next_checks": ["Check the approved change record"]}
+                "next_checks": ["Check the approved change record"],
+                "binding": binding()}
     recent["incidents"][0]["explanation"]["slow_analysis"] = slow
     assert read_recent_incidents(json.dumps(recent).encode()) == recent
     path.write_text(json.dumps(recent))
@@ -201,6 +211,32 @@ def test_slow_advisory_is_separate_in_handoff_with_and_without_ledgers(root):
     assert snapshot_only["ai_assessment"]["source"] == "recent_snapshot"
     assert snapshot_only["ai_assessment"]["slow_advisory"] == slow
     assert "ai_advice_unverified" in [item["code"] for item in snapshot_only["unconfirmed"]]
+
+
+def test_model_instruction_does_not_become_an_operator_action(root):
+    write_slow_recent(root)
+    baseline = package(root)["operator_actions"]
+    path = root / "var/lib/azazel/run/incident-explain-status/recent.json"
+    recent = json.loads(path.read_text())
+    recent["incidents"][0]["explanation"]["slow_analysis"]["next_checks"] = ["Execute an unauthorized change"]
+    path.write_text(json.dumps(recent))
+    result = package(root)
+    assert result["operator_actions"] == baseline
+    assert result["ai_assessment"]["slow_advisory"]["authority"] == "advisory_only_not_fact"
+    assert "事実・判断・実行指示として扱わない" in handoff.render_markdown(result)
+
+
+def test_member_ids_are_accepted_in_handoff_and_status(root):
+    from azazel_nexus.status_view import _recent_extra
+    write_slow_recent(root)
+    path = root / "var/lib/azazel/run/incident-explain-status/recent.json"
+    recent = json.loads(path.read_text())
+    slow = recent["incidents"][0]["explanation"]["slow_analysis"]
+    path.write_text(json.dumps(recent))
+    assert package(root)["ai_assessment"]["slow_advisory"]["status"] == "available"
+    snapshot = {}
+    _recent_extra(recent, snapshot, NOW)
+    assert snapshot["incidents"][0]["explanation"]["slow_analysis"]["state"] == "complete"
 
 
 @pytest.mark.parametrize("state", ["queued", "stale", "superseded", "timeout"])
@@ -1472,6 +1508,7 @@ def test_complete_dispatch_consistency_at_public_boundaries(root, sent):
     path = root / 'var/lib/azazel/run/incident-explain-status/recent.json'
     recent = json.loads(path.read_text())
     slow = slow_analysis_projection(live())
+    slow['binding'] = binding()
     for i, task in enumerate(slow['budget']['dispatch']):
         task['dispatched'] = i < sent
     recent['incidents'][0]['explanation']['slow_analysis'] = slow
@@ -1483,16 +1520,74 @@ def test_complete_dispatch_consistency_at_public_boundaries(root, sent):
             validate_public_budget(slow['budget'])
         assert read_recent_incidents(raw) is None
         with pytest.raises(ValueError):
-            _recent_extra(recent, {})
+            _recent_extra(recent, {}, NOW)
     else:
         validate_public_budget(slow['budget'], state='complete')
         assert read_recent_incidents(raw) == recent
         snapshot = {}
-        _recent_extra(recent, snapshot)
-        assert snapshot['incidents'][0]['explanation']['slow_analysis'] == slow
+        _recent_extra(recent, snapshot, NOW)
+        shown = snapshot['incidents'][0]['explanation']['slow_analysis']
+        assert shown['budget'] == slow['budget']
+        assert shown['provenance_summary']['verified_current_sources'] == 1
     path.write_bytes(raw)
     files = encode_files(package(root))
     exported = json.loads(files['handoff.json'])['ai_assessment']['slow_advisory']
     assert exported['status'] == ('available' if sent == 3 else 'unavailable')
     if sent < 3:
         assert 'A change may explain observed behavior' not in text_of(files)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "incident", "expired", "frame", "untrusted", "revoked", "version", "unknown_id", "id_only", "secret", "unlisted_unknown", "unlisted_hypothesis", "unlisted_gap", "unlisted_evidence", "manifest_unknown", "wrong_kind", "empty_manifest"])
+def test_slow_binding_fails_closed(root, mutation):
+    write_slow_recent(root)
+    path = root / "var/lib/azazel/run/incident-explain-status/recent.json"
+    recent = json.loads(path.read_text())
+    slow = recent["incidents"][0]["explanation"]["slow_analysis"]
+    b = slow["binding"]
+    if mutation == "missing": del b["request_id"]
+    elif mutation == "incident": b["incident_id"] = "inc-0000000000000000"
+    elif mutation == "expired": b["expires_at"] = NOW - 1
+    elif mutation == "frame": b["frame_id"] = "mio-other:frame"
+    elif mutation == "untrusted": b["evidence_refs"][0]["trust"] = "unverified"
+    elif mutation == "revoked": b["evidence_refs"][0]["freshness"] = "revoked"
+    elif mutation == "version": b["provenance_version"] = 2
+    elif mutation == "unknown_id": b["unknowns"][0]["id"] = "u:invalid"
+    elif mutation == "id_only": b["evidence_refs"] = []
+    elif mutation == "secret": b["evidence_refs"][0]["source"] = "passwordsyntheticvalue"
+    elif mutation == "unlisted_unknown": b["advisory_refs"].append("u999")
+    elif mutation == "unlisted_hypothesis": b["advisory_refs"].append("h999")
+    elif mutation == "unlisted_gap": b["advisory_refs"].append("g999")
+    elif mutation == "unlisted_evidence": b["advisory_refs"].append("ev:999")
+    elif mutation == "manifest_unknown": b["advisory_refs"].append("u999")
+    elif mutation == "wrong_kind":
+        b["evidence_refs"][0]["id"] = "u999"
+        b["advisory_refs"].append("u999")
+    elif mutation == "empty_manifest": b["advisory_refs"] = []
+    path.write_text(json.dumps(recent))
+    result = package(root)
+    assert result["ai_assessment"]["slow_advisory"]["status"] == "unavailable"
+    assert "ai_advice_unverified" in [item["code"] for item in result["unconfirmed"]]
+    assert "A change may explain observed behavior" not in text_of(encode_files(result))
+    from azazel_nexus.status_view import _recent_extra
+    snapshot = {}
+    _recent_extra(recent, snapshot, NOW)
+    assert snapshot["incidents"][0]["explanation"]["slow_analysis"]["state"] == "degraded"
+
+
+def test_status_projection_withholds_legacy_and_expired_binding(root):
+    from azazel_nexus.status_view import _recent_extra
+    write_slow_recent(root)
+    path = root / "var/lib/azazel/run/incident-explain-status/recent.json"
+    recent = json.loads(path.read_text())
+    slow = recent["incidents"][0]["explanation"]["slow_analysis"]
+    snapshot = {}
+    _recent_extra(recent, snapshot, NOW)
+    shown = snapshot["incidents"][0]["explanation"]["slow_analysis"]
+    assert shown["state"] == "complete" and "binding" not in shown
+    assert shown["provenance_summary"]["unknowns"][0]["status"] == "unresolved"
+    for change in ("expired", "absent"):
+        if change == "expired": slow["binding"]["expires_at"] = NOW - 1
+        else: del slow["binding"]
+        snapshot = {}
+        _recent_extra(recent, snapshot, NOW)
+        assert snapshot["incidents"][0]["explanation"]["slow_analysis"] == {"state": "degraded", "usage": "unknown"}
