@@ -12,7 +12,7 @@ from pathlib import Path
 import hashlib
 import re
 
-wheel = Path('/wheel/azazel_mio-0.1.0.dev20261107+gited860f2-py3-none-any.whl')
+wheel = Path('/wheel/azazel_mio-0.1.0.dev20261108+gitadvice3-py3-none-any.whl')
 fabric_wheel = Path('/fabric-wheel/azazel_fabric-0.10.0-py3-none-any.whl')
 locks = [
     Path('/src/packaging/offline/requirements-aarch64-cp313.lock'),
@@ -58,9 +58,27 @@ rm -rf -- "$SCRATCH_KNOWLEDGE/.venv" "$SCRATCH_KNOWLEDGE/.pytest_cache"
 export KNOWLEDGE_TEST_SRC="$SCRATCH_KNOWLEDGE"
 python -m pip install --no-index --find-links=/wheels --find-links=/fabric-wheel \
   -e "${SCRATCH_SRC}[dev]" -e "$SCRATCH_SRC/runtime" \
-  /wheel/azazel_mio-0.1.0.dev20261107+gited860f2-py3-none-any.whl \
+  /wheel/azazel_mio-0.1.0.dev20261108+gitadvice3-py3-none-any.whl \
   /fabric-wheel/azazel_fabric-0.10.0-py3-none-any.whl \
   fastapi uvicorn pydantic PyYAML idna PyNaCl httpx
+
+# Verify the installed distribution and import come from this environment's site-packages.
+python -I -B - <<'PYVERIFY'
+import importlib.metadata as metadata
+import pathlib
+import sysconfig
+import azazel_mio
+from azazel_mio.playbook import PROMPT_TEMPLATE_VERSION
+
+dist = metadata.distribution('azazel-mio')
+origin = pathlib.Path(azazel_mio.__file__).resolve()
+site = pathlib.Path(sysconfig.get_path('purelib')).resolve()
+dist_root = pathlib.Path(dist.locate_file('')).resolve()
+assert dist.version == '0.1.0.dev20261108+gitadvice3'
+assert PROMPT_TEMPLATE_VERSION == '1.9.0'
+assert dist_root == site and origin.is_relative_to(site), (dist_root, origin, site)
+print(f'MIO distribution={dist_root} module={origin} version={dist.version} template={PROMPT_TEMPLATE_VERSION}')
+PYVERIFY
 
 # The test's Linux SO_PEERCRED run uses these ordinary system identities. They
 # exist only in this --rm container; the source tree's principal policy is

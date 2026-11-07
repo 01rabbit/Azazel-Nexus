@@ -42,16 +42,16 @@ and both platform locks. CORE remains usable without Fabric.
    release verification supports the selected tag; it does not introduce a
    Nexus trust-root policy.
 
-The current candidate's MIO wheel is
+The earlier candidate's MIO wheel was
 `azazel_mio-0.1.0.dev20261107+gited860f2-py3-none-any.whl`, built from exact
-source commit `989dd959a635b5877814bd2912639676308cf999` and pinned in both
+source commit `989dd959a635b5877814bd2912639676308cf999` and was pinned in both
 target locks at SHA-256
 `a99fdc1bb15484581b41cb1bd22914b4d1e1f452499278b5f42902daacc2a3cb`. The
-optional `mio` source extra resolves to the same immutable commit. The
+optional `mio` source extra resolved to the same immutable commit. The
 `gited860f2` version suffix identifies the implementation baseline; `989dd959…`
 is the source commit that carries this version metadata. The former
 `gite639a65` / `1ba191b…` artifact and hash are superseded and must not be used
-for this candidate. Reproduction uses `SOURCE_DATE_EPOCH=1793887544`, the
+for that candidate. Reproduction used `SOURCE_DATE_EPOCH=1793887544`, the
 fixed reproducible-build epoch; Fabric retains its separately pinned
 1980 epoch so its released wheel hash is unchanged.
 
@@ -65,3 +65,18 @@ the candidate only after the required Nexus four-configuration matrix and
 wheelhouse source/hash check pass on that candidate. It does not establish
 Nexus main integration, the full Knowledge-to-Nexus production route, a Nexus
 release, credentials, trust configuration, or deployment.
+
+## 2026-11-08 advice runtime pin update
+
+The current candidate pins optional MIO source commit
+`762305354ce1cb8ef6f190b48f10f9297e79bb5a` (tree
+`4bd981030e9fca70252e7ecf0383e738f1af9243`), version
+`0.1.0.dev20261108+gitadvice3`, template `1.9.0`. Both target locks pin
+`azazel_mio-0.1.0.dev20261108+gitadvice3-py3-none-any.whl` at SHA-256
+`175dd38cd613b3775ba23d137d68cf8c1dcb48766217ead7a067cea688399068`.
+The source archive recipe uses the pinned build backend, umask 022 and
+`SOURCE_DATE_EPOCH=1794058907`. Two canonical builds produced identical
+bytes and a fresh offline install verified the package origin and template.
+The updated Nexus wheelhouse recipe still requires its own reproduction
+check and candidate-level integration and D3b evidence; the pin does not
+open model admission, authorize release, or establish deployment.
