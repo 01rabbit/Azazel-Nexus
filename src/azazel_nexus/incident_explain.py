@@ -1217,7 +1217,7 @@ def valid_handoff_binding(binding, incident_id, now):
     """Check a non-secret receipt projection; IDs never establish content or trust."""
     try:
         keys = {"provenance_version", "incident_id", "request_id", "frame_id", "template_version", "created_at", "expires_at", "unknowns", "evidence_refs", "hypothesis_ids", "advisory_refs"}
-        if type(binding) is not dict or set(binding) != keys or type(binding["provenance_version"]) is not int or binding["provenance_version"] != 1:
+        if type(binding) is not dict or set(binding) != keys | {"completeness"} or binding["completeness"] != "complete" or type(binding["provenance_version"]) is not int or binding["provenance_version"] != 1:
             return False
         if binding["incident_id"] != incident_id or not re.fullmatch(r"inc-[0-9a-f]{16}", incident_id):
             return False
@@ -1272,7 +1272,7 @@ def valid_handoff_binding(binding, incident_id, now):
                 if ref not in hypotheses:
                     return False
             elif re.fullmatch(r"(?:u[0-9]+|ux:.*|um:.*)", ref):
-                if ref not in unknown_ids:
+                if ref not in unknown_ids or any(item["id"] == ref and item["status"] != "unresolved" for item in unknowns):
                     return False
             elif ref not in ids:
                 return False

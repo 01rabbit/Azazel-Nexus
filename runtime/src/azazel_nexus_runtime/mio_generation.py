@@ -222,6 +222,7 @@ class GenerationLane:
 
     def private_metadata(self, handle, caller_epoch):
         """Non-secret binding on the epoch-only internal transport."""
+        from .mio_advisory_manifest import project_sources
         from .mio_generation_journal import unknown_metadata
         with self._lock:
             record = self._receipts.get(handle)
@@ -234,7 +235,10 @@ class GenerationLane:
                         created_at=record['created_at'], expires_at=record['expires_at'],
                         template_version=(meta.get('profile') or {}).get('template_version'),
                         unknowns=unknown_metadata(record.get('frame_unknowns', {})),
-                        evidence_refs=[])
+                        evidence_refs=project_sources(record.get('source_manifest', []), time.time(),
+                            record['expires_at'] - record['created_at']),
+                        **copy.deepcopy(record.get('manifest', dict(hypothesis_ids=[], advisory_refs=[],
+                            completeness='partial', unlisted_prose_ids=False))))
 
     def _journal_finish(self, job, status, unknowns):
         if self._journal is None:
@@ -904,6 +908,8 @@ class GenerationLane:
                         if session is not None:
                             record['frame_unknowns'] = copy.deepcopy(session.frame_unknowns)
                             record['unknown_origins'] = copy.deepcopy(session.unknown_origins)
+                            record['manifest'] = copy.deepcopy(session.manifest)
+                            record['source_manifest'] = copy.deepcopy(session.source_manifest)
                         record['status'] = copy.deepcopy(status)
                         status = self._public_record(record)
                         record['status'] = copy.deepcopy(status)

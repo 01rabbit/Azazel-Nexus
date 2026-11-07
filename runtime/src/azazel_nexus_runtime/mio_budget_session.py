@@ -52,6 +52,11 @@ class BudgetSession:
         # wire-visible budget schema.
         self.frame_unknowns = {}
         self.unknown_origins = {}
+        self.manifest = {}
+        self.source_manifest = []
+        self.broker_results = ()  # Only a verified caller adapter may populate this seam.
+        self._structured_refs, self._prose_refs = set(), set()
+        self._invalid_refs = False
 
     def note_failure(self, reason, outcome):
         with self.lock:
@@ -254,6 +259,14 @@ class BudgetSession:
                     raise ValueError
             except Exception:
                 self.reject('malformed','output_invalid')
+            try:
+                from .mio_advisory_manifest import references
+                structured, prose, invalid = references(value)
+                self._structured_refs.update(structured)
+                self._prose_refs.update(prose)
+                self._invalid_refs |= invalid
+            except (ImportError, AttributeError, TypeError, ValueError, RecursionError):
+                self._invalid_refs = True
             self.planner.completed(task)
             return value
         except TokenCountUnknown:
@@ -335,6 +348,20 @@ class BudgetSession:
                 and all(t['dispatched'] and t['validated'] for t in self.tasks))
             if self.core_complete:
                 validate_model_assistance(public,self.job['frame'].frame_id,self.job['frame'].trace_id)
+                try:
+                    from .mio_advisory_manifest import finish_manifest, source_manifest
+                    self.manifest = finish_manifest(public, self.frame_unknowns,
+                        self._structured_refs, self._prose_refs, self._invalid_refs)
+                    self.source_manifest = source_manifest(self.job['frame'], self.frame_unknowns, self.broker_results)
+                    if len(self.source_manifest) > 32:
+                        self.manifest['completeness'] = 'partial'
+                    self.source_manifest = self.source_manifest[:32]
+                except (ImportError, AttributeError, KeyError, TypeError, ValueError):
+                    # An unavailable manifest withholds advice. It does not
+                    # reinterpret already validated generation accounting.
+                    self.manifest = dict(hypothesis_ids=[], advisory_refs=[],
+                        completeness='partial', unlisted_prose_ids=bool(self._prose_refs - self._structured_refs))
+                    self.source_manifest = []
                 self.assistance = public
             elif self.reason is None:
                 self.note_failure('malformed','output_invalid')

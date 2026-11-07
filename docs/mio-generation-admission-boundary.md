@@ -303,3 +303,37 @@ scope does not guarantee ID-only inputs for the shared MIO API when callers use
 show the validated task dispatch flags and report fence state as `unknown`, since
 a cleanup observation alone does not establish the current lane fence. No raw
 receipt or provider payload is exported.
+
+### Incident-bound handoff and restart
+
+The budgeted runtime journals request and dispatch accounting and unknown IDs,
+without persisting model, prompt, source or unknown bodies. After a restart or
+caller epoch mismatch, an unconfirmed result cannot become complete; retained
+terminal accounting does not restore the model text. The recent projection's
+v1 binding requires the original incident, request, frame and lifetime, the
+template version, unknown IDs and origins, verified/current evidence references,
+receipt-verified hypothesis IDs and a complete advisory reference manifest.
+Consumers withhold advice when that binding is missing or invalid. ID membership
+does not independently verify a source or the meaning of a statement. The
+budget caller is the authority for source metadata: frame references and frame
+unknown IDs come from the authenticated Edge-to-Nexus local caller path and are
+labelled `source=frame`, `trust=verified` as a caller assertion. Their observation
+age must be less than the original receipt lifetime. Broker references require
+explicit adapter-verified trust and an observed timestamp; missing metadata is
+unverified/unknown, and only explicit revocation information yields revoked.
+The current budget caller configures no broker; its adapter seam does not turn
+raw request or model trust claims into verified sources.
+
+Runtime extracts structured IDs from validated assistance and each raw task
+response, and scans prose with MIO's ID grammar before display sanitization.
+`hypothesis_ids` comes from validated hypothesis provenance; `advisory_refs`
+contains the structured reference set, including unknown and gap references.
+An ID occurring only in prose is excluded and sets private
+`unlisted_prose_ids=true` and public `completeness=partial`. Only
+`completeness=complete` is displayable; missing completeness also withholds.
+A referenced model unknown without its live body, unavailable extraction, or
+an oversized manifest also withholds. Bodies are never added to binding or
+journal. Unknown IDs marked unavailable after restart cannot authorize advice.
+These checks establish membership, not semantic truth or model quality.
+Template 1.9.0 is accepted; the Nexus MIO dependency pin is unchanged and does
+not identify the advice3 candidate wheel.

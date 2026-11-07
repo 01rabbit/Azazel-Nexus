@@ -85,7 +85,7 @@ def binding():
     return {"provenance_version": 1, "incident_id": INCIDENT,
             "request_id": f"{INCIDENT}:1", "frame_id": f"mio-{INCIDENT[4:]}-1:frame",
             "template_version": "1.9.0", "created_at": NOW - 60, "expires_at": NOW + 60,
-            "hypothesis_ids": ["h1"], "advisory_refs": ["h1", "um:1", "ev:1"],
+            "completeness": "complete", "hypothesis_ids": ["h1"], "advisory_refs": ["h1", "um:1", "ev:1"],
             "unknowns": [{"id": "um:1", "origin": "model_asserted", "category": "unclassified", "status": "unresolved"}],
             "evidence_refs": [{"id": "ev:1", "source": "sensor", "trust": "verified", "freshness": "current"}]}
 

@@ -623,7 +623,7 @@ class Explainer:
         return self._generation_private
 
     def _capture_private_binding(self, receipt):
-        """B's body-free contract; no authority to assert verified source trust."""
+        """Copy the budget caller's body-free manifest after receipt identity checks."""
         raw = self._generation_metadata
         try:
             if (raw.get('epoch') != self.restart_epoch or raw.get('handle') != receipt['result_handle']
@@ -645,8 +645,11 @@ class Explainer:
             self._generation_bindings[receipt['result_handle']] = dict(
                 provenance_version=1, incident_id=receipt['incident_id'], request_id=receipt['request_id'],
                 frame_id=receipt['frame_id'], template_version=raw['template_version'],
-                created_at=created, expires_at=expires, unknowns=copy.deepcopy(unknowns), evidence_refs=[],
-                hypothesis_ids=[], advisory_refs=[])
+                created_at=created, expires_at=expires, unknowns=copy.deepcopy(unknowns),
+                evidence_refs=copy.deepcopy(raw.get('evidence_refs', [])),
+                hypothesis_ids=copy.deepcopy(raw.get('hypothesis_ids', [])),
+                advisory_refs=copy.deepcopy(raw.get('advisory_refs', [])),
+                completeness=raw.get('completeness', 'partial'))
         except (OSError, KeyError, TypeError, ValueError):
             return
 
