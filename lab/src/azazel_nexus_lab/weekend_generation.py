@@ -11,8 +11,10 @@ import time
 
 def run(binary, model, root, output):
     from azazel_nexus_lab.weekend_process import require_container
-    require_container()
-    from azazel_nexus_lab.weekend_fixture import harness, fixture_lane, NativeFixtureWire, poll, production_control
+    # This model-only fixture never switches service UIDs or owns root paths.
+    # Keep the disposable-container and loopback-only checks for uid 1001.
+    require_container(root=False)
+    from azazel_nexus_lab.weekend_fixture import harness, fixture_lane, native_fixture_wire, poll, production_control
     from azazel_nexus_lab.weekend_ui import noc_frame
     from azazel_nexus_runtime.mio_fast_assistance import _frame
     from azazel_nexus.generation_budget import TASKS
@@ -24,7 +26,7 @@ def run(binary, model, root, output):
     existing = harness(repo)
     record = existing.record_for(root, binary, model, root / 'serve.sock')
     direct = existing.DirectLlamaFixture(record, root=root, socket_path=root / 'serve.sock')
-    wire = NativeFixtureWire(direct)
+    wire = native_fixture_wire(repo, direct)
     def digest(path):
         with path.open('rb') as stream:
             return hashlib.file_digest(stream, 'sha256').hexdigest()

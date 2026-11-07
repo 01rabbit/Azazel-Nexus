@@ -241,3 +241,20 @@ def test_complete_seam_is_signed_before_transport_and_production_stays_partial(t
     control = fresh.post('/v1/knowledge-context', json=_request())
     assert control.status_code == 200
     assert json.loads(control.content[64:])['payload']['snapshot']['state'] == 'partial'
+
+
+@pytest.mark.parametrize('args', [[], ['--lite']])
+def test_locald_exec_preserves_interpreter_and_guarded_process_entry(monkeypatch, args):
+    import sys
+    from azazel_nexus_lab import weekend_locald
+    launcher = REPO / 'tests/real_process/_weekend_locald_process.py'
+    assert launcher.is_file()
+    class ExecCalled(Exception):
+        pass
+    def execute(executable, argv):
+        assert executable == sys.executable
+        assert argv == [sys.executable, '-B', str(launcher), *args]
+        raise ExecCalled
+    monkeypatch.setattr(weekend_locald.os, 'execv', execute)
+    with pytest.raises(ExecCalled):
+        weekend_locald.main(args)

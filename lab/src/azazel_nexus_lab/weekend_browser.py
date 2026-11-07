@@ -43,7 +43,7 @@ def http_files(output, receipt):
 
 def serve(args):
     from azazel_nexus.ui_model import browser_json
-    from azazel_nexus_runtime import ui_serve as ui
+    import azazel_nexus_runtime.ui_serve as ui
     from azazel_nexus_lab.weekend_ui import supplement
     listener = ui.adopt_listener(os.environ, os.getpid())
     receipt = json.loads(args.receipt.read_text())

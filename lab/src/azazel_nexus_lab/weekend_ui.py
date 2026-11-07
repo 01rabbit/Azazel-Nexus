@@ -102,7 +102,7 @@ def main(argv=None):
     parser.add_argument('--login-file', type=Path, required=True)
     args = parser.parse_args(argv)
     from azazel_nexus.ui_model import browser_json
-    from azazel_nexus_runtime import ui_serve as ui
+    import azazel_nexus_runtime.ui_serve as ui
     listener = ui.adopt_listener(__import__('os').environ, __import__('os').getpid())
 
     class LabUiApp(ui.UiApp):
