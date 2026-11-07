@@ -811,6 +811,11 @@ def _recent_extra(value, snapshot):
         _require(type(omitted) is int and 1 <= omitted <= 16)
         copy = _pick(row, INCIDENT_FIELDS)
         copy["explanation"] = _pick(explanation, EXPLANATION_FIELDS)
+        if "slow_analysis" in explanation:
+            # Re-run the strict recent reader before forwarding this bounded projection.
+            from .incident_explain import read_recent_incidents
+            _require(read_recent_incidents(json.dumps(value).encode()) == value)
+            copy["explanation"]["slow_analysis"] = explanation["slow_analysis"]
         copy["explanation"]["knowledge_refs"] = [
             _knowledge_ref(ref) for ref in explanation["knowledge_refs"]]
         copy["edge_decision"] = {"kind": "would", "action": row["edge_would"],

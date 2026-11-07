@@ -295,3 +295,11 @@ The private and public budget projections retain these closed reasons and keep
 `coordinator_disposition` separate from the original failure. The #48 candidate
 wheel is used for isolated connection tests; the consumer dependency pin is
 unchanged by this work.
+
+For this weekend's budgeted Nexus caller through `mio_generation`, later tasks
+receive bounded IDs and classifications for prior report and gap content. This
+scope does not guarantee ID-only inputs for the shared MIO API when callers use
+`references` or `knowledge`; that path remains open work. Public incident views
+show the validated task dispatch flags and report fence state as `unknown`, since
+a cleanup observation alone does not establish the current lane fence. No raw
+receipt or provider payload is exported.

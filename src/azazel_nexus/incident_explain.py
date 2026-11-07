@@ -1228,7 +1228,9 @@ def slow_analysis_projection(value):
         public_budget = {'version':1, 'outcome':meta['outcome'], 'coverage':meta['coverage'],
             'cleanup_state':meta['cleanup']['state'], 'superseded':meta['superseded'],
             'omitted_units':meta['upstream_selection']['omitted_units']+sum(t['selection']['omitted_units'] for t in meta['tasks']),
-            'reasons':list(meta['reasons']), 'coordinator_disposition':meta.get('coordinator_disposition')}
+            'reasons':list(meta['reasons']), 'coordinator_disposition':meta.get('coordinator_disposition'),
+            'dispatch':[{'task':t['task'], 'dispatched':t['dispatched']} for t in meta['tasks']],
+            'fence_state':'unknown'}
     elif state == 'complete':
         return {'state':'degraded','usage':'unknown','budget':{
             'version':0,'outcome':'legacy_unverified','coverage':'unknown',

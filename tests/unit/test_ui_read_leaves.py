@@ -852,3 +852,10 @@ def test_r389b_concurrent_ui_copy_writes_and_removals_never_interleave(tmp_path,
     for thread in threads:
         thread.join()
     assert overlaps == []
+
+
+def test_slow_ui_renders_dispatch_and_fence_fields():
+    script = (REPO / "runtime/src/azazel_nexus_runtime/ui_static/app.js").read_text()
+    assert 'budget.dispatch.forEach' in script
+    assert 'budget.fence_state' in script
+    assert '送信済み' in script and '未送信' in script

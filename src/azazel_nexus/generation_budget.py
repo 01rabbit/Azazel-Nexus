@@ -220,7 +220,7 @@ def project_budget(value):
 
 def validate_public_budget(value, *, state=None):
     if (type(value) is not dict or not {'version','outcome','coverage','cleanup_state','superseded','omitted_units'} <= set(value)
-            or set(value)-{'version','outcome','coverage','cleanup_state','superseded','omitted_units','reasons','coordinator_disposition'}
+            or set(value)-{'version','outcome','coverage','cleanup_state','superseded','omitted_units','reasons','coordinator_disposition','dispatch','fence_state'}
             or type(value['version']) is not int or value['version'] not in (0,1)
             or value['coverage'] not in COVERAGES or type(value['superseded']) is not bool
             or value['cleanup_state'] not in {'not_needed','pending','confirmed','unconfirmed'}
@@ -232,6 +232,20 @@ def validate_public_budget(value, *, state=None):
             or any(type(r) is not str or r not in REASONS for r in value.get('reasons',[]))
             or (value.get('coordinator_disposition') is not None and value['coordinator_disposition'] not in COORDINATOR_DISPOSITIONS)):
         raise ValueError('generation_public_budget_refused')
+    # Optional fields are a closed projection of the validated receipt. Fence
+    # is unknown: cleanup observation alone does not prove current lane state.
+    if ('dispatch' in value) != ('fence_state' in value):
+        raise ValueError('generation_public_budget_refused')
+    if 'dispatch' in value:
+        dispatch = value['dispatch']
+        if (value['version'] != 1 or value['fence_state'] != 'unknown'
+                or type(dispatch) is not list or len(dispatch) != len(TASKS)
+                or any(type(item) is not dict or set(item) != {'task', 'dispatched'}
+                       or item['task'] != task or type(item['dispatched']) is not bool
+                       for item, task in zip(dispatch, TASKS))
+                or any(not dispatch[i]['dispatched'] and dispatch[i+1]['dispatched']
+                       for i in range(len(dispatch)-1))):
+            raise ValueError('generation_public_budget_refused')
     if value['coverage']=='intact' and value['omitted_units']:
         raise ValueError('generation_public_budget_refused')
     if state is not None:

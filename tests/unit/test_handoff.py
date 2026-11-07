@@ -1437,3 +1437,25 @@ def test_the_recorded_generation_method_is_used_not_inferred(root, source, metho
     write_record(root, {k: v for k, v in mio.items() if k != "provenance"})
     item = package(root)["ai_assessment"]["explanations"][0]
     assert (item["generation_method"], item["generation_method_basis"]) == (method, "fixed_banner")
+
+
+def test_degraded_slow_advisory_preserves_bounded_reason_and_dispatch(root):
+    write_slow_recent(root, state='degraded')
+    path = root / 'var/lib/azazel/run/incident-explain-status/recent.json'
+    recent = json.loads(path.read_text())
+    budget = dict(version=1, outcome='stop_unconfirmed', coverage='unknown',
+                  cleanup_state='unconfirmed', superseded=False, omitted_units=0,
+                  reasons=['timeout', 'stop_unconfirmed'], coordinator_disposition=None,
+                  fence_state='unknown', dispatch=[
+                      dict(task='generate_hypotheses', dispatched=True),
+                      dict(task='identify_evidence_gaps', dispatched=False),
+                      dict(task='recommend', dispatched=False)])
+    recent['incidents'][0]['explanation']['slow_analysis']['budget'] = budget
+    path.write_text(json.dumps(recent))
+    p = package(root)
+    slow = p['ai_assessment']['slow_advisory']
+    assert slow['state'] == 'degraded' and slow['budget'] == budget
+    assert slow['hypotheses'] == slow['unknowns'] == slow['next_checks'] == []
+    rendered = handoff.render_markdown(p)
+    assert 'stop_unconfirmed' in rendered and 'timeout' in rendered
+    assert '送信数: 1 / 3' in rendered and '未送信' in rendered and 'fence 状態: `unknown`' in rendered

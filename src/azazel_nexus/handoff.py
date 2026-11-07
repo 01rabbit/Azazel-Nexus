@@ -1071,6 +1071,10 @@ def _ai(explanations, explanation_code, row, mio, labels, hide, recent_fresh=Non
         slow_advisory["reason_code"] = "recent_snapshot_stale"
     elif row is not None:
         slow = row["explanation"].get("slow_analysis")
+        if type(slow) is dict and slow.get("state") != "complete":
+            slow_advisory["state"] = slow["state"]
+            if "budget" in slow:
+                slow_advisory["budget"] = dict(slow["budget"])
         if type(slow) is dict and slow.get("state") == "complete":
             # `read_recent_incidents` already checked this closed, sanitized
             # projection. Keep it separate from the immutable explanation
@@ -1083,6 +1087,8 @@ def _ai(explanations, explanation_code, row, mio, labels, hide, recent_fresh=Non
                 "unknowns": list(slow["unknowns"]),
                 "next_checks": list(slow["next_checks"]),
             }
+            if "budget" in slow:
+                slow_advisory["budget"] = dict(slow["budget"])
     base = {"authority": "advisory_only_not_fact", "route_capability_now": capability,
             "slow_advisory": slow_advisory,
             "label_basis": "the explainer's content_kind: every answered local-route reply is "
@@ -1599,6 +1605,17 @@ def render_markdown(p: dict) -> str:
     add("")
     add(f"状態: {_state_ja(slow)}")
     add("Edge の判断、説明台帳の記録、M.I.O. 高速評価とは別の時間軸です。")
+    if "state" in slow:
+        add(f"生成状態: `{slow['state']}`")
+    if "budget" in slow:
+        budget = slow["budget"]
+        add(f"予算結果: `{budget['outcome']}`、停止確認: `{budget['cleanup_state']}`、"
+            + "縮退理由: " + "、".join(f"`{r}`" for r in budget.get("reasons", [])))
+        if "dispatch" in budget:
+            add(f"送信数: {sum(t['dispatched'] for t in budget['dispatch'])} / {len(budget['dispatch'])}、"
+                + f"fence 状態: `{budget['fence_state']}`")
+            for task in budget['dispatch']:
+                add(f"- `{task['task']}`: " + ("送信済み" if task['dispatched'] else "未送信"))
     if slow["status"] == "available":
         add("検証区分: `model_proposed_unverified`。事実・判断・実行指示として扱わないでください。")
         for label, key in (("仮説", "hypotheses"), ("未確認事項", "unknowns"), ("確認候補", "next_checks")):

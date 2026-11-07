@@ -409,3 +409,20 @@ def test_reader_accepts_context_minimum_from_two_known_limits(verified,configure
 def test_failed_receipt_cannot_claim_impossible_allocations(allocation):
     value=metadata(complete=False);value['tasks'][0]['allocated_ms']=allocation
     with pytest.raises(ValueError):read_budget(value,state='timeout',usage='known')
+
+
+def test_public_dispatch_is_bounded_and_does_not_claim_fence_observation():
+    from azazel_nexus.generation_budget import validate_public_budget
+    meta = metadata(complete=False, pending=True)
+    meta['cleanup'] = dict(state='unconfirmed', reason='observation_lost', remaining_ms=0)
+    _, meta = project_budget(meta)
+    shown = slow_analysis_projection(live(meta))
+    budget = shown['budget']
+    assert budget['fence_state'] == 'unknown'
+    assert [t['dispatched'] for t in budget['dispatch']] == [True, False, False]
+    validate_public_budget(budget, state='degraded')
+    for key, value in [('fence_state', True), ('dispatch', [{'task':'secret', 'dispatched':False}])]:
+        bad = copy.deepcopy(budget)
+        bad[key] = value
+        with pytest.raises(ValueError):
+            validate_public_budget(bad, state='degraded')
