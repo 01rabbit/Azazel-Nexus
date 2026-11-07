@@ -39,6 +39,25 @@ def _digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def published_incidents(paths, records):
+    """Ledger durability precedes the daemon's throttled operator/UI copies."""
+    from azazel_nexus.edge_loop_status import read_snapshot
+    from azazel_nexus.incident_explain import RECENT_BYTES, explanation_summary, read_recent_incidents
+    snapshots = {}
+    for reader, path in paths.items():
+        value = read_snapshot(path, read_recent_incidents, RECENT_BYTES)
+        if value is None:
+            return None
+        rows = {row['incident_id']: row for row in value['incidents']}
+        for record in records:
+            row = rows.get(record['incident_id'])
+            if row is None or any(row['explanation'].get(k) != v
+                                  for k, v in explanation_summary(record).items()):
+                return None
+        snapshots[reader] = value
+    return snapshots
+
+
 def verify_handoff(parent, incident_id):
     """The ordinary CLI creates ONE package below its private output parent."""
     entries = list(parent.iterdir())
@@ -95,6 +114,7 @@ def run_pair(output: Path, *, snapshot='complete'):
     root.chmod(0o755)
     children = []
     roles = {}
+    readiness = {}
     receipt = dict(schema='weekend-paired/v1', synthetic=True, snapshot=snapshot,
         production_constants_unchanged=True, network='none', cases={}, processes=[],
         input_classification='P0 is authored synthetic public text; P3 is the Edge producer frame',
@@ -112,6 +132,12 @@ def run_pair(output: Path, *, snapshot='complete'):
         receipt['processes'].append(dict(role=role, pid=child.pid, start_ticks=stat[19],
             uid=pwd.getpwnam(user).pw_uid if user else os.getuid()))
         return child
+
+    def ready(child):
+        value = _ready(child)
+        readiness[child.pid] = json.dumps(value) + '\n'
+        (output / f'{roles[child.pid]}.ready.json').write_text(json.dumps(value) + '\n')
+        return value
 
     try:
         with pytest.MonkeyPatch.context() as env_patch:
@@ -160,8 +186,8 @@ def run_pair(output: Path, *, snapshot='complete'):
         server = launch('knowledge', [sys.executable, '-B', '-m', 'azazel_nexus_lab.weekend_knowledge',
             '--root', str(root / 'knowledge-root'), '--pki', str(pki), '--snapshot', snapshot,
             '--ingress', str(ingress)])
-        ready = _ready(server)
-        assert ready['host'] == '127.0.0.1' and ready['pid'] == server.pid
+        knowledge_ready = ready(server)
+        assert knowledge_ready['host'] == '127.0.0.1' and knowledge_ready['pid'] == server.pid
         pki.chmod(0o750)
         os.chown(pki, 0, users['azknowledgeegress'].pw_gid)
         for name in ('ca.pem', 'nexus.pem', 'nexus.key'):
@@ -175,10 +201,10 @@ def run_pair(output: Path, *, snapshot='complete'):
         broker_log_target = az / 'state/knowledge-context/broker-ingress.jsonl'
         broker_log.rename(broker_log_target)
         broker_args = [sys.executable, '-B', '-m', 'azazel_nexus_lab.weekend_broker', str(root),
-            str(pki), str(ready['port']), ready['public_key'],
+            str(pki), str(knowledge_ready['port']), knowledge_ready['public_key'],
             spki_pin(ssl.PEM_cert_to_DER_cert((pki / 'server.pem').read_text()))]
         broker = launch('broker', broker_args, 'azknowledgeegress')
-        assert _ready(broker)['ready']
+        assert ready(broker)['ready']
         for role, user, groups, module, opts in (
             ('lite', 'azknowledge', ('azazel-operator',), 'azazel_nexus_runtime.knowledge_lited', []),
             ('locald', 'azmio', ('azknowledge-read', 'azknowledge-context-client', 'azmission-read'),
@@ -271,7 +297,12 @@ def run_pair(output: Path, *, snapshot='complete'):
             preexec_fn=_credentials('azedge', (gid('azedge'),)))
         assert sent.returncode == 0, 'NOC synthetic intake failed'
         until = time.monotonic() + 12
+        publication_started = time.monotonic()
         noc_record = None
+        published = None
+        from azazel_nexus.runtime_paths import incident_recent_path
+        recent_paths = {reader: incident_recent_path(root, reader=reader)
+                        for reader in ('operator', 'ui')}
         while time.monotonic() < until:
             assert all(c.poll() is None for c in children)
             for path in sorted((az / 'incident-explain/explanations').glob('*.jsonl')):
@@ -280,9 +311,20 @@ def run_pair(output: Path, *, snapshot='complete'):
                     if candidate['incident_id'] == expected_incident:
                         noc_record = candidate
             if noc_record is not None:
-                break
+                # Use the SAME existing 12 s deadline for ledger + publication.
+                # recent_status() publishes at most once per 5 s; a durable
+                # explanation alone does not make the read model ready.
+                published = published_incidents(recent_paths, (record, noc_record))
+                if published is not None:
+                    break
             time.sleep(.05)
         assert noc_record is not None, 'no NOC incident explanation'
+        assert published is not None, 'NOC/SOC explanations not published to operator/UI within existing deadline'
+        receipt['read_model_publication'] = dict(deadline_s=12,
+            elapsed_s=time.monotonic() - publication_started,
+            written_at={reader: value['written_at'] for reader, value in published.items()})
+        for reader, value in published.items():
+            (output / f'recent-{reader}.json').write_text(json.dumps(value, indent=2) + '\n')
         noc_fast = noc_record['mio']['fast_assistance']
         assert noc_fast['full_node_context_status'] == 'not_queried'
         assert noc_fast['generation_method'] == 'static_reference'
@@ -299,7 +341,7 @@ def run_pair(output: Path, *, snapshot='complete'):
         unavailable = request(noc_frame('weekend-recovery-down'))
         assert unavailable['fast_assistance']['full_node_context_status'] == 'unavailable'
         broker = launch('broker-recovery', broker_args, 'azknowledgeegress')
-        assert _ready(broker)['ready']
+        assert ready(broker)['ready']
         recovered = request(noc_frame('weekend-recovery-up'))
         assert recovered['fast_assistance']['full_node_context_status'] == 'received'
         receipt['cases']['P03'] = dict(down=unavailable, recovered=recovered)
@@ -342,6 +384,27 @@ def run_pair(output: Path, *, snapshot='complete'):
         return receipt
     finally:
         (output / 'paired-attempt.json').write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + '\n')
+        # Preserve only public snapshots and synthetic ledger outputs, never PKI,
+        # private state or trust. Take these before graceful stop changes status.
+        capture_error = None
+        try:
+            for leaf in ('run/edge-intake-status', 'run/incident-explain-status',
+                         'run/ui-read/edge-intake', 'run/ui-read/incident-explain',
+                         'edge-incidents', 'incident-explain/explanations',
+                         'incident-explain/generation-results'):
+                source = root / 'var/lib/azazel' / leaf
+                if source.is_dir():
+                    for path in source.iterdir():
+                        if not path.is_symlink() and path.is_file() and path.suffix in {'.json', '.jsonl'}:
+                            target = output / 'process-artifacts' / leaf / path.name
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copyfile(path, target)
+            for name, path in (('broker-ingress.jsonl', root / 'var/lib/azazel/state/knowledge-context/broker-ingress.jsonl'),
+                               ('knowledge-ingress.jsonl', root / 'knowledge-ingress.jsonl')):
+                if path.is_file():
+                    shutil.copyfile(path, output / name)
+        except Exception as exc:  # cleanup still owns and stops every child
+            capture_error = exc
         cleanup = []
         cleanup_ok = True
         for child in reversed(children):
@@ -353,13 +416,18 @@ def run_pair(output: Path, *, snapshot='complete'):
                 cleanup_ok = False
                 child.kill()
                 child.wait(timeout=5)
-            cleanup.append(dict(pid=child.pid, exit=child.returncode))
-            _, stderr = child.communicate(timeout=5)
-            (output / f'{roles[child.pid]}.stderr').write_text(stderr)
+            role = roles[child.pid]
+            cleanup.append(dict(role=role, pid=child.pid, exit=child.returncode))
+            stdout, stderr = child.communicate(timeout=5)
+            (output / f'{role}.stdout').write_text(readiness.get(child.pid, '') + stdout)
+            (output / f'{role}.stderr').write_text(stderr)
+            (output / f'{role}.exit').write_text(str(child.returncode) + '\n')
         (output / 'cleanup.json').write_text(json.dumps(dict(clean=cleanup_ok, processes=cleanup)) + '\n')
         shutil.rmtree(root)
         if not cleanup_ok:
             raise AssertionError('owned daemon did not stop within the cleanup deadline')
+        if capture_error is not None:
+            raise AssertionError('process artifact capture failed') from capture_error
 
 
 def main(argv=None):

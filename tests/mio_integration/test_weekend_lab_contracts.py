@@ -12,6 +12,60 @@ from test_budget_api import ControlledServer, inputs
 REPO = Path(__file__).resolve().parents[2]
 
 
+def test_ledger_records_are_not_publication_ready_before_real_daemon_throttle(tmp_path):
+    from test_incident_explaind import make, append, records
+    from test_incident_explain import transition
+    from azazel_nexus_lab.weekend_process import published_incidents
+    ui = tmp_path / 'ui-recent.json'
+    daemon = make(tmp_path, ui_recent_path=ui)
+    daemon.poll()  # Startup publishes an empty read model at monotonic 0.
+    paths = {'operator': tmp_path / 'recent.json', 'ui': ui}
+    daemon.monotonic = lambda: 1
+    append(daemon)
+    append(daemon, transition(incident_id='inc-' + 'f' * 16))
+    daemon.poll()
+    durable = records(daemon)
+    assert len(durable) == 2
+    assert published_incidents(paths, durable) is None
+    daemon.monotonic = lambda: 4.999
+    daemon.poll()
+    assert published_incidents(paths, durable) is None
+    daemon.monotonic = lambda: 5
+    daemon.poll()
+    value = published_incidents(paths, durable)
+    assert set(value) == {'operator', 'ui'}
+    assert paths['operator'].read_bytes() == ui.read_bytes()
+    assert {r['incident_id'] for r in value['ui']['incidents']} == {r['incident_id'] for r in durable}
+
+
+@pytest.mark.parametrize('damage', ['absent', 'invalid', 'missing_incident', 'pending'])
+def test_publication_requires_both_strict_snapshots_with_explanations(tmp_path, damage):
+    from test_incident_explaind import make, append, records
+    from azazel_nexus_lab.weekend_process import published_incidents
+    ui = tmp_path / 'ui-recent.json'
+    daemon = make(tmp_path, ui_recent_path=ui)
+    append(daemon)
+    daemon.poll()
+    paths = {'operator': tmp_path / 'recent.json', 'ui': ui}
+    durable = records(daemon)
+    assert published_incidents(paths, durable) is not None
+    value = json.loads(ui.read_text())
+    if damage == 'absent':
+        # A different, absent UI leaf must not accept the operator's good copy.
+        paths['ui'] = tmp_path / 'not-published.json'
+    elif damage == 'invalid':
+        ui.write_text('{}')
+    else:
+        if damage == 'missing_incident':
+            value['incidents'] = []
+        else:
+            from azazel_nexus.incident_explain import build_recent_incident
+            from test_incident_explain import transition
+            value['incidents'] = [build_recent_incident(transition())]
+        ui.write_text(json.dumps(value))
+    assert published_incidents(paths, durable) is None
+
+
 def handoff_fixture(tmp_path):
     import io
     from datetime import datetime, timezone
