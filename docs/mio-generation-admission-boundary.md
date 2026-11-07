@@ -340,7 +340,7 @@ Compatibility spellings such as `h¹`, `𝐡1` and `ｈ１` use membership after
 The prose repertoire includes ASCII `% & + / * # @ ~ ^ | < > = $`; independent secret/path privacy guards still apply.
 Secret-labelled keys in `key=value` or `key: value`
 prose cause the entire string, including its value, to become fixed withheld text.
-Short secret key aliases match whole elements separated by any ASCII non-alphanumeric character; each chained key is checked independently, alongside the punctuation-stripped skeleton.
+After NFKC and format-control (Cf) removal, every non-ASCII-alphanumeric character (Unicode-wide `[^A-Za-z0-9]`) separates key elements, including Japanese punctuation. The secret-check skeleton preserves each run of boundaries as `|`, including `=` and `:`; it never deletes them to join adjacent words. Short secret aliases match whole elements. Consecutive fragments of one or two characters are also joined for exact alias checks (for example, `hint,p,w;d: value`); longer elements stop this scan. Chained keys are checked before any prose sanitization. The independent character repertoire guard still rejects format controls in public prose.
 `hypothesis_ids` comes from validated hypothesis provenance; `advisory_refs`
 contains the structured reference set, including unknown and gap references.
 An ID occurring only in prose is excluded and sets private

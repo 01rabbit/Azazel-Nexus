@@ -570,9 +570,9 @@ def test_unsupported_codepoints_never_claim_exhaustive_references(text):
 def test_nfkc_composed_secret_letter_is_withheld_by_repertoire():
     import unicodedata
     text = 'p\u0301wd=syntheticvalue'
-    # NFKC composes p + acute; the specified ASCII skeleton loses that letter.
+    # NFKC composes p + acute; the ASCII skeleton keeps its boundary, not p.
     # The independent allowlist must therefore reject this whole model text.
-    assert incident_explain._secret_skeleton(unicodedata.normalize('NFKC', text)) == 'wd=syntheticvalue'
+    assert incident_explain._secret_skeleton(unicodedata.normalize('NFKC', text)) == '|wd|syntheticvalue'
     assert incident_explain.guard_public_model_text(text) == 'Details withheld verify through an authorized source'
 
 
@@ -670,3 +670,120 @@ def test_compatibility_ids_follow_normalized_membership(root, tmp_path, identifi
     assert metadata['advisory_refs'] == ['ev:ssh:1', 'h1', 'h2']
     recent, _ = project(root, tmp_path, frame, value, metadata)
     check_export(root, recent, available=complete)
+
+
+_R12_SECRET_PROSE = [
+    'hint、pwd: syntheticvalue', 'hint。pwd: syntheticvalue',
+    'hint「pwd」: syntheticvalue', 'hint【pwd】: syntheticvalue',
+    'foo、pin: syntheticvalue', 'foo「auth」: syntheticvalue',
+    'a=1、pwd=syntheticvalue', 'hint,p,w;d: syntheticvalue',
+    'hint、ＰＷＤ： syntheticvalue', 'hint「p」【w】、d: syntheticvalue',
+    'hint、pa、ss、wd: syntheticvalue', 'hint、to、ke、n=syntheticvalue',
+    'a=1。p\u200bwd=syntheticvalue',
+]
+
+
+@pytest.mark.parametrize('text', _R12_SECRET_PROSE)
+def test_r12_unicode_key_boundaries_through_real_receipt(root, tmp_path, text):
+    _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
+    complete = '\u200b' not in text
+    assert metadata['completeness'] == ('complete' if complete else 'partial')
+    recent, path = project(root, tmp_path, frame, value, metadata)
+    fixed = 'Details withheld verify through an authorized source'
+    assert recent['incidents'][0]['explanation']['slow_analysis']['hypotheses'] == [fixed, 'possible']
+    advisory = check_export(root, recent, available=complete)
+    if complete:
+        assert advisory['hypotheses'][0] == fixed
+    assert b'syntheticvalue' not in path.read_bytes()
+    assert all(b'syntheticvalue' not in data for data in
+               handoff.encode_files(package(root, now=time.time())).values())
+
+
+@pytest.mark.parametrize('text', _R12_SECRET_PROSE[:8])
+@pytest.mark.parametrize('field', ['hypotheses', 'unknowns', 'next_checks'])
+def test_r12_recent_writer_unicode_key_boundaries(root, tmp_path, text, field):
+    _, frame, _, value, metadata = execute(tmp_path)
+    recent, path = project(root, tmp_path, frame, value, metadata)
+    recent['incidents'][0]['explanation']['slow_analysis'][field] = [text]
+    explainer = incident_explaind.Explainer(incidents=tmp_path/'writer-incidents',
+        state=tmp_path/'writer-state', status_path=path.with_name('status.json'), clock=time.time)
+    explainer.prepare()
+    explainer.recent = recent['incidents']
+    explainer.recent_status()
+    saved = path.read_bytes()
+    assert b'syntheticvalue' not in saved
+    reread = incident_explain.read_recent_incidents(saved)
+    assert reread is not None
+    slow = reread['incidents'][0]['explanation']['slow_analysis']
+    assert slow[field] == ['Details withheld verify through an authorized source']
+    assert slow['binding']['completeness'] == 'complete'
+    check_export(root, reread, available=True)
+    assert all(b'syntheticvalue' not in data for data in
+               handoff.encode_files(package(root, now=time.time())).values())
+
+
+@pytest.mark.parametrize('separator', ['、', '。', '「', '」', '【', '】', '：', '仮', 'é', '😀'])
+@pytest.mark.parametrize('key', ['pass', 'pwd', 'passwd', 'passphrase', 'passcode',
+                               'pin', 'auth', 'otp', 'key', 'token'])
+def test_r12_unicode_separators_and_aliases_independent_of_repertoire(separator, key):
+    import unicodedata
+    text = unicodedata.normalize('NFKC', f'hint{separator}{key}: syntheticvalue')
+    assert incident_explain._public_secret_text(text)
+
+
+@pytest.mark.parametrize('text', ['hint,p,w;d: syntheticvalue',
+    'hint、pa、ss、ph、ra、se: syntheticvalue', 'hint【pa】【ss】【co】【de】: syntheticvalue',
+    'hint,to,ke,n: syntheticvalue', 'hint,a,u,t,h: syntheticvalue'])
+def test_r12_short_fragment_sequences_detect_aliases(text):
+    assert incident_explain._public_secret_text(text)
+
+
+@pytest.mark.parametrize('text', ['hint,passi,ve: normal', 'hint,passw,ord: normal',
+                                  'hint,to,ken: normal', 'hint,p,word,d: normal'])
+def test_r12_fragment_joining_never_crosses_long_elements(text):
+    assert not incident_explain._public_secret_text(text)
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('hint、pwd: v', 'hint|pwd|v'), ('hint。pwd=v', 'hint|pwd|v'),
+    ('hint「pwd」： v', 'hint|pwd|v'), ('hint【pwd】: v', 'hint|pwd|v'),
+    ('hint,p,w;d: v', 'hint|p|w|d|v'),
+    ('a=1、p\u200bwd=v', 'a|1|pwd|v'),
+    ('ｈｉｎｔ、ｐｗｄ： v', 'hint|pwd|v'),
+])
+def test_r12_skeleton_preserves_boundaries_after_nfkc_and_cf_removal(text, expected):
+    assert incident_explain._secret_skeleton(text) == expected
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('hint、passi、ve: normal', 'hintpassive normal'),
+    ('hint、to、ken: normal', 'hinttoken normal'),
+    ('hint、p、word、d: normal', 'hintpwordd normal'),
+])
+def test_r12_long_elements_stop_fragment_joining_through_real_receipt(root, tmp_path, text, expected):
+    _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
+    assert metadata['completeness'] == 'complete'
+    recent, path = project(root, tmp_path, frame, value, metadata)
+    assert recent['incidents'][0]['explanation']['slow_analysis']['hypotheses'][0] == expected
+    assert expected.encode() in path.read_bytes()
+    assert check_export(root, recent, available=True)['hypotheses'][0] == expected
+    files = handoff.encode_files(package(root, now=time.time()))
+    assert expected in json.loads(files['handoff.json'])['ai_assessment']['slow_advisory']['hypotheses']
+    assert expected.encode() in files['handoff.ja.md']
+
+
+@pytest.mark.parametrize('key', ['hint、pwd', 'hint,p,w;d', 'foo「auth」'])
+@pytest.mark.parametrize('secret_value', ['合成秘匿値', '１２３４', '。。。'])
+def test_r12_key_is_guarded_when_value_has_no_skeleton_letters(root, tmp_path, key, secret_value):
+    text = f'{key}: {secret_value}'
+    _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
+    assert metadata['completeness'] == 'complete'
+    recent, path = project(root, tmp_path, frame, value, metadata)
+    fixed = 'Details withheld verify through an authorized source'
+    assert recent['incidents'][0]['explanation']['slow_analysis']['hypotheses'][0] == fixed
+    assert check_export(root, recent, available=True)['hypotheses'][0] == fixed
+    files = handoff.encode_files(package(root, now=time.time()))
+    assert fixed in json.loads(files['handoff.json'])['ai_assessment']['slow_advisory']['hypotheses']
+    assert fixed.encode() in files['handoff.ja.md']
+    assert secret_value not in json.dumps(recent, ensure_ascii=False)
+    assert all(secret_value not in data.decode() for data in [path.read_bytes(), *files.values()])

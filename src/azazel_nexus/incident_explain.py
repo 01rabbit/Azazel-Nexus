@@ -1191,42 +1191,59 @@ _PUBLIC_SECRET_LABELS = (
     r"credential|bearer|cookie|private[_ -]?key|access[_ -]?key|secret[_ -]?key|"
     r"session[_ -]?(?:id|key|token)|client[_ -]?secret|refresh[_ -]?token"
 )
-_PUBLIC_SECRET_KEY_LABEL = re.compile(r"(?i)(?:" + _PUBLIC_SECRET_LABELS + r")")
+# Long labels retain substring checks on the boundary-preserving skeleton.
+# The shorter aliases below are checked only as complete key elements.
+_PUBLIC_SECRET_KEY_LABEL = re.compile(
+    r"(?i)(?:password|secret|api\|?key|credential|bearer|cookie|"
+    r"private\|?key|access\|?key|session\|?(?:id|key|token)|"
+    r"client\|?secret|refresh\|?token)"
+)
 _PUBLIC_SECRET_WORD = re.compile(r"(?i)\b(?:" + _PUBLIC_SECRET_LABELS + r")\b")
-_SHORT_SECRET_ELEMENTS = frozenset({"pin", "auth", "pass", "otp", "key", "pwd"})
+_SHORT_SECRET_ELEMENTS = frozenset({
+    "pin", "auth", "pass", "otp", "key", "pwd", "passwd", "password",
+    "passphrase", "passcode", "token",
+})
+_MAX_SECRET_ELEMENT_LENGTH = max(map(len, _SHORT_SECRET_ELEMENTS))
 _KEY_VALUE = re.compile(r"([\w.-]+)[\"']?\s*[:=]\s*\S+")
-# Inspect the value without consuming it: it may itself start another key.
-_PUBLIC_KEY_VALUE = re.compile(r"([^:=\r\n]+?)\s*[:=](?=\s*\S)")
-_ASCII_KEY_SEPARATOR = re.compile(r"[\x00-\x2f\x3a-\x40\x5b-\x60\x7b-\x7f]+")
+_SECRET_KEY_SEPARATOR = re.compile(r"[^A-Za-z0-9]+")
+# On the skeleton every separator (including = and :) is a boundary. Include
+# chained keys. A trailing boundary also counts: a non-ASCII value may have
+# collapsed into that boundary, so do not require an ASCII value to survive.
+_PUBLIC_KEY_VALUE = re.compile(r"([A-Za-z0-9]+(?:\|[A-Za-z0-9]+)*)\|")
 _MODEL_TEXT_WITHHELD = "Details withheld verify through an authorized source"
 
 
 def _secret_skeleton(value):
-    # No Unicode category enumeration: every non-ASCII separator disappears.
-    return re.sub(r"[^A-Za-z0-9=:]", "", value)
+    # NFKC precedes Cf removal: invisible splits in a key must join, while
+    # every remaining non-ASCII-alphanumeric character preserves a boundary.
+    normalized = unicodedata.normalize("NFKC", value)
+    normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Cf")
+    return _SECRET_KEY_SEPARATOR.sub("|", normalized)
 
 
 def _public_secret_text(normalized):
-    # Retain original punctuation for element boundaries, after NFKC (caller)
-    # and format-control removal. The independent repertoire guard still sees
-    # the controls and refuses that text; this is only the secret-check view.
-    normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Cf")
     skeleton = _secret_skeleton(normalized)
-    # Long labels retain the existing substring policy. Short aliases are
-    # whole key elements only, never substrings of spinning/author/compass.
-    if (_PUBLIC_SECRET_WORD.search(normalized)
-            or _PUBLIC_SECRET_WORD.search(skeleton)
-            or any(_PUBLIC_SECRET_KEY_LABEL.search(match[1])
-                   or match[1].lower() in _SHORT_SECRET_ELEMENTS
-                   for match in _PUBLIC_KEY_VALUE.finditer(skeleton))):
+    if _PUBLIC_SECRET_WORD.search(normalized) or _PUBLIC_SECRET_WORD.search(skeleton):
         return True
-    for match in _PUBLIC_KEY_VALUE.finditer(normalized):
+    for match in _PUBLIC_KEY_VALUE.finditer(skeleton):
         key = match[1]
-        if _PUBLIC_SECRET_KEY_LABEL.search(_secret_skeleton(key)):
+        if _PUBLIC_SECRET_KEY_LABEL.search(key):
             return True
-        if any(_secret_skeleton(element).lower() in _SHORT_SECRET_ELEMENTS
-               for element in _ASCII_KEY_SEPARATOR.split(key)):
+        elements = key.lower().split("|")
+        if any(element in _SHORT_SECRET_ELEMENTS for element in elements):
             return True
+        # Only consecutive 1-2 character fragments can form an obscured alias.
+        # Bound each scan by the longest alias; never join across a long word.
+        for start in range(len(elements)):
+            joined = ""
+            for element in elements[start:]:
+                if not 1 <= len(element) <= 2:
+                    break
+                joined += element
+                if len(joined) > _MAX_SECRET_ELEMENT_LENGTH:
+                    break
+                if joined in _SHORT_SECRET_ELEMENTS:
+                    return True
     return False
 
 
