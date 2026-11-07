@@ -1194,22 +1194,32 @@ _PUBLIC_SECRET_LABELS = (
 # Long labels retain substring checks on the boundary-preserving skeleton.
 # The shorter aliases below are checked only as complete key elements.
 _PUBLIC_SECRET_KEY_LABEL = re.compile(
-    r"(?i)(?:password|secret|api\|?key|credential|bearer|cookie|"
+    r"(?i)(?:password|passwd|passphrase|passcode|secret|token|api\|?key|credential|bearer|cookie|"
     r"private\|?key|access\|?key|session\|?(?:id|key|token)|"
     r"client\|?secret|refresh\|?token)"
 )
 _PUBLIC_SECRET_WORD = re.compile(r"(?i)\b(?:" + _PUBLIC_SECRET_LABELS + r")\b")
 _SHORT_SECRET_ELEMENTS = frozenset({
-    "pin", "auth", "pass", "otp", "key", "pwd", "passwd", "password",
-    "passphrase", "passcode", "token",
+    "pin", "auth", "pass", "otp", "key", "pwd",
 })
-_MAX_SECRET_ELEMENT_LENGTH = max(map(len, _SHORT_SECRET_ELEMENTS))
+# Keep the W8 bounded-fragment guard for both short and long labels.
+_FRAGMENT_SECRET_ELEMENTS = _SHORT_SECRET_ELEMENTS | frozenset({
+    "password", "passwd", "passphrase", "passcode", "secret", "credential",
+    "token", "bearer", "cookie", "apikey", "accesskey", "secretkey",
+    "privatekey", "clientsecret", "refreshtoken", "sessionid", "sessionkey",
+    "sessiontoken",
+})
+_MAX_SECRET_ELEMENT_LENGTH = max(map(len, _FRAGMENT_SECRET_ELEMENTS))
 _KEY_VALUE = re.compile(r"([\w.-]+)[\"']?\s*[:=]\s*\S+")
 _SECRET_KEY_SEPARATOR = re.compile(r"[^A-Za-z0-9]+")
-# On the skeleton every separator (including = and :) is a boundary. Include
-# chained keys. A trailing boundary also counts: a non-ASCII value may have
-# collapsed into that boundary, so do not require an ASCII value to survive.
-_PUBLIC_KEY_VALUE = re.compile(r"([A-Za-z0-9]+(?:\|[A-Za-z0-9]+)*)\|")
+# Retain offsets into normalized prose: the skeleton deliberately erases the
+# distinction between whitespace, punctuation and assignment operators.
+_PUBLIC_KEY_ELEMENTS = re.compile(r"[A-Za-z0-9]+")
+# Closing quotes/brackets belong to a wrapped key (R11/R12), not to its value.
+_PUBLIC_KEY_ASSIGNMENT = re.compile(r"[\"')\]}>」』】〕〉》]*\s*[:=]")
+# A whitespace key/value pair ends at the value. Trailing prose (e.g.
+# 'key observation h1') is not such a pair, even if its next word is long.
+_PUBLIC_KEY_SPACE_VALUE = re.compile(r"\s+[A-Za-z0-9]{8,}\s*\Z")
 _MODEL_TEXT_WITHHELD = "Details withheld verify through an authorized source"
 
 
@@ -1222,27 +1232,32 @@ def _secret_skeleton(value):
 
 
 def _public_secret_text(normalized):
+    normalized = unicodedata.normalize("NFKC", normalized)
+    normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Cf")
     skeleton = _secret_skeleton(normalized)
-    if _PUBLIC_SECRET_WORD.search(normalized) or _PUBLIC_SECRET_WORD.search(skeleton):
+    # Long labels are sensitive substrings regardless of key/value context.
+    if _PUBLIC_SECRET_KEY_LABEL.search(skeleton):
         return True
-    for match in _PUBLIC_KEY_VALUE.finditer(skeleton):
-        key = match[1]
-        if _PUBLIC_SECRET_KEY_LABEL.search(key):
+    elements = list(_PUBLIC_KEY_ELEMENTS.finditer(normalized))
+    for start, match in enumerate(elements):
+        element = match[0].lower()
+        tail = normalized[match.end():]
+        if element in _SHORT_SECRET_ELEMENTS and (
+                _PUBLIC_KEY_ASSIGNMENT.match(tail) or _PUBLIC_KEY_SPACE_VALUE.fullmatch(tail)):
             return True
-        elements = key.lower().split("|")
-        if any(element in _SHORT_SECRET_ELEMENTS for element in elements):
-            return True
-        # Only consecutive 1-2 character fragments can form an obscured alias.
-        # Bound each scan by the longest alias; never join across a long word.
-        for start in range(len(elements)):
-            joined = ""
-            for element in elements[start:]:
-                if not 1 <= len(element) <= 2:
-                    break
-                joined += element
-                if len(joined) > _MAX_SECRET_ELEMENT_LENGTH:
-                    break
-                if joined in _SHORT_SECRET_ELEMENTS:
+        # Only consecutive 1-2 character fragments may form an obscured label.
+        # Do not join across longer elements or scan beyond the longest label.
+        joined = ""
+        for fragment in elements[start:]:
+            if not 1 <= len(fragment[0]) <= 2:
+                break
+            joined += fragment[0].lower()
+            if len(joined) > _MAX_SECRET_ELEMENT_LENGTH:
+                break
+            if joined in _FRAGMENT_SECRET_ELEMENTS:
+                tail = normalized[fragment.end():]
+                if joined not in _SHORT_SECRET_ELEMENTS or (
+                        _PUBLIC_KEY_ASSIGNMENT.match(tail) or _PUBLIC_KEY_SPACE_VALUE.fullmatch(tail)):
                     return True
     return False
 
@@ -1281,7 +1296,10 @@ def _public_model_text(value, *, _identifier=False):
     if current:
         words.append("".join(current[:32]))
     text = "".join(words).strip()
-    return text[:240] or "Details withheld verify through an authorized source"
+    text = text[:240] or "Details withheld verify through an authorized source"
+    # Removing punctuation can create a long secret label (to,ken -> token).
+    # Keep the in-memory/checkpoint projection safe, not only the recent writer.
+    return text if _identifier else guard_public_model_text(text)
 
 
 def handoff_ref_freshness(ref, now):

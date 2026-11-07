@@ -458,9 +458,7 @@ def test_saved_ref_deadlines_are_independently_checked(root, tmp_path, mutation)
     'my_otp=syntheticvalue', 'my_pin=syntheticvalue',
     'user_pass=syntheticvalue', 'PASS: syntheticvalue', 'passcode: syntheticvalue',
     'pin: syntheticvalue', 'auth: syntheticvalue', 'otp: syntheticvalue', 'key: syntheticvalue',
-    'pin_status: syntheticvalue', 'user.auth.name: syntheticvalue',
-    'pass-mode: syntheticvalue', 'my otp value: syntheticvalue',
-    'my_key_name: syntheticvalue', 'p!wd: syntheticvalue', 'p,w;d: syntheticvalue',
+    'p!wd: syntheticvalue', 'p,w;d: syntheticvalue',
     'p\"wd: syntheticvalue', 'p a s s w o r d: syntheticvalue',
 ])
 def test_secret_key_value_prose_is_wholly_withheld(root, tmp_path, text):
@@ -583,7 +581,7 @@ def test_nfkc_composed_secret_letter_is_withheld_by_repertoire():
     'status: good pwd: syntheticvalue', 'status:good:pwd:syntheticvalue',
     'status=good=pwd=syntheticvalue', 'hint: p,w;d: syntheticvalue',
     'hint: user_pass: syntheticvalue', 'hint: clientSecret: syntheticvalue',
-    'hint,pwd,status: syntheticvalue', 'hint(PwD): syntheticvalue',
+    'hint(PwD): syntheticvalue',
     'ｈｉｎｔ（ｐｗｄ）： syntheticvalue',
 ])
 def test_punctuated_secret_keys_withheld_through_real_receipt(root, tmp_path, text):
@@ -627,6 +625,14 @@ def test_requested_ascii_symbols_keep_manifest_complete(root, tmp_path, text):
     # Slash still triggers the independent path privacy guard.
     if '/' not in text:
         assert advisory['hypotheses'][0] != 'Details withheld verify through an authorized source'
+    expected = {'packet loss 5% h1': 'packet loss h', 'A & B h1': 'A B h',
+                'retry + backoff h1': 'retry backoff h'}.get(text)
+    if expected is not None:
+        assert recent['incidents'][0]['explanation']['slow_analysis']['hypotheses'][0] == expected
+        assert advisory['hypotheses'][0] == expected
+        files = handoff.encode_files(package(root, now=time.time()))
+        assert json.loads(files['handoff.json'])['ai_assessment']['slow_advisory']['hypotheses'][0] == expected
+        assert expected.encode() in files['handoff.ja.md']
 
 
 @pytest.mark.parametrize('text,expected,complete', [
@@ -757,7 +763,8 @@ def test_r12_skeleton_preserves_boundaries_after_nfkc_and_cf_removal(text, expec
 
 @pytest.mark.parametrize('text,expected', [
     ('hint、passi、ve: normal', 'hintpassive normal'),
-    ('hint、to、ken: normal', 'hinttoken normal'),
+    # Projection joins to+ken; the writer must recheck the resulting long label.
+    ('hint、to、ken: normal', 'Details withheld verify through an authorized source'),
     ('hint、p、word、d: normal', 'hintpwordd normal'),
 ])
 def test_r12_long_elements_stop_fragment_joining_through_real_receipt(root, tmp_path, text, expected):
@@ -787,3 +794,102 @@ def test_r12_key_is_guarded_when_value_has_no_skeleton_letters(root, tmp_path, k
     assert fixed.encode() in files['handoff.ja.md']
     assert secret_value not in json.dumps(recent, ensure_ascii=False)
     assert all(secret_value not in data.decode() for data in [path.read_bytes(), *files.values()])
+
+
+@pytest.mark.parametrize('text', [
+    'prefixTokenSuffix=v', 'prefixTokenSuffix=syntheticvalue',
+    'myAccessKey: syntheticvalue', 'x_password_y=syntheticvalue',
+    *[f'prefix{label}Suffix=syntheticvalue' for label in (
+        'password', 'passwd', 'passphrase', 'passcode', 'secret', 'credential',
+        'token', 'bearer', 'cookie', 'api_key', 'api-key', 'apiKey',
+        'access_key', 'access-key', 'secret_key', 'secret-key',
+        'private_key', 'private-key', 'client_secret', 'client-secret',
+        'refresh_token', 'refresh-token', 'session_id', 'session-id',
+        'session_key', 'session-key', 'session_token', 'session-token')],
+])
+def test_r13_long_label_substrings_through_real_receipt(root, tmp_path, text):
+    _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
+    assert metadata['completeness'] == 'complete'
+    recent, path = project(root, tmp_path, frame, value, metadata)
+    fixed = 'Details withheld verify through an authorized source'
+    assert recent['incidents'][0]['explanation']['slow_analysis']['hypotheses'] == [fixed, 'possible']
+    assert check_export(root, recent, available=True)['hypotheses'][0] == fixed
+    files = handoff.encode_files(package(root, now=time.time()))
+    assert json.loads(files['handoff.json'])['ai_assessment']['slow_advisory']['hypotheses'][0] == fixed
+    assert fixed.encode() in files['handoff.ja.md']
+    assert all(b'syntheticvalue' not in data for data in [path.read_bytes(), *files.values()])
+    assert b'prefixTokenSuffix' not in path.read_bytes()
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('check auth status h1', 'check auth status h'),
+    ('pin the route h1', 'pin the route h'),
+    ('pass the check h1', 'pass the check h'),
+    ('key observation h1', 'key observation h'),
+])
+def test_r13_natural_short_alias_prose_through_real_receipt(root, tmp_path, text, expected):
+    _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
+    assert metadata['completeness'] == 'complete'
+    recent, path = project(root, tmp_path, frame, value, metadata)
+    assert recent['incidents'][0]['explanation']['slow_analysis']['hypotheses'][0] == expected
+    assert expected.encode() in path.read_bytes()
+    assert check_export(root, recent, available=True)['hypotheses'][0] == expected
+    files = handoff.encode_files(package(root, now=time.time()))
+    assert json.loads(files['handoff.json'])['ai_assessment']['slow_advisory']['hypotheses'][0] == expected
+    assert expected.encode() in files['handoff.ja.md']
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('pin_status: syntheticvalue', 'pinstatus syntheticvalue'),
+    ('user.auth.name: syntheticvalue', 'userauthname syntheticvalue'),
+    ('pass-mode: syntheticvalue', 'passmode syntheticvalue'),
+    ('my otp value: syntheticvalue', 'my otp value syntheticvalue'),
+    ('my_key_name: syntheticvalue', 'mykeyname syntheticvalue'),
+    ('hint,pwd,status: syntheticvalue', 'hintpwdstatus syntheticvalue'),
+])
+def test_r13_short_alias_requires_its_own_immediate_value(root, tmp_path, text, expected):
+    # R13-L1 explicitly narrows the old W8 rule: another key element between
+    # the short alias and operator does not make that alias a secret key.
+    assert not incident_explain._public_secret_text(text)
+    _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
+    assert metadata['completeness'] == 'complete'
+    recent, path = project(root, tmp_path, frame, value, metadata)
+    assert recent['incidents'][0]['explanation']['slow_analysis']['hypotheses'][0] == expected
+    assert check_export(root, recent, available=True)['hypotheses'][0] == expected
+    files = handoff.encode_files(package(root, now=time.time()))
+    assert expected.encode() in path.read_bytes()
+    assert json.loads(files['handoff.json'])['ai_assessment']['slow_advisory']['hypotheses'][0] == expected
+    assert expected.encode() in files['handoff.ja.md']
+
+
+@pytest.mark.parametrize('alias', ['pass', 'pwd', 'pin', 'auth', 'otp', 'key'])
+@pytest.mark.parametrize('suffix', ['=syntheticvalue', ' : syntheticvalue',
+    '   ：syntheticvalue', ' abcdefgh', ' Ab12Cd34', ' abcdefghijklmnop  '])
+def test_r13_short_alias_value_forms_through_real_receipt(root, tmp_path, alias, suffix):
+    text = alias + suffix
+    assert incident_explain._public_secret_text(text)
+    _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
+    assert metadata['completeness'] == 'complete'
+    recent, path = project(root, tmp_path, frame, value, metadata)
+    fixed = 'Details withheld verify through an authorized source'
+    assert recent['incidents'][0]['explanation']['slow_analysis']['hypotheses'] == [fixed, 'possible']
+    assert check_export(root, recent, available=True)['hypotheses'][0] == fixed
+    files = handoff.encode_files(package(root, now=time.time()))
+    assert json.loads(files['handoff.json'])['ai_assessment']['slow_advisory']['hypotheses'][0] == fixed
+    assert fixed.encode() in files['handoff.ja.md']
+    secret_value = suffix.replace('=', '').replace(':', '').replace('：', '').strip()
+    assert all(secret_value.encode() not in data for data in [path.read_bytes(), *files.values()])
+
+
+@pytest.mark.parametrize('alias', ['pass', 'pwd', 'pin', 'auth', 'otp', 'key'])
+@pytest.mark.parametrize('suffix', [' abcdefg', ' status h1', ' observation h1',
+                                   '_status: normal', '-mode=normal', ''])
+def test_r13_short_alias_context_boundary(alias, suffix):
+    assert not incident_explain._public_secret_text(alias + suffix)
+
+
+@pytest.mark.parametrize('text', ['prefixTokenSuffix', 'prefixPasswdSuffix',
+    'prefixPassphraseSuffix', 'prefixPasscodeSuffix', 'myAccessKey',
+    'x_password_y', 'hint、to、ke、n'])
+def test_r13_long_labels_need_no_value_context(text):
+    assert incident_explain._public_secret_text(text)
