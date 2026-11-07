@@ -208,7 +208,7 @@ class GenerationLane:
         value.pop('result_handle',None)
         return value
 
-    def _cancel(self, job, reason):
+    def _cancel(self, job, reason, *, defer_legacy_result=False):
         with self._lock:
             if job.get('budget_session') is not None:
                 job['reason'] = reason
@@ -218,7 +218,8 @@ class GenerationLane:
                 return
             job['reason'] = reason
             job['cancelled'].set()
-            self._finish_legacy(job, reason)
+            if not defer_legacy_result:
+                self._finish_legacy(job, reason)
         # stop() is the existing bounded supervisor process-group termination.
         # Do not call it in the fast caller: the worker/timer owns cancellation.
 
@@ -476,14 +477,19 @@ class GenerationLane:
         def watch():
             while not timer_stop.wait(.01):
                 if job['cancelled'].is_set() or time.monotonic() >= job['end']:
-                    if not job['cancelled'].is_set():
-                        self._cancel(job, 'timeout')
+                    deadline_cancel = not job['cancelled'].is_set()
+                    if deadline_cancel:
+                        # Do not expose timeout before the in-flight stop has
+                        # been classified at its confirmation deadline.
+                        self._cancel(job, 'timeout', defer_legacy_result=True)
                     # The transport checks cancel/deadline under this gate before it
                     # marks a request in flight, so no request can begin after this read.
                     with state['gate']:
                         in_flight = state['in_flight']
                     if in_flight:
                         self._stop_provider(job)
+                    if deadline_cancel:
+                        self._finish_legacy(job, 'timeout')
                     return
         watcher = threading.Thread(target=watch, daemon=True, name='mio-generation-deadline')
         self._watcher_threads = [t for t in self._watcher_threads if t.is_alive()] + [watcher]
@@ -521,8 +527,8 @@ class GenerationLane:
             self._finish_legacy(job, job['reason'] if job['cancelled'].is_set() else 'timeout')
         # Only a transport/provider failure stops the provider here; content failures do not.
         if transport.failed and not self._fenced:
-            self._finish_legacy(job, 'degraded')
             self._stop_provider(job)
+            self._finish_legacy(job, 'degraded')
         return copy.deepcopy(job.get('terminal_status', status))
 
     def _update_budget_cleanup(self, job, state, reason):

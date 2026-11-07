@@ -304,6 +304,36 @@ def _workers():
     return [t for t in threading.enumerate() if t.name == 'mio-generation']
 
 
+def test_deadline_result_is_not_published_before_stop_failure_fences(monkeypatch):
+    lane, source, frame = setup(deadline_s=.08)
+    server = lane.server = HungStopFailsServer()
+    stop_entered, allow_stop = threading.Event(), threading.Event()
+    original_stop = lane._stop_provider
+
+    def gated_stop(job):
+        stop_entered.set()
+        assert allow_stop.wait(2)
+        return original_stop(job)
+
+    monkeypatch.setattr(lane, '_stop_provider', gated_stop)
+    try:
+        receipt = lane.submit(source, frame, 'fixture-generation')
+        assert server.entered.wait(2)
+        assert stop_entered.wait(2)
+        handle = receipt['result_handle']
+        assert lane.poll(handle, 'fixture-generation', frame.trace_id)['state'] == 'queued'
+        assert not lane._fenced
+        allow_stop.set()
+        assert _wait(lambda: lane.poll(handle, 'fixture-generation', frame.trace_id)['state'] == 'timeout')
+        assert lane._fenced
+        assert lane.stop_observation()['cleanup']['state'] == 'unconfirmed'
+        assert not server.release.is_set()
+    finally:
+        allow_stop.set()
+        server.release.set()
+        assert _wait(lambda: lane._active is None)
+
+
 def test_stop_failure_publishes_degraded_while_infer_is_still_blocked():
     lane, source, frame = setup(deadline_s=.08)
     server = lane.server = HungStopFailsServer()
