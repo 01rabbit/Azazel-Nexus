@@ -11,7 +11,9 @@ import time
 
 def run(binary, model, root, output):
     from azazel_nexus_lab.weekend_process import require_container
-    require_container()
+    # This model-only fixture never switches service UIDs or owns root paths.
+    # Keep the disposable-container and loopback-only checks for uid 1001.
+    require_container(root=False)
     from azazel_nexus_lab.weekend_fixture import harness, fixture_lane, NativeFixtureWire, poll, production_control
     from azazel_nexus_lab.weekend_ui import noc_frame
     from azazel_nexus_runtime.mio_fast_assistance import _frame
