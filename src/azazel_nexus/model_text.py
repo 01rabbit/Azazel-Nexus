@@ -1,6 +1,6 @@
 """Closed character repertoire for normalized, optional model prose."""
 
-_ASCII = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:_-. ,;!?()[]{}\"'")
+_ASCII = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:_-. ,;!?()[]{}\"'%&+/*#@~^|<>=$")
 # Explicit ordinary Japanese letters and punctuation, not whole Unicode blocks.
 # Combining marks, fillers, variation selectors and unassigned gaps stay out.
 _JAPANESE = (

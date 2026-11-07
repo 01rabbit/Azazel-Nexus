@@ -470,13 +470,11 @@ def test_secret_key_value_prose_is_wholly_withheld(root, tmp_path, text):
     recent, _ = project(root, tmp_path, frame, value, metadata)
     shown = recent['incidents'][0]['explanation']['slow_analysis']
     assert shown['hypotheses'][0] == fixed
-    # '=' is outside the explicit repertoire; ':' remains allowed. The
-    # tighter manifest closes exports with '=', independently of privacy.
-    available = '=' not in text
-    assert metadata['completeness'] == ('complete' if available else 'partial')
-    advisory = check_export(root, recent, available=available)
-    if available:
-        assert advisory['hypotheses'][0] == fixed
+    # Both '=' and ':' are in the requested repertoire. A complete manifest
+    # must still export only the fixed replacement, never the secret value.
+    assert metadata['completeness'] == 'complete'
+    advisory = check_export(root, recent, available=True)
+    assert advisory['hypotheses'][0] == fixed
     assert 'syntheticvalue' not in json.dumps(recent)
     assert all(b'syntheticvalue' not in data for data in handoff.encode_files(package(root, now=time.time())).values())
 
@@ -576,3 +574,99 @@ def test_nfkc_composed_secret_letter_is_withheld_by_repertoire():
     # The independent allowlist must therefore reject this whole model text.
     assert incident_explain._secret_skeleton(unicodedata.normalize('NFKC', text)) == 'wd=syntheticvalue'
     assert incident_explain.guard_public_model_text(text) == 'Details withheld verify through an authorized source'
+
+
+@pytest.mark.parametrize('text', [
+    'hint,pwd: syntheticvalue', 'hint;pwd: syntheticvalue',
+    'hint(pwd): syntheticvalue', 'hint:pwd: syntheticvalue',
+    'foo,pin: syntheticvalue', 'foo,auth: syntheticvalue',
+    'status: good pwd: syntheticvalue', 'status:good:pwd:syntheticvalue',
+    'status=good=pwd=syntheticvalue', 'hint: p,w;d: syntheticvalue',
+    'hint: user_pass: syntheticvalue', 'hint: clientSecret: syntheticvalue',
+    'hint,pwd,status: syntheticvalue', 'hint(PwD): syntheticvalue',
+    'ｈｉｎｔ（ｐｗｄ）： syntheticvalue',
+])
+def test_punctuated_secret_keys_withheld_through_real_receipt(root, tmp_path, text):
+    _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
+    recent, path = project(root, tmp_path, frame, value, metadata)
+    # A complete manifest must not mask a privacy failure.
+    assert metadata['completeness'] == 'complete'
+    fixed = 'Details withheld verify through an authorized source'
+    assert recent['incidents'][0]['explanation']['slow_analysis']['hypotheses'][0] == fixed
+    assert check_export(root, recent, available=True)['hypotheses'][0] == fixed
+    assert b'syntheticvalue' not in path.read_bytes()
+    assert all(b'syntheticvalue' not in data for data in
+               handoff.encode_files(package(root, now=time.time())).values())
+
+
+@pytest.mark.parametrize('separator', [chr(i) for i in range(128)
+    if not chr(i).isalnum()])
+def test_short_secret_key_elements_use_all_ascii_non_alphanumerics(separator):
+    # Test the secret check independently: unsupported control characters
+    # also close the separate repertoire guard, but cannot hide a key here.
+    assert incident_explain._public_secret_text(f'hint{separator}pwd: syntheticvalue')
+
+
+@pytest.mark.parametrize('text', [
+    'hint,p\u200bwd: syntheticvalue', 'hint;pw\u2060d: syntheticvalue',
+    'hint: pw\ufeffd: syntheticvalue',
+])
+def test_original_key_elements_remove_format_controls_before_secret_check(text):
+    assert incident_explain._public_secret_text(text)
+
+
+@pytest.mark.parametrize('text', [
+    'packet loss 5% h1', 'A & B h1', 'retry + backoff h1',
+    *[f'observation {symbol} h1' for symbol in '/*#@~^|<>=$'],
+])
+def test_requested_ascii_symbols_keep_manifest_complete(root, tmp_path, text):
+    _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
+    assert metadata['completeness'] == 'complete'
+    recent, _ = project(root, tmp_path, frame, value, metadata)
+    advisory = check_export(root, recent, available=True)
+    # Slash still triggers the independent path privacy guard.
+    if '/' not in text:
+        assert advisory['hypotheses'][0] != 'Details withheld verify through an authorized source'
+
+
+@pytest.mark.parametrize('text,expected,complete', [
+    ('status: good', 'status good', True),
+    ('hint: see u1', 'hint see u', True),
+    ('仮説h1を確認', None, False),
+    ('参照ev:ssh:1を確認。', None, False),
+    ('不明点u1を確認。', None, False),
+    ('仮説 h1、ev:ssh:1。', '仮説 hevssh', True),
+    ('不明点（u1）。', '不明点u', True),
+])
+def test_delimited_ids_and_ordinary_key_prose_contract(root, tmp_path, text, expected, complete):
+    class UnknownReferenceProvider(ProseProvider):
+        def infer(self, *args, **kwargs):
+            result = super().infer(*args, **kwargs)
+            payload = json.loads(result.text)
+            if 'hypotheses' in payload:
+                # Bind u1 via the actual frame unknown body, not a synthetic manifest.
+                payload['hypotheses'][0]['missing_evidence'] = ['unknown']
+            return replace(result, text=json.dumps(payload))
+    _, frame, _, value, metadata = execute(tmp_path, server=UnknownReferenceProvider(text))
+    assert 'u1' in metadata['advisory_refs']
+    assert metadata['completeness'] == ('complete' if complete else 'partial')
+    recent, _ = project(root, tmp_path, frame, value, metadata)
+    advisory = check_export(root, recent, available=complete)
+    if complete:
+        assert advisory['hypotheses'][0] == expected
+        files = handoff.encode_files(package(root, now=time.time()))
+        assert expected in json.loads(files['handoff.json'])['ai_assessment']['slow_advisory']['hypotheses']
+        assert expected in files['handoff.ja.md'].decode()
+
+
+@pytest.mark.parametrize('identifier,complete', [
+    ('h¹', True), ('𝐡1', True), ('ｈ１', True),
+    ('h⁹⁹⁹', False), ('𝐡999', False), ('ｈ９９９', False),
+])
+def test_compatibility_ids_follow_normalized_membership(root, tmp_path, identifier, complete):
+    _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider('possible ' + identifier))
+    assert metadata['completeness'] == ('complete' if complete else 'partial')
+    assert metadata['unlisted_prose_ids'] is (not complete)
+    assert metadata['advisory_refs'] == ['ev:ssh:1', 'h1', 'h2']
+    recent, _ = project(root, tmp_path, frame, value, metadata)
+    check_export(root, recent, available=complete)

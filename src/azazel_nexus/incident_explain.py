@@ -1195,7 +1195,9 @@ _PUBLIC_SECRET_KEY_LABEL = re.compile(r"(?i)(?:" + _PUBLIC_SECRET_LABELS + r")")
 _PUBLIC_SECRET_WORD = re.compile(r"(?i)\b(?:" + _PUBLIC_SECRET_LABELS + r")\b")
 _SHORT_SECRET_ELEMENTS = frozenset({"pin", "auth", "pass", "otp", "key", "pwd"})
 _KEY_VALUE = re.compile(r"([\w.-]+)[\"']?\s*[:=]\s*\S+")
-_PUBLIC_KEY_VALUE = re.compile(r"([^:=\r\n]+?)\s*[:=]\s*\S+")
+# Inspect the value without consuming it: it may itself start another key.
+_PUBLIC_KEY_VALUE = re.compile(r"([^:=\r\n]+?)\s*[:=](?=\s*\S)")
+_ASCII_KEY_SEPARATOR = re.compile(r"[\x00-\x2f\x3a-\x40\x5b-\x60\x7b-\x7f]+")
 _MODEL_TEXT_WITHHELD = "Details withheld verify through an authorized source"
 
 
@@ -1205,6 +1207,10 @@ def _secret_skeleton(value):
 
 
 def _public_secret_text(normalized):
+    # Retain original punctuation for element boundaries, after NFKC (caller)
+    # and format-control removal. The independent repertoire guard still sees
+    # the controls and refuses that text; this is only the secret-check view.
+    normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Cf")
     skeleton = _secret_skeleton(normalized)
     # Long labels retain the existing substring policy. Short aliases are
     # whole key elements only, never substrings of spinning/author/compass.
@@ -1212,14 +1218,14 @@ def _public_secret_text(normalized):
             or _PUBLIC_SECRET_WORD.search(skeleton)
             or any(_PUBLIC_SECRET_KEY_LABEL.search(match[1])
                    or match[1].lower() in _SHORT_SECRET_ELEMENTS
-                   for match in _KEY_VALUE.finditer(skeleton))):
+                   for match in _PUBLIC_KEY_VALUE.finditer(skeleton))):
         return True
     for match in _PUBLIC_KEY_VALUE.finditer(normalized):
         key = match[1]
         if _PUBLIC_SECRET_KEY_LABEL.search(_secret_skeleton(key)):
             return True
         if any(_secret_skeleton(element).lower() in _SHORT_SECRET_ELEMENTS
-               for element in re.split(r"[_\-.\s]+", key)):
+               for element in _ASCII_KEY_SEPARATOR.split(key)):
             return True
     return False
 

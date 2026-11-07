@@ -335,8 +335,12 @@ Runtime extracts structured IDs from validated assistance and each raw task
 response, and scans prose with MIO's ID grammar before display sanitization.
 Prose uses the same NFKC normalization as public text. Reference-like tokens with
 ambiguous boundaries or joined/malformed IDs make completeness partial rather
-than silently disappearing. Secret-labelled keys in `key=value` or `key: value`
+than silently disappearing. Separate IDs with whitespace or punctuation; Japanese text directly adjoining an ID (for example, `仮説h1を確認`) remains partial.
+Compatibility spellings such as `h¹`, `𝐡1` and `ｈ１` use membership after NFKC: known IDs are accepted and unknown IDs remain partial.
+The prose repertoire includes ASCII `% & + / * # @ ~ ^ | < > = $`; independent secret/path privacy guards still apply.
+Secret-labelled keys in `key=value` or `key: value`
 prose cause the entire string, including its value, to become fixed withheld text.
+Short secret key aliases match whole elements separated by any ASCII non-alphanumeric character; each chained key is checked independently, alongside the punctuation-stripped skeleton.
 `hypothesis_ids` comes from validated hypothesis provenance; `advisory_refs`
 contains the structured reference set, including unknown and gap references.
 An ID occurring only in prose is excluded and sets private
