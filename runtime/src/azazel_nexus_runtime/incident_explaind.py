@@ -413,6 +413,7 @@ class Explainer:
         self._generation_metadata = {}
         self._generation_bindings = {}
         self._generation_restart_unknown = set()
+        self._generation_recovered = set()
         self.mio = mio or (lambda frame: advise(frame, caller_epoch=self.restart_epoch,
                                                private_metadata=self._generation_metadata))
         self.mio_result = mio_result or (lambda receipt, **kw: poll_generation_result(receipt,
@@ -588,6 +589,17 @@ class Explainer:
                 else:
                     # Mixed A/base library cannot read B's new projection.
                     projection = {'state': 'degraded', 'usage': 'unknown'}
+        if (projection.get('state') != 'complete' and (
+                handle in self._generation_recovered or handle in self._generation_restart_unknown
+                or value.get('generation_budget', {}).get('cleanup', {}).get('reason') == 'restart_unconfirmed')):
+            from azazel_nexus.incident_explain import public_unknown_metadata
+            unknowns = []
+            try:
+                observation = self._private_generation_journal().observation(receipt['request_id'])
+                unknowns = public_unknown_metadata(observation['unknowns'])
+            except (OSError, ValueError, KeyError, TypeError):
+                pass  # Report unavailability even when the ID-only sidecar is unreadable.
+            projection['recovery'] = dict(status='unavailable_after_restart', unknowns=unknowns)
         for row in self.recent:
             if row["incident_id"] == receipt["incident_id"]:
                 explanation = dict(row["explanation"])
@@ -820,6 +832,7 @@ class Explainer:
         self._generation_cleanup,self._generation_superseded = cleanup,superseded
         self._generation_cleanup_deadlines = {}
         self._generation_current = current
+        self._generation_recovered.update(receipts)
         for handle,receipt in receipts.items():
             if handle not in terminal:
                 # A receipt without a result is never re-adopted after restart,

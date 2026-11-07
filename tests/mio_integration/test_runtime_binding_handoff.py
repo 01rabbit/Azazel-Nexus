@@ -84,8 +84,21 @@ def check_export(root, recent, *, available):
         assert advisory['verification'] == 'model_proposed_unverified'
         assert advisory['hypotheses'] and advisory['next_checks']
         assert shown['provenance_summary']['verified_current_sources'] >= 1
+        binding = recent['incidents'][0]['explanation']['slow_analysis']['binding']
+        assert shown['binding'] == advisory['binding'] == binding
+        for key in ('incident_id', 'request_id', 'frame_id', 'template_version',
+                    'created_at', 'expires_at', 'completeness'):
+            assert str(binding[key]) in markdown
+        for item in binding['unknowns'] + binding['evidence_refs']:
+            assert all(str(value) in markdown for value in item.values())
     else:
         assert not advisory['hypotheses'] and not advisory['next_checks']
+        assert advisory['reason_code'] == shown['reason_code']
+        assert advisory['reason_ja'] == shown['reason_ja']
+        assert advisory['reason_code'] in markdown and advisory['reason_ja'] in markdown
+        if 'recovery' in shown:
+            assert advisory['recovery'] == shown['recovery']
+            assert 'unavailable_after_restart' in markdown
     return advisory
 
 
@@ -131,7 +144,10 @@ def test_real_projection_negative_binding(root, tmp_path, mutation):
                                        status='unavailable_after_restart'))
     assert not incident_explain.valid_handoff_binding(binding, INCIDENT, time.time())
     path.write_text(json.dumps(recent))
-    check_export(root, recent, available=False)
+    advisory = check_export(root, recent, available=False)
+    expected_reason = {'incident': 'incident_mismatch', 'expired': 'binding_expired',
+                       'unverified': 'source_unverified', 'template': 'template_unknown'}
+    assert advisory['reason_code'] == expected_reason.get(mutation, 'binding_unverified')
 
 
 @pytest.mark.parametrize('text', ['possible u999', 'possible (h999).', 'possible kn:attack:T1059.001',
@@ -197,7 +213,9 @@ def test_restart_cannot_promote_complete_or_reexport_advice(root, tmp_path, rest
     metadata = lane.private_metadata(value['result_handle'], 'after')
     assert metadata is None
     recent, _ = project(root, tmp_path, frame, result, metadata)
-    check_export(root, recent, available=False)
+    advisory = check_export(root, recent, available=False)
+    assert advisory['reason_code'] == 'unavailable_after_restart'
+    assert advisory['recovery']['status'] == 'unavailable_after_restart'
 
 
 def test_explainer_only_restart_keeps_unknown_and_terminal_accounting(root, tmp_path):
@@ -215,6 +233,9 @@ def test_explainer_only_restart_keeps_unknown_and_terminal_accounting(root, tmp_
     recent = json.loads(path.read_text())
     shown = recent['incidents'][0]['explanation']['slow_analysis']
     assert shown['state'] == 'degraded'
+    assert shown['recovery']['status'] == 'unavailable_after_restart'
+    assert shown['recovery']['unknowns'][0] == dict(
+        id='u1', origin='frame', category='frame_unknown', status='unavailable_after_restart')
     receipt = restarted._generation_receipts[value['result_handle']]
     restored = restarted._generation_value(value['result_handle'])
     assert restored['generation_budget']['primary_outcome'] == 'within_budget'

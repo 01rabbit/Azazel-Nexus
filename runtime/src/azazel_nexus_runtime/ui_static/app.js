@@ -655,6 +655,30 @@
     if (slow) {
       var slowNode = block("M.I.O. 非同期モデル提案（未検証・助言のみ）");
       add(slowNode, kv([["状態", slow.state], ["検証区分", slow.verification], ["使用量", slow.usage]]));
+      if (slow.reason_code) {
+        add(slowNode, kv([["保留理由", slow.reason_code]]), el("p", "small", slow.reason_ja));
+      }
+      var binding = slow.binding;
+      if (binding) {
+        var bindingNode = block("対応情報（助言のみ・内容の事実性を保証しない）");
+        add(bindingNode, kv([["provenance_version", binding.provenance_version],
+          ["incident_id", binding.incident_id], ["request_id", binding.request_id], ["frame_id", binding.frame_id],
+          ["template_version", binding.template_version], ["created_at", binding.created_at],
+          ["expires_at", binding.expires_at], ["completeness", binding.completeness],
+          ["hypothesis_ids", (binding.hypothesis_ids || []).join(", ")],
+          ["advisory_refs", (binding.advisory_refs || []).join(", ")]]));
+        (binding.evidence_refs || []).forEach(function (ref) {
+          add(bindingNode, kv([["evidence_ref", ref.id], ["source", ref.source], ["trust", ref.trust],
+            ["freshness", ref.freshness], ["observed_at", ref.observed_at], ["valid_until", ref.valid_until]]));
+        });
+        add(slowNode, bindingNode);
+      }
+      var recovery = slow.recovery;
+      if (recovery) { add(slowNode, kv([["復元状態", recovery.status]])); }
+      ((binding || recovery || {}).unknowns || []).forEach(function (unknown) {
+        add(slowNode, kv([["unknown ID", unknown.id], ["origin", unknown.origin],
+          ["category", unknown.category], ["status", unknown.status]]));
+      });
       var budget = slow.budget;
       if (budget) {
         add(slowNode, kv([["生成予算", budget.outcome], ["資料の範囲", budget.coverage],

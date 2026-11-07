@@ -205,6 +205,20 @@ def fixed_vocabulary() -> frozenset:
         {"incident_ledger.first_seen", "recent_snapshot.first_seen"})
 
 
+_BINDING_ID = re.compile(
+    r"inc-[0-9a-f]{16}:[1-9][0-9]{0,11}|mio-[0-9a-f]{16}-[1-9][0-9]{0,11}:frame"
+    r"|ev:(?:[a-z][a-z_]{0,31}:)?[0-9]{1,6}|suricata_sid:[0-9]{1,8}"
+    r"|kn:attack:T[0-9]{4}(?:\.[0-9]{3})?|um:[1-9][0-9]{0,2}")
+
+
+def public_binding_id(text):
+    """Distinguish closed public IDs from host:port without exempting secrets."""
+    from .incident_explain import _SECRET_KEY_LABEL
+    return (type(text) is str and bool(_BINDING_ID.fullmatch(text))
+            and not _SECRET_KEY_LABEL.search(text)
+            and not [code for code in detect(text) if code != "host_port"])
+
+
 def scan_package(value) -> list[str]:
     """Every category found in any string of a package or manifest value."""
     found = []
@@ -217,6 +231,8 @@ def scan_package(value) -> list[str]:
             continue
         # A code-shaped string is still checked for encoded and secret forms.
         found_here = detect(text)
+        if key in {"request_id", "frame_id", "id", "advisory_refs"} and public_binding_id(text):
+            found_here = [c for c in found_here if c != "host_port"]
         if _SAFE.fullmatch(text):
             found_here = [c for c in found_here
                           if c in ("hex_value", "base64_value", "secret_like")]
@@ -236,6 +252,7 @@ def scan_markdown(text: str) -> list[str]:
     words = sorted(fixed_vocabulary(), key=len, reverse=True)
     text = re.sub(r"(?<![\w.-])(?:" + "|".join(map(re.escape, words)) + r")(?![\w.-])", " ", text)
     text = re.sub(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", " ", text)
+    text = re.sub(r"`([^`\n]+)`", lambda m: " " if public_binding_id(m[1]) else m[0], text)
     return detect(text)
 
 
@@ -1078,15 +1095,16 @@ def _ai(explanations, explanation_code, row, mio, labels, hide, recent_fresh=Non
         slow_advisory["reason_code"] = "recent_snapshot_stale"
     elif row is not None:
         slow = row["explanation"].get("slow_analysis")
+        if type(slow) is dict:
+            from .incident_explain import public_slow_analysis
+            slow = public_slow_analysis(slow, row["incident_id"], now)
+            for key in ("reason_code", "reason_ja", "recovery"):
+                if key in slow:
+                    slow_advisory[key] = slow[key]
         if type(slow) is dict and slow.get("state") != "complete":
             slow_advisory["state"] = slow["state"]
             if "budget" in slow:
                 slow_advisory["budget"] = dict(slow["budget"])
-        if type(slow) is dict and slow.get("state") == "complete":
-            from .incident_explain import valid_handoff_advisory
-            if not valid_handoff_advisory(slow, row["incident_id"], now):
-                slow_advisory["reason_code"] = "binding_unverified"
-                slow = None
         if type(slow) is dict and slow.get("state") == "complete":
             # `read_recent_incidents` already checked this closed, sanitized
             # projection. Keep it separate from the immutable explanation
@@ -1098,6 +1116,7 @@ def _ai(explanations, explanation_code, row, mio, labels, hide, recent_fresh=Non
                 "hypotheses": list(slow["hypotheses"]),
                 "unknowns": list(slow["unknowns"]),
                 "next_checks": list(slow["next_checks"]),
+                "binding": slow["binding"],
                 "provenance_summary": {
                     "unknowns": [{"origin": item["origin"], "status": item["status"]}
                                  for item in slow["binding"]["unknowns"]],
@@ -1106,6 +1125,9 @@ def _ai(explanations, explanation_code, row, mio, labels, hide, recent_fresh=Non
             }
             if "budget" in slow:
                 slow_advisory["budget"] = dict(slow["budget"])
+    if slow_advisory["status"] == "unavailable":
+        from .incident_explain import SLOW_WITHHOLD_REASONS
+        slow_advisory["reason_ja"] = SLOW_WITHHOLD_REASONS[slow_advisory["reason_code"]]
     base = {"authority": "advisory_only_not_fact", "route_capability_now": capability,
             "slow_advisory": slow_advisory,
             "label_basis": "the explainer's content_kind: every answered local-route reply is "
@@ -1403,7 +1425,9 @@ def _unconfirmed(p) -> list:
     items.append("ai_advice_unverified" if (
         any(e["labelled_ai_output"] for e in explanations)
         or slow_advisory.get("status") == "available"
-        or slow_advisory.get("reason_code") == "binding_unverified")
+        or slow_advisory.get("reason_code") in {
+            "binding_unverified", "incident_mismatch", "template_unknown", "binding_expired",
+            "source_unverified", "unavailable_after_restart"})
                  else "no_ai_answer")
     occurrence = p["time"]["occurrence"]["status"]
     items.append("occurrence_time_untrusted" if occurrence == "untrusted"
@@ -1625,6 +1649,21 @@ def render_markdown(p: dict) -> str:
     add("Edge の判断、説明台帳の記録、M.I.O. 高速評価とは別の時間軸です。")
     if "state" in slow:
         add(f"生成状態: `{slow['state']}`")
+    if "reason_ja" in slow:
+        add(f"保留理由: `{slow['reason_code']}` — {_md(slow['reason_ja'])}")
+    binding = slow.get("binding")
+    if binding:
+        add("対応情報（助言のみ・内容の事実性を保証しない）:")
+        for key in ("provenance_version", "incident_id", "request_id", "frame_id", "template_version",
+                    "created_at", "expires_at", "completeness"):
+            add(f"- {key}: `{binding[key]}`")
+        for key in ("hypothesis_ids", "advisory_refs"):
+            add(f"- {key}: " + "、".join(f"`{x}`" for x in binding[key]))
+        for ref in binding["evidence_refs"]:
+            add("- evidence_ref: " + "、".join(f"{k}: `{v}`" for k, v in ref.items()))
+    unknowns = (binding or slow.get("recovery", {})).get("unknowns", [])
+    for item in unknowns:
+        add("- unknown: " + "、".join(f"{k}: `{v}`" for k, v in item.items()))
     if "budget" in slow:
         budget = slow["budget"]
         add(f"予算結果: `{budget['outcome']}`、停止確認: `{budget['cleanup_state']}`、"

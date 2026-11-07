@@ -348,3 +348,20 @@ journal. Unknown IDs marked unavailable after restart cannot authorize advice.
 These checks establish membership, not semantic truth or model quality.
 Template 1.9.0 is accepted; the Nexus MIO dependency pin is unchanged and does
 not identify the advice3 candidate wheel.
+
+The native incident card, status JSON and handoff JSON/Markdown retain the
+validated non-secret binding: incident/request/frame IDs, template version,
+original timestamps, completeness, ID-only unknown origin/category/status,
+source trust/freshness/deadlines and hypothesis/advisory reference IDs. These
+fields remain advisory metadata, never operator actions or proof of facts.
+The public metadata guard also rejects secret-like, address and encoded values;
+fixed reference IDs are handled as typed IDs, not arbitrary host:port strings.
+Withheld results expose a fixed `reason_code` and Japanese `reason_ja`.
+Missing and partial bindings both use `binding_unverified`; expired bindings,
+incident mismatch, unknown templates and unverified sources have specific codes.
+
+After recovery, a non-complete slow projection may carry the closed
+`recovery` object with `status=unavailable_after_restart` and ID-only `unknowns`.
+It does not fabricate a complete binding or restore unknown bodies. Readers
+reject recovery metadata on complete results. Receipt accounting, terminal
+reasons, original TTLs and the permanent restart fence are unchanged.

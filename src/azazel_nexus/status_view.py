@@ -815,16 +815,8 @@ def _recent_extra(value, snapshot, now=None):
             # Re-run the strict recent reader before forwarding this bounded projection.
             from .incident_explain import read_recent_incidents
             _require(read_recent_incidents(json.dumps(value).encode()) == value)
-            from .incident_explain import valid_handoff_advisory
-            slow = explanation["slow_analysis"]
-            if slow.get("state") == "complete" and not valid_handoff_advisory(slow, row["incident_id"], now):
-                slow = {"state": "degraded", "usage": "unknown"}
-            elif slow.get("state") == "complete":
-                binding = slow["binding"]
-                slow = {k: v for k, v in slow.items() if k != "binding"}
-                slow["provenance_summary"] = {
-                    "unknowns": [{"origin": item["origin"], "status": item["status"]} for item in binding["unknowns"]],
-                    "verified_current_sources": len(binding["evidence_refs"])}
+            from .incident_explain import public_slow_analysis
+            slow = public_slow_analysis(explanation["slow_analysis"], row["incident_id"], now)
             copy["explanation"]["slow_analysis"] = slow
         copy["explanation"]["knowledge_refs"] = [
             _knowledge_ref(ref) for ref in explanation["knowledge_refs"]]

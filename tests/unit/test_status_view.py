@@ -1565,7 +1565,10 @@ def test_recent_view_preserves_checked_slow_projection():
     recent['incidents'][0]['explanation']['slow_analysis'] = slow
     snapshot = {}
     _recent_extra(recent, snapshot)
-    assert snapshot['incidents'][0]['explanation']['slow_analysis'] == slow
+    from azazel_nexus.incident_explain import SLOW_WITHHOLD_REASONS
+    assert snapshot['incidents'][0]['explanation']['slow_analysis'] == {
+        **slow, 'reason_code': 'no_current_slow_result',
+        'reason_ja': SLOW_WITHHOLD_REASONS['no_current_slow_result']}
     slow['budget']['reasons'].append('private payload')
     with pytest.raises(Exception):
         _recent_extra(recent, {})

@@ -1304,6 +1304,109 @@ def valid_handoff_advisory(slow, incident_id, now):
     return valid_handoff_binding(slow.get("binding"), incident_id, now)
 
 
+SLOW_WITHHOLD_REASONS = {
+    "no_current_slow_result": "表示できる現在の助言結果がありません。生成状態と予算結果の理由を確認してください。",
+    "recent_snapshot_stale": "状態記録が古いため、助言の表示を保留しました。",
+    "binding_unverified": "助言と根拠の対応情報が欠落または不完全なため、助言の表示を保留しました。",
+    "incident_mismatch": "助言の対応先がこのインシデントと一致しないため、表示を保留しました。",
+    "template_unknown": "対応情報のテンプレート版を確認できないため、助言の表示を保留しました。",
+    "binding_expired": "助言と根拠の対応情報が期限切れのため、表示を保留しました。",
+    "source_unverified": "参照元の信頼性または現在の有効性を確認できないため、助言の表示を保留しました。",
+    "unavailable_after_restart": "再起動後は未確認事項の本文を復元できません。unknown のまま助言の表示を保留しています。",
+}
+
+
+def _public_binding_identifier(value):
+    # Metadata is not model prose. Preserve IDs, but apply the same secret,
+    # address and path guard before exposing a previously private identifier.
+    from .handoff import detect, public_binding_id
+    return (type(value) is str and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", value))
+            and not _SECRET_KEY_LABEL.search(value)
+            and _public_model_text(value) != "Details withheld verify through an authorized source"
+            and not [code for code in detect(value) if code != "host_port" or not public_binding_id(value)])
+
+
+def public_unknown_metadata(items):
+    """Closed ID-only unknowns, also usable without a live advisory binding."""
+    if type(items) is not list or len(items) > 24:
+        raise ValueError("unknown_metadata_refused")
+    seen = set()
+    for item in items:
+        if type(item) is not dict or set(item) != {"id", "origin", "category", "status"}:
+            raise ValueError("unknown_metadata_refused")
+        ident = item["id"]
+        origin = ("frame" if type(ident) is str and re.fullmatch(r"u[1-9][0-9]{0,2}", ident) else
+                  "model_asserted" if type(ident) is str and re.fullmatch(r"um:[1-9][0-9]{0,2}", ident) else
+                  "fixed_projection" if type(ident) is str and ident in
+                  {"ux:identity", "ux:success", "ux:baseline", "ux:impact"} else None)
+        if (not origin or item["origin"] != origin or ident in seen
+                or not _public_binding_identifier(item["category"])
+                or not re.fullmatch(r"[a-z][a-z0-9_]{0,31}", item["category"])
+                or item["status"] not in ("unresolved", "unavailable_after_restart")):
+            raise ValueError("unknown_metadata_refused")
+        seen.add(ident)
+    return [dict(item) for item in items]
+
+
+def _binding_withhold_reason(binding, incident_id, now):
+    # Diagnostics do not grant acceptance: the unchanged v1 validator runs first.
+    if type(binding) is not dict:
+        return "binding_unverified"
+    if binding.get("incident_id", incident_id) != incident_id:
+        return "incident_mismatch"
+    if type(binding.get("template_version")) is str and binding["template_version"] not in {"1.6.0", "1.7.0", "1.8.0", "1.9.0"}:
+        return "template_unknown"
+    try:
+        expiry = binding.get("expires_at")
+        if all(type(x) in (int, float) and math.isfinite(x) for x in (expiry, now)) and now >= expiry:
+            return "binding_expired"
+        refs = binding.get("evidence_refs")
+        if type(refs) is list and any(type(ref) is dict and (
+                ref.get("trust") != "verified" or handoff_ref_freshness(ref, now) != "current") for ref in refs):
+            return "source_unverified"
+    except (TypeError, ValueError, OverflowError):
+        pass  # Invalid metadata must not make the diagnostic path fail open or crash.
+    return "binding_unverified"
+
+
+def public_slow_analysis(slow, incident_id, now):
+    """One fail-closed read/export view; never copy unchecked binding metadata."""
+    result = dict(slow)
+    if slow.get("state") == "complete":
+        binding = slow.get("binding")
+        valid = valid_handoff_advisory(slow, incident_id, now)
+        if valid:
+            try:
+                public_unknown_metadata(binding["unknowns"])
+                valid = all(_public_binding_identifier(ref[key])
+                            for ref in binding["evidence_refs"] for key in ("id", "source"))
+            except ValueError:
+                valid = False
+        if valid:
+            # All fields passed the closed v1 schema plus the public secret guard.
+            result["binding"] = json.loads(json.dumps(binding))
+            result["provenance_summary"] = {
+                "unknowns": [{"origin": item["origin"], "status": item["status"]} for item in binding["unknowns"]],
+                "verified_current_sources": len(binding["evidence_refs"])}
+            return result
+        result = {"state": "degraded", "usage": "unknown"}
+        code = _binding_withhold_reason(binding, incident_id, now)
+    elif "recovery" in slow:
+        recovery = slow["recovery"]
+        if (type(recovery) is not dict or set(recovery) != {"status", "unknowns"}
+                or recovery["status"] != "unavailable_after_restart"):
+            raise ValueError("recovery_refused")
+        unknowns = public_unknown_metadata(recovery["unknowns"])
+        if any(item["status"] != "unavailable_after_restart" for item in unknowns):
+            raise ValueError("recovery_refused")
+        result["recovery"] = {"status": "unavailable_after_restart", "unknowns": unknowns}
+        code = "unavailable_after_restart"
+    else:
+        code = "no_current_slow_result"
+    result.update(reason_code=code, reason_ja=SLOW_WITHHOLD_REASONS[code])
+    return result
+
+
 def slow_analysis_projection(value):
     """Project only a labelled, bounded advisory; never expose retrieval handles."""
     if type(value) is not dict or value.get("state") not in SLOW_RESULT_STATES:
@@ -1599,6 +1702,11 @@ def read_recent_incidents(raw):
                     from .generation_budget import validate_public_budget
                     validate_public_budget(slow['budget'],state=slow['state'])
                     slow = {k:v for k,v in slow.items() if k != 'budget'}
+                if "recovery" in slow:
+                    if slow["state"] == "complete":
+                        return None
+                    public_slow_analysis(slow, row["incident_id"], None)
+                    slow = {k: v for k, v in slow.items() if k != "recovery"}
                 if slow["state"] == "complete":
                     if set(slow) - {"binding"} != {"state", "usage", "verification", "hypotheses",
                                      "unknowns", "next_checks"}:
