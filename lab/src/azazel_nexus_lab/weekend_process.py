@@ -21,15 +21,18 @@ def require_container(*, root=True, ui_network=False):
         raise RuntimeError('requires the disposable Linux root container; host execution forbidden')
     interfaces = {p.name for p in Path('/sys/class/net').iterdir()}
     if ui_network:
-        # Host launcher must independently verify an existing, empty Docker
-        # internal bridge. This lab-only option never changes a product gate.
-        routes = Path('/proc/net/route').read_text().splitlines()[1:]
+        # Host launcher verifies the existing empty no-masquerade bridge and
+        # loopback DNS. A default route is present; require the startup probes.
+        # This lab-only option never changes a product gate.
+        probe = json.loads(Path('/results/egress-probe.txt').read_text())
         v6 = Path('/proc/net/ipv6_route').read_text().splitlines()
         if (interfaces != {'lo', 'eth0'}
-                or any(r.split()[1] == '00000000' for r in routes)
+                or probe.get('schema') != 'weekend-egress-probe/v1'
+                or probe.get('tcp_blocked') is not True
+                or probe.get('dns_blocked') is not True
                 or any(r.split()[0] == '0' * 32 and r.split()[1] == '00' for r in v6
                        if r.split()[-1] != 'lo')):
-            raise RuntimeError('UI lab requires internal bridge with no default route')
+            raise RuntimeError('UI lab requires no-masquerade bridge with blocked TCP/DNS probes')
     elif interfaces != {'lo'}:
         raise RuntimeError('requires --network=none; only loopback may exist')
 
@@ -131,7 +134,8 @@ def run_pair(output: Path, *, snapshot='complete', on_ready=None, ui_network=Fal
         recipe_sha256=_digest(Path(__file__)), model_sends=0)
     receipt['model_send_scope'] = 'no model process or provider configured; actual slow replies must remain closed'
     if ui_network:
-        receipt['network'] = 'preexisting_internal_bridge_no_default_route'
+        receipt['network'] = 'preexisting_nomasq_bridge_loopback_dns_blocked_probes'
+        receipt['egress_probe'] = json.loads(Path('/results/egress-probe.txt').read_text())
 
     def launch(role, argv, user=None, groups=(), env=None):
         child = subprocess.Popen(argv, cwd=REPO, env=env or runtime_env,

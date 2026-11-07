@@ -74,7 +74,7 @@ def main(argv=None):
     parser.add_argument('--pki', type=Path, required=True)
     parser.add_argument('--snapshot', choices=('complete', 'partial'), required=True)
     parser.add_argument('--ingress', type=Path, required=True)
-    parser.add_argument('--ui-network', action='store_true', help='reserved internal bridge; no default route')
+    parser.add_argument('--ui-network', action='store_true', help='reserved no-masquerade bridge; startup TCP/DNS probes blocked')
     args = parser.parse_args(argv)
     from azazel_nexus_lab.weekend_process import require_container
     require_container(ui_network=args.ui_network)

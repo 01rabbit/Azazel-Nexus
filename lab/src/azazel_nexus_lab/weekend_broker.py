@@ -11,7 +11,7 @@ from pathlib import Path
 import argparse
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--ui-network', action='store_true', help='reserved internal bridge; no default route')
+parser.add_argument('--ui-network', action='store_true', help='reserved no-masquerade bridge; startup TCP/DNS probes blocked')
 for name in ('root', 'pki', 'port', 'public_hex', 'pin'):
     parser.add_argument(name)
 args = parser.parse_args()

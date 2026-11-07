@@ -34,7 +34,8 @@ def http_files(output, receipt):
         same_cap_control=receipt['same_cap_control'], model_sends=receipt['model_sends'],
         network=receipt['network'], handoffs=receipt['handoffs'],
         process_roles=[p['role'] for p in receipt['processes']],
-        deception_execution='not_started', external_communication='no_default_route; no_external_provider_configured',
+        egress_probe=receipt['egress_probe'],
+        deception_execution='not_started', external_communication='startup_TCP_DNS_probes_blocked; no_external_provider_configured',
         scope='synthetic receipts; human DOM/meaning/browser-network review required')
     files['/lab/checks'] = (json.dumps(control).encode(), 'application/json')
     return files
