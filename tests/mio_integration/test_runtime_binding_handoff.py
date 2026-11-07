@@ -95,9 +95,12 @@ def test_runtime_complete_manifest_displays_and_exports(root, tmp_path):
     assert metadata['hypothesis_ids'] == ['h1', 'h2']
     assert set(metadata['advisory_refs']) == {'h1', 'h2', 'ev:ssh:1'}
     assert metadata['completeness'] == 'complete' and not metadata['unlisted_prose_ids']
+    observed = datetime.fromisoformat(frame.created_at).timestamp()
     assert metadata['evidence_refs'] == [
-        dict(id='ev:ssh:1', source='frame', trust='verified', freshness='current'),
-        dict(id='u1', source='frame', trust='verified', freshness='current')]
+        dict(id='ev:ssh:1', source='frame', trust='verified', freshness='current',
+             observed_at=observed, valid_until=observed + 60),
+        dict(id='u1', source='frame', trust='verified', freshness='current',
+             observed_at=observed, valid_until=observed + 60)]
     recent, _ = project(root, tmp_path, frame, value, metadata)
     binding = recent['incidents'][0]['explanation']['slow_analysis']['binding']
     assert incident_explain.valid_handoff_binding(binding, INCIDENT, time.time())
@@ -282,3 +285,116 @@ def test_degraded_result_preserves_primary_reason_through_restart_and_export(roo
     second.mkdir()
     recent, _ = project(root, second, frame, after, None)
     assert check_export(root, recent, available=False)['budget']['reasons'] == before['budget']['reasons']
+
+
+class ProseProvider(ControlledServer):
+    def __init__(self, text):
+        super().__init__()
+        self.prose = text
+
+    def infer(self, *args, **kwargs):
+        result = super().infer(*args, **kwargs)
+        value = json.loads(result.text)
+        if 'hypotheses' in value:
+            value['hypotheses'][0]['statement'] = self.prose
+        return replace(result, text=json.dumps(value))
+
+
+@pytest.mark.parametrize('text', [
+    'possible ｕ９９９', 'possible h999:unverified', 'possible u999-h999',
+    'possible ｈ９９９：unverified', 'possible h1-u1', 'possible h1:unverified',
+    'possible u999_suffix', 'possible prefixu999', 'possible h9999',
+    'possible U999', 'possible um:999-unverified', 'possible ev:ssh:1-h999',
+    'possible 日本u999', 'possible ' + 'x' * 129 + '-u999', 'possible h1:',
+])
+def test_normalized_or_ambiguous_raw_refs_withhold_real_receipt(root, tmp_path, text):
+    _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
+    # The real schema/receipt remains complete; only advice authorization closes.
+    assert metadata['completeness'] == 'partial'
+    assert metadata['advisory_refs'] == ['ev:ssh:1', 'h1', 'h2']
+    recent, _ = project(root, tmp_path, frame, value, metadata)
+    check_export(root, recent, available=False)
+
+
+@pytest.mark.parametrize('text', ['possible (h1).', 'possible ｈ１', 'possible ev:ssh:1'])
+def test_normalized_unambiguous_member_still_exports(root, tmp_path, text):
+    _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
+    assert metadata['completeness'] == 'complete'
+    recent, _ = project(root, tmp_path, frame, value, metadata)
+    check_export(root, recent, available=True)
+
+
+@pytest.mark.parametrize('source', ['frame', 'broker'])
+def test_saved_recent_expires_at_source_deadline_without_metadata_refresh(root, tmp_path, monkeypatch, source):
+    broker = ({'evidence_refs': ['ev:ssh:1'], 'trust': 'verified',
+               'observed_at': time.time() - 59},) if source == 'broker' else ()
+    lane, frame, _, value, metadata = execute(tmp_path, frame_age=59 if source == 'frame' else 0,
+                                             broker=broker)
+    record = lane._receipts[value['result_handle']]
+    receipt_expiry = record['expires_at']
+    refs = metadata['evidence_refs']
+    assert metadata['expires_at'] == min(receipt_expiry, *(ref['valid_until'] for ref in refs))
+    assert metadata['expires_at'] < receipt_expiry
+    assert all(ref['valid_until'] - ref['observed_at'] == 60 for ref in refs)
+    recent, path = project(root, tmp_path, frame, value, metadata)
+    saved = path.read_bytes()
+    check_export(root, recent, available=True)
+    later = time.time() + 2
+    assert metadata['expires_at'] < later < receipt_expiry
+    # Re-read exactly the saved bytes. No runtime lookup or reprojection occurs.
+    with monkeypatch.context() as patch:
+        patch.setattr(time, 'time', lambda: later)
+        reread = incident_explain.read_recent_incidents(path.read_bytes())
+        binding = reread['incidents'][0]['explanation']['slow_analysis']['binding']
+        assert all(ref['freshness'] == 'current' for ref in binding['evidence_refs'])
+        assert 'expired' in {incident_explain.handoff_ref_freshness(ref, later)
+                             for ref in binding['evidence_refs']}
+        check_export(root, reread, available=False)
+    assert path.read_bytes() == saved
+    assert record['expires_at'] == receipt_expiry
+
+
+@pytest.mark.parametrize('mutation', ['missing_observed', 'missing_until', 'null', 'future',
+                                     'expired', 'at_deadline', 'inverted', 'too_short'])
+def test_saved_ref_deadlines_are_independently_checked(root, tmp_path, mutation):
+    _, frame, _, value, metadata = execute(tmp_path)
+    recent, path = project(root, tmp_path, frame, value, metadata)
+    binding = recent['incidents'][0]['explanation']['slow_analysis']['binding']
+    ref = binding['evidence_refs'][0]
+    now = time.time()
+    if mutation == 'missing_observed': del ref['observed_at']
+    elif mutation == 'missing_until': del ref['valid_until']
+    elif mutation == 'null': ref['valid_until'] = None
+    elif mutation == 'future': ref['observed_at'] = now + 1
+    elif mutation in {'expired', 'at_deadline'}:
+        ref['observed_at'] = now - 60
+        ref['valid_until'] = now - 1 if mutation == 'expired' else now
+        assert incident_explain.handoff_ref_freshness(ref, now) == 'expired'
+    elif mutation == 'inverted': ref['valid_until'] = ref['observed_at']
+    else: ref['valid_until'] = binding['expires_at'] - 1
+    assert binding['expires_at'] > now  # binding lifetime alone cannot authorize
+    assert not incident_explain.valid_handoff_binding(binding, INCIDENT, now)
+    path.write_text(json.dumps(recent))
+    check_export(root, recent, available=False)
+
+
+@pytest.mark.parametrize('text', [
+    'my_password=syntheticvalue', 'pwd=syntheticvalue', 'PASSWD: syntheticvalue',
+    'my_password：syntheticvalue', 'service_token: syntheticvalue',
+    'prefixAPI-keySuffix=syntheticvalue', 'prefixprivate_keySuffix: syntheticvalue',
+    'my_pass=syntheticvalue', 'my_passphrase=syntheticvalue',
+    'prefixcredentialSuffix: syntheticvalue', 'prefixbearerSuffix=syntheticvalue',
+    'prefixcookieSuffix=syntheticvalue', 'prefixsecretSuffix: syntheticvalue',
+    '"my_password": "syntheticvalue"', "'pwd': 'syntheticvalue'",
+])
+def test_secret_key_value_prose_is_wholly_withheld(root, tmp_path, text):
+    fixed = 'Details withheld verify through an authorized source'
+    assert incident_explain._public_model_text(text) == fixed
+    _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
+    recent, _ = project(root, tmp_path, frame, value, metadata)
+    shown = recent['incidents'][0]['explanation']['slow_analysis']
+    assert shown['hypotheses'][0] == fixed
+    advisory = check_export(root, recent, available=True)
+    assert advisory['hypotheses'][0] == fixed
+    assert 'syntheticvalue' not in json.dumps(recent)
+    assert all(b'syntheticvalue' not in data for data in handoff.encode_files(package(root, now=time.time())).values())

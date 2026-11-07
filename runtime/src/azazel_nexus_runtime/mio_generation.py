@@ -230,13 +230,18 @@ class GenerationLane:
                     or record.get('restart_reason') or time.monotonic() >= record['expires']):
                 return None
             meta = record['status'].get('generation_budget', {})
+            sources = project_sources(record.get('source_manifest', []), time.time(),
+                                      record['expires_at'] - record['created_at'])
+            # Only the advisory binding is shortened; the receipt and its
+            # original retention/terminal accounting remain unchanged.
+            expires_at = min([record['expires_at']] + [
+                ref['valid_until'] for ref in sources if ref['valid_until'] is not None])
             return dict(request_id=record['request_id'], handle=handle, epoch=record['epoch'],
                         frame_id=record['status']['frame_id'], generation_id=record['generation'],
-                        created_at=record['created_at'], expires_at=record['expires_at'],
+                        created_at=record['created_at'], expires_at=expires_at,
                         template_version=(meta.get('profile') or {}).get('template_version'),
                         unknowns=unknown_metadata(record.get('frame_unknowns', {})),
-                        evidence_refs=project_sources(record.get('source_manifest', []), time.time(),
-                            record['expires_at'] - record['created_at']),
+                        evidence_refs=sources,
                         **copy.deepcopy(record.get('manifest', dict(hypothesis_ids=[], advisory_refs=[],
                             completeness='partial', unlisted_prose_ids=False))))
 

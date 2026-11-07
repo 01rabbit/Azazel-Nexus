@@ -1182,6 +1182,9 @@ def explanation_summary(record):
 SLOW_RESULT_STATES = frozenset({"queued", "complete", "degraded", "timeout", "cancelled",
                                 "superseded", "stale", "closed"})
 
+_SECRET_KEY_LABEL = re.compile(r"(?i)(pass(word|wd|phrase)?|pwd|secret|token|api[_-]?key|credential|bearer|cookie|private[_-]?key)")
+_KEY_VALUE = re.compile(r"([\w.-]+)[\"']?\s*[:=]\s*\S+")
+
 
 def _public_model_text(value):
     """Bound optional model prose before the read-only operator projection."""
@@ -1191,6 +1194,7 @@ def _public_model_text(value):
     # The MIO frame excludes network addresses, but a generated response is
     # still untrusted. Withhold any address/path-like string at this boundary.
     if (any(ch in normalized for ch in "/\\⁄∕∖⧸⧹﹨")
+            or any(_SECRET_KEY_LABEL.search(match[1]) for match in _KEY_VALUE.finditer(normalized))
             or re.search(r"(?i)\b(?:password|passwd|passphrase|secret|credential|api[_ -]?key|access[_ -]?key|private[_ -]?key|bearer|token|cookie)\b", normalized)
             or re.search(r"\b[A-Za-z0-9_-]{32,}\b", normalized)
             or re.search(r"://|(?:^|\s)//|[\w.+-]+@[\w.-]+|\b\d+(?:\.\d+){3}\b", normalized)
@@ -1211,6 +1215,19 @@ def _public_model_text(value):
         words.append("".join(current[:32]))
     text = "".join(words).strip()
     return text[:240] or "Details withheld verify through an authorized source"
+
+
+def handoff_ref_freshness(ref, now):
+    """Re-evaluate saved source deadlines; a saved current flag is not a lease."""
+    observed, until = ref.get("observed_at"), ref.get("valid_until")
+    if ref.get("freshness") == "revoked":
+        return "revoked"
+    if (any(type(x) not in (int, float) or not math.isfinite(x) for x in (observed, until, now))
+            or not observed < until or observed > now):
+        return "unknown"
+    if now >= until:
+        return "expired"
+    return ref.get("freshness") if ref.get("freshness") in {"current", "expired"} else "unknown"
 
 
 def valid_handoff_binding(binding, incident_id, now):
@@ -1247,13 +1264,14 @@ def valid_handoff_binding(binding, incident_id, now):
             ids.add(ident)
         ids = set()
         for item in refs:
-            if type(item) is not dict or set(item) != {"id", "source", "trust", "freshness"}:
+            if type(item) is not dict or set(item) != {"id", "source", "trust", "freshness", "observed_at", "valid_until"}:
                 return False
             for key in ("id", "source"):
                 val = item[key]
                 if type(val) is not str or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", val) or re.search(r"(?i)password|secret|credential|token|api[_-]?key|bearer", val) or re.search(r"[A-Za-z0-9_-]{32,}", val):
                     return False
-            if item["id"] in ids or item["trust"] != "verified" or item["freshness"] != "current":
+            if (item["id"] in ids or item["trust"] != "verified"
+                    or handoff_ref_freshness(item, now) != "current" or b > item["valid_until"]):
                 return False
             ids.add(item["id"])
         hypotheses = binding["hypothesis_ids"]

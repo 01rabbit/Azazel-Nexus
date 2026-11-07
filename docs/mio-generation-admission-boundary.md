@@ -323,9 +323,20 @@ explicit adapter-verified trust and an observed timestamp; missing metadata is
 unverified/unknown, and only explicit revocation information yields revoked.
 The current budget caller configures no broker; its adapter seam does not turn
 raw request or model trust claims into verified sources.
+Each binding evidence reference carries non-secret `observed_at` and
+`valid_until` timestamps (observation plus the original receipt TTL). The binding
+`expires_at` is the minimum of the receipt expiry and all known source deadlines;
+this never extends or changes the receipt itself. Readers re-evaluate each source
+deadline on every display/export, including a saved recent snapshot: at or after
+`valid_until`, freshness is expired and advice is withheld. Missing/invalid times
+also withhold; a saved `freshness=current` flag cannot renew a source.
 
 Runtime extracts structured IDs from validated assistance and each raw task
 response, and scans prose with MIO's ID grammar before display sanitization.
+Prose uses the same NFKC normalization as public text. Reference-like tokens with
+ambiguous boundaries or joined/malformed IDs make completeness partial rather
+than silently disappearing. Secret-labelled keys in `key=value` or `key: value`
+prose cause the entire string, including its value, to become fixed withheld text.
 `hypothesis_ids` comes from validated hypothesis provenance; `advisory_refs`
 contains the structured reference set, including unknown and gap references.
 An ID occurring only in prose is excluded and sets private

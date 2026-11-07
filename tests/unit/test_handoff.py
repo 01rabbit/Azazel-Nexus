@@ -87,7 +87,8 @@ def binding():
             "template_version": "1.9.0", "created_at": NOW - 60, "expires_at": NOW + 60,
             "completeness": "complete", "hypothesis_ids": ["h1"], "advisory_refs": ["h1", "um:1", "ev:1"],
             "unknowns": [{"id": "um:1", "origin": "model_asserted", "category": "unclassified", "status": "unresolved"}],
-            "evidence_refs": [{"id": "ev:1", "source": "sensor", "trust": "verified", "freshness": "current"}]}
+            "evidence_refs": [{"id": "ev:1", "source": "sensor", "trust": "verified", "freshness": "current",
+                               "observed_at": NOW - 60, "valid_until": NOW + 60}]}
 
 
 def write_slow_recent(root, *, state="complete", written_at=None):

@@ -2,6 +2,7 @@
 from datetime import datetime
 import math
 import re
+import unicodedata
 
 _REFERENCE_FIELDS = frozenset({
     'hypothesis_id', 'gap_id', 'supporting_evidence_refs', 'contradicting_evidence_refs',
@@ -10,15 +11,18 @@ _REFERENCE_FIELDS = frozenset({
 })
 _KINDS = ('event_id', 'structured_ref', 'suricata_ref', 'knowledge_ref', 'fixture_ref',
           'hypothesis_id', 'gap_id', 'unknown_id')
-_TOKENS = re.compile(r'(?<![A-Za-z0-9_.:-])[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}(?![A-Za-z0-9_.:-])')
+_TOKENS = re.compile(r'[\w.:-]+')
+_REFERENCE_LIKE = re.compile(r'(?i)(?:[ugh][0-9]|(?:um|ux|ev|kn|suricata_sid|sha256):)')
 
 
 def references(value):
     """Extract IDs before display sanitization, using MIO's shared grammar."""
     from azazel_mio.id_grammar import id_ok
     structured, prose = set(), set()
+    ambiguous = False
 
     def walk(item, reference=False):
+        nonlocal ambiguous
         if type(item) is dict:
             for key, child in item.items():
                 walk(child, key in _REFERENCE_FIELDS)
@@ -30,11 +34,17 @@ def references(value):
                 # Preserve invalid references as incompleteness, never publish them.
                 structured.add(item)
             else:
-                prose.update(token for match in _TOKENS.finditer(item)
-                             if id_ok(token := match[0].rstrip('.:'), _KINDS))
+                # Match the public text normalization, but never salvage a
+                # valid substring from a joined or malformed reference.
+                for match in _TOKENS.finditer(unicodedata.normalize('NFKC', item)):
+                    token = match[0].rstrip('.')
+                    if id_ok(token, _KINDS):
+                        prose.add(token)
+                    elif _REFERENCE_LIKE.search(token):
+                        ambiguous = True
     walk(value)
     valid = {ref for ref in structured if id_ok(ref, _KINDS)}
-    return valid, prose, valid != structured
+    return valid, prose, ambiguous or valid != structured
 
 
 def timestamp(value):
@@ -81,6 +91,8 @@ def source_manifest(frame, unknowns, broker_results=()):
 
 def project_sources(sources, now, lifetime):
     return [dict(id=item['id'], source=item['source'], trust=item['trust'],
+                 observed_at=item['observed_at'],
+                 valid_until=(item['observed_at'] + lifetime if item['observed_at'] is not None else None),
                  freshness='revoked' if item['revoked'] else freshness(item['observed_at'], now, lifetime))
             for item in sources]
 
