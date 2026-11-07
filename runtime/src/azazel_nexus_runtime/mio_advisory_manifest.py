@@ -13,6 +13,21 @@ _KINDS = ('event_id', 'structured_ref', 'suricata_ref', 'knowledge_ref', 'fixtur
           'hypothesis_id', 'gap_id', 'unknown_id')
 _TOKENS = re.compile(r'[\w.:-]+')
 _REFERENCE_LIKE = re.compile(r'(?i)(?:[ugh][0-9]|(?:um|ux|ev|kn|suricata_sid|sha256):)')
+_ID_CHARACTER = re.compile(r'[A-Za-z0-9._:-]')
+_AMBIGUOUS_CATEGORIES = frozenset({'Cf', 'Mn', 'Mc'})
+
+
+def _ambiguous_id_marks(value):
+    # Inspect BEFORE NFKC: it can compose a combining mark into a letter.
+    # Even a mark beside an ASCII ID character elsewhere in the sentence
+    # prevents a claim of completeness. Never repair it into a valid ID.
+    for index, char in enumerate(value):
+        if unicodedata.category(char) in _AMBIGUOUS_CATEGORIES:
+            neighbors = value[max(0, index - 1):index] + value[index + 1:index + 2]
+            if any(_ID_CHARACTER.search(unicodedata.normalize('NFKC', neighbor))
+                   for neighbor in neighbors):
+                return True
+    return False
 
 
 def references(value):
@@ -34,6 +49,11 @@ def references(value):
                 # Preserve invalid references as incompleteness, never publish them.
                 structured.add(item)
             else:
+                if _ambiguous_id_marks(item):
+                    ambiguous = True
+                    # Do not salvage apparent reference fragments from this
+                    # ambiguous prose; structured IDs are still collected.
+                    return
                 # Match the public text normalization, but never salvage a
                 # valid substring from a joined or malformed reference.
                 for match in _TOKENS.finditer(unicodedata.normalize('NFKC', item)):

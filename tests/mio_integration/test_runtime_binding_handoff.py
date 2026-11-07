@@ -345,6 +345,46 @@ def test_normalized_unambiguous_member_still_exports(root, tmp_path, text):
     check_export(root, recent, available=True)
 
 
+@pytest.mark.parametrize('text', [
+    'possible u\u200b999', 'possible h\u200d999', 'possible ev\u200b:ssh:999',
+    'possible u\u0301999', 'possible h1\u0301',
+    'possible h\u200c1', 'possible \ufeffh1', 'possible h1\u202e',
+    'possible h\u20661', 'possible h\u093e1', 'possible ｈ\u0301１',
+    'possible h1\u200b\u0301', 'possible a\u0301 h1', 'possible a\u200b\u0301 h1',
+])
+def test_format_and_combining_id_marks_withhold_real_receipt(root, tmp_path, text):
+    _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
+    assert metadata['completeness'] == 'partial'
+    assert metadata['advisory_refs'] == ['ev:ssh:1', 'h1', 'h2']
+    recent, _ = project(root, tmp_path, frame, value, metadata)
+    assert check_export(root, recent, available=False)['reason_code'] == 'binding_unverified'
+
+
+@pytest.mark.parametrize('text', ['possible \u200b h1', 'possible \u0301 h1'])
+def test_marks_separated_from_id_characters_keep_complete_receipt(root, tmp_path, text):
+    _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
+    assert metadata['completeness'] == 'complete'
+    recent, _ = project(root, tmp_path, frame, value, metadata)
+    check_export(root, recent, available=True)
+
+
+def test_auth_evidence_id_still_displays_and_exports(root, tmp_path, monkeypatch):
+    original_frame, cap = inputs()
+    monkeypatch.setitem(execute.__globals__, 'inputs', lambda: (
+        replace(original_frame, evidence_refs=('ev:auth:1',)), cap))
+
+    class AuthProvider(ControlledServer):
+        def infer(self, *args, **kwargs):
+            result = super().infer(*args, **kwargs)
+            return replace(result, text=result.text.replace('ev:ssh:1', 'ev:auth:1'))
+
+    _, frame, _, value, metadata = execute(tmp_path, server=AuthProvider())
+    assert metadata['completeness'] == 'complete'
+    assert 'ev:auth:1' in metadata['advisory_refs']
+    recent, _ = project(root, tmp_path, frame, value, metadata)
+    check_export(root, recent, available=True)
+
+
 @pytest.mark.parametrize('source', ['frame', 'broker'])
 def test_saved_recent_expires_at_source_deadline_without_metadata_refresh(root, tmp_path, monkeypatch, source):
     broker = ({'evidence_refs': ['ev:ssh:1'], 'trust': 'verified',
@@ -407,6 +447,12 @@ def test_saved_ref_deadlines_are_independently_checked(root, tmp_path, mutation)
     'prefixcredentialSuffix: syntheticvalue', 'prefixbearerSuffix=syntheticvalue',
     'prefixcookieSuffix=syntheticvalue', 'prefixsecretSuffix: syntheticvalue',
     '"my_password": "syntheticvalue"', "'pwd': 'syntheticvalue'",
+    'my_access_key=syntheticvalue', 'clientSecret: syntheticvalue',
+    'my_secret_key=syntheticvalue', 'my_session_id=syntheticvalue',
+    'my_session-key=syntheticvalue', 'my_sessionToken=syntheticvalue',
+    'my_auth=syntheticvalue', 'my_refresh_token=syntheticvalue',
+    'my_otp=syntheticvalue', 'my_pin=syntheticvalue',
+    'user_pass=syntheticvalue', 'PASS: syntheticvalue', 'passcode: syntheticvalue',
 ])
 def test_secret_key_value_prose_is_wholly_withheld(root, tmp_path, text):
     fixed = 'Details withheld verify through an authorized source'
@@ -419,3 +465,33 @@ def test_secret_key_value_prose_is_wholly_withheld(root, tmp_path, text):
     assert advisory['hypotheses'][0] == fixed
     assert 'syntheticvalue' not in json.dumps(recent)
     assert all(b'syntheticvalue' not in data for data in handoff.encode_files(package(root, now=time.time())).values())
+
+
+@pytest.mark.parametrize('text', ['p\u200bwd=syntheticvalue', 'my_ac\u200ccess_key=syntheticvalue',
+                                  'client\ufeffSecret: syntheticvalue', 'PA\u202eSS: syntheticvalue'])
+def test_format_obscured_secret_is_removed_before_public_projection(root, tmp_path, text):
+    fixed = 'Details withheld verify through an authorized source'
+    assert incident_explain._public_model_text(text) == fixed
+    _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
+    # Both boundaries close: raw reference ambiguity and public prose privacy.
+    assert metadata['completeness'] == 'partial'
+    recent, _ = project(root, tmp_path, frame, value, metadata)
+    assert recent['incidents'][0]['explanation']['slow_analysis']['hypotheses'][0] == fixed
+    check_export(root, recent, available=False)
+    assert 'syntheticvalue' not in json.dumps(recent)
+    assert all(b'syntheticvalue' not in data for data in handoff.encode_files(package(root, now=time.time())).values())
+
+
+@pytest.mark.parametrize('text,expected', [('compass: north', 'compass north'),
+    ('bypass: allowed', 'bypass allowed'), ('passive: yes', 'passive yes'),
+    ('passing: normal', 'passing normal')])
+def test_ordinary_words_containing_pass_remain_visible(root, tmp_path, text, expected):
+    assert incident_explain._public_model_text(text) == expected
+    _, frame, _, value, metadata = execute(tmp_path, server=ProseProvider(text))
+    assert metadata['completeness'] == 'complete'
+    recent, _ = project(root, tmp_path, frame, value, metadata)
+    assert recent['incidents'][0]['explanation']['slow_analysis']['hypotheses'][0] == expected
+    assert check_export(root, recent, available=True)['hypotheses'][0] == expected
+    files = handoff.encode_files(package(root, now=time.time()))
+    assert expected.encode() in files['handoff.json']
+    assert expected.encode() in files['handoff.ja.md']

@@ -1182,20 +1182,34 @@ def explanation_summary(record):
 SLOW_RESULT_STATES = frozenset({"queued", "complete", "degraded", "timeout", "cancelled",
                                 "superseded", "stale", "closed"})
 
+# Keep the ID-only metadata/export guard independent of prose key syntax.
 _SECRET_KEY_LABEL = re.compile(r"(?i)(pass(word|wd|phrase)?|pwd|secret|token|api[_-]?key|credential|bearer|cookie|private[_-]?key)")
+_IDENTIFIER_SECRET_WORD = re.compile(r"(?i)\b(?:password|passwd|passphrase|secret|credential|api[_ -]?key|access[_ -]?key|private[_ -]?key|bearer|token|cookie)\b")
+_PUBLIC_SECRET_LABELS = (
+    r"password|passwd|passphrase|passcode|pwd|secret|token|api[_ -]?key|"
+    r"credential|bearer|cookie|private[_ -]?key|access[_ -]?key|secret[_ -]?key|"
+    r"session[_ -]?(?:id|key|token)|auth|client[_ -]?secret|refresh[_ -]?token|otp|pin"
+)
+_PUBLIC_SECRET_KEY_LABEL = re.compile(r"(?i)(?:" + _PUBLIC_SECRET_LABELS + r"|(?:^|[_.-])pass$)")
+_PUBLIC_SECRET_WORD = re.compile(r"(?i)\b(?:" + _PUBLIC_SECRET_LABELS + r")\b")
 _KEY_VALUE = re.compile(r"([\w.-]+)[\"']?\s*[:=]\s*\S+")
 
 
-def _public_model_text(value):
+def _public_model_text(value, *, _identifier=False):
     """Bound optional model prose before the read-only operator projection."""
     if type(value) is not str or not value:
         raise ValueError("slow_result_refused")
-    normalized = unicodedata.normalize("NFKC", value)
+    normalized = unicodedata.normalize("NFKC", "".join(
+        char for char in value if unicodedata.category(char) != "Cf"))
+    # Closed ASCII metadata keeps its existing guard: e.g. ev:auth:1 is an
+    # evidence ID, not a free-form credential label. Only the ID caller opts in.
+    key_labels = _SECRET_KEY_LABEL if _identifier else _PUBLIC_SECRET_KEY_LABEL
+    secret_words = _IDENTIFIER_SECRET_WORD if _identifier else _PUBLIC_SECRET_WORD
     # The MIO frame excludes network addresses, but a generated response is
     # still untrusted. Withhold any address/path-like string at this boundary.
     if (any(ch in normalized for ch in "/\\⁄∕∖⧸⧹﹨")
-            or any(_SECRET_KEY_LABEL.search(match[1]) for match in _KEY_VALUE.finditer(normalized))
-            or re.search(r"(?i)\b(?:password|passwd|passphrase|secret|credential|api[_ -]?key|access[_ -]?key|private[_ -]?key|bearer|token|cookie)\b", normalized)
+            or any(key_labels.search(match[1]) for match in _KEY_VALUE.finditer(normalized))
+            or secret_words.search(normalized)
             or re.search(r"\b[A-Za-z0-9_-]{32,}\b", normalized)
             or re.search(r"://|(?:^|\s)//|[\w.+-]+@[\w.-]+|\b\d+(?:\.\d+){3}\b", normalized)
             or re.search(r"(?:[0-9a-fA-F]{0,4}:){2,}[0-9a-fA-F:.]*", normalized)):
@@ -1322,7 +1336,7 @@ def _public_binding_identifier(value):
     from .handoff import detect, public_binding_id
     return (type(value) is str and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", value))
             and not _SECRET_KEY_LABEL.search(value)
-            and _public_model_text(value) != "Details withheld verify through an authorized source"
+            and _public_model_text(value, _identifier=True) != "Details withheld verify through an authorized source"
             and not [code for code in detect(value) if code != "host_port" or not public_binding_id(value)])
 
 
