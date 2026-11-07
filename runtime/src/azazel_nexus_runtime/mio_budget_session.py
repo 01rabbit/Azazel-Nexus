@@ -48,6 +48,9 @@ class BudgetSession:
         self.done = threading.Event()
         self.assistance = None
         self.calls = []
+        # Private material follows the lifetime of the local receipt, not the
+        # wire-visible budget schema.
+        self.frame_unknowns = {}
 
     def note_failure(self, reason, outcome):
         with self.lock:
@@ -261,6 +264,7 @@ class BudgetSession:
         try:
             if not isinstance(receipt,self.api.GenerationOutcome):
                 raise ValueError
+            self.frame_unknowns = copy.deepcopy(getattr(receipt, 'frame_unknowns', {}))
             raw_reason = receipt.reason
             self.mio_reason = raw_reason if raw_reason in MIO_REASON_OUTCOMES else ('malformed' if raw_reason is not None else None)
             disposition = receipt.coordinator_disposition
