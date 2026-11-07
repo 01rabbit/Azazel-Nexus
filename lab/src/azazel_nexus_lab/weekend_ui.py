@@ -19,25 +19,26 @@ def noc_frame(request_id='weekend-noc1'):
 def panels(receipt):
     """Allowlisted projection from the SAME paired receipt; no raw frame/body."""
     from azazel_nexus.incident_explain import read_record
-    record = read_record(receipt['cases']['P04']['record'])
-    soc = record['mio']['fast_assistance']
-    expected = f"mio-{record['incident_id'][4:]}-{record['incident_sequence']}"
-    if soc['trace_id'] != expected or soc['frame_id'] != expected + ':frame':
-        raise ValueError('lab UI requires incident-bound SOC trace')
-    noc = receipt['cases']['P01']['fast_assistance']
+    records = [('NOC1', read_record(receipt['noc_incident']['record'])),
+               ('SOC1', read_record(receipt['cases']['P04']['record']))]
+    if records[0][1]['incident_id'] == records[1][1]['incident_id']:
+        raise ValueError('lab UI requires distinct NOC and SOC incidents')
     rows = []
-    for name, fast in (('NOC1', noc), ('SOC1', soc)):
-        assert fast['frame_id'] == fast['trace_id'] + ':frame'
+    for name, record in records:
+        fast = record['mio']['fast_assistance']
+        expected = f"mio-{record['incident_id'][4:]}-{record['incident_sequence']}"
+        if fast['trace_id'] != expected or fast['frame_id'] != expected + ':frame':
+            raise ValueError('lab UI requires incident-bound trace')
         assert fast['generation_method'] == 'static_reference'
         assert fast['unknowns'] and fast['next_checks'] and fast['handoff']['current_action'] is None
         rows.append(dict(case=name, incident_id=record['incident_id'], trace_id=fast['trace_id'],
             frame_id=fast['frame_id'], method=fast['generation_method'],
-            evidence=('Unverified synthetic operator report of intermittent service reachability; '
-                      'T1110 is a caller tag, not a measured cause.' if name == 'NOC1' else
+            evidence=('Validated intake of an authored synthetic service report in an Edge-shaped envelope; '
+                      'outage and maintenance remain unverified. T1110 is a caller tag, not a measured cause.' if name == 'NOC1' else
                       'Validated intake transition; refs remain in the incident evidence plane.'),
             unknowns=list(fast['unknowns']), next_checks=list(fast['next_checks']),
             handoff=dict(current_action=None, frame_id=fast['handoff']['frame_id']),
-            association=('lab_case_association_not_event_evidence' if name == 'NOC1' else 'incident_bound'),
+            association='incident_bound',
             # Context-specific operator checks are predeclared lab guidance,
             # visually separate from actual MIO next_checks above.
             lab_guidance=('Read authorized service reachability records, trusted timestamps, maintenance '

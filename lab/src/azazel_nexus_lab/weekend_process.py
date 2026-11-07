@@ -39,6 +39,44 @@ def _digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def verify_handoff(parent, incident_id):
+    """The ordinary CLI creates ONE package below its private output parent."""
+    entries = list(parent.iterdir())
+    assert len(entries) == 1, 'expected one ordinary handoff package'
+    package = entries[0]
+    assert not package.is_symlink() and package.is_dir(), 'handoff package is not a directory'
+    files = list(package.iterdir())
+    assert {p.name for p in files} == {'manifest.json', 'handoff.json', 'handoff.ja.md'}
+    assert all(not p.is_symlink() and p.is_file() for p in files)
+    manifest = json.loads((package / 'manifest.json').read_text())
+    assert manifest['schema'] == 'azazel-nexus/handoff-manifest/1'
+    assert manifest['incident_id'] == incident_id
+    assert [e['name'] for e in manifest['files']] == ['handoff.json', 'handoff.ja.md']
+    for entry in manifest['files']:
+        path = package / entry['name']
+        assert _digest(path) == entry['sha256'], 'handoff digest mismatch'
+        assert path.stat().st_size == entry['bytes'], 'handoff size mismatch'
+    document = json.loads((package / 'handoff.json').read_text())
+    assert document['incident']['incident_id'] == incident_id
+    assert incident_id in (package / 'handoff.ja.md').read_text()
+    return dict(directory=str(package.relative_to(parent.parent)),
+                files={p.name: _digest(p) for p in files})
+
+
+def noc_event():
+    """Authored service report in a synthetic Edge-shaped envelope, not telemetry."""
+    from azazel_nexus_lab.weekend_ui import NOC_QUESTION, NOC_CONTEXT
+    event = edge_input()
+    event['normalized'].update(src_ip='192.0.2.18', sid=990001, target_port=22,
+        attack_type=NOC_QUESTION + ' ' + NOC_CONTEXT, category='Misc activity',
+        severity=4, technique_ids=[])
+    event['defense'].update(action='observe', reason='synthetic service report only',
+        policy_reason='baseline_observe_only', target='192.0.2.18')
+    event['enforcement'].update(selected_action='observe', target='192.0.2.18',
+        policy_reason='baseline_observe_only', command_plan=[], rollback_plan=[])
+    return event
+
+
 def run_pair(output: Path, *, snapshot='complete'):
     require_container()
     import grp
@@ -98,6 +136,7 @@ def run_pair(output: Path, *, snapshot='complete'):
             ('run/mio-advise', 'azmioentry', 'azmio-advise', 0o2710),
             ('run/mio-status', 'azmioentry', 'azazel-operator', 0o2750),
             ('run/ui-read/mio', 'azmioentry', None, 0o2750),
+            ('run/ui-read/knowledge', 'azknowledge', None, 0o2750),
             ('run/edge-intake', 'azintake', 'azedge', 0o2710),
             ('run/edge-intake-status', 'azintake', 'azazel-operator', 0o2750),
             ('run/incident-explain-status', 'azexplain', 'azazel-operator', 0o2750),
@@ -157,6 +196,10 @@ def run_pair(output: Path, *, snapshot='complete'):
             value = subprocess.run([sys.executable, '-B', '-c', code], input=json.dumps(frame),
                 cwd=REPO, env=runtime_env, capture_output=True, text=True, timeout=8,
                 preexec_fn=_credentials('azoperator', (gid('azazel-operator'),)))
+            index = len(list(output.glob('operator-*.exit')))
+            for suffix, text in (('stdout', value.stdout), ('stderr', value.stderr),
+                                 ('exit', str(value.returncode) + '\n')):
+                (output / f'operator-{index}.{suffix}').write_text(text)
             assert value.returncode == 0, 'operator entry request failed'
             return json.loads(value.stdout)
 
@@ -210,6 +253,46 @@ def run_pair(output: Path, *, snapshot='complete'):
         assert after == before, 'P3 caused full context egress'
         receipt['cases']['P04'] = dict(record=record, broker_ingress=after[0]-before[0],
             knowledge_ingress=after[1]-before[1], generated_sends=0)
+        # A distinct NOC incident through the SAME actual intake/explainer chain.
+        # The authored report remains P3 in this envelope; P01's public operator
+        # request above is separate and is never relabelled as incident evidence.
+        from azazel_nexus.edge_intake import EvidenceRecord, IncidentTracker, parse_edge_event
+        event = noc_event()
+        raw = json.dumps(event).encode()
+        expected_incident = IncidentTracker(lambda: 0).add(
+            EvidenceRecord.receive(parse_edge_event(raw), lambda: 0))[0]['incident_id']
+        assert expected_incident != record['incident_id']
+        (output / 'noc-input.json').write_bytes(raw + b'\n')
+        sent = subprocess.run([sys.executable, '-B', '-c',
+            'import socket,sys; s=socket.socket(socket.AF_UNIX); s.settimeout(2); '
+            's.connect(sys.argv[1]); s.sendall(sys.stdin.buffer.read()); s.close()',
+            str(az / 'run/edge-intake/edge-intake.sock')], input=raw + b'\n',
+            cwd=REPO, env=runtime_env, capture_output=True, timeout=4,
+            preexec_fn=_credentials('azedge', (gid('azedge'),)))
+        assert sent.returncode == 0, 'NOC synthetic intake failed'
+        until = time.monotonic() + 12
+        noc_record = None
+        while time.monotonic() < until:
+            assert all(c.poll() is None for c in children)
+            for path in sorted((az / 'incident-explain/explanations').glob('*.jsonl')):
+                for line in path.read_bytes().splitlines():
+                    candidate = read_record(json.loads(line))
+                    if candidate['incident_id'] == expected_incident:
+                        noc_record = candidate
+            if noc_record is not None:
+                break
+            time.sleep(.05)
+        assert noc_record is not None, 'no NOC incident explanation'
+        noc_fast = noc_record['mio']['fast_assistance']
+        assert noc_fast['full_node_context_status'] == 'not_queried'
+        assert noc_fast['generation_method'] == 'static_reference'
+        assert noc_fast['unknowns'] and noc_fast['next_checks']
+        assert noc_fast['handoff']['current_action'] is None
+        assert noc_fast['trace_id'] == f"mio-{expected_incident[4:]}-{noc_record['incident_sequence']}"
+        assert (_count(broker_log_target), _count(ingress)) == after
+        receipt['noc_incident'] = dict(record=noc_record, input_sha256=_digest(output / 'noc-input.json'),
+            input_kind='authored_synthetic_report_in_edge_envelope_not_measured_outage',
+            broker_ingress=0, knowledge_ingress=0, generated_sends=0)
         # Same live producer/broker: prove actual unavailable then recovery.
         broker.terminate()
         broker.wait(timeout=5)
@@ -229,26 +312,32 @@ def run_pair(output: Path, *, snapshot='complete'):
         # Preserve the actual status read model for the later real browser.
         status = subprocess.run([sys.executable, '-B', '-m', 'azazel_nexus.cli',
             'status', '--json'], cwd=REPO, env=runtime_env, capture_output=True, text=True, timeout=15)
+        (output / 'status.stdout').write_text(status.stdout)
+        (output / 'status.stderr').write_text(status.stderr)
+        (output / 'status.exit').write_text(str(status.returncode) + '\n')
         assert status.returncode == 0, 'status read model export failed'
         view = json.loads(status.stdout)
         assert view['schema'] == 'azazel-nexus/status-view/1'
+        visible = {row['incident_id'] for row in
+                   view['sections']['edge_loop']['recent']['snapshot']['incidents']}
+        assert {record['incident_id'], noc_record['incident_id']} <= visible
         (output / 'status-view.json').write_text(json.dumps(view, ensure_ascii=False, indent=2) + '\n')
-        handoff = output / 'handoff'
-        handoff.mkdir(mode=0o700)
-        exported = subprocess.run([sys.executable, '-B', '-m', 'azazel_nexus.cli', 'handoff',
-            'export', '--incident', record['incident_id'], '--output-dir', str(handoff)],
-            cwd=REPO, env=runtime_env, capture_output=True, text=True, timeout=15)
-        (output / 'handoff.stdout').write_text(exported.stdout)
-        (output / 'handoff.stderr').write_text(exported.stderr)
-        assert exported.returncode == 0, 'ordinary handoff export failed'
-        receipt['handoff_files'] = {p.name: _digest(p) for p in handoff.iterdir() if p.is_file()}
-        assert 'manifest.json' in receipt['handoff_files']
-        manifest = json.loads((handoff / 'manifest.json').read_text())
-        assert manifest['incident_id'] == record['incident_id']
-        for entry in manifest['files']:
-            path = handoff / entry['name']
-            assert path.parent == handoff and _digest(path) == entry['sha256']
-            assert path.stat().st_size == entry['bytes']
+        receipt['handoffs'] = {}
+        for case, incident in (('SOC1', record), ('NOC1', noc_record)):
+            label = 'handoff' if case == 'SOC1' else 'noc-handoff'
+            handoff = output / label
+            handoff.mkdir(mode=0o700)
+            exported = subprocess.run([sys.executable, '-B', '-m', 'azazel_nexus.cli', 'handoff',
+                'export', '--incident', incident['incident_id'], '--output-dir', str(handoff)],
+                cwd=REPO, env=runtime_env, capture_output=True, text=True, timeout=15)
+            for suffix, text in (('stdout', exported.stdout), ('stderr', exported.stderr),
+                                 ('exit', str(exported.returncode) + '\n')):
+                (output / f'{label}.{suffix}').write_text(text)
+            assert exported.returncode == 0, 'ordinary handoff export failed'
+            receipt['handoffs'][case] = {**verify_handoff(handoff, incident['incident_id']),
+                'incident_id': incident['incident_id'],
+                'trace_id': incident['mio']['fast_assistance']['trace_id']}
+        receipt['handoff_files'] = receipt['handoffs']['SOC1']['files']
         (output / 'paired.json').write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + '\n')
         return receipt
     finally:

@@ -12,6 +12,60 @@ from test_budget_api import ControlledServer, inputs
 REPO = Path(__file__).resolve().parents[2]
 
 
+def handoff_fixture(tmp_path):
+    import io
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from azazel_nexus.handoff_cli import run
+    from test_handoff import example, INCIDENT, NOW
+    root, parent = tmp_path / 'root', tmp_path / 'export'
+    root.mkdir()
+    parent.mkdir(mode=0o700)
+    example.build_fixture(root)
+    stream = io.StringIO()
+    now = datetime.fromtimestamp(NOW, timezone.utc).isoformat().replace('+00:00', 'Z')
+    assert run(SimpleNamespace(incident=INCIDENT, output_dir=parent), now=now,
+               out=stream, principal='root', root=root) == 0
+    return parent, INCIDENT, stream.getvalue()
+
+
+def test_handoff_verifies_real_cli_child_package_and_all_three_files(tmp_path):
+    from azazel_nexus_lab.weekend_process import verify_handoff
+    parent, incident, stdout = handoff_fixture(tmp_path)
+    value = verify_handoff(parent, incident)
+    assert str(tmp_path / value['directory']) in stdout
+    assert set(value['files']) == {'manifest.json', 'handoff.json', 'handoff.ja.md'}
+    assert value['files']['manifest.json'] in stdout
+
+
+@pytest.mark.parametrize('damage', ['bytes', 'size', 'incident', 'path', 'symlink', 'extra_package'])
+def test_handoff_rejects_corrupt_or_ambiguous_exports(tmp_path, damage):
+    from azazel_nexus_lab.weekend_process import verify_handoff
+    parent, incident, _ = handoff_fixture(tmp_path)
+    package = next(parent.iterdir())
+    path = package / 'handoff.json'
+    manifest_path = package / 'manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    if damage == 'bytes':
+        data = path.read_bytes()
+        path.write_bytes(b'X' + data[1:])  # same size; digest must catch it
+    elif damage == 'size':
+        manifest['files'][0]['bytes'] += 1
+    elif damage == 'incident':
+        manifest['incident_id'] = 'inc-' + 'f' * 16
+    elif damage == 'path':
+        manifest['files'][0]['name'] = '../handoff.json'
+    elif damage == 'symlink':
+        saved = package / 'saved.json'
+        path.rename(saved)
+        path.symlink_to(saved.name)
+    else:
+        (parent / 'extra-package').mkdir()
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(AssertionError):
+        verify_handoff(parent, incident)
+
+
 def test_three_task_short_fixture_tracks_budget_and_same_cap_production_refusal():
     from azazel_nexus.generation_budget import TASKS
     from azazel_nexus_runtime.mio_serve import LocalInferenceResult
@@ -42,20 +96,29 @@ def paired_fixture():
     from test_incident_explain import transition, _record
     from azazel_nexus.incident_explain import build_frame, read_mio_reply
     from azazel_nexus_runtime.mio_fast_assistance import fast_assistance
-    edge = transition()
-    fast = fast_assistance(build_frame(edge, 17), deadline_s=.5)
-    record = _record(read_mio_reply(dict(route='local', outcome='abandoned', reason='no advice',
-        ledger_seq=41, fast_assistance=fast)))
-    record.update(incident_id=edge['incident_id'], incident_sequence=17)
+    def explained(edge, sequence):
+        fast = fast_assistance(build_frame(edge, sequence), deadline_s=.5)
+        record = _record(read_mio_reply(dict(route='local', outcome='abandoned', reason='no advice',
+            ledger_seq=41, fast_assistance=fast)))
+        record.update(incident_id=edge['incident_id'], incident_sequence=sequence)
+        return record
+    record = explained(transition(), 17)
+    from azazel_nexus_lab.weekend_process import noc_event
+    from azazel_nexus.edge_intake import EvidenceRecord, IncidentTracker, parse_edge_event
+    event = parse_edge_event(json.dumps(noc_event()).encode())
+    noc_transition = IncidentTracker(lambda: 0).add(EvidenceRecord.receive(event, lambda: 0))[0]
+    noc_transition['event_type'] = 'edge.incident.' + noc_transition.pop('transition')
     return dict(cases={'P01': {'fast_assistance': fast_assistance(noc_frame(), deadline_s=.5)},
-                       'P04': {'record': record}})
+                       'P04': {'record': record}},
+                noc_incident={'record': explained(noc_transition, 18)})
 
 
 def test_ui_trace_noc_soc_projection_preserves_identity_and_marks_guidance():
     value = panels(paired_fixture())
     assert [r['case'] for r in value['rows']] == ['NOC1', 'SOC1']
     assert value['rows'][1]['association'] == 'incident_bound'
-    assert value['rows'][0]['association'] == 'lab_case_association_not_event_evidence'
+    assert value['rows'][0]['association'] == 'incident_bound'
+    assert value['rows'][0]['incident_id'] != value['rows'][1]['incident_id']
     for row in value['rows']:
         assert row['incident_id'] and row['trace_id'] and row['frame_id']
         assert row['evidence'] and row['unknowns'] and row['next_checks'] and row['lab_guidance']
@@ -65,19 +128,30 @@ def test_ui_trace_noc_soc_projection_preserves_identity_and_marks_guidance():
 
 
 def test_ui_rejects_cross_incident_trace_and_does_not_modify_production_assets():
-    from types import SimpleNamespace
+    from azazel_nexus_runtime.ui_serve import UiApp, LoginCodes, FixtureSource
     receipt = paired_fixture()
     forged = copy.deepcopy(receipt)
     forged['cases']['P04']['record']['incident_id'] = 'inc-' + 'f' * 16
     with pytest.raises(ValueError):
         panels(forged)
-    original = b'<html><body></body></html>'
-    instance = SimpleNamespace(static={'/': (original, 'text/html'), '/index.html': (original, 'text/html')})
+    forged = copy.deepcopy(receipt)
+    forged['noc_incident']['record']['incident_id'] = 'inc-' + 'e' * 16
+    with pytest.raises(ValueError):
+        panels(forged)
+    def app():
+        return UiApp(source=FixtureSource(REPO / 'tests/fixtures/ui/demo-status-view.json'),
+                     codes=LoginCodes(lambda _: None, 'http://127.0.0.1:8443/'), port=8443)
+    production = app()
+    original = dict(production.static)
+    original_document = production.view_document()
+    instance = app()
     supplement(instance, receipt)
     assert b'/static/weekend.js' in instance.static['/'][0]
     assert b'textContent' in instance.static['/static/weekend.js'][0]
     assert b'innerHTML' not in instance.static['/static/weekend.js'][0]
-    assert original == b'<html><body></body></html>'
+    assert production.static == original == app().static
+    assert production.view_document() == original_document
+    assert b'weekend_lab' not in original_document
 
 
 def test_complete_seam_is_signed_before_transport_and_production_stays_partial(tmp_path):
