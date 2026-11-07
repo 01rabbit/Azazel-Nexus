@@ -3,7 +3,7 @@ from datetime import datetime
 import math
 import re
 import unicodedata
-from azazel_nexus.model_text import allowed_model_text
+from azazel_nexus.model_text import allowed_model_text, is_typed_content_digest
 
 _REFERENCE_FIELDS = frozenset({
     'hypothesis_id', 'gap_id', 'supporting_evidence_refs', 'contradicting_evidence_refs',
@@ -43,11 +43,22 @@ def references(value):
                     return
                 # Match the public text normalization, but never salvage a
                 # valid substring from a joined or malformed reference.
+                # Digests are ASCII IDs, not compatibility spellings. Count
+                # raw occurrences so a valid copy cannot mask a normalized one.
+                raw_digests = [m[0].rstrip('.') for m in _TOKENS.finditer(item)
+                               if is_typed_content_digest(m[0].rstrip('.'))]
                 for match in _TOKENS.finditer(normalized):
                     token = match[0].rstrip('.')
-                    if id_ok(token, _KINDS):
+                    if is_typed_content_digest(token):
+                        if token not in raw_digests:
+                            ambiguous = True
+                        else:
+                            raw_digests.remove(token)
+                            prose.add(token)
+                    elif id_ok(token, _KINDS):
                         prose.add(token)
-                    elif _REFERENCE_LIKE.search(token):
+                    elif (_REFERENCE_LIKE.search(token)
+                          or re.search(r"[A-Za-z0-9_-]{32,}", token)):
                         ambiguous = True
     walk(value)
     valid = {ref for ref in structured if id_ok(ref, _KINDS)}

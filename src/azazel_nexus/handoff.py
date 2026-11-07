@@ -183,15 +183,15 @@ def detect(text: str) -> list[str]:
     return found
 
 
-def _walk(value, key=None):
+def _walk(value, path=()):
     if isinstance(value, dict):
         for k, v in value.items():
-            yield from _walk(v, k)
+            yield from _walk(v, path + (k,))
     elif isinstance(value, list):
         for v in value:
-            yield from _walk(v, key)
+            yield from _walk(v, path)
     elif isinstance(value, str):
-        yield key, value
+        yield path, value
 
 
 def fixed_vocabulary() -> frozenset:
@@ -221,9 +221,15 @@ def public_binding_id(text):
 
 def scan_package(value) -> list[str]:
     """Every category found in any string of a package or manifest value."""
+    from .model_text import is_typed_content_digest
     found = []
     vocabulary = fixed_vocabulary()
-    for key, text in _walk(value):
+    for path, text in _walk(value):
+        key = path[-1] if path else None
+        if (is_typed_content_digest(text)
+                and (path[-3:] == ("binding", "evidence_refs", "id")
+                     or path[-2:] == ("binding", "advisory_refs"))):
+            continue
         form = _FIXED_FORM.get(key)
         if form is not None and form.fullmatch(text):
             continue
