@@ -501,6 +501,64 @@ def test_one_shot_fence_write_failure_still_refuses_repeat(tmp_path, monkeypatch
     assert len(starts) == 1
 
 
+@pytest.mark.parametrize('failure', ['selector', 'wait', 'cleanup'])
+@pytest.mark.parametrize('entry', ['supervise', 'run_once'])
+def test_one_shot_observation_exception_fences_before_retry(tmp_path, monkeypatch, failure, entry):
+    from azazel_nexus.model_runtime import RuntimeBinary
+    from azazel_nexus.runtime_lifecycle import BudgetLedger, RestartBudget
+    starts = []
+    process = ProcessStub()
+    process.stdout = process.stderr = None
+    def spawn(*args, **kwargs):
+        starts.append(process)
+        return process
+    def fail(*args, **kwargs):
+        raise OSError(errno.EMFILE, 'injected observation failure')
+    monkeypatch.setattr(supervisor.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(supervisor, '_process_identity', lambda pid: 'owned-start')
+    if failure == 'selector':
+        monkeypatch.setattr(supervisor.selectors, 'DefaultSelector', fail)
+    else:
+        monkeypatch.setattr(supervisor, '_drain_bounded', lambda *a, **kw: (b'', b'', False, False, False))
+    if failure == 'wait':
+        monkeypatch.setattr(process, 'wait', fail)
+    monkeypatch.setattr(supervisor, '_terminate_group', fail if failure == 'cleanup' else
+                        lambda *a, **kw: supervisor.StopResult(supervisor.StopState.REFUSED, 'signal_refused'))
+    record = RuntimeBinary('exception-stub', '/usr/libexec/azazel/owned-stub', 'fixture', 'sha256:' + '0' * 64, ('/usr/libexec/azazel/owned-stub',))
+    ledger = BudgetLedger(tmp_path / 'state' / 'budget.json')
+    state = supervisor.Supervision(record, tmp_path, RestartBudget(generation=1), ledger=ledger)
+    if entry == 'supervise':
+        supervisor.supervise(state)
+        report = state.reports[-1]
+        supervisor.supervise(state)
+        assert state.budget.fenced and ledger.load(generation=1, runtime_id=record.runtime_id).fenced
+        assert len(state.reports) == 1
+    else:
+        report = supervisor.run_once(record, root=tmp_path, ledger=ledger)
+    assert report.state is LifecycleState.FENCED and report.process is process
+    assert 'OSError' in report.reason and 'injected observation failure' in report.reason
+    fence = json.loads((ledger.path.parent / 'stop-fence.json').read_text())
+    assert (fence['state'], fence['pid'], fence['group'], fence['start_identity']) == ('unconfirmed', process.pid, process.pid, 'owned-start')
+    assert supervisor.run_once(record, root=tmp_path, ledger=ledger).state is LifecycleState.FENCED
+    monkeypatch.setattr(supervisor, '_unconfirmed_runs', {})
+    assert supervisor.run_once(record, root=tmp_path, ledger=ledger).state is LifecycleState.FENCED
+    assert len(starts) == 1
+
+
+def test_one_shot_observation_exception_propagates_after_confirmed_cleanup(tmp_path, monkeypatch):
+    from azazel_nexus.model_runtime import RuntimeBinary
+    process = ProcessStub()
+    process.stdout = process.stderr = None
+    monkeypatch.setattr(supervisor.subprocess, 'Popen', lambda *a, **kw: process)
+    monkeypatch.setattr(supervisor, '_process_identity', lambda pid: 'owned-start')
+    monkeypatch.setattr(supervisor.selectors, 'DefaultSelector', lambda: (_ for _ in ()).throw(OSError(errno.EMFILE, 'selector failure')))
+    monkeypatch.setattr(supervisor, '_terminate_group', lambda *a, **kw: supervisor.StopResult(supervisor.StopState.CONFIRMED, 'stopped'))
+    record = RuntimeBinary('confirmed-stub', '/usr/libexec/azazel/owned-stub', 'fixture', 'sha256:' + '0' * 64, ('/usr/libexec/azazel/owned-stub',))
+    with pytest.raises(OSError, match='selector failure'):
+        supervisor.run_once(record, root=tmp_path)
+    assert not (tmp_path / 'stop-fence.json').exists()
+
+
 def test_run_once_normal_cleanup_is_not_fenced(monkeypatch, tmp_path):
     from azazel_nexus.model_runtime import RuntimeBinary
     process = ProcessStub()

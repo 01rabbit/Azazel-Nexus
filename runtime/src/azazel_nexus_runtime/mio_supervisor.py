@@ -329,6 +329,9 @@ def run_once(
     identity = _process_identity(process.pid)
 
     readiness = Readiness.NOT_CHECKED
+    stdout_bytes = stderr_bytes = 0
+    stdout_truncated = stderr_truncated = False
+    observation_error = None
     try:
         out, err, stdout_truncated, stderr_truncated, timed_out = _drain_bounded(
             process, ceiling=STDIO_BYTE_CEILING, remaining=remaining
@@ -344,8 +347,13 @@ def run_once(
             readiness = Readiness.PASSED
         elif out or err:
             readiness = Readiness.FAILED
+    except Exception as exc:
+        observation_error = exc
     finally:
-        cleanup = _terminate_group(process, group=group, identity=identity)
+        try:
+            cleanup = _terminate_group(process, group=group, identity=identity)
+        except Exception as exc:
+            cleanup = StopResult(StopState.UNKNOWN, f"cleanup observation exception: {type(exc).__name__}: {exc}")
         for stream in (process.stdout, process.stderr):
             if stream is not None:
                 try:
@@ -358,7 +366,10 @@ def run_once(
             state=LifecycleState.FENCED, readiness=readiness, exit_code=process.returncode,
             signalled=None, stdout_bytes=stdout_bytes, stderr_bytes=stderr_bytes,
             stdout_truncated=stdout_truncated, stderr_truncated=stderr_truncated,
-            reason="process cleanup unconfirmed: " + cleanup.reason,
+            reason="process cleanup unconfirmed: " + cleanup.reason + (
+                f"; observation exception: {type(observation_error).__name__}: {observation_error}"
+                if observation_error is not None else ""
+            ),
             process=process, start_identity=identity, group=group,
         )
         _unconfirmed_runs[owner] = report
@@ -372,6 +383,9 @@ def run_once(
             report = ProcessReport(**{**report.__dict__, "reason": report.reason + "; fence_write_failed"})
             _unconfirmed_runs[owner] = report
         return report
+
+    if observation_error is not None:
+        raise observation_error
 
     code = process.returncode
     signalled = -code if code is not None and code < 0 else None
