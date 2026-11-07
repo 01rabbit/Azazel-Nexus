@@ -137,6 +137,15 @@
 
 最後に、パッケージと manifest の**すべての文字列**と Markdown を検査する。対象: IP アドレス（v4・v6）、MAC、URL、メールアドレス、Windows と Unix のパス、host:port、ドット区切りのホスト名、インターフェース名、percent 符号化、24 桁以上の 16 進、Base64 らしい値、秘密らしい形（鍵の先頭行、`password=` 等）。形の決まった欄（digest・schema・版・ファイル名）と、ドットのないコード・時刻・ID の形の文字列、製品自身のドット付き語彙だけを除き（コードの形でも 16 進・Base64・秘密の形は検査する）、見つかれば `suppression_incomplete:<種別>` で拒否して何も書かない。
 形の決まった欄・コード・時刻・ID の扱いは JSON と Markdown で同じ。ドットを含む語は、製品自身の語彙（監査のイベント種別 `bootstrap.ready` 等。auditd の宣言と照合する試験がある）だけを除き、ほかはホスト名として検査する。
+
+助言の handoff binding では、`evidence_refs[].id` に厳密な ASCII
+`sha256:[0-9a-f]{64}`（小文字 prefix・小文字 hex 64 桁）を content digest 型の
+ID として保持する。JSON の最終検査も binding 内のこの欄と `advisory_refs` の同型 ID
+に限定して扱う。frame の verified/current refs に実在することと、助言の参照集合への
+membership は引き続き必須で、未掲載 digest を本文だけで参照した助言は partial として
+表示しない。大文字・63/65 桁・他 prefix・base64 風・全角・Cf 混入はこの型にならない。
+`source` 欄、一般の 32 桁以上の連続 token、秘密キー語彙、短い別名の要素一致、本文の
+秘密検査は変更しない。詳細は [生成境界契約](mio-generation-admission-boundary.md) を参照。
 規則は [機密区分](inventory-confidentiality.md)（外部の報告に raw identity を入れない）と status view の伏字（自由文・パスは出さず `withheld` と書く）に合わせている。
 
 ## 6. 生成例（fixture 由来）

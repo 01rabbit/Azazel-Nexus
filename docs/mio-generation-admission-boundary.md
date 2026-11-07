@@ -337,6 +337,18 @@ Prose uses the same NFKC normalization as public text. Reference-like tokens wit
 ambiguous boundaries or joined/malformed IDs make completeness partial rather
 than silently disappearing. Separate IDs with whitespace or punctuation; Japanese text directly adjoining an ID (for example, `仮説h1を確認`) remains partial.
 Compatibility spellings such as `h¹`, `𝐡1` and `ｈ１` use membership after NFKC: known IDs are accepted and unknown IDs remain partial.
+Content digests are the exception to compatibility normalization: only raw ASCII
+`sha256:[0-9a-f]{64}` (exact lowercase prefix and exactly 64 lowercase hex digits)
+is a typed evidence ID. The same type is accepted in `binding.evidence_refs[].id`
+and extracted from delimited advisory prose for membership checking. A digest
+mentioned only in prose remains unlisted/partial; verified/current frame source
+membership and receipt reference checks are still required. Uppercase, 63/65
+digits, other prefixes, base64-like values, fullwidth spellings and embedded Cf
+characters cannot acquire this type. Other long tokens retain the 32+ rejection.
+The type does not apply to `source`, unknown categories or arbitrary text fields.
+The prose privacy guard is unchanged: recognizing an ID for membership does not
+authorize displaying its raw text. Digest-bearing prose can still become the
+fixed withheld text while the valid ID remains visible in binding metadata.
 The prose repertoire includes ASCII `% & + / * # @ ~ ^ | < > = $`; independent secret/path privacy guards still apply.
 Secret-labelled keys in `key=value` or `key: value`
 prose cause the entire string, including its value, to become fixed withheld text.

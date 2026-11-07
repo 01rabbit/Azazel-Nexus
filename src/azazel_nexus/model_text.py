@@ -1,5 +1,13 @@
 """Closed character repertoire for normalized, optional model prose."""
 
+import re
+
+
+def is_typed_content_digest(value):
+    """Exact content ID, checked before normalization; never grants membership."""
+    return type(value) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+
+
 _ASCII = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:_-. ,;!?()[]{}\"'%&+/*#@~^|<>=$")
 # Explicit ordinary Japanese letters and punctuation, not whole Unicode blocks.
 # Combining marks, fillers, variation selectors and unassigned gaps stay out.

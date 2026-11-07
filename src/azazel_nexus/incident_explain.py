@@ -34,7 +34,7 @@ from .local_advisory import (
 )
 from .route_selection import RequestOutcome, TerminalEvent
 from .sanitizer import PrivacyClass
-from .model_text import allowed_model_text
+from .model_text import allowed_model_text, is_typed_content_digest
 
 MAX_PENDING = 64
 MAX_PER_MINUTE = 6
@@ -1338,6 +1338,8 @@ def valid_handoff_binding(binding, incident_id, now):
                 return False
             for key in ("id", "source"):
                 val = item[key]
+                if key == "id" and is_typed_content_digest(val):
+                    continue
                 if type(val) is not str or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", val) or re.search(r"(?i)password|secret|credential|token|api[_-]?key|bearer", val) or re.search(r"[A-Za-z0-9_-]{32,}", val):
                     return False
             if (item["id"] in ids or item["trust"] != "verified"
@@ -1448,7 +1450,8 @@ def public_slow_analysis(slow, incident_id, now):
         if valid:
             try:
                 public_unknown_metadata(binding["unknowns"])
-                valid = all(_public_binding_identifier(ref[key])
+                valid = all((key == "id" and is_typed_content_digest(ref[key]))
+                            or _public_binding_identifier(ref[key])
                             for ref in binding["evidence_refs"] for key in ("id", "source"))
             except ValueError:
                 valid = False
