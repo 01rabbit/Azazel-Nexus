@@ -27,3 +27,14 @@ binding. Controlled providers establish contract behavior, not model quality.
 Budgets, deadlines, caps, templates, expectation tables, MIO sources and the
 general secret/allowlist policies remain unchanged. Run artifacts and exact
 pytest summary lines are recorded separately in B's `report-2.md`.
+
+R1 (Medium, 2026-11-08) is resolved by the coordinator's W7 boundary ruling:
+`+` and `/` are allowlisted punctuation, so `digest+Abc` and `digest/Abc`
+contain a digest ID followed by a separate token. With listed evidence the
+manifest remains complete, while the unchanged prose guard withholds the body.
+ID-character suffixes (`Abc`, `_x`, `-1`, `.x`, `:1`) extend the token, fail the
+digest type and make extraction ambiguous/partial under the existing 32+ rule
+(existing trailing-period stripping is unchanged). `token=digest` still
+withholds the entire body. R1 adds only contract text and extraction/recent/
+JSON/Markdown counterexamples; no general guard or source behavior changes.
+The rerun evidence is recorded in B's `report-3.md` and `tests-focused-3.log`.

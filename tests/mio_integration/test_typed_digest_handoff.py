@@ -3,6 +3,9 @@ from dataclasses import replace
 
 import pytest
 
+from azazel_nexus.model_text import is_typed_content_digest
+from azazel_nexus_runtime.mio_advisory_manifest import references
+
 import test_runtime_binding_handoff as flow
 from test_handoff import root  # noqa: F401
 from test_model_text import DIGEST, INVALID_DIGESTS
@@ -45,6 +48,46 @@ def test_unlisted_or_malformed_digest_prose_is_partial(root, tmp_path, digest_pr
         assert reference not in metadata['advisory_refs']
     recent, _ = flow.project(root, tmp_path, frame, value, metadata)
     flow.check_export(root, recent, available=False)
+
+
+@pytest.mark.parametrize('text', [DIGEST + '+Abc', DIGEST + '/Abc', 'token=' + DIGEST])
+def test_r1_punctuation_and_secret_label_keep_manifest_but_withhold_body(
+        root, tmp_path, digest_provider, text):
+    assert references({'statement': text}) == (set(), {DIGEST}, False)
+    _, frame, _, value, metadata = flow.execute(tmp_path, server=digest_provider(text))
+    assert metadata['completeness'] == 'complete'
+    assert not metadata['unlisted_prose_ids']
+    assert DIGEST in metadata['advisory_refs']
+    recent, path = flow.project(root, tmp_path, frame, value, metadata)
+    fixed = flow.incident_explain._MODEL_TEXT_WITHHELD
+    slow = recent['incidents'][0]['explanation']['slow_analysis']
+    assert slow['hypotheses'][0] == fixed
+    advisory = flow.check_export(root, recent, available=True)
+    assert advisory['hypotheses'][0] == fixed
+    assert advisory['binding']['evidence_refs'][0]['id'] == DIGEST
+    files = flow.handoff.encode_files(flow.package(root, now=flow.time.time()))
+    bodies = [path.read_bytes(), files['handoff.json'], files['handoff.ja.md']]
+    # The digest remains legitimate binding metadata, never raw model prose.
+    assert all(text.encode() not in body and b'Abc' not in body for body in bodies)
+    assert all(DIGEST.encode() in body for body in bodies)
+    assert fixed in files['handoff.ja.md'].decode()
+
+
+@pytest.mark.parametrize('suffix', ['Abc', '_x', '-1', '.x', ':1'])
+def test_r1_id_character_suffix_is_ambiguous_and_partial(
+        root, tmp_path, digest_provider, suffix):
+    text = DIGEST + suffix
+    assert not is_typed_content_digest(text)
+    assert references({'statement': text}) == (set(), set(), True)
+    _, frame, _, value, metadata = flow.execute(tmp_path, server=digest_provider(text))
+    assert metadata['completeness'] == 'partial'
+    assert not metadata['unlisted_prose_ids']
+    assert text not in metadata['advisory_refs']
+    recent, path = flow.project(root, tmp_path, frame, value, metadata)
+    flow.check_export(root, recent, available=False)
+    bodies = [path.read_bytes(), *flow.handoff.encode_files(
+        flow.package(root, now=flow.time.time())).values()]
+    assert all(text.encode() not in body for body in bodies)
 
 
 # Original R14 three counterexamples + old six, R12 eight, R13 substring.

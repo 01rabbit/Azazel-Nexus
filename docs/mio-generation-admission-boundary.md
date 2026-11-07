@@ -345,6 +345,8 @@ mentioned only in prose remains unlisted/partial; verified/current frame source
 membership and receipt reference checks are still required. Uppercase, 63/65
 digits, other prefixes, base64-like values, fullwidth spellings and embedded Cf
 characters cannot acquire this type. Other long tokens retain the 32+ rejection.
+Non-ID punctuation such as `+` or `/` directly after a digest separates tokens: the digest is extracted for membership, while the remainder follows the usual allowlist/secret guards and prose may become fixed withheld text; this boundary alone does not require partial completeness.
+An ID-character suffix (ASCII alphanumeric, `_`, `-`, `.`, `:`, e.g. `Abc`, `_x`, `-1`, `.x`, `:1`) instead extends the same token, fails the digest type and triggers the 32+ ambiguous/partial rule; existing trailing-period stripping still applies.
 The type does not apply to `source`, unknown categories or arbitrary text fields.
 The prose privacy guard is unchanged: recognizing an ID for membership does not
 authorize displaying its raw text. Digest-bearing prose can still become the
