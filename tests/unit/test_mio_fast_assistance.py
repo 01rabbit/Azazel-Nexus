@@ -730,6 +730,20 @@ def test_slow_selection_records_loss_before_projection_without_changing_fast_fra
     assert 'x' * 20 not in str(selection)
 
 
+def test_slow_selection_counts_duplicate_edge_display_units():
+    from azazel_nexus.generation_budget import validate_selection
+    from azazel_nexus.incident_explain import build_frame, pending_entry
+    from test_incident_explain import transition
+
+    source = read_frame(build_frame(pending_entry(transition()), 17))
+    frame, selection = adapter._frame(source, with_selection=True)
+    validate_selection(selection)
+    assert selection['coverage'] == 'selected'
+    assert selection['omitted_units'] == 2
+    assert [item['reason'] for item in selection['omissions']] == ['duplicate', 'duplicate']
+    assert frame.evidence_refs and not frame.truncated
+
+
 def test_report_units_are_not_partially_sent_and_addresses_refuse_generation():
     source = _lite_frame('synthetic question')
     source['context'] = [{'kind': 'operator_report', 'text': 'first unverified report'},

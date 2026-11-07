@@ -62,6 +62,7 @@ def _frame(source: dict, *, with_selection=False):
              f"destination_port={transition['target_port']}; severity={transition['most_severe']}; count={transition['count']}"),
             ('edge_decision', f"Edge would {transition['edge_would']}; policy_reason={transition['policy_reason']}"),
         }
+    duplicate_count = sum((item['kind'], item['text']) in duplicates for item in context)
     selected_context = [item['text'] for item in context if (item['kind'], item['text']) not in duplicates]
     noc = source['question']
     if transition is not None:
@@ -77,10 +78,13 @@ def _frame(source: dict, *, with_selection=False):
     excluded = [len(noc) > 480 or contains_address(noc),
                 len(soc) > 480 or raw_context or contains_address(soc)]
     projected = sum(excluded)
-    selection = {'policy_version':'nexus-frame-v1', 'coverage':'unknown' if projected else 'intact',
-        'input_units':2,'selected_units':2-projected,'omitted_units':projected,
+    selection = {'policy_version':'nexus-frame-v2',
+        'coverage':'unknown' if projected else 'selected' if duplicate_count else 'intact',
+        'input_units':2+duplicate_count,'selected_units':2-projected,'omitted_units':projected+duplicate_count,
         'omissions':[{'kind':'projection','ordinal':i,'reason':'upstream_projection'}
-                     for i,omit in enumerate(excluded) if omit]}
+                     for i,omit in enumerate(excluded) if omit]
+                    + [{'kind':'projection','ordinal':2+i,'reason':'duplicate'}
+                       for i in range(duplicate_count)]}
     frame = MioSituationFrame.build(
         frame_id=frame_id, trace_id=trace_id,
         created_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z'),
