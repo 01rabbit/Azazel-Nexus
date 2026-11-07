@@ -344,6 +344,25 @@ def test_linux_stat_parsing_handles_spaces_and_parentheses(monkeypatch):
     assert supervisor._proc_stat(123) == (123, '98765')
 
 
+def test_fake_serving_adapter_records_spawn_identity(monkeypatch, tmp_path):
+    from admission_helpers import install_fake_serving
+    from azazel_nexus_runtime import mio_serve
+
+    install_fake_serving(monkeypatch)
+    process = ProcessStub()
+    observed = []
+    monkeypatch.setattr(supervisor.subprocess, 'Popen', lambda *args, **kwargs: process)
+    def identity(pid):
+        observed.append(pid)
+        return 'fixture-start'
+    monkeypatch.setattr(supervisor, '_process_identity', identity)
+    handle = mio_serve.ServingProcess(
+        SimpleNamespace(executable='/usr/libexec/azazel/fake', argv=('fake',)), root=tmp_path)
+    handle.start()
+    assert observed == [process.pid]
+    assert handle.start_identity == 'fixture-start'
+
+
 @pytest.mark.parametrize('flag', ['_nexus_stop_pending', '_nexus_stopped', '_nexus_stop_unconfirmed'])
 def test_existing_lane_cannot_reuse_same_server_after_other_lane_stop(make, flag):
     lane, server, source, frame = make()
