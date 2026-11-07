@@ -115,18 +115,37 @@ class RelayServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
+def fixture_variants(base):
+    """Advance only the loop's evaluation clock, using its production projection.
+
+    Snapshots remain saved history. Freshness, status, reason and age must be
+    evaluated together; changing freshness alone leaves a green running card.
+    """
+    from azazel_nexus.status_view import LOOP_STALE_S, _component
+    unknown = copy.deepcopy(base)
+    unknown['clock'] = dict(status='unknown', reason_code='clock_unknown')
+    stale = copy.deepcopy(base)
+    loop = stale['sections']['edge_loop']
+    names = ('intake', 'explainer', 'recent')
+    now = max(loop['evaluated_at'], *(loop[name]['source']['written_at']
+                                     for name in names)) + LOOP_STALE_S + 1
+    loop['evaluated_at'] = now
+    for name in names:
+        part = loop[name]
+        # The input is an already allowlisted snapshot, not raw producer data.
+        loop[name] = _component(part['snapshot'], now, LOOP_STALE_S,
+                               tuple(part['snapshot']), schema=part['source']['schema'],
+                               flags=tuple(part['conditions']))
+    return {'primary': base, 'clock-unknown': unknown, 'loop-stale': stale}
+
+
 def hold(args, receipt, children):
     from azazel_nexus_lab.weekend_process import REPO
     control = args.control
     private = control / 'private'
     private.mkdir(mode=0o700)
     base = json.loads((args.output / 'status-view.json').read_text())
-    unknown = copy.deepcopy(base)
-    unknown['clock'] = dict(status='unknown', reason_code='clock_unknown')
-    stale = copy.deepcopy(base)
-    for name in ('intake', 'explainer', 'recent'):
-        stale['sections']['edge_loop'][name]['source']['freshness'] = 'stale'
-    variants = {'primary': base, 'clock-unknown': unknown, 'loop-stale': stale}
+    variants = fixture_variants(base)
     # Address supplied by Docker inspect, never discovered by contacting a peer.
     import fcntl
     import struct

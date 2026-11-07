@@ -14,9 +14,12 @@ def test_module_entry_launches_resolvable_ui_children(tmp_path, monkeypatch):
     output, control = tmp_path / 'paired', tmp_path / 'control'
     output.mkdir()
     control.mkdir()
+    from azazel_nexus.status_view import LOOP_STALE_S, _component
+    part = _component({'schema': 'lab-header/v1', 'written_at': 100}, 100,
+                      LOOP_STALE_S, ('schema', 'written_at'), schema='lab-header/v1')
     (output / 'status-view.json').write_text(json.dumps({
-        'sections': {'edge_loop': {name: {'source': {}} for name in
-                                 ('intake', 'explainer', 'recent')}}}))
+        'sections': {'edge_loop': {'evaluated_at': 100, **{name: part for name in
+                                 ('intake', 'explainer', 'recent')}}}}))
     (control / 'STOP').touch()
     commands = []
 
@@ -81,3 +84,45 @@ def test_module_entry_launches_resolvable_ui_children(tmp_path, monkeypatch):
     assert (control / 'CONTAINER-READY').is_file()
     assert json.loads((control / 'ui-cleanup.json').read_text()) == [
         {'role': name, 'exit': -15} for name in ('primary', 'clock-unknown', 'loop-stale')]
+
+
+def test_stale_variant_agrees_with_production_cards_and_summary(tmp_path):
+    """U02-F1: exercise FixtureSource/UiApp without a listener or child process."""
+    import copy
+    from pathlib import Path
+    from azazel_nexus.status_view import LOOP_STALE_S, _component
+    from azazel_nexus_runtime.ui_serve import FixtureSource, UiApp
+    from azazel_nexus_lab.weekend_browser import fixture_variants
+
+    repo = Path(__file__).resolve().parents[2]
+    base = json.loads((repo / 'tests/fixtures/ui/demo-status-view.json').read_text())
+    before = copy.deepcopy(base)
+    variants = fixture_variants(base)
+    assert base == before and variants['primary'] is base
+    assert variants['clock-unknown']['sections'] == base['sections']
+    assert variants['clock-unknown']['clock']['status'] == 'unknown'
+    value = variants['loop-stale']
+    loop = value['sections']['edge_loop']
+    for name in ('intake', 'explainer', 'recent'):
+        part = loop[name]
+        assert part['snapshot'] == base['sections']['edge_loop'][name]['snapshot']
+        assert part['status'] == part['source']['freshness'] == 'stale'
+        assert part['reason_code'] == part['source']['reason_code'] == 'snapshot_expired'
+        assert part['source']['age_s'] > LOOP_STALE_S
+        # Independent raw-header projection: the production stale decision.
+        header = {key: part['source'][key] for key in ('schema', 'written_at')}
+        production = _component(header, loop['evaluated_at'], LOOP_STALE_S,
+                                tuple(header), schema=header['schema'])
+        assert (part['status'], part['reason_code'], part['source']) == (
+            production['status'], production['reason_code'], production['source'])
+    path = tmp_path / 'stale.json'
+    path.write_text(json.dumps(value))
+    app = UiApp(source=FixtureSource(path), codes=None, port=8843, clock=lambda: 100)
+    model = json.loads(app.view_document())
+    assert model['summary']['events']['status'] == 'stale'
+    assert any(item['code'] == 'check_stale_sources' for item in model['summary']['next']['items'])
+    # These are exactly the status values consumed by incidents() card badges.
+    assert all(model['sections']['edge_loop'][name]['status'] == 'stale'
+               for name in ('intake', 'explainer', 'recent'))
+    labels = json.loads(app.static['/static/labels.json'][0])
+    assert labels['words']['stale'][1] != 'ok'
