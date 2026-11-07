@@ -62,7 +62,7 @@ def test_core_reader_and_public_projection_without_runtime_dependency():
 
 
 @pytest.mark.parametrize(('version', 'accepted'), [
-    ('1.6.0', True), ('1.7.0', True), ('1.8.0', False),
+    ('1.6.0', True), ('1.7.0', True), ('1.8.0', True), ('1.9.0', False),
     ('1.7', False), ('1.7.0-extra', False),
 ])
 def test_template_version_allowlist_keeps_old_receipts_and_rejects_unknown(version, accepted):

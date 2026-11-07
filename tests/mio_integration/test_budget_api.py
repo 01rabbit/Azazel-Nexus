@@ -96,6 +96,18 @@ def test_real_assistant_core_receipt_and_actual_dispatch_are_aligned():
     assert all(t['validated'] for t in value['generation_budget']['tasks'])
 
 
+def test_later_task_selection_is_accounted_in_product_receipt():
+    _, _, value = run()
+    tasks = value['generation_budget']['tasks']
+    assert tasks[0]['selection']['coverage'] == 'intact'
+    for task in tasks[1:]:
+        selection = task['selection']
+        assert selection['coverage'] == 'selected'
+        assert selection['omitted_units'] > 0
+        assert selection['selected_units'] + selection['omitted_units'] == selection['input_units']
+        assert len(selection['omissions']) == selection['omitted_units']
+
+
 def test_rejected_revision_supersedes_active_with_real_core():
     from dataclasses import replace
     class BlockingServer(ControlledServer):
@@ -302,7 +314,8 @@ def test_real_api_http_positive_send_boundary_preserves_normal_results(monkeypat
             data=self.response[self.read:self.read+size];self.read+=len(data);return data
     monkeypatch.setattr(mio_serve.socket,'socket',lambda *a:Peer())
     lane,server,value=run(server);meta=value['generation_budget']
-    assert value['state']=='complete' and meta['job_calls']==3 and meta['coverage']=='intact'
+    assert value['state']=='complete' and meta['job_calls']==3 and meta['coverage']=='selected'
+    assert sum(t['selection']['omitted_units'] for t in meta['tasks']) > 0
     assert len(server.payloads)==3 and server.requests==list(TASKS)
     assert all(p['prompt']==list(range(12)) for p in server.payloads)
     assert [p['n_predict'] for p in server.payloads]==[768,384,512]
