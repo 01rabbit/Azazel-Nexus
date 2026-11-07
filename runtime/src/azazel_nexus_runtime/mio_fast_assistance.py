@@ -4,13 +4,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import secrets
 import time
-import unicodedata
 from dataclasses import asdict
 
 from azazel_nexus.lite_import import KnowledgeRef, read_knowledge_refs
 from azazel_nexus.reasoning_playbook import technique_ids
 from azazel_nexus.incident_explain import FAST_TRANSITION_KIND, read_fast_transition
-from azazel_nexus.handoff import _IPV4, _IPV6
+from azazel_nexus.handoff import contains_network_address
 
 from azazel_mio import (
     AssistantCore,
@@ -72,11 +71,8 @@ def _frame(source: dict, *, with_selection=False):
     # source is not an authorization to expose addresses in a prompt.
     raw_context = any(item['kind'] in {'event', 'raw_event', 'edge_event'}
                       or item['kind'].startswith('raw_') for item in context)
-    def contains_address(text):
-        inspected = unicodedata.normalize('NFKC', text)
-        return bool(_IPV4.search(inspected) or _IPV6.search(inspected))
-    excluded = [len(noc) > 480 or contains_address(noc),
-                len(soc) > 480 or raw_context or contains_address(soc)]
+    excluded = [len(noc) > 480 or contains_network_address(noc),
+                len(soc) > 480 or raw_context or contains_network_address(soc)]
     projected = sum(excluded)
     selection = {'policy_version':'nexus-frame-v2',
         'coverage':'unknown' if projected else 'selected' if duplicate_count else 'intact',

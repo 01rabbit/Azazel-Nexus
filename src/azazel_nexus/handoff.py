@@ -117,6 +117,13 @@ _IPV6 = re.compile(
     r"(?:%[0-9A-Za-z]+)?(?![0-9A-Za-z:])")
 _LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
 
+
+def contains_network_address(text: str) -> bool:
+    """Detect IPv4 or IPv6 in NFKC-normalized text using the handoff rules."""
+    text = unicodedata.normalize("NFKC", text)
+    return bool(_IPV4.search(text) or _IPV6.search(text))
+
+
 #: Every form the final scan refuses, by the category it reports.
 DETECTORS = (
     ("secret_like", re.compile(
