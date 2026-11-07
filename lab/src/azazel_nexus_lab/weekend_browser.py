@@ -142,7 +142,8 @@ def hold(args, receipt, children):
         log = (control / f'{name}.log').open('ab')
         logs.append(log)
         child = subprocess.Popen([sys.executable, '-B', str(REPO / 'tools/ui_socket_activate.py'),
-            '--port', str(port), '--', sys.executable, '-B', '-m', __name__, 'serve',
+            '--port', str(port), '--', sys.executable, '-B', '-m',
+            'azazel_nexus_lab.weekend_browser', 'serve',
             '--fixture', str(control / f'{name}.json'), '--receipt', str(args.output / 'paired.json'),
             '--login-file', str(private / f'{name}.json')], stdout=log, stderr=log)
         processes[name] = child
