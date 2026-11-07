@@ -728,3 +728,23 @@ def test_slow_selection_records_loss_before_projection_without_changing_fast_fra
     ordinary = adapter._frame(source)
     assert ordinary.to_dict()['noc_summary'] == frame.to_dict()['noc_summary']
     assert 'x' * 20 not in str(selection)
+
+
+def test_report_units_are_not_partially_sent_and_addresses_refuse_generation():
+    source = _lite_frame('synthetic question')
+    source['context'] = [{'kind': 'operator_report', 'text': 'first unverified report'},
+                         {'kind': 'operator_report', 'text': 'contradictory unverified report'}]
+    frame, selection = adapter._frame(read_frame(source), with_selection=True)
+    assert selection['coverage'] == 'intact'
+    assert 'first unverified report' in frame.soc_summary
+    assert 'contradictory unverified report' in frame.soc_summary
+    assert not frame.truncated
+    source['context'].append({'kind': 'operator_report', 'text': 'x' * 480})
+    frame, selection = adapter._frame(read_frame(source), with_selection=True)
+    assert frame.truncated and selection['coverage'] == 'unknown'
+    source['context'] = [{'kind': 'raw_event', 'text': 'unparsed event body'}]
+    frame, selection = adapter._frame(read_frame(source), with_selection=True)
+    assert frame.truncated and selection['coverage'] == 'unknown'
+    source['context'] = [{'kind': 'operator_report', 'text': 'synthetic 10.20.30.40'}]
+    frame, selection = adapter._frame(read_frame(source), with_selection=True)
+    assert frame.truncated and selection['coverage'] == 'unknown'

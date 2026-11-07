@@ -298,7 +298,7 @@ def validate_verified_tuple(value):
     return value
 
 
-SELECTION_VERSIONS=frozenset({'1.6.0','fixture-v1','transport-fixture-v1'})
+SELECTION_VERSIONS=frozenset({'1.6.0','1.7.0','fixture-v1','transport-fixture-v1'})
 
 def validate_profile(value):
     keys={'version','origin','reserve_fraction','minimum_reserve_ms','weights','slack','output_caps','output_mins','minimum_provider_ms','template_version','configured_context_limit'}

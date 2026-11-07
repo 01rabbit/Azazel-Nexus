@@ -61,6 +61,22 @@ def test_core_reader_and_public_projection_without_runtime_dependency():
     assert slow_analysis_projection(legacy)['budget']['outcome']=='legacy_unverified'
 
 
+@pytest.mark.parametrize(('version', 'accepted'), [
+    ('1.6.0', True), ('1.7.0', True), ('1.8.0', False),
+    ('1.7', False), ('1.7.0-extra', False),
+])
+def test_template_version_allowlist_keeps_old_receipts_and_rejects_unknown(version, accepted):
+    meta = metadata()
+    meta['profile']['template_version'] = version
+    for task in meta['tasks']:
+        task['selection']['policy_version'] = version
+    if accepted:
+        assert read_budget(meta, state='complete', usage='known')['profile']['template_version'] == version
+    else:
+        with pytest.raises(ValueError):
+            read_budget(meta, state='complete', usage='known')
+
+
 @pytest.mark.parametrize('change',[
     lambda m:m.update(version=2), lambda m:m.update(coverage='selected'),
     lambda m:m['tasks'].reverse(), lambda m:m['tasks'].__setitem__(1,copy.deepcopy(m['tasks'][0])),

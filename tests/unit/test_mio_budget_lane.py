@@ -163,6 +163,16 @@ def test_three_tasks_use_counts_caps_and_shared_deadline(make):
     assert sum(t['elapsed_ms'] for t in meta['tasks'])<meta['deadline_ms']
 
 
+def test_truncated_upstream_frame_is_budget_exhausted_before_dispatch(make):
+    lane, server, source, frame = make()
+    frame.truncated = True
+    result = lane.submit(source, frame, 'fixture', upstream_coverage='unknown')
+    assert result['state'] == 'degraded'
+    assert result['generation_budget']['primary_outcome'] == 'budget_exhausted'
+    assert result['generation_budget']['job_calls'] == 0
+    assert not server.requests and not server.counts
+
+
 def test_second_count_unknown_preserves_first_usage_and_unsent_tasks(make):
     lane,server,source,frame=make();server.fail_task=TASKS[1]
     value=terminal(lane,source,frame)

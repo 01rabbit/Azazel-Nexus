@@ -297,6 +297,8 @@ class GenerationLane:
             return self._decline('closed',frame,generation_id,'admission_closed',upstream_coverage,upstream_selection)
         if self.server is None:
             return self._decline('degraded',frame,generation_id,'model_unavailable',upstream_coverage,upstream_selection)
+        if self.budget_enabled and getattr(frame, 'truncated', False):
+            return self._decline('degraded',frame,generation_id,'budget_exhausted',upstream_coverage,upstream_selection)
         fingerprint = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
         key = (generation_id, fingerprint)
         with self._lock:
