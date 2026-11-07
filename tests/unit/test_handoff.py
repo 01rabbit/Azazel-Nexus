@@ -1459,3 +1459,40 @@ def test_degraded_slow_advisory_preserves_bounded_reason_and_dispatch(root):
     rendered = handoff.render_markdown(p)
     assert 'stop_unconfirmed' in rendered and 'timeout' in rendered
     assert '送信数: 1 / 3' in rendered and '未送信' in rendered and 'fence 状態: `unknown`' in rendered
+
+
+@pytest.mark.parametrize('sent', [0, 1, 2, 3])
+def test_complete_dispatch_consistency_at_public_boundaries(root, sent):
+    from azazel_nexus.generation_budget import validate_public_budget
+    from azazel_nexus.incident_explain import read_recent_incidents, slow_analysis_projection
+    from azazel_nexus.status_view import _recent_extra
+    from test_generation_budget_receipts import live
+
+    write_slow_recent(root, state='complete')
+    path = root / 'var/lib/azazel/run/incident-explain-status/recent.json'
+    recent = json.loads(path.read_text())
+    slow = slow_analysis_projection(live())
+    for i, task in enumerate(slow['budget']['dispatch']):
+        task['dispatched'] = i < sent
+    recent['incidents'][0]['explanation']['slow_analysis'] = slow
+    raw = json.dumps(recent).encode()
+    if sent < 3:
+        with pytest.raises(ValueError):
+            validate_public_budget(slow['budget'], state='complete')
+        with pytest.raises(ValueError):
+            validate_public_budget(slow['budget'])
+        assert read_recent_incidents(raw) is None
+        with pytest.raises(ValueError):
+            _recent_extra(recent, {})
+    else:
+        validate_public_budget(slow['budget'], state='complete')
+        assert read_recent_incidents(raw) == recent
+        snapshot = {}
+        _recent_extra(recent, snapshot)
+        assert snapshot['incidents'][0]['explanation']['slow_analysis'] == slow
+    path.write_bytes(raw)
+    files = encode_files(package(root))
+    exported = json.loads(files['handoff.json'])['ai_assessment']['slow_advisory']
+    assert exported['status'] == ('available' if sent == 3 else 'unavailable')
+    if sent < 3:
+        assert 'A change may explain observed behavior' not in text_of(files)

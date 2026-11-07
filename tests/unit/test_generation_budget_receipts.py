@@ -426,3 +426,21 @@ def test_public_dispatch_is_bounded_and_does_not_claim_fence_observation():
         bad[key] = value
         with pytest.raises(ValueError):
             validate_public_budget(bad, state='degraded')
+
+
+@pytest.mark.parametrize('sent', [0, 1, 2, 3])
+def test_degraded_public_dispatch_allows_each_sent_prefix(sent):
+    from azazel_nexus.generation_budget import TASKS, validate_public_budget
+    budget = dict(version=1, outcome='deadline_exceeded', coverage='unknown',
+                  cleanup_state='not_needed', superseded=False, omitted_units=0,
+                  fence_state='unknown', dispatch=[
+                      dict(task=task, dispatched=i < sent) for i, task in enumerate(TASKS)])
+    validate_public_budget(budget, state='degraded')
+
+
+def test_legacy_complete_projection_without_dispatch_remains_valid():
+    from azazel_nexus.generation_budget import validate_public_budget
+    budget = slow_analysis_projection(live())['budget']
+    budget.pop('dispatch')
+    budget.pop('fence_state')
+    validate_public_budget(budget, state='complete')

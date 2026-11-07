@@ -244,7 +244,9 @@ def validate_public_budget(value, *, state=None):
                        or item['task'] != task or type(item['dispatched']) is not bool
                        for item, task in zip(dispatch, TASKS))
                 or any(not dispatch[i]['dispatched'] and dispatch[i+1]['dispatched']
-                       for i in range(len(dispatch)-1))):
+                       for i in range(len(dispatch)-1))
+                or (value['outcome'] == 'within_budget'
+                    and not all(item['dispatched'] for item in dispatch))):
             raise ValueError('generation_public_budget_refused')
     if value['coverage']=='intact' and value['omitted_units']:
         raise ValueError('generation_public_budget_refused')
