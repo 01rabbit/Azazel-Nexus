@@ -45,8 +45,10 @@ import os
 import selectors
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
@@ -67,6 +69,8 @@ __all__ = [
     "ProcessReport",
     "ServingProcess",
     "SupervisorRefused",
+    "StopResult",
+    "StopState",
     "Supervision",
     "run_once",
     "supervise",
@@ -83,6 +87,20 @@ GRACE_SECONDS = 2
 
 class SupervisorRefused(Exception):
     """A process that will not be started. Refused, never repaired."""
+
+
+class StopState(str, Enum):
+    CONFIRMED = "confirmed"
+    UNCONFIRMED = "unconfirmed"
+    REFUSED = "refused"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class StopResult:
+    state: StopState
+    reason: str
+    scope: str = "owned_runtime_group_no_new_session_or_cgroup"
 
 
 @dataclass(frozen=True)
@@ -259,6 +277,7 @@ def run_once(
     # cleanup that can only run while the thing it cleans up is alive is a
     # cleanup that misses exactly the orphans it exists for.
     group = process.pid
+    identity = _process_identity(process.pid)
 
     readiness = Readiness.NOT_CHECKED
     try:
@@ -277,13 +296,21 @@ def run_once(
         elif out or err:
             readiness = Readiness.FAILED
     finally:
-        _terminate_group(process, group=group)
+        cleanup = _terminate_group(process, group=group, identity=identity)
         for stream in (process.stdout, process.stderr):
             if stream is not None:
                 try:
                     stream.close()
                 except OSError:
                     pass
+
+    if cleanup.state is not StopState.CONFIRMED:
+        return ProcessReport(
+            state=LifecycleState.FENCED, readiness=readiness, exit_code=process.returncode,
+            signalled=None, stdout_bytes=stdout_bytes, stderr_bytes=stderr_bytes,
+            stdout_truncated=stdout_truncated, stderr_truncated=stderr_truncated,
+            reason="process cleanup unconfirmed: " + cleanup.reason,
+        )
 
     code = process.returncode
     signalled = -code if code is not None and code < 0 else None
@@ -342,38 +369,100 @@ def run_once(
     )
 
 
-def _terminate_group(process: subprocess.Popen, *, group: int) -> None:
-    """Stop the process **and anything it started**.
+def _proc_stat(pid: int) -> tuple[int, str]:
+    # comm can contain spaces and parentheses; fields after its final ')' start at 3.
+    fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    return int(fields[2]), fields[19]
 
-    By process group, because a provider that forks leaves the node with a
-    child nothing is watching -- and an orphan that keeps a port or a file
-    open is a failure that outlives the thing that caused it.
 
-    `group` is passed in rather than derived from the process, because a
-    parent that has already exited cannot be asked for its group: the
-    children are still there, and the one way to find them has gone with it.
+def _process_identity(pid: int) -> str | None:
+    try:
+        if sys.platform.startswith("linux"):
+            return _proc_stat(pid)[1]
+        result = subprocess.run(
+            ["/bin/ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=GRACE_SECONDS, check=False,
+        )
+        return result.stdout.strip() or None
+    except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
+        return None
+
+
+def _group_members(group: int) -> tuple[int, ...] | None:
+    """Observe only membership of our recorded group. None means unknown."""
+    try:
+        if sys.platform.startswith("linux"):
+            members = []
+            for path in Path("/proc").iterdir():
+                if path.name.isdecimal():
+                    try:
+                        pgid, _ = _proc_stat(int(path.name))
+                    except (FileNotFoundError, ProcessLookupError):
+                        continue
+                    if pgid == group:
+                        members.append(int(path.name))
+            return tuple(members)
+        result = subprocess.run(
+            ["/bin/ps", "-o", "pid=", "-g", str(group)],
+            capture_output=True, text=True, timeout=GRACE_SECONDS, check=False,
+        )
+        if result.returncode not in (0, 1) or result.stderr.strip():
+            return None
+        return tuple(int(pid) for pid in result.stdout.split())
+    except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
+        return None
+
+
+def _terminate_group(process: subprocess.Popen, *, group: int,
+                     identity: str | None = None) -> StopResult:
+    """Bounded stop of a spawn-owned session; never infer identity from a PID alone.
+
+    A reaped leader may leave the original group populated. Its pgid remains
+    reserved while those members exist. A different leader identity refuses
+    signalling; escaped descendants are outside the stated scope.
     """
-
-    if process.poll() is None:
-        _signal_group(group, signal.SIGTERM)
-        try:
-            process.wait(timeout=GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            pass
-    # Unconditionally, and after reaping. A parent that exited cleanly may
-    # still have left the group populated, which is the orphan case.
-    _signal_group(group, signal.SIGKILL)
+    if identity is None or group != process.pid:
+        return StopResult(StopState.UNKNOWN, "start_identity_unknown")
     try:
-        process.wait(timeout=GRACE_SECONDS)
-    except subprocess.TimeoutExpired:
-        pass
-
-
-def _signal_group(group: int, sig: int) -> None:
-    try:
-        os.killpg(group, sig)
-    except (ProcessLookupError, PermissionError, OSError):
-        pass
+        current = _process_identity(process.pid)
+        # poll reaps only our direct child. An absent /proc entry is acceptable
+        # only after that child has been reaped, with its spawn identity retained.
+        reaped = process.poll() is not None
+        if current != identity and (current is not None or not reaped):
+            return StopResult(StopState.UNKNOWN, "start_identity_mismatch")
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            members = _group_members(group)
+            if members is None:
+                return StopResult(StopState.UNKNOWN, "group_observation_failed")
+            if members:
+                current = _process_identity(process.pid)
+                if current is not None and current != identity:
+                    return StopResult(StopState.UNKNOWN, "start_identity_mismatch")
+                try:
+                    os.killpg(group, sig)
+                except ProcessLookupError:
+                    pass  # Verify absence below; ESRCH alone is not confirmation.
+            try:
+                process.wait(timeout=GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                if sig == signal.SIGKILL:
+                    return StopResult(StopState.UNCONFIRMED, "wait_timeout")
+                continue
+            until = time.monotonic() + GRACE_SECONDS
+            while True:
+                members = _group_members(group)
+                if members is None:
+                    return StopResult(StopState.UNKNOWN, "group_observation_failed")
+                if not members:
+                    return StopResult(StopState.CONFIRMED, "parent_reaped_group_absent")
+                if time.monotonic() >= until:
+                    break
+                time.sleep(0.01)
+        return StopResult(StopState.UNCONFIRMED, "group_remaining")
+    except PermissionError:
+        return StopResult(StopState.REFUSED, "signal_refused")
+    except (OSError, ValueError):
+        return StopResult(StopState.UNKNOWN, "process_observation_failed")
 
 
 @dataclass
@@ -488,6 +577,7 @@ class ServingProcess:
         self.descriptors = descriptors
         self.root = root
         self.process: subprocess.Popen | None = None
+        self.start_identity: str | None = None
 
     def start(self) -> None:
         from azazel_nexus import model_admission
@@ -513,12 +603,16 @@ class ServingProcess:
             )
         except (OSError, ValueError):
             raise SupervisorRefused("the serving process did not start") from None
+        self.start_identity = _process_identity(self.process.pid)
 
     @property
     def alive(self) -> bool:
         return self.process is not None and self.process.poll() is None
 
-    def stop(self) -> None:
-        if self.process is not None:
-            _terminate_group(self.process, group=self.process.pid)
+    def stop(self, *, retain: bool = False) -> StopResult:
+        if self.process is None:
+            return StopResult(StopState.UNKNOWN, "no_owned_process_identity")
+        result = _terminate_group(self.process, group=self.process.pid, identity=self.start_identity)
+        if result.state is StopState.CONFIRMED and not retain:
             self.process = None
+        return result

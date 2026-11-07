@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from azazel_nexus import model_admission
 from azazel_nexus.generation_budget import CAPS, read_budget, project_budget
 from .mio_generation_budget import BudgetSettings
+from .mio_supervisor import StopResult, StopState
 
 GENERATION_ADMISSION_ENABLED = False
 _SEAL = object()
@@ -173,8 +174,11 @@ class GenerationLane:
         self.capability, self.server, self.deadline_s = capability, server, deadline_s
         self._lock = threading.RLock()
         self._stop_lock = threading.Lock()
-        self._fenced = False  # set permanently when provider stop() raises
-        self._stopped = False  # set permanently when provider stop() succeeded
+        self._fenced = bool(getattr(server, "_nexus_stop_unconfirmed", False) or getattr(server, "_nexus_stop_pending", False))
+        self._stopped = bool(getattr(server, "_nexus_stopped", False))
+        self._stop_threads = []
+        self._infer_threads = []
+        self._watcher_threads = []
         self._pending = None
         self._active = None
         self._worker = None
@@ -245,7 +249,7 @@ class GenerationLane:
                 if now >= record['end']:
                     final = dict(state='unconfirmed',reason='confirmation_deadline',remaining_ms=0)
                     record['cleanup_final'] = final
-                    self._fenced = True
+                    self._persist_stop_fence()
             if final is not None:
                 meta['cleanup'] = copy.deepcopy(final)
                 value['state'],value['generation_budget'] = project_budget(meta)
@@ -301,7 +305,7 @@ class GenerationLane:
                     return self._status('queued', job['frame'], generation_id, result_handle=job['handle'])
             # _fence()/_mark_stopped() set their flags under this lock: new work is
             # refused here, so a stop that lands mid-call admits no receipt or pending job.
-            if self._fenced or self._stopped:
+            if self._fenced or self._stopped or self._server_closed():
                 return self._status('degraded', frame, generation_id)
             # A new revision of the same caller request supersedes its old work.
             for job in (self._active, self._pending):
@@ -334,23 +338,57 @@ class GenerationLane:
                 if job:
                     self._cancel(job, 'cancelled')
 
-    def _stop_provider(self, job):
-        """Stop the provider; never raises. A stop failure fences the server for this lane.
+    def _server_closed(self):
+        return any(getattr(self.server, name, False) for name in
+                   ('_nexus_stop_unconfirmed', '_nexus_stop_pending', '_nexus_stopped'))
 
-        The fence is permanent: no further request may reach a provider whose
-        termination is unconfirmed. The loader must supply a new lane/server.
-        """
+    def _persist_stop_fence(self):
+        self._fenced = True
+        if self.server is not None:
+            setattr(self.server, '_nexus_stop_unconfirmed', True)
+            persist = getattr(self.server, 'fence_stop', None)
+            if persist is not None:
+                try:
+                    persist()
+                except OSError:
+                    self._fence_write_failed = True
+
+    def stop_observation(self):
+        """Local diagnostics, separate from the fixed generation receipt schema."""
+        return dict(scope='owned_runtime_group_no_new_session_or_cgroup',
+                    fenced=self._fenced,
+                    stop_threads_alive=sum(t.is_alive() for t in self._stop_threads),
+                    infer_threads_alive=sum(t.is_alive() for t in self._infer_threads),
+                    watcher_threads_alive=sum(t.is_alive() for t in self._watcher_threads),
+                    worker_alive=self._worker is not None and self._worker.is_alive(),
+                    fence_write_failed=getattr(self, '_fence_write_failed', False))
+
+    def _stop_provider(self, job):
+        """Bound the caller's wait; a hung stop retains its thread and fences."""
         with self._stop_lock:
             if self._fenced:
-                return False  # already fenced: stop() was attempted once, never again
+                return False
             if job.get('stopped'):
-                return True  # stop() already succeeded for this job: never call it twice
-            try:
-                self.server.stop()
-            except Exception:
+                return True
+            setattr(self.server, '_nexus_stop_pending', True)
+            result = []
+            def stop():
+                try:
+                    result.append(self.server.stop())
+                except Exception:
+                    result.append(None)
+            worker = threading.Thread(target=stop, daemon=True, name='mio-provider-stop')
+            self._stop_threads.append(worker)
+            worker.start()
+            worker.join(timeout=max(0, job.get('end', time.monotonic()) - time.monotonic()))
+            if (worker.is_alive() or not result or not isinstance(result[0], StopResult)
+                    or result[0].state is not StopState.CONFIRMED):
+                job['stop_thread_alive'] = worker.is_alive()
                 self._fence(job)
                 return False
             job['stopped'] = True
+            setattr(self.server, '_nexus_stopped', True)
+            setattr(self.server, '_nexus_stop_pending', False)
             self._mark_stopped()
         return True
 
@@ -380,7 +418,7 @@ class GenerationLane:
         queued or run. A late return of the blocked worker cannot overwrite these.
         """
         with self._lock:
-            self._fenced = True
+            self._persist_stop_fence()
             job['stop_failed'] = True
             pending, self._pending = self._pending, None
             for item in (job, pending):
@@ -409,7 +447,7 @@ class GenerationLane:
                 return copy.deepcopy(session.frozen)
             return self._execute_budget(job,AssistantCore,api)
         from azazel_mio import AssistantCore
-        if self._fenced or self._stopped:
+        if self._fenced or self._stopped or self._server_closed():
             return self._status('degraded', job['frame'], job['generation'])
         if job['cancelled'].is_set() or time.monotonic() >= job['end']:
             # Cancelled or expired before any provider request: no watcher, no stop.
@@ -430,11 +468,12 @@ class GenerationLane:
                         self._stop_provider(job)
                     return
         watcher = threading.Thread(target=watch, daemon=True, name='mio-generation-deadline')
+        self._watcher_threads = [t for t in self._watcher_threads if t.is_alive()] + [watcher]
         watcher.start()
         transport = StructuredGenerationTransport(self.server, self.capability,
             deadline=job['end'], cancelled=job['cancelled'],
             check=lambda: self._authorized(job['generation'])
-                           and not (self._fenced or self._stopped),
+                           and not (self._fenced or self._stopped or self._server_closed()),
             state=state)
         status = self._status('degraded', job['frame'], job['generation'])
         try:
@@ -456,11 +495,12 @@ class GenerationLane:
             pass
         finally:
             timer_stop.set()
-            # Unbounded join: a watcher already inside _stop_provider must finish before
-            # this job ends, so a queued next job never races a stale provider stop.
-            watcher.join()
+            watcher.join(timeout=max(0, job['end'] - time.monotonic()))
+            if watcher.is_alive():
+                job['watcher_alive'] = True
+                self._fence(job)
         # Only a transport/provider failure stops the provider here; content failures do not.
-        if transport.failed:
+        if transport.failed and not self._fenced:
             self._stop_provider(job)
         if job.get('stop_failed'):
             # Stop raised: termination is unconfirmed, so report degraded, not timeout/cancelled.
@@ -475,6 +515,11 @@ class GenerationLane:
         with session.lock:
             if session.cleanup['state'] != 'pending':
                 return
+            # The stop worker can be delayed acquiring this lock after its
+            # initial deadline check. Confirmation is decided at publication,
+            # still against the original job end.
+            if state == 'confirmed' and time.monotonic() >= job['end']:
+                state, reason = 'unconfirmed', 'confirmation_deadline'
             session.cleanup = dict(state=state, reason=reason, remaining_ms=0)
             if session.frozen is not None:
                 status = copy.deepcopy(session.frozen)
@@ -488,7 +533,7 @@ class GenerationLane:
                 status = None
         with self._lock:
             if state == 'unconfirmed':
-                self._fenced = True
+                self._persist_stop_fence()
             if status is not None:
                 record = self._receipts.get(job['handle'])
                 if record is not None:
@@ -507,17 +552,36 @@ class GenerationLane:
         # Closing the dispatch gate is synchronous. stop() never runs on the
         # deadline/control worker, so a hung provider cannot hold result termination.
         self._mark_stopped(budget=True)
+        try:
+            setattr(self.server, '_nexus_stop_pending', True)
+        except Exception:
+            self._update_budget_cleanup(job, 'unconfirmed', 'stop_failed')
+            return
         def stop():
             try:
-                self.server.stop()
+                result = self.server.stop()
             except Exception:
                 self._update_budget_cleanup(job, 'unconfirmed', 'stop_failed')
             else:
-                if time.monotonic() < job['end']:
+                if not isinstance(result, StopResult) or result.state is not StopState.CONFIRMED:
+                    self._update_budget_cleanup(job, 'unconfirmed', 'stop_failed')
+                    return
+                # Socket teardown wakes infer asynchronously. Wait only to the
+                # original E; a lingering infer thread never confirms cleanup.
+                session.done.wait(max(0, job['end'] - time.monotonic()))
+                infer = job.get('infer_thread')
+                if infer is not None:
+                    infer.join(timeout=max(0, job['end'] - time.monotonic()))
+                if (session.done.is_set() and (infer is None or not infer.is_alive())
+                        and time.monotonic() < job['end']):
+                    setattr(self.server, '_nexus_stopped', True)
+                    setattr(self.server, '_nexus_stop_pending', False)
                     self._update_budget_cleanup(job, 'confirmed', 'stop_confirmed')
                 else:
                     self._update_budget_cleanup(job, 'unconfirmed', 'confirmation_deadline')
-        threading.Thread(target=stop, daemon=True, name='mio-budget-stop').start()
+        worker = threading.Thread(target=stop, daemon=True, name='mio-budget-stop')
+        self._stop_threads.append(worker)
+        worker.start()
         def expire():
             while time.monotonic() < job['end']:
                 with session.lock:
@@ -561,11 +625,14 @@ class GenerationLane:
         elif time.monotonic() >= job['end']:
             session.note_failure('timeout','deadline_exceeded')
             session.done.set()
-        elif self._stopped or self._fenced:
+        elif self._stopped or self._fenced or self._server_closed():
             session.note_failure('model_unavailable','model_unavailable')
             session.done.set()
         else:
-            threading.Thread(target=work, daemon=True,name='mio-budget-infer').start()
+            infer = threading.Thread(target=work, daemon=True, name='mio-budget-infer')
+            job['infer_thread'] = infer
+            self._infer_threads = [t for t in self._infer_threads if t.is_alive()] + [infer]
+            infer.start()
         while True:
             now = time.monotonic()
             with session.lock:

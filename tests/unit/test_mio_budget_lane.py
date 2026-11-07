@@ -70,6 +70,8 @@ class Server:
         if self.stop_fail:
             raise OSError('fixture')
         self.release.set()
+        from azazel_nexus_runtime.mio_supervisor import StopResult, StopState
+        return StopResult(StopState.CONFIRMED, 'fixture_stop_confirmed')
 
 
 @pytest.fixture

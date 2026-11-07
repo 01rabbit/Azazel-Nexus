@@ -86,7 +86,7 @@ def server(tmp_path):
     binary.write_text(f'#!{sys.executable}\n' + FAKE)
     binary.chmod(0o700)
     # Short paths also work under macOS's 104-byte sockaddr_un ceiling.
-    with tempfile.TemporaryDirectory(prefix='azb-', dir='/tmp') as directory:
+    with tempfile.TemporaryDirectory(prefix='azb-', dir=tempfile.gettempdir()) as directory:
         sock = Path(directory) / 's.sock'
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:

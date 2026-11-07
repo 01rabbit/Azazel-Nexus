@@ -12,6 +12,7 @@ from azazel_mio import MioSituationFrame
 from azazel_nexus_runtime import mio_generation as generation
 from azazel_nexus_runtime.mio_fast_assistance import _frame
 from azazel_nexus_runtime.mio_serve import LocalInferenceResult
+from azazel_nexus_runtime.mio_supervisor import StopResult, StopState
 
 
 class FixtureLane(generation.GenerationLane):
@@ -57,6 +58,7 @@ class FixtureServer:
 
     def stop(self):
         self.stopped.set()
+        return StopResult(StopState.CONFIRMED, "fixture_stop_confirmed")
 
 
 def setup(known=True, block=False, deadline_s=.5):
@@ -179,7 +181,7 @@ class GatedServer(FixtureServer):
         self.release.set()
         time.sleep(.3)  # slower than the lane's former join timeout
         self.stop_done.set()
-        super().stop()
+        return super().stop()
 
 
 def test_queued_job_waits_for_prior_watcher_stop():
@@ -344,7 +346,7 @@ class StopOnceServer(FixtureServer):
         self.stop_calls += 1
         if self.stop_calls > 1:
             raise OSError('second stop must never happen')
-        super().stop()
+        return super().stop()
 
 
 def test_successful_watcher_stop_is_not_repeated_by_worker():
