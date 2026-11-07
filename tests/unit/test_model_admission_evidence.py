@@ -512,12 +512,20 @@ def test_spawn_uses_both_held_descriptors_and_rehashes_before_popen(tmp_path, mo
         _context, held, _entry, _provider, _host, _tested, _resources, record = values
         process = mio_supervisor.ServingProcess(record, root=Path("/"), descriptors=held)
         calls = []
-        monkeypatch.setattr(mio_supervisor.subprocess, "Popen", lambda argv, **kwargs: calls.append((argv, kwargs)))
+        fake_process = type("FakeProcess", (), {"pid": 12345})()
+        def popen(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return fake_process
+        monkeypatch.setattr(mio_supervisor.subprocess, "Popen", popen)
+        monkeypatch.setattr(mio_supervisor, "_process_identity", lambda pid: "test-identity")
+        monkeypatch.setattr(mio_supervisor, "_terminate_group", lambda *args, **kwargs:
+                            mio_supervisor.StopResult(mio_supervisor.StopState.CONFIRMED, "test_stopped"))
         process.start()
         argv, kwargs = calls[0]
         assert argv[0] == kwargs["executable"] == f"/proc/self/fd/{held.binary_fd}"
         assert argv[argv.index("-m") + 1] == f"/proc/self/fd/{held.model_fd}"
         assert kwargs["pass_fds"] == (held.binary_fd, held.model_fd)
+        process.stop()
         # Tampering the held inode is detected before the next mocked spawn.
         write(LLAMA_EXECUTABLE, b"tampered").chmod(0o750)
         from azazel_nexus.model_runtime import RuntimeRefused

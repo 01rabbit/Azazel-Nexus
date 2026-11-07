@@ -12,6 +12,7 @@ from azazel_mio import MioSituationFrame
 from azazel_nexus_runtime import mio_generation as generation
 from azazel_nexus_runtime.mio_fast_assistance import _frame
 from azazel_nexus_runtime.mio_serve import LocalInferenceResult
+from azazel_nexus_runtime.mio_supervisor import StopResult, StopState
 
 
 class FixtureLane(generation.GenerationLane):
@@ -57,6 +58,7 @@ class FixtureServer:
 
     def stop(self):
         self.stopped.set()
+        return StopResult(StopState.CONFIRMED, "fixture_stop_confirmed")
 
 
 def setup(known=True, block=False, deadline_s=.5):
@@ -179,7 +181,7 @@ class GatedServer(FixtureServer):
         self.release.set()
         time.sleep(.3)  # slower than the lane's former join timeout
         self.stop_done.set()
-        super().stop()
+        return super().stop()
 
 
 def test_queued_job_waits_for_prior_watcher_stop():
@@ -231,13 +233,14 @@ class StopFailsServer(FixtureServer):
         raise OSError('stop failed')
 
 
-def assert_fenced_after_stop_failure(lane, source, frame, value):
-    assert value['state'] == 'degraded'
+def assert_fenced_after_stop_failure(lane, source, frame, value, expected='degraded'):
+    assert value['state'] == expected
     until = time.monotonic() + 2
     while lane._active is not None and time.monotonic() < until:
         time.sleep(.005)
     assert lane._active is None
-    assert lane._receipts[value['result_handle']]['status']['state'] == 'degraded'
+    assert lane._receipts[value['result_handle']]['status']['state'] == expected
+    assert lane._fenced and lane.stop_observation()['cleanup']['state'] == 'unconfirmed'
     calls = len(lane.server.requests)
     later = lane.submit(source | {'request_id': 'after-stop-failure'}, frame, 'fixture-generation')
     assert later['state'] == 'degraded'
@@ -258,7 +261,7 @@ def test_stop_failure_in_deadline_watcher_fences_provider():
     lane.server = StopFailsServer(block=True)
     value = result(lane, source, frame)
     assert lane.server.requests and lane.server.stop_calls >= 1
-    assert_fenced_after_stop_failure(lane, source, frame, value)
+    assert_fenced_after_stop_failure(lane, source, frame, value, expected='timeout')
 
 
 class HungStopFailsServer(StopFailsServer):
@@ -301,6 +304,36 @@ def _workers():
     return [t for t in threading.enumerate() if t.name == 'mio-generation']
 
 
+def test_deadline_result_is_not_published_before_stop_failure_fences(monkeypatch):
+    lane, source, frame = setup(deadline_s=.08)
+    server = lane.server = HungStopFailsServer()
+    stop_entered, allow_stop = threading.Event(), threading.Event()
+    original_stop = lane._stop_provider
+
+    def gated_stop(job):
+        stop_entered.set()
+        assert allow_stop.wait(2)
+        return original_stop(job)
+
+    monkeypatch.setattr(lane, '_stop_provider', gated_stop)
+    try:
+        receipt = lane.submit(source, frame, 'fixture-generation')
+        assert server.entered.wait(2)
+        assert stop_entered.wait(2)
+        handle = receipt['result_handle']
+        assert lane.poll(handle, 'fixture-generation', frame.trace_id)['state'] == 'queued'
+        assert not lane._fenced
+        allow_stop.set()
+        assert _wait(lambda: lane.poll(handle, 'fixture-generation', frame.trace_id)['state'] == 'timeout')
+        assert lane._fenced
+        assert lane.stop_observation()['cleanup']['state'] == 'unconfirmed'
+        assert not server.release.is_set()
+    finally:
+        allow_stop.set()
+        server.release.set()
+        assert _wait(lambda: lane._active is None)
+
+
 def test_stop_failure_publishes_degraded_while_infer_is_still_blocked():
     lane, source, frame = setup(deadline_s=.08)
     server = lane.server = HungStopFailsServer()
@@ -311,8 +344,9 @@ def test_stop_failure_publishes_degraded_while_infer_is_still_blocked():
         # A second job queues behind the blocked worker before the deadline fires.
         queued = lane.submit(source | {'request_id': 'second'}, frame, 'fixture-generation')
         polled = lambda: lane.poll(handle, 'fixture-generation', frame.trace_id)
-        assert _wait(lambda: polled()['state'] == 'degraded')  # infer has NOT returned
+        assert _wait(lambda: polled()['state'] == 'timeout')  # infer has NOT returned
         assert not server.release.is_set() and lane._active is not None
+        assert lane._fenced and lane.stop_observation()['cleanup']['state'] == 'unconfirmed'
         assert lane._pending is None
         assert lane.poll(queued['result_handle'], 'fixture-generation',
                          frame.trace_id)['state'] == 'degraded'
@@ -324,10 +358,10 @@ def test_stop_failure_publishes_degraded_while_infer_is_still_blocked():
         assert len(server.requests) == calls
         # Late worker completion and an explicit cancel cannot rewrite the receipt.
         lane.cancel()
-        assert polled()['state'] == 'degraded'
+        assert polled()['state'] == 'timeout'
         server.release.set()
         assert _wait(lambda: lane._active is None)
-        assert polled()['state'] == 'degraded'
+        assert polled()['state'] == 'timeout'
         assert server.stop_calls == 1  # stop() attempted once, never retried
         assert len(server.requests) == calls
     finally:
@@ -344,7 +378,37 @@ class StopOnceServer(FixtureServer):
         self.stop_calls += 1
         if self.stop_calls > 1:
             raise OSError('second stop must never happen')
-        super().stop()
+        return super().stop()
+
+
+def test_f07_timeout_survives_unconfirmed_stop_and_late_infer_return():
+    lane, source, frame = setup(deadline_s=.08)
+    server = lane.server = HungStopFailsServer()
+    try:
+        first = lane.submit(source, frame, 'fixture-generation')
+        assert server.entered.wait(2)
+        pending = lane.submit(source | {'request_id': 'pending'}, frame, 'fixture-generation')
+        assert _wait(lambda: lane._fenced)
+        assert lane.stop_observation()['cleanup']['state'] == 'unconfirmed'
+        polled = lambda: lane.poll(first['result_handle'], 'fixture-generation', frame.trace_id)
+        assert polled()['state'] == 'timeout'
+        assert generation.read_slow_analysis(polled()) == polled()
+        assert not server.release.is_set() and lane._active is not None
+        assert lane.poll(pending['result_handle'], 'fixture-generation', frame.trace_id)['state'] == 'degraded'
+        assert lane._pending is None
+        lane.cancel()
+        assert polled()['state'] == 'timeout'
+        server.release.set()
+        assert _wait(lambda: lane._active is None)
+        assert polled()['state'] == 'timeout'
+        assert lane.submit(source, frame, 'fixture-generation')['state'] == 'timeout'
+        refused = lane.submit(source | {'request_id': 'new'}, frame, 'fixture-generation')
+        assert refused['state'] == 'degraded' and 'result_handle' not in refused
+        assert len(server.requests) == server.stop_calls == 1
+        assert lane._fenced and lane.stop_observation()['cleanup']['state'] == 'unconfirmed'
+    finally:
+        server.release.set()
+        assert _wait(lambda: lane._active is None)
 
 
 def test_successful_watcher_stop_is_not_repeated_by_worker():
@@ -354,8 +418,8 @@ def test_successful_watcher_stop_is_not_repeated_by_worker():
     assert _wait(lambda: lane._active is None)
     assert lane.server.requests
     assert lane.server.stop_calls == 1
-    assert not lane._fenced
-    assert lane._stopped
+    assert lane._fenced and not lane._stopped
+    assert lane.stop_observation()['cleanup']['state'] == 'unconfirmed'
     assert value['state'] == 'timeout'
     assert lane._receipts[value['result_handle']]['status']['state'] == 'timeout'
     before = len(lane.server.requests)
@@ -366,11 +430,16 @@ def test_successful_watcher_stop_is_not_repeated_by_worker():
 
 def test_successful_stop_degrades_pending_job_without_inference():
     lane, source, frame = setup(block=True, deadline_s=.08)
-    assert lane.submit(source, frame, 'fixture-generation')['state'] == 'queued'
+    first = lane.submit(source, frame, 'fixture-generation')
+    assert first['state'] == 'queued'
     assert lane.server.entered.wait(.5)
     pending = lane.submit(source | {'request_id': 'pending'}, frame, 'fixture-generation')
     assert pending['state'] == 'queued'
-    assert _wait(lambda: lane._stopped and lane._active is None)
+    assert _wait(lambda: lane._fenced and lane._active is None)
+    assert lane.stop_observation()['cleanup']['state'] == 'unconfirmed'
+    assert lane.poll(first['result_handle'], 'fixture-generation', frame.trace_id)['state'] == 'timeout'
+    fresh = lane.submit(source | {'request_id': 'new'}, frame, 'fixture-generation')
+    assert fresh['state'] == 'degraded' and 'result_handle' not in fresh
     assert lane._pending is None
     assert lane._receipts[pending['result_handle']]['status']['state'] == 'degraded'
     assert len(lane.server.requests) == 1  # the pending job never reached the stopped server
@@ -528,12 +597,15 @@ def test_invalid_result_ttl_rejected(ttl):
 
 def test_pending_same_source_retry_after_stop_returns_original_handle():
     lane, source, frame = setup(block=True, deadline_s=.08)
-    lane.submit(source, frame, 'fixture-generation')
+    first = lane.submit(source, frame, 'fixture-generation')
     assert lane.server.entered.wait(.5)
     other = source | {'request_id': 'pending'}
     pending = lane.submit(other, frame, 'fixture-generation')
-    assert _wait(lambda: lane._stopped and lane._active is None)
+    assert _wait(lambda: lane._fenced and lane._active is None)
+    assert lane.stop_observation()['cleanup']['state'] == 'unconfirmed'
+    assert lane.poll(first['result_handle'], 'fixture-generation', frame.trace_id)['state'] == 'timeout'
     calls = len(lane.server.requests)
+    assert calls == 1
     retry = lane.submit(other, frame, 'fixture-generation')
     assert retry['state'] == 'degraded' and retry['result_handle'] == pending['result_handle']
     assert lane.poll(pending['result_handle'], 'fixture-generation', frame.trace_id)['state'] == 'degraded'
@@ -580,7 +652,12 @@ def test_active_same_source_retry_after_stop_or_fence_is_terminal():
         assert server.entered.wait(2)
         assert _wait(lambda: lane._fenced)
         retry = lane.submit(source, frame, 'fixture-generation')
-        assert retry['state'] == 'degraded' and retry['result_handle'] == first['result_handle']
+        assert retry['state'] == 'timeout' and retry['result_handle'] == first['result_handle']
+        assert lane.stop_observation()['cleanup']['state'] == 'unconfirmed'
+        assert len(server.requests) == 1
+        fresh = lane.submit(source | {'request_id': 'new'}, frame, 'fixture-generation')
+        assert fresh['state'] == 'degraded' and 'result_handle' not in fresh
+        assert len(server.requests) == 1
         # F2: receipt pruned while the active key still matches -> no unpollable handle.
         lane._receipts.clear()
         pruned = lane.submit(source, frame, 'fixture-generation')

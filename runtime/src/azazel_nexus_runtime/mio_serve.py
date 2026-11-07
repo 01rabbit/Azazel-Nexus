@@ -6,6 +6,9 @@ owned by locald; constructing this handle does not admit a runtime.
 from __future__ import annotations
 
 import json
+import errno
+import stat
+import threading
 import math
 import socket
 import select
@@ -19,7 +22,7 @@ from azazel_nexus.local_advisory import advisory_response_format
 from azazel_nexus.model_runtime import RuntimeBinary
 from azazel_nexus.runtime_lifecycle import BudgetLedger, LifecycleState, RestartBudget
 
-from .mio_supervisor import ServingProcess, SupervisorRefused
+from .mio_supervisor import ServingProcess, SupervisorRefused, StopResult, StopState, _write_stop_fence
 
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_RESPONSE_BYTES = 1024 * 1024
@@ -193,6 +196,26 @@ class LocalServer:
         self._child = ServingProcess(record, root=Path(root), descriptors=descriptors)
         self._started = False
         self.state = LifecycleState.ABSENT
+        self._socket_identity = None
+        self._stop_lock = threading.RLock()
+        self._fence_lock = threading.Lock()
+        self._fence_path = (ledger.path.parent if ledger is not None else self.socket_path.parent) / "stop-fence.json"
+        self._nexus_stop_unconfirmed = False
+        self._last_stop = None
+        self._restore_stop_fence()
+
+    def _restore_stop_fence(self):
+        try:
+            fence = json.loads(self._fence_path.read_text())
+            self._nexus_stop_unconfirmed = (fence.get("socket_path") == str(self.socket_path)
+                                            and fence.get("state") == "unconfirmed")
+        except FileNotFoundError:
+            # A crash during the atomic fence write is uncertainty, never clearance.
+            self._nexus_stop_unconfirmed = self._fence_path.with_suffix(".json.pending").exists()
+        except (OSError, ValueError, AttributeError):
+            self._nexus_stop_unconfirmed = True
+        if self._nexus_stop_unconfirmed:
+            self.state = LifecycleState.FENCED
 
     def _spend(self) -> None:
         verdict = self.budget.spend()
@@ -205,6 +228,9 @@ class LocalServer:
             raise LocalServerRefused("restart budget spent; provider fenced")
 
     def _check_admission(self):
+        if any(getattr(self, name, False) for name in
+               ('_nexus_stop_unconfirmed', '_nexus_stop_pending', '_nexus_stopped')):
+            raise LocalServerRefused("provider stop gate closed")
         from azazel_nexus import model_admission
 
         if model_admission.LOCAL_MODEL_ADMISSION_ENABLED is not True:
@@ -214,6 +240,8 @@ class LocalServer:
         self.descriptors.recheck()
 
     def start(self, deadline_s: float | None = None) -> None:
+        if self._nexus_stop_unconfirmed:
+            raise LocalServerRefused("stop unconfirmed; provider fenced")
         self._check_admission()
         end = _deadline(self.start_deadline_s)
         if deadline_s is not None:
@@ -224,7 +252,8 @@ class LocalServer:
         if self._child.alive and self.health(deadline_s=min(0.2, max(0.001, end - time.monotonic()))):
             return
         if self._child.process is not None:
-            self.stop()
+            if self.stop().state is not StopState.CONFIRMED:
+                raise LocalServerRefused("prior provider stop unconfirmed")
         if self._started:
             self._spend()
         # Refuse existing paths rather than probing or deleting somebody
@@ -234,22 +263,27 @@ class LocalServer:
         self._started = True
         try:
             self._child.start()
+            self._last_stop = None
+            self._socket_identity = None
             self.state = LifecycleState.STARTED
             while self._child.alive:
+                self._capture_socket()
                 remaining = end - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("local server readiness deadline exceeded")
                 if self.health(deadline_s=min(remaining, 0.2)):
+                    self._capture_socket()
                     self.state = LifecycleState.SERVING
                     return
                 time.sleep(min(0.02, max(0, end - time.monotonic())))
             raise LocalServerRefused("serving process exited before readiness")
         except BaseException:
             self.stop()
-            self.state = LifecycleState.CRASHED
             raise
 
     def health(self, deadline_s: float = 0.2) -> bool:
+        if self._nexus_stop_unconfirmed:
+            return False
         if not self._child.alive:
             if self._started and self.state is not LifecycleState.STOPPED:
                 self.state = LifecycleState.CRASHED
@@ -264,7 +298,7 @@ class LocalServer:
     def infer(self, request: LocalInferenceRequest, deadline_s: float, *,
               allow_unknown_usage: bool = False, on_dispatch: Callable[[], None] | None = None) -> LocalInferenceResult:
         end = _deadline(deadline_s)
-        if not self._child.alive or self.state is not LifecycleState.SERVING:
+        if getattr(self, "_nexus_stop_unconfirmed", False) or not self._child.alive or self.state is not LifecycleState.SERVING:
             raise LocalServerRefused("local server is not serving")
         body = json.dumps(inference_document(request), ensure_ascii=False).encode("utf-8")
         if len(body) > MAX_REQUEST_BYTES:
@@ -307,7 +341,7 @@ class LocalServer:
     def context_limit(self, deadline_s: float) -> int:
         """Read the running server's effective context through the admitted socket."""
         end = _deadline(deadline_s)
-        if not self._child.alive or self.state is not LifecycleState.SERVING:
+        if getattr(self, "_nexus_stop_unconfirmed", False) or not self._child.alive or self.state is not LifecycleState.SERVING:
             raise LocalServerRefused("local server is not serving")
         try:
             data = _decode_document(self._http("GET", "/props", b"", end))
@@ -323,7 +357,7 @@ class LocalServer:
         return self._tokenize_rendered(text, _deadline(deadline_s))
 
     def _tokenize_rendered(self, text: str, end: float) -> int:
-        if not self._child.alive or self.state is not LifecycleState.SERVING:
+        if getattr(self, "_nexus_stop_unconfirmed", False) or not self._child.alive or self.state is not LifecycleState.SERVING:
             raise LocalServerRefused("local server is not serving")
         if type(text) is not str:
             raise LocalServerRefused("invalid tokenization input")
@@ -348,7 +382,7 @@ class LocalServer:
         the count as exact.
         """
         end = _deadline(deadline_s)
-        if not self._child.alive or self.state is not LifecycleState.SERVING:
+        if getattr(self, "_nexus_stop_unconfirmed", False) or not self._child.alive or self.state is not LifecycleState.SERVING:
             raise LocalServerRefused("local server is not serving")
         body = json.dumps(inference_document(request), ensure_ascii=False).encode('utf-8')
         if len(body) > MAX_REQUEST_BYTES:
@@ -367,7 +401,7 @@ class LocalServer:
 
     def _verified_tuple(self, end):
         from azazel_nexus.generation_budget import verified_tuple_from_props
-        if not self._child.alive or self.state is not LifecycleState.SERVING:
+        if getattr(self, "_nexus_stop_unconfirmed", False) or not self._child.alive or self.state is not LifecycleState.SERVING:
             raise TokenCountUnknown('server_tuple_unavailable')
         try:
             props=_decode_document(self._http('GET','/props',b'',end))
@@ -430,7 +464,7 @@ class LocalServer:
 
     def embed(self, texts, deadline_s):
         end = _deadline(deadline_s)
-        if not self._child.alive or self.state is not LifecycleState.SERVING:
+        if getattr(self, "_nexus_stop_unconfirmed", False) or not self._child.alive or self.state is not LifecycleState.SERVING:
             raise LocalServerRefused("local server is not serving")
         if (type(texts) is not list or not 1 <= len(texts) <= 8
                 or any(type(t) is not str or not t for t in texts)):
@@ -528,14 +562,79 @@ class LocalServer:
             remaining()
             return bytes(result)
 
-    def stop(self) -> None:
-        owned = self._child.process is not None
-        self._child.stop()
-        if owned:
-            try:
-                if self.socket_path.is_socket():
-                    self.socket_path.unlink()
-            except FileNotFoundError:
-                pass
-        if self.state is not LifecycleState.FENCED:
-            self.state = LifecycleState.STOPPED
+    def _capture_socket(self) -> None:
+        if self._socket_identity is not None:
+            return
+        try:
+            observed = self.socket_path.lstat()
+        except FileNotFoundError:
+            return
+        if not stat.S_ISSOCK(observed.st_mode):
+            raise LocalServerRefused("owned socket is not a socket")
+        self._socket_identity = (observed.st_dev, observed.st_ino)
+
+    def fence_stop(self) -> None:
+        """Persist uncertainty. No automatic clear, including after a late stop."""
+        self._nexus_stop_unconfirmed = True
+        self.state = LifecycleState.FENCED
+        process = self._child.process
+        value = dict(socket_path=str(self.socket_path), pid=process.pid if process else getattr(self, "_server_pid", None),
+                     start_identity=self._child.start_identity, state="unconfirmed", time=time.time())
+        # A failed write leaves this instance fenced and is surfaced to its caller.
+        with self._fence_lock:
+            _write_stop_fence(self._fence_path, value)
+
+    def _socket_stop_state(self) -> StopResult:
+        # An escaped child can retain the listener even after the owned group
+        # disappears. Unlinking its pathname would hide that live endpoint.
+        # Probe only this recorded local socket, nonblocking, without sending.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.setblocking(False)
+            code = probe.connect_ex(str(self.socket_path))
+        if code in (errno.ECONNREFUSED, errno.ENOENT):
+            return StopResult(StopState.CONFIRMED, "owned_socket_inactive")
+        if code in (0, errno.EAGAIN, errno.EWOULDBLOCK, errno.EINPROGRESS, errno.EALREADY):
+            return StopResult(StopState.UNCONFIRMED, "owned_socket_active")
+        return StopResult(StopState.UNKNOWN, "socket_observation_failed")
+
+    def stop(self) -> StopResult:
+        with self._stop_lock:
+            if self._last_stop is not None and self._last_stop.state is StopState.CONFIRMED:
+                return self._last_stop
+            if self._child.process is not None:
+                self._server_pid = self._child.process.pid
+            result = self._child.stop(retain=True)
+            if result.state is StopState.CONFIRMED:
+                try:
+                    try:
+                        observed = self.socket_path.lstat()
+                    except FileNotFoundError:
+                        observed = None
+                    if observed is not None:
+                        identity = (observed.st_dev, observed.st_ino)
+                        if self._socket_identity is None:
+                            result = StopResult(StopState.UNKNOWN, "socket_identity_unknown")
+                        elif identity == self._socket_identity:
+                            result = self._socket_stop_state()
+                            if result.state is StopState.CONFIRMED:
+                                self.socket_path.unlink()
+                                # Verify absence; never unlink a replacement.
+                                try:
+                                    after = self.socket_path.lstat()
+                                except FileNotFoundError:
+                                    after = None
+                                if after is not None and (after.st_dev, after.st_ino) == identity:
+                                    result = StopResult(StopState.UNCONFIRMED, "socket_remaining")
+                except OSError:
+                    result = StopResult(StopState.UNKNOWN, "socket_observation_failed")
+            if result.state is StopState.CONFIRMED:
+                self._child.process = None
+                if not self._nexus_stop_unconfirmed:
+                    self.state = LifecycleState.STOPPED
+            else:
+                try:
+                    self.fence_stop()
+                except OSError:
+                    result = StopResult(StopState.UNKNOWN, "fence_write_failed")
+            self._last_stop = result
+            return result

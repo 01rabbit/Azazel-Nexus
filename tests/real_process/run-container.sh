@@ -12,7 +12,7 @@ from pathlib import Path
 import hashlib
 import re
 
-wheel = Path('/wheel/azazel_mio-0.1.0.dev20261106+gitbb6dcfd-py3-none-any.whl')
+wheel = Path('/wheel/azazel_mio-0.1.0.dev20261107+gited860f2-py3-none-any.whl')
 fabric_wheel = Path('/fabric-wheel/azazel_fabric-0.10.0-py3-none-any.whl')
 locks = [
     Path('/src/packaging/offline/requirements-aarch64-cp313.lock'),
@@ -58,7 +58,7 @@ rm -rf -- "$SCRATCH_KNOWLEDGE/.venv" "$SCRATCH_KNOWLEDGE/.pytest_cache"
 export KNOWLEDGE_TEST_SRC="$SCRATCH_KNOWLEDGE"
 python -m pip install --no-index --find-links=/wheels --find-links=/fabric-wheel \
   -e "${SCRATCH_SRC}[dev]" -e "$SCRATCH_SRC/runtime" \
-  /wheel/azazel_mio-0.1.0.dev20261106+gitbb6dcfd-py3-none-any.whl \
+  /wheel/azazel_mio-0.1.0.dev20261107+gited860f2-py3-none-any.whl \
   /fabric-wheel/azazel_fabric-0.10.0-py3-none-any.whl \
   fastapi uvicorn pydantic PyYAML idna PyNaCl httpx
 

@@ -277,10 +277,14 @@ def test_local_server_stop_is_idempotent_without_socket_bind(tmp_path, monkeypat
     server._child.process = SimpleNamespace(pid=123)
     stopped = []
 
-    def stop_child():
+    def stop_child(*, retain=False):
+        from azazel_nexus_runtime.mio_supervisor import StopResult, StopState
+
         if server._child.process is not None:
             stopped.append(server._child.process.pid)
-            server._child.process = None
+            if not retain:
+                server._child.process = None
+        return StopResult(StopState.CONFIRMED, "test_stopped")
 
     monkeypatch.setattr(server._child, "stop", stop_child)
     server.stop()

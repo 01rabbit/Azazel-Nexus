@@ -84,6 +84,9 @@ def install_fake_serving(monkeypatch):
                 env={"PATH": "/nonexistent", "LC_ALL": "C"}, start_new_session=True,
                 close_fds=True,
             )
+            # Match the owned-process contract of the real spawn path. Without
+            # this observation stop() must refuse to confirm even a clean exit.
+            self.start_identity = mio_supervisor._process_identity(self.process.pid)
 
     def initialize(self, *args, **kwargs):
         kwargs.setdefault("descriptors", FakeDescriptors())
