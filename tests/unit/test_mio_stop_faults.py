@@ -1,6 +1,8 @@
 """G4 controlled faults; scope and watchdog observations are separate evidence."""
 import json
+import errno
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -321,6 +323,7 @@ def test_owned_socket_removed_only_after_group_confirmation(tmp_path, monkeypatc
     handle.socket_path.write_bytes(b'stub inode')
     st = handle.socket_path.lstat()
     handle._socket_identity = (st.st_dev, st.st_ino)
+    monkeypatch.setattr(handle, '_socket_stop_state', lambda: supervisor.StopResult(supervisor.StopState.CONFIRMED, 'inactive-stub'))
     monkeypatch.setattr(handle._child, 'stop', lambda **kw: supervisor.StopResult(supervisor.StopState.CONFIRMED, 'stub'))
     assert handle.stop().state is supervisor.StopState.CONFIRMED
     assert not handle.socket_path.exists() and handle.state is LifecycleState.STOPPED
@@ -346,13 +349,43 @@ def test_replaced_socket_is_never_unlinked(tmp_path, monkeypatch):
     assert handle.socket_path.read_bytes() == b'replacement'
 
 
-def test_f09_setsid_escape_is_visible_only_to_external_watchdog(tmp_path, monkeypatch):
+@pytest.mark.parametrize('code,expected', [
+    (0, supervisor.StopState.UNCONFIRMED),
+    (errno.EAGAIN, supervisor.StopState.UNCONFIRMED),
+    (errno.ECONNREFUSED, supervisor.StopState.CONFIRMED),
+    (errno.EPERM, supervisor.StopState.UNKNOWN),
+])
+def test_owned_listener_probe_controls_unlink_and_fence(tmp_path, monkeypatch, code, expected):
+    handle = local_handle(tmp_path)
+    handle.socket_path.write_bytes(b'controlled socket inode')
+    st = handle.socket_path.stat()
+    handle._socket_identity = (st.st_dev, st.st_ino)
+    class Probe:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def setblocking(self, value): assert value is False
+        def connect_ex(self, path):
+            assert path == str(handle.socket_path)
+            return code
+    monkeypatch.setattr(socket, 'socket', lambda *a: Probe())
+    monkeypatch.setattr(handle._child, 'stop', lambda **kw: supervisor.StopResult(supervisor.StopState.CONFIRMED, 'stub'))
+    assert handle.stop().state is expected
+    if expected is supervisor.StopState.CONFIRMED:
+        assert not handle.socket_path.exists() and handle._child.process is None
+    else:
+        assert handle.socket_path.exists() and handle._child.process is not None
+        assert handle.state is LifecycleState.FENCED
+        assert json.loads(handle._fence_path.read_text())['state'] == 'unconfirmed'
+
+
+def test_f09_setsid_escape_retaining_owned_pipe_fences(tmp_path, monkeypatch):
     import select
     # A real fixture parent owns a new session. Its child escapes with setsid,
-    # inherits only test pipes, and remains after the direct parent is reaped.
+    # inherits the owned stdout pipe and remains after the direct parent is reaped.
     # Identity/group reads are controlled here so this fault also runs in a
     # host sandbox that denies ps. The child answers the external watchdog.
     marker = tmp_path / 'escape.json'
+    handle = local_handle(tmp_path)
     child_code = """import os,sys,json
 os.setsid()
 with open(sys.argv[1],'w') as f: json.dump({'pid':os.getpid(),'group':os.getpgrp()}, f)
@@ -369,19 +402,31 @@ for line in sys.stdin:
         assert select.select([parent.stdout], [], [], 2)[0]
         assert parent.stdout.readline() == b'READY\n'
         parent.wait(timeout=2)
+        handle._child.process = parent
+        handle._child.start_identity = 'controlled-spawn-identity'
         monkeypatch.setattr(supervisor, '_process_identity', lambda pid: None)
         monkeypatch.setattr(supervisor, '_group_members', lambda group: ())
-        result = supervisor._terminate_group(parent, group=parent.pid, identity='controlled-spawn-identity')
+        result = handle.stop()
         observation = json.loads(marker.read_text())
         assert observation['pid'] == observation['group'] != parent.pid
         parent.stdin.write(b'PING\n')
         parent.stdin.flush()
         assert select.select([parent.stdout], [], [], 2)[0]
         assert parent.stdout.readline() == b'PONG\n'  # physical survivor after receipt
-        assert result.state is supervisor.StopState.CONFIRMED
+        assert result.state is supervisor.StopState.UNCONFIRMED
+        assert result.reason == 'owned_pipe_writer_remaining'
+        assert handle._child.process is parent
+        fence = json.loads(handle._fence_path.read_text())
+        assert fence['state'] == 'unconfirmed' and fence['pid'] == parent.pid
+        from azazel_nexus_runtime.mio_serve import LocalInferenceRequest
+        with pytest.raises(LocalServerRefused, match='not serving'):
+            handle.infer(LocalInferenceRequest((('user', 'must not send'),)), deadline_s=1)
+        with pytest.raises(LocalServerRefused, match='fenced'):
+            handle.start()
         assert result.scope == 'owned_runtime_group_no_new_session_or_cgroup'
         audit = dict(scope=result.scope, receipt=result.state.value,
                      group_members=[], parent_reaped=True, physical_survivor=True,
+                     fence=fence['state'], additional_send_refused=True,
                      premise_violated=True, cleanup_owner='test_pipe_eof_then_disposable_container')
         destination = os.environ.get('W3_PHYSICAL_AUDIT_DIR')
         if destination:
@@ -394,6 +439,66 @@ for line in sys.stdin:
         assert parent.stdout.read() == b''
         parent.stdout.close()
         parent.wait(timeout=2)
+
+
+@pytest.mark.parametrize('entry', ['supervise', 'run_once'])
+def test_one_shot_unconfirmed_retains_identity_and_refuses_repeat(tmp_path, monkeypatch, entry):
+    from azazel_nexus.model_runtime import RuntimeBinary
+    from azazel_nexus.runtime_lifecycle import BudgetLedger, RestartBudget
+    starts = []
+    process = ProcessStub()
+    process.stdout = process.stderr = None
+    def spawn(*args, **kwargs):
+        starts.append(process)
+        return process
+    monkeypatch.setattr(supervisor.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(supervisor, '_process_identity', lambda pid: 'owned-start')
+    monkeypatch.setattr(supervisor, '_drain_bounded', lambda *a, **kw: (b'READY', b'', False, False, True))
+    monkeypatch.setattr(supervisor, '_terminate_group', lambda *a, **kw: supervisor.StopResult(supervisor.StopState.REFUSED, 'signal_refused'))
+    record = RuntimeBinary('stub', '/usr/libexec/azazel/owned-stub', 'fixture', 'sha256:' + '0' * 64, ('/usr/libexec/azazel/owned-stub',))
+    ledger = BudgetLedger(tmp_path / 'state' / 'budget.json')
+    state = supervisor.Supervision(record, tmp_path, RestartBudget(generation=1), ledger=ledger)
+    if entry == 'supervise':
+        supervisor.supervise(state)
+        report = state.reports[-1]
+        supervisor.supervise(state)
+        assert len(state.reports) == 1 and state.budget.fenced
+        assert state.budget.remaining > 0  # cleanup fence is independent of spent restarts
+        assert ledger.load(generation=1, runtime_id='stub').fenced
+    else:
+        report = supervisor.run_once(record, root=tmp_path, ledger=ledger)
+    assert supervisor.run_once(record, root=tmp_path, ledger=ledger).state is LifecycleState.FENCED
+    assert supervisor.run_once(record, root=tmp_path).state is LifecycleState.FENCED
+    assert report.state is LifecycleState.FENCED and report.process is process
+    assert (report.group, report.start_identity) == (process.pid, 'owned-start')
+    fence = json.loads((ledger.path.parent / 'stop-fence.json').read_text())
+    assert (fence['pid'], fence['group'], fence['start_identity']) == (process.pid, process.pid, 'owned-start')
+    assert fence['state'] == 'unconfirmed'
+    # A fresh interpreter's in-memory state is empty; the durable fence still refuses.
+    monkeypatch.setattr(supervisor, '_unconfirmed_runs', {})
+    assert supervisor.run_once(record, root=tmp_path, ledger=ledger).state is LifecycleState.FENCED
+    assert len(starts) == 1
+
+
+def test_one_shot_fence_write_failure_still_refuses_repeat(tmp_path, monkeypatch):
+    from azazel_nexus.model_runtime import RuntimeBinary
+    starts = []
+    process = ProcessStub()
+    process.stdout = process.stderr = None
+    def spawn(*args, **kwargs):
+        starts.append(process)
+        return process
+    monkeypatch.setattr(supervisor.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(supervisor, '_process_identity', lambda pid: 'owned-start')
+    monkeypatch.setattr(supervisor, '_drain_bounded', lambda *a, **kw: (b'', b'', False, False, True))
+    monkeypatch.setattr(supervisor, '_terminate_group', lambda *a, **kw: supervisor.StopResult(supervisor.StopState.UNKNOWN, 'unknown'))
+    monkeypatch.setattr(supervisor, '_write_stop_fence', lambda *a: (_ for _ in ()).throw(PermissionError()))
+    record = RuntimeBinary('stub', '/usr/libexec/azazel/owned-stub', 'fixture', 'sha256:' + '0' * 64, ('/usr/libexec/azazel/owned-stub',))
+    report = supervisor.run_once(record, root=tmp_path)
+    assert report.state is LifecycleState.FENCED and report.process is process
+    assert 'fence_write_failed' in report.reason
+    assert supervisor.run_once(record, root=tmp_path) is report
+    assert len(starts) == 1
 
 
 def test_run_once_normal_cleanup_is_not_fenced(monkeypatch, tmp_path):

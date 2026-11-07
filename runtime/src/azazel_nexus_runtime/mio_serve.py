@@ -6,7 +6,7 @@ owned by locald; constructing this handle does not admit a runtime.
 from __future__ import annotations
 
 import json
-import os
+import errno
 import stat
 import threading
 import math
@@ -22,7 +22,7 @@ from azazel_nexus.local_advisory import advisory_response_format
 from azazel_nexus.model_runtime import RuntimeBinary
 from azazel_nexus.runtime_lifecycle import BudgetLedger, LifecycleState, RestartBudget
 
-from .mio_supervisor import ServingProcess, SupervisorRefused, StopResult, StopState
+from .mio_supervisor import ServingProcess, SupervisorRefused, StopResult, StopState, _write_stop_fence
 
 MAX_REQUEST_BYTES = 256 * 1024
 MAX_RESPONSE_BYTES = 1024 * 1024
@@ -581,19 +581,21 @@ class LocalServer:
         value = dict(socket_path=str(self.socket_path), pid=process.pid if process else getattr(self, "_server_pid", None),
                      start_identity=self._child.start_identity, state="unconfirmed", time=time.time())
         # A failed write leaves this instance fenced and is surfaced to its caller.
-        self._fence_path.parent.mkdir(parents=True, exist_ok=True)
         with self._fence_lock:
-            temporary = self._fence_path.with_suffix(".json.pending")
-            with temporary.open("w", encoding="utf-8") as stream:
-                json.dump(value, stream)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self._fence_path)
-            directory = os.open(self._fence_path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            _write_stop_fence(self._fence_path, value)
+
+    def _socket_stop_state(self) -> StopResult:
+        # An escaped child can retain the listener even after the owned group
+        # disappears. Unlinking its pathname would hide that live endpoint.
+        # Probe only this recorded local socket, nonblocking, without sending.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.setblocking(False)
+            code = probe.connect_ex(str(self.socket_path))
+        if code in (errno.ECONNREFUSED, errno.ENOENT):
+            return StopResult(StopState.CONFIRMED, "owned_socket_inactive")
+        if code in (0, errno.EAGAIN, errno.EWOULDBLOCK, errno.EINPROGRESS, errno.EALREADY):
+            return StopResult(StopState.UNCONFIRMED, "owned_socket_active")
+        return StopResult(StopState.UNKNOWN, "socket_observation_failed")
 
     def stop(self) -> StopResult:
         with self._stop_lock:
@@ -613,14 +615,16 @@ class LocalServer:
                         if self._socket_identity is None:
                             result = StopResult(StopState.UNKNOWN, "socket_identity_unknown")
                         elif identity == self._socket_identity:
-                            self.socket_path.unlink()
-                            # Verify the owned inode disappeared; never unlink a replacement.
-                            try:
-                                after = self.socket_path.lstat()
-                            except FileNotFoundError:
-                                after = None
-                            if after is not None and (after.st_dev, after.st_ino) == identity:
-                                result = StopResult(StopState.UNCONFIRMED, "socket_remaining")
+                            result = self._socket_stop_state()
+                            if result.state is StopState.CONFIRMED:
+                                self.socket_path.unlink()
+                                # Verify absence; never unlink a replacement.
+                                try:
+                                    after = self.socket_path.lstat()
+                                except FileNotFoundError:
+                                    after = None
+                                if after is not None and (after.st_dev, after.st_ino) == identity:
+                                    result = StopResult(StopState.UNCONFIRMED, "socket_remaining")
                 except OSError:
                     result = StopResult(StopState.UNKNOWN, "socket_observation_failed")
             if result.state is StopState.CONFIRMED:
