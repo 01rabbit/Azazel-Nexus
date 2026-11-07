@@ -82,20 +82,23 @@ ROUTE_VERB = Verb(
     ),
     admits=frozenset({PrincipalClass.OPERATOR, PrincipalClass.SERVICE}),
 )
-ADVISE_VERB = Verb(
+from .mio_generation_epoch import EpochVerb
+
+ADVISE_VERB = EpochVerb(
     "mio.advise",
     arguments=(Argument("deadline_ms", ArgumentKind.ORDINAL, maximum=60_000),),
     admits=frozenset({PrincipalClass.OPERATOR, PrincipalClass.SERVICE}),
     accepts_payload=True,
     payload_contract="azazel_nexus.local_advisory.read_frame",
 )
-POLL_GENERATION_RESULT_VERB = Verb(
+POLL_GENERATION_RESULT_VERB = EpochVerb(
     "mio.generation.result",
     arguments=(Argument("deadline_ms", ArgumentKind.ORDINAL, maximum=50),) + tuple(
         Argument(name, ArgumentKind.IDENTIFIER) for name in
         ("result_handle", "generation_id", "frame_id", "trace_id")),
     admits=frozenset({PrincipalClass.SERVICE}),
 )
+
 #: The remote opt-in (`mio_remote_consent`): the only writers of the store,
 #: and its read. `OPERATOR` alone -- not `SERVICE` (the arbiter, the
 #: explainer), not the advice listener -- and no argument is free text.
@@ -738,19 +741,25 @@ class MioEntryService:
         # The request's one deadline, on the router's monotonic clock. The
         # route, any fallback and the reference all take what is left of it.
         deadline_at = self.router.monotonic() + request.arguments["deadline_ms"] / 1000
-        is_advice = getattr(getattr(request, "verb", None), "name", None) == ADVISE_VERB.name
+        verb_name = getattr(getattr(request, "verb", None), "name", None)
+        is_advice = verb_name == ADVISE_VERB.name
+        epoch_args = ({'caller_epoch': request.arguments['caller_epoch']}
+                      if 'caller_epoch' in request.arguments else {})
         explainer = (principal is not None and self._explainer_uid is not None
                      and principal.uid == self._explainer_uid
                      and PrincipalClass.SERVICE in principal.classes)
-        if getattr(getattr(request, "verb", None), "name", None) == POLL_GENERATION_RESULT_VERB.name:
+        if epoch_args and not explainer:
+            raise RequestRefused(Refusal.PRINCIPAL_DENIED, 'generation_epoch_explainer')
+        if verb_name == POLL_GENERATION_RESULT_VERB.name:
             if not explainer:
                 raise RequestRefused(Refusal.PRINCIPAL_DENIED, "generation_result_explainer")
             receipt = {"state": "queued", "usage": "unknown",
                        **{key: request.arguments[key] for key in
                           ("result_handle", "generation_id", "frame_id", "trace_id")}}
             value = self.local.generation_result(
-                receipt, deadline_s=request.arguments["deadline_ms"] / 1000)
-            return {"outcome": "generation_result", "slow_analysis": value}
+                receipt, deadline_s=request.arguments["deadline_ms"] / 1000, **epoch_args)
+            return {"outcome": "generation_result", "slow_analysis": value,
+                    **({'generation_metadata': self.local.last_generation_metadata} if epoch_args else {})}
         if explainer and not is_advice:
             raise RequestRefused(Refusal.PRINCIPAL_DENIED, "explainer_verb")
         local_request = None
@@ -804,7 +813,7 @@ class MioEntryService:
                     else:
                         started = self.router.monotonic()
                         fast_assistance = self.local.assess(
-                            frame, deadline_s=min(FAST_ASSESS_MAX_S, fast_budget))
+                            frame, deadline_s=min(FAST_ASSESS_MAX_S, fast_budget), **epoch_args)
                         # Only an absent locald (dependency unavailable, no
                         # socket or account) hands the same core to this
                         # process. A timeout, refusal or a locald-run core
@@ -828,9 +837,11 @@ class MioEntryService:
                     reply["slow_analysis"] = getattr(
                         self.local, 'last_slow_analysis',
                         {"state": "closed", "usage": "unknown"})
+                if epoch_args:
+                    reply['generation_metadata'] = getattr(self.local, 'last_generation_metadata', None)
                 return reply
             local_request = SimpleNamespace(
-                verb=INFER_VERB, arguments=request.arguments, payload=frame,
+                verb=INFER_VERB, arguments={'deadline_ms': request.arguments['deadline_ms']}, payload=frame,
             )
         else:
             privacy = PrivacyClass(request.arguments["privacy_class"])
@@ -896,6 +907,8 @@ class MioEntryService:
             reply["fast_assistance"] = fast_assistance
             reply["slow_analysis"] = getattr(self.local, 'last_slow_analysis',
                                              {"state": "closed", "usage": "unknown"})
+        if epoch_args:
+            reply['generation_metadata'] = getattr(self.local, 'last_generation_metadata', None)
         return reply
 
 

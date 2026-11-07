@@ -102,13 +102,15 @@ INFER_VERB = Verb(
     accepts_payload=True,
     payload_contract="azazel_nexus.local_advisory.read_frame",
 )
-FAST_ASSESS_VERB = Verb(
+from .mio_generation_epoch import EpochVerb
+
+FAST_ASSESS_VERB = EpochVerb(
     name="mio.local.assess",
     arguments=(Argument("deadline_ms", ArgumentKind.ORDINAL, maximum=60_000),),
     admits=frozenset({PrincipalClass.SERVICE}), accepts_payload=True,
     payload_contract="azazel_nexus.local_advisory.read_frame",
 )
-GENERATION_RESULT_VERB = Verb(
+GENERATION_RESULT_VERB = EpochVerb(
     name="mio.local.generation.result",
     arguments=tuple(Argument(name, ArgumentKind.IDENTIFIER) for name in
                     ("result_handle", "generation_id", "trace_id")),
@@ -244,8 +246,12 @@ class LocalRuntimeService:
     def handle(self, request: Any, *, audit: Callable[[dict], None] = lambda e: None) -> dict:
         name = getattr(getattr(request, "verb", None), "name", None)
         if name == GENERATION_RESULT_VERB.name:
-            return {"outcome": "generation_result", "slow_analysis":
-                    self._generation_lane.poll(**request.arguments)}
+            result = {"outcome": "generation_result", "slow_analysis":
+                      self._generation_lane.poll(**request.arguments)}
+            if 'caller_epoch' in request.arguments:
+                result['generation_metadata'] = self._generation_lane.private_metadata(
+                    request.arguments['result_handle'], request.arguments['caller_epoch'])
+            return result
         if name == INFER_VERB.name:
             return self._infer(request, audit=audit)
         if name == FAST_ASSESS_VERB.name:
@@ -294,10 +300,15 @@ class LocalRuntimeService:
             slow = {"state": "closed", "usage": "unknown"}
             try:
                 slow = self._generation_lane.submit(frame, situation, self._generation_id,
-                    upstream_coverage=slow_selection['coverage'], upstream_selection=slow_selection)
+                    upstream_coverage=slow_selection['coverage'], upstream_selection=slow_selection,
+                    **({'caller_epoch': request.arguments['caller_epoch']} if 'caller_epoch' in request.arguments else {}))
             except Exception:
                 pass
-            return {"outcome": "assessed", "fast_assistance": result, "slow_analysis": slow}
+            reply = {"outcome": "assessed", "fast_assistance": result, "slow_analysis": slow}
+            if 'caller_epoch' in request.arguments:
+                reply['generation_metadata'] = self._generation_lane.private_metadata(
+                    slow.get('result_handle'), request.arguments['caller_epoch'])
+            return reply
         if name == ADMISSION_VERB.name:
             return self.admission()
         arguments = request.arguments

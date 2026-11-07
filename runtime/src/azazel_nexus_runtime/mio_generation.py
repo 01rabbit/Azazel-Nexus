@@ -159,7 +159,7 @@ class GenerationLane:
     configurable TTL: three hundred seconds), with sixteen retained records.
     """
     def __init__(self, *, capability=None, server=None, deadline_s=5.0, result_ttl_s=60.0,
-                 budget_enabled=False, output_caps=CAPS, budget_settings=None):
+                 budget_enabled=False, output_caps=CAPS, budget_settings=None, journal_dir=None):
         if type(deadline_s) not in (int, float) or not math.isfinite(deadline_s) or not 0 < deadline_s <= 30:
             raise ValueError('invalid_generation_deadline')
         if type(result_ttl_s) not in (int, float) or not math.isfinite(result_ttl_s) or not 0 < result_ttl_s <= 300:
@@ -174,6 +174,7 @@ class GenerationLane:
         self._receipts = {}
         self.capability, self.server, self.deadline_s = capability, server, deadline_s
         self._lock = threading.RLock()
+        self._submission_lock = threading.Lock()
         self._stop_lock = threading.Lock()
         self._fenced = bool(getattr(server, "_nexus_stop_unconfirmed", False) or getattr(server, "_nexus_stop_pending", False))
         self._stopped = bool(getattr(server, "_nexus_stopped", False))
@@ -185,6 +186,64 @@ class GenerationLane:
         self._active = None
         self._worker = None
         self._results = {}
+        from .mio_generation_journal import GenerationJournal, new_epoch
+        self._epoch = new_epoch()
+        self._journal = None
+        self._journal_failed = False
+        self._restart_records = {}
+        if budget_enabled:
+            fence_path = getattr(server, '_fence_path', None)
+            if journal_dir is None and fence_path is not None:
+                journal_dir = fence_path.parent / 'generation-journal'
+            if journal_dir is not None:
+                try:
+                    self._journal = GenerationJournal(journal_dir)
+                    for record in self._journal.records.values():
+                        self._restart_records[record['handle']] = record['request_id']
+                        if not record['fenced']:
+                            self._journal.fence(record['request_id'], 'restart_unconfirmed', restart_epoch=self._epoch)
+                except (OSError, ValueError, TypeError):
+                    self._journal_failed = True
+
+    def _restarted(self, request_id, frame, generation_id):
+        from .mio_generation_journal import restored_status
+        observation = self._journal.observation(request_id)
+        if ('handle' not in observation or observation.get('generation_id') != generation_id
+                or observation.get('frame_id') != frame.frame_id):
+            return self._status('degraded', frame, generation_id)
+        return restored_status(observation.get('terminal'), observation,
+                               uncertain=observation['sent_count'] is None)
+
+    def private_observation(self, request_id):
+        """Local diagnostics only; never attached to the public receipt."""
+        if self._journal is None:
+            return {'state': 'unknown', 'reason': 'journal_unavailable'}
+        return self._journal.observation(request_id)
+
+    def private_metadata(self, handle, caller_epoch):
+        """Non-secret binding on the epoch-only internal transport."""
+        from .mio_generation_journal import unknown_metadata
+        with self._lock:
+            record = self._receipts.get(handle)
+            if (not self.budget_enabled or not record or record.get('epoch') != caller_epoch
+                    or record.get('restart_reason') or time.monotonic() >= record['expires']):
+                return None
+            meta = record['status'].get('generation_budget', {})
+            return dict(request_id=record['request_id'], handle=handle, epoch=record['epoch'],
+                        frame_id=record['status']['frame_id'], generation_id=record['generation'],
+                        created_at=record['created_at'], expires_at=record['expires_at'],
+                        template_version=(meta.get('profile') or {}).get('template_version'),
+                        unknowns=unknown_metadata(record.get('frame_unknowns', {})),
+                        evidence_refs=[])
+
+    def _journal_finish(self, job, status, unknowns):
+        if self._journal is None:
+            return
+        try:
+            self._journal.finish(job['source']['request_id'], status, unknowns)
+        except (OSError, ValueError, KeyError):
+            self._journal_failed = True
+            self._persist_stop_fence()
 
     def _authorized(self, generation_id):
         return authorized(self.capability, generation_id)
@@ -270,20 +329,54 @@ class GenerationLane:
                 value.pop('assistance',None)
         return value
 
-    def poll(self, result_handle, generation_id, trace_id):
+    def poll(self, result_handle, generation_id, trace_id, *, caller_epoch=None):
         """Read one original job, never dispatch or consult embedding admission."""
         stale = {'state': 'stale', 'usage': 'unknown'}
         if not self._authorized(generation_id):
             return stale
+        fence_request = None
         with self._lock:
+            if self.budget_enabled and type(result_handle) is str and result_handle in self._restart_records:
+                from .mio_generation_journal import restored_status
+                observation = self._journal.observation(self._restart_records[result_handle])
+                if observation.get('generation_id') != generation_id or observation.get('trace_id') != trace_id:
+                    return stale
+                return restored_status(observation.get('terminal'), observation,
+                                       uncertain=observation.get('sent_count') is None)
             self._prune()
             record = self._receipts.get(result_handle) if type(result_handle) is str else None
             if (not record or record['generation'] != generation_id
                     or record['trace'] != trace_id):
                 return stale
-            return self._public_record(record)
+            if self.budget_enabled and caller_epoch is not None and caller_epoch != record.get('epoch'):
+                record['restart_reason'] = 'stale_epoch'
+                fence_request = record['request_id']
+                for job in (self._active, self._pending):
+                    if job and job['handle'] == result_handle:
+                        self._cancel(job, 'stale')
+            if record.get('restart_reason'):
+                from .mio_generation_journal import restored_status
+                result = restored_status(record['status'].get('generation_budget'), dict(
+                    generation_id=record['generation'], frame_id=record['status']['frame_id'],
+                    trace_id=record['trace'], handle=result_handle), uncertain=True)
+            else:
+                result = self._public_record(record)
+        if fence_request is not None and self._journal is not None:
+            try:
+                self._journal.fence(fence_request, 'stale_epoch', restart_epoch=caller_epoch)
+            except (OSError, ValueError):
+                self._journal_failed = True
+        return result
 
-    def submit(self, source, frame, generation_id, *, upstream_coverage='unknown', upstream_selection=None):
+    def submit(self, source, frame, generation_id, *, upstream_coverage='unknown', upstream_selection=None,
+               caller_epoch=None):
+        # Serial admission permits durable reservation without holding the
+        # control/dispatch lock during disk I/O.
+        with self._submission_lock:
+            return self._submit(source, frame, generation_id, upstream_coverage=upstream_coverage,
+                                upstream_selection=upstream_selection, caller_epoch=caller_epoch)
+
+    def _submit(self, source, frame, generation_id, *, upstream_coverage, upstream_selection, caller_epoch):
         from azazel_nexus.generation_budget import validate_selection, selection_unknown
         if upstream_selection is None:
             upstream_selection = selection_unknown()
@@ -297,6 +390,15 @@ class GenerationLane:
             return self._decline('closed',frame,generation_id,'admission_closed',upstream_coverage,upstream_selection)
         if self.server is None:
             return self._decline('degraded',frame,generation_id,'model_unavailable',upstream_coverage,upstream_selection)
+        if self.budget_enabled and self._journal_failed:
+            return self._status('degraded', frame, generation_id)
+        if self.budget_enabled and caller_epoch is not None:
+            with self._lock:
+                other_epoch = next((r for r in self._receipts.values()
+                    if r.get('request_id') == source['request_id'] and r.get('epoch') != caller_epoch), None)
+            if other_epoch is not None:
+                return self.poll(other_epoch['status']['result_handle'], generation_id, frame.trace_id,
+                                 caller_epoch=caller_epoch)
         if self.budget_enabled and getattr(frame, 'truncated', False):
             # A rejected revision still invalidates older work for this request.
             # Mark and cancel under the lane lock, but never acquire a session
@@ -332,6 +434,10 @@ class GenerationLane:
         key = (generation_id, fingerprint)
         with self._lock:
             self._prune()
+            if self._journal is not None and self._journal.seen(source['request_id']):
+                live = next((r for r in self._receipts.values() if r.get('request_id') == source['request_id']), None)
+                if live is None or live.get('restart_reason'):
+                    return self._restarted(source['request_id'], frame, generation_id)
             if key in self._results:
                 cached = self._results[key]
                 record = self._receipts.get(cached.get('result_handle'))
@@ -361,13 +467,32 @@ class GenerationLane:
             if self._pending is not None:
                 return self._status('queue_full', frame, generation_id)
             handle = secrets.token_hex(32)
-            queued = self._status('queued', frame, generation_id, result_handle=handle)
+            epoch = caller_epoch if caller_epoch is not None else self._epoch
             submitted = time.monotonic()
+            created_at = time.time()
+            if self._journal is not None:
+                # Exact request IDs are permanent tombstones, even with a changed source.
+                if self._journal.seen(source['request_id']):
+                    return self._restarted(source['request_id'], frame, generation_id)
+                # Other submits are serialized, but timeout/stop/publication
+                # can proceed while reservation is fsynced.
+                self._lock.release()
+                try:
+                    self._journal.reserve(source['request_id'], handle, generation_id, frame, epoch, self.result_ttl_s)
+                except (OSError, ValueError):
+                    return self._status('degraded', frame, generation_id)
+                finally:
+                    self._lock.acquire()
+                if self._fenced or self._stopped or self._server_closed():
+                    return self._restarted(source['request_id'], frame, generation_id)
+            queued = self._status('queued', frame, generation_id, result_handle=handle)
             self._receipts[handle] = dict(generation=generation_id, trace=frame.trace_id,
-                expires=submitted + self.result_ttl_s, end=submitted+self.deadline_s, status=queued)
+                expires=submitted + self.result_ttl_s, end=submitted+self.deadline_s, status=queued,
+                request_id=source['request_id'], epoch=epoch,
+                created_at=created_at, expires_at=created_at+self.result_ttl_s)
             self._prune()
             self._pending = dict(handle=handle, key=key, source=copy.deepcopy(source), frame=frame,
-                                 generation=generation_id, cancelled=threading.Event(),
+                                 generation=generation_id, cancelled=threading.Event(), epoch=epoch,
                                  submitted=submitted,
                                  end=submitted + self.deadline_s, reason='cancelled',
                                  upstream_coverage=upstream_coverage, upstream_selection=copy.deepcopy(upstream_selection))
@@ -593,6 +718,8 @@ class GenerationLane:
                     status = self._public_record(record)
                     record['status'] = copy.deepcopy(status)
                 self._retain(job['key'], copy.deepcopy(status))
+        if status is not None:
+            self._journal_finish(job, status, session.frame_unknowns)
 
     def _start_budget_stop(self, job):
         session = job['budget_session']
@@ -782,6 +909,8 @@ class GenerationLane:
                         record['status'] = copy.deepcopy(status)
                     self._retain(job['key'], status)
                     self._active = None
+            if session is not None:
+                self._journal_finish(job, status, session.frame_unknowns)
 
 def read_slow_analysis(value):
     """Use the same dependency-free reader as CORE; malformed slow data is closed."""

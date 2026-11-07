@@ -185,6 +185,15 @@ class BudgetSession:
             self.calls.append(call)
         @contextmanager
         def dispatch_guard():
+            # Disk I/O is outside the deadline/session gate. A freeze or epoch
+            # change during fsync is rechecked before the nonblocking send.
+            if self.lane._journal is not None:
+                try:
+                    from azazel_mio import playbook
+                    self.lane._journal.intent(self.job['source']['request_id'], task,
+                        getattr(playbook, 'PROMPT_TEMPLATE_VERSION', 'unknown'))
+                except (OSError, ValueError, KeyError):
+                    self.reject('stop_unconfirmed', 'stop_unconfirmed')
             # Same lock order as terminal publication; serialize lane fence too.
             with self.lock,self.lane._lock:
                 before_dispatch()
@@ -202,6 +211,11 @@ class BudgetSession:
             result = self.lane.server.infer_native(request,
                 deadline_s=max(.000001,self.call_end-time.monotonic()),allow_unknown_usage=True,on_dispatch=dispatch,before_dispatch=before_dispatch,dispatch_guard=dispatch_guard,
                 prepared=cached[1],expected_tuple=self.verified_tuple)
+            if self.lane._journal is not None and record['dispatched']:
+                try:
+                    self.lane._journal.received(self.job['source']['request_id'])
+                except (OSError, ValueError, KeyError):
+                    self.reject('stop_unconfirmed', 'stop_unconfirmed')
             with self.lock:
                 if self.frozen is not None:
                     return self.reject('timeout','deadline_exceeded')
