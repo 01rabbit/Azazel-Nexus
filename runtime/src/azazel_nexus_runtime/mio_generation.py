@@ -150,8 +150,9 @@ class GenerationLane:
     stopped for good (_stopped), drops/degrades its pending job and rejects later
     submits without a handle or inference. If stop() raises, termination is
     unconfirmed: once that failure is known, the lane fences the server
-    permanently and changes active/pending receipts to degraded. A
-    timeout/cancelled receipt may remain visible while stop() is still pending.
+    permanently. The active job keeps its terminal result independently of
+    cleanup; pending work that cannot be sent degrades. Stop confirmation must
+    be observed before the original job end, including for legacy jobs.
     Later submits degrade without inference.
     No restart/spawn occurs here. Exact-source repeats and explicit handles poll
     results. Handles retain original bindings for at most sixty seconds (maximum
@@ -179,6 +180,7 @@ class GenerationLane:
         self._stop_threads = []
         self._infer_threads = []
         self._watcher_threads = []
+        self._legacy_cleanup = {'state': 'not_needed', 'reason': None, 'remaining_ms': 0}
         self._pending = None
         self._active = None
         self._worker = None
@@ -207,18 +209,29 @@ class GenerationLane:
         return value
 
     def _cancel(self, job, reason):
-        job['cancelled'].set()
-        job['reason'] = reason
-        if job.get('budget_session') is not None:
-            return  # control worker observes cancellation; terminal supersession is consumer-owned
         with self._lock:
-            record = self._receipts.get(job['handle'])
-            # A fenced lane's degraded receipts are final; never rewrite them.
-            if record and not self._fenced:
-                record['status'] = self._status(reason, job['frame'], job['generation'],
-                                                 result_handle=job['handle'])
+            if job.get('budget_session') is not None:
+                job['reason'] = reason
+                job['cancelled'].set()
+                return  # budget control worker owns its terminal result
+            if 'terminal_status' in job:
+                return
+            job['reason'] = reason
+            job['cancelled'].set()
+            self._finish_legacy(job, reason)
         # stop() is the existing bounded supervisor process-group termination.
         # Do not call it in the fast caller: the worker/timer owns cancellation.
+
+    def _finish_legacy(self, job, state):
+        """Latch the result independently of asynchronous stop/fence observations."""
+        with self._lock:
+            if 'terminal_status' not in job:
+                job['terminal_status'] = self._status(state, job['frame'], job['generation'],
+                                                       result_handle=job['handle'])
+            record = self._receipts.get(job['handle'])
+            if record is not None:
+                record['status'] = copy.deepcopy(job['terminal_status'])
+            return copy.deepcopy(job['terminal_status'])
 
     def _retain(self, key, status):
         """Cache one terminal status under the existing sixteen-entry bound (caller holds lock)."""
@@ -361,6 +374,7 @@ class GenerationLane:
                     infer_threads_alive=sum(t.is_alive() for t in self._infer_threads),
                     watcher_threads_alive=sum(t.is_alive() for t in self._watcher_threads),
                     worker_alive=self._worker is not None and self._worker.is_alive(),
+                    cleanup=copy.deepcopy(self._legacy_cleanup),
                     fence_write_failed=getattr(self, '_fence_write_failed', False))
 
     def _stop_provider(self, job):
@@ -371,25 +385,34 @@ class GenerationLane:
             if job.get('stopped'):
                 return True
             setattr(self.server, '_nexus_stop_pending', True)
+            self._legacy_cleanup = dict(state='pending', reason=None,
+                remaining_ms=max(0, int((job['end'] - time.monotonic()) * 1000)))
             result = []
             def stop():
                 try:
-                    result.append(self.server.stop())
+                    stopped = self.server.stop()
                 except Exception:
-                    result.append(None)
+                    stopped = None
+                result.append((stopped, time.monotonic()))
             worker = threading.Thread(target=stop, daemon=True, name='mio-provider-stop')
             self._stop_threads.append(worker)
             worker.start()
             worker.join(timeout=max(0, job.get('end', time.monotonic()) - time.monotonic()))
-            if (worker.is_alive() or not result or not isinstance(result[0], StopResult)
-                    or result[0].state is not StopState.CONFIRMED):
-                job['stop_thread_alive'] = worker.is_alive()
-                self._fence(job)
-                return False
-            job['stopped'] = True
-            setattr(self.server, '_nexus_stopped', True)
-            setattr(self.server, '_nexus_stop_pending', False)
-            self._mark_stopped()
+            with self._lock:
+                # Even a completed zero-time join cannot confirm after E. Both
+                # completion and its publication must be strictly before E.
+                late = time.monotonic() >= job['end'] or (result and result[0][1] >= job['end'])
+                if (self._fenced or late or worker.is_alive() or not result
+                        or not isinstance(result[0][0], StopResult)
+                        or result[0][0].state is not StopState.CONFIRMED):
+                    job['stop_thread_alive'] = worker.is_alive()
+                    self._fence(job, reason='confirmation_deadline' if late else 'stop_failed')
+                    return False
+                job['stopped'] = True
+                self._legacy_cleanup = dict(state='confirmed', reason='stop_confirmed', remaining_ms=0)
+                setattr(self.server, '_nexus_stopped', True)
+                setattr(self.server, '_nexus_stop_pending', False)
+                self._mark_stopped()
         return True
 
     def _mark_stopped(self, *, budget=False):
@@ -410,24 +433,19 @@ class GenerationLane:
                 # Dropped pending work: an exact retry gets this terminal receipt, not a bare degraded.
                 self._retain(pending['key'], copy.deepcopy(record['status']))
 
-    def _fence(self, job):
-        """Fence permanently and publish degraded receipts now, without waiting for infer().
-
-        The only worker the lane may retain is the one blocked in infer(); the
-        pending job is dropped and its receipt degraded, so nothing else is
-        queued or run. A late return of the blocked worker cannot overwrite these.
-        """
+    def _fence(self, job, *, reason='stop_failed'):
+        """Record unconfirmed cleanup without changing the active terminal result."""
         with self._lock:
             self._persist_stop_fence()
             job['stop_failed'] = True
+            if self._legacy_cleanup['state'] != 'unconfirmed':
+                self._legacy_cleanup = dict(state='unconfirmed', reason=reason, remaining_ms=0)
+            state = (job['reason'] if job['cancelled'].is_set() else
+                     'timeout' if time.monotonic() >= job['end'] else 'degraded')
+            self._finish_legacy(job, state)
             pending, self._pending = self._pending, None
-            for item in (job, pending):
-                record = self._receipts.get(item['handle']) if item else None
-                if record:
-                    record['status'] = self._status('degraded', item['frame'], item['generation'],
-                                                     result_handle=item['handle'])
-                    if item is pending:
-                        self._retain(item['key'], copy.deepcopy(record['status']))
+            if pending is not None:
+                self._retain(pending['key'], self._finish_legacy(pending, 'degraded'))
 
     def _execute(self, job):
         """Run one job. The provider is stopped only while one of its requests is in flight."""
@@ -498,17 +516,14 @@ class GenerationLane:
             watcher.join(timeout=max(0, job['end'] - time.monotonic()))
             if watcher.is_alive():
                 job['watcher_alive'] = True
-                self._fence(job)
+                self._fence(job, reason='confirmation_deadline')
+        if job['cancelled'].is_set() or time.monotonic() >= job['end']:
+            self._finish_legacy(job, job['reason'] if job['cancelled'].is_set() else 'timeout')
         # Only a transport/provider failure stops the provider here; content failures do not.
         if transport.failed and not self._fenced:
+            self._finish_legacy(job, 'degraded')
             self._stop_provider(job)
-        if job.get('stop_failed'):
-            # Stop raised: termination is unconfirmed, so report degraded, not timeout/cancelled.
-            return self._status('degraded', job['frame'], job['generation'])
-        if job['cancelled'].is_set() or time.monotonic() >= job['end']:
-            status = self._status(job['reason'] if job['cancelled'].is_set() else 'timeout',
-                                  job['frame'], job['generation'])
-        return status
+        return copy.deepcopy(job.get('terminal_status', status))
 
     def _update_budget_cleanup(self, job, state, reason):
         session = job['budget_session']
@@ -703,6 +718,8 @@ class GenerationLane:
                 with self._lock:
                     if session is not None:
                         status = copy.deepcopy(session.frozen or status)
+                    elif 'terminal_status' in job:
+                        status = copy.deepcopy(job['terminal_status'])
                     status['result_handle'] = job['handle']
                     # Retained output has the same hard byte/schema bound as the wire reader.
                     if read_slow_analysis(status) == {'state':'closed','usage':'unknown'}:

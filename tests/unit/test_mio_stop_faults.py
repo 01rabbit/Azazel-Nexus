@@ -198,6 +198,79 @@ def local_handle(tmp_path):
     return handle
 
 
+@pytest.mark.parametrize('completed_at', [10.0, 10.001])
+def test_f07_legacy_timeout_and_unconfirmed_fence_coexist(tmp_path, monkeypatch, completed_at):
+    handle = local_handle(tmp_path)
+    monkeypatch.setattr(handle, 'stop', lambda: supervisor.StopResult(supervisor.StopState.CONFIRMED, 'stub'))
+    lane = mio_generation.GenerationLane(server=handle)
+    frame = SimpleNamespace(frame_id='frame', trace_id='trace')
+    job = dict(handle='handle', key=('generation', 'source'), frame=frame,
+               generation='generation', end=10.0, reason='cancelled', cancelled=threading.Event())
+    lane._receipts['handle'] = dict(status=lane._status('queued', frame, 'generation'))
+    clock = [10.0]
+    monkeypatch.setattr(mio_generation.time, 'monotonic', lambda: clock[0])
+
+    class CompletedStopWorker:
+        def __init__(self, *, target, **kwargs):
+            self.target = target
+        def start(self):
+            clock[0] = completed_at
+            self.target()
+        def join(self, *, timeout):
+            assert timeout == 0  # worker completed even though no time remains
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr(mio_generation, 'threading', SimpleNamespace(Thread=CompletedStopWorker))
+    lane._cancel(job, 'timeout')  # actual boundary, never an early timeout injection
+    assert not lane._stop_provider(job)
+    assert lane._receipts['handle']['status']['state'] == 'timeout'
+    assert lane.stop_observation()['cleanup'] == dict(
+        state='unconfirmed', reason='confirmation_deadline', remaining_ms=0)
+    assert lane._fenced and not lane._stopped
+    assert json.loads(handle._fence_path.read_text())['state'] == 'unconfirmed'
+    lane._cancel(job, 'cancelled')
+    lane._fence(job)
+    assert job['reason'] == 'timeout'
+    assert lane._receipts['handle']['status']['state'] == 'timeout'
+    # Restart restoration and dispatch rejection use the real durable fence.
+    restored = local_handle(tmp_path)
+    restored._restore_stop_fence()
+    assert restored.state is LifecycleState.FENCED
+    with pytest.raises(LocalServerRefused, match='fenced'):
+        restored.start()
+
+
+def test_f07_legacy_stop_completion_before_end_observed_at_end_fences(tmp_path, monkeypatch):
+    handle = local_handle(tmp_path)
+    monkeypatch.setattr(handle, 'stop', lambda: supervisor.StopResult(supervisor.StopState.CONFIRMED, 'stub'))
+    lane = mio_generation.GenerationLane(server=handle)
+    frame = SimpleNamespace(frame_id='frame', trace_id='trace')
+    job = dict(handle='handle', key=('generation', 'source'), frame=frame,
+               generation='generation', end=10.0, reason='cancelled', cancelled=threading.Event())
+    lane._receipts['handle'] = dict(status=lane._status('queued', frame, 'generation'))
+    clock = [9.0]
+    monkeypatch.setattr(mio_generation.time, 'monotonic', lambda: clock[0])
+
+    class LateObservationWorker:
+        def __init__(self, *, target, **kwargs):
+            self.target = target
+        def start(self):
+            self.target()  # stop itself completes before E
+        def join(self, *, timeout):
+            assert timeout == 1.0
+            clock[0] = 10.0  # publication observes it only at E
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr(mio_generation, 'threading', SimpleNamespace(Thread=LateObservationWorker))
+    lane._cancel(job, 'cancelled')
+    assert not lane._stop_provider(job)
+    assert lane._receipts['handle']['status']['state'] == 'cancelled'
+    assert lane.stop_observation()['cleanup']['state'] == 'unconfirmed'
+    assert lane._fenced and json.loads(handle._fence_path.read_text())['state'] == 'unconfirmed'
+
+
 def test_f08_unconfirmed_stop_is_durable_and_restart_refuses(tmp_path, monkeypatch):
     handle = local_handle(tmp_path)
     monkeypatch.setattr(handle._child, 'stop', lambda **kw: supervisor.StopResult(supervisor.StopState.REFUSED, 'signal_refused'))
