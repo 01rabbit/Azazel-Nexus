@@ -143,3 +143,13 @@ The consumer pin moves to `azazel-mio` source `072cfacba0537219766a3a428d44f338f
 `generic-evidence-first-v1` 1.2.0 — a time overlap is listed as a candidate to examine, never as proof of a relation,
 a non-overlapping record is not excluded as a delayed cause, and an unknown clock / time zone / window is settled first.
 Nexus change in the same candidate: Japanese display of those two questions only. Previous pins stay recorded above.
+
+### Addendum (2026-11-08, unit 17): azazel-mio pin → 4511f1fc (+gitguidance8)
+
+The consumer pin moves to `azazel-mio` source `4511f1fcb4618a9675bc33abceeb606a60349583`, version
+`0.1.0.dev20261108+gitguidance8`, wheel SHA-256 `9268474f1504d709b489fc3bd697ca62f7d867da7f1cd5bb586459272ff47188`
+(two byte-identical builds, SOURCE_DATE_EPOCH 1794147123 = commit epoch). MIO change: the comparability unknown
+("Comparison conditions ... are not aligned in the report") carries source `frame_analysis` instead of `report`,
+because it is a judgement derived by the analysis, not a statement the reporter made. Nexus change in the same
+candidate is display-only (the comparison precondition shown next to the required checks, kept in the summary,
+the precondition check listed once, time-zone wording). Previous pins stay recorded above.
