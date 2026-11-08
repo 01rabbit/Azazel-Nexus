@@ -24,7 +24,7 @@ MAX_BYTES = 256 * 1024
 IDENTIFIER = re.compile(r'[A-Za-z0-9._:@+-]{1,128}')
 HEX = re.compile(r'[0-9a-f]{64}')
 POLICIES = {'unknown', 'nexus-frame-v1', 'nexus-frame-v2', 'fixture-v1',
-            'transport-fixture-v1', '1.6.0', '1.7.0', '1.8.0', '1.9.0'}
+            'transport-fixture-v1', '1.6.0', '1.7.0', '1.8.0', '1.9.0', '1.10.0'}
 
 
 def new_epoch():

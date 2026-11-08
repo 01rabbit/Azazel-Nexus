@@ -364,8 +364,8 @@ A referenced model unknown without its live body, unavailable extraction, or
 an oversized manifest also withholds. Bodies are never added to binding or
 journal. Unknown IDs marked unavailable after restart cannot authorize advice.
 These checks establish membership, not semantic truth or model quality.
-Template 1.9.0 is accepted; the Nexus MIO dependency pin is unchanged and does
-not identify the advice3 candidate wheel.
+Templates 1.9.0 (stored receipts) and 1.10.0 are accepted; the Nexus MIO dependency pin
+identifies the advice4 candidate wheel (template 1.10.0).
 
 The native incident card, status JSON and handoff JSON/Markdown retain the
 validated non-secret binding: incident/request/frame IDs, template version,

@@ -80,3 +80,24 @@ bytes and a fresh offline install verified the package origin and template.
 The updated Nexus wheelhouse recipe still requires its own reproduction
 check and candidate-level integration and D3b evidence; the pin does not
 open model admission, authorize release, or establish deployment.
+
+## 2026-11-08 advice runtime pin update (template 1.10.0)
+
+This supersedes the tuple of the previous section, which stays above as history
+(source `762305354ce1cb8ef6f190b48f10f9297e79bb5a`, `+gitadvice3`, template
+`1.9.0`, wheel SHA-256 `175dd38cd613b3775ba23d137d68cf8c1dcb48766217ead7a067cea688399068`).
+An intermediate candidate (`+gitadvice4`, source `42075c22365bf7ad9d85f67137de768584f0a2b2`)
+was replaced before adoption after review; it is not pinned anywhere.
+
+The current candidate pins optional MIO source commit
+`7425d66e23ee3e351aac30d5fa34f41ddaf88c3e` (tree
+`6327e2576f9a6bd094cca81ca4cc2bd445e6ad4c`), version
+`0.1.0.dev20261108+gitadvice5`, template `1.10.0`. Both target locks pin
+`azazel_mio-0.1.0.dev20261108+gitadvice5-py3-none-any.whl` at SHA-256
+`1ba3bf800ed35ebe1e2609fb1e62e354f5e2b72fc33fce52258d34d3b84158fa`
+(`SOURCE_DATE_EPOCH=1794097292`, umask 022, Requires-Python >=3.11, no
+Requires-Dist). Two canonical builds produced identical bytes and the template
+version was checked in the wheel. Nexus accepts template 1.10.0 in addition to
+1.6.0-1.9.0 so that stored 1.9.0 receipts remain readable. The pin does not open
+model admission, authorize release, or establish deployment; the Nexus wheelhouse
+reproduction and candidate-level integration evidence remain separate gates.

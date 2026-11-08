@@ -1311,7 +1311,7 @@ def valid_handoff_binding(binding, incident_id, now):
         match = re.fullmatch(re.escape(incident_id) + r":([1-9][0-9]{0,11})", binding["request_id"])
         if not match or int(match[1]) > MIO_TRACE_SEQUENCE_MAX or binding["frame_id"] != f"mio-{incident_id[4:]}-{match[1]}:frame":
             return False
-        if binding["template_version"] not in {"1.6.0", "1.7.0", "1.8.0", "1.9.0"}:
+        if binding["template_version"] not in {"1.6.0", "1.7.0", "1.8.0", "1.9.0", "1.10.0"}:
             return False
         a, b = binding["created_at"], binding["expires_at"]
         if any(type(x) not in (int, float) or not math.isfinite(x) for x in (a, b, now)) or not a <= now < b or not a < b:
@@ -1426,7 +1426,7 @@ def _binding_withhold_reason(binding, incident_id, now):
         return "binding_unverified"
     if binding.get("incident_id", incident_id) != incident_id:
         return "incident_mismatch"
-    if type(binding.get("template_version")) is str and binding["template_version"] not in {"1.6.0", "1.7.0", "1.8.0", "1.9.0"}:
+    if type(binding.get("template_version")) is str and binding["template_version"] not in {"1.6.0", "1.7.0", "1.8.0", "1.9.0", "1.10.0"}:
         return "template_unknown"
     try:
         expiry = binding.get("expires_at")
