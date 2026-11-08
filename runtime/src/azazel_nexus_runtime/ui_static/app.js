@@ -626,8 +626,9 @@
     var gv = ex.guidance_view;
     if (gv) {
       var gs = gv.summary || {}, gd = gv.detail || {};
-      var gNode = block("決定論の案内（モデル生成ではありません・model_calls 0）");
+      var gNode = block("決定論の案内（モデル生成ではありません）");
       add(gNode, el("p", "small", text(gs.notice)), kv([["playbook", gs.playbook], ["推奨", gs.recommendation]]));
+      if (gs.precondition) { add(gNode, el("p", "small", "比較の前提：" + text(gs.precondition))); }
       add(gNode, el("p", "small", "報告の要点（供給された報告の記述。独立検証はされていない）："),
         list((gs.report_points || []).map(function (p) { return "[" + text(p.kind) + "] " + text(p.text); })));
       add(gNode, el("p", "small", "必須の確認（既存権限内・read-only、自動実行・通知送信なし）："),
@@ -636,11 +637,13 @@
         list((gs.key_unknowns || []).map(function (u) { return text(u.text) + "（出典：" + text((u.sources || []).join("・")) + "）"; })));
       if ((gs.priority_changes || []).length) {
         add(gNode, el("p", "small", "新情報による確認優先度の変化（報告ベース・未検証）："),
-          list(gs.priority_changes.map(function (w) { return text(w.explanation_ja) + "：" + text(w.direction) + "（" + text(w.topic) + "）"; })));
+          list(gs.priority_changes.map(function (w) { return text(w.explanation_ja) + "：" + text(w.direction) + " — " + text(w.topic); })));
+      } else if (gs.weight_status) {
+        add(gNode, el("p", "small", "新情報による確認優先度の変化：" + text(gs.weight_status)));
       }
       var gDetail = el("details", "guidance-detail");
       gDetail.appendChild(el("summary", null, "詳細（競合説明・切り分け材料・追加確認・全不明点・引継ぎ）"));
-      add(gDetail, el("p", "small", "競合する説明（報告 ref に基づく候補。内容的な支持は未検証）："),
+      add(gDetail, el("p", "small", "競合する説明（いずれも未検証。報告 ref に基づく候補であり、ref が内容を証明するものではない）："),
         list((gd.explanations || []).map(function (e) { return text(e.label) + "（" + text(e.role) + "）"; })));
       add(gDetail, el("p", "small", "切り分け材料："), list(gd.weakening || []));
       add(gDetail, el("p", "small", "主張の境界："), list(gd.claim_boundaries || []));
@@ -649,8 +652,11 @@
       add(gDetail, el("p", "small", "わかっていないこと（出典つき）："),
         list((gd.all_unknowns || []).map(function (u) { return text(u.text) + "（出典：" + text((u.sources || []).join("・")) + "）"; })));
       var gh = gd.handoff || {};
-      add(gDetail, kv([["incident_id", gh.incident_id], ["request_id", gh.request_id], ["trace_id", gh.trace_id],
+      var gp = gd.provenance || {};
+      add(gDetail, kv([["運用で伝える ID: incident_id", gh.incident_id], ["診断用 ID: request_id", gh.request_id], ["trace_id", gh.trace_id],
         ["frame_id", gh.frame_id], ["privacy", gh.privacy_class]]));
+      add(gDetail, el("p", "small", "詳細：" + text(gp.content_kind) + " / schema " + text(gp.guidance_schema_version) + " / playbook " + text(gs.playbook) + " " + text(gp.playbook_version) + " / model_calls " + text(gp.model_calls)));
+      if (gs.edge_relation) { add(gNode, el("p", "small", text(gs.edge_relation))); }
       add(gNode, gDetail);
       add(node, gNode);
     }

@@ -189,9 +189,24 @@ def _ja_check(g, check):
 
 
 def _unknown_text(text):
+    fixed = DISPLAY_JA["fixed_unknowns"].get(text)
+    if fixed:
+        return fixed
     if text.startswith(_UNKNOWN_PREFIX):
         return "報告ベース・未検証：" + text[len(_UNKNOWN_PREFIX):].replace(" (verification still required)", "（確認が必要）")
     return text
+
+
+_EDGE_RE = re.compile(r"Edge selected_action=(\S+), result=(\S+), executed_count=(\d+)")
+
+
+def _fact_text(f):
+    m = _EDGE_RE.fullmatch(f["text"]) if f["kind"] == "edge_decision" else None
+    if not m:
+        return f["text"]
+    ev = DISPLAY_JA["edge_values"]
+    a, r = m.group(1).rstrip(","), m.group(2).rstrip(",")
+    return f"Edge の判断: {ev.get(a, a)} を選択（結果 {ev.get(r, r)}、実行件数 {m.group(3)}）"
 
 
 def guidance_view(g):
@@ -212,19 +227,34 @@ def guidance_view(g):
     boundaries = bounds if len(bounds) == len(g["claim_boundaries"]) else list(g["claim_boundaries"])
     unknowns = [{"text": _unknown_text(u["text"]), "topic": d["topics"].get(u["topic"], u["topic"]) if u["topic"] else None,
                  "sources": [source_ja.get(s, s) for s in u["sources"]]} for u in g["unknown_groups"]]
-    report_points = [{"kind": d["fact_kinds"].get(f["kind"], f["kind"]), "text": f["text"], "trust": f["trust"]}
+    report_points = [{"kind": d["fact_kinds"].get(f["kind"], f["kind"]), "text": _fact_text(f), "trust": f["trust"]}
                      for f in g["facts"] if f["kind"] != "knowledge"]
+    nc = d["nochange"]
+    compare = any(u["text"].startswith(d["compare_unknown"]) for u in g["unknown_groups"])
+    if weights:
+        weight_status = None
+    elif compare:
+        weight_status = nc["compare"]
+    else:
+        weight_status = nc["no_effect"] if g["topics_addressed"] else nc["no_topic"]
+    qid = pb.get("precondition_check")
+    precondition = None
+    if compare:
+        ref = next((c for c in checks if c["id"].endswith(":" + str(qid))), None) if qid else None
+        precondition = "比較条件（窓・時刻帯・集計）が揃っていません。" + (
+            f"先に {ref['id']}（{ref['text']}）を確認してから比較する" if ref else "先に比較条件を確認してから比較する")
     summary = {
         "title": d["sections"]["summary"], "playbook": pb.get("label", g["playbook_id"]),
         "report_points": report_points[:6],
         "required_checks": [c for c in checks if c["tier"] == "required"],
         "key_unknowns": unknowns[:3], "priority_changes": weights,
         "recommendation": "経過観察（OBSERVE）。実行可能な推奨ではありません。",
-        "notice": "モデル生成ではありません（決定論の案内・model_calls 0）。報告は未検証です。",
+        "notice": "モデル生成ではありません（決定論の案内）。報告は未検証です。",
+        "weight_status": weight_status, "precondition": precondition,
+        "edge_relation": "§2 の Edge 観測との関係: 未確認（この案内は供給された報告のみに基づく）",
     }
     detail = {
         "explanations": [{"slot": e["slot"], "label": labels.get(e["slot"], e["prompt"]), "role": e["role"],
-                          "support": "報告 ref に基づく候補。内容的な支持は未検証",
                           "evidence_refs": e.get("evidence_refs", [])} for e in g["competing_explanations"]],
         "weakening": weakening, "claim_boundaries": boundaries,
         "optional_checks": [c for c in checks if c["tier"] != "required"],
@@ -243,23 +273,27 @@ def guidance_markdown(g, esc=str):
     """Japanese Markdown block for the handoff; mirrors `guidance_view`."""
     v = guidance_view(g)
     s, dt = v["summary"], v["detail"]
-    out = ["### 決定論の案内（モデル生成ではない・model_calls 0）", "",
-           f"- 種別: {g['content_kind']} / schema {g['guidance_schema_version']} / playbook {g['playbook_id']} {g['playbook_version']}",
+    out = ["### 決定論の案内（モデル生成ではない）", "",
            f"- {s['recommendation']}", "", "#### " + v["sections"]["report_points"]]
     out += [f"- [{esc(p['kind'])}] {esc(p['text'])}" for p in s["report_points"]] or ["- なし"]
+    if s["precondition"]:
+        out += ["", "比較の前提: " + esc(s["precondition"])]
     out += ["", "#### " + v["sections"]["required_checks"]]
     out += [f"- {c['id']}: {esc(c['text'])}" for c in s["required_checks"]] or ["- なし"]
     out += ["", "#### " + v["sections"]["all_unknowns"]]
     out += [f"- {esc(u['text'])}（出典: {'・'.join(u['sources'])}）" for u in dt["all_unknowns"]] or ["- なし"]
     out += ["", "#### " + v["sections"]["weights"]]
-    out += [f"- {w['explanation_ja']}: {w['direction']}（{esc(w['topic'])}）" for w in s["priority_changes"]] or ["- 変化なし"]
+    out += [f"- {w['explanation_ja']}: {w['direction']} — {esc(w['topic'])}" for w in s["priority_changes"]] or ["- " + s["weight_status"]]
     out += ["", "#### " + v["sections"]["explanations"]]
-    out += [f"- {esc(e['label'])}（{e['support']}）" for e in dt["explanations"]]
+    out += [f"- {esc(e['label'])}" for e in dt["explanations"]]
     out += ["", "#### " + v["sections"]["optional_checks"]]
     out += [f"- {c['id']}: {esc(c['text'])}" for c in dt["optional_checks"]] or ["- なし"]
     h = dt["handoff"]
-    ids = " / ".join(f"{k} `{h[k]}`" for k in ("incident_id", "request_id", "trace_id", "frame_id") if k in h)
+    pv = dt["provenance"]
     out += ["", "#### " + v["sections"]["handoff"],
-            "- " + ids + ("" if "frame_id" in h else "（request・trace・frame は snapshot 由来のため非表示）"),
-            "- 証拠 ref: " + (", ".join(h["evidence_refs"]) or "なし" if "evidence_refs" in h else "非表示（snapshot 由来の公開形）"), f"- privacy 区分: {h['privacy_class'].lower()}（伏せた値は再掲しない）"]
+            "- 運用で伝える ID: " + (f"incident_id `{h['incident_id']}`" if "incident_id" in h else "なし"),
+            "- 診断用 ID: " + (" / ".join(f"{k} `{h[k]}`" for k in ("request_id", "trace_id", "frame_id") if k in h) or "なし") + ("" if "frame_id" in h else "（request・trace・frame は snapshot 由来のため非表示）"),
+            "- 証拠 ref: " + (", ".join(h["evidence_refs"]) or "なし" if "evidence_refs" in h else "非表示（snapshot 由来の公開形）"), f"- privacy 区分: {h['privacy_class'].lower()}（伏せた値は再掲しない）",
+            "", s["edge_relation"], "",
+            f"詳細: 種別 {pv['content_kind']} / schema {pv['guidance_schema_version']} / playbook {g['playbook_id']} {pv['playbook_version']} / model_calls {pv['model_calls']}"]
     return "\n".join(out) + "\n"
