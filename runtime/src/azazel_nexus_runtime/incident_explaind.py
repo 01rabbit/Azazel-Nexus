@@ -649,7 +649,7 @@ class Explainer:
         try:
             if (raw.get('epoch') != self.restart_epoch or raw.get('handle') != receipt['result_handle']
                     or any(raw.get(k) != receipt[k] for k in ('request_id', 'frame_id', 'generation_id'))
-                    or raw.get('template_version') not in {'1.6.0', '1.7.0', '1.8.0', '1.9.0'}):
+                    or raw.get('template_version') not in {'1.6.0', '1.7.0', '1.8.0', '1.9.0', '1.10.0'}):
                 return
             created, expires = raw['created_at'], raw['expires_at']
             if (any(type(t) not in (int, float) or not math.isfinite(t) for t in (created, expires))
