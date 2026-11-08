@@ -255,6 +255,7 @@ def guidance_view(g):
     }
     detail = {
         "explanations": [{"slot": e["slot"], "label": labels.get(e["slot"], e["prompt"]), "role": e["role"],
+                          "support": "報告 ref に基づく候補。内容的な支持は未検証",
                           "evidence_refs": e.get("evidence_refs", [])} for e in g["competing_explanations"]],
         "weakening": weakening, "claim_boundaries": boundaries,
         "optional_checks": [c for c in checks if c["tier"] != "required"],
