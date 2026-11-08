@@ -134,3 +134,12 @@ The consumer pin moves to `azazel-mio` source `8751c60046b500dcdffda0154e75ab9f0
 other log lines against it) and the comparability vocabulary recognises an unknown or unsynchronised clock.
 Nexus changes in the same candidate are display-only (operator-facing wording of the deterministic guidance);
 `guidance_schema_version` stays 1.0.0 and stored receipts remain readable. The previous pins stay recorded above as history.
+
+### Addendum (2026-11-08, unit 16): azazel-mio pin → 072cfacb (+gitguidance7)
+
+The consumer pin moves to `azazel-mio` source `072cfacba0537219766a3a428d44f338f7766ad1`, version
+`0.1.0.dev20261108+gitguidance7`, wheel SHA-256 `aaaa6c4fc569bd1ea82d80797ac86adbff843d686ba3a4e96550747151e8127a`
+(two byte-identical builds, SOURCE_DATE_EPOCH 1794143047 = commit epoch). MIO change: generic playbook
+`generic-evidence-first-v1` 1.2.0 — a time overlap is listed as a candidate to examine, never as proof of a relation,
+a non-overlapping record is not excluded as a delayed cause, and an unknown clock / time zone / window is settled first.
+Nexus change in the same candidate: Japanese display of those two questions only. Previous pins stay recorded above.
