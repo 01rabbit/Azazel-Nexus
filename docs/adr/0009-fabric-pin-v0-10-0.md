@@ -97,3 +97,20 @@ site-packages. The previous `+gitadvice3` pin (wheel
 superseded and kept above as history. The new MIO module
 `azazel_mio.guidance` makes no model call; it adds no admission or release
 authority.
+
+### Addendum: MIO deterministic guidance report-epistemics fix (unit 12)
+
+The optional MIO pin moves to source commit
+`6557fcace54b85623dd5dce85fed5841a9522d46` (tree
+`880b4e840710038ee339c21de1ba2ccca48dcdb9`), version
+`0.1.0.dev20261108+gitguidance4`, template `1.9.0` (unchanged). Both target locks
+pin `azazel_mio-0.1.0.dev20261108+gitguidance4-py3-none-any.whl` at SHA-256
+`afb75a759ab859984bcc037994a3709ab136989db08d70af64348b4047963d3c`
+(`SOURCE_DATE_EPOCH=1794127010`, umask 022). Two canonical builds produced
+identical bytes. The MIO change fixes how deterministic guidance reads a
+report: hedged or hearsay statements stay unverified notes, negated
+confirmations ("not checked", "no record") become gaps, and statements that the
+compared windows are not aligned no longer change a verification priority.
+`guidance_schema_version` stays `1.0.0`. The previous `+gitguidance1` pin
+(wheel `5b42d752672d02fd3ffad896b1d7c47dd145f8cfb83429e3b72ebe54f74d5913`)
+is superseded and kept above as history.
