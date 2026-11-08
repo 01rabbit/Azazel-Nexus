@@ -238,15 +238,22 @@ def guidance_view(g):
         weight_status = nc["no_effect"] if g["topics_addressed"] else nc["no_topic"]
     qid = pb.get("precondition_check")
     precondition = None
+    ref = None
     if compare:
         ref = next((c for c in checks if c["id"].endswith(":" + str(qid))), None) if qid else None
-        precondition = "比較条件（窓・時刻帯・集計）が揃っていません。" + (
+        precondition = "比較条件（窓・タイムゾーン・集計）が揃っていません。" + (
             f"先に {ref['id']}（{ref['text']}）を確認してから比較する" if ref else "先に比較条件を確認してから比較する")
+    # the comparability unknown is a precondition for the required checks: keep it in the summary even when
+    # more than three unknowns exist (it is listed first), and show the precondition check once, before the
+    # required checks, instead of leaving it only under the optional checks
+    compare_idx = [i for i, u in enumerate(g["unknown_groups"]) if u["text"].startswith(d["compare_unknown"])]
+    key_unknowns = ([unknowns[i] for i in compare_idx] + [u for i, u in enumerate(unknowns) if i not in compare_idx])[:4 if compare_idx else 3]
     summary = {
         "title": d["sections"]["summary"], "playbook": pb.get("label", g["playbook_id"]),
         "report_points": report_points[:6],
         "required_checks": [c for c in checks if c["tier"] == "required"],
-        "key_unknowns": unknowns[:3], "priority_changes": weights,
+        "key_unknowns": key_unknowns, "priority_changes": weights,
+        "precondition_check": ref,
         "recommendation": "経過観察（OBSERVE）。実行可能な推奨ではありません。",
         "notice": "モデル生成ではありません（決定論の案内）。報告は未検証です。",
         "weight_status": weight_status, "precondition": precondition,
@@ -257,7 +264,7 @@ def guidance_view(g):
                           "support": "報告 ref に基づく候補。内容的な支持は未検証",
                           "evidence_refs": e.get("evidence_refs", [])} for e in g["competing_explanations"]],
         "weakening": weakening, "claim_boundaries": boundaries,
-        "optional_checks": [c for c in checks if c["tier"] != "required"],
+        "optional_checks": [c for c in checks if c["tier"] != "required" and not (ref and c["id"] == ref["id"])],
         "all_unknowns": unknowns,
         "handoff": {k: v for k, v in g["handoff"].items() if k != "sections"},
         "provenance": {"playbook_id": g["playbook_id"], "playbook_version": g["playbook_version"],
@@ -279,6 +286,8 @@ def guidance_markdown(g, esc=str):
     if s["precondition"]:
         out += ["", "比較の前提: " + esc(s["precondition"])]
     out += ["", "#### " + v["sections"]["required_checks"]]
+    if s.get("precondition_check"):
+        out += [f"- （前提）{s['precondition_check']['id']}: {esc(s['precondition_check']['text'])}"]
     out += [f"- {c['id']}: {esc(c['text'])}" for c in s["required_checks"]] or ["- なし"]
     out += ["", "#### " + v["sections"]["all_unknowns"]]
     out += [f"- {esc(u['text'])}（出典: {'・'.join(u['sources'])}）" for u in dt["all_unknowns"]] or ["- なし"]

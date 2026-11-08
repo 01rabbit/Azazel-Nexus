@@ -628,11 +628,11 @@
       var gs = gv.summary || {}, gd = gv.detail || {};
       var gNode = block("決定論の案内（モデル生成ではありません）");
       add(gNode, el("p", "small", text(gs.notice)), kv([["playbook", gs.playbook], ["推奨", gs.recommendation]]));
-      if (gs.precondition) { add(gNode, el("p", "small", "比較の前提：" + text(gs.precondition))); }
       add(gNode, el("p", "small", "報告の要点（供給された報告の記述。独立検証はされていない）："),
         list((gs.report_points || []).map(function (p) { return "[" + text(p.kind) + "] " + text(p.text); })));
+      if (gs.precondition) { add(gNode, el("p", "small", "比較の前提：" + text(gs.precondition))); }
       add(gNode, el("p", "small", "必須の確認（既存権限内・read-only、自動実行・通知送信なし）："),
-        list((gs.required_checks || []).map(function (c) { return text(c.id) + "：" + text(c.text); })));
+        list((gs.precondition_check ? [{id: "（前提）" + gs.precondition_check.id, text: gs.precondition_check.text}] : []).concat(gs.required_checks || []).map(function (c) { return text(c.id) + "：" + text(c.text); })));
       add(gNode, el("p", "small", "重要な不明点："),
         list((gs.key_unknowns || []).map(function (u) { return text(u.text) + "（出典：" + text((u.sources || []).join("・")) + "）"; })));
       if ((gs.priority_changes || []).length) {
