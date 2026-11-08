@@ -34,6 +34,7 @@ from .local_advisory import (
 )
 from .route_selection import RequestOutcome, TerminalEvent
 from .sanitizer import PrivacyClass
+from .guidance_record import GUIDANCE_FIELD, bind_guidance, public_guidance, read_guidance
 from .model_text import allowed_model_text, is_typed_content_digest
 
 MAX_PENDING = 64
@@ -856,7 +857,7 @@ KNOWLEDGE_CLAIM_PREFIX = "knowledge:"
 
 
 def read_record(value):
-    _shape(value, RECORD_FIELDS, (FABRIC_RECORD_FIELD, EVIDENCE_FIELD, "incident_sequence"))
+    _shape(value, RECORD_FIELDS, (FABRIC_RECORD_FIELD, EVIDENCE_FIELD, "incident_sequence", GUIDANCE_FIELD))
     if type(value["incident_id"]) is not str or not re.fullmatch(r"inc-[0-9a-f]{16}", value["incident_id"]):
         raise ValueError("record_refused")
     if "incident_sequence" in value:
@@ -909,6 +910,18 @@ def read_record(value):
             _read_evidence(value[EVIDENCE_FIELD], value["explained_at"])
         except ValueError:
             raise ValueError("record_refused") from None
+    if GUIDANCE_FIELD in value:
+        # Deterministic guidance: only content_kind "deterministic_guidance" is read; it must
+        # describe this record (incident, request, trace, frame and evidence references).
+        try:
+            read_guidance(value[GUIDANCE_FIELD])
+            bind_guidance(value[GUIDANCE_FIELD], incident_id=value["incident_id"],
+                          sequence=value.get("incident_sequence"),
+                          evidence_ids=[r["evidence_id"] for r in value[EVIDENCE_FIELD]["refs"]]
+                          if EVIDENCE_FIELD in value else None)
+        except ValueError:
+            # Same as the writer: guidance that is refused or does not bind is dropped; the record stays.
+            value = {k: v for k, v in value.items() if k != GUIDANCE_FIELD}
     if FABRIC_RECORD_FIELD in value:
         _read_fabric_projection(value[FABRIC_RECORD_FIELD], value)
     return json.loads(json.dumps(value, allow_nan=False))
@@ -1175,6 +1188,8 @@ def explanation_summary(record):
             summary["fast_assistance"]["full_node_context"] = _full_node_projection(
                 advisory, fast.get("full_node_context_status", "unknown"),
                 fast["dependency_outcome"]["knowledge"])
+    if GUIDANCE_FIELD in r:
+        summary[GUIDANCE_FIELD] = public_guidance(r[GUIDANCE_FIELD])
     if omitted:
         summary["knowledge_refs_omitted"] = omitted
     return summary
@@ -1686,7 +1701,14 @@ def read_recent_incidents(raw):
             e = row["explanation"]
             _shape(e, ("state", "route", "outcome", "summary", "knowledge_refs", "failure_codes"),
                    ("content_kind", "notice", "knowledge_refs_omitted", "fast_assistance",
-                    "slow_analysis"))
+                    "slow_analysis", GUIDANCE_FIELD))
+            if GUIDANCE_FIELD in e:
+                try:
+                    read_guidance(e[GUIDANCE_FIELD], public=True)
+                    if e[GUIDANCE_FIELD]["handoff"]["incident_id"] != row["incident_id"]:
+                        return None
+                except ValueError:
+                    return None
             # The same consistency rule as a record, applied to the summary.
             if "content_kind" in e:
                 try:

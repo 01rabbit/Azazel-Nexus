@@ -118,6 +118,12 @@ _IPV6 = re.compile(
 _LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
 
 
+def redact_network_addresses(text: str, mark: str = "[withheld]") -> str:
+    """Replace every IPv4 or IPv6 address in `text` by `mark` (NFKC-normalized like the detector)."""
+    text = unicodedata.normalize("NFKC", text)
+    return _IPV6.sub(mark, _IPV4.sub(mark, text))
+
+
 def contains_network_address(text: str) -> bool:
     """Detect IPv4 or IPv6 in NFKC-normalized text using the handoff rules."""
     text = unicodedata.normalize("NFKC", text)
@@ -155,6 +161,9 @@ _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 #: Keys whose value has one fixed form: checked against it, never scanned.
 _FIXED_FORM = {
     "digest": _DIGEST, "bundle_digest": _DIGEST,
+    # deterministic guidance: fixed-form digests and the one privacy class it is written under
+    "playbook_digest": _DIGEST, "guidance_digest": _DIGEST, "evidence_refs": _DIGEST,
+    "privacy_class": re.compile(r"P3-restricted"),
     "bundle_digest_short": re.compile(r"sha256:[0-9a-f]{12}"),
     "sha256": re.compile(r"[0-9a-f]{64}"),
     "schema": re.compile(r"azazel-nexus/[a-z-]+/[0-9]+"),
@@ -1080,6 +1089,24 @@ def _text_of(value, fixed, hide) -> tuple[Optional[str], str]:
     return None, "withheld"
 
 
+def _guidance_block(explanations, row) -> dict:
+    """The deterministic guidance (no model): the newest ledger record's, else the recent row's."""
+    from .guidance_record import GUIDANCE_FIELD, guidance_view, read_guidance
+    guidance, source = None, None
+    for record in reversed(explanations):
+        if GUIDANCE_FIELD in record:
+            guidance, source = record[GUIDANCE_FIELD], "explanation_ledger"
+            break
+    if guidance is None and row is not None and GUIDANCE_FIELD in row["explanation"]:
+        guidance, source = row["explanation"][GUIDANCE_FIELD], "recent_snapshot"
+    if guidance is None:
+        return {"status": "unavailable", "reason_code": "no_guidance_recorded", "model_calls": 0}
+    read_guidance(guidance, public=source == "recent_snapshot")
+    return {"status": "available", "reason_code": None, "source": source, "content_kind": guidance["content_kind"],
+            "model_calls": 0, "generated_by": "deterministic rules, not a model",
+            "authority": "advisory_only_not_fact", "guidance": guidance, "view": guidance_view(guidance)}
+
+
 def _ai(explanations, explanation_code, row, mio, labels, hide, recent_fresh=None, now=None) -> dict:
     from .explanation_claims import PROVENANCE_FIELD
     from .incident_explain import content_kind
@@ -1146,6 +1173,7 @@ def _ai(explanations, explanation_code, row, mio, labels, hide, recent_fresh=Non
                 "model_identity_not_included_in_package" if recorded
                 else "model_identity_not_recorded_in_explanation_ledger"),
             "remote_route": "not_used_by_incident_explainer"}
+    base["deterministic_guidance"] = _guidance_block(explanations, row)
     if explanations:
         items = []
         for record in explanations:
@@ -1647,6 +1675,15 @@ def render_markdown(p: dict) -> str:
     if ai.get("explanations_display", {}).get("omitted"):
         add("")
         add("説明の記録" + _omitted_ja(ai["explanations_display"]))
+    dg = ai.get("deterministic_guidance", {})
+    add("")
+    if dg.get("status") == "available":
+        from .guidance_record import guidance_markdown
+        add(guidance_markdown(dg["guidance"], _md))
+    else:
+        add("### 決定論の案内（モデル生成ではない・model_calls 0）")
+        add("")
+        add("記録なし。")
     slow = ai["slow_advisory"]
     add("")
     add("### 非同期のモデル提案（未検証・助言のみ）")

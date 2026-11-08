@@ -1,6 +1,11 @@
 {
   "ai_assessment": {
     "authority": "advisory_only_not_fact",
+    "deterministic_guidance": {
+      "model_calls": 0,
+      "reason_code": "no_guidance_recorded",
+      "status": "unavailable"
+    },
     "explanations": [
       {
         "content_kind": "ai_advice",

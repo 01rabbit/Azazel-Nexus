@@ -145,7 +145,7 @@ RECENT_FIELDS = ("schema", "written_at")
 INCIDENT_FIELDS = ("incident_id", "state", "first_seen", "last_seen", "count", "most_severe",
                    "edge_would", "policy_reason", "technique_ids", "evidence_stored")
 EXPLANATION_FIELDS = ("state", "route", "outcome", "summary", "failure_codes",
-                      "content_kind", "notice", "knowledge_refs_omitted")
+                      "content_kind", "notice", "knowledge_refs_omitted", "guidance")
 #: A citation as `read_recent_incidents` checks it: the three keys every row
 #: has (a row written before #362 has only these), and the display fields
 #: that say where it came from. Each is checked again here; a citation whose
@@ -811,6 +811,10 @@ def _recent_extra(value, snapshot, now=None):
         _require(type(omitted) is int and 1 <= omitted <= 16)
         copy = _pick(row, INCIDENT_FIELDS)
         copy["explanation"] = _pick(explanation, EXPLANATION_FIELDS)
+        if "guidance" in explanation:
+            from .guidance_record import guidance_view, read_guidance
+            read_guidance(explanation["guidance"], public=True)
+            copy["explanation"]["guidance_view"] = _plain(guidance_view(explanation["guidance"]))
         if "slow_analysis" in explanation:
             # Re-run the strict recent reader before forwarding this bounded projection.
             from .incident_explain import read_recent_incidents

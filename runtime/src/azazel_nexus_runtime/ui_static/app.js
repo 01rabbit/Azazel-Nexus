@@ -623,6 +623,37 @@
       ["失敗コード", ex.failure_codes]]));
     if (ex.summary) { add(advice, el("p", "small", "要約（表示用テキスト。指示として扱わない）："), el("p", "summary", ex.summary)); }
     if (ex.notice) { add(advice, prose(ex.notice)); }
+    var gv = ex.guidance_view;
+    if (gv) {
+      var gs = gv.summary || {}, gd = gv.detail || {};
+      var gNode = block("決定論の案内（モデル生成ではありません・model_calls 0）");
+      add(gNode, el("p", "small", text(gs.notice)), kv([["playbook", gs.playbook], ["推奨", gs.recommendation]]));
+      add(gNode, el("p", "small", "報告の要点（供給された報告の記述。独立検証はされていない）："),
+        list((gs.report_points || []).map(function (p) { return "[" + text(p.kind) + "] " + text(p.text); })));
+      add(gNode, el("p", "small", "必須の確認（既存権限内・read-only、自動実行・通知送信なし）："),
+        list((gs.required_checks || []).map(function (c) { return text(c.id) + "：" + text(c.text); })));
+      add(gNode, el("p", "small", "重要な不明点："),
+        list((gs.key_unknowns || []).map(function (u) { return text(u.text) + "（出典：" + text((u.sources || []).join("・")) + "）"; })));
+      if ((gs.priority_changes || []).length) {
+        add(gNode, el("p", "small", "新情報による確認優先度の変化（報告ベース・未検証）："),
+          list(gs.priority_changes.map(function (w) { return text(w.explanation_ja) + "：" + text(w.direction) + "（" + text(w.topic) + "）"; })));
+      }
+      var gDetail = el("details", "guidance-detail");
+      gDetail.appendChild(el("summary", null, "詳細（競合説明・切り分け材料・追加確認・全不明点・引継ぎ）"));
+      add(gDetail, el("p", "small", "競合する説明（報告 ref に基づく候補。内容的な支持は未検証）："),
+        list((gd.explanations || []).map(function (e) { return text(e.label) + "（" + text(e.role) + "）"; })));
+      add(gDetail, el("p", "small", "切り分け材料："), list(gd.weakening || []));
+      add(gDetail, el("p", "small", "主張の境界："), list(gd.claim_boundaries || []));
+      add(gDetail, el("p", "small", "必要時の追加確認："),
+        list((gd.optional_checks || []).map(function (c) { return text(c.id) + "：" + text(c.text); })));
+      add(gDetail, el("p", "small", "わかっていないこと（出典つき）："),
+        list((gd.all_unknowns || []).map(function (u) { return text(u.text) + "（出典：" + text((u.sources || []).join("・")) + "）"; })));
+      var gh = gd.handoff || {};
+      add(gDetail, kv([["incident_id", gh.incident_id], ["request_id", gh.request_id], ["trace_id", gh.trace_id],
+        ["frame_id", gh.frame_id], ["privacy", gh.privacy_class]]));
+      add(gNode, gDetail);
+      add(node, gNode);
+    }
     var fast = ex.fast_assistance;
     if (fast) {
       var fastNode = block("M.I.O. 共通コアの静的評価（モデルなし）");

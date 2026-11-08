@@ -80,3 +80,20 @@ bytes and a fresh offline install verified the package origin and template.
 The updated Nexus wheelhouse recipe still requires its own reproduction
 check and candidate-level integration and D3b evidence; the pin does not
 open model admission, authorize release, or establish deployment.
+
+## 2026-11-08 deterministic guidance pin update
+
+The candidate now pins optional MIO source commit
+`86a707f0933c9013d99246305f32d99f140aa4dc` (tree
+`f811a638763110286347797ceb0efd498a1eac5d`), version
+`0.1.0.dev20261108+gitguidance1`, template `1.9.0` (unchanged, so no template
+allowlist change). Both target locks pin
+`azazel_mio-0.1.0.dev20261108+gitguidance1-py3-none-any.whl` at SHA-256
+`5b42d752672d02fd3ffad896b1d7c47dd145f8cfb83429e3b72ebe54f74d5913`
+(`SOURCE_DATE_EPOCH=1794107668`, umask 022). Two canonical builds produced
+identical bytes and a fresh offline install loaded the module from
+site-packages. The previous `+gitadvice3` pin (wheel
+`175dd38cd613b3775ba23d137d68cf8c1dcb48766217ead7a067cea688399068`) is
+superseded and kept above as history. The new MIO module
+`azazel_mio.guidance` makes no model call; it adds no admission or release
+authority.

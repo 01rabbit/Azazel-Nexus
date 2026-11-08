@@ -85,7 +85,9 @@ def build_fixture(root: Path) -> None:
     explainer = Explainer(incidents=incidents, state=state,
                           status_path=status_dir / "status.json", clock=lambda: clock[0],
                           monotonic=lambda: clock[0], mio=mio, knowledge=knowledge,
-                          audit=lambda event: None)
+                          audit=lambda event: None,
+                          # The example must not depend on whether M.I.O.'s guidance module is installed.
+                          guidance=lambda frame: None)
     # Prepared first: an explainer that starts on existing history seeds
     # past it rather than explaining it.
     explainer.prepare()

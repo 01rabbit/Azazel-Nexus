@@ -401,7 +401,7 @@ def poll_generation_result(receipt, *, deadline_s=0.05, caller_epoch=None, priva
 class Explainer:
     def __init__(self, *, incidents, state, status_path, clock=time.time,
                  monotonic=time.monotonic, mio=None, knowledge=None, store_limits=None, audit=None,
-                 ui_status_path=None, ui_recent_path=None, mio_result=None):
+                 ui_status_path=None, ui_recent_path=None, mio_result=None, guidance=None):
         self.incidents, self.state, self.status_path = incidents, state, status_path
         # The read-only UI's byte-identical copies (ADR-0007); optional.
         self.ui_status = UiCopy(ui_status_path, name="az-incident-explaind")
@@ -414,6 +414,8 @@ class Explainer:
         self._generation_bindings = {}
         self._generation_restart_unknown = set()
         self._generation_recovered = set()
+        from .mio_deterministic_guidance import guidance_for_frame
+        self.guidance = guidance or guidance_for_frame
         self.mio = mio or (lambda frame: advise(frame, caller_epoch=self.restart_epoch,
                                                private_metadata=self._generation_metadata))
         self.mio_result = mio_result or (lambda receipt, **kw: poll_generation_result(receipt,
@@ -1261,18 +1263,33 @@ class Explainer:
                   "attack_type": t["attack_type"],
                   "technique_ids": t["technique_ids"], "mio": mio,
                   "knowledge_refs": refs, "knowledge_state": state, "failure_codes": codes}
+        try:
+            # Deterministic guidance: no model call; a failure leaves the record without it.
+            guidance = self.guidance(frame)
+        except Exception:  # noqa: BLE001
+            guidance = None
+        if guidance is not None:
+            record["guidance"] = guidance
         if EVIDENCE_FIELD in t:
             # The pointers carried since the transition, with their retention
             # as of this record. A pending entry from before them (a previous
             # release's checkpoint) has none, and its record says so.
             record[EVIDENCE_FIELD] = record_evidence(t[EVIDENCE_FIELD], record["explained_at"])
         try:
-            value = read_record(record)
+            try:
+                value = read_record(record)
+            except ValueError:
+                if "guidance" not in record:
+                    raise
+                # Guidance that does not bind to this record is dropped; the rest is kept.
+                record.pop("guidance")
+                value = read_record(record)
         except ValueError:
             # A reply that passed its own reader but does not make a valid
             # record is still refused as a reply: the incident is recorded
             # with no M.I.O. content rather than raising out of the loop.
             codes = [c for c in codes if not c.startswith("mio_")] + ["mio_reply_refused"]
+            record.pop("guidance", None)
             record.update(failure_codes=codes, mio={
                 "route": "unavailable", "outcome": "unavailable",
                 "reason": "mio_reply_refused", "text": None})
