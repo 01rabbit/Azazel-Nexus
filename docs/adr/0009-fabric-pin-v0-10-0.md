@@ -124,3 +124,13 @@ The optional MIO pin moves to source commit
 (`SOURCE_DATE_EPOCH=1794132247`). When a new observation addresses a topic,
 only analysis-derived unknowns are replaced; report-derived gaps, hearsay and
 comparison conditions are kept. `guidance_schema_version` stays `1.0.0`.
+
+### Addendum (2026-11-08, unit 15): azazel-mio pin → 8751c600 (+gitguidance6)
+
+The consumer pin moves to `azazel-mio` source `8751c60046b500dcdffda0154e75ab9f05225a41`, version
+`0.1.0.dev20261108+gitguidance6`, wheel SHA-256 `255e5670207159c41ac1c89fef513ac20e224eec83848b3237ea882a829154ae`
+(two byte-identical builds, SOURCE_DATE_EPOCH 1794140808 = commit epoch). MIO changes: the generic playbook
+(`generic-evidence-first-v1` 1.1.0) asks concrete read-only questions (fix the complaint's time window, line up
+other log lines against it) and the comparability vocabulary recognises an unknown or unsynchronised clock.
+Nexus changes in the same candidate are display-only (operator-facing wording of the deterministic guidance);
+`guidance_schema_version` stays 1.0.0 and stored receipts remain readable. The previous pins stay recorded above as history.
