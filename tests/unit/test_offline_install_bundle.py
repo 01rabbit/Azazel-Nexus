@@ -875,7 +875,7 @@ def test_an_own_wheel_at_another_version_is_refused(built, tmp_path):
 def test_the_reviewed_lock_is_the_real_one():
     lock, versions = offline_bundle.reviewed_pins()
     assert set(lock) == {
-        "dbus-next==0.2.3", "pyyaml==6.0.3", "azazel-fabric==0.10.0", "azazel-mio==0.1.0.dev20261108+gitadvice4",
+        "dbus-next==0.2.3", "pyyaml==6.0.3", "azazel-fabric==0.10.0", "azazel-mio==0.1.0.dev20261108+gitadvice5",
         "pydantic==2.13.5",
         "pydantic-core==2.46.5", "annotated-types==0.8.0", "typing-extensions==4.16.0",
         "typing-inspection==0.4.4",
@@ -1592,7 +1592,7 @@ def test_mio_extra_is_optional_exact_commit_and_does_not_change_core_dependencie
     assert package.get("dependencies", []) == []
     extras = _uv_lock_packages()["azazel-nexus"]["optional-dependencies"]
     assert extras["mio"] == [{"name": "azazel-mio"}]
-    assert build_wheelhouse.bundled_extra_closure(ROOT) >= {"azazel-mio==0.1.0.dev20261108+gitadvice4"}
+    assert build_wheelhouse.bundled_extra_closure(ROOT) >= {"azazel-mio==0.1.0.dev20261108+gitadvice5"}
 
 
 def test_each_pypi_wheel_hash_in_the_lock_is_one_uv_lock_records():
@@ -1600,11 +1600,11 @@ def test_each_pypi_wheel_hash_in_the_lock_is_one_uv_lock_records():
     lock = build_wheelhouse.parse_lock(ROOT / build_wheelhouse.LOCK)
     closure = build_wheelhouse.bundled_extra_closure(ROOT)
     assert closure == {
-        "azazel-fabric==0.10.0", "azazel-mio==0.1.0.dev20261108+gitadvice4",
+        "azazel-fabric==0.10.0", "azazel-mio==0.1.0.dev20261108+gitadvice5",
         "pydantic==2.13.5", "pydantic-core==2.46.5",
         "annotated-types==0.8.0", "typing-extensions==4.16.0", "typing-inspection==0.4.4",
     }
-    for requirement in closure - {"azazel-fabric==0.10.0", "azazel-mio==0.1.0.dev20261108+gitadvice4"}:
+    for requirement in closure - {"azazel-fabric==0.10.0", "azazel-mio==0.1.0.dev20261108+gitadvice5"}:
         name, _, version = requirement.partition("==")
         assert packages[name]["version"] == version
         recorded = {w["hash"].removeprefix("sha256:") for w in packages[name]["wheels"]}
@@ -1622,10 +1622,10 @@ def _closure_root(tmp_path: Path) -> Path:
 @pytest.mark.parametrize("path, old, new, match", [
     ("pyproject.toml", "Azazel-Fabric.git@v0.10.0", "Azazel-Fabric.git@main", "not a pinned source build"),
     ("uv.lock", "#397fcce7a87ca7ab1a5e84bc196c44d70c404907", "#" + "0" * 40, "does not resolve azazel-fabric"),
-    ("pyproject.toml", "Azazel-MIO.git@42075c22365bf7ad9d85f67137de768584f0a2b2",
+    ("pyproject.toml", "Azazel-MIO.git@7425d66e23ee3e351aac30d5fa34f41ddaf88c3e",
      "Azazel-MIO.git@main", "not a pinned source build"),
-    ("uv.lock", "Azazel-MIO.git?rev=42075c22365bf7ad9d85f67137de768584f0a2b2#42075c22365bf7ad9d85f67137de768584f0a2b2",
-     "Azazel-MIO.git?rev=42075c22365bf7ad9d85f67137de768584f0a2b2#" + "0" * 40,
+    ("uv.lock", "Azazel-MIO.git?rev=7425d66e23ee3e351aac30d5fa34f41ddaf88c3e#7425d66e23ee3e351aac30d5fa34f41ddaf88c3e",
+     "Azazel-MIO.git?rev=7425d66e23ee3e351aac30d5fa34f41ddaf88c3e#" + "0" * 40,
      "does not resolve azazel-mio"),
     ("uv.lock", '    { name = "pydantic-core" },\n', '    { name = "pydantic-core", marker = "x" },\n', "markers"),
     ("uv.lock", 'name = "pydantic"\nversion = "2.13.5"\nsource = { registry = "https://pypi.org/simple" }',
@@ -1693,13 +1693,13 @@ def test_a_source_built_wheel_that_did_not_reproduce_the_lock_is_refused():
 def test_the_mio_source_wheel_hash_is_reproduced_and_exactly_pinned():
     build = build_wheelhouse.SOURCE_BUILDS["azazel-mio"]
     lock = build_wheelhouse.parse_lock(ROOT / build_wheelhouse.LOCK)
-    digest, = lock["azazel-mio==0.1.0.dev20261108+gitadvice4"]
-    assert digest == "a0a3700c9e7cee1fb87f6a912bd88098754fffb0ad928aac1a03c57d46d58575"
+    digest, = lock["azazel-mio==0.1.0.dev20261108+gitadvice5"]
+    assert digest == "1ba3bf800ed35ebe1e2609fb1e62e354f5e2b72fc33fce52258d34d3b84158fa"
     for target in offline_bundle.TARGETS:
         target_lock = build_wheelhouse.parse_lock(ROOT / offline_bundle.target_lock(target))
-        assert target_lock["azazel-mio==0.1.0.dev20261108+gitadvice4"] == [digest]
+        assert target_lock["azazel-mio==0.1.0.dev20261108+gitadvice5"] == [digest]
     origin = build_wheelhouse.source_build_origin(
-        "azazel_mio-0.1.0.dev20261108+gitadvice4-py3-none-any.whl", digest, lock)
+        "azazel_mio-0.1.0.dev20261108+gitadvice5-py3-none-any.whl", digest, lock)
     assert build["commit"] in origin and "hash-pinned" in origin
 
 
@@ -1813,7 +1813,7 @@ def test_the_git_steps_read_no_user_or_system_configuration():
 def test_the_mio_wheel_build_uses_its_pinned_source_commit_epoch():
     mio_env = build_wheelhouse._build_env(
         source_date_epoch=build_wheelhouse.SOURCE_BUILDS["azazel-mio"]["source_date_epoch"])
-    assert mio_env["SOURCE_DATE_EPOCH"] == "1794096692"
+    assert mio_env["SOURCE_DATE_EPOCH"] == "1794097292"
 
 
 def test_a_lock_entry_the_bundle_does_not_carry_is_refused():
