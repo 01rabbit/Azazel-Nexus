@@ -90,10 +90,10 @@ SOURCE_BUILDS = {
         "commit": "397fcce7a87ca7ab1a5e84bc196c44d70c404907",
     },
     "azazel-mio": {
-        "version": "0.1.0.dev20261108+gitguidance4",
+        "version": "0.1.0.dev20261108+gitguidance5",
         "repository": "https://github.com/01rabbit/Azazel-MIO.git",
-        "commit": "6557fcace54b85623dd5dce85fed5841a9522d46",
-        "source_date_epoch": 1794127010,
+        "commit": "9887c346b7dcbeb6a7beae31d368316d85a6c9b0",
+        "source_date_epoch": 1794132247,
     },
 }
 

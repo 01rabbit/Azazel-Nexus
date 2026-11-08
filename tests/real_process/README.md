@@ -56,10 +56,10 @@ DOCKER_CONTEXT=colima-rosetta SUITE_CONTEXT=rosetta \
 Before starting Docker, the wrapper requires clean Nexus and Knowledge source
 trees and compares each checkout's full HEAD to the supplied commit. The
 container runner checks the SHA-256 of the runtime MIO wheel
-(`afb75a759ab859984bcc037994a3709ab136989db08d70af64348b4047963d3c`) and
+(`14af771df9eb4c0981b51861b4b18ac1d1b5c8c7f07aab9fe376b8a90b27ced8`) and
 the Fabric `v0.10.0` tag-source test wheel
 (`b22356fd672cd60471606d3a7b73ccdba99091e680fedd854381a29d76e21424`)
-before installing offline. The MIO wheel is `azazel_mio-0.1.0.dev20261108+gitguidance4-py3-none-any.whl`; after installation the runner verifies distribution and module origins in site-packages, version, and template `1.9.0`. The Fabric wheel was rebuilt from the exact signed
+before installing offline. The MIO wheel is `azazel_mio-0.1.0.dev20261108+gitguidance5-py3-none-any.whl`; after installation the runner verifies distribution and module origins in site-packages, version, and template `1.9.0`. The Fabric wheel was rebuilt from the exact signed
 release source commit; it is a local test artifact, not a published PyPI
 wheel. The tagged package contains the Knowledge Context v1 contract, which
 remains experimental. It copies both source mounts into unique `/tmp` directories,

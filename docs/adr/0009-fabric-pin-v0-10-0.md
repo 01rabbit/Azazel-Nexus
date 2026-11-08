@@ -114,3 +114,13 @@ compared windows are not aligned no longer change a verification priority.
 `guidance_schema_version` stays `1.0.0`. The previous `+gitguidance1` pin
 (wheel `5b42d752672d02fd3ffad896b1d7c47dd145f8cfb83429e3b72ebe54f74d5913`)
 is superseded and kept above as history.
+
+### Addendum: MIO unknown-replacement narrowing (unit 12)
+
+The optional MIO pin moves to source commit
+`9887c346b7dcbeb6a7beae31d368316d85a6c9b0`, version
+`0.1.0.dev20261108+gitguidance5`, wheel SHA-256
+`14af771df9eb4c0981b51861b4b18ac1d1b5c8c7f07aab9fe376b8a90b27ced8`
+(`SOURCE_DATE_EPOCH=1794132247`). When a new observation addresses a topic,
+only analysis-derived unknowns are replaced; report-derived gaps, hearsay and
+comparison conditions are kept. `guidance_schema_version` stays `1.0.0`.

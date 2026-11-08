@@ -49,7 +49,7 @@ fabric = ["azazel-fabric @ git+https://github.com/01rabbit/Azazel-Fabric.git@v0.
 
 # Optional shared M.I.O. core for the complete runtime distribution. Keep it
 # out of CORE dependencies; the offline bundle builds this exact source commit.
-mio = ["azazel-mio @ git+https://github.com/01rabbit/Azazel-MIO.git@6557fcace54b85623dd5dce85fed5841a9522d46"]
+mio = ["azazel-mio @ git+https://github.com/01rabbit/Azazel-MIO.git@9887c346b7dcbeb6a7beae31d368316d85a6c9b0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
