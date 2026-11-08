@@ -204,9 +204,8 @@ def _fact_text(f):
     m = _EDGE_RE.fullmatch(f["text"]) if f["kind"] == "edge_decision" else None
     if not m:
         return f["text"]
-    ev = DISPLAY_JA["edge_values"]
     a, r = m.group(1).rstrip(","), m.group(2).rstrip(",")
-    return f"Edge の判断: {ev.get(a, a)} を選択（結果 {ev.get(r, r)}、実行件数 {m.group(3)}）"
+    return f"Edge の判断: {a} を選択（結果 {r}、実行件数 {m.group(3)}）"
 
 
 def guidance_view(g):
