@@ -118,6 +118,12 @@ _IPV6 = re.compile(
 _LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
 
 
+def redact_network_addresses(text: str, mark: str = "[withheld]") -> str:
+    """Replace every IPv4 or IPv6 address in `text` by `mark` (NFKC-normalized like the detector)."""
+    text = unicodedata.normalize("NFKC", text)
+    return _IPV6.sub(mark, _IPV4.sub(mark, text))
+
+
 def contains_network_address(text: str) -> bool:
     """Detect IPv4 or IPv6 in NFKC-normalized text using the handoff rules."""
     text = unicodedata.normalize("NFKC", text)

@@ -56,7 +56,7 @@ def test_summary_snapshot_and_view(tmp_path):
     _, rec, _ = explained(tmp_path, NEW)
     summary = explanation_summary(rec)
     assert summary["guidance"]["content_kind"] == "deterministic_guidance"
-    assert "sections" not in summary["guidance"]["handoff"]
+    assert set(summary["guidance"]["handoff"]) == {"incident_id", "privacy_class"}
     v = GR.guidance_view(rec["guidance"])
     assert len(v["summary"]["required_checks"]) == 2
     assert any(w["direction"] == "確認の優先度が上がる" for w in v["summary"]["priority_changes"])
@@ -76,26 +76,40 @@ def test_withheld_value_never_appears(tmp_path):
         GR.read_guidance(bad)
 
 
-def test_unknown_kind_and_tampering_are_refused(tmp_path):
+def test_unknown_kind_and_tampering_drop_the_guidance_only(tmp_path):
     _, rec, _ = explained(tmp_path)
-    for mutate in (lambda g: g.update(content_kind="ai_advice"), lambda g: g.update(model_calls=1),
-                   lambda g: g["recommendation"].update(executable=True),
-                   lambda g: g["facts"][0].update(trust="verified"),
-                   lambda g: g.update(extra=1)):
+    muts = (lambda g: g.update(content_kind="ai_advice"), lambda g: g.update(model_calls=1),
+            lambda g: g["recommendation"].update(executable=True),
+            lambda g: g["facts"][0].update(trust="verified"),
+            lambda g: g.update(extra=1))
+    for mutate in muts:
         bad = copy.deepcopy(rec)
         mutate(bad["guidance"])
         with pytest.raises(ValueError):
-            read_record(bad)
+            GR.read_guidance(bad["guidance"])
+        kept = read_record(bad)
+        assert "guidance" not in kept and kept["mio"] == rec["mio"] and kept["incident_id"] == rec["incident_id"]
 
 
-def test_binding_mismatch_is_refused(tmp_path):
+def test_binding_mismatch_drops_the_guidance_only(tmp_path):
     _, rec, _ = explained(tmp_path)
     for path, value in (("incident_id", "inc-" + "0" * 16), ("trace_id", "mio-x-1"), ("frame_id", "mio-x-1:frame"),
                         ("request_id", "inc-0000000000000000:1"), ("evidence_refs", ["sha256:" + "0" * 64])):
         bad = copy.deepcopy(rec)
         bad["guidance"]["handoff"][path] = value
-        with pytest.raises(ValueError):
-            read_record(bad)
+        kept = read_record(bad)
+        assert "guidance" not in kept and kept["mio"] == rec["mio"]
+
+
+def test_recent_row_only_guidance_makes_json_and_markdown_handoff(tmp_path):
+    from azazel_nexus import handoff as H
+    _, rec, first = explained(tmp_path, NEW)
+    row = {"explanation": {"guidance": explanation_summary(rec)["guidance"]}}
+    block = H._guidance_block([], row)
+    assert block["source"] == "recent_snapshot" and H.scan_package(block) == []
+    md = GR.guidance_markdown(row["explanation"]["guidance"], H._md)
+    assert "非表示" in md and "model_calls 0" in md and rec["incident_id"] in md and H.scan_markdown(md) == []
+    assert first.digest not in md and first.digest not in json.dumps(block)
 
 
 def test_old_records_without_guidance_still_read(tmp_path):
@@ -160,3 +174,10 @@ def test_daemon_recent_snapshot_row_validates(tmp_path):
     assert g["content_kind"] == "deterministic_guidance"
     snap["incidents"][0]["explanation"]["guidance"]["content_kind"] = "x"
     assert read_recent_incidents(json.dumps(snap).encode()) is None
+
+
+def test_an_unlisted_address_in_the_report_is_scrubbed_not_fatal(tmp_path):
+    _, rec, _ = explained(tmp_path, REPORT + " Peer 203.0.113.5 and 2001:db8::7 also timed out. Two sites.")
+    blob = json.dumps(rec)
+    assert "203.0.113.5" not in blob and "2001:db8::7" not in blob
+    assert any("[withheld]" in f["text"] for f in rec["guidance"]["facts"])

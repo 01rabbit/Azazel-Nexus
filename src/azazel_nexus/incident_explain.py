@@ -920,7 +920,8 @@ def read_record(value):
                           evidence_ids=[r["evidence_id"] for r in value[EVIDENCE_FIELD]["refs"]]
                           if EVIDENCE_FIELD in value else None)
         except ValueError:
-            raise ValueError("record_refused") from None
+            # Same as the writer: guidance that is refused or does not bind is dropped; the record stays.
+            value = {k: v for k, v in value.items() if k != GUIDANCE_FIELD}
     if FABRIC_RECORD_FIELD in value:
         _read_fabric_projection(value[FABRIC_RECORD_FIELD], value)
     return json.loads(json.dumps(value, allow_nan=False))

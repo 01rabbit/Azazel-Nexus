@@ -125,8 +125,9 @@ def read_guidance(g, *, public=False):
         for v in item.values():
             _t(v, 240)
     h = g["handoff"]
-    _shape(h, ("incident_id", "request_id", "trace_id", "frame_id", "privacy_class") + (() if public else ("evidence_refs", "sections")))
-    for key in ("incident_id", "request_id", "trace_id", "frame_id"):
+    # The snapshot keeps the incident only: request, trace, frame and evidence ids stay in the ledger.
+    _shape(h, ("incident_id", "privacy_class") + (() if public else ("request_id", "trace_id", "frame_id", "evidence_refs", "sections")))
+    for key in ("incident_id",) if public else ("incident_id", "request_id", "trace_id", "frame_id"):
         _t(h[key], 96)
     if not public and (type(h["evidence_refs"]) is not list or len(h["evidence_refs"]) > 8 or any(
             type(r) is not str or not _DIGEST.fullmatch(r) for r in h["evidence_refs"])):
@@ -170,7 +171,7 @@ def public_guidance(g):
     h = dict(g["handoff"])
     h.pop("sections", None)
     # Evidence pointers stay in the ledger; the snapshot never shows them.
-    h.pop("evidence_refs", None)
+    h = {"incident_id": h["incident_id"], "privacy_class": h["privacy_class"]}
     p["competing_explanations"] = [{k: v for k, v in e.items() if k != "evidence_refs"} for e in g["competing_explanations"]]
     p["handoff"] = h
     return read_guidance(p, public=True)
@@ -257,7 +258,8 @@ def guidance_markdown(g, esc=str):
     out += ["", "#### " + v["sections"]["optional_checks"]]
     out += [f"- {c['id']}: {esc(c['text'])}" for c in dt["optional_checks"]] or ["- なし"]
     h = dt["handoff"]
+    ids = " / ".join(f"{k} `{h[k]}`" for k in ("incident_id", "request_id", "trace_id", "frame_id") if k in h)
     out += ["", "#### " + v["sections"]["handoff"],
-            f"- incident `{h['incident_id']}` / request `{h['request_id']}` / trace `{h['trace_id']}` / frame `{h['frame_id']}`",
-            f"- 証拠 ref: {', '.join(h['evidence_refs']) or 'なし'}", f"- privacy 区分: {h['privacy_class'].lower()}（伏せた値は再掲しない）"]
+            "- " + ids + ("" if "frame_id" in h else "（request・trace・frame は snapshot 由来のため非表示）"),
+            "- 証拠 ref: " + (", ".join(h["evidence_refs"]) or "なし" if "evidence_refs" in h else "非表示（snapshot 由来の公開形）"), f"- privacy 区分: {h['privacy_class'].lower()}（伏せた値は再掲しない）"]
     return "\n".join(out) + "\n"
