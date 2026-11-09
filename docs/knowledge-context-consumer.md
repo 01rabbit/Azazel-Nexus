@@ -3,12 +3,11 @@
 The semantic request/response belongs to Fabric's `knowledge-context/v1`
 profile. Nexus imports it only through `fabric_boundary`, where the import is
 deferred so CORE remains usable without the optional Fabric package. The
-current #402/#403 candidate stack uses the exact published Fabric `v0.10.0`
-tag, which contains this profile as experimental functionality without a
-compatibility promise. Nexus main retains its prior accepted pin until #402 is
-integrated. Even with the profile installed, the adapter remains unavailable
-unless its explicit transport configuration is supplied; Knowledge Lite
-behavior is independent.
+optional `fabric` extra pins the published Fabric `v0.10.0` tag, which
+contains this profile as experimental functionality without a compatibility
+promise (#402 and #403 are merged). Even with the profile installed, the
+adapter remains unavailable unless its explicit transport configuration is
+supplied; Knowledge Lite behavior is independent.
 
 The Nexus envelope is separate from the Fabric payload. It binds `key_id`,
 `issued_at`, `expires_at`, and the canonical response bytes under the
@@ -27,7 +26,7 @@ wider class. `KnowledgeClient.request_context()` opens an mTLS connection only
 when explicitly called on a client with the local opt-in flag, commissioned
 peer, client identity, CA and pin configured. The opt-in boolean is caller
 configuration; it is not a Context capability in the signed peer registry.
-This candidate composes that method behind the ordinary local broker, but the
+The default-disabled broker composes that method behind the ordinary local path, but the
 production commissioning loader and live credentials are absent and
 activation remains withheld. Importing this module or installing the package
 does not connect, load commissioned state, install a trust anchor, or alter
@@ -36,7 +35,7 @@ authority or alter Edge's deterministic decision path.
 
 Status: **isolated software path in development; production commissioning is
 not wired**. The service boundary and local request path described below are
-implemented in this candidate. No production registry/credential loader or
+implemented. No production registry/credential loader or
 systemd egress allowance is supplied, so activation remains withheld.
 
 ## Process boundary
@@ -120,6 +119,60 @@ The #402 adapter can open a socket only through an explicit enabled client call
 with commissioned transport inputs. This #403 change adds the optional local
 process boundary without supplying the production registry, credentials,
 trust anchor or network allowance; those commissioning decisions remain open.
+
+## Isolated acceptance matrix (software only)
+
+`tests/unit/test_knowledge_context_acceptance.py` drives the ordinary entry
+(`LocalRuntimeService` FAST_ASSESS) through a real `KnowledgeClient` and
+`KnowledgeContextBroker` against a synthetic producer on loopback mTLS, using
+test-only PKI and a test-only signing key. It needs the `fabric` and M.I.O.
+extras and skips without them. The AF_UNIX hop between locald and the broker
+is replaced by a direct call whose deadline arguments are built in the test,
+not by the real socket client; that hop stays covered by the isolated
+real-process runner. The matrix asserts:
+
+| Case | Expected result |
+| --- | --- |
+| valid response for the request | `received`; advisory is `advisory_only`, `source_reported_unverified`, `unverified_advisory_only`; source kind, snapshot state and generated/expiry times reach the stored projection; one producer call; audit holds only fixed event names and outcomes |
+| same inputs, Knowledge refused vs. received | every field outside the Knowledge-context fields is identical: the advisory cannot change observations, hypotheses or any decision field |
+| bad signature, tampered payload, expired envelope, wrong key id, wrong request id, wrong provider id, HTTP 500, non-envelope body, oversized body, producer absent | `unavailable`, no advisory, local assessment still `assessed`, no producer text or snapshot reference anywhere in the result, projection or audit |
+| producer slower than the Knowledge wait budget (0.25 s in locald) | request reaches the producer, is abandoned at the budget, `unavailable`, local assessment completes |
+| earlier valid signed answer replayed for a new request, with a fresh client and broker (not a process restart) | refused; a later honest answer is accepted again |
+| non-P0 frame, or the shipped uncommissioned broker | producer never queried (`not_queried`); broker returns a fixed `unavailable` |
+
+Not established by this matrix: operator-UI rendering of an expired receipt
+(covered by UI tests), a typed-IOC lookup (not in contract), the Linux
+peer-credential and systemd confinement (real-process runner), and any real
+credential, trust anchor or network.
+
+## Open items before any real connection
+
+Nothing in this repository authorizes a live connection. The items below are
+open and undecided; they are listed, not proposed as policy, and none is
+satisfied by this software:
+
+1. The open ownership and lifecycle items listed under *Commissioning and
+   credentials* are decided and written down, including the numeric maximum
+   response TTL.
+2. A production commissioning loader and registry exist; today the broker
+   factory is closed by design and an injected client is available only to
+   tests.
+3. Which trusted local inputs may set the P0 label and which question fields
+   may be sent (stated above as required; not yet defined).
+4. An endpoint allowlist is approved before any `IPAddressAllow` is designed;
+   this package supplies none.
+5. The per-request audit ledger gets an explicit retention and disk-quota
+   policy.
+6. The activation grant for `azazel-knowledge-contextd.service` is issued by
+   the existing activation path, not by editing the unit.
+
+Stopping and recovery use mechanisms that already exist: the unit is preset
+disabled and starts only while its activation grant marker is present, so
+removing the grant through the activation path or stopping the unit returns
+FAST_ASSESS to `unavailable` (the request fails closed) with Knowledge Lite and
+local assessment unchanged. The broker keeps no response cache, so there is nothing
+stale to clear after a restart. How a revoked or expired peer key is replaced
+is one of the open items above and is not defined here.
 
 ## Verification scope
 
