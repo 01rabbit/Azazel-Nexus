@@ -29,3 +29,11 @@ def test_model_free_display_is_not_called_failure():
     js = _t("app.js")
     assert "モデル生成の見解：なし" in js and "記録コード（診断用）" in js
     assert '"失敗コード"' not in js
+
+
+def test_show_login_clears_panels_and_live_text():
+    js = _t("app.js")
+    login = js[js.index("function showLogin"):]
+    head = login[:login.index("request(")]
+    assert 'clear($("panel-" + n))' in head
+    assert 'state.announced = ""' in head and '$("live").textContent = ""' in head

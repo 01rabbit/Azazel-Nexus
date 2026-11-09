@@ -1018,6 +1018,9 @@
     state.csrf = null;
     state.model = null;
     state.open = {};
+    Object.keys(SCREENS).forEach(function (n) { clear($("panel-" + n)); });
+    state.announced = "";
+    $("live").textContent = "";
     $("login").hidden = false;
     $("tabs").hidden = true;
     $("panels").hidden = true;
