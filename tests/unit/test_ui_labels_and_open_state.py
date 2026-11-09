@@ -1,5 +1,11 @@
 """Static checks of the read-only UI: tab/summary names and kept open state."""
+import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 STATIC = Path(__file__).resolve().parents[2] / "runtime/src/azazel_nexus_runtime/ui_static"
 
@@ -78,3 +84,25 @@ def test_failure_text_is_fixed_and_never_shows_a_body_or_exception():
         assert 'f.kind === "%s"' % kind in reason
     assert "現在の状態を確認できたものではありません" in js and "表示できる前回データはありません" in js
     assert "判別できません" in reason  # 404 is not asserted to be a deletion or a temporary gap
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+@pytest.mark.parametrize("mode", ["", "start_retry", "unauth"])
+def test_poll_behaviour_against_a_stub_dom(tmp_path, mode):
+    """Runs the real app.js: failures keep stale content under a notice, refusals discard it,
+    a response that arrives after logout never repaints, and the first load retries."""
+    from azazel_nexus.ui_model import project
+    from azazel_nexus_runtime.ui_serve import browser_json
+
+    model = tmp_path / "model.json"
+    model.write_bytes(browser_json(project(None, origin={"kind": "fixture", "notice": "n"},
+                                           served_at="2026-11-10T00:00:00Z",
+                                           read_reason="status_read_failed")))
+    out = subprocess.run(
+        ["node", str(Path(__file__).with_name("ui_poll_harness.js")), str(STATIC / "app.js"),
+         str(STATIC / "labels.json"), str(model)],
+        capture_output=True, text=True, timeout=60, env={**os.environ, "MODE": mode}, check=True)
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert "harness_error" not in result, result
+    failed = [k for k, v in result.items() if v is False]
+    assert not failed and len(result) >= 1, result

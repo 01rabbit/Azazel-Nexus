@@ -1086,7 +1086,7 @@
     return request("GET", "/api/session").then(function (r) {
       state.loginToken = r.data.login_token || null;
       if (r.data.authenticated) { state.csrf = r.data.csrf; showApp(); }
-    });
+    }).catch(function () { $("login-msg").textContent = "UI サーバーに接続できません。"; });
   }
 
   function showApp() {
@@ -1185,12 +1185,14 @@
     });
   }
 
-  function start() {
-    wire();
+  function begin() {
     request("GET", "/static/labels.json").then(function (r) {
       state.labels = r.data;
       return request("GET", "/api/session");
     }).then(function (r) {
+      state.failing = false;
+      state.fail = null;
+      showConn();
       if (r.data.authenticated) { state.csrf = r.data.csrf; showApp(); } else {
         state.loginToken = r.data.login_token || null;
         $("login").hidden = false;
@@ -1199,7 +1201,13 @@
       state.failing = true;
       state.fail = { kind: "network" };
       showConn();
+      setTimeout(begin, POLL_MS);
     });
+  }
+
+  function start() {
+    wire();
+    begin();
   }
 
   document.addEventListener("DOMContentLoaded", start);
