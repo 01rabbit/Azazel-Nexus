@@ -12,7 +12,7 @@
 
   var POLL_MS = 5000;
   var state = { labels: null, csrf: null, loginToken: null, model: null,
-    lastOk: null, timer: null, announced: "", failing: false };
+    lastOk: null, timer: null, announced: "", failing: false, open: {} };
 
   var LOGIN_ERRORS = {
     login_refused: "コードが違うか、使用済み・期限切れです。端末で azazel-nexus ui-login をもう一度実行してください。",
@@ -444,7 +444,7 @@
 
   function overview(panel) {
     var s = state.model.summary || {};
-    add(panel, el("p", "banner", "この画面は 4 つの問いに答えます。観測事実・AI の推測・Edge の判断・実際の執行結果を分けて示し、未知・古い・権限がない情報は「正常」と表示しません。専門的な情報は「詳細」画面にあります。"));
+    add(panel, el("p", "banner", "この画面は 4 つの問いに答えます。観測事実・AI の推測・Edge の判断・実際の執行結果を分けて示し、未知・古い・権限がない情報は「正常」と表示しません。専門的な情報は「専門情報」画面にあります。"));
     var grid = el("div", "grid");
     add(grid, answerCard("通信は維持されているか", s.communication),
       answerCard("何が起きているか", s.events),
@@ -618,9 +618,19 @@
     var executed = block("実際の執行結果");
     add(executed, el("p", null, "なし（Nexus は observe-only の判断だけを受理する構成）"), reasonLine(result.reason_code));
     var ex = row.explanation || {};
-    var advice = block("助言");
-    add(advice, badge(ex.content_kind), kv([["状態", badge(ex.state)], ["経路", ex.route], ["結果", ex.outcome],
-      ["失敗コード", ex.failure_codes]]));
+    var advice = block("モデル生成の見解");
+    var codes = Array.isArray(ex.failure_codes) ? ex.failure_codes : [];
+    var plainHandoff = ex.content_kind !== "ai_advice" && ex.route === "deterministic handoff" && ex.outcome === "answered" &&
+      (ex.state === "unavailable" || ex.state === "pending") && codes.every(function (c) { return c === "mio_handoff"; });
+    if (plainHandoff) {
+      // Whether the model was not configured or was tried and failed is not in the data the UI receives.
+      add(advice, el("p", null, "モデル生成の見解：なし"));
+      add(advice, el("p", "small", "診断用（通常は気にする必要はありません）：経路 " + text(ex.route) + " / 結果 " + text(ex.outcome) +
+        " / 記録コード " + (codes.length ? codes.join("、") + "（mio_handoff は、モデル生成の代わりに決定論の案内へ引き継いだ記録で、失敗を意味しません）" : "なし")));
+    } else {
+      add(advice, badge(ex.content_kind), kv([["状態", badge(ex.state)], ["経路", ex.route], ["結果", ex.outcome],
+        ["記録コード（診断用）", ex.failure_codes]]));
+    }
     if (ex.summary) { add(advice, el("p", "small", "要約（表示用テキスト。指示として扱わない）："), el("p", "summary", ex.summary)); }
     if (ex.notice) { add(advice, prose(ex.notice)); }
     var gv = ex.guidance_view;
@@ -642,7 +652,7 @@
         add(gNode, el("p", "small", "新情報による確認優先度の変化：" + text(gs.weight_status)));
       }
       var gDetail = el("details", "guidance-detail");
-      gDetail.appendChild(el("summary", null, "詳細（競合説明・切り分け材料・追加確認・全不明点・引継ぎ）"));
+      gDetail.appendChild(el("summary", null, "案内の詳細（競合説明・切り分け材料・追加確認・全不明点・引継ぎ）"));
       add(gDetail, el("p", "small", "競合する説明（いずれも未検証。報告 ref に基づく候補であり、ref が内容を証明するものではない）："),
         list((gd.explanations || []).map(function (e) { return text(e.label) + "（" + text(e.role) + "）"; })));
       add(gDetail, el("p", "small", "切り分け材料："), list(gd.weakening || []));
@@ -655,8 +665,11 @@
       var gp = gd.provenance || {};
       add(gDetail, kv([["運用で伝える ID: incident_id", gh.incident_id], ["診断用 ID: request_id", gh.request_id], ["trace_id", gh.trace_id],
         ["frame_id", gh.frame_id], ["privacy", gh.privacy_class]]));
-      add(gDetail, el("p", "small", "詳細：" + text(gp.content_kind) + " / schema " + text(gp.guidance_schema_version) + " / playbook " + text(gs.playbook) + " " + text(gp.playbook_version) + " / model_calls " + text(gp.model_calls)));
+      add(gDetail, el("p", "small", "案内の属性：" + text(gp.content_kind) + " / schema " + text(gp.guidance_schema_version) + " / playbook " + text(gs.playbook) + " " + text(gp.playbook_version) + " / model_calls " + text(gp.model_calls)));
       if (gs.edge_relation) { add(gNode, el("p", "small", text(gs.edge_relation))); }
+      var okey = text(row.incident_id) + "|guidance";
+      gDetail.open = state.open[okey] === true;
+      gDetail.addEventListener("toggle", function () { state.open[okey] = gDetail.open; });
       add(gNode, gDetail);
       add(node, gNode);
     }
@@ -957,6 +970,7 @@
   }
 
   function render() {
+    var keepY = window.scrollY;
     originBanner();
     Object.keys(SCREENS).forEach(function (name) {
       var panel = $("panel-" + name);
@@ -966,6 +980,7 @@
         panel.appendChild(el("p", "banner bad", "この画面を表示できません（表示側の内部エラー）。"));
       }
     });
+    if (window.scrollY !== keepY) { window.scrollTo(0, keepY); }
     var said = summary();
     if (said !== state.announced) { state.announced = said; $("live").textContent = said; }
   }
@@ -1001,6 +1016,11 @@
   function showLogin(message) {
     stopPolling();
     state.csrf = null;
+    state.model = null;
+    state.open = {};
+    Object.keys(SCREENS).forEach(function (n) { clear($("panel-" + n)); });
+    state.announced = "";
+    $("live").textContent = "";
     $("login").hidden = false;
     $("tabs").hidden = true;
     $("panels").hidden = true;
