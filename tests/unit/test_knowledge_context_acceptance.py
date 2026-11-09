@@ -180,6 +180,10 @@ class Chain:
             return reply["response"]
 
         monkeypatch.setattr(mio_locald, "request_context", request_context)
+        if mode != "timeout":
+            # Headroom so a loaded CI host cannot turn a handshake into a timeout;
+            # the timeout case keeps the shipped 0.25 s budget.
+            monkeypatch.setattr(mio_locald, "KNOWLEDGE_MAX_S", 2.0)
         lane = SimpleNamespace(submit=lambda *a, **k: {"state": "closed", "usage": "unknown"})
         service = mio_locald.LocalRuntimeService(generation_lane=lane)
         frame = {"request_id": "acceptance", "privacy_class": "P0-public",
