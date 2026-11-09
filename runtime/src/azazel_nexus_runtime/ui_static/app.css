@@ -105,3 +105,15 @@ ol.steps { margin: 6px 0 0; padding-left: 1.4em; }
 ol.steps li { margin: 6px 0; overflow-wrap: anywhere; }
 ol.steps p { margin: 2px 0; }
 .row { margin: 4px 0; overflow-wrap: anywhere; }
+/* Optional SOC read layout; no additional permissions or assets. */
+.soc-cards { margin: 12px 0; }
+.metric { font-size: 1.8rem; font-weight: 700; margin: 6px 0; }
+.soc-filters { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+.soc-filters select { font: inherit; min-height: 44px; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 5px; max-width: 100%; }
+.soc-table-wrap { max-width: 100%; overflow-x: auto; }
+.soc-table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+.soc-table th, .soc-table td { text-align: left; border-bottom: 1px solid var(--line); padding: 8px 4px; overflow-wrap: anywhere; font-size: .85rem; }
+.soc-table caption { text-align: left; color: var(--muted); margin: 8px 0; }
+.soc-table button { padding: 6px; }
+.soc-detail { margin: 12px 0; }
+@media(max-width:480px) { .soc-table th, .soc-table td { font-size: .75rem; padding: 6px 2px; } .soc-table button { font-size: .75rem; } }

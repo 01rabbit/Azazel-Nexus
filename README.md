@@ -176,3 +176,5 @@ This division is intentional. It keeps the authority to change the field boundar
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+- [Optional SOC read layout](docs/soc-dashboard.md): retained coverage, incident selection and verification limits.
