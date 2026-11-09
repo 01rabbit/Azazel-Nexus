@@ -205,6 +205,21 @@ one of them to look wrong.
 | Knowledge | Knowledge Lite state, freshness, generation, what "functional" does and does not mean, the verified bundle's facts (shortened digest, signing key ids, static and dated claim counts, nearest expiry; a withheld fact says so), the cryptographic implementation status, the operator snapshot of `knowledge.status`, the external peer (absent by design) and the citations of recent incidents. | `knowledge_lite`, `knowledge_status`, `external_modules`, `edge_loop.recent` |
 | セットアップ・復旧 (setup and recovery) | The setup guide's steps and their next commands **as text** (the page runs nothing), provider admission, health, each unit's state and each storage location, the explainer's chain recovery hint and status's next actions. | `setup --json`, `health`, `services`, `storage`, `next_actions`, `enforcement` |
 
+### When a refresh fails
+
+The page refreshes `/api/view` every 5 seconds (a request that has not answered within 8 seconds counts as timed out). What stays on screen depends on why it failed:
+
+| Response | Screen |
+| --- | --- |
+| 401 | Back to the login screen; panels, open/closed state and live text are discarded. |
+| 403, 421 | The previous content is discarded and a refusal notice is shown; polling continues and a later 200 restores the screens. |
+| Timeout, no connection, 5xx, 408, 429 | The previous content stays, under a prominent "更新停止" notice with the time the page last got a valid answer. That time is when this page fetched, not an observation time inside the data. |
+| 404, 410, other 4xx | Same notice, worded as "not found" / "rejected"; it is not read as "no data" or "healthy", and a missing endpoint is not called deleted. |
+| 200 with an invalid body | Not used; the previous content stays under the "応答の形式が不正" notice. |
+| Failure before the first valid answer | "表示できる前回データはありません". |
+
+The last-fetch time moves only on a valid 200. The notice names the cause with fixed wording; response bodies and exception text are never shown. A response that arrives after logout or a refusal is ignored. Server-side authentication, authorization and the allowlist are unchanged.
+
 ### The operator snapshot and NOC sections
 
 `knowledge_status`, `mio_status`, `services` and `noc` are the snapshots the
