@@ -253,3 +253,104 @@ def test_main_with_defective_bundle_stays_closed_with_reason(root, monkeypatch):
     captured, events = _run_main(monkeypatch, root)
     assert captured["handler"].__self__._ready is False
     assert (events[0]["outcome"], events[0]["reason_code"]) == ("refused", "enabled_not_true")
+
+
+# ---- observation rule reader (unit A) ---------------------------------------
+
+import json as _json  # noqa: E402
+
+_RULE = {"schema": "azazel.knowledge-context.observation-query/1",
+         "rule": "technique-set/1", "max_requests_per_minute": 6}
+
+
+def rule_file(root):
+    return root / "etc/azazel/knowledge-context/observation-query.json"
+
+
+def put_rule(root, doc=None, *, raw=None, mode=0o644):
+    path = rule_file(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for part in (root / "etc", root / "etc/azazel", path.parent):
+        os.chmod(part, 0o755)
+    path.write_bytes(raw if raw is not None else _json.dumps(_RULE if doc is None else doc).encode())
+    os.chmod(path, mode)
+    return path
+
+
+def test_observation_rule_absent_is_none(root):
+    assert cfg.load_observation_rule() is None
+    rule_file(root).parent.mkdir(parents=True)
+    assert cfg.load_observation_rule() is None
+
+
+def test_observation_rule_valid_returns_rule_and_identity(root):
+    path = put_rule(root)
+    rule, identity = cfg.load_observation_rule()
+    info = os.lstat(path)
+    assert rule == ("technique-set/1", 6)
+    assert identity == (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
+    put_rule(root, dict(_RULE, max_requests_per_minute=60))
+    assert cfg.load_observation_rule()[0].max_requests_per_minute == 60
+
+
+@pytest.mark.parametrize("doc", [
+    {k: v for k, v in _RULE.items() if k != "rule"},
+    dict(_RULE, extra=1),
+    dict(_RULE, schema="other/1"), dict(_RULE, rule="technique-set/2"),
+    dict(_RULE, max_requests_per_minute=0), dict(_RULE, max_requests_per_minute=61),
+    dict(_RULE, max_requests_per_minute=True), dict(_RULE, max_requests_per_minute="6"),
+    dict(_RULE, max_requests_per_minute=6.0), dict(_RULE, rule=1), [], "x",
+])
+def test_observation_rule_defects_are_none(root, doc):
+    put_rule(root, doc)
+    assert cfg.load_observation_rule() is None
+
+
+def test_observation_rule_unsafe_files_are_none_without_raising(root, monkeypatch):
+    path = put_rule(root, raw=b"{not json")
+    assert cfg.load_observation_rule() is None
+    put_rule(root, raw=b"\xff\xfe")
+    assert cfg.load_observation_rule() is None
+    put_rule(root, raw=_json.dumps(dict(_RULE, pad="x" * 5000)).encode())
+    assert cfg.load_observation_rule() is None
+    put_rule(root)
+    os.chmod(path, 0o664)
+    assert cfg.load_observation_rule() is None
+    os.chmod(path, 0o646)
+    assert cfg.load_observation_rule() is None
+    os.chmod(path, 0o644)
+    os.link(path, root / "hard")
+    assert cfg.load_observation_rule() is None
+    os.unlink(root / "hard")
+    assert cfg.load_observation_rule() is not None
+    path.rename(root / "real.json")
+    path.symlink_to(root / "real.json")
+    assert cfg.load_observation_rule() is None
+    path.unlink()
+    (root / "real.json").rename(path)
+    # not owned by the trusted owner
+    monkeypatch.setattr(cfg, "_OWNER", os.getuid() + 1)
+    assert cfg.load_observation_rule() is None
+
+
+def test_observation_rule_unsafe_ancestors_are_none(root, monkeypatch):
+    put_rule(root)
+    parent = rule_file(root).parent
+    os.chmod(parent, 0o775)
+    assert cfg.load_observation_rule() is None
+    os.chmod(parent, 0o755)
+    os.chmod(root / "etc", 0o777)
+    assert cfg.load_observation_rule() is None
+    os.chmod(root / "etc", 0o755)
+    assert cfg.load_observation_rule() is not None
+    parent.rename(root / "moved")
+    parent.symlink_to(root / "moved")
+    assert cfg.load_observation_rule() is None
+
+
+def test_observation_rule_does_not_change_the_bundle_contract(root):
+    put_rule(root)
+    assert set(cfg._FILES) == {"manifest.json", "registry-keys.json", "registry.signed",
+                               "ca.pem", "client.pem", "client.key", "alias.key"}
+    build(root)
+    assert cfg.load_commissioning(now=NOW).status == "commissioned"
