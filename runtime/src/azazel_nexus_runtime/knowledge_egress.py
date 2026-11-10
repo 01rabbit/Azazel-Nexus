@@ -45,6 +45,16 @@ _KNOWLEDGE_CONTEXT_PATH = "/v1/knowledge-context"
 _MAX_KNOWLEDGE_CONTEXT_REQUEST_BYTES = 64 * 1024
 
 
+def _staged(exc: Exception, stage: str) -> Exception:
+    """Tag a refusal with the fixed request section it came from.
+
+    The tag is one of refused_before_send / transport / verification; the broker
+    reads it instead of parsing any message text.
+    """
+    exc.stage = stage
+    return exc
+
+
 class KnowledgeClient:
     """Constructed only from commissioned registry and identity material.
 
@@ -175,9 +185,9 @@ class KnowledgeClient:
         It returns a Fabric-validated advisory response or one fixed refusal.
         """
         if self.knowledge_context_enabled is not True:
-            raise KnowledgeContextRefused("full-node Knowledge Context is disabled")
+            raise _staged(KnowledgeContextRefused("full-node Knowledge Context is disabled"), "refused_before_send")
         if self.registry is None or self.context is None:
-            raise KnowledgeContextRefused("commissioned Knowledge peer is unavailable")
+            raise _staged(KnowledgeContextRefused("commissioned Knowledge peer is unavailable"), "refused_before_send")
         caller_deadline = None
         if deadline_s is not None:
             try:
@@ -186,13 +196,14 @@ class KnowledgeClient:
             except OverflowError:
                 valid_deadline = False
             if not valid_deadline:
-                raise KnowledgeContextRefused("Knowledge Context deadline is invalid")
+                raise _staged(KnowledgeContextRefused("Knowledge Context deadline is invalid"), "refused_before_send")
             caller_deadline = time.monotonic() + float(deadline_s)
         max_ttl_seconds = self.knowledge_context_max_ttl_seconds
         if type(max_ttl_seconds) is not int or max_ttl_seconds < 1:
-            raise KnowledgeContextRefused("Knowledge Context TTL is not commissioned")
+            raise _staged(KnowledgeContextRefused("Knowledge Context TTL is not commissioned"), "refused_before_send")
         if not self.slots.acquire(blocking=False):
-            raise KnowledgeContextRefused("Knowledge peer queue is full")
+            raise _staged(KnowledgeContextRefused("Knowledge peer queue is full"), "refused_before_send")
+        stage = "refused_before_send"
         try:
             peer = self.registry.resolve(self.peer_id, now=self.utc_now())
             if PrivacyClass.P0_PUBLIC not in peer.endpoint.allowed_privacy_classes:
@@ -213,13 +224,15 @@ class KnowledgeClient:
                 _MAX_KNOWLEDGE_CONTEXT_REQUEST_BYTES,
             )
             if len(body) > limit:
-                raise KnowledgeContextRefused("Knowledge Context request is too large")
+                raise _staged(KnowledgeContextRefused("Knowledge Context request is too large"), "refused_before_send")
             deadline = time.monotonic() + peer.endpoint.deadline_seconds
             if caller_deadline is not None:
                 deadline = min(deadline, caller_deadline)
             if time.monotonic() >= deadline:
-                raise KnowledgeContextRefused("Knowledge Context deadline exceeded")
+                raise _staged(KnowledgeContextRefused("Knowledge Context deadline exceeded"), "refused_before_send")
+            stage = "transport"
             raw = self._post_path(peer, _KNOWLEDGE_CONTEXT_PATH, body, deadline)
+            stage = "verification"
             # Refuse a response if commissioning was revoked or expired in flight.
             self.registry.resolve(self.peer_id, now=self.utc_now())
             return read_signed_response(
@@ -239,9 +252,9 @@ class KnowledgeClient:
             OSError,
             ValueError,
         ) as exc:
-            raise KnowledgeContextRefused(
+            raise _staged(KnowledgeContextRefused(
                 "Knowledge Context peer refused or unavailable"
-            ) from exc
+            ), stage) from exc
         finally:
             self.slots.release()
 

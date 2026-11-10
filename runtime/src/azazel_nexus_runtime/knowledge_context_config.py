@@ -92,7 +92,9 @@ class _GuardedClient:
                 if current != self._identity:
                     self._latched = True
             if self._latched:
-                raise KnowledgeRefused("commissioning bundle changed")
+                refusal = KnowledgeRefused("commissioning bundle changed")
+                refusal.stage = "refused_before_send"
+                raise refusal
         return self._inner.request_context(**kwargs)
 
 

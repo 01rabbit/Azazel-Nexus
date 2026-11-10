@@ -44,6 +44,8 @@ CONTEXT_VERB = Verb(
     payload_contract="bounded frame; broker constructs a P0-public request",
 )
 REGISTRY = VerbRegistry([CONTEXT_VERB])
+# Fixed request sections a client may name on the refusal it raises.
+_CLIENT_STAGES = frozenset({"refused_before_send", "transport", "verification"})
 
 
 class KnowledgeContextBroker:
@@ -87,6 +89,8 @@ class KnowledgeContextBroker:
         deadline_s = deadline - start
         if deadline_s <= 0:
             return {"refusal": "timeout"}
+        reason = None
+        phase = "frame"
         try:
             wire_frame = read_context_frame(request.payload.get("frame"))
             if set(request.payload) != {"frame"} or not self._ready:
@@ -104,12 +108,15 @@ class KnowledgeContextBroker:
                 raise ValueError
             frame = {"question": wire_frame["question"]}
             if not self._slot.acquire(blocking=False):
+                reason = "busy"
                 raise TimeoutError
             try:
                 # Record the sanitized request attempt before any egress. A
                 # failed audit sink must keep the optional network path closed.
+                phase = "audit"
                 self._audit({"event_type": "knowledge.context.requested",
                              "outcome": "attempted"})
+                phase = "client"
                 verified = self._client.request_context(
                     frame=frame,
                     privacy_class=PrivacyClass.P0_PUBLIC,
@@ -118,13 +125,16 @@ class KnowledgeContextBroker:
                     alias_key=self._alias_key,
                     deadline_s=deadline_s,
                 )
+                phase = "verified"
             finally:
                 self._slot.release()
             if self._monotonic() >= deadline:
+                reason = "late"
                 raise TimeoutError
             dump = getattr(verified, "model_dump", None)
             response = dump(mode="json") if callable(dump) else verified
             if type(response) is not dict:
+                reason = "verification"
                 raise ValueError
             encoded = json.dumps(
                 {"ok": True, "result": {"response": response}},
@@ -132,6 +142,7 @@ class KnowledgeContextBroker:
                 separators=(",", ":"),
             ).encode("utf-8")
             if not encoded or len(encoded) > MAX_RESPONSE_BYTES:
+                reason = "verification"
                 raise ValueError
             self._audit({"event_type": "knowledge.context.completed",
                          "outcome": "verified_advisory",
@@ -140,12 +151,19 @@ class KnowledgeContextBroker:
             return {"response": response}
         except TimeoutError:
             outcome = "timeout"
-        except Exception:  # refusal details may include caller data; never export them
+        except Exception as exc:  # refusal details may include caller data; never export them
             outcome = "unavailable"
+            if phase in ("frame", "audit"):
+                reason = "refused_before_send"
+            elif phase == "client":
+                stage = getattr(exc, "stage", None)
+                reason = stage if type(stage) is str and stage in _CLIENT_STAGES else None
+        event = {"event_type": "knowledge.context.completed", "outcome": outcome,
+                 "elapsed_ms": min(10_000, int((self._monotonic() - start) * 1000))}
+        if reason is not None:
+            event["reason_code"] = reason
         try:
-            self._audit({"event_type": "knowledge.context.completed",
-                         "outcome": outcome,
-                         "elapsed_ms": min(10_000, int((self._monotonic() - start) * 1000))})
+            self._audit(event)
         except Exception:
             pass
         return {"refusal": outcome}
