@@ -198,8 +198,7 @@ effective in that environment:** `ProtectSystem`/`ReadWritePaths` (mount
 namespace), `PrivateTmp`, `PrivateDevices`, `Protect*`, `RestrictNamespaces`,
 `RestrictAddressFamilies` and `SystemCallFilter` (seccomp),
 `MemoryDenyWriteExecute`, `IPAddressDeny` (the container network is simply
-off), the bounding set (the runner keeps its five capabilities; the process
-holds none), `ConditionPathExists`, restart policy, and the `Type=notify`
+off), the bounding set (the runner's capability set stays in the bounding set; the process holds none effective), `ConditionPathExists`, restart policy, and the `Type=notify`
 handshake (`systemd_notify` requires a real systemd context and is not
 simulated). Paths are relocated with `AZAZEL_ROOT`, not the real
 `/var/lib/azazel`. Needed for real acceptance: a disposable VM or a container
@@ -218,10 +217,8 @@ call shows the same envelope is accepted for its own request and refused for
 the new one (so the refusal is by binding, not expiry or signature). A new
 request then succeeds, so there is no permanent refusal. A producer restart
 with the same key and port needs no broker restart; a producer restart with a
-different key (Knowledge's fixture default) is refused until the registry key
-is updated by the operator, which stays an open commissioning step. Six
-concurrent callers are served one at a time, every served answer belongs to its
-own request, and the rest receive `timeout` or `unavailable`. The audit ledger
+different key (Knowledge's fixture default) is refused (recovery presumably needs an operator registry key update; not exercised here, and an open commissioning step). Six
+concurrent callers: every served answer belongs to its own request and none is served twice, and the rest receive `timeout` or `unavailable`. The audit ledger
 is the only durable state; an empty ledger starts, a corrupt or torn one stops
 the daemon before it binds. These show the broker keeps no state across a
 restart, not a protection specific to restarts. locald and entryd keep no

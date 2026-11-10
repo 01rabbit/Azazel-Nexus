@@ -45,7 +45,7 @@ from test_knowledge_context_process_interop import (
 from azazel_nexus.knowledge_context_adapter import (
     KnowledgeContextRefused, read_signed_response,
 )
-from azazel_nexus.knowledge_peer import KnowledgePeer, KnowledgeRegistry
+from azazel_nexus.knowledge_peer import KnowledgePeer, KnowledgeRefused, KnowledgeRegistry
 from azazel_nexus.provider_registry import ProviderRecord
 from azazel_nexus.sanitizer import PrivacyClass
 from azazel_nexus.spki import spki_pin
@@ -406,7 +406,7 @@ def test_a1_a5_allowed_peer_denied_peers_and_socket_attributes(stack: Stack):
         assert refusals[0]["uid"] == account.pw_uid          # kernel-derived, not claimed
         assert refusals[0]["reason"] == "principal_denied"
         assert refusals[0]["verb"] == "knowledge.context"
-        assert "operator" in refusals[0]["classes"] or refusals[0]["classes"] == []
+        assert refusals[0]["classes"] == (["operator"] if account is stack.operator else [])
         assert not [e for e in events if e.get("event_type") == "knowledge.context.requested"]
         assert len(stack.exchanges()) == marks[1]            # handler and egress not reached
 
@@ -457,8 +457,7 @@ def test_a4_peer_information_missing_is_fail_closed(stack: Stack):
     server_side, _ = listener.accept()
     # Real kernel answer for a non-AF_UNIX peer: no usable credentials.
     pid, uid, gid = peer_credentials(server_side)
-    assert pid <= 0 or uid in (0xFFFFFFFF, -1) or gid in (0xFFFFFFFF, -1) or (pid, uid) == (0, 0), (
-        pid, uid, gid)
+    assert (pid, uid, gid) == (0, -1, -1), (pid, uid, gid)  # observed kernel answer
     reached = []
     events: list[dict] = []
     engine = SocketServer(
@@ -674,8 +673,7 @@ def test_c2_producer_restart_same_key_and_changed_key(stack: Stack):
         _end_replay(stack)
     # (b) producer restarts with a different key (the Knowledge fixture's default
     # behaviour): nothing is adopted, and recovery needs the registry key update
-    # that is an operator commissioning step (broker restarted with the old
-    # registry here, so the old key stays pinned).
+    # that is an operator commissioning step (the broker was not restarted and keeps the old key pinned).
     stack.stop_producer()
     stack.start_producer(secrets.token_hex(32))
     marks = len(stack.exchanges())
@@ -845,7 +843,7 @@ def test_d1_d2_nexus_signature_window_boundaries_and_unknown_clock(stack: Stack)
                                  now=_iso(low), max_ttl_seconds=shorter)
     # D2: unknown / unusable clock values are refused, never treated as "now ok".
     for bad in ("", "garbage", "2026-11-10T00:00:00", "0000-00-00T00:00:00Z", None, 12345):
-        with pytest.raises(Exception):
+        with pytest.raises((KnowledgeContextRefused, ValueError, TypeError, AttributeError)):
             read_signed_response(envelope, request=request, registry=registry, peer_id=peer_id,
                                  now=bad, max_ttl_seconds=MAX_TTL)
     # Observation: no wall-clock floor in this path. After the window has passed,
@@ -859,7 +857,7 @@ def test_d1_d2_nexus_signature_window_boundaries_and_unknown_clock(stack: Stack)
     # issued_at it is refused; inside its window it is accepted.
     narrow = KnowledgeRegistry(registry.commissioning_digest, registry.peers,
                                _iso(low - timedelta(seconds=1)), _iso(high + timedelta(seconds=5)), 1)
-    with pytest.raises(Exception):
+    with pytest.raises((KnowledgeContextRefused, ValueError, KnowledgeRefused)):
         narrow.resolve(peer_id, now=_iso(low - timedelta(seconds=2)))
     assert narrow.resolve(peer_id, now=_iso(low)).endpoint.provider_id == peer_id
 

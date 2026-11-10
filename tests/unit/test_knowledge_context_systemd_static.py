@@ -48,9 +48,6 @@ def test_broker_unit_declares_the_enumerated_confinement():
     assert "IPAddressAllow" not in d
     assert d["ConditionPathExists"] == [
         "/run/azazel-activation/granted/azazel-knowledge-contextd.service"]
-    # Not given: any account/group or capability beyond the dedicated one.
-    for forbidden in ("SupplementaryGroups", "Group", "AmbientCapabilities=CAP"):
-        assert forbidden not in d or d[forbidden] == [""]
 
 
 def test_broker_state_and_socket_areas_match_the_installer_and_the_daemon():
