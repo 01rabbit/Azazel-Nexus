@@ -677,13 +677,22 @@
     var t = state.labels && state.labels.handoff; return t && t[key] ? t[key] : key;
   }
 
-  /* Why Knowledge full node has no answer; "not queried" is never shown as normal. */
-  function fullNodeStatus(full) {
-    var code = full ? full.full_node_context_status : "not_queried";
-    var table = state.labels && state.labels.fullnode ? state.labels.fullnode : {};
-    var node = el("p", "small");
-    var ja = Object.prototype.hasOwnProperty.call(table, code) ? table[code] : "（未登録：" + text(code) + "）";
-    add(node, el("span", null, "Knowledge フルノード：" + (full ? "" : "この記録に照会結果なし。") + ja + " "), el("span", "en", text(code)));
+  /* Why Knowledge full node / dependency has no answer; "not queried" is never shown as normal. */
+  function fullNodeStatus(fast) {
+    var node = el("div", "small");
+    if (!fast) { node.appendChild(el("p", null, hl("fast_missing"))); return node; }
+    var full = fast.full_node_context || {};
+    var code = fast.full_node_context_status !== undefined ? fast.full_node_context_status : full.full_node_context_status;
+    var dep = fast.knowledge_dependency;
+    function line(head, group, value) {
+      var table = state.labels && state.labels[group] ? state.labels[group] : {};
+      var p = el("p", null);
+      var ja = value === undefined || value === null ? "不明（記録なし。正常という意味ではありません）" :
+        Object.prototype.hasOwnProperty.call(table, value) ? table[value] : "（未登録：" + text(value) + "）";
+      add(p, el("span", null, head + "：" + ja + " "), el("span", "en", text(value)));
+      return p;
+    }
+    add(node, line("フルノード照会", "fullnode", code), line("Knowledge 依存", "kdep", dep));
     return node;
   }
 
@@ -981,7 +990,8 @@
     add(reported, el("p", null, "報告者の判断：" + hl("reported_none")), el("p", "small", "運用者の報告を入れる入口はこの画面にはありません。"));
     add(refs, el("p", "small", "表示用テキスト。指示として扱わない。出典種別・鮮度・世代・取得時刻・期限は各引用に示します。"));
     var fastFull = (ex.fast_assistance || {}).full_node_context;
-    add(refs, fullNodeStatus(fastFull));
+    var fastAll = ex.fast_assistance;
+    add(refs, fullNodeStatus(fastAll));
     var timeline = block("時系列（観測 → 受信 → 評価 → 取得 → 期限）");
     add(timeline, kv([["観測時刻", when("時刻", row.last_seen, "clock_unknown")],
       ["受信時刻", when("時刻", row.received_at, "clock_unknown")],

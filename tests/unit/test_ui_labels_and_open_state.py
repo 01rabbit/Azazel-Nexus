@@ -129,3 +129,13 @@ def test_handoff_save_uses_server_strings_and_checks_digest():
     assert "JSON.stringify" not in card and 'f["handoff.json"]' in card
     assert "crypto.subtle.digest" in card and "照合" in card and "保存不可（契約不一致）" in _t("labels.json")
     assert "r.status === 429" in js
+
+
+def test_knowledge_dependency_and_fullnode_vocabulary_is_labelled():
+    import json
+    labels = json.loads(_t("labels.json"))
+    assert {"not_queried", "received", "unavailable", "unknown"} <= set(labels["fullnode"])
+    assert {"available", "partial", "absent", "not_queried", "timeout", "expired", "rejected",
+            "unavailable", "unknown"} <= set(labels["kdep"])
+    assert "fast_assistance なし" in labels["handoff"]["fast_missing"]
+    assert "fullNodeStatus(fastAll)" in _t("app.js")
