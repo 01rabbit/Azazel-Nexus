@@ -466,9 +466,25 @@ def test_g5_expired_response_is_unavailable(official, mode):
     official.start_daemon()
     official.start_chain()
     _assert_advisory_only(_normal_entry_advisory(official.service_root))
+    before = official.peer.counters()["requests"]
+    sent_before = official.peer.answers_sent
+    completed_before = len(official.events("knowledge.context.completed"))
     official.peer.mode = mode
     _degraded(_normal_entry_advisory(official.service_root))
+    # the expired answer was really received: the peer read the request and wrote
+    # a complete signed answer (no peer-thread failure, no connection drop)
+    assert official.peer.counters()["requests"] == before + 1
+    assert official.peer.answers_sent == sent_before + 1
     assert _refusal(official.as_service()) == "unavailable"
+    assert official.peer.counters()["requests"] == before + 2
+    assert official.peer.answers_sent == sent_before + 2
+    # The product ledger has one refusal vocabulary for every failure ("unavailable",
+    # knowledge_contextd.py:148); it cannot tell a semantic expiry from a bad
+    # signature or a dropped connection. The most specific fixed result available is
+    # an "unavailable" completion carrying no response_bytes (never verified_advisory).
+    done = official.events("knowledge.context.completed")[completed_before:]
+    assert [e["outcome"] for e in done] == ["unavailable", "unavailable"], done
+    assert all("response_bytes" not in e for e in done), done
     official.peer.mode = "valid"
     _assert_advisory_only(_normal_entry_advisory(official.service_root))
     official.stop_daemon()

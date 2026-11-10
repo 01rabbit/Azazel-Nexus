@@ -9,6 +9,8 @@ shipped contextd started from the commissioning bundle, plus a synthetic peer.
 
 Not real here: systemd, admission (disabled in product: LOCAL_MODEL_ADMISSION_ENABLED
 is False, so no model/embedding is used), AZAZEL_ROOT relocation, non-root-/ paths.
+The shipped locald (packaging/systemd/azazel-mio-locald.service:21) also carries the
+supplementary groups azknowledge-read and azmission-read; this test does not grant them.
 """
 from __future__ import annotations
 

@@ -141,12 +141,13 @@ def test_secret_group_read_limited_to_service_group(root):
     d = bundle_dir(root)
     assert cfg.load_commissioning(now=NOW).status == "commissioned"  # own egid
     other = next((g for g in os.getgroups() if g != os.getegid()), None)
-    if other is not None:
-        os.chown(d / "client.key", -1, other)
-        assert cfg.load_commissioning(now=NOW).reason_code == "perm_unsafe"
-        os.chown(d / "client.key", -1, os.getegid())
-        os.chown(d / "alias.key", -1, other)
-        assert cfg.load_commissioning(now=NOW).reason_code == "perm_unsafe"
+    if other is None:
+        pytest.skip("no supplementary group available to act as an unrelated group")
+    os.chown(d / "client.key", -1, other)
+    assert cfg.load_commissioning(now=NOW).reason_code == "perm_unsafe"
+    os.chown(d / "client.key", -1, os.getegid())
+    os.chown(d / "alias.key", -1, other)
+    assert cfg.load_commissioning(now=NOW).reason_code == "perm_unsafe"
 
 
 def test_secret_group_check_uses_effective_gid(root, monkeypatch):

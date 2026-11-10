@@ -48,7 +48,8 @@ its ancestors are inspected; it can only relocate where a bundle is read from,
 and a complete, root-owned bundle is still required, so it does not enable
 egress. Secret files (`client.key`, `alias.key`) are `root:<service group>`
 0640: group read is accepted only for the daemon's own effective group, and
-any other group with read permission is refused as `perm_unsafe`.
+a secret owned by any other group is refused (`perm_unsafe`, or
+`path_unsafe` when the daemon cannot open it).
 The directory is flat and holds exactly: `manifest.json` (schema, `enabled`
 must be JSON `true`, peer_id, client_identity, commissioning_digest,
 max_ttl_seconds, mission, sanitizer_policy; no defaults), `registry-keys.json`,

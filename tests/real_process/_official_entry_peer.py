@@ -52,6 +52,7 @@ class SyntheticPeer:
         self.handshakes = 0        # completed mTLS handshakes
         self.requests = 0          # HTTP requests fully read
         self.sent_after_delay = False
+        self.answers_sent = 0      # signed answers fully written to the client
         self.request_bodies: list[bytes] = []
         self.lock = threading.Lock()
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -121,6 +122,8 @@ class SyntheticPeer:
             answer = self._answer(body)
             try:
                 tls.sendall(_http("200 OK", answer))
+                with self.lock:
+                    self.answers_sent += 1
                 if self.mode == "delay":
                     self.sent_after_delay = True
             except OSError:
@@ -155,12 +158,21 @@ class SyntheticPeer:
             "unknowns": ["PRODUCER-UNKNOWN-PROSE"],
             "limitations": ["PRODUCER-LIMITATION-PROSE-MUST-STAY-WITHHELD"],
             "generated_at": ts(),
-            "expires_at": ts(-30 if mode == "expired-semantic" else 20),
+            "expires_at": ts(20),
             "authority": "advisory_only",
         }
         if mode == "expired-semantic":
-            response["generated_at"] = ts(-120)
-            response["snapshot"]["as_of"] = ts(-120)
+            # Valid for the schema and the request binding (generated_at is not
+            # earlier than requested_at, as_of <= generated_at < expires_at) but
+            # the semantic validity window is 1 ms wide and has closed by the time
+            # the signed answer is read. The envelope itself stays valid.
+            requested = request.requested_at.isoformat().replace("+00:00", "Z")
+            window_end = (request.requested_at + timedelta(milliseconds=1)
+                          ).isoformat().replace("+00:00", "Z")
+            response["generated_at"] = requested
+            response["snapshot"]["as_of"] = requested
+            response["expires_at"] = window_end
+            time.sleep(0.05)
         typed = contract.KnowledgeContextResponseV1.model_validate(response)
         envelope = {
             "schema": ENVELOPE_SCHEMA,
