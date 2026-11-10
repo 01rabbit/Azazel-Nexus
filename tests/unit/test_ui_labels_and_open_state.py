@@ -106,3 +106,18 @@ def test_poll_behaviour_against_a_stub_dom(tmp_path, mode):
     assert "harness_error" not in result, result
     failed = [k for k, v in result.items() if k != "conn_debug" and v is not True]
     assert not failed and len(result) >= 1, result
+
+
+def test_handoff_card_uses_epoch_seq_and_labels():
+    import json
+    js, labels = _t("app.js"), json.loads(_t("labels.json"))
+    assert "state.epoch++" in js[js.index("function discardView"):js.index("function showRefused")]
+    fetch = js[js.index("function fetchHandoff"):js.index("function handoffCard")]
+    assert "epoch === state.epoch && seq === state.hseq" in fetch and "state.gen" not in fetch
+    assert "/api/handoff/" in fetch and "X-CSRF" not in fetch
+    for key in ("fetch", "busy", "not_found", "failed", "save_json", "save_md", "unexecuted", "reported_none", "time_note"):
+        assert labels["handoff"][key], key
+    assert "取得できませんでした" in labels["handoff"]["failed"]
+    assert set(labels["basis_titles"]) == {"observed", "reported", "mio_inference", "knowledge_ref",
+                                           "edge_decision", "execution_result"}
+    assert "not_queried" in labels["fullnode"]

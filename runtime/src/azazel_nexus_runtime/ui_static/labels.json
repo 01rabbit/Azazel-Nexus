@@ -828,5 +828,38 @@
       "not-found": "unit ファイルが見つからない",
       "masked": "masked（起動を禁止）"
     }
+  },
+  "handoff": {
+    "title": "引継ぎ",
+    "fetch": "引継ぎを取得",
+    "busy": "取得中…（引継ぎを生成しています）",
+    "idle": "未取得（ボタンを押すと、この端末の保存記録から引継ぎ資料を生成して取得します。何も実行せず、保存もしません）",
+    "ok": "取得済み",
+    "not_found": "引継ぎ記録が見つかりません",
+    "failed": "取得できませんでした",
+    "network": "取得できませんでした",
+    "save_json": "JSON を保存",
+    "save_md": "Markdown を保存",
+    "unexecuted": "未実行（OBSERVE、executable=false）：この資料は記録であり、実行指示ではありません",
+    "resave_note": "保存する JSON は画面側で同じ規則（キー昇順・字下げ 2）に整形し直したものです。manifest の sha256 との一致は、保存後に利用者側で確認してください",
+    "reported_none": "記録なし（入口未実装）",
+    "time_note": "時間的に近いだけで因果ではありません",
+    "clock_unknown": "不明（clock_unknown）"
+  },
+  "fullnode": {
+    "not_queried": "未照会（Knowledge フルノードに問い合わせていません。正常という意味ではありません）",
+    "unavailable": "利用不能（Knowledge フルノードから回答を得られませんでした）",
+    "queried": "照会済み",
+    "expired": "期限切れ（この助言は古い）",
+    "timeout": "時間切れ（回答を得られませんでした）",
+    "refused": "拒否（回答は使えません）"
+  },
+  "basis_titles": {
+    "observed": "◎ 観測事実",
+    "reported": "✎ 報告者の判断（未検証）",
+    "mio_inference": "◇ M.I.O. の判定（推論・助言のみ）",
+    "knowledge_ref": "▣ Knowledge 参照（出典つき・未検証・advisory_only）",
+    "edge_decision": "⚑ Edge の判断（would・未実行）",
+    "execution_result": "✔ 実行結果"
   }
 }

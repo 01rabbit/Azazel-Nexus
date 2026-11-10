@@ -691,9 +691,12 @@ def test_the_page_script_writes_text_only():
                       r"location\s*="):
         assert not re.search(forbidden, script), forbidden
     attributes = set(re.findall(r"setAttribute\(\s*\"([^\"]+)\"", script))
-    assert attributes == {"aria-hidden", "aria-selected", "aria-pressed"}
-    assert "setAttribute(" not in re.sub(r"setAttribute\(\s*\"(aria-hidden|aria-selected|aria-pressed)\"", "",
-                                         script)
+    # href/download only on the handoff save link, whose href is a local blob: URL.
+    allowed = {"aria-hidden", "aria-selected", "aria-pressed", "aria-busy", "role", "href", "download"}
+    assert attributes == allowed
+    assert "setAttribute(" not in re.sub(r"setAttribute\(\s*\"(" + "|".join(sorted(allowed)) + r")\"", "", script)
+    assert re.findall(r"setAttribute\(\"href\", ([^)]*)\)", script) == ["url"]
+    assert "var url = URL.createObjectURL(blob);" in script
     assert "textContent" in script
     # Every request goes to this origin by an absolute path, never a full URL.
     assert not re.search(r"https?://(?!127\.0\.0\.1\b)", script)
