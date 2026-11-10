@@ -206,13 +206,18 @@ scans of the CLI.
   `markdown` and `manifest` are conveniences for display. A receipt from an
   earlier transition is not carried over; the package is rebuilt from the
   current records on each request.
-* **Schema.** `generator.principal_class` may now be `ui`, and for `ui`
-  `generator.command` is `null` and `generator.entry` is `ui_get_handoff`
-  (a fixed word, so that it is not mistaken for a runnable command). The
-  schema version stays `handoff-package/1`: no field was removed or
-  retyped, `command` is `null` only for this principal, and CLI output is
-  byte-for-byte unchanged (tested). A consumer that switches on
-  `principal_class` should accept `ui`.
+* **Schema.** `generator.principal_class` may now be `ui`. For `ui` only,
+  `generator.command` is `null` (a string for `root` and `operator`) and a
+  new field `generator.entry` is the fixed word `ui_get_handoff`, so that the
+  record does not read as a runnable command. This is a type change of
+  `command` for that principal and an added field, not an unchanged shape.
+  The schema version stays `handoff-package/1` because the CLI's package is
+  not affected: the output of `root` and `operator` is byte-for-byte
+  unchanged (tested against fixed digests). A consumer must accept
+  `principal_class` `ui`, a `null` `command` and the extra `entry` field. The
+  web response returns the exact UTF-8 text of the three files in `files`;
+  a client should check each against the manifest's SHA-256 and size before
+  or after saving it, and save the string as UTF-8 without altering it.
 * **Errors.** `401 login_required`, `404 not_found`, `400
   query_or_fragment_refused`, `421 host_refused`, `429 handoff_busy`,
   `500 handoff_refused`, `500 handoff_too_large`; every body is
