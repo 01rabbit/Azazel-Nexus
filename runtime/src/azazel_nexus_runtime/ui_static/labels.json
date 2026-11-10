@@ -881,14 +881,10 @@
     ],
     "closed": [
       "○",
-      "解決済み"
-    ],
-    "resolved": [
-      "○",
-      "解決済み"
+      "終了（Edge 観測グループ終了）"
     ]
   },
-  "incident_state_unknown": "未定義の語",
+  "incident_state_unknown": "不明",
   "denied_words": [
     "permission_denied",
     "not_read"

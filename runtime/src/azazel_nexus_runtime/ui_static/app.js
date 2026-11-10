@@ -63,7 +63,7 @@
     var node = el("span", "badge tone-" + (known ? "info" : "unknown") + " incident-state");
     var m = el("span", "mark", known ? table[value][0] : "？");
     m.setAttribute("aria-hidden", "true");
-    var ja = known ? table[value][1] : ((state.labels && state.labels.incident_state_unknown) || "未定義の語");
+    var ja = known ? table[value][1] : ((state.labels && state.labels.incident_state_unknown) || "不明");
     add(node, m, el("span", "ja", ja), el("span", "en", value === null || value === undefined ? "null" : String(value)));
     return node;
   }
@@ -84,7 +84,7 @@
     var m = el("span", "mark", mark);
     m.setAttribute("aria-hidden", "true");
     var toneWord = denied ? "権限なし" : state.labels && state.labels.tones[tone] ? state.labels.tones[tone].ja : "不明";
-    add(node, m, el("span", "sr-only", toneWord + "："), el("span", "ja", w.ja), el("span", "en", w.en));
+    add(node, m, denied && w.ja === toneWord ? null : el("span", "sr-only", toneWord + "："), el("span", "ja", w.ja), el("span", "en", w.en));
     return node;
   }
 

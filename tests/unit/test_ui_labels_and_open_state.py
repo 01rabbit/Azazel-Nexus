@@ -161,7 +161,8 @@ def test_handoff_card_behaviour_in_a_stub_dom(tmp_path):
 def test_incident_state_and_denied_labels_are_defined_and_apart_from_generic_words():
     import json
     labels = json.loads(_t("labels.json"))
-    assert labels["incident_states"]["open"] == ["◉", "未解決"] and labels["incident_states"]["closed"][0] == "○"
+    assert labels["incident_states"] == {"open": ["◉", "未解決"], "closed": ["○", "終了（Edge 観測グループ終了）"]}
+    assert labels["incident_state_unknown"] == "不明" and labels["words"]["unknown"][0] != "未定義の語"
     assert set(labels["denied_words"]) <= set(labels["words"])
     assert labels["words"]["open"][0] == "観測中"  # generic words keep their meaning
     assert len({t["mark"] for t in labels["tones"].values()}) == 5
