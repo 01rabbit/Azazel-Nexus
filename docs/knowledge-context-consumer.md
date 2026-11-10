@@ -249,7 +249,7 @@ the contract and no grace period was added; they are commissioning decisions.
 | A peer authentication | isolated acceptance passed (real kernel, container) |
 | B systemd | static agreement passed; **real systemd not run**; approximation only |
 | C restart replay | isolated acceptance passed |
-| D clocks | isolated acceptance passed for the single-host model; cross-host skew not tested |
+| D clocks | isolated acceptance passed for the single-host model; cross-host skew not tested; re-validity after a clock rollback is an open observation (see Open items) |
 | real credentials, trust anchor, endpoint, audit retention, activation grant | not done |
 
 ## Open items before any real connection
@@ -270,7 +270,13 @@ satisfied by this software:
    this package supplies none.
 5. The per-request audit ledger gets an explicit retention and disk-quota
    policy.
-6. The activation grant for `azazel-knowledge-contextd.service` is issued by
+6. Unresolved observation: the Context path has no wall-clock floor, so a
+   clock moved back makes the same (request, envelope) valid again for a
+   caller holding both (see *Clocks*). This is distinct from the restart
+   result above, which shows only that a different request is refused by
+   binding; reuse of the same request is not prevented. Whether a floor,
+   persisted state or other measure is wanted is undecided.
+7. The activation grant for `azazel-knowledge-contextd.service` is issued by
    the existing activation path, not by editing the unit.
 
 Stopping and recovery use mechanisms that already exist: the unit is preset
