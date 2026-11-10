@@ -122,5 +122,23 @@ const res = {};
   assert.match(panel().textContent, /取得できませんでした/); assert.match(panel().textContent, /別時点の結果（取得時刻/);
   assert.match(panel().textContent, new RegExp(ID1));
   res.timeout_keeps_previous_result_labelled = true;
+  // 7. incident state (3b) and no-permission (3a) symbols, list and detail, legacy and SOC layouts.
+  const states = () => { const m = JSON.parse(JSON.stringify(MODEL)); m.sections = m.sections || {};
+    const rows = [["inc-00000000000000a1", "open", "permission_denied"], ["inc-00000000000000b2", "closed", "available"],
+      ["inc-00000000000000c3", "weird_state", "available"], ["inc-00000000000000d4", "resolved", "available"]]
+      .map(([id, st, ex]) => ({ incident_id: id, state: st, most_severe: 1, last_seen: 1, explanation: { state: ex } }));
+    m.sections.edge_loop = { intake: { status: "ok" }, recent: { status: "ok", snapshot: { incidents: rows } } }; return m; };
+  view = () => ok(states()); await advance(5000);
+  const card = id => findAll(panel(), n => n.tag === "article" && n.textContent.includes("インシデント " + id))[0].textContent;
+  assert.match(card("inc-00000000000000a1"), /◉未解決open/); assert.match(card("inc-00000000000000b2"), /○解決済みclosed/);
+  assert.match(card("inc-00000000000000d4"), /○解決済みresolved/); assert.match(card("inc-00000000000000c3"), /？未定義の語weird_state/);
+  assert.ok(!/観測中/.test(card("inc-00000000000000a1")), "incident state no longer uses the generic open word");
+  const toggle = findAll(panel(), n => n.tag === "button" && n.textContent.includes("SOC 一覧")); toggle[0].ls.click(); await flush();
+  const tableRows = findAll(panel(), n => n.tag === "tr").map(n => n.textContent);
+  assert.ok(tableRows.some(t => /◉未解決open/.test(t) && /⊘/.test(t) && /権限なし/.test(t) && /permission_denied/.test(t)), "list: open row with no-permission symbol");
+  assert.ok(tableRows.some(t => /○解決済みclosed/.test(t) && !/⊘/.test(t)));
+  assert.ok(tableRows.some(t => /？未定義の語weird_state/.test(t)));
+  assert.ok(tableRows.every(t => !/[◉○？⊘]\s*(1|重大)/.test(t)), "severity carries no symbol");
+  res.incident_state_and_denied_symbols = true;
   console.log(JSON.stringify(res));
 })().catch(e => { console.log(JSON.stringify({ harness_error: String(e && e.stack || e) })); process.exit(1); });

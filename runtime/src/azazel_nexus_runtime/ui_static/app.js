@@ -56,6 +56,18 @@
     return { ja: entry[0], tone: entry[1], en: String(value) };
   }
 
+  /* Incident state (05 section 3b): its own symbols, apart from the data-state badge. Only incident views call this. */
+  function incidentState(value) {
+    var table = state.labels && state.labels.incident_states ? state.labels.incident_states : {};
+    var known = typeof value === "string" && Object.prototype.hasOwnProperty.call(table, value);
+    var node = el("span", "badge tone-" + (known ? "info" : "unknown") + " incident-state");
+    var m = el("span", "mark", known ? table[value][0] : "？");
+    m.setAttribute("aria-hidden", "true");
+    var ja = known ? table[value][1] : ((state.labels && state.labels.incident_state_unknown) || "未定義の語");
+    add(node, m, el("span", "ja", ja), el("span", "en", value === null || value === undefined ? "null" : String(value)));
+    return node;
+  }
+
   function reasonText(code) {
     if (code === null || code === undefined) { return null; }
     var table = state.labels ? state.labels.reasons : {};
@@ -66,10 +78,12 @@
     var w = word(value);
     var tone = toneOverride || w.tone;
     var mark = state.labels && state.labels.tones[tone] ? state.labels.tones[tone].mark : "？";
+    var denied = state.labels && Array.isArray(state.labels.denied_words) && state.labels.denied_words.indexOf(value) !== -1;
+    if (denied) { mark = "⊘"; }
     var node = el("span", "badge tone-" + tone);
     var m = el("span", "mark", mark);
     m.setAttribute("aria-hidden", "true");
-    var toneWord = state.labels && state.labels.tones[tone] ? state.labels.tones[tone].ja : "不明";
+    var toneWord = denied ? "権限なし" : state.labels && state.labels.tones[tone] ? state.labels.tones[tone].ja : "不明";
     add(node, m, el("span", "sr-only", toneWord + "："), el("span", "ja", w.ja), el("span", "en", w.en));
     return node;
   }
@@ -511,7 +525,7 @@
     head.appendChild(hr); var tbody=el("tbody");
     rows.forEach(function (row) {
       var tr=el("tr"), d=row.edge_decision || {}, ex=row.explanation || {};
-      [when("時刻", row.last_seen), text(row.most_severe), badge(row.state), "would " + text(d.action), badge(ex.state)].forEach(function (value) {
+      [when("時刻", row.last_seen), text(row.most_severe), incidentState(row.state), "would " + text(d.action), badge(ex.state)].forEach(function (value) {
         var td=el("td"); if (typeof value === "object") td.appendChild(value); else td.textContent=value; tr.appendChild(td);
       });
       var td=el("td"), button=el("button", null, "根拠を見る"); button.type="button";
@@ -880,7 +894,7 @@
     var node = el("article", "card tone-info");
     node.appendChild(el("h3", null, "インシデント " + text(row.incident_id)));
     var facts = block(bt("observed"));
-    add(facts, kv([["状態", badge(row.state)], ["最初の観測", when("時刻", row.first_seen)],
+    add(facts, kv([["状態", incidentState(row.state)], ["最初の観測", when("時刻", row.first_seen)],
       ["最後の観測", when("時刻", row.last_seen)], ["件数", row.count], ["重大度（最大）", row.most_severe],
       ["手法 ID", row.technique_ids],
       ["証拠の保存", row.evidence_stored === false ? "保存できなかった" : "保存の失敗なし"]]));

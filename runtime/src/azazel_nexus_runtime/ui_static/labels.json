@@ -873,5 +873,24 @@
     "rejected": "拒否",
     "unavailable": "利用不能",
     "unknown": "不明"
-  }
+  },
+  "incident_states": {
+    "open": [
+      "◉",
+      "未解決"
+    ],
+    "closed": [
+      "○",
+      "解決済み"
+    ],
+    "resolved": [
+      "○",
+      "解決済み"
+    ]
+  },
+  "incident_state_unknown": "未定義の語",
+  "denied_words": [
+    "permission_denied",
+    "not_read"
+  ]
 }

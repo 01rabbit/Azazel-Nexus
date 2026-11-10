@@ -155,4 +155,13 @@ def test_handoff_card_behaviour_in_a_stub_dom(tmp_path):
                          capture_output=True, text=True, timeout=60, check=False)
     result = json.loads(out.stdout.strip().splitlines()[-1])
     assert "harness_error" not in result, result
-    assert len(result) == 6 and all(v is True for v in result.values()), result
+    assert len(result) == 7 and all(v is True for v in result.values()), result
+
+
+def test_incident_state_and_denied_labels_are_defined_and_apart_from_generic_words():
+    import json
+    labels = json.loads(_t("labels.json"))
+    assert labels["incident_states"]["open"] == ["◉", "未解決"] and labels["incident_states"]["closed"][0] == "○"
+    assert set(labels["denied_words"]) <= set(labels["words"])
+    assert labels["words"]["open"][0] == "観測中"  # generic words keep their meaning
+    assert len({t["mark"] for t in labels["tones"].values()}) == 5
