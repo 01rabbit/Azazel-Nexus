@@ -143,7 +143,10 @@ DETECTORS = (
     ("email", re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")),
     ("windows_path", re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]|\\\\[^\\\s]+\\|\\[\w$.-]+\\")),
     ("unix_path", re.compile(r"(?:^|(?<=[\s(\[`'\"=:,;]))(?:~|\.{1,2})?/[^\s/]+")),
-    ("host_port", re.compile(r"(?<![\w.-])[A-Za-z][\w.-]*:\d{1,5}(?![\d.])")),
+    # A `sha256:<hex>` digest is not a host and port (its hex can start with digits).
+    ("host_port", re.compile(
+        r"(?<![\w.-])(?!sha(?:1|224|256|384|512):[0-9a-fA-F]{6,128}(?![\w-]|\.\w))"
+        r"[A-Za-z][\w.-]*:\d{1,5}(?![\d.])")),
     ("host_name", re.compile(
         rf"(?<![\w.@/-]){_LABEL}(?:\.{_LABEL})*\.[A-Za-z][A-Za-z0-9-]*[A-Za-z0-9](?![\w-]|\.\w)")),
     ("interface_name", re.compile(
