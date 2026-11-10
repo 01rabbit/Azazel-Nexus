@@ -877,7 +877,7 @@
     var dg = ai.deterministic_guidance || {}, dgv = dg.view && dg.view.summary && Array.isArray(dg.view.summary.required_checks) ? dg.view.summary.required_checks :
       (dg.guidance && Array.isArray(dg.guidance.next_checks) ? dg.guidance.next_checks.filter(function (c) { return c && c.tier === "required"; }) : null);
     var reqChecks = dgv ? dgv.length : null;
-    var aiText = !Object.keys(slow).length ? hl("ai_none") :
+    var aiText = slow.status !== "available" ? hl("ai_none") + (slow.status ? "（status " + text(slow.status) + "）" : "") :
       (unknowns === null ? "不明" : unknowns + " 件") + "／" + (checks === null ? "不明" : checks + " 件");
     var matchKey = handoffMatch(row, pkg);
     var bindingText = hl(matchKey);

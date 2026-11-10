@@ -205,9 +205,12 @@ def _fact_text(f):
     if not m:
         return f["text"]
     a, r = m.group(1).rstrip(","), m.group(2).rstrip(",")
-    # the line carries the EXECUTED action (None when nothing ran), not Edge's would decision (Edge column / handoff §3)
-    ex = "なし" if a in ("None", "none") else a
-    return f"Edge の判断（would）は Edge 欄・§3 を参照／実行した action: {ex}（結果 {r}、実行件数 {m.group(3)}）"
+    # selected_action is mio_deterministic_guidance's mapping of Edge's would sentence (observe / None), never an executed
+    # action; whether anything ran is told by result and executed_count (always not_executed / 0 from the runtime)
+    mapped = "なし" if a in ("None", "none") else a
+    ran = "なし" if r == "not_executed" and m.group(3) == "0" else f"結果を参照（{r}）"
+    return (f"Edge の判断（would）は Edge 欄・§3 を参照／案内入力（would の写像・未実行）: {mapped}／実行: {ran}"
+            f"（結果 {r}、実行件数 {m.group(3)}）")
 
 
 def guidance_view(g):
