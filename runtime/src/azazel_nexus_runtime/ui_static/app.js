@@ -11,8 +11,12 @@
   "use strict";
 
   var POLL_MS = 5000;
+  var VIEW_TIMEOUT_MS = 8000; // shorter than the server's own 10 s cut-off, so a hung server reads as a timeout
+  var UI_MODEL_SCHEMA = "azazel-nexus/ui-model/1";
+  // gen: every login/logout/refusal/poll bumps it, so a response that arrives late never repaints.
   var state = { labels: null, csrf: null, loginToken: null, model: null,
-    lastOk: null, timer: null, announced: "", failing: false, open: {}, socLayout: false, incidentFilter: "all", incidentSort: "severity", selectedIncident: null };
+    lastOk: null, timer: null, announced: "", failing: false, open: {}, gen: 0, fail: null,
+    socLayout: false, incidentFilter: "all", incidentSort: "severity", selectedIncident: null };
 
   var LOGIN_ERRORS = {
     login_refused: "コードが違うか、使用済み・期限切れです。端末で azazel-nexus ui-login をもう一度実行してください。",
@@ -1079,18 +1083,41 @@
 
   // -- connection, login, polling ---------------------------------------------
 
+  // Fixed wording only: neither the response body nor an exception text is ever shown.
+  function failReason(f) {
+    if (f.kind === "refused") { return "このセッションには表示する権限がなく、サーバーが要求を拒否しました（HTTP " + f.status + "）"; }
+    if (f.kind === "timeout") { return "応答が " + (VIEW_TIMEOUT_MS / 1000) + " 秒以内に返りませんでした"; }
+    if (f.kind === "network") { return "UI サーバーに接続できません"; }
+    if (f.kind === "server") { return "サーバー側の一時的な失敗です（HTTP " + f.status + "）"; }
+    if (f.kind === "missing") { return "取得先が見つかりません（HTTP " + f.status + "）。一時的な欠落か削除かは、この画面からは判別できません"; }
+    if (f.kind === "rejected") { return "要求が受け付けられませんでした（HTTP " + f.status + "）"; }
+    if (f.kind === "invalid") { return "応答の形式が不正だったため、表示に使いませんでした"; }
+    return "表示側で応答を処理できませんでした";
+  }
+
   function showConn() {
     var box = $("conn");
     clear(box);
-    if (state.failing) {
-      add(box, el("p", "banner bad", "UI サーバーに接続できません。表示は最終取得時点のものです" +
-        (state.lastOk ? "（" + age(state.lastOk) + "）。" : "。")));
+    if (state.fail) {
+      var f = state.fail;
+      var text = "更新停止：" + failReason(f) + "。";
+      if (f.kind === "refused") {
+        text += "前回の内容は破棄しました。";
+      } else if (state.model && state.lastOk) {
+        text += "下の内容は、この画面が最後に取得できた " + new Date(state.lastOk).toLocaleTimeString("ja-JP") +
+          "（" + age(state.lastOk) + "）の保存された前回表示です。現在の状態を確認できたものではありません。" +
+          "この時刻は画面が取得した時刻で、各項目の観測時刻とは別です。自動で再試行しています。";
+      } else {
+        text += "表示できる前回データはありません。自動で再試行しています。";
+      }
+      add(box, el("p", "banner bad", text));
+      return text;
     } else if (state.lastOk) {
       add(box, el("span", "small", "最終取得：" + new Date(state.lastOk).toLocaleTimeString("ja-JP")));
     }
   }
 
-  function request(method, path, body, token) {
+  function request(method, path, body, token, timeoutMs) {
     var headers = { "Accept": "application/json" };
     var options = { method: method, credentials: "same-origin", cache: "no-store", headers: headers,
       redirect: "error", referrerPolicy: "no-referrer" };
@@ -1099,21 +1126,53 @@
       headers["X-CSRF-Token"] = token || "";
       options.body = JSON.stringify(body || {});
     }
+    var timer = null;
+    if (timeoutMs && typeof AbortController === "function") {
+      var controller = new AbortController();
+      options.signal = controller.signal;
+      timer = setTimeout(function () { controller.abort(); }, timeoutMs);
+    }
     return fetch(path, options).then(function (response) {
-      return response.json().then(function (data) { return { status: response.status, data: data }; },
-        function () { return { status: response.status, data: {} }; });
-    });
+      return response.json().then(function (data) {
+        if (timer) { clearTimeout(timer); }
+        return { status: response.status, data: data };
+      }, function () {
+        if (timer) { clearTimeout(timer); }
+        return { status: response.status, data: {}, invalid: true };
+      });
+    }, function (error) { if (timer) { clearTimeout(timer); } throw error; });
+  }
+
+  function discardView() {
+    state.gen++;
+    state.model = null;
+    state.lastOk = null;
+    state.fail = null;
+    state.failing = false;
+    state.open = {};
+    // Selection, filters and layout belong to the view that was just discarded (logout, 401, 403, 421).
+    state.selectedIncident = null; state.incidentFilter = "all"; state.incidentSort = "severity"; state.socLayout = false;
+    Object.keys(SCREENS).forEach(function (n) { clear($("panel-" + n)); });
+    clear($("conn"));
+    state.announced = "";
+    $("live").textContent = "";
+  }
+
+  function showRefused(status) {
+    stopPolling();
+    discardView();
+    state.fail = { kind: "refused", status: status };
+    $("tabs").hidden = true;
+    $("panels").hidden = true;
+    showConn();
+    state.timer = setTimeout(poll, POLL_MS);
   }
 
   function showLogin(message) {
     stopPolling();
+    state.gen++;
     state.csrf = null;
-    state.model = null;
-    state.open = {};
-    state.selectedIncident = null; state.incidentFilter = "all"; state.incidentSort = "severity"; state.socLayout = false;
-    Object.keys(SCREENS).forEach(function (n) { clear($("panel-" + n)); });
-    state.announced = "";
-    $("live").textContent = "";
+    discardView();
     $("login").hidden = false;
     $("tabs").hidden = true;
     $("panels").hidden = true;
@@ -1122,7 +1181,7 @@
     return request("GET", "/api/session").then(function (r) {
       state.loginToken = r.data.login_token || null;
       if (r.data.authenticated) { state.csrf = r.data.csrf; showApp(); }
-    });
+    }).catch(function () { $("login-msg").textContent = "UI サーバーに接続できません。"; });
   }
 
   function showApp() {
@@ -1136,21 +1195,48 @@
 
   function stopPolling() { if (state.timer) { clearTimeout(state.timer); state.timer = null; } }
 
+  function validModel(d) {
+    return d !== null && typeof d === "object" && !Array.isArray(d) && d.schema === UI_MODEL_SCHEMA &&
+      d.sections !== null && typeof d.sections === "object" && d.pending !== null && typeof d.pending === "object";
+  }
+
+  function fail(gen, kind, status) {
+    if (gen !== state.gen) { return; }
+    state.fail = { kind: kind, status: status };
+    state.failing = true;
+    if (state.model) { render(); }
+    var said = showConn();
+    if (said && said !== state.announced) { state.announced = said; $("live").textContent = said; }
+    state.timer = setTimeout(poll, POLL_MS);
+  }
+
   function poll() {
     stopPolling();
-    request("GET", "/api/view").then(function (r) {
-      if (r.status === 401) { showLogin("セッションが終了しました。もう一度ログインしてください。"); return; }
-      if (r.status !== 200) { throw new Error("status"); }
-      state.model = r.data;
-      state.lastOk = Date.now();
-      state.failing = false;
-      render();
-      showConn();
-      state.timer = setTimeout(poll, POLL_MS);
-    }).catch(function () {
-      state.failing = true;
-      showConn();
-      state.timer = setTimeout(poll, POLL_MS);
+    var gen = ++state.gen;
+    request("GET", "/api/view", null, null, VIEW_TIMEOUT_MS).then(function (r) {
+      if (gen !== state.gen) { return; }
+      try {
+        if (r.status === 401) { showLogin("セッションが終了しました。もう一度ログインしてください。"); return; }
+        if (r.status === 403 || r.status === 421) { showRefused(r.status); return; }
+        if (r.status === 200) {
+          if (r.invalid || !validModel(r.data)) { fail(gen, "invalid", 200); return; }
+          state.model = r.data;
+          state.lastOk = Date.now();
+          state.failing = false;
+          state.fail = null;
+          $("tabs").hidden = false;
+          $("panels").hidden = false;
+          render();
+          showConn();
+          state.timer = setTimeout(poll, POLL_MS);
+          return;
+        }
+        if (r.status === 404 || r.status === 410) { fail(gen, "missing", r.status); return; }
+        if (r.status === 408 || r.status === 429 || r.status >= 500) { fail(gen, "server", r.status); return; }
+        fail(gen, "rejected", r.status);
+      } catch (e) { fail(gen, "internal"); }
+    }, function (error) {
+      fail(gen, error && error.name === "AbortError" ? "timeout" : "network");
     });
   }
 
@@ -1194,20 +1280,29 @@
     });
   }
 
-  function start() {
-    wire();
+  function begin() {
     request("GET", "/static/labels.json").then(function (r) {
       state.labels = r.data;
       return request("GET", "/api/session");
     }).then(function (r) {
+      state.failing = false;
+      state.fail = null;
+      showConn();
       if (r.data.authenticated) { state.csrf = r.data.csrf; showApp(); } else {
         state.loginToken = r.data.login_token || null;
         $("login").hidden = false;
       }
     }).catch(function () {
       state.failing = true;
+      state.fail = { kind: "network" };
       showConn();
+      setTimeout(begin, POLL_MS);
     });
+  }
+
+  function start() {
+    wire();
+    begin();
   }
 
   if (typeof module !== "undefined" && module.exports) module.exports = {dashboardRows: dashboardRows};
