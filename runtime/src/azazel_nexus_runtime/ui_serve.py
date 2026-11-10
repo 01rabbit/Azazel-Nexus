@@ -56,6 +56,7 @@ import hmac
 import io
 import json
 import os
+import re
 import secrets
 import socket
 import socketserver
@@ -558,6 +559,37 @@ class UiApp:
         self._view_lock = threading.Lock()
         self._view_cache: Optional[tuple[float, bytes]] = None
 
+    def handoff_document(self, incident_id: str) -> bytes:
+        """One incident's handoff package for an authenticated viewer, or `Refused`.
+
+        Read-only: nothing is written. Built as the `ui` principal, which
+        reads only the UI's snapshot copies; the root-only ledgers are
+        reported as not readable. The same leak scans as the CLI run first.
+        """
+        from azazel_nexus import handoff
+
+        if not HANDOFF_ID.fullmatch(incident_id):
+            raise Refused(404, "not_found")
+        now = self.clock()
+        try:
+            package = handoff.build_package(incident_id, now=now, principal="ui")
+            files = handoff.encode_files(package)
+        except handoff.HandoffRefused as refused:
+            if refused.code == "incident_not_found":
+                raise Refused(404, "not_found") from None
+            raise Refused(500, "handoff_refused") from None
+        except Exception:  # noqa: BLE001 - fixed code only
+            raise Refused(500, "handoff_refused") from None
+        document = browser_json({
+            "incident_id": incident_id, "generated_at": package["generated_at"],
+            "principal_class": "ui", "package": package,
+            "markdown": files[handoff.MARKDOWN_NAME].decode("utf-8"),
+            "manifest": json.loads(files[handoff.MANIFEST_NAME]),
+            "manifest_sha256": hashlib.sha256(files[handoff.MANIFEST_NAME]).hexdigest()})
+        if len(document) > HANDOFF_MAX_BYTES:
+            raise Refused(500, "handoff_too_large")
+        return document
+
     def view_document(self) -> bytes:
         now = self.clock()
         with self._view_lock:
@@ -576,6 +608,10 @@ class UiApp:
                     read_reason="internal_error"))
             self._view_cache = (now, document)
             return document
+
+
+HANDOFF_ID = re.compile(r"inc-[0-9a-f]{16}", re.ASCII)
+HANDOFF_MAX_BYTES = 2 * 1024 * 1024
 
 
 # -- HTTP --------------------------------------------------------------------------
@@ -718,6 +754,11 @@ class UiHandler(BaseHTTPRequestHandler):
                 if self.app.sessions.get(self._cookie(SESSION_COOKIE), now) is None:
                     raise Refused(401, "login_required")
                 self._send(200, self.app.view_document(), "application/json; charset=utf-8")
+            elif route.startswith("/api/handoff/"):
+                if self.app.sessions.get(self._cookie(SESSION_COOKIE), now) is None:
+                    raise Refused(401, "login_required")
+                self._send(200, self.app.handoff_document(route[len("/api/handoff/"):]),
+                           "application/json; charset=utf-8")
             else:
                 raise Refused(404, "not_found")
         except Refused as refused:

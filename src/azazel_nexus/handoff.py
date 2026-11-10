@@ -458,8 +458,10 @@ def principal_class() -> Optional[str]:
 class Sources:
     """The fixed paths, under `AZAZEL_ROOT` when a test or the harness sets it."""
 
-    def __init__(self, root=None):
+    def __init__(self, root=None, reader: str = "operator"):
         from . import runtime_paths as paths
+
+        self.reader = reader
 
         self.root = Path(os.environ.get("AZAZEL_ROOT", "/")) if root is None else Path(root)
         under = lambda p: self.root / p.lstrip("/")  # noqa: E731
@@ -468,12 +470,12 @@ class Sources:
         self.audit = under("/var/lib/azazel/state/audit")
         self.knowledge_floor = under("/var/lib/azazel/state/knowledge/clock-floor.json")
         self.timesync = under("/run/systemd/timesync/synchronized")
-        self.recent = paths.incident_recent_path(self.root)
-        self.explainer_status = paths.incident_explain_status_path(self.root)
-        self.intake_status = paths.edge_intake_status_path(self.root)
-        self.knowledge_status = paths.knowledge_status_path(self.root)
-        self.mio_status = paths.mio_status_path(self.root)
-        self.noc_status = paths.noc_status_path(self.root)
+        self.recent = paths.incident_recent_path(self.root, reader=reader)
+        self.explainer_status = paths.incident_explain_status_path(self.root, reader=reader)
+        self.intake_status = paths.edge_intake_status_path(self.root, reader=reader)
+        self.knowledge_status = paths.knowledge_status_path(self.root, reader=reader)
+        self.mio_status = paths.mio_status_path(self.root, reader=reader)
+        self.noc_status = paths.noc_status_path(self.root, reader=reader)
 
 
 def _chain_lines(path: Path, budget: list):
@@ -657,9 +659,10 @@ def build_package(incident_id: str, *, now: float, principal: str, root=None,
 
     if not _INCIDENT_ID.fullmatch(incident_id):
         raise HandoffRefused("incident_id_refused")
-    if provenance not in ("node", "fixture") or principal not in ("root", "operator"):
+    if provenance not in ("node", "fixture") or principal not in ("root", "operator", "ui"):
         raise HandoffRefused("generator_refused")
-    sources = Sources(root)
+    ui = principal == "ui"
+    sources = Sources(root, reader="ui" if ui else "operator")
     hide = Suppressor()
     read_log = []
     future = []
@@ -691,7 +694,7 @@ def build_package(incident_id: str, *, now: float, principal: str, root=None,
         value, code = _snapshot(path, reader, limit)
         fresh = _freshness(value, now, stale or NOC_STALE_S) if value is not None else None
         snaps[name] = (value, fresh)
-        note(name, code, "operator", **({"freshness": fresh["freshness"]} if fresh else {}))
+        note(name, code, "ui" if ui else "operator", **({"freshness": fresh["freshness"]} if fresh else {}))
         if value is not None:
             seen(value.get("written_at"), name)
     recent, recent_fresh = snaps["recent_incidents_snapshot"]
@@ -702,8 +705,11 @@ def build_package(incident_id: str, *, now: float, principal: str, root=None,
         row = next((r for r in recent["incidents"] if r["incident_id"] == incident_id), None)
 
     # Incident ledger (root), anchored at genesis or the retention boundary.
-    chain = _read_incident_chain(sources.incidents,
-                                 lambda event: event.get("incident_id") == incident_id)
+    if ui:  # the ledgers are root's; the UI account never opens them
+        chain = Chain("not_readable_by_principal", "not_readable_by_principal", [], [])
+    else:
+        chain = _read_incident_chain(sources.incidents,
+                                     lambda event: event.get("incident_id") == incident_id)
     ledger_status, ledger_code = chain.status, chain.reason_code
     transitions = []
     for event in chain.kept:
@@ -721,7 +727,8 @@ def build_package(incident_id: str, *, now: float, principal: str, root=None,
 
     # Explanation ledger (root). Plain JSON lines, not chained.
     explanations, explanation_code = [], "read"
-    days, code = _list_days(sources.explanations)
+    days, code = ((None, "not_readable_by_principal") if ui
+                  else _list_days(sources.explanations))
     if days is None:
         explanation_code = code
     else:
@@ -755,7 +762,8 @@ def build_package(incident_id: str, *, now: float, principal: str, root=None,
             return event.get("incident_id") == incident_id
         at = _epoch(event.get("occurred_at"))
         return kind in OPERATOR_EVENT_FIELDS and at is not None and window_from <= at
-    audit_days, code = _list_days(sources.audit)
+    audit_days, code = ((None, "not_readable_by_principal") if ui
+                        else _list_days(sources.audit))
     if audit_days is None:
         audit = Chain(code, code, [], [])
     else:
@@ -810,7 +818,8 @@ def build_package(incident_id: str, *, now: float, principal: str, root=None,
         "schema": SCHEMA,
         "provenance": provenance,
         "generated_at": _iso(now),
-        "generator": {"command": "azazel-nexus handoff export", "principal_class": principal,
+        "generator": {"command": ("azazel-ui handoff" if ui else "azazel-nexus handoff export"),
+                      "principal_class": principal,
                       "network_used": False, "uploaded": False,
                       "nexus_version": _version()},
         "authority": {
@@ -889,7 +898,8 @@ def _generation_clock(sources: Sources, now: float, note) -> dict:
         "means": "a synchronization happened in this boot; not that it is still synchronized, "
                  "that the time source was authenticated, or that it happened before the incident"}
     note("timesyncd_marker", "read" if marker != "refused" else "refused", "everyone")
-    raw, code = _open_regular(sources.knowledge_floor, 256)
+    raw, code = ((None, "not_readable_by_principal") if sources.reader == "ui"
+                 else _open_regular(sources.knowledge_floor, 256))
     floor = {"status": "unavailable", "reason_code": code, "floor_utc": None}
     if raw is not None:
         try:

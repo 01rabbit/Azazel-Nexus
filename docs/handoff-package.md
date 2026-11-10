@@ -163,3 +163,41 @@ fixture は `tools/build_handoff_example.py` が作る: intake と同じ形式�
 - 監査記録は、インシデントの 1 時間前の日より前の segment があるとき、読んだ範囲の連続性だけを確かめる（`anchored: false`）。全体の検証は auditd の起動時検証による。
 - Knowledge の名前・要約・出典文は出さない。検証済み bundle の語彙と照合して出す方式は今後の課題。
 - 失敗時に残る未完成のディレクトリは自動では消さない（場所を表示する）。
+
+## Web retrieval (`GET /api/handoff/<incident_id>`)
+
+The read-only UI (`az-ui`) can return the same package to a logged-in viewer.
+It is a product path, not a second generator: it calls `build_package()` and
+`encode_files()` and so keeps the schema, the digest manifest and the leak
+scans of the CLI.
+
+* **Authentication.** The existing session cookie, as for `/api/view`. No
+  session is a `401 login_required`. The request is a `GET` with no side
+  effect: nothing is written, no CSRF token is needed or put in the URL, and
+  the response carries `Cache-Control: no-store`. `POST` and other methods are
+  refused as for every other route.
+* **Identifier.** Only `inc-` and 16 lowercase hexadecimal digits. `latest`,
+  paths, other lengths and anything else are `404 not_found`, the same fixed
+  answer as an identifier that is well formed but not in the UI's snapshot.
+  A query string is `400 query_or_fragment_refused`.
+* **Authorization.** The package is built as principal `ui`. It reads only the
+  UI's snapshot copies (`/var/lib/azazel/run/ui-read/...`), which `azui` is
+  already permitted to open. The incident ledger, the explanation ledger, the
+  audit chain and the clock floor are root's; they are not opened, and each
+  source says `not_readable_by_principal` with `readable_by` naming who could
+  read it. No group, privilege or output path is added. An incident that is not
+  in the UI's recent-incident copy is `404 not_found`.
+* **Confidentiality.** `encode_files()` runs `scan_package()` and
+  `scan_markdown()` on the package, the Markdown and the manifest. A finding
+  returns `500 handoff_refused` with no content. A response above 2 MiB is
+  `500 handoff_too_large`. Any other failure is `500 handoff_refused`.
+* **Response.** JSON with `incident_id`, `generated_at`, `principal_class`
+  (`ui`), `package`, `markdown`, `manifest` and `manifest_sha256`. The
+  manifest lists the SHA-256 and size of `handoff.json` (the canonical
+  encoding of `package`) and `handoff.ja.md` (`markdown`), so a recipient can
+  check that the incident, the time and the content belong together. A receipt
+  from an earlier transition is not carried over; the package is rebuilt from
+  the current records on each request.
+* **Errors.** `401 login_required`, `404 not_found`, `400
+  query_or_fragment_refused`, `421 host_refused`, `500 handoff_refused`,
+  `500 handoff_too_large`; every body is `{"error": code}`.
