@@ -142,8 +142,115 @@ real-process runner. The matrix asserts:
 
 Not established by this matrix: operator-UI rendering of an expired receipt
 (covered by UI tests), a typed-IOC lookup (not in contract), the Linux
-peer-credential and systemd confinement (real-process runner), and any real
+peer-credential and systemd confinement (see the Linux isolated acceptance section), and any real
 credential, trust anchor or network.
+
+## Linux isolated acceptance (unit 29)
+
+`tests/real_process/test_knowledge_context_linux_acceptance.py` runs in the
+existing isolated root container (`run-docker.sh`: `--network=none`, no new
+capabilities, read-only mounts, `--rm`), with a real Knowledge mTLS producer
+process, the real broker, locald and entryd processes, distinct container-only
+uids and real `SO_PEERCRED` / `SO_PEERGROUPS` on real AF_UNIX sockets. It
+changes no product code. Two harness seams exist, both test-only: the
+producer wrapper fixes the signing seed and port across restarts, and the
+broker harness can record the producer envelope and, while a control file
+exists, offer an earlier envelope at the network edge (`_post_path`). The
+signature, lifetime and request-binding checks that follow the edge are the
+product's own.
+
+### Peer authentication (area A)
+
+| Case | Result observed |
+| --- | --- |
+| service peer `azmio` in the client group | served |
+| `azoperator` / `azmioentry` placed in the client group (so the filesystem passes) | refused inside the broker with `principal_denied`; the broker audit holds the kernel uid, the verb, no `requested` event and no producer exchange; root is refused the same way |
+| service uid or operator uid outside the client group | `EACCES` at `connect` (this includes the effect of the 2710 parent directory; socket mode alone is not isolated) |
+| identity named in the request | at the top level or in `arguments`: `client_asserted_principal` from an allowed peer; a denied peer naming an allowed uid is still `principal_denied` (principal is checked first) |
+| client against an impostor socket | wrong owner, mode or group: refused before connect and nothing arrives; correct file attributes but the process behind the socket is another uid: refused as `peer identity` after connect and no request byte is sent |
+| missing peer credentials | a real non-AF_UNIX peer reports pid 0, uid/gid -1; the function-level check shows the server never reaches the handler. A daemon only ever listens on AF_UNIX, so this is a function-level observation, not a daemon test. The client branch `pid <= 0` (a peer in another PID namespace) is not verified |
+| restart and socket regeneration | orderly stop removes the socket; a crash leaves a stale socket that refuses connects; the restart recreates it with the same owner, group and mode and the same allow/deny results. The shipped `main()` has no SIGTERM handler, so even SIGTERM leaves a stale socket (the restart replaces it) |
+
+### systemd: static versus effective (area B)
+
+Static (`tests/unit/test_knowledge_context_systemd_static.py`, host and Linux):
+the shipped unit declares `User=azknowledgeegress`, `NoNewPrivileges`,
+`ProtectSystem=strict`, two `ReadWritePaths`, `PrivateTmp`, `PrivateDevices`,
+`Protect*`, `RestrictNamespaces`, `RestrictSUIDSGID`, `MemoryDenyWriteExecute`,
+`SystemCallFilter=@system-service`, empty capability sets,
+`RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, `IPAddressDeny=any` with no
+`IPAddressAllow` (so the package as shipped cannot egress), `UMask=0027`, the
+activation `ConditionPathExists`, and `Type=notify`; the installer's directory
+modes match the daemon's socket and state paths. This shows the files agree,
+not that the kernel enforces them.
+
+Effective: **real systemd was not run.** The images have no systemd and running
+one as PID 1 needs a privileged container with cgroup access, which this
+acceptance does not add. A `setpriv` approximation runs the real daemon as a
+non-root uid with no-new-privs, an empty inheritable/effective/permitted
+capability set and umask 0027, and shows: the socket and ledger attributes,
+the fixed refusal from the uncommissioned factory, `principal_denied` in the
+daemon's own ledger, `setuid(0)` and `chown` failing with `EPERM`, a write
+outside the state area failing with `EACCES` (ordinary file permissions, not
+`ProtectSystem`), and the daemon refusing to start when its state area is not
+writable or its ledger is corrupt or torn (no socket is bound). **Not
+effective in that environment:** `ProtectSystem`/`ReadWritePaths` (mount
+namespace), `PrivateTmp`, `PrivateDevices`, `Protect*`, `RestrictNamespaces`,
+`RestrictAddressFamilies` and `SystemCallFilter` (seccomp),
+`MemoryDenyWriteExecute`, `IPAddressDeny` (the container network is simply
+off), the bounding set (the runner's capability set stays in the bounding set; the process holds none effective), `ConditionPathExists`, restart policy, and the `Type=notify`
+handshake (`systemd_notify` requires a real systemd context and is not
+simulated). Paths are relocated with `AZAZEL_ROOT`, not the real
+`/var/lib/azazel`. Needed for real acceptance: a disposable VM or a container
+run with a real systemd and cgroup delegation, with the decision to allow it.
+
+### Replay across restarts (area C)
+
+The only replay defence is request binding: each call generates a fresh
+128-bit `request_id` in the broker (`make_request`), the producer's signed
+envelope carries it, and the answer is validated against that request. There is
+no replay state to persist, and none was added. Observed, with the producer
+real and the envelope still inside its signed lifetime: after the broker is
+stopped (SIGTERM or SIGKILL) and restarted, an earlier valid envelope offered
+for a new request is refused as the fixed `unavailable`, and a direct control
+call shows the same envelope is accepted for its own request and refused for
+the new one (so the refusal is by binding, not expiry or signature). A new
+request then succeeds, so there is no permanent refusal. A producer restart
+with the same key and port needs no broker restart; a producer restart with a
+different key (Knowledge's fixture default) is refused (recovery presumably needs an operator registry key update; not exercised here, and an open commissioning step). Six
+concurrent callers: every served answer belongs to its own request and none is served twice, and the rest receive `timeout` or `unavailable`. The audit ledger
+is the only durable state; an empty ledger starts, a corrupt or torn one stops
+the daemon before it binds. These show the broker keeps no state across a
+restart, not a protection specific to restarts. locald and entryd keep no
+state either, so restarting them changes nothing for this property.
+
+### Clocks (area D)
+
+| Use | Clock | Observed |
+| --- | --- | --- |
+| signature validity, TTL, semantic generated/expiry, registry validity | wall clock (`KnowledgeClient.utc_now`) | window is [max(issued, generated), min(expires, semantic expiry)); one microsecond before the start and at the end are refused; no grace; unparseable, naive, empty or non-string time is refused |
+| MIO expiry | wall clock of the MIO side (`datetime.now` in `mio_fast_assistance`, taken after the broker returns) | `now` before `generated_at` is rejected; `now` at `expires_at` is dropped with `KNOWLEDGE_CONTEXT_EXPIRED`; one microsecond earlier is accepted |
+| request budget | `time.monotonic` | an absolute `deadline_monotonic_ns` in the past is refused as `timeout` before any producer call; the shorter of it and `deadline_ms` governs |
+
+Observation, not a guarantee: the Context path keeps no wall-clock floor.
+After a window has passed, moving the injected clock back makes the same
+(request, envelope) valid again, and the registry window follows the same
+clock. The request is consumed within the call and another request is refused
+by binding, so the reach is the caller that holds both. The tests inject only
+one side (MIO) to model skew; in production both read the host clock in
+different processes. Clock difference between hosts, the allowed skew and the
+maximum envelope lifetime (`max_ttl_seconds`, tests use 30) are not defined by
+the contract and no grace period was added; they are commissioning decisions.
+
+### Status
+
+| Area | Status |
+| --- | --- |
+| A peer authentication | isolated acceptance passed (real kernel, container) |
+| B systemd | static agreement passed; **real systemd not run**; approximation only |
+| C restart replay | isolated acceptance passed |
+| D clocks | isolated acceptance passed for the single-host model; cross-host skew not tested; re-validity after a clock rollback is an open observation (see Open items) |
+| real credentials, trust anchor, endpoint, audit retention, activation grant | not done |
 
 ## Open items before any real connection
 
@@ -163,7 +270,13 @@ satisfied by this software:
    this package supplies none.
 5. The per-request audit ledger gets an explicit retention and disk-quota
    policy.
-6. The activation grant for `azazel-knowledge-contextd.service` is issued by
+6. Unresolved observation: the Context path has no wall-clock floor, so a
+   clock moved back makes the same (request, envelope) valid again for a
+   caller holding both (see *Clocks*). This is distinct from the restart
+   result above, which shows only that a different request is refused by
+   binding; reuse of the same request is not prevented. Whether a floor,
+   persisted state or other measure is wanted is undecided.
+7. The activation grant for `azazel-knowledge-contextd.service` is issued by
    the existing activation path, not by editing the unit.
 
 Stopping and recovery use mechanisms that already exist: the unit is preset
