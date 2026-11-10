@@ -706,28 +706,90 @@
     setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
   }
 
+  var HANDOFF_TIMEOUT_MS = 20000;
+  var HANDOFF_FILES = ["handoff.json", "handoff.ja.md", "manifest.json"];
+
+  function sha256Hex(body) {
+    var bytes = new TextEncoder().encode(body);
+    return crypto.subtle.digest("SHA-256", bytes).then(function (buf) {
+      return { hex: Array.prototype.map.call(new Uint8Array(buf), function (x) { return (x < 16 ? "0" : "") + x.toString(16); }).join(""), size: bytes.length };
+    });
+  }
+
+  /* Every file the server sent must match the manifest (sha256 and size) and the manifest itself must match
+     manifest_sha256, before any save button is enabled. Resolves to {ok, reasons[]}. */
+  function verifyHandoff(d) {
+    var reasons = [], f = d.files, entries = [];
+    if (!f || typeof f !== "object" || HANDOFF_FILES.some(function (n) { return typeof f[n] !== "string"; })) {
+      return Promise.resolve({ ok: false, contract: true, reasons: ["files に 3 ファイル（handoff.json／handoff.ja.md／manifest.json）が揃っていない"] });
+    }
+    if (!window.crypto || !crypto.subtle || typeof TextEncoder === "undefined") {
+      return Promise.resolve({ ok: false, reasons: ["この環境では sha256 を計算できない"] });
+    }
+    return Promise.all(HANDOFF_FILES.map(function (n) { return sha256Hex(f[n]); })).then(function (r) {
+      try { var parsed = JSON.parse(f["manifest.json"]); entries = parsed && Array.isArray(parsed.files) ? parsed.files : []; }
+      catch (e) { reasons.push("manifest.json を読めない"); }
+      HANDOFF_FILES.forEach(function (n, i) {
+        if (n === "manifest.json") {
+          if (r[i].hex !== d.manifest_sha256) { reasons.push("manifest.json の sha256 が manifest_sha256 と一致しない"); }
+          return;
+        }
+        var e = entries.filter(function (x) { return x && x.name === n; })[0];
+        if (!e) { reasons.push(n + " の manifest エントリが無い"); }
+        else if (e.sha256 !== r[i].hex) { reasons.push(n + " の sha256 が一致しない"); }
+        else if (e.bytes !== r[i].size) { reasons.push(n + " の大きさが一致しない"); }
+      });
+      return { ok: reasons.length === 0, reasons: reasons };
+    }, function () { return { ok: false, reasons: ["sha256 の計算に失敗した"] }; });
+  }
+
+  /* The target incident is fixed when the request is made (the card's own row). The response is applied only
+     while epoch, seq and that target are all still current; a refusal obeys the same rule before it changes anything. */
   function fetchHandoff(id) {
     if (!/^inc-[0-9a-f]{16}$/.test(id)) { return; }
+    var prev = state.handoff && state.handoff.id === id ? (state.handoff.status === "ok" ? state.handoff : state.handoff.prev) : null;
     var seq = ++state.hseq, epoch = state.epoch;
-    state.handoff = { id: id, status: "busy" };
+    state.handoff = { id: id, status: "busy", prev: prev || null };
     render();
-    function mine() { return epoch === state.epoch && seq === state.hseq && state.selectedIncident === id; }
-    function settle(status, data) { if (!mine()) { return; } state.handoff = { id: id, status: status, data: data }; render(); }
-    fetch("/api/handoff/" + id, { method: "GET", credentials: "same-origin", cache: "no-store",
-      redirect: "error", referrerPolicy: "no-referrer", headers: { "Accept": "application/json" } }).then(function (response) {
+    function mine() { return epoch === state.epoch && seq === state.hseq && state.handoff !== null && state.handoff.id === id; }
+    function settle(status, data) {
+      if (!mine()) { return; }
+      state.handoff = { id: id, status: status, data: data, prev: status === "ok" ? null : prev || null, at: Date.now(), verify: status === "ok" ? null : undefined };
+      render();
+      if (status !== "ok") { return; }
+      var held = state.handoff;
+      verifyHandoff(data).then(function (v) { if (mine() && state.handoff === held) { held.verify = v; render(); } });
+    }
+    var options = { method: "GET", credentials: "same-origin", cache: "no-store", redirect: "error",
+      referrerPolicy: "no-referrer", headers: { "Accept": "application/json" } };
+    var timer = null;
+    if (typeof AbortController === "function") {
+      var controller = new AbortController();
+      options.signal = controller.signal;
+      timer = setTimeout(function () { controller.abort(); }, HANDOFF_TIMEOUT_MS);
+    }
+    fetch("/api/handoff/" + id, options).then(function (response) {
       return response.json().then(function (data) { return { status: response.status, data: data }; },
-        function () { return { status: response.status, data: null }; });
+        function () { return { status: response.status, data: null, invalid: true }; });
     }).then(function (r) {
-      if (epoch !== state.epoch) { return; }
+      if (timer) { clearTimeout(timer); }
+      if (!mine()) { return; }
       if (r.status === 401) { showLogin("セッションが終了しました。もう一度ログインしてください。"); return; }
       if (r.status === 403 || r.status === 421) { showRefused(r.status); return; }
-      if (!mine()) { return; }
-      if (r.status === 200 && r.data && r.data.incident_id === id && r.data.package && typeof r.data.markdown === "string" &&
+      if (r.status === 200 && !r.invalid && r.data && r.data.incident_id === id && r.data.package && typeof r.data.markdown === "string" &&
           r.data.manifest && typeof r.data.manifest_sha256 === "string") { settle("ok", r.data); }
       else if (r.status === 404) { settle("not_found"); }
       else if (r.status === 429) { settle("busy429"); }
       else { settle("failed"); }
-    }, function () { settle("network"); });
+    }, function () { if (timer) { clearTimeout(timer); } settle("network"); });
+  }
+
+  function rowBindingId(row) {
+    var ex = row.explanation || {};
+    var b = ex.slow_analysis && ex.slow_analysis.binding;
+    if (b && typeof b.request_id === "string") { return b.request_id; }
+    var h = ex.guidance_view && ex.guidance_view.detail && ex.guidance_view.detail.handoff;
+    return h && typeof h.request_id === "string" ? h.request_id : null;
   }
 
   function handoffCard(row) {
@@ -737,7 +799,7 @@
     node.id = "soc-handoff";
     node.setAttribute("aria-busy", h && h.status === "busy" ? "true" : "false");
     var button = el("button", "primary", hl("fetch"));
-    button.type = "button"; button.dataset.focusKey = "handoff-fetch";
+    button.type = "button"; button.dataset.focusKey = "handoff-fetch:" + id;
     if (h && h.status === "busy") { button.disabled = true; }
     button.addEventListener("click", function () { fetchHandoff(id); });
     add(node, button);
@@ -745,14 +807,23 @@
       h.status === "ok" ? "● " + hl("ok") : h.status === "not_found" ? "？ " + hl("not_found") : h.status === "busy429" ? "◆ " + hl("busy_retry") : "■ " + hl("failed")));
     status.setAttribute("role", "status");
     node.appendChild(status);
-    if (!h || h.status !== "ok") { return node; }
-    var d = h.data, pkg = d.package || {}, m = d.manifest || {};
+    var view = !h ? null : h.status === "ok" ? h : h.prev;
+    if (!view) { return node; }
+    if (view !== h) {
+      node.appendChild(el("p", "small warn", "以下は別時点の結果（取得時刻 " + new Date(view.at).toLocaleString("ja-JP") + "）です。今回の取得は成功していません。"));
+    }
+    var d = view.data, pkg = d.package || {}, m = d.manifest || {};
     var ai = pkg.ai_assessment || {}, slow = ai.slow_advisory || {}, kn = pkg.knowledge || {};
     var unknowns = Array.isArray(slow.unknowns) ? slow.unknowns.length : null;
     var checks = Array.isArray(slow.next_checks) ? slow.next_checks.length : null;
+    var pkgReq = slow.binding && typeof slow.binding.request_id === "string" ? slow.binding.request_id : null;
+    var rowReq = rowBindingId(row);
+    var bindingText = pkgReq === null && rowReq === null ? "binding なし" : pkgReq === rowReq ? "binding：一致（" + pkgReq + "）" :
+      "binding：別時点（package=" + text(pkgReq) + "、画面=" + text(rowReq) + "）";
     add(node, kv([["incident_id", d.incident_id], ["generated_at", d.generated_at], ["principal_class", d.principal_class],
       ["未確認事項", unknowns === null ? "不明" : unknowns + " 件"], ["次の確認", checks === null ? "不明" : checks + " 件"],
       ["Knowledge 参照", kn.status ? (kn.status === "available" ? "あり（未検証・advisory_only）" : "なし／一部（status " + text(kn.status) + "）") : "不明"],
+      ["画面の行との突合せ", bindingText],
       ["manifest_sha256", short(d.manifest_sha256)]]), el("p", null, hl("unexecuted")));
     var files = Array.isArray(m.files) ? m.files : [];
     var ul = el("ul", "plain");
@@ -762,34 +833,25 @@
       add(li, sh); ul.appendChild(li);
     });
     add(node, el("p", "small", "manifest（ファイル名・大きさ・sha256 先頭 12 桁。全文は桁にポインタを載せると表示）："), ul);
-    var stamp = String(d.generated_at).replace(/[^0-9A-Za-z._-]/g, "-");
-    var base = "azazel-handoff-" + id + "-" + stamp;
-    var f = d.files;
-    var saveable = f && typeof f === "object" && typeof f["handoff.json"] === "string" && typeof f["handoff.ja.md"] === "string";
-    if (!saveable) {
-      add(node, el("p", "small", "■ " + hl("no_save")));
+    var v = view.verify;
+    if (v === null || v === undefined) { add(node, el("p", "small", "◆ 照合中…（照合が済むまで保存できません）")); return node; }
+    if (v.contract) { add(node, el("p", "small", "■ " + hl("no_save") + "（" + v.reasons.join("、") + "）")); return node; }
+    if (!v.ok) {
+      add(node, el("p", "small", "■ 照合に失敗したため保存できません。この資料を信用しないでください："), list(v.reasons));
       return node;
     }
-    var verdicts = el("ul", "plain");
-    verdicts.setAttribute("role", "status");
-    function save(fileName, outName, type) {
-      var body = f[fileName];
-      saveBlob(outName, body, type);
-      var entry = files.filter(function (x) { return x.name === fileName; })[0];
-      var li = el("li", null, outName + " の照合：計算中…");
-      verdicts.appendChild(li);
-      if (!window.crypto || !crypto.subtle || !entry) { li.textContent = outName + " の照合：不明（この環境では計算できません）。保存ファイルを信用しないでください"; return; }
-      crypto.subtle.digest("SHA-256", new TextEncoder().encode(body)).then(function (buf) {
-        var hex = Array.prototype.map.call(new Uint8Array(buf), function (x) { return (x < 16 ? "0" : "") + x.toString(16); }).join("");
-        li.textContent = hex === entry.sha256 ? outName + " の照合：一致（sha256 " + hex.slice(0, 12) + "）"
-          : outName + " の照合：不一致。保存したファイルを信用しないでください";
-      }, function () { li.textContent = outName + " の照合：不明。保存ファイルを信用しないでください"; });
-    }
-    var bj = el("button", null, hl("save_json")), bm = el("button", null, hl("save_md"));
-    bj.type = "button"; bm.type = "button";
-    bj.addEventListener("click", function () { save("handoff.json", base + ".json", "application/json"); });
-    bm.addEventListener("click", function () { save("handoff.ja.md", base + ".ja.md", "text/markdown;charset=utf-8"); });
-    add(node, add(el("div", "actions"), bj, bm), el("p", "small", "保存はサーバーが返した文字列をそのまま UTF-8 で書き出します（作り直しません）。"), verdicts);
+    var stamp = String(d.generated_at).replace(/[^0-9A-Za-z._-]/g, "-");
+    var base = "azazel-handoff-" + id + "-" + stamp;
+    var buttons = el("div", "actions");
+    [["handoff.json", ".json", "application/json", "save_json"], ["handoff.ja.md", ".ja.md", "text/markdown;charset=utf-8", "save_md"],
+      ["manifest.json", ".manifest.json", "application/json", "save_manifest"]].forEach(function (spec) {
+      var b = el("button", null, hl(spec[3])); b.type = "button";
+      b.dataset.focusKey = "handoff-save:" + id + ":" + spec[0];
+      b.addEventListener("click", function () { saveBlob(base + spec[1], d.files[spec[0]], spec[2]); });
+      buttons.appendChild(b);
+    });
+    add(node, el("p", "small", "● 照合：3 ファイルとも manifest と一致（sha256・大きさ）、manifest.json も manifest_sha256 と一致"), buttons,
+      el("p", "small", "保存はサーバーが返した文字列をそのまま UTF-8 で書き出します（作り直しません）。"));
     return node;
   }
 
@@ -995,10 +1057,10 @@
     var timeline = block("時系列（観測 → 受信 → 評価 → 取得 → 期限）");
     add(timeline, kv([["観測時刻", when("時刻", row.last_seen, "clock_unknown")],
       ["受信時刻", when("時刻", row.received_at, "clock_unknown")],
-      ["評価時刻", when("時刻", state.model ? state.model.as_of : null, "clock_unknown")],
+      ["status 実行時刻", when("時刻", state.model ? state.model.as_of : null, "clock_unknown")],
       ["取得時刻", when("時刻", state.lastOk === null ? null : state.lastOk / 1000, "clock_unknown")],
       ["期限", when("時刻", fastFull ? fastFull.expires_at : null, "clock_unknown")]]),
-      el("p", "small", "関連候補（手法 ID・参照根拠）：" + hl("time_note") + "。"));
+      el("p", "small", "同じ時間窓の保持行（未実装・表示のみ）：" + hl("time_note") + "。"));
     add(node, facts, reported, judged, executed, advice, refs, timeline, handoffCard(row));
     return node;
   }

@@ -126,8 +126,8 @@ def test_handoff_card_uses_epoch_seq_and_labels():
 def test_handoff_save_uses_server_strings_and_checks_digest():
     js = _t("app.js")
     card = js[js.index("function handoffCard"):js.index("function short(")]
-    assert "JSON.stringify" not in card and 'f["handoff.json"]' in card
-    assert "crypto.subtle.digest" in card and "照合" in card and "保存不可（契約不一致）" in _t("labels.json")
+    assert "JSON.stringify" not in card and 'd.files[spec[0]]' in card
+    assert "crypto.subtle.digest" in js and "照合" in card and "保存不可（契約不一致）" in _t("labels.json")
     assert "r.status === 429" in js
 
 
@@ -139,3 +139,20 @@ def test_knowledge_dependency_and_fullnode_vocabulary_is_labelled():
             "unavailable", "unknown"} <= set(labels["kdep"])
     assert "fast_assistance なし" in labels["handoff"]["fast_missing"]
     assert "fullNodeStatus(fastAll)" in _t("app.js")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_handoff_card_behaviour_in_a_stub_dom(tmp_path):
+    """Legacy-layout fetch, stale seq/epoch/refusal handling, verified-only save, timeout with previous result."""
+    from azazel_nexus.ui_model import project
+    from azazel_nexus_runtime.ui_serve import browser_json
+
+    model = tmp_path / "model.json"
+    model.write_bytes(browser_json(project(None, origin={"kind": "fixture", "notice": "n"},
+                                           served_at="2026-11-10T00:00:00Z", read_reason="status_read_failed")))
+    out = subprocess.run(["node", str(Path(__file__).resolve().parents[2] / "tests" / "js" / "handoff_card.test.js"),
+                          str(STATIC / "app.js"), str(STATIC / "labels.json"), str(model)],
+                         capture_output=True, text=True, timeout=60, check=False)
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert "harness_error" not in result, result
+    assert len(result) == 6 and all(v is True for v in result.values()), result
