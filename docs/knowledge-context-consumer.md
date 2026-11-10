@@ -114,10 +114,13 @@ contract and must not reclassify restricted incident data as P0.
 
 The service uses the separate `azknowledgeegress` account. The installed unit
 is preset disabled, requires its activation grant marker and is absent from
-`wired_capabilities()` because no production commissioning loader exists yet.
+`wired_capabilities()`; a commissioning loader exists and consumes a
+root-owned bundle, but activation remains a separate gate.
 Its unit retains `IPAddressDeny=any` and has no `IPAddressAllow` entry. Thus
 installation does not start it and this candidate cannot reach a Knowledge
-peer. The broker's default constructor is closed even if started manually.
+peer. The broker's default constructor is closed even if started manually; the
+service enables the broker only when the root-owned commissioning bundle loads
+as commissioned, and any absence or defect leaves it closed.
 The new per-request audit ledger has no retention or disk quota in this
 candidate; production activation needs an explicit storage and retention policy.
 
@@ -287,9 +290,9 @@ satisfied by this software:
 1. The open ownership and lifecycle items listed under *Commissioning and
    credentials* are decided and written down, including the numeric maximum
    response TTL.
-2. A production commissioning loader and registry exist; today the broker
-   factory is closed by design and an injected client is available only to
-   tests.
+2. A production commissioning registry exists. The loader that consumes the
+   root-owned bundle ships, and the broker stays closed unless that bundle
+   loads as commissioned; activation remains a separate gate.
 3. Which trusted local inputs may set the P0 label and which question fields
    may be sent (stated above as required; not yet defined).
 4. An endpoint allowlist is approved before any `IPAddressAllow` is designed;
