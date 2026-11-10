@@ -103,3 +103,43 @@ def test_full_projection_text_never_reaches_the_package(tmp_path, monkeypatch, p
         text = data.decode("utf-8")
         for mark in FULL_ONLY:
             assert mark not in text, (principal, name, mark)
+
+
+def _closed(status, outcome):
+    return {"full_node_context_status": status, "outcome": outcome,
+            "source_kind": None, "claim_status": None, "trust": None,
+            "snapshot_state": None, "generated_at": None, "expires_at": None,
+            "limitations": []}
+
+
+# Other states of the closed projection that the strict reader accepts.
+OTHER_STATES = {
+    "unavailable": _closed("unavailable", "unavailable"),
+    "rejected": _closed("received", "rejected"),
+    "expired": _closed("received", "expired"),
+}
+
+
+@pytest.mark.parametrize("state", sorted(OTHER_STATES))
+def test_other_projection_states_pass_the_strict_reader(tmp_path, state):
+    row = {**BASE, "full_node_context": OTHER_STATES[state]}
+    assert _row_is_read(_root(tmp_path, "r", row))
+
+
+@pytest.mark.parametrize("principal", ["root", "operator"])
+@pytest.mark.parametrize("state", sorted(OTHER_STATES))
+def test_other_projection_states_keep_the_pinned_digests(tmp_path, principal, state):
+    row = {**BASE, "full_node_context": OTHER_STATES[state]}
+    files = _files(_root(tmp_path, "s", row), principal)
+    assert _digests(files) == GOLDEN_FULL_ROW[principal]
+
+
+@pytest.mark.parametrize("principal", ["root", "operator", "ui"])
+@pytest.mark.parametrize("state", sorted(OTHER_STATES))
+def test_other_projection_states_never_reach_the_package(tmp_path, monkeypatch, principal, state):
+    row = {**BASE, "full_node_context": OTHER_STATES[state]}
+    files = _files(_root(tmp_path, "t", row), principal, monkeypatch)
+    for name, data in files.items():
+        text = data.decode("utf-8")
+        for mark in ("full_node_context", "full_node_context_status"):
+            assert mark not in text, (principal, name, state, mark)
