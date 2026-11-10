@@ -202,7 +202,9 @@ scans of the CLI.
   (`ui`), `files`, `package`, `markdown`, `manifest` and `manifest_sha256`.
   `files` holds `handoff.json`, `handoff.ja.md` and `manifest.json` as UTF-8
   strings exactly as `encode_files()` made them: saving each string as UTF-8
-  reproduces the bytes whose SHA-256 and size the manifest lists. `package`,
+  reproduces the bytes whose SHA-256 and size the manifest lists for the two
+  body files (`handoff.json`, `handoff.ja.md`); `manifest.json` itself is
+  checked against `manifest_sha256`. `package`,
   `markdown` and `manifest` are conveniences for display. A receipt from an
   earlier transition is not carried over; the package is rebuilt from the
   current records on each request.
@@ -216,8 +218,9 @@ scans of the CLI.
   unchanged (tested against fixed digests). A consumer must accept
   `principal_class` `ui`, a `null` `command` and the extra `entry` field. The
   web response returns the exact UTF-8 text of the three files in `files`;
-  a client should check each against the manifest's SHA-256 and size before
-  or after saving it, and save the string as UTF-8 without altering it.
+  a client should check the two body files against the manifest's SHA-256
+  and size, and `manifest.json` against `manifest_sha256`, before saving,
+  and save each string as UTF-8 without altering it.
 * **Errors.** `401 login_required`, `404 not_found`, `400
   query_or_fragment_refused`, `421 host_refused`, `429 handoff_busy`,
   `500 handoff_refused`, `500 handoff_too_large`; every body is

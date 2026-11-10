@@ -850,7 +850,7 @@
       b.addEventListener("click", function () { saveBlob(base + spec[1], d.files[spec[0]], spec[2]); });
       buttons.appendChild(b);
     });
-    add(node, el("p", "small", "● 照合：3 ファイルとも manifest と一致（sha256・大きさ）、manifest.json も manifest_sha256 と一致"), buttons,
+    add(node, el("p", "small", "● 照合：本体 2 点（handoff.json・handoff.ja.md）が manifest の sha256・大きさと一致、manifest.json が manifest_sha256 と一致"), buttons,
       el("p", "small", "保存はサーバーが返した文字列をそのまま UTF-8 で書き出します（作り直しません）。"));
     return node;
   }
