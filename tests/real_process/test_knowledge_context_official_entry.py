@@ -117,10 +117,12 @@ class Official(Stack):
         return out
 
     # -- shipped daemon ---------------------------------------------------
-    def start_daemon(self) -> None:
+    def start_daemon(self, extra_groups=()) -> None:
         egress = self.egress
+        groups = (f"--groups={','.join(str(g) for g in extra_groups)}"
+                  if extra_groups else "--clear-groups")
         command = [
-            "setpriv", f"--reuid={egress.pw_uid}", f"--regid={egress.pw_gid}", "--clear-groups",
+            "setpriv", f"--reuid={egress.pw_uid}", f"--regid={egress.pw_gid}", groups,
             "--no-new-privs", "--inh-caps=-all", "sh", "-c",
             "umask 0027; exec " + sys.executable + " -B -c "
             "'from azazel_nexus_runtime.knowledge_contextd import main; raise SystemExit(main())'"]
@@ -388,6 +390,44 @@ def test_g3_invalid_bundle_is_closed_with_fixed_reason_and_zero_peer_traffic(
     official.assert_no_leak()
 
 
+@pytest.mark.parametrize("key", ["client.key", "alias.key"])
+def test_g3_secret_readable_by_unrelated_group_is_perm_unsafe_with_zero_peer_traffic(official, key):
+    official.start_peer("valid")
+    official.make_bundle()
+    os.chown(official.bundle / key, 0, official.operator_gid)   # 0640, group not the service group
+    # the daemon is also a member of that group, so the file is readable and only the
+    # group check can refuse it (without membership the open itself would fail)
+    official.start_daemon(extra_groups=(official.operator_gid,))
+    assert _refusal(official.as_service()) == "unavailable"
+    assert official.peer.counters() == {"accepted": 0, "handshakes": 0, "requests": 0}
+    event = official.commissioning_event()
+    assert (event["outcome"], event["reason_code"]) == ("refused", "perm_unsafe"), event
+    official.stop_daemon()
+    official.assert_no_leak()
+
+
+def test_g3_removed_bundle_latches_closed_until_restart(official):
+    official.start_peer("valid")
+    official.make_bundle()
+    official.start_daemon()
+    official.start_chain()
+    _assert_advisory_only(_normal_entry_advisory(official.service_root))
+    assert official.peer.counters()["requests"] == 1
+    manifest = official.bundle / "manifest.json"
+    saved = manifest.read_bytes()
+    manifest.unlink()
+    for _ in range(2):
+        assert _refusal(official.as_service()) == "unavailable"
+    assert official.peer.counters()["requests"] == 1, "removed bundle must not reach the peer"
+    manifest.write_bytes(saved)
+    os.chown(manifest, 0, official.egress.pw_gid)
+    manifest.chmod(0o640)
+    assert _refusal(official.as_service()) == "unavailable"   # restored content stays latched
+    assert official.peer.counters()["requests"] == 1
+    official.stop_daemon()
+    official.assert_no_leak()
+
+
 # ---------------------------------------------------------------------------
 # Group 4: bad / mis-bound responses -> unavailable, no advisory (valid before and after)
 # ---------------------------------------------------------------------------
@@ -442,8 +482,8 @@ def test_g5_late_response_is_not_adopted(official):
     start = time.monotonic()
     reply = official.as_service(_doc(mono="MONO+1000", deadline_ms=1000))
     elapsed = time.monotonic() - start
-    assert reply["connect"] == "ok" and reply["reply"].get("ok") is not True or \
-        "response" not in reply["reply"].get("result", {}), reply
+    assert (reply["connect"] == "ok" and reply["reply"].get("ok") is not True) or \
+        ("response" not in reply["reply"].get("result", {})), reply
     assert _refusal(reply) in {"timeout", "unavailable"}, reply
     assert elapsed < 2.5, elapsed                    # bounded by the caller deadline, not the peer
     deadline = time.monotonic() + 8

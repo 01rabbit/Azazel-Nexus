@@ -100,6 +100,10 @@ def _check(info, *, directory, secret=False, limit=0):
             raise _Refused("path_unsafe")
         if secret and info.st_mode & 0o007:
             raise _Refused("perm_unsafe")
+        # Group read is allowed only for the daemon's own effective group (the
+        # service group) or root's group (unreadable to a non-root daemon).
+        if secret and info.st_mode & 0o040 and info.st_gid not in (os.getegid(), 0):
+            raise _Refused("perm_unsafe")
 
 
 def _open_dir() -> int | None:
@@ -214,10 +218,14 @@ def _load(now: str) -> CommissioningResult:
         except KnowledgeRefused:
             # Distinguish expiry from other registry defects without parsing text.
             raise _Refused(_registry_code(registry_raw, keys, manifest, now)) from None
+        except Exception:
+            raise _Refused("registry_invalid") from None
         try:
             peer = registry.resolve(manifest["peer_id"], now=now)
         except KnowledgeRefused:
             raise _Refused("peer_unknown") from None
+        except Exception:
+            raise _Refused("registry_invalid") from None
         if peer.endpoint.client_identity != manifest["client_identity"]:
             raise _Refused("identity_mismatch")
         if PrivacyClass.P0_PUBLIC not in peer.endpoint.allowed_privacy_classes:

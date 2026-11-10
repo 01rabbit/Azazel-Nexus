@@ -42,7 +42,13 @@ can enable egress; only a complete, root-owned commissioning bundle can.
 ## Commissioning bundle
 
 `az-knowledge-contextd` reads `/etc/azazel/knowledge-context/commissioning/`
-once at start (`AZAZEL_ROOT` relocates it for tests). Absence means closed.
+once at start. Absence means closed. `AZAZEL_ROOT` is for tests only: when
+it is set, that directory is trusted as the starting point and neither it nor
+its ancestors are inspected; it can only relocate where a bundle is read from,
+and a complete, root-owned bundle is still required, so it does not enable
+egress. Secret files (`client.key`, `alias.key`) are `root:<service group>`
+0640: group read is accepted only for the daemon's own effective group, and
+any other group with read permission is refused as `perm_unsafe`.
 The directory is flat and holds exactly: `manifest.json` (schema, `enabled`
 must be JSON `true`, peer_id, client_identity, commissioning_digest,
 max_ttl_seconds, mission, sanitizer_policy; no defaults), `registry-keys.json`,

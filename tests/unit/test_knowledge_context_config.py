@@ -113,19 +113,55 @@ def test_symlinked_bundle_directory_and_wrong_owner_refused(root, monkeypatch):
     assert cfg.load_commissioning(now=NOW).reason_code == "path_unsafe"
 
 
+def _request(client):
+    return client.request_context(frame={}, privacy_class=None, policy=None,
+                                  mission="m", alias_key=b"x" * 32, deadline_s=1)
+
+
 def test_removed_manifest_latches_client_closed(root):
     build(root)
     result = cfg.load_commissioning(now=NOW)
     manifest = bundle_dir(root) / "manifest.json"
+    # Before removal the guard passes and the call reaches the inner client,
+    # which refuses for its own (different) reason.
+    with pytest.raises(Exception) as before:
+        _request(result.client)
+    assert str(before.value) != "commissioning bundle changed"
     saved = manifest.read_bytes()
     manifest.unlink()
-    with pytest.raises(Exception):
-        result.client.request_context(frame={}, privacy_class=None, policy=None,
-                                      mission="m", alias_key=b"x" * 32, deadline_s=1)
+    with pytest.raises(cfg.KnowledgeRefused, match="^commissioning bundle changed$"):
+        _request(result.client)
     manifest.write_bytes(saved)
-    with pytest.raises(Exception):
-        result.client.request_context(frame={}, privacy_class=None, policy=None,
-                                      mission="m", alias_key=b"x" * 32, deadline_s=1)
+    with pytest.raises(cfg.KnowledgeRefused, match="^commissioning bundle changed$"):
+        _request(result.client)
+
+
+def test_secret_group_read_limited_to_service_group(root):
+    build(root, secret_mode=0o640)
+    d = bundle_dir(root)
+    assert cfg.load_commissioning(now=NOW).status == "commissioned"  # own egid
+    other = next((g for g in os.getgroups() if g != os.getegid()), None)
+    if other is not None:
+        os.chown(d / "client.key", -1, other)
+        assert cfg.load_commissioning(now=NOW).reason_code == "perm_unsafe"
+        os.chown(d / "client.key", -1, os.getegid())
+        os.chown(d / "alias.key", -1, other)
+        assert cfg.load_commissioning(now=NOW).reason_code == "perm_unsafe"
+
+
+def test_secret_group_check_uses_effective_gid(root, monkeypatch):
+    build(root, secret_mode=0o640)
+    fake = os.getegid() + 12345
+    monkeypatch.setattr(cfg.os, "getegid", lambda: fake)
+    assert cfg.load_commissioning(now=NOW).reason_code == "perm_unsafe"
+
+
+def test_unexpected_registry_error_is_registry_invalid(root, monkeypatch):
+    build(root)
+    def boom(*a, **k):
+        raise RuntimeError("internal")
+    monkeypatch.setattr(cfg, "load_registry", boom)
+    assert cfg.load_commissioning(now=NOW).reason_code == "registry_invalid"
 
 
 def _run_main(monkeypatch, root):
