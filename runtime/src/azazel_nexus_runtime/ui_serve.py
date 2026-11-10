@@ -75,6 +75,7 @@ from azazel_nexus.ui_login import (
     CODE_ALPHABET, CODE_LENGTH, CODE_TTL_S, SCHEMA as LOGIN_SCHEMA, login_code_path,
     normalize_code,
 )
+from azazel_nexus.incident_explain import OBSERVATION_FULL_CONTEXT_QUERY
 from azazel_nexus.ui_model import browser_json, project
 
 __all__ = ["main"]
@@ -597,6 +598,17 @@ class UiApp:
             raise Refused(500, "handoff_too_large")
         return document
 
+    def _capabilities(self) -> dict:
+        """Display control only, from the source kind alone. /api/handoff
+        decides 401/404 on its own and never reads this."""
+        kind = self.source.kind
+        if kind == "live":
+            return {"handoff": True,
+                    "full_context_from_observation": OBSERVATION_FULL_CONTEXT_QUERY}
+        if kind == "fixture":
+            return {"handoff": False, "full_context_from_observation": None}
+        return {"handoff": None, "full_context_from_observation": None}
+
     def view_document(self) -> bytes:
         now = self.clock()
         with self._view_lock:
@@ -608,11 +620,13 @@ class UiApp:
                     read["view"], origin=read["origin"], served_at=_now_iso(now),
                     setup=read["setup"], setup_reason=read["setup_reason"],
                     access=read["access"], read_reason=read["read_reason"],
-                    observers=read.get("observers")))
+                    observers=read.get("observers"),
+                    capabilities=self._capabilities()))
             except Exception:  # noqa: BLE001 - shown as a fixed code
                 document = browser_json(project(
                     None, origin={"kind": self.source.kind}, served_at=_now_iso(now),
-                    read_reason="internal_error"))
+                    read_reason="internal_error",
+                    capabilities=self._capabilities()))
             self._view_cache = (now, document)
             return document
 

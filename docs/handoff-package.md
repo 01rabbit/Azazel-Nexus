@@ -194,6 +194,14 @@ scans of the CLI.
   stale copy is labelled. Guidance and binding are read back strictly as for
   the CLI; a record that does not validate fails the request. No group,
   privilege or output path is added.
+* **Display capabilities.** `/api/view` carries `capabilities.handoff` and
+  `capabilities.full_context_from_observation` (`null` = unknown). They are
+  display control derived from the source kind only (live or fixture). The
+  server judges `401` and `404` on every request independently and never reads
+  them. `full_context_from_observation` is `false` in this version: no Full
+  Context query is generated from an observation. It says nothing about
+  commissioning, grants, peers or past receipts. The package and manifest are
+  unchanged.
 * **Confidentiality.** `encode_files()` runs `scan_package()` and
   `scan_markdown()` on the package, the Markdown and the manifest. A finding,
   a serialization failure or any other error returns `500 handoff_refused`

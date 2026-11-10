@@ -314,3 +314,22 @@ def test_cli_bytes_are_unchanged(tmp_path, principal):
     files = handoff.encode_files(handoff.build_package(
         INCIDENT, now=example.GENERATED, principal=principal, root=root))
     assert {k: hashlib.sha256(v).hexdigest() for k, v in files.items()} == GOLDEN[principal]
+
+
+def test_capabilities_live_and_fixture(ui, tmp_path, monkeypatch):
+    sid, _ = ui.login()
+    caps = get(ui, "/api/view", sid).json()["capabilities"]
+    assert caps == {"handoff": True, "full_context_from_observation": False}
+    monkeypatch.setenv("AZAZEL_ROOT", str(tmp_path))
+    h = Harness(tmp_path / "h2")
+    try:
+        s2, _ = h.login()
+        assert get(h, "/api/view", s2).json()["capabilities"] == {
+            "handoff": False, "full_context_from_observation": None}
+        # capabilities never authorize: server judgement is independent.
+        monkeypatch.setattr(ui_serve, "project", lambda *a, **k: {"capabilities": {"handoff": True}})
+        h._view_cache = None
+        assert get(h, f"/api/handoff/{INCIDENT}", s2).status == 404
+        assert get(h, f"/api/handoff/{INCIDENT}").status == 401
+    finally:
+        h.close()

@@ -129,7 +129,8 @@ def _setup(value) -> dict:
 
 def project(view, *, origin: dict, served_at: str, setup=None,
             setup_reason: Optional[str] = None, access: Optional[dict] = None,
-            read_reason: Optional[str] = None, observers: Optional[dict] = None) -> dict:
+            read_reason: Optional[str] = None, observers: Optional[dict] = None,
+            capabilities: Optional[dict] = None) -> dict:
     """The document the browser receives. Never raises on a bad `view`."""
 
     from .status_view import AUTHORITY, SCHEMA as VIEW_SCHEMA
@@ -146,6 +147,11 @@ def project(view, *, origin: dict, served_at: str, setup=None,
                       in OBSERVER_WORDS else "unknown" for name in OBSERVER_TIMERS},
         "sections": {},
         "pending": {},
+        # Display control only (None = unknown). The server decides /api/handoff
+        # on its own; this is never an authorization.
+        "capabilities": {
+            name: (capabilities or {}).get(name) if isinstance((capabilities or {}).get(name), bool) else None
+            for name in ("handoff", "full_context_from_observation")},
     }
     if setup is not None:
         model["setup"] = _setup(setup)
