@@ -56,8 +56,8 @@ def test_valid_bundle_commissions_without_communication(root, monkeypatch):
     build(root)
     result = cfg.load_commissioning(now=NOW)
     assert result.status == "commissioned", result.reason_code
-    assert result.client.knowledge_context_enabled is True
-    assert result.client.knowledge_context_max_ttl_seconds == 60
+    assert result.client._inner.knowledge_context_enabled is True
+    assert result.client._inner.knowledge_context_max_ttl_seconds == 60
     assert len(result.alias_key) >= 32 and result.mission == "synthetic-mission"
     assert "AAAA" not in repr(result)
 
@@ -134,6 +134,61 @@ def test_removed_manifest_latches_client_closed(root):
     manifest.write_bytes(saved)
     with pytest.raises(cfg.KnowledgeRefused, match="^commissioning bundle changed$"):
         _request(result.client)
+
+
+class _Counting:
+    def __init__(self):
+        self.calls = 0
+        self.retrieve = lambda *a, **k: "bypass"
+
+    def request_context(self, **kwargs):
+        self.calls += 1
+        return "ok"
+
+
+def _guarded(tmp_path):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}")
+    info = os.lstat(manifest)
+    ident = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
+    inner = _Counting()
+    return cfg._GuardedClient(inner, str(manifest), ident), inner, manifest, ident
+
+
+def test_guarded_client_exposes_only_request_context(tmp_path):
+    guard, inner, _, _ = _guarded(tmp_path)
+    assert guard.request_context(x=1) == "ok" and inner.calls == 1
+    for name in ("retrieve", "knowledge_context_enabled", "anything"):
+        with pytest.raises(AttributeError):
+            getattr(guard, name)
+
+
+def test_guarded_client_does_not_call_inner_after_change(tmp_path):
+    guard, inner, manifest, _ = _guarded(tmp_path)
+    manifest.unlink()
+    for _ in range(2):
+        with pytest.raises(cfg.KnowledgeRefused):
+            guard.request_context()
+    assert inner.calls == 0
+
+
+def test_latch_survives_lstat_returning_original_identity(tmp_path, monkeypatch):
+    guard, inner, manifest, ident = _guarded(tmp_path)
+    assert guard.request_context() == "ok" and inner.calls == 1
+    manifest.unlink()
+    with pytest.raises(cfg.KnowledgeRefused):
+        guard.request_context()
+    real = os.lstat
+    original = real  # restore original identity: recreate would differ, so fake it
+    manifest.write_text("{}")
+    class _Info:
+        st_dev, st_ino, st_mtime_ns, st_ctime_ns = ident
+    monkeypatch.setattr(cfg.os, "lstat", lambda p: _Info())
+    assert original is real
+    for _ in range(2):
+        with pytest.raises(cfg.KnowledgeRefused, match="^commissioning bundle changed$"):
+            guard.request_context()
+    assert inner.calls == 1
 
 
 def test_secret_group_read_limited_to_service_group(root):

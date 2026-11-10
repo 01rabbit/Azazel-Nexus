@@ -121,8 +121,8 @@ class SyntheticPeer:
                 time.sleep(self.delay_s)
             answer = self._answer(body)
             try:
-                tls.sendall(_http("200 OK", answer))
                 with self.lock:
+                    tls.sendall(_http("200 OK", answer))
                     self.answers_sent += 1
                 if self.mode == "delay":
                     self.sent_after_delay = True

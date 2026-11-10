@@ -71,9 +71,8 @@ class _GuardedClient:
         self._latched = False
         self._lock = threading.Lock()
 
-    def __getattr__(self, name):
-        return getattr(self._inner, name)
-
+    # Only request_context is exposed (the broker calls nothing else,
+    # knowledge_contextd.py:113); there is deliberately no attribute delegation.
     def request_context(self, **kwargs):
         with self._lock:
             if not self._latched:

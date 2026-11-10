@@ -46,10 +46,12 @@ once at start. Absence means closed. `AZAZEL_ROOT` is for tests only: when
 it is set, that directory is trusted as the starting point and neither it nor
 its ancestors are inspected; it can only relocate where a bundle is read from,
 and a complete, root-owned bundle is still required, so it does not enable
-egress. Secret files (`client.key`, `alias.key`) are `root:<service group>`
-0640: group read is accepted only for the daemon's own effective group, and
-a secret owned by any other group is refused (`perm_unsafe`, or
-`path_unsafe` when the daemon cannot open it).
+egress. Secret files (`client.key`, `alias.key`) are owned by root. Other-readable
+secrets are refused (`perm_unsafe`). Group-readable secrets are accepted only
+when `st_gid` is the daemon's effective gid or gid 0; any other group is
+refused (`perm_unsafe`). A secret the daemon cannot open is `path_unsafe`; in
+particular a `root:root` 0600 file cannot be read by a non-root daemon and is
+reported as `path_unsafe`. The service-group form is `root:<service group>` 0640.
 The directory is flat and holds exactly: `manifest.json` (schema, `enabled`
 must be JSON `true`, peer_id, client_identity, commissioning_digest,
 max_ttl_seconds, mission, sanitizer_policy; no defaults), `registry-keys.json`,

@@ -460,6 +460,16 @@ def test_g4_bad_or_unbound_response_is_unavailable_without_advisory(official, mo
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("mode", ["expired-envelope", "expired-semantic"])
+def _answers_sent(peer, expected, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while True:
+        with peer.lock:
+            value = peer.answers_sent
+        if value >= expected or time.monotonic() >= deadline:
+            return value
+        time.sleep(0.02)
+
+
 def test_g5_expired_response_is_unavailable(official, mode):
     official.start_peer("valid")
     official.make_bundle()
@@ -467,17 +477,18 @@ def test_g5_expired_response_is_unavailable(official, mode):
     official.start_chain()
     _assert_advisory_only(_normal_entry_advisory(official.service_root))
     before = official.peer.counters()["requests"]
-    sent_before = official.peer.answers_sent
+    with official.peer.lock:
+        sent_before = official.peer.answers_sent
     completed_before = len(official.events("knowledge.context.completed"))
     official.peer.mode = mode
     _degraded(_normal_entry_advisory(official.service_root))
     # the expired answer was really received: the peer read the request and wrote
     # a complete signed answer (no peer-thread failure, no connection drop)
     assert official.peer.counters()["requests"] == before + 1
-    assert official.peer.answers_sent == sent_before + 1
+    assert _answers_sent(official.peer, sent_before + 1) == sent_before + 1
     assert _refusal(official.as_service()) == "unavailable"
     assert official.peer.counters()["requests"] == before + 2
-    assert official.peer.answers_sent == sent_before + 2
+    assert _answers_sent(official.peer, sent_before + 2) == sent_before + 2
     # The product ledger has one refusal vocabulary for every failure ("unavailable",
     # knowledge_contextd.py:148); it cannot tell a semantic expiry from a bad
     # signature or a dropped connection. The most specific fixed result available is
