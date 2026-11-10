@@ -104,5 +104,5 @@ def test_poll_behaviour_against_a_stub_dom(tmp_path, mode):
         capture_output=True, text=True, timeout=60, env={**os.environ, "MODE": mode}, check=True)
     result = json.loads(out.stdout.strip().splitlines()[-1])
     assert "harness_error" not in result, result
-    failed = [k for k, v in result.items() if v is False]
+    failed = [k for k, v in result.items() if k != "conn_debug" and v is not True]
     assert not failed and len(result) >= 1, result
