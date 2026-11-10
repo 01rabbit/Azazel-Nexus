@@ -189,13 +189,22 @@ const res = {};
   t = await fetched(b => pk(b, { time: { last_seen: "yesterday" } })); assert.match(t, /照合不可（必要な欄/);
   t = await fetched(b => pk(b, { observed_facts: { summary: { count: "3", most_severe: 1 } } })); assert.match(t, /照合不可（必要な欄/, "string count is not coerced");
   t = await fetched(b => pk(b, { incident: { incident_id: ID1, state: null } })); assert.match(t, /照合不可（必要な欄/);
+  // calendar strictness: impossible dates never normalise into a match (binding and other 3 items equal).
+  view = () => ok(bindRow("r1")); await advance(5000);
+  for (const bad of ["2026-02-29T00:00:00Z", "2026-02-30T00:00:00Z", "2026-11-10T00:00:60Z", "2026-11-10T24:00:00Z", "2026-13-10T00:00:00Z", "2026-11-10T00:00:00+24:00"]) {
+    t = await fetched(b => withBinding(pk(b, { time: { last_seen: bad } }), "r1")); assert.match(t, /照合不可（必要な欄/, bad); assert.ok(!/観測 4 項目一致/.test(t), bad);
+  }
+  t = await fetched(b => withBinding(pk(b, { time: { last_seen: "1970-01-01T00:00:01Z" } }), "r1")); assert.match(t, /観測 4 項目一致（state/, "valid Z");
+  t = await fetched(b => withBinding(pk(b, { time: { last_seen: "1970-01-01T09:00:01+09:00" } }), "r1")); assert.match(t, /観測 4 項目一致（state/, "valid +09:00");
+  t = await fetched(b => withBinding(pk(b, { time: { last_seen: "2024-02-29T00:00:00Z" } }), "r1")); assert.match(t, /別時点: 画面/, "leap day is valid (differs from row)");
+  view = () => ok(model()); await advance(5000);
   // 11. Full-query capability line: three values, rendered in the incident detail.
   for (const [v, re] of [[false, /この版は生成しない（既定無効・規則未決）/], [true, /観測起点の Full 照会: 有効/], [null, /観測起点の Full 照会: 不明/], [undefined, /観測起点の Full 照会: 不明/]]) {
     CAPS = v === undefined ? {} : { handoff: true, full_context_from_observation: v }; view = () => ok(model()); await advance(5000);
     assert.match(panel().textContent, re, String(v));
   }
   CAPS = undefined; await advance(5000); assert.match(panel().textContent, /観測起点の Full 照会: 不明/, "old model without the key");
-  // 12. 421 (and 401) discard capabilities and the held handoff; a late answer stays dropped; 503 keeps them.
+  // 12. 421 discards (401 is not exercised here) capabilities and the held handoff; a late answer stays dropped; 503 keeps them.
   CAPS = { handoff: true, full_context_from_observation: false }; view = () => ok(model()); await advance(5000);
   view = () => ({ status: 503, body: {} }); await advance(5000); assert.equal(fetchButtons().length, 2, "503 keeps the view");
   const w5 = []; routes["/api/handoff/"] = () => new Promise(r => w5.push(r)); fetchButtons()[0].ls.click(); await flush();

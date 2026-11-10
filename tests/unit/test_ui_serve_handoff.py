@@ -327,8 +327,11 @@ def test_capabilities_live_and_fixture(ui, tmp_path, monkeypatch):
         assert get(h, "/api/view", s2).json()["capabilities"] == {
             "handoff": False, "full_context_from_observation": None}
         # capabilities never authorize: server judgement is independent.
-        monkeypatch.setattr(ui_serve, "project", lambda *a, **k: {"capabilities": {"handoff": True}})
-        h._view_cache = None
+        monkeypatch.setattr(h.app, "_capabilities",
+                            lambda: {"handoff": True, "full_context_from_observation": True})
+        h.app._view_cache = None
+        assert get(h, "/api/view", s2).json()["capabilities"] == {
+            "handoff": True, "full_context_from_observation": True}
         assert get(h, f"/api/handoff/{INCIDENT}", s2).status == 404
         assert get(h, f"/api/handoff/{INCIDENT}").status == 401
     finally:

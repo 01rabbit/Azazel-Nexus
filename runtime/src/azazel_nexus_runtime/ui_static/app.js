@@ -806,7 +806,15 @@
   }
 
   function isoSeconds(v) {
-    if (typeof v !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:\d\d)$/.test(v)) { return null; }
+    if (typeof v !== "string") { return null; }
+    var m = /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(\.\d+)?(Z|[+-](\d\d):(\d\d))$/.exec(v);
+    if (!m) { return null; }
+    var y = parseInt(m[1], 10), mo = parseInt(m[2], 10), d = parseInt(m[3], 10);
+    var hh = parseInt(m[4], 10), mi = parseInt(m[5], 10), ss = parseInt(m[6], 10);
+    var leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+    var dim = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if (mo < 1 || mo > 12 || d < 1 || d > dim[mo - 1] || hh > 23 || mi > 59 || ss > 59) { return null; }
+    if (m[8] !== undefined && (parseInt(m[8], 10) > 23 || parseInt(m[9], 10) > 59)) { return null; }
     var t = Date.parse(v);
     return typeof t === "number" && isFinite(t) ? Math.floor(t / 1000) : null;
   }
