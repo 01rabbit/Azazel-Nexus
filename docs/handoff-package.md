@@ -225,3 +225,29 @@ scans of the CLI.
   query_or_fragment_refused`, `421 host_refused`, `429 handoff_busy`,
   `500 handoff_refused`, `500 handoff_too_large`; every body is
   `{"error": code}`.
+
+### Reading `guidance_digest` and `playbook_digest`
+
+A package that carries deterministic guidance (`ai_assessment.guidance`) shows
+two digests, and they say different things.
+
+* `guidance_digest` is the SHA-256 of M.I.O.'s guidance vocabulary, returned by
+  `guidance_digest()` in M.I.O.'s `guidance.py`: the schema version, the
+  topics, the patterns and the limits, all constants. It does not depend on the
+  incident or on the playbook text. Every guidance made by the same M.I.O.
+  build therefore has the same value, by design. It is not an incident
+  identifier and says nothing about whether a record belongs to an incident.
+* `playbook_digest` is the SHA-256 of the playbook content on M.I.O.'s side
+  and goes with the record's `playbook_id`. Different playbooks give different
+  values.
+* Nexus does not verify that a `playbook_id` and a `playbook_digest` belong
+  together. `read_guidance()` in `guidance_record.py` checks only the form of
+  each digest (`sha256:` and hexadecimal digits); it neither recomputes a
+  digest nor compares digests with each other, and `bind_guidance()` does not
+  look at them. A swapped or altered `playbook_digest` of the right form passes
+  both checks. Read these two fields as what M.I.O. reported, not as checked.
+* What does tie a guidance to its incident is `bind_guidance()`: it compares
+  the handoff `incident_id`, the `request_id` (`<incident_id>:<sequence>`), the
+  trace and frame identifiers, and the evidence references (including those of
+  the competing explanations) with the incident's own record, and refuses a
+  mismatch.
