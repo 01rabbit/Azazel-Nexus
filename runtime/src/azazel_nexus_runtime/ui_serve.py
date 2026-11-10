@@ -557,6 +557,7 @@ class UiApp:
             route: (resources.files(__package__).joinpath("ui_static", name).read_bytes(), kind)
             for route, (name, kind) in STATIC_FILES.items()}
         self._view_lock = threading.Lock()
+        self._handoff_lock = threading.Lock()
         self._view_cache: Optional[tuple[float, bytes]] = None
 
     def handoff_document(self, incident_id: str) -> bytes:
@@ -568,24 +569,30 @@ class UiApp:
         """
         from azazel_nexus import handoff
 
-        if not HANDOFF_ID.fullmatch(incident_id):
-            raise Refused(404, "not_found")
-        now = self.clock()
+        if not HANDOFF_ID.fullmatch(incident_id) or self.source.kind != "live":
+            raise Refused(404, "not_found")  # a fixture is another provenance
+        if not self._handoff_lock.acquire(blocking=False):
+            raise Refused(429, "handoff_busy")
         try:
-            package = handoff.build_package(incident_id, now=now, principal="ui")
-            files = handoff.encode_files(package)
-        except handoff.HandoffRefused as refused:
-            if refused.code == "incident_not_found":
-                raise Refused(404, "not_found") from None
-            raise Refused(500, "handoff_refused") from None
-        except Exception:  # noqa: BLE001 - fixed code only
-            raise Refused(500, "handoff_refused") from None
-        document = browser_json({
-            "incident_id": incident_id, "generated_at": package["generated_at"],
-            "principal_class": "ui", "package": package,
-            "markdown": files[handoff.MARKDOWN_NAME].decode("utf-8"),
-            "manifest": json.loads(files[handoff.MANIFEST_NAME]),
-            "manifest_sha256": hashlib.sha256(files[handoff.MANIFEST_NAME]).hexdigest()})
+            now = self.clock()
+            try:
+                package = handoff.build_package(incident_id, now=now, principal="ui")
+                files = handoff.encode_files(package)
+                texts = {name: raw.decode("utf-8") for name, raw in files.items()}
+                document = browser_json({
+                    "incident_id": incident_id, "generated_at": package["generated_at"],
+                    "principal_class": "ui", "package": package,
+                    "markdown": texts[handoff.MARKDOWN_NAME], "files": texts,
+                    "manifest": json.loads(files[handoff.MANIFEST_NAME]),
+                    "manifest_sha256": hashlib.sha256(files[handoff.MANIFEST_NAME]).hexdigest()})
+            except handoff.HandoffRefused as refused:
+                if refused.code == "incident_not_found":
+                    raise Refused(404, "not_found") from None
+                raise Refused(500, "handoff_refused") from None
+            except Exception:  # noqa: BLE001 - fixed code only
+                raise Refused(500, "handoff_refused") from None
+        finally:
+            self._handoff_lock.release()
         if len(document) > HANDOFF_MAX_BYTES:
             raise Refused(500, "handoff_too_large")
         return document
