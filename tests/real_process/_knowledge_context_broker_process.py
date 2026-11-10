@@ -36,13 +36,29 @@ registry = KnowledgeRegistry(
     (now - timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
     (now + timedelta(minutes=5)).isoformat().replace("+00:00", "Z"), 1,
 )
+def _wall_now():
+    """Test-only clock injection through the product's `utc_now` parameter.
+
+    U30_CLOCK_FILE holds a signed offset in seconds, re-read at every call. The
+    host clock is never changed; verification code is not bypassed.
+    """
+    path = os.environ.get("U30_CLOCK_FILE")
+    offset = 0.0
+    if path:
+        try:
+            offset = float(Path(path).read_text().strip() or 0)
+        except (OSError, ValueError):
+            offset = 0.0
+    return datetime.now(UTC) + timedelta(seconds=offset)
+
+
 client = KnowledgeClient(
     registry=registry, peer_id=endpoint.provider_id,
     ca_certificate=str(Path(pki) / "ca.pem"),
     identities={"nexus-process-test": (str(Path(pki) / "nexus.pem"),
                                        str(Path(pki) / "nexus.key"))},
     knowledge_context_enabled=True, knowledge_context_max_ttl_seconds=30,
-    utc_now=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    utc_now=lambda: _wall_now().isoformat().replace("+00:00", "Z"),
 )
 policy = SanitizerPolicy.from_mapping({
     "version": "synthetic-process-test-v1", "remote_default": "deny",
@@ -69,7 +85,15 @@ if _exchange_dir or _replay_file:
             raw = Path(_replay_file).read_bytes()
             kind = "replayed"
         else:
-            raw = _original_post(peer, path, body, deadline)
+            try:
+                raw = _original_post(peer, path, body, deadline)
+            except Exception as exc:  # U30: record only the exception class and request body
+                if _exchange_dir:
+                    _counter[0] += 1
+                    stamp = f"{os.getpid()}-{time.time_ns()}-{_counter[0]}"
+                    base = Path(_exchange_dir)
+                    (base / f"{stamp}.postfail.note").write_text(type(exc).__name__ + " " + str(exc)[:200])
+                raise
             kind = "live"
         if _exchange_dir:
             _counter[0] += 1
