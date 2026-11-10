@@ -518,6 +518,9 @@ for _name, _fields in (
                             "bundle_digest_short", "generation", "freshness", "as_of",
                             "citation", "citation_state", "withheld", "withheld[]")),
                         "explanation.knowledge_refs_omitted",
+                        "explanation.fast_assistance",
+                        "explanation.fast_assistance.full_node_context_status",
+                        "explanation.fast_assistance.knowledge_dependency",
                         "edge_decision", "edge_decision.kind", "edge_decision.action",
                         "edge_decision.executed", "edge_decision.decided_by",
                         "execution_result", "execution_result.status",
@@ -1572,3 +1575,45 @@ def test_recent_view_preserves_checked_slow_projection():
     slow['budget']['reasons'].append('private payload')
     with pytest.raises(Exception):
         _recent_extra(recent, {})
+
+
+def _recent_fast(fast):
+    from azazel_nexus.incident_explain import build_recent_incident, build_recent_incidents
+    from azazel_nexus.status_view import _recent_extra
+    from test_incident_explain import transition
+
+    row = build_recent_incident(transition(edge_would="notify", incident_id="inc-00000000000000d4",
+                                           first_seen=NOW - 300, last_seen=NOW - 20))
+    if fast is not None:
+        row["explanation"] = {**row["explanation"], "fast_assistance": fast}
+    value = build_recent_incidents([row], NOW)
+    snapshot = {}
+    _recent_extra(value, snapshot, NOW)
+    return snapshot["incidents"][0]["explanation"]
+
+
+def _fast(status, knowledge):
+    from azazel_nexus.incident_explain import _full_node_projection
+    return {"state": "dependency_unavailable", "unknowns": [], "next_checks": [], "knowledge": [],
+            "dependency_outcome": {"knowledge": knowledge, "deception": "absent"},
+            "full_node_context": _full_node_projection(None, status, knowledge)}
+
+
+def test_recent_row_shows_why_knowledge_was_not_used(tmp_path):
+    ex = _recent_fast(_fast("not_queried", "not_queried"))
+    assert ex["fast_assistance"] == {"full_node_context_status": "not_queried",
+                                     "knowledge_dependency": "not_queried"}
+    ex = _recent_fast(_fast("unavailable", "timeout"))
+    assert ex["fast_assistance"] == {"full_node_context_status": "unavailable",
+                                     "knowledge_dependency": "timeout"}
+
+
+def test_recent_row_without_full_node_projection_says_unknown(tmp_path):
+    fast = _fast("not_queried", "not_queried")
+    del fast["full_node_context"]
+    assert _recent_fast(fast)["fast_assistance"] == {
+        "full_node_context_status": "unknown", "knowledge_dependency": "not_queried"}
+
+
+def test_recent_row_without_fast_assistance_has_no_key(tmp_path):
+    assert "fast_assistance" not in _recent_fast(None)
