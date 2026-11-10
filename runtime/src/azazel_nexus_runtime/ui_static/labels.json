@@ -847,7 +847,16 @@
     "busy_retry": "生成中です。しばらくして再試行してください（「引継ぎを取得」で再試行できます）",
     "no_save": "保存不可（契約不一致）：サーバーの応答に保存用の原文（files）が無いため、保存ボタンを出しません。上の要約表示のみです",
     "fast_missing": "照会状態不明（fast_assistance なし）。正常という意味ではありません",
-    "save_manifest": "manifest.json を保存"
+    "save_manifest": "manifest.json を保存",
+    "cap_off": "この起動では引継ぎを取得できません",
+    "cap_unknown": "引継ぎの可否は不明",
+    "match_full": "観測 4 項目一致（state・last_seen・count・most_severe。同一遷移・説明内容・真正性の証明ではない）",
+    "match_nobinding": "観測 4 項目一致／binding 照合不可（片側または両側に無し）",
+    "match_diff": "別時点: 画面の行と package の観測値が異なる。再取得してください",
+    "match_unverifiable": "照合不可（必要な欄の欠落・形式不正のため、画面の行と比べられない）",
+    "full_query_off": "観測起点の Full 照会: この版は生成しない（既定無効・規則未決）",
+    "full_query_on": "観測起点の Full 照会: 有効",
+    "full_query_unknown": "観測起点の Full 照会: 不明"
   },
   "fullnode": {
     "not_queried": "未照会（Knowledge フルノードに問い合わせていません。正常という意味ではありません）",
