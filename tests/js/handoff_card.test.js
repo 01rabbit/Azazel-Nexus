@@ -191,9 +191,14 @@ const res = {};
   t = await fetched(b => pk(b, { incident: { incident_id: ID1, state: null } })); assert.match(t, /照合不可（必要な欄/);
   // calendar strictness: impossible dates never normalise into a match (binding and other 3 items equal).
   view = () => ok(bindRow("r1")); await advance(5000);
-  for (const bad of ["2026-02-29T00:00:00Z", "2026-02-30T00:00:00Z", "2026-11-10T00:00:60Z", "2026-11-10T24:00:00Z", "2026-13-10T00:00:00Z", "2026-11-10T00:00:00+24:00"]) {
+  // Date.parse is spied in the sandbox: an impossible value must be rejected by the explicit validation, never reach the parser.
+  const parsed = []; const nativeParse = Date.parse; sandbox.Date.parse = (x) => { parsed.push(x); return nativeParse(x); };
+  for (const bad of ["2026-02-29T00:00:00Z", "2026-02-30T00:00:00Z", "2026-11-10T00:00:60Z", "2026-11-10T24:00:00Z", "2026-13-10T00:00:00Z",
+                     "2026-11-10T00:00:00+24:00", "2026-11-10T00:00:00-24:00", "2026-11-10T00:00:00+00:60", "2026-11-10T00:00:00-00:60"]) {
     t = await fetched(b => withBinding(pk(b, { time: { last_seen: bad } }), "r1")); assert.match(t, /照合不可（必要な欄/, bad); assert.ok(!/観測 4 項目一致/.test(t), bad);
+    assert.ok(!parsed.includes(bad), "rejected before Date.parse: " + bad);
   }
+  delete sandbox.Date.parse;
   t = await fetched(b => withBinding(pk(b, { time: { last_seen: "1970-01-01T00:00:01Z" } }), "r1")); assert.match(t, /観測 4 項目一致（state/, "valid Z");
   t = await fetched(b => withBinding(pk(b, { time: { last_seen: "1970-01-01T09:00:01+09:00" } }), "r1")); assert.match(t, /観測 4 項目一致（state/, "valid +09:00");
   t = await fetched(b => withBinding(pk(b, { time: { last_seen: "2024-02-29T00:00:00Z" } }), "r1")); assert.match(t, /別時点: 画面/, "leap day is valid (differs from row)");
