@@ -87,7 +87,7 @@ def test_failure_text_is_fixed_and_never_shows_a_body_or_exception():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
-@pytest.mark.parametrize("mode", ["", "start_retry", "unauth"])
+@pytest.mark.parametrize("mode", ["", "start_retry", "unauth", "soc_state"])
 def test_poll_behaviour_against_a_stub_dom(tmp_path, mode):
     """Runs the real app.js: failures keep stale content under a notice, refusals discard it,
     a response that arrives after logout never repaints, and the first load retries."""
