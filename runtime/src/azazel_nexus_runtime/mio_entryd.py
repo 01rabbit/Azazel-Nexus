@@ -99,6 +99,18 @@ POLL_GENERATION_RESULT_VERB = EpochVerb(
     admits=frozenset({PrincipalClass.SERVICE}),
 )
 
+#: The explainer's observation-origin Full Node Context request (T1). A
+#: separate request after advice, never part of it. Writes no ledger event.
+CONTEXT_OBSERVE_DEADLINE_MAX_MS = 350
+CONTEXT_OBSERVE_VERB = Verb(
+    "mio.context.observe",
+    arguments=(Argument("deadline_ms", ArgumentKind.ORDINAL,
+                        maximum=CONTEXT_OBSERVE_DEADLINE_MAX_MS),),
+    admits=frozenset({PrincipalClass.SERVICE}),
+    accepts_payload=True,
+    payload_contract="azazel_nexus.local_advisory.read_frame",
+)
+
 #: The remote opt-in (`mio_remote_consent`): the only writers of the store,
 #: and its read. `OPERATOR` alone -- not `SERVICE` (the arbiter, the
 #: explainer), not the advice listener -- and no argument is free text.
@@ -123,7 +135,8 @@ REGISTRY = VerbRegistry([ROUTE_VERB, ADVISE_VERB, OPT_IN_STATUS_VERB,
                          OPT_IN_SET_VERB, OPT_IN_WITHDRAW_VERB])
 #: The explainer's own listener (`mio-advise`, group azmio-advise): advice
 #: only. Its client holds that group and not the operator group (#213 O1).
-ADVISE_REGISTRY = VerbRegistry([ADVISE_VERB, POLL_GENERATION_RESULT_VERB])
+ADVISE_REGISTRY = VerbRegistry([ADVISE_VERB, POLL_GENERATION_RESULT_VERB,
+                                CONTEXT_OBSERVE_VERB])
 LOCAL_REFUSAL = "HG-05 Core reserve unmeasured; no local provider admitted"
 CAPABILITY_INTERVAL_SECONDS = 10
 #: Per-principal request rate (#211 S4). The explainer sends at most six
@@ -731,6 +744,37 @@ class MioEntryService:
             return fast_assessment_degraded("timeout")  # a late result is discarded
         return outcome.get("result") or fast_assessment_degraded("unavailable")
 
+    def _context_observe(self, request, explainer: bool, deadline_at: float) -> dict:
+        """Relay an explainer's observation-origin request; no ledger, no route."""
+        if not explainer:
+            raise RequestRefused(Refusal.PRINCIPAL_DENIED, "context_observe_explainer")
+        started = self.router.monotonic()
+        try:
+            frame = read_frame(request.payload)
+        except FrameRefused:
+            raise RequestRefused(Refusal.MALFORMED_FRAME, "situation_frame") from None
+        if PrivacyClass(frame["privacy_class"]) is not PrivacyClass.P3_RESTRICTED:
+            raise RequestRefused(Refusal.PRINCIPAL_DENIED, "explainer_privacy")
+        try:
+            transition = read_fast_transition(frame)
+        except ValueError:
+            raise RequestRefused(Refusal.MALFORMED_FRAME, "edge_transition_context") from None
+        if transition is None or not transition["technique_ids"]:
+            raise RequestRefused(Refusal.MALFORMED_FRAME, "edge_transition_context")
+        remaining = deadline_at - self.router.monotonic() - ENTRY_DELIVERY_RESERVE_MS / 1000
+        self.local.last_observe_timing = None
+        fast = self.local.observe_context(frame, deadline_s=remaining)
+        fast = read_fast_assistance(fast)
+        timing = getattr(self.local, "last_observe_timing", None)
+        reply = {"outcome": "context_observed", "fast_assistance": fast}
+        # Fixed keys, integer milliseconds, no incident data: success, delay
+        # and refusal can be measured by the caller without a ledger write.
+        reply["timing"] = {
+            "locald": timing,
+            "entry_ms": max(0, int((self.router.monotonic() - started) * 1000)),
+        }
+        return reply
+
     def _mark(self, key: str) -> None:
         if hasattr(self.router.ledger, "rebuild_usage"):
             self.router._record({"event_type": REQUEST_MARKER, "caller": key})
@@ -760,6 +804,8 @@ class MioEntryService:
                 receipt, deadline_s=request.arguments["deadline_ms"] / 1000, **epoch_args)
             return {"outcome": "generation_result", "slow_analysis": value,
                     **({'generation_metadata': self.local.last_generation_metadata} if epoch_args else {})}
+        if verb_name == CONTEXT_OBSERVE_VERB.name:
+            return self._context_observe(request, explainer, deadline_at)
         if explainer and not is_advice:
             raise RequestRefused(Refusal.PRINCIPAL_DENIED, "explainer_verb")
         local_request = None

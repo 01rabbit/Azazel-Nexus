@@ -239,7 +239,7 @@ def test_readiness_and_advisory_verbs_exist():
     # The playbook reference moved to the model-free reference service.
     assert mio_locald.REGISTRY.names() == (
         "mio.local.admission", "mio.local.assess", "mio.local.generation.result",
-        "mio.local.infer", "model.activate")
+        "mio.local.infer", "mio.local.observe", "model.activate")
     assert mio_locald.GENERATION_RESULT_VERB.admits == frozenset({PrincipalClass.SERVICE})
     assert not mio_locald.GENERATION_RESULT_VERB.accepts_payload
 

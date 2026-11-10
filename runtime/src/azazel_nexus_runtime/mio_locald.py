@@ -8,6 +8,7 @@ caller supplied. Advisory bodies return to the caller, never to the ledger.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -129,7 +130,34 @@ ADMISSION_VERB = Verb(
 #: No reference verb: verified playbook references are served by the
 #: model-free `azazel-mio-referenced.service` (`mio_referenced`), which runs
 #: on a node with no admitted model. This host serves only model verbs.
-REGISTRY = VerbRegistry([ACTIVATE_VERB, ADMISSION_VERB, INFER_VERB, FAST_ASSESS_VERB, GENERATION_RESULT_VERB])
+#: The explainer-only observation-origin request (relayed by entry). The
+#: ceiling is the T1 policy value (350 ms), and 0 is refused in the handler.
+CONTEXT_OBSERVE_DEADLINE_MAX_MS = 350
+CONTEXT_OBSERVE_VERB = Verb(
+    name="mio.local.observe",
+    arguments=(Argument("deadline_ms", ArgumentKind.ORDINAL,
+                        maximum=CONTEXT_OBSERVE_DEADLINE_MAX_MS),),
+    admits=frozenset({PrincipalClass.SERVICE}), accepts_payload=True,
+    payload_contract="azazel_nexus.local_advisory.read_frame",
+)
+REGISTRY = VerbRegistry([ACTIVATE_VERB, ADMISSION_VERB, INFER_VERB, FAST_ASSESS_VERB,
+                         GENERATION_RESULT_VERB, CONTEXT_OBSERVE_VERB])
+
+#: The fixed sentence of the `technique-set/1` question. Only technique codes
+#: (already validated by `read_fast_transition`) fill it; nothing else of the
+#: incident is placed in the P0 frame.
+CONTEXT_OBSERVE_QUESTION_PREFIX = "ATT&CK technique context: "
+
+
+def observation_context_question(ids) -> str:
+    codes = sorted(set(ids))
+    if not 1 <= len(codes) <= 8 or any(
+            type(code) is not str or not _TECHNIQUE_CODE.fullmatch(code) for code in codes):
+        raise ValueError("invalid_technique_set")
+    return CONTEXT_OBSERVE_QUESTION_PREFIX + " ".join(codes)
+
+
+_TECHNIQUE_CODE = re.compile(r"T[0-9]{4}(?:\.[0-9]{3})?", re.ASCII)
 
 
 def _read_assessment_payload(payload: Any) -> dict:
@@ -227,6 +255,64 @@ class LocalRuntimeService:
         self._generation_lane = generation_lane if generation_lane is not None else GenerationLane()
         self._generation_id = generation_id
 
+    def _observe_context(self, request: Any) -> dict:
+        """Query Full Node Context for an observed technique set, then re-run the core.
+
+        Nothing is written to the ledger and no generation is submitted. The
+        only thing sent to the broker is a P0 frame of `{privacy_class,
+        question}` whose question is the fixed sentence plus technique codes.
+        `timing` has fixed keys (ints in ms, no incident data) so the
+        success, delay and refusal cases can be measured.
+        """
+        from .mio_socket_client import fast_assessment_degraded
+        started = time.monotonic()
+        budget_ms = request.arguments["deadline_ms"]
+        if not 0 < budget_ms <= CONTEXT_OBSERVE_DEADLINE_MAX_MS:
+            return {"outcome": "failed", "refusal": "deadline"}
+        deadline = started + budget_ms / 1000
+        try:
+            from azazel_nexus.incident_explain import read_fast_transition
+            frame = read_frame(request.payload)
+            transition = read_fast_transition(frame)
+            if (transition is None
+                    or frame["privacy_class"] != PrivacyClass.P3_RESTRICTED.value):
+                raise ValueError("fast_transition_refused")
+            query = {"privacy_class": PrivacyClass.P0_PUBLIC.value,
+                     "question": observation_context_question(transition["technique_ids"])}
+        except (FrameRefused, ValueError):
+            return {"outcome": "failed", "refusal": "malformed_frame"}
+        context_status = FullNodeContextStatus.UNAVAILABLE
+        response = None
+        broker_started = time.monotonic()
+        try:
+            budget = deadline - broker_started - DELIVERY_RESERVE_S - FAST_CORE_RESERVE_S
+            if budget > 0:
+                response = request_context(query, deadline_s=min(KNOWLEDGE_MAX_S, budget))
+                context_status = FullNodeContextStatus.RECEIVED
+        except KnowledgeContextUnavailable:
+            pass
+        except Exception:  # noqa: BLE001 - any failure is an unavailable Full lookup
+            response = None
+        broker_ms = int((time.monotonic() - broker_started) * 1000)
+        received_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        try:
+            from .mio_fast_assistance import _frame, fast_assistance
+            situation, _ = _frame(frame, with_selection=True)
+            result = fast_assistance(
+                frame, deadline_s=max(0.0, deadline - time.monotonic() - DELIVERY_RESERVE_S),
+                knowledge_lookup=None, knowledge_max_s=KNOWLEDGE_MAX_S,
+                core_reserve_s=FAST_CORE_RESERVE_S, situation_frame=situation,
+                fabric_knowledge_context_response=response,
+                full_node_context_status=context_status)
+            if (context_status is FullNodeContextStatus.RECEIVED
+                    and result.get("full_node_context_status") == "received"):
+                result["full_node_context_received_at"] = received_at
+        except Exception:  # noqa: BLE001
+            result = fast_assessment_degraded("unavailable")
+        return {"outcome": "context_observed", "fast_assistance": result,
+                "timing": {"context": context_status.value, "broker_ms": broker_ms,
+                           "total_ms": int((time.monotonic() - started) * 1000)}}
+
     def set_playbooks(self, library: Library | None) -> None:
         self._playbooks = library
 
@@ -309,6 +395,8 @@ class LocalRuntimeService:
                 reply['generation_metadata'] = self._generation_lane.private_metadata(
                     slow.get('result_handle'), request.arguments['caller_epoch'])
             return reply
+        if name == CONTEXT_OBSERVE_VERB.name:
+            return self._observe_context(request)
         if name == ADMISSION_VERB.name:
             return self.admission()
         arguments = request.arguments
