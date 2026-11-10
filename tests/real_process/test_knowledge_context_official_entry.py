@@ -459,7 +459,6 @@ def test_g4_bad_or_unbound_response_is_unavailable_without_advisory(official, mo
 # Group 5: expired / late responses -> safe degradation; late answers are not adopted
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("mode", ["expired-envelope", "expired-semantic"])
 def _answers_sent(peer, expected, timeout=2.0):
     deadline = time.monotonic() + timeout
     while True:
@@ -470,6 +469,7 @@ def _answers_sent(peer, expected, timeout=2.0):
         time.sleep(0.02)
 
 
+@pytest.mark.parametrize("mode", ["expired-envelope", "expired-semantic"])
 def test_g5_expired_response_is_unavailable(official, mode):
     official.start_peer("valid")
     official.make_bundle()
