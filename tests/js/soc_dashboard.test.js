@@ -1,0 +1,10 @@
+const assert = require('node:assert/strict');
+const {dashboardRows} = require('../../runtime/src/azazel_nexus_runtime/ui_static/app.js');
+assert.deepEqual(dashboardRows({},'all','time'),[]);
+const recent={snapshot:{incidents:[{incident_id:'inc-a',state:'open',most_severe:3,last_seen:20},{incident_id:'inc-b',state:'closed',most_severe:1,last_seen:10},{incident_id:'inc-c',state:'open',most_severe:null,last_seen:30},null]}};
+assert.deepEqual(dashboardRows(recent,'all','severity').map(r=>r.incident_id),['inc-b','inc-a','inc-c']);
+assert.deepEqual(dashboardRows(recent,'open','time').map(r=>r.incident_id),['inc-c','inc-a']);
+assert.equal(recent.snapshot.incidents[0].incident_id,'inc-a');
+assert.equal(dashboardRows({snapshot:{incidents:Array(200).fill({incident_id:'inc-a'})}},'all','time').length,100);
+assert.deepEqual(dashboardRows({snapshot:{incidents:'bad'}},'all','time'),[]);
+console.log('SOC retained rows, priority order, filters and bounds pass');

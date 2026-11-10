@@ -15,7 +15,8 @@
   var UI_MODEL_SCHEMA = "azazel-nexus/ui-model/1";
   // gen: every login/logout/refusal/poll bumps it, so a response that arrives late never repaints.
   var state = { labels: null, csrf: null, loginToken: null, model: null,
-    lastOk: null, timer: null, announced: "", failing: false, open: {}, gen: 0, fail: null };
+    lastOk: null, timer: null, announced: "", failing: false, open: {}, gen: 0, fail: null,
+    socLayout: false, incidentFilter: "all", incidentSort: "severity", selectedIncident: null };
 
   var LOGIN_ERRORS = {
     login_refused: "コードが違うか、使用済み・期限切れです。端末で azazel-nexus ui-login をもう一度実行してください。",
@@ -445,8 +446,92 @@
     return card("担当者が次にすること", a.status, { reason: a.reason_code, wide: true, time: evaluatedAt(), children: [ol] });
   }
 
+  // Local presentation state only: no new read leaves or requests.
+  function dashboardRows(recent, filter, sort) {
+    var rows = recent && recent.snapshot && Array.isArray(recent.snapshot.incidents) ? recent.snapshot.incidents : [];
+    return rows.slice(0, 100).filter(function (r) {
+      return r && typeof r.incident_id === "string" && (filter !== "open" || r.state === "open");
+    }).sort(function (a, b) {
+      function numeric(v, fallback) { return typeof v === "number" && isFinite(v) ? v : fallback; }
+      if (sort === "severity") {
+        var d = numeric(a.most_severe, 99) - numeric(b.most_severe, 99);
+        if (d) return d;
+      }
+      return numeric(b.last_seen, 0) - numeric(a.last_seen, 0) || a.incident_id.localeCompare(b.incident_id);
+    });
+  }
+
+  function layoutToggle(panel) {
+    var toggle = el("button", null, state.socLayout ? "従来の表示に戻す" : "SOC 一覧レイアウトを試す");
+    toggle.type = "button";
+    toggle.dataset.focusKey = "layout";
+    toggle.setAttribute("aria-pressed", String(state.socLayout));
+    toggle.addEventListener("click", function () { state.socLayout = !state.socLayout; render(); });
+    panel.appendChild(toggle);
+  }
+
+  function dashboardStatus(panel) {
+    var loop = section("edge_loop") || {}, recent = loop.recent || {}, intake = loop.intake || {};
+    var rs = statusWithAccess(recent.status, recent.reason_code, "incident_recent");
+    var is = statusWithAccess(intake.status, intake.reason_code, "edge_intake_status");
+    var rows = dashboardRows(recent, "all", "time");
+    var grid = el("div", "grid soc-cards");
+    add(grid, card("保持一覧の範囲", rs.status, {reason: rs.reason, children: [
+      el("p", "metric", recent.snapshot ? String(rows.length) : "—"),
+      el("p", "small", "最大 100 件の保持行。未解決総数・実行済み対処数ではありません。")]}),
+      card("Edge 受信・鮮度", is.status, {reason: is.reason, time: when("観測時刻", (intake.source || {}).written_at)}));
+    var health = section("health") || [], audit = health.filter(function (h) { return h.subject === "audit"; })[0];
+    add(grid, audit ? card("監査", audit.status, {reason: audit.reason_code}) : pendingCard("監査", "audit"));
+    [ ["Knowledge Lite", "knowledge_lite"], ["M.I.O.（助言）", "mio_status"] ].forEach(function (pair) {
+      var value = section(pair[1]);
+      add(grid, value ? genericCard(pair[0], value, {compact: true, access: pair[1]}) : pendingCard(pair[0], pair[1]));
+    });
+    add(panel, grid, el("p", "small", "時間推移：利用不可。この読取モデルには保持履歴がありません。欠落を 0 に置き換えません。"));
+  }
+
+  function incidentTable(panel, recent) {
+    var controls = el("div", "soc-filters");
+    [["絞り込み", "filter", [["all", "すべて"], ["open", "未解決のみ"]]],
+      ["並び順", "sort", [["severity", "重大度（小さい値が優先）"], ["time", "最終観測が新しい順"]]]].forEach(function (spec) {
+      var lab = el("label", null, spec[0] + " "), select = el("select");
+      select.dataset.focusKey = spec[1];
+      spec[2].forEach(function (pair) { var option = el("option", null, pair[1]); option.value = pair[0]; select.appendChild(option); });
+      select.value = spec[1] === "filter" ? state.incidentFilter : state.incidentSort;
+      select.addEventListener("change", function () {
+        if (spec[1] === "filter") state.incidentFilter = select.value; else state.incidentSort = select.value;
+        render();
+      });
+      add(lab, select); add(controls, lab);
+    });
+    var rows = dashboardRows(recent, state.incidentFilter, state.incidentSort);
+    var wrap = el("div", "soc-table-wrap"), table = el("table", "soc-table");
+    var caption = el("caption", null, "保持一覧 " + rows.length + " 行（最大 100）。送信元はこの読取モデルでは提供されません。");
+    var head = el("thead"), hr = el("tr");
+    ["最終観測", "重大度", "状態", "Edge would・未実行", "説明状態", "根拠"].forEach(function (name) { var th=el("th", null, name); th.scope="col"; hr.appendChild(th); });
+    head.appendChild(hr); var tbody=el("tbody");
+    rows.forEach(function (row) {
+      var tr=el("tr"), d=row.edge_decision || {}, ex=row.explanation || {};
+      [when("時刻", row.last_seen), text(row.most_severe), badge(row.state), "would " + text(d.action), badge(ex.state)].forEach(function (value) {
+        var td=el("td"); if (typeof value === "object") td.appendChild(value); else td.textContent=value; tr.appendChild(td);
+      });
+      var td=el("td"), button=el("button", null, "根拠を見る"); button.type="button";
+      button.dataset.focusKey="incident:" + row.incident_id;
+      button.setAttribute("aria-pressed", String(state.selectedIncident === row.incident_id));
+      button.addEventListener("click", function () { state.selectedIncident=row.incident_id; render(); var box=$("soc-incident-detail"); if(box)box.focus(); });
+      add(td,button); add(tr,td); tbody.appendChild(tr);
+    });
+    add(table,caption,head,tbody); add(wrap,table); add(panel,controls,wrap);
+    var detail=el("section", "soc-detail"); detail.id="soc-incident-detail"; detail.tabIndex=-1; detail.dataset.focusKey="incident-detail";
+    var selected=dashboardRows(recent,"all","time").filter(function (r) {return r.incident_id===state.selectedIncident;})[0];
+    if (selected) detail.appendChild(incidentCard(selected));
+    else detail.appendChild(el("p", null, state.selectedIncident ? "選択した行は現在の保持一覧にありません。別の行へ自動で関連付けません。" : "一覧からインシデントを選んで根拠を確認してください。"));
+    panel.appendChild(detail);
+  }
+
   function overview(panel) {
     var s = state.model.summary || {};
+    layoutToggle(panel);
+    if (state.socLayout) dashboardStatus(panel);
     add(panel, el("p", "banner", "この画面は 4 つの問いに答えます。観測事実・AI の推測・Edge の判断・実際の執行結果を分けて示し、未知・古い・権限がない情報は「正常」と表示しません。専門的な情報は「専門情報」画面にあります。"));
     var grid = el("div", "grid");
     add(grid, answerCard("通信は維持されているか", s.communication),
@@ -781,6 +866,7 @@
   }
 
   function incidents(panel) {
+    layoutToggle(panel);
     var loop = section("edge_loop") || {};
     add(panel, el("p", "banner", "観測事実・Edge の判断（would・未実行）・実際の執行結果・助言・参照根拠を分けて表示します。Nexus は判断も執行もしません。"));
     var grid = el("div", "grid");
@@ -810,6 +896,7 @@
     add(grid, card("最近のインシデント（一覧の snapshot）", rs.status, { reason: rs.reason,
       time: when("観測時刻", rsrc.written_at, rsrc.reason_code) }));
     panel.appendChild(grid);
+    if (state.socLayout) { incidentTable(panel, recent); return; }
     var rows = recent.snapshot && Array.isArray(recent.snapshot.incidents) ? recent.snapshot.incidents : [];
     var list2 = el("div", "grid");
     rows.forEach(function (row) { list2.appendChild(incidentCard(row)); });
@@ -974,6 +1061,9 @@
 
   function render() {
     var keepY = window.scrollY;
+    var active = document.activeElement, focusKey = active && active.dataset && active.dataset.focusKey;
+    var focusPanel = active && active.closest ? active.closest("[role=tabpanel]") : null;
+    var focusPanelId = focusPanel && focusPanel.id;
     originBanner();
     Object.keys(SCREENS).forEach(function (name) {
       var panel = $("panel-" + name);
@@ -983,6 +1073,9 @@
         panel.appendChild(el("p", "banner bad", "この画面を表示できません（表示側の内部エラー）。"));
       }
     });
+    if (focusKey && focusPanelId) {
+      Array.prototype.some.call($(focusPanelId).querySelectorAll("[data-focus-key]"), function (n) { if (n.dataset.focusKey === focusKey) { n.focus({preventScroll:true}); return true; } return false; });
+    }
     if (window.scrollY !== keepY) { window.scrollTo(0, keepY); }
     var said = summary();
     if (said !== state.announced) { state.announced = said; $("live").textContent = said; }
@@ -1057,6 +1150,8 @@
     state.fail = null;
     state.failing = false;
     state.open = {};
+    // Selection, filters and layout belong to the view that was just discarded (logout, 401, 403, 421).
+    state.selectedIncident = null; state.incidentFilter = "all"; state.incidentSort = "severity"; state.socLayout = false;
     Object.keys(SCREENS).forEach(function (n) { clear($("panel-" + n)); });
     clear($("conn"));
     state.announced = "";
@@ -1210,5 +1305,6 @@
     begin();
   }
 
-  document.addEventListener("DOMContentLoaded", start);
+  if (typeof module !== "undefined" && module.exports) module.exports = {dashboardRows: dashboardRows};
+  else document.addEventListener("DOMContentLoaded", start);
 }());

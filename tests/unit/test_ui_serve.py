@@ -691,8 +691,8 @@ def test_the_page_script_writes_text_only():
                       r"location\s*="):
         assert not re.search(forbidden, script), forbidden
     attributes = set(re.findall(r"setAttribute\(\s*\"([^\"]+)\"", script))
-    assert attributes == {"aria-hidden", "aria-selected"}
-    assert "setAttribute(" not in re.sub(r"setAttribute\(\s*\"(aria-hidden|aria-selected)\"", "",
+    assert attributes == {"aria-hidden", "aria-selected", "aria-pressed"}
+    assert "setAttribute(" not in re.sub(r"setAttribute\(\s*\"(aria-hidden|aria-selected|aria-pressed)\"", "",
                                          script)
     assert "textContent" in script
     # Every request goes to this origin by an absolute path, never a full URL.
