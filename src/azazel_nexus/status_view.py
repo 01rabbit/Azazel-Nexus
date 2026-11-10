@@ -207,6 +207,23 @@ def _require(condition) -> None:
         raise _Refused("refused")
 
 
+#: Closed vocabularies for the recent row's Full Node Context availability
+#: (`local_advisory.read_fast_assistance` and `incident_explain` projection).
+FULL_NODE_STATUS_WORDS = frozenset({"unknown", "not_queried", "received", "unavailable"})
+KNOWLEDGE_DEPENDENCY_WORDS = frozenset({"available", "partial", "absent", "not_queried", "timeout",
+                                        "expired", "rejected", "unavailable", "unknown"})
+
+
+def _fast_assistance_availability(fast) -> dict:
+    """Only the two closed words the UI needs to say why Knowledge was not used."""
+    node = fast.get("full_node_context")
+    status = node.get("full_node_context_status") if isinstance(node, dict) else None
+    dependency = fast.get("dependency_outcome")
+    knowledge = dependency.get("knowledge") if isinstance(dependency, dict) else None
+    return {"full_node_context_status": status if status in FULL_NODE_STATUS_WORDS else "unknown",
+            "knowledge_dependency": knowledge if knowledge in KNOWLEDGE_DEPENDENCY_WORDS else "unknown"}
+
+
 def _pick(value: dict, fields) -> dict:
     return {key: _plain(value[key]) for key in fields if key in value}
 
@@ -811,6 +828,9 @@ def _recent_extra(value, snapshot, now=None):
         _require(type(omitted) is int and 1 <= omitted <= 16)
         copy = _pick(row, INCIDENT_FIELDS)
         copy["explanation"] = _pick(explanation, EXPLANATION_FIELDS)
+        if isinstance(explanation.get("fast_assistance"), dict):
+            copy["explanation"]["fast_assistance"] = _fast_assistance_availability(
+                explanation["fast_assistance"])
         if "guidance" in explanation:
             from .guidance_record import guidance_view, read_guidance
             read_guidance(explanation["guidance"], public=True)
