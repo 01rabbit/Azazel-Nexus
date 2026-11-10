@@ -181,3 +181,11 @@ def test_an_unlisted_address_in_the_report_is_scrubbed_not_fatal(tmp_path):
     blob = json.dumps(rec)
     assert "203.0.113.5" not in blob and "2001:db8::7" not in blob
     assert any("[withheld]" in f["text"] for f in rec["guidance"]["facts"])
+
+
+def test_edge_fact_text_names_executed_action_not_edge_decision():
+    # U36: the line carries the executed action (None = nothing ran); Edge's would decision is elsewhere.
+    t = GR._fact_text({"kind": "edge_decision", "text": "Edge selected_action=None, result=not_executed, executed_count=0"})
+    assert "None を選択" not in t and "Edge の判断:" not in t
+    assert "実行した action: なし（結果 not_executed、実行件数 0）" in t and "Edge 欄" in t
+    assert "実行した action: isolate" in GR._fact_text({"kind": "edge_decision", "text": "Edge selected_action=isolate, result=x, executed_count=1"})

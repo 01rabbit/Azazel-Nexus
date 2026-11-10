@@ -873,10 +873,17 @@
     var ai = pkg.ai_assessment || {}, slow = ai.slow_advisory || {}, kn = pkg.knowledge || {};
     var unknowns = Array.isArray(slow.unknowns) ? slow.unknowns.length : null;
     var checks = Array.isArray(slow.next_checks) ? slow.next_checks.length : null;
+    var unconf = Array.isArray(pkg.unconfirmed) ? pkg.unconfirmed.length : null;
+    var dg = ai.deterministic_guidance || {}, dgv = dg.view && dg.view.summary && Array.isArray(dg.view.summary.required_checks) ? dg.view.summary.required_checks :
+      (dg.guidance && Array.isArray(dg.guidance.next_checks) ? dg.guidance.next_checks.filter(function (c) { return c && c.tier === "required"; }) : null);
+    var reqChecks = dgv ? dgv.length : null;
+    var aiText = !Object.keys(slow).length ? hl("ai_none") :
+      (unknowns === null ? "不明" : unknowns + " 件") + "／" + (checks === null ? "不明" : checks + " 件");
     var matchKey = handoffMatch(row, pkg);
     var bindingText = hl(matchKey);
     add(node, kv([["incident_id", d.incident_id], ["generated_at", d.generated_at], ["principal_class", d.principal_class],
-      ["未確認事項", unknowns === null ? "不明" : unknowns + " 件"], ["次の確認", checks === null ? "不明" : checks + " 件"],
+      [hl("lbl_unconfirmed"), unconf === null ? "不明" : unconf + " 件"], [hl("lbl_required"), reqChecks === null ? "不明" : reqChecks + " 件"],
+      [hl("lbl_ai"), aiText],
       ["Knowledge 参照", kn.status ? (kn.status === "available" ? "あり（未検証・advisory_only）" : "なし／一部（status " + text(kn.status) + "）") : "不明"],
       ["画面の行との突合せ（ID・観測値。保存物の hash 照合とは別）", bindingText],
       ["manifest_sha256", short(d.manifest_sha256)]]), el("p", null, hl("unexecuted")));

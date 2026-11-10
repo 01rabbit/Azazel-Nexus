@@ -155,7 +155,7 @@ def test_handoff_card_behaviour_in_a_stub_dom(tmp_path):
                          capture_output=True, text=True, timeout=60, check=False)
     result = json.loads(out.stdout.strip().splitlines()[-1])
     assert "harness_error" not in result, result
-    assert len(result) == 7 and all(v is True for v in result.values()), result
+    assert len(result) == 8 and all(v is True for v in result.values()), result
 
 
 def test_incident_state_and_denied_labels_are_defined_and_apart_from_generic_words():

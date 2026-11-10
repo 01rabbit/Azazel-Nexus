@@ -75,6 +75,15 @@ const res = {};
   assert.equal(saved.length, 0); saveButtons()[0].ls.click(); assert.equal(saved.length, 1);
   assert.equal(saved[0].parts[0], handoff(ID1).files["handoff.json"]);
   res.legacy_fetch_and_verified_save = true;
+  // 1b. U36 card counts: package.unconfirmed and the deterministic required checks, not the (empty) AI advisory.
+  routes["/api/handoff/"] = () => ok(handoff(ID1, b => ({ package: Object.assign({}, b.package, { unconfirmed: Array.from({ length: 11 }, (_, i) => "u" + i),
+    ai_assessment: { slow_advisory: {}, deterministic_guidance: { guidance: { next_checks: [{ id: "a", tier: "required" }, { id: "b", tier: "required" }, { id: "c", tier: "optional" }] } } } }) })));
+  fetchButtons()[0].ls.click(); await flush();
+  const ct = panel().textContent;
+  assert.match(ct, /未確認事項（引継ぎ資料の unconfirmed）11 件/); assert.match(ct, /必須の確認（決定論案内）2 件/);
+  assert.match(ct, /AI 助言の未確認／確認候補なし（AI 回答なし/); assert.ok(!/0 件/.test(ct), "no misleading 0 件");
+  assert.match(ct, /binding 照合不可/); assert.match(ct, /保存物の hash 照合とは別/);
+  res.card_counts_from_package = true;
   // 2. tampered / missing / size mismatch / manifest mismatch: no save buttons, createObjectURL never called.
   for (const [name, tweak] of [["json", b => ({ files: Object.assign({}, b.files, { "handoff.json": b.files["handoff.json"] + " " }) })],
       ["md", b => ({ files: Object.assign({}, b.files, { "handoff.ja.md": "x" }) })],

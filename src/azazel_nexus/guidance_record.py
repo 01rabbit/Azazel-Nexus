@@ -205,7 +205,9 @@ def _fact_text(f):
     if not m:
         return f["text"]
     a, r = m.group(1).rstrip(","), m.group(2).rstrip(",")
-    return f"Edge の判断: {a} を選択（結果 {r}、実行件数 {m.group(3)}）"
+    # the line carries the EXECUTED action (None when nothing ran), not Edge's would decision (Edge column / handoff §3)
+    ex = "なし" if a in ("None", "none") else a
+    return f"Edge の判断（would）は Edge 欄・§3 を参照／実行した action: {ex}（結果 {r}、実行件数 {m.group(3)}）"
 
 
 def guidance_view(g):
