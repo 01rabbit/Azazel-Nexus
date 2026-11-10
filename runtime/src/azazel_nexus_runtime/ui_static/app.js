@@ -986,7 +986,7 @@
     add(timeline, kv([["観測時刻", when("時刻", row.last_seen, "clock_unknown")],
       ["受信時刻", when("時刻", row.received_at, "clock_unknown")],
       ["評価時刻", when("時刻", state.model ? state.model.as_of : null, "clock_unknown")],
-      ["取得時刻", when("時刻", state.lastOk, "clock_unknown")],
+      ["取得時刻", when("時刻", state.lastOk === null ? null : state.lastOk / 1000, "clock_unknown")],
       ["期限", when("時刻", fastFull ? fastFull.expires_at : null, "clock_unknown")]]),
       el("p", "small", "関連候補（手法 ID・参照根拠）：" + hl("time_note") + "。"));
     add(node, facts, reported, judged, executed, advice, refs, timeline, handoffCard(row));
