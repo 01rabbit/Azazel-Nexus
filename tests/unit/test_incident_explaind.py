@@ -529,7 +529,8 @@ def test_explainer_reaches_only_its_own_listeners_not_operator_sockets():
         assert writers == (["azazel-auditd-loop.service", unit]
                            if name == "audit-submit" else [unit])
     assert auditd.SUBMIT_REGISTRY.names() == ("audit.append",)
-    assert mio_entryd.ADVISE_REGISTRY.names() == ("mio.advise", "mio.generation.result")
+    assert mio_entryd.ADVISE_REGISTRY.names() == (
+        "mio.advise", "mio.context.observe", "mio.generation.result")
 
 
 @pytest.mark.parametrize("resume", [False, True])
