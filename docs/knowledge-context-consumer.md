@@ -26,17 +26,34 @@ wider class. `KnowledgeClient.request_context()` opens an mTLS connection only
 when explicitly called on a client with the local opt-in flag, commissioned
 peer, client identity, CA and pin configured. The opt-in boolean is caller
 configuration; it is not a Context capability in the signed peer registry.
-The default-disabled broker composes that method behind the ordinary local path, but the
-production commissioning loader and live credentials are absent and
-activation remains withheld. Importing this module or installing the package
+The default-disabled broker composes that method behind the ordinary local path.
+It is enabled only by the root-owned commissioning bundle described below;
+live credentials are not supplied and activation remains withheld. Importing this module or installing the package
 does not connect, load commissioned state, install a trust anchor, or alter
 service startup. The response is a bounded advisory object; it cannot grant
 authority or alter Edge's deterministic decision path.
 
-Status: **isolated software path in development; production commissioning is
-not wired**. The service boundary and local request path described below are
-implemented. No production registry/credential loader or
-systemd egress allowance is supplied, so activation remains withheld.
+Status: **isolated software path in development**. The service boundary, local
+request path and commissioning-bundle loader described below are implemented.
+No credentials, endpoint or systemd egress allowance is supplied, so
+activation remains withheld. No environment variable or command-line option
+can enable egress; only a complete, root-owned commissioning bundle can.
+
+## Commissioning bundle
+
+`az-knowledge-contextd` reads `/etc/azazel/knowledge-context/commissioning/`
+once at start (`AZAZEL_ROOT` relocates it for tests). Absence means closed.
+The directory is flat and holds exactly: `manifest.json` (schema, `enabled`
+must be JSON `true`, peer_id, client_identity, commissioning_digest,
+max_ttl_seconds, mission, sanitizer_policy; no defaults), `registry-keys.json`,
+`registry.signed`, `ca.pem`, `client.pem`, `client.key`, `alias.key` (at least
+32 bytes). Every ancestor and file must be root-owned and not group/other
+writable, files are opened without following symlinks, must have one link and
+a bounded size, and `client.key`/`alias.key` must have no other-user access.
+A signed registry alone never enables egress. The loader performs no network
+I/O. A refusal is recorded once as `knowledge.context.commissioning` with a
+fixed `reason_code`, and the broker stays closed. Removing or replacing
+`manifest.json` while running closes the client until restart.
 
 ## Process boundary
 
