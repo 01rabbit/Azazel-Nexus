@@ -88,3 +88,9 @@ prove live producer authentication. The separate mTLS process test proves the
 bounded software client/listener interoperability path only; it is not
 production service composition, credential lifecycle, release, or deployment
 evidence. No model is admitted or invoked; it is not admission or HG evidence.
+
+`test_knowledge_context_linux_acceptance.py` (unit 29) adds real-kernel peer
+authentication, restart/replay, clock-boundary and a `setpriv` approximation of
+the broker's confinement, in the same container and phase as the process
+interop test. It does not run systemd; see "Linux isolated acceptance" in
+`docs/knowledge-context-consumer.md`.

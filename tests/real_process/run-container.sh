@@ -121,6 +121,7 @@ PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
   tests/unit/test_knowledge_context_transport.py \
   tests/unit/test_knowledge_contextd.py \
   tests/unit/test_runtime_hardening.py \
+  tests/unit/test_knowledge_context_systemd_static.py \
   tests/unit/test_activation.py \
   tests/unit/test_activation_policy.py \
   tests/unit/test_activation_approval_v3.py \
@@ -136,7 +137,8 @@ PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
 # service-path timing cases above. Both run under the same suite lock.
 export NEXUS_REQUIRE_REAL_PROCESS=1
 PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
-  tests/real_process/test_knowledge_context_process_interop.py
+  tests/real_process/test_knowledge_context_process_interop.py \
+  tests/real_process/test_knowledge_context_linux_acceptance.py
 
 # Exercise the service's fixed degraded response with the shared package
 # absent. The positive adapter unit tests above intentionally need the wheel.
