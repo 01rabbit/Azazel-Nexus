@@ -121,3 +121,11 @@ def test_handoff_card_uses_epoch_seq_and_labels():
     assert set(labels["basis_titles"]) == {"observed", "reported", "mio_inference", "knowledge_ref",
                                            "edge_decision", "execution_result"}
     assert "not_queried" in labels["fullnode"]
+
+
+def test_handoff_save_uses_server_strings_and_checks_digest():
+    js = _t("app.js")
+    card = js[js.index("function handoffCard"):js.index("function short(")]
+    assert "JSON.stringify" not in card and 'f["handoff.json"]' in card
+    assert "crypto.subtle.digest" in card and "照合" in card and "保存不可（契約不一致）" in _t("labels.json")
+    assert "r.status === 429" in js

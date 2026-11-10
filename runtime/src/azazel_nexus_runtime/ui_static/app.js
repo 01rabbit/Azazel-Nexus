@@ -689,16 +689,6 @@
 
   // -- handoff card (GET /api/handoff/<id>, display and save only) ---------------
 
-  function sortKeys(v) {
-    if (Array.isArray(v)) { return v.map(sortKeys); }
-    if (v && typeof v === "object") {
-      var out = {};
-      Object.keys(v).sort().forEach(function (k) { out[k] = sortKeys(v[k]); });
-      return out;
-    }
-    return v;
-  }
-
   function saveBlob(name, body, type) {
     var blob = new Blob([body], { type: type });
     var url = URL.createObjectURL(blob);
@@ -726,6 +716,7 @@
       if (r.status === 200 && r.data && r.data.incident_id === id && r.data.package && typeof r.data.markdown === "string" &&
           r.data.manifest && typeof r.data.manifest_sha256 === "string") { settle("ok", r.data); }
       else if (r.status === 404) { settle("not_found"); }
+      else if (r.status === 429) { settle("busy429"); }
       else { settle("failed"); }
     }, function () { settle("network"); });
   }
@@ -742,7 +733,7 @@
     button.addEventListener("click", function () { fetchHandoff(id); });
     add(node, button);
     var status = el("p", "small", "状態：" + (!h ? hl("idle") : h.status === "busy" ? "◆ " + hl("busy") :
-      h.status === "ok" ? "● " + hl("ok") : h.status === "not_found" ? "？ " + hl("not_found") : "■ " + hl("failed")));
+      h.status === "ok" ? "● " + hl("ok") : h.status === "not_found" ? "？ " + hl("not_found") : h.status === "busy429" ? "◆ " + hl("busy_retry") : "■ " + hl("failed")));
     status.setAttribute("role", "status");
     node.appendChild(status);
     if (!h || h.status !== "ok") { return node; }
@@ -764,11 +755,32 @@
     add(node, el("p", "small", "manifest（ファイル名・大きさ・sha256 先頭 12 桁。全文は桁にポインタを載せると表示）："), ul);
     var stamp = String(d.generated_at).replace(/[^0-9A-Za-z._-]/g, "-");
     var base = "azazel-handoff-" + id + "-" + stamp;
+    var f = d.files;
+    var saveable = f && typeof f === "object" && typeof f["handoff.json"] === "string" && typeof f["handoff.ja.md"] === "string";
+    if (!saveable) {
+      add(node, el("p", "small", "■ " + hl("no_save")));
+      return node;
+    }
+    var verdicts = el("ul", "plain");
+    verdicts.setAttribute("role", "status");
+    function save(fileName, outName, type) {
+      var body = f[fileName];
+      saveBlob(outName, body, type);
+      var entry = files.filter(function (x) { return x.name === fileName; })[0];
+      var li = el("li", null, outName + " の照合：計算中…");
+      verdicts.appendChild(li);
+      if (!window.crypto || !crypto.subtle || !entry) { li.textContent = outName + " の照合：不明（この環境では計算できません）。保存ファイルを信用しないでください"; return; }
+      crypto.subtle.digest("SHA-256", new TextEncoder().encode(body)).then(function (buf) {
+        var hex = Array.prototype.map.call(new Uint8Array(buf), function (x) { return (x < 16 ? "0" : "") + x.toString(16); }).join("");
+        li.textContent = hex === entry.sha256 ? outName + " の照合：一致（sha256 " + hex.slice(0, 12) + "）"
+          : outName + " の照合：不一致。保存したファイルを信用しないでください";
+      }, function () { li.textContent = outName + " の照合：不明。保存ファイルを信用しないでください"; });
+    }
     var bj = el("button", null, hl("save_json")), bm = el("button", null, hl("save_md"));
     bj.type = "button"; bm.type = "button";
-    bj.addEventListener("click", function () { saveBlob(base + ".json", JSON.stringify(sortKeys(pkg), null, 2) + "\n", "application/json"); });
-    bm.addEventListener("click", function () { saveBlob(base + ".ja.md", d.markdown, "text/markdown;charset=utf-8"); });
-    add(node, add(el("div", "actions"), bj, bm), el("p", "small", hl("resave_note")));
+    bj.addEventListener("click", function () { save("handoff.json", base + ".json", "application/json"); });
+    bm.addEventListener("click", function () { save("handoff.ja.md", base + ".ja.md", "text/markdown;charset=utf-8"); });
+    add(node, add(el("div", "actions"), bj, bm), el("p", "small", "保存はサーバーが返した文字列をそのまま UTF-8 で書き出します（作り直しません）。"), verdicts);
     return node;
   }
 
