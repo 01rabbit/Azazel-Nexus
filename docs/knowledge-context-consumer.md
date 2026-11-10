@@ -64,6 +64,44 @@ I/O. A refusal is recorded once as `knowledge.context.commissioning` with a
 fixed `reason_code`, and the broker stays closed. Removing or replacing
 `manifest.json` while running closes the client until restart.
 
+## Observation-origin questions and the audit reason_code
+
+A question that is exactly `ATT&CK technique context: ` followed by one to eight
+technique ids (`T1234` or `T1234.567`, single spaces) is treated by the broker
+as observation-origin. Other questions are handled as before. Such a question is
+accepted only when the root-owned rule file
+`/etc/azazel/knowledge-context/observation-query.json` was read at start-up.
+It holds exactly `schema` (`azazel.knowledge-context.observation-query/1`),
+`rule` (`technique-set/1`) and `max_requests_per_minute` (an integer from 1 to
+60). The file and every ancestor directory must be root-owned and not group- or
+other-writable; the file is a regular file with one link and at most 4 KiB, and
+symlinks are not followed. The broker reads it once at start-up and, on each
+observation-origin request, checks that its identity (device, inode, mtime,
+ctime) is unchanged. If it is missing or changed, the broker refuses such
+questions until it is restarted (latch); a request that already passed the
+check is not cancelled. Adding or replacing the file takes effect only after a
+restart of `azazel-knowledge-contextd`; to stop, remove the file. When the file
+was read, `knowledge.context.commissioning` carries `observation_rule: loaded`.
+
+The broker counts requests that passed the rule and limit check in the last 60
+seconds, even if they later fail (for example `busy`). At the limit the request
+is refused as `rate_limited`. Both refusals are decided before the
+`knowledge.context.requested` event and before any peer call.
+
+`knowledge.context.completed` may carry an optional `reason_code`. `outcome`
+is unchanged. Success and unclassified failures carry none.
+
+| reason_code | outcome | Meaning |
+| --- | --- | --- |
+| `refused_before_send` | `unavailable` | Rejected before any send: frame, P0 label, not ready, no/changed rule file, `requested` audit write failed, client pre-send checks, changed manifest |
+| `rate_limited` | `unavailable` | Observation-origin limit reached; not sent |
+| `busy` | `timeout` | The single in-flight slot was occupied; not sent |
+| `transport` | `unavailable` | Failed while connecting, in TLS pinning, or in HTTP exchange; delivery is not guaranteed either way |
+| `verification` | `unavailable` | A response arrived but failed signature, binding, lifetime or schema checks, or the broker rejected it (not an object, over 48 KiB) |
+| `late` | `timeout` | A verified response arrived after the deadline |
+
+Events never contain exception text, the question or any response fragment.
+
 ## Process boundary
 
 Ordinary `mio.local.assess` requests still arrive at `azazel-mio-locald` over
