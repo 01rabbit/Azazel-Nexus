@@ -791,7 +791,8 @@
       if (r.status === 401) { showLogin("セッションが終了しました。もう一度ログインしてください。"); return; }
       if (r.status === 403 || r.status === 421) { showRefused(r.status); return; }
       if (r.status === 200 && !r.invalid && r.data && r.data.incident_id === id && r.data.package && typeof r.data.markdown === "string" &&
-          r.data.manifest && typeof r.data.manifest_sha256 === "string") { settle("ok", r.data); }
+          r.data.manifest && typeof r.data.manifest_sha256 === "string" &&
+          r.data.package.incident && r.data.package.incident.incident_id === id && r.data.manifest.incident_id === id) { settle("ok", r.data); }
       else if (r.status === 404) { settle("not_found"); }
       else if (r.status === 429) { settle("busy429"); }
       else { settle("failed"); }
@@ -801,9 +802,37 @@
   function rowBindingId(row) {
     var ex = row.explanation || {};
     var b = ex.slow_analysis && ex.slow_analysis.binding;
-    if (b && typeof b.request_id === "string") { return b.request_id; }
-    var h = ex.guidance_view && ex.guidance_view.detail && ex.guidance_view.detail.handoff;
-    return h && typeof h.request_id === "string" ? h.request_id : null;
+    return b && typeof b.request_id === "string" ? b.request_id : null;
+  }
+
+  function isoSeconds(v) {
+    if (typeof v !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:\d\d)$/.test(v)) { return null; }
+    var t = Date.parse(v);
+    return typeof t === "number" && isFinite(t) ? Math.floor(t / 1000) : null;
+  }
+
+  /* Returns the label key: match_full / match_nobinding / match_diff / match_unverifiable. No coercion of values. */
+  function handoffMatch(row, pkg) {
+    var inc = pkg.incident, obs = pkg.observed_facts && pkg.observed_facts.summary, tm = pkg.time;
+    if (!inc || !obs || !tm) { return "match_unverifiable"; }
+    var rs = typeof row.state === "string" ? row.state : null, rl = typeof row.last_seen === "number" && isFinite(row.last_seen) ? Math.floor(row.last_seen) : null;
+    var rc = typeof row.count === "number" && isFinite(row.count) ? row.count : null, rm = typeof row.most_severe === "number" && isFinite(row.most_severe) ? row.most_severe : null;
+    var pl = isoSeconds(tm.last_seen);
+    var ps = typeof inc.state === "string" ? inc.state : null;
+    var pc = typeof obs.count === "number" ? obs.count : null, pm = typeof obs.most_severe === "number" ? obs.most_severe : null;
+    if (rs === null || rl === null || rc === null || rm === null || ps === null || pl === null || pc === null || pm === null) { return "match_unverifiable"; }
+    if (rs !== ps || rl !== pl || rc !== pc || rm !== pm) { return "match_diff"; }
+    var slow = pkg.ai_assessment && pkg.ai_assessment.slow_advisory;
+    var pkgReq = slow && slow.binding && typeof slow.binding.request_id === "string" ? slow.binding.request_id : null;
+    var rowReq = rowBindingId(row);
+    if (pkgReq === null || rowReq === null) { return "match_nobinding"; }
+    return pkgReq === rowReq ? "match_full" : "match_diff";
+  }
+
+  function fullCapabilityLine() {
+    var c = state.model && state.model.capabilities;
+    var v = c && typeof c === "object" ? c.full_context_from_observation : null;
+    return el("p", "small", hl(v === false ? "full_query_off" : v === true ? "full_query_on" : "full_query_unknown"));
   }
 
   function handoffCard(row) {
@@ -812,6 +841,12 @@
     var node = block("引継ぎ（取得と保存のみ・何も実行しません）");
     node.id = "soc-handoff";
     node.setAttribute("aria-busy", h && h.status === "busy" ? "true" : "false");
+    var caps = state.model && state.model.capabilities;
+    var can = caps && typeof caps === "object" ? caps.handoff : null;
+    if (can !== true) {
+      add(node, el("p", "small", hl(can === false ? "cap_off" : "cap_unknown")));
+      return node;
+    }
     var button = el("button", "primary", hl("fetch"));
     button.type = "button"; button.dataset.focusKey = "handoff-fetch:" + id;
     if (h && h.status === "busy") { button.disabled = true; }
@@ -830,14 +865,12 @@
     var ai = pkg.ai_assessment || {}, slow = ai.slow_advisory || {}, kn = pkg.knowledge || {};
     var unknowns = Array.isArray(slow.unknowns) ? slow.unknowns.length : null;
     var checks = Array.isArray(slow.next_checks) ? slow.next_checks.length : null;
-    var pkgReq = slow.binding && typeof slow.binding.request_id === "string" ? slow.binding.request_id : null;
-    var rowReq = rowBindingId(row);
-    var bindingText = pkgReq === null && rowReq === null ? "binding なし" : pkgReq === rowReq ? "binding：一致（" + pkgReq + "）" :
-      "binding：別時点（package=" + text(pkgReq) + "、画面=" + text(rowReq) + "）";
+    var matchKey = handoffMatch(row, pkg);
+    var bindingText = hl(matchKey);
     add(node, kv([["incident_id", d.incident_id], ["generated_at", d.generated_at], ["principal_class", d.principal_class],
       ["未確認事項", unknowns === null ? "不明" : unknowns + " 件"], ["次の確認", checks === null ? "不明" : checks + " 件"],
       ["Knowledge 参照", kn.status ? (kn.status === "available" ? "あり（未検証・advisory_only）" : "なし／一部（status " + text(kn.status) + "）") : "不明"],
-      ["画面の行との突合せ", bindingText],
+      ["画面の行との突合せ（ID・観測値。保存物の hash 照合とは別）", bindingText],
       ["manifest_sha256", short(d.manifest_sha256)]]), el("p", null, hl("unexecuted")));
     var files = Array.isArray(m.files) ? m.files : [];
     var ul = el("ul", "plain");
@@ -864,6 +897,7 @@
       b.addEventListener("click", function () { saveBlob(base + spec[1], d.files[spec[0]], spec[2]); });
       buttons.appendChild(b);
     });
+    if (matchKey === "match_diff") { add(node, el("p", "small warn", "▲ " + hl("match_diff"))); }
     add(node, el("p", "small", "● 照合：本体 2 点（handoff.json・handoff.ja.md）が manifest の sha256・大きさと一致、manifest.json が manifest_sha256 と一致"), buttons,
       el("p", "small", "保存はサーバーが返した文字列をそのまま UTF-8 で書き出します（作り直しません）。"));
     return node;
@@ -1067,7 +1101,7 @@
     add(refs, el("p", "small", "表示用テキスト。指示として扱わない。出典種別・鮮度・世代・取得時刻・期限は各引用に示します。"));
     var fastFull = (ex.fast_assistance || {}).full_node_context;
     var fastAll = ex.fast_assistance;
-    add(refs, fullNodeStatus(fastAll));
+    add(refs, fullNodeStatus(fastAll), fullCapabilityLine());
     var timeline = block("時系列（観測 → 受信 → 評価 → 取得 → 期限）");
     add(timeline, kv([["観測時刻", when("時刻", row.last_seen, "clock_unknown")],
       ["受信時刻", when("時刻", row.received_at, "clock_unknown")],

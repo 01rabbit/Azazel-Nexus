@@ -45,15 +45,18 @@ const sha = s => nodeCrypto.createHash("sha256").update(s, "utf8").digest("hex")
 function handoff(id, tweak = () => ({})) {
   const j = '{"incident":"' + id + '","メモ":"日本語"}\n', md = "# 引継ぎ " + id + "\n", mf = { files: [
     { name: "handoff.json", sha256: sha(j), bytes: Buffer.byteLength(j) }, { name: "handoff.ja.md", sha256: sha(md), bytes: Buffer.byteLength(md) }] };
-  const mfs = JSON.stringify(mf);
-  const body = { incident_id: id, generated_at: "2026-11-10T12:00:00Z", principal_class: "ui", package: { ai_assessment: { slow_advisory: {} }, knowledge: { status: "partial" } },
+  mf.incident_id = id; const mfs = JSON.stringify(mf);
+  const body = { incident_id: id, generated_at: "2026-11-10T12:00:00Z", principal_class: "ui", package: { incident: { incident_id: id, state: "open" }, time: { last_seen: "1970-01-01T00:00:01Z" },
+      observed_facts: { summary: { count: 3, most_severe: 1 } }, ai_assessment: { slow_advisory: {} }, knowledge: { status: "partial" } },
     markdown: md, manifest: mf, manifest_sha256: sha(mfs), files: { "handoff.json": j, "handoff.ja.md": md, "manifest.json": mfs } };
   return Object.assign(body, tweak(body) || {});
 }
 function remanifest(b, edit) { const m = JSON.parse(b.files["manifest.json"]); edit(m); const t = JSON.stringify(m);
   return { files: Object.assign({}, b.files, { "manifest.json": t }), manifest_sha256: sha(t) }; }
-const row = id => ({ incident_id: id, state: "open", most_severe: 1, last_seen: 1 });
+const row = id => ({ incident_id: id, state: "open", most_severe: 1, last_seen: 1, count: 3 });
+let CAPS = { handoff: true, full_context_from_observation: false };
 const model = () => { const m = JSON.parse(JSON.stringify(MODEL)); m.sections = m.sections || {};
+  if (CAPS === undefined) { delete m.capabilities; } else { m.capabilities = CAPS; }
   m.sections.edge_loop = { intake: { status: "ok" }, recent: { status: "ok", snapshot: { incidents: [row(ID1), row(ID2)] } } }; return m; };
 let view = () => ok(model());
 const res = {};
@@ -68,7 +71,7 @@ const res = {};
   assert.match(panel().textContent, /取得中/); assert.equal(saveButtons().length, 0);
   release(ok(handoff(ID1))); await flush();
   assert.match(panel().textContent, /取得済み/); assert.equal(saveButtons().length, 3, "3 save buttons after verification");
-  assert.match(panel().textContent, /binding なし/);
+  assert.match(panel().textContent, /binding 照合不可/); assert.ok(!/別時点: 画面/.test(panel().textContent));
   assert.equal(saved.length, 0); saveButtons()[0].ls.click(); assert.equal(saved.length, 1);
   assert.equal(saved[0].parts[0], handoff(ID1).files["handoff.json"]);
   res.legacy_fetch_and_verified_save = true;
@@ -143,5 +146,60 @@ const res = {};
   assert.ok(tableRows.some(t => /？不明weird_state/.test(t)));
   assert.ok(tableRows.every(t => !/[◉○？⊘]\s*(1|重大)/.test(t)), "severity carries no symbol");
   res.incident_state_and_denied_symbols = true;
+  findAll(panel(), n => n.tag === "button" && n.textContent.includes("従来の表示に戻す"))[0].ls.click(); await flush();
+  // 8. capabilities gate (closed): only handoff === true shows the fetch button; nothing else is shown instead of it.
+  for (const caps of [undefined, { handoff: false, full_context_from_observation: null }, { handoff: null }, { handoff: "true" }, { handoff: 1 }, "x", {}]) {
+    CAPS = caps; view = () => ok(model()); await advance(5000);
+    assert.equal(fetchButtons().length, 0, "no fetch button for " + JSON.stringify(caps)); assert.equal(saveButtons().length, 0);
+    assert.match(panel().textContent, /この起動では引継ぎを取得できません|引継ぎの可否は不明/);
+  }
+  CAPS = { handoff: true, full_context_from_observation: false }; await advance(5000); assert.equal(fetchButtons().length, 2);
+  // 9. nested incident_id mismatch is a contract violation: dropped, nothing saved.
+  for (const tweak of [b => ({ package: Object.assign({}, b.package, { incident: { incident_id: ID2, state: "open" } }) }),
+      b => ({ manifest: Object.assign({}, b.manifest, { incident_id: ID2 }) })]) {
+    routes["/api/handoff/"] = () => ok(handoff(ID1, tweak)); fetchButtons()[0].ls.click(); await flush();
+    assert.match(panel().textContent, /状態：■ 取得できませんでした/); assert.ok(!/状態：● 取得済み/.test(panel().textContent), "mismatch is not accepted");
+  }
+  // 10. four-step match. Row values: open / most_severe 1 / last_seen 1 / count 3.
+  const fetched = async tweak => { routes["/api/handoff/"] = () => ok(handoff(ID1, tweak)); fetchButtons()[0].ls.click(); await flush(); return panel().textContent; };
+  const pk = (b, o) => ({ package: Object.assign({}, b.package, o) });
+  const withBinding = (b, rid) => pk(b, { ai_assessment: { slow_advisory: { binding: { request_id: rid } } } });
+  let t = await fetched(); assert.match(t, /binding 照合不可/); assert.ok(!/別時点: 画面|同一遷移・説明内容/.test(t), "one-sided binding is neither match nor diff");
+  t = await fetched(b => withBinding(b, "r1")); assert.match(t, /binding 照合不可/);
+  const bindRow = rid => { const m = model(); m.sections.edge_loop.recent.snapshot.incidents[0].explanation = { slow_analysis: { binding: { request_id: rid } } }; return m; };
+  view = () => ok(bindRow("r1")); await advance(5000);
+  t = await fetched(b => withBinding(b, "r1")); assert.match(t, /観測 4 項目一致（state/); assert.ok(!/別時点: 画面/.test(t)); assert.equal(saveButtons().length, 3);
+  t = await fetched(b => withBinding(b, "r2")); assert.match(t, /別時点: 画面の行と package/);
+  const kids = n => n.children.map(c => c.textContent);
+  const warn = findAll(panel(), n => n.tag === "p" && /^▲ 別時点/.test(n.textContent))[0]; assert.ok(warn, "warning shown with save buttons kept");
+  assert.equal(saveButtons().length, 3, "save buttons remain on a time difference");
+  t = await fetched(b => Object.assign(withBinding(b, "r1"), { package: Object.assign({}, withBinding(b, "r1").package, { observed_facts: { summary: { count: 4, most_severe: 1 } } }) }));
+  assert.match(t, /別時点: 画面/, "both bindings equal but count differs");
+  // row changes after the fetch: re-render shows 別時点
+  routes["/api/handoff/"] = () => ok(handoff(ID1)); fetchButtons()[0].ls.click(); await flush();
+  for (const [k, v] of [["count", 4], ["last_seen", 5], ["state", "closed"]]) {
+    view = () => { const m = model(); m.sections.edge_loop.recent.snapshot.incidents[0][k] = v; return ok(m); }; await advance(5000);
+    assert.match(panel().textContent, /別時点: 画面/, k);
+  }
+  view = () => ok(model()); await advance(5000);
+  // 照合不可: too_large count, malformed last_seen, null field. No coercion.
+  view = () => { const m = model(); m.sections.edge_loop.recent.snapshot.incidents[0].count = "too_large"; return ok(m); }; await advance(5000);
+  t = await fetched(); assert.match(t, /照合不可（必要な欄/); assert.ok(!/別時点: 画面/.test(t));
+  view = () => ok(model()); await advance(5000);
+  t = await fetched(b => pk(b, { time: { last_seen: "yesterday" } })); assert.match(t, /照合不可（必要な欄/);
+  t = await fetched(b => pk(b, { observed_facts: { summary: { count: "3", most_severe: 1 } } })); assert.match(t, /照合不可（必要な欄/, "string count is not coerced");
+  t = await fetched(b => pk(b, { incident: { incident_id: ID1, state: null } })); assert.match(t, /照合不可（必要な欄/);
+  // 11. Full-query capability line: three values, rendered in the incident detail.
+  for (const [v, re] of [[false, /この版は生成しない（既定無効・規則未決）/], [true, /観測起点の Full 照会: 有効/], [null, /観測起点の Full 照会: 不明/], [undefined, /観測起点の Full 照会: 不明/]]) {
+    CAPS = v === undefined ? {} : { handoff: true, full_context_from_observation: v }; view = () => ok(model()); await advance(5000);
+    assert.match(panel().textContent, re, String(v));
+  }
+  CAPS = undefined; await advance(5000); assert.match(panel().textContent, /観測起点の Full 照会: 不明/, "old model without the key");
+  // 12. 421 (and 401) discard capabilities and the held handoff; a late answer stays dropped; 503 keeps them.
+  CAPS = { handoff: true, full_context_from_observation: false }; view = () => ok(model()); await advance(5000);
+  view = () => ({ status: 503, body: {} }); await advance(5000); assert.equal(fetchButtons().length, 2, "503 keeps the view");
+  const w5 = []; routes["/api/handoff/"] = () => new Promise(r => w5.push(r)); fetchButtons()[0].ls.click(); await flush();
+  view = () => ({ status: 421, body: {} }); await advance(5000); assert.equal(fetchButtons().length, 0, "421 discards");
+  w5[0](ok(handoff(ID1))); await flush(); assert.ok(!/取得済み/.test(panel().textContent), "late answer after 421 dropped");
   console.log(JSON.stringify(res));
 })().catch(e => { console.log(JSON.stringify({ harness_error: String(e && e.stack || e) })); process.exit(1); });
