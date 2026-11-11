@@ -454,18 +454,18 @@ can be designed. Until those conditions are met, activation remains withheld.
 Before any activation request, an operator can confirm the start-up
 configuration with read-only commands only (nothing here changes state):
 
-1. `AZAZEL_ROOT` is not set for the service: `systemctl show -p Environment -p EnvironmentFile azazel-knowledge-contextd.service`
+1. `AZAZEL_ROOT` is not set for the service: `systemctl show -p Environment -p EnvironmentFiles azazel-knowledge-contextd.service`
    prints empty values, and `grep -rs AZAZEL_ROOT /etc/systemd/system /usr/lib/systemd/system` finds nothing relevant.
 2. No drop-in sets `Environment=` or `EnvironmentFile=`: `systemctl cat azazel-knowledge-contextd.service`.
-3. Drop-ins under `/etc/systemd/system/azazel-knowledge-contextd.service.d/` contain
-   `IPAddressAllow=` lines and nothing else: `grep -vE '^(\[Service\]|IPAddressAllow=|#|$)' <file>` prints nothing.
+3. No drop-in exists yet: `systemctl cat azazel-knowledge-contextd.service` shows no drop-in section, and
+   `/etc/systemd/system/azazel-knowledge-contextd.service.d/` does not exist (`ls -d`). A network allowance is not designed here.
 4. The unit is still in the state the plan expects: `systemctl is-enabled azazel-knowledge-contextd.service`
    (disabled or masked) and `systemctl is-active azazel-knowledge-contextd.service` (inactive).
 5. No activation grant marker exists yet: `ls -l /run/azazel-activation/granted/azazel-knowledge-contextd.service` reports no such file (the unit's `ConditionPathExists`). Do not create or edit anything there.
 6. The bundle is root-owned and not group/other-writable, secrets have no other-user access:
    `stat -c '%U:%G %a %n' /etc/azazel/knowledge-context/commissioning /etc/azazel/knowledge-context/commissioning/*`
    (`stat -f '%Su:%Sg %Lp %N'` on macOS), and `ls -ld` on each parent directory.
-7. `python3 tools/check_knowledge_context_bundle.py` reports `commissioned` and its
+7. `sudo -u azknowledgeegress -g <service group> python3 tools/check_knowledge_context_bundle.py` (never as root; the loader's checks depend on the caller's uid and group) reports `commissioned` and its
    warnings are understood. `--pin <cert>` prints the Nexus (SPKI) and Knowledge
    (DER SHA-256) pin forms for comparison with each side's configuration.
 

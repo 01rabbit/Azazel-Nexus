@@ -112,12 +112,19 @@ def test_usage_errors(root, capsys, monkeypatch):
     assert tool.main(["--now", "2026-11-10T00:00:00"]) == 2
     assert tool.main(["--bogus"]) == 2
     assert tool.main(["--pin", "x", "--now", NOW]) == 2
-    monkeypatch.setenv("AZAZEL_ROOT", "/tmp")
+    monkeypatch.setenv("AZAZEL_ROOT", "")
     assert tool.main([str(root)]) == 2
 
 
+def test_root_caller_is_refused(root, capsys, monkeypatch):
+    d = build(root)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    assert tool.main([str(d), "--now", NOW]) == 2
+    assert "not root" in capsys.readouterr().err
+
+
 def test_pin_shows_both_forms_matching_independent_values(root, capsys):
-    code, out = run_pin = (tool.main(["--pin", str(TLS / "client.crt")]), capsys.readouterr().out)
+    code, out = (tool.main(["--pin", str(TLS / "client.crt")]), capsys.readouterr().out)
     der = tool.certificate_der((TLS / "client.crt").read_bytes())
     assert code == 0
     assert PINS["client"] in out
@@ -142,10 +149,7 @@ def test_test_only_examples_are_marked_and_use_documentation_addresses():
     assert json.loads((d / "observation-query.json").read_text())["rule"] == "technique-set/1"
     registry = json.loads((d / "registry.skeleton.json").read_text())
     assert registry["peers"][0]["endpoint"]["provider_id"] == manifest["peer_id"]
-    conf = (d / "10-knowledge-endpoint-test-only.conf").read_text()
-    assert "test-only, not for production" in conf
+    assert not list(d.glob("*.conf"))
     texts = "".join(p.read_text() for p in d.iterdir())
     for ip in re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", texts):
         assert ip.startswith("192.0.2."), ip
-    assert [l for l in conf.splitlines() if l and not l.startswith("#")] == [
-        "[Service]", "IPAddressAllow=192.0.2.10/32"]

@@ -120,7 +120,8 @@ def check_bundle(directory: Path, now: datetime) -> int:
         status = 1
     if ttl > KNOWLEDGE_TTL_CEILING:
         print(f"warning: ttl_above_knowledge_ceiling (max_ttl_seconds {ttl} > "
-              f"{KNOWLEDGE_TTL_CEILING}); may not match the Knowledge-side setting")
+              f"{KNOWLEDGE_TTL_CEILING}, the Knowledge 41cad719 acceptance ceiling); "
+              "compare with the Knowledge-side setting")
     return status
 
 
@@ -133,12 +134,18 @@ def main(argv: list[str] | None = None) -> int:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return 2 if exc.code else 0
+    if os.geteuid() == 0 and not args.pin:
+        # The loader's checks depend on the caller's uid/gid; root would read
+        # root:root 0600 secrets the service account cannot, and pass wrongly.
+        print("usage: run as the service account and its group, not root "
+              "(sudo -u azknowledgeegress -g <service group> ...)", file=sys.stderr)
+        return 2
     if args.pin:
         if args.directory or args.now:
             print("usage: --pin takes no directory or --now", file=sys.stderr)
             return 2
         return print_pins(Path(args.pin))
-    if os.environ.get("AZAZEL_ROOT"):
+    if "AZAZEL_ROOT" in os.environ:
         print("usage: AZAZEL_ROOT must not be set for this check", file=sys.stderr)
         return 2
     try:

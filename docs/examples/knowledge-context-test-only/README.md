@@ -9,6 +9,11 @@ The files show the shape of what an owner has to supply for
 `/etc/azazel/knowledge-context/commissioning/` (see
 [the consumer boundary](../../knowledge-context-consumer.md)). Use
 `tools/check_knowledge_context_bundle.py` to check a real bundle read-only.
+Run it as the service account and its group, never as root, because the
+loader's checks depend on the caller:
+`sudo -u azknowledgeegress -g <service group> python3 tools/check_knowledge_context_bundle.py`.
+This directory deliberately has no network allowance example; the endpoint
+allowlist is not designed here.
 
 - `manifest.json`: the bundle manifest. `enabled` is `false` here on purpose;
   the loader refuses it (`enabled_not_true`).
@@ -16,8 +21,6 @@ The files show the shape of what an owner has to supply for
   file is a 64-byte signature followed by canonical JSON, signed by a registry
   key that must differ from Knowledge's response-signing key.
 - `observation-query.json`: the optional rule file, kept outside the bundle.
-- `10-knowledge-endpoint-test-only.conf`: a systemd drop-in that holds only
-  `IPAddressAllow`. Not installed by anything.
 
 Points that are easy to get wrong:
 
