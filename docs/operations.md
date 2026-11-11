@@ -786,8 +786,11 @@ cannot reset that budget. During the wait the explainer's `status.json`
 `azazel-nexus status --json`; the text `status` omits `pending` and
 `last_explained_at`) shows `pending` rising (or unchanged) and
 `last_explained_at` not advancing, and this is expected. A handoff exported
-meanwhile reports the incident's AI assessment as `explanation_pending`. Only explaining stops: ingest, checkpoints,
-the recent list, close handling, audit forwarding and status writes continue;
+meanwhile with sudo reports the AI assessment of an incident that has no
+recorded explanation yet as `explanation_pending`; an incident already
+explained keeps showing its recorded explanations. Only explaining stops:
+ingest, checkpoints, the recent list, close handling, audit forwarding and
+status writes continue;
 recorded explanations are not altered by the restart, and recent rows keep
 updating from new transitions. A first start or a start after the cursor reset
 above has no checkpoint and does not wait. If `pending` stays above 0 and

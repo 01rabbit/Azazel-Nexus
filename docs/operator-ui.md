@@ -211,9 +211,10 @@ Shortly after `azazel-incident-explaind` restarts with a checkpoint, the
 explainer may be shown as behind (`explainer_behind`, with a count) and no new
 explanation appears. That is the designed 60-second wait of the rolling
 rate budget, not a fault. Recorded explanations are not changed by the
-restart and rows keep updating from new transitions; a handoff exported
-meanwhile reports the AI assessment as `explanation_pending`. Only an
-asynchronous model proposal that was still running at the restart can change
+restart and rows keep updating from new transitions. A handoff exported
+from this page cannot read the explanation ledger and reports
+`not_readable_by_principal` as before; see [operations](operations.md) for
+what a sudo export shows meanwhile. Only an asynchronous model proposal that was still running at the restart can change
 state: after restore its `slow_analysis` becomes degraded
 (`unavailable_after_restart`). If the behind state continues well beyond a
 minute, treat it as a different cause: check that the explainer card's
