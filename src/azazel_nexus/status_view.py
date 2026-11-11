@@ -791,7 +791,7 @@ def _explainer_extra(value, snapshot):
     _require(value["recovery_hint"] in (None, RECOVERY_HINT))
 
 
-def _recent_extra(value, snapshot, now=None):
+def _recent_extra(value, snapshot, now=None, reader="operator"):
     from .edge_intake import ACTIONS
     from .incident_explain import (
         CITATION_STATES, CODES, CONTENT_KINDS, LEGACY_HANDOFF, POLICY_REASONS, SHOWN_STATES,
@@ -829,8 +829,10 @@ def _recent_extra(value, snapshot, now=None):
         _require(type(omitted) is int and 1 <= omitted <= 16)
         copy = _pick(row, INCIDENT_FIELDS)
         # One closed word from the stored trace (never the trace itself), judged at `as_of`.
-        copy["full_node_reference"] = full_node_reference_state(
-            row.get("full_node_trace"), row["technique_ids"], now)
+        # Only the read-only UI's view carries it; the operator and root views are unchanged.
+        if reader == "ui":
+            copy["full_node_reference"] = full_node_reference_state(
+                row.get("full_node_trace"), row["technique_ids"], now)
         copy["explanation"] = _pick(explanation, EXPLANATION_FIELDS)
         if isinstance(explanation.get("fast_assistance"), dict):
             copy["explanation"]["fast_assistance"] = _fast_assistance_availability(
@@ -895,7 +897,7 @@ def _edge_loop(now, reader: str = "operator") -> dict:
                                     extra=_explainer_extra,
                                     flags=("chain_broken", "storage_failed")),
             "recent": _component(raw["recent"], now, LOOP_STALE_S, RECENT_FIELDS,
-                                 schema=RECENT_SCHEMA, extra=lambda value, snapshot: _recent_extra(value, snapshot, now)),
+                                 schema=RECENT_SCHEMA, extra=lambda value, snapshot: _recent_extra(value, snapshot, now, reader)),
             "content_labels": dict(CONTENT_LABELS),
         }
     except Exception:  # noqa: BLE001 - presentation only; status continues

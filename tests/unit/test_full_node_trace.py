@@ -140,10 +140,21 @@ def test_status_view_shows_one_word_not_the_trace():
                           (trace(), 1793923210.0, "in_window"), (trace(), 1793923300.0, "expired")):
         value = build_recent_incidents([row_with(tr)], 1)
         snap = {}
-        _recent_extra(value, snap, now)
+        _recent_extra(value, snap, now, "ui")
         copy = snap["incidents"][0]
         assert copy["full_node_reference"] == word
         assert "full_node_trace" not in copy and "observed_sequence" not in json.dumps(snap)
+
+
+@pytest.mark.parametrize("reader", ["operator", "root"])
+def test_status_view_without_ui_reader_has_no_reference_key(reader):
+    from azazel_nexus.status_view import _recent_extra
+    snap = {}
+    _recent_extra(build_recent_incidents([row_with(trace())], 1), snap, 1793923210.0, reader)
+    assert "full_node_reference" not in snap["incidents"][0]
+    snap = {}
+    _recent_extra(build_recent_incidents([row_with(trace())], 1), snap, 1793923210.0)
+    assert "full_node_reference" not in snap["incidents"][0]
 
 
 def _maximal_guidance(incident_id):
