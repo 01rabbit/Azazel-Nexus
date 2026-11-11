@@ -146,20 +146,85 @@ def test_status_view_shows_one_word_not_the_trace():
         assert "full_node_trace" not in copy and "observed_sequence" not in json.dumps(snap)
 
 
-def test_twenty_maximal_rows_with_trace_fit():
+def _maximal_guidance(incident_id):
+    t = lambda k: ("Inspect the launch of the interpreter and check its parent " * 6)[:k].strip()
+    return {"guidance_schema_version": "1.0.0", "content_kind": "deterministic_guidance",
+            "generation_method": "deterministic_guidance", "model_calls": 0,
+            "playbook_id": "p" * 60, "playbook_version": "v" * 90, "playbook_digest": "sha256:" + "a" * 64,
+            "guidance_digest": "sha256:" + "b" * 64, "selection_mode": "s" * 90,
+            "facts": [{"kind": "knowledge", "trust": "x" * 60, "text": t(280)}] * 8,
+            "competing_explanations": [{"slot": "s" * 60, "role": "hostile", "prompt": t(280),
+                                        "support": "unverified_candidate"}] * 4,
+            "discriminating_material": [t(280)] * 8, "claim_boundaries": [t(280)] * 8,
+            "unknown_groups": [{"text": t(280), "topic": "t" * 60, "sources": ["report"],
+                                "merged": [t(280)] * 8}] * 8,
+            "topics_addressed": [{"id": "i" * 60, "as_reported": t(280), "negative": False}] * 4,
+            "weight_notes": [{"explanation": "e" * 60, "direction": "verification_priority_up",
+                              "topic": "t" * 60, "as_reported": t(280)}] * 4,
+            "next_checks": [{"id": "check-a", "tier": "required", "mode": "read_only_existing_authority", "text": t(240)},
+                            {"id": "check-b", "tier": "required", "mode": "read_only_existing_authority", "text": t(240)},
+                            {"id": "check-c", "tier": "optional_when_needed", "mode": "read_only_existing_authority", "text": t(240)},
+                            {"id": "check-d", "tier": "optional_when_needed", "mode": "read_only_existing_authority", "text": t(240)}],
+            "recommendation": {"recommended_action": "OBSERVE", "executable": False, "current_action": None,
+                               "source": "deterministic_fixed"},
+            "evidence_gaps": {"items": [{"marker": t(240), "question": t(240), "capability": t(240)}] * 4,
+                              "reason": "r" * 90, "source": "deterministic"},
+            "handoff": {"incident_id": incident_id, "privacy_class": "P3-restricted"}}
+
+
+def _maximal_row(n):
+    """A row with every optional field the reader accepts at its upper bound, plus a maximal trace."""
+    from azazel_nexus.incident_explain import CITATION_FIELDS
+    big = trace(last_receipt={**RECEIPT, "limitations": [FULL_NODE_LIMITATIONS[i] for i in (0, 2, 1)]})
+    r = row_with(big, fast=_core_full_node_fast("partial"), origin="observation_rule_v1_repeat")
+    r["incident_id"] = f"inc-{n:016x}"
+    r["last_seen"] = r["last_seen"] + n
+    text = lambda k: ("Inspect the launch of the interpreter and check its parent " * 5)[:k].strip()
+    e = r["explanation"]
+    e.update(state="explained", route="local", outcome="answered", content_kind="ai_advice",
+             summary=text(279), knowledge_refs_omitted=8)
+    ref = {"technique_id": "T1110", "name": "n" * 120, "claim_id": "T1110",
+           "bundle_digest_short": "sha256:" + "a" * 12, "generation": 2**62, "freshness": "current",
+           "as_of": "2026-11-06T00:00:00Z", "citation": "c" * 160, "citation_state": "shown"}
+    e["knowledge_refs"] = [ref] * 8
+    e["guidance"] = _maximal_guidance(r["incident_id"])
+    f = e["fast_assistance"]
+    f["unknowns"] = [text(240)] * 8
+    f["next_checks"] = [text(240)] * 8
+    f["knowledge"] = [{"technique_id": "T1110", "name": "n" * 120, "summary": "s" * 240,
+                       "freshness": "current", "as_of": "2026-11-06T00:00:00Z", "citation": "c" * 160,
+                       "revocation_status": "clear", "claim_status": "reported_unverified"}] * 8
+    f["dependency_outcome"] = {"knowledge": "available", "deception": "absent"}
+    e["slow_analysis"] = {"state": "complete", "usage": "known", "verification": "model_proposed_unverified",
+                          "hypotheses": [text(240)] * 4, "unknowns": [text(240)] * 8,
+                          "next_checks": [text(240)] * 8}
+    return r
+
+
+def _recent_bytes(rows):
+    return len(json.dumps({"schema": "azazel-nexus/recent-incidents/v1", "written_at": 1,
+                           "incidents": rows}).encode())
+
+
+def test_the_trace_adds_under_one_kib_to_a_maximal_row():
     from azazel_nexus.incident_explain import RECENT_BYTES
-    big = trace(last_receipt={**RECEIPT, "limitations": list(FULL_NODE_LIMITATIONS[:1])})
-    rows = []
-    for n in range(20):
-        r = row_with(big, origin="observation_rule_v1_repeat")
-        r["incident_id"] = f"inc-{n:016x}"
-        r["last_seen"] = r["last_seen"] + n
-        r["explanation"].update(state="explained", route="local", outcome="answered",
-                                content_kind="ai_advice", summary=("Inspect the launch of the interpreter and check its parent " * 5)[:279].strip())
-        rows.append(r)
-    raw = json.dumps(build_recent_incidents(rows, 1)).encode()
-    assert len(raw) <= RECENT_BYTES
-    assert len(json.dumps(big).encode()) < 1024
+    rows = [_maximal_row(n) for n in range(20)]
+    assert read_recent_incidents(json.dumps({"schema": "azazel-nexus/recent-incidents/v1",
+                                             "written_at": 1, "incidents": rows[:1]}).encode()) is not None
+    bare = [{k: v for k, v in r.items() if k != "full_node_trace"} for r in rows]
+    per_row = (_recent_bytes(rows) - _recent_bytes(bare)) / 20
+    assert 0 < per_row < 1024
+    print("one maximal row:", len(json.dumps(rows[0])), "twenty with trace:", _recent_bytes(rows),
+          "without:", _recent_bytes(bare), "bound:", RECENT_BYTES)
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "FINDING (review M4): rows with every existing optional field at the reader's maximum "
+    "(citations, guidance, slow_analysis, fast_assistance strings) are about 60 KiB each, so 20 of "
+    "them exceed RECENT_BYTES (256 KiB) even without the trace; the product is unchanged."))
+def test_twenty_maximal_rows_fit_in_the_bound():
+    from azazel_nexus.incident_explain import RECENT_BYTES
+    assert _recent_bytes([_maximal_row(n) for n in range(20)]) <= RECENT_BYTES
 
 
 # ---- rollback conversion -------------------------------------------------
