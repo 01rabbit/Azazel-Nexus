@@ -208,14 +208,19 @@ one of them to look wrong.
 ### Reading the explainer right after a restart
 
 Shortly after `azazel-incident-explaind` restarts with a checkpoint, the
-explainer list may show it as behind (pending work) while the time of the last
-explanation does not move. That is the designed 60-second wait of the rolling
-rate budget, not a fault; the restart itself does not alter the rows already
-shown, and they keep updating from new transitions. If it continues well
-beyond a minute, treat it as a different cause: check that the explainer
-snapshot is still fresh, the storage indicator, and the refusal counts, with
-the recovery steps in [operations](operations.md). The page does not estimate
-the remaining time.
+explainer may be shown as behind (`explainer_behind`, with a count) and no new
+explanation appears. That is the designed 60-second wait of the rolling
+rate budget, not a fault. Recorded explanations are not changed by the
+restart and rows keep updating from new transitions; a handoff exported
+meanwhile reports the AI assessment as `explanation_pending`. Only an
+asynchronous model proposal that was still running at the restart can change
+state: after restore its `slow_analysis` becomes degraded
+(`unavailable_after_restart`). If the behind state continues well beyond a
+minute, treat it as a different cause: check that the explainer card's
+observation time is still fresh and whether a storage failure is noted, then
+read the last explanation time and refusal counts from status as described in
+[operations](operations.md). The page shows neither of those, and does not
+estimate the remaining time.
 
 ### When a refresh fails
 

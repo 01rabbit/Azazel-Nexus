@@ -594,8 +594,7 @@ nothing in intake, detection or Edge's observe-only decisions.
   when a checkpoint exists and covers every queued candidate (resumed,
   escalation and new openings); polling, checkpointing, the recent list and
   audit forwarding continue meanwhile, and status exposes no remaining time.
-  Record append precedes
-  cursor checkpoint: a crash between the two can duplicate the last explanation
+  Record append precedes cursor checkpoint: a crash between the two can duplicate the last explanation
   (at-least-once processing), without affecting Edge.
 - **Frame and privacy.** Frames use exactly `read_frame`'s four fields, with
   request id `inc-<16 hex>:<ledger sequence>` and a fixed Japanese question.
