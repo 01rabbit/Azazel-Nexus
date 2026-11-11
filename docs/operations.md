@@ -777,6 +777,33 @@ is still broken it latches again. First installation uses the same seeding rule.
 A checkpoint from the earlier I2 format containing full pending transitions is
 refused at startup; inspect it and use this reset procedure after upgrading.
 
+**No new explanations for about a minute after a restart.** When the
+explainer restarts with a checkpoint (`cursor.json` present), it treats the
+rolling six-per-minute budget as fully used and waits 60 seconds from startup
+before the next explanation attempt, severe incidents included; a restart
+cannot reset that budget. During the wait the explainer's `status.json`
+(`/var/lib/azazel/run/incident-explain-status/status.json`, or
+`azazel-nexus status --json`; the text `status` omits `pending` and
+`last_explained_at`) shows `pending` rising (or unchanged) and
+`last_explained_at` not advancing, and this is expected. A handoff exported
+meanwhile with sudo reports the AI assessment of an incident that has no
+recorded explanation yet and whose recent row is still `pending` as
+`explanation_pending`; an incident already explained keeps showing its
+recorded explanations. Only explaining stops:
+ingest, checkpoints, the recent list, close handling, audit forwarding and
+status writes continue;
+recorded explanations are not altered by the restart, and recent rows keep
+updating from new transitions. A first start or a start after the cursor reset
+above has no checkpoint and does not wait. If `pending` stays above 0 and
+`last_explained_at` does not advance well beyond a minute, the cause is
+something else: check that status's `written_at` is still fresh (the unit's
+state and journal), `storage_failed`, and `refused` (the text `status` does
+not list every code) for `explanation_segment_full` or `stale_skipped`. (An
+unavailable M.I.O. does not produce this picture: the explainer still records
+an explanation without content. A broken chain stops ingest and shows as
+`chain_broken` with the recovery hint above.)
+Status carries no restart time or remaining wait, so none is shown.
+
 **Rolling the explainer back past #392.** From #392 the checkpoint's pending
 entries carry Edge evidence pointers (digests and receive instants), and
 explanation records carry `evidence` and `mio.provenance`. The release before

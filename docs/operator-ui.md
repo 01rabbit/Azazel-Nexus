@@ -205,6 +205,25 @@ one of them to look wrong.
 | Knowledge | Knowledge Lite state, freshness, generation, what "functional" does and does not mean, the verified bundle's facts (shortened digest, signing key ids, static and dated claim counts, nearest expiry; a withheld fact says so), the cryptographic implementation status, the operator snapshot of `knowledge.status`, the external peer (absent by design) and the citations of recent incidents. | `knowledge_lite`, `knowledge_status`, `external_modules`, `edge_loop.recent` |
 | セットアップ・復旧 (setup and recovery) | The setup guide's steps and their next commands **as text** (the page runs nothing), provider admission, health, each unit's state and each storage location, the explainer's chain recovery hint and status's next actions. | `setup --json`, `health`, `services`, `storage`, `next_actions`, `enforcement` |
 
+### Reading the explainer right after a restart
+
+Shortly after `azazel-incident-explaind` restarts with a checkpoint, the
+explainer may be shown as behind (`explainer_behind`, with a count) and no new
+explanation appears. That is the designed 60-second wait of the rolling
+rate budget, not a fault. Recorded explanations are not changed by the
+restart and rows keep updating from new transitions. A handoff exported
+from this page cannot read the explanation ledger and reports
+`not_readable_by_principal` as before; see [operations](operations.md) for
+what a sudo export shows meanwhile. Only an asynchronous model proposal,
+whether still running or already completed before the restart, can change
+state: after restore its `slow_analysis` becomes degraded
+(`unavailable_after_restart`). If the behind state continues well beyond a
+minute, treat it as a different cause: check that the explainer card's
+observation time is still fresh and whether a storage failure is noted, then
+read the last explanation time and refusal counts from status as described in
+[operations](operations.md). The page shows neither of those, and does not
+estimate the remaining time.
+
 ### When a refresh fails
 
 The page refreshes `/api/view` every 5 seconds (a request that has not answered within 8 seconds counts as timed out). What stays on screen depends on why it failed:
