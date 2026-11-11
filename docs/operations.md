@@ -928,8 +928,9 @@ package's own withholding rules. An operator's export reads the snapshots only
 and reports the ledger as `not_readable_by_principal`. The UI cannot read the
 ledger and shows the reduced row, and a slow analysis reduced to `degraded`
 reads as `degraded` in the package as well. The `refused.status_write_failed`
-counter adds up failed writes of the public files, polls in which the window could not be written, and reduction
-passes (one per pass however many rows it changed; settling an explanation and then
+counter adds up failed writes of the public files, polls in which the window
+could not be written, and reduction passes (one per pass however many rows it
+changed; settling an explanation and then
 attaching its slow analysis can count twice). A row whose slow analysis alone
 became `degraded` carries no failure code. None of this calls for removing the
 cursor. Only a window that still exceeded the bound with every row reduced would
