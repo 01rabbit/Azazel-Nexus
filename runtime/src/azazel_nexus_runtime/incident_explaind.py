@@ -415,6 +415,32 @@ def poll_generation_result(receipt, *, deadline_s=0.05, caller_epoch=None, priva
         return None
 
 
+#: The builder's order (incident_explain.py); ascending is oldest first.
+_RECENT_ORDER = lambda r: (r["last_seen"], r["first_seen"], r["incident_id"])  # noqa: E731
+def _withhold_path_citations(row):
+    """The builder's projection of a row (`_public_refs` in the library), by public names."""
+    from azazel_nexus.incident_explain import citation_names_a_path
+    explanation = row.get("explanation")
+    if not isinstance(explanation, dict) or not isinstance(explanation.get("knowledge_refs"), list):
+        return row
+    refs = []
+    for ref in explanation["knowledge_refs"]:
+        if (isinstance(ref, dict) and isinstance(ref.get("citation"), str)
+                and citation_names_a_path(ref["citation"])):
+            ref = {**ref, "citation": "", "citation_state": "withheld"}
+        refs.append(ref)
+    return {**row, "explanation": {**explanation, "knowledge_refs": refs}}
+
+
+_SLOW_REDUCED = {"state": "degraded", "usage": "unknown"}
+
+
+def _unavailable_explanation(code):
+    return {"state": "unavailable", "route": "unavailable",
+            "outcome": "unavailable", "summary": "",
+            "knowledge_refs": [], "failure_codes": [code]}
+
+
 class Explainer:
     def __init__(self, *, incidents, state, status_path, clock=time.time,
                  monotonic=time.monotonic, mio=None, knowledge=None, store_limits=None, audit=None,
@@ -498,17 +524,92 @@ class Explainer:
         with self._audit_lock:
             setattr(self, name, getattr(self, name) + n)
 
-    def recent_status(self):
+    def _public_rows(self, rows=None):
         # Guard at the actual public file/UI write boundary as well as during
         # library projection. Never rely on partial binding to hide model text.
-        rows = copy.deepcopy(self.recent)
+        rows = copy.deepcopy(self.recent if rows is None else rows)
         for row in rows:
             slow = row.get("explanation", {}).get("slow_analysis", {})
             if slow.get("state") == "complete":
                 for field in ("hypotheses", "unknowns", "next_checks"):
                     if type(slow.get(field)) is list:
                         slow[field] = [guard_public_model_text(text) for text in slow[field]]
-        value = build_recent_incidents(rows, self.clock())
+        return rows
+
+    def _fits(self, rows, now):
+        try:
+            build_recent_incidents(self._public_rows(rows), now)
+            # defensive: checkpoint measures the unguarded projection
+            build_recent_incidents(copy.deepcopy(rows), 0)
+            return True
+        except ValueError:
+            return False
+
+    def _shrink_to_fit(self, rows, own=None, own_first=True, now=None):
+        """Reduce rows in place, in a fixed order, until the window fits (#427).
+
+        `own` (the row just rewritten) goes first when `own_first`, else it is
+        left alone; then the other rows from the oldest in the builder's order.
+        A row's slow analysis is reduced to degraded, then its explanation to
+        unavailable (status_write_failed) when that is shorter; pending rows are
+        left untouched in both steps. The ledger and full_node_trace are not touched.
+        Returns whether any row changed.
+        """
+        now = self.clock() if now is None else now  # one reading per pass
+        if self._fits(rows, now):
+            return False
+        from azazel_nexus.incident_explain import RECENT_BYTES, RECENT_SCHEMA
+        order = sorted(rows, key=_RECENT_ORDER)
+        # Measured with the builder's projection: a path-naming citation is withheld there
+        # (_public_refs in the library, a private name the runtime may not import).
+        sized = json.dumps({"schema": RECENT_SCHEMA, "written_at": now,
+                            "incidents": [_withhold_path_citations(r)
+                                          for r in self._public_rows(order[::-1][:20])]},
+                           allow_nan=False)
+        if len(sized.encode()) <= RECENT_BYTES:
+            return False  # refused for a reason other than size: shrinking would not help
+        targets = ([r for r in order if r["incident_id"] == own] if own_first else []) + [
+            r for r in order if r["incident_id"] != own]
+        changed = False
+        for row in targets:
+            e = row["explanation"]
+            if e["state"] == "pending":
+                continue  # pending rows are not reduced (#427 section 5)
+            if ("slow_analysis" in e and e["slow_analysis"] != _SLOW_REDUCED
+                    and len(json.dumps(_SLOW_REDUCED)) < len(json.dumps(e["slow_analysis"]))):
+                row["explanation"] = e = {**e, "slow_analysis": dict(_SLOW_REDUCED)}
+                changed = True
+                if self._fits(rows, now):
+                    return True
+            gone = _unavailable_explanation("status_write_failed")
+            if len(json.dumps(gone)) < len(json.dumps(e)):
+                row["explanation"] = gone
+                changed = True
+                if self._fits(rows, now):
+                    return True
+        return changed
+
+    def _keep_window(self, own=None, own_first=True, now=None):
+        """Keep the in-memory window inside the published bound (#427)."""
+        if self._shrink_to_fit(self.recent, own, own_first, self.clock() if now is None else now):
+            self.refuse("status_write_failed")
+
+    def recent_status(self):
+        now = self.clock()  # one reading for the whole pass
+        try:
+            value = build_recent_incidents(self._public_rows(), now)
+        except ValueError:
+            try:
+                self._keep_window(None, now=now)
+            except ValueError:
+                # Defensive only: the formal path cannot reach it; count one failed pass.
+                self.refuse("status_write_failed")
+                return
+            try:
+                value = build_recent_incidents(self._public_rows(), now)
+            except ValueError:
+                self.refuse("status_write_failed")
+                return
         now = self.monotonic()
         # Rewrite unchanged rows every 20 s so a quiet node is not shown stale.
         if now - self._recent_at < 5 or (value["incidents"] == self._recent_value
@@ -535,8 +636,18 @@ class Explainer:
                     row["explanation"] = {**row["explanation"],
                                            "slow_analysis": {"state": "superseded",
                                                              "usage": "unknown"}}
-            self.recent = build_recent_incidents(
-                [r for r in self.recent if r["incident_id"] != ident] + [row], self.clock())["incidents"]
+            candidate = [r for r in self.recent if r["incident_id"] != ident] + [row]
+            now = self.clock()  # one reading for the whole pass
+            try:
+                self.recent = build_recent_incidents(candidate, now)["incidents"]
+            except ValueError:
+                # A full window gives room from its oldest rows (#427, DESIGN-427
+                # section 5); nothing changes unless the reduced window is accepted.
+                trial = sorted(copy.deepcopy(candidate), key=_RECENT_ORDER, reverse=True)[:20]
+                reduced = self._shrink_to_fit(trial, ident, own_first=False, now=now)
+                self.recent = build_recent_incidents(trial, now)["incidents"]
+                if reduced:
+                    self.refuse("status_write_failed")
             if sequence is not None:
                 self._latest_sequence.pop(ident, None)
                 self._latest_sequence[ident] = sequence
@@ -587,11 +698,10 @@ class Explainer:
             if row["incident_id"] == ident:
                 if displaced and row["explanation"]["state"] in SHOWN_STATES:
                     continue
-                row["explanation"] = {"state": "unavailable", "route": "unavailable",
-                                      "outcome": "unavailable", "summary": "",
-                                      "knowledge_refs": [], "failure_codes": [code]}
+                row["explanation"] = _unavailable_explanation(code)
                 if "full_node_trace" in row:
                     row["full_node_trace"]["transition_query"] = "not_explained"
+        self._keep_window(ident, own_first=False)
 
     @staticmethod
     def _generation_binding(event):
@@ -651,6 +761,7 @@ class Explainer:
                 explanation = dict(row["explanation"])
                 explanation["slow_analysis"] = projection
                 row["explanation"] = explanation
+        self._keep_window(receipt["incident_id"])
 
     def _generation_value(self, handle):
         if handle in self._generation_restart_unknown:
@@ -1083,6 +1194,7 @@ class Explainer:
                 self._generation_current.clear()
                 self.refuse("storage_failed")
         self._future()
+        self._keep_window(None)  # a reader-valid window the builder would refuse
         self.checkpoint()
 
     def _future(self):
@@ -1205,6 +1317,7 @@ class Explainer:
                                 for row in self.recent:
                                     row["state"] = "closed"
                                     self._close_full_node(row)
+                                self._keep_window(None)
                         else:
                             t = read_transition(event)
                             if seeding:
@@ -1484,6 +1597,7 @@ class Explainer:
         for row in self.recent:
             if row["incident_id"] == t["incident_id"]:
                 self._settle_row(row, summary, t, sequence, attempt, value["explained_at"])
+        self._keep_window(t["incident_id"])
         handle = self._generation_current.get(t["incident_id"])
         if handle is not None:
             self._set_generation_projection(

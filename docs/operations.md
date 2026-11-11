@@ -913,6 +913,31 @@ availability, `audit_forward_dropped` (delivery gave up or queue full) and
 `inspect_incident_chain_then_remove_cursor_and_restart`; follow the recovery
 procedure above before removing any cursor.
 
+The explainer keeps the recent window it publishes inside the 256 KiB bound of
+`recent.json` (Issue #427). When a change would take the window over the bound,
+rows are reduced in a fixed order until it fits: first the row whose explanation
+just grew (a settled explanation or a slow analysis), then the other rows from the
+oldest, in the list's order (last seen, then first seen, then incident ID). A
+reduced row shows its slow analysis as `degraded` or, if that is not enough, its
+explanation as `unavailable` with the failure code `status_write_failed`. Pending
+rows are not reduced, and a new incident is always added to the list. Only the
+published window changes: the explanation ledger keeps every record, and
+`azazel-nexus handoff <id>` run as root or as an operator shows the ledger's
+explanation and guidance in full. The UI cannot read the ledger and shows the
+reduced row, and a slow analysis reduced to `degraded` reads as `degraded` in the
+package as well. The `refused.status_write_failed` counter adds up failed writes of
+the public files, polls in which the window could not be written, and reduction
+passes (one per pass however many rows it changed; settling an explanation and then
+attaching its slow analysis can count twice). A row whose slow analysis alone
+became `degraded` carries no failure code. None of this calls for removing the
+cursor. Only a window that still exceeded the bound with every row reduced would
+refuse a new incident (`refused.transition_refused`) or latch `storage_failed:
+true`, and the row limits rule that out today (twenty fully reduced rows with the
+largest traces measure about 30 KB). If the window latches `storage_failed:
+true`, follow the cursor removal procedure for `chain_broken` above. A refused new
+incident alone (the window unchanged, no latch) needs no cursor removal: the ledger
+and the handoff still hold it.
+
 The intake's part ends with one line for the Deception Lite decoy
 (#196 P2). With the decoy socket open it reads
 `decoy (Deception Lite; Nexus's own observation, not Edge's; not hardware evidence): accepted 3; last accepted 12s ago; refused 5 (DECOY_SHAPE=4, decoy_rate_limited=1)`;
