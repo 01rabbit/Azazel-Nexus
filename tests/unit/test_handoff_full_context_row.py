@@ -96,13 +96,26 @@ def test_full_row_digest_vector(tmp_path, principal):
     assert _digests(files) == GOLDEN_FULL_ROW[principal]
 
 
-@pytest.mark.parametrize("principal", ["root", "operator", "ui"])
+# U39 E: principal ui now carries a closed `knowledge.full_node_context`; what stays
+# hidden for ui is the source text and identifiers, not the closed words.
+UI_HIDDEN = ("request_id", "correlation_id", "provider_id", "key_id", "subject", "question")
+
+
+@pytest.mark.parametrize("principal", ["root", "operator"])
 def test_full_projection_text_never_reaches_the_package(tmp_path, monkeypatch, principal):
     files = _files(_root(tmp_path, "d", {**BASE, "full_node_context": FULL}), principal, monkeypatch)
     for name, data in files.items():
         text = data.decode("utf-8")
         for mark in FULL_ONLY:
             assert mark not in text, (principal, name, mark)
+
+
+def test_ui_package_hides_source_text_and_identifiers(tmp_path, monkeypatch):
+    files = _files(_root(tmp_path, "d", {**BASE, "full_node_context": FULL}), "ui", monkeypatch)
+    for name, data in files.items():
+        text = data.decode("utf-8")
+        for mark in UI_HIDDEN:
+            assert mark not in text, (name, mark)
 
 
 def _closed(status, outcome):
@@ -134,7 +147,7 @@ def test_other_projection_states_keep_the_pinned_digests(tmp_path, principal, st
     assert _digests(files) == GOLDEN_FULL_ROW[principal]
 
 
-@pytest.mark.parametrize("principal", ["root", "operator", "ui"])
+@pytest.mark.parametrize("principal", ["root", "operator"])
 @pytest.mark.parametrize("state", sorted(OTHER_STATES))
 def test_other_projection_states_never_reach_the_package(tmp_path, monkeypatch, principal, state):
     row = {**BASE, "full_node_context": OTHER_STATES[state]}
