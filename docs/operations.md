@@ -883,24 +883,27 @@ availability, `audit_forward_dropped` (delivery gave up or queue full) and
 procedure above before removing any cursor.
 
 The explainer keeps the recent window it publishes inside the 256 KiB bound of
-`recent.json` (Issue #427). When an incident's explanation is too large for the
-window, its row is shown with the slow analysis reduced to `degraded` or, if that
-is not enough, with the explanation `unavailable` and the failure code
-`status_write_failed`; the full explanation stays in the explanation ledger and
-`azazel-nexus handoff <id>` shows it in full. The `refused.status_write_failed`
-counter adds up failed writes of the public files, polls in which the window
-exceeded the bound and could not be written (counted every poll), and row
-reductions. A `status_write_failed` in a row's `failure_codes` means that row's
-explanation was reduced because of the window; the ledger and the handoff hold
-it in full. A row whose slow analysis alone became `degraded` carries no such
-mark. If `refused.transition_refused` rises while the status open count differs
-from the list (`list_differs_from_intake`), the window may be full and new
-incidents are missing from the list even though it reads as fresh; check the
-ledger and the handoff for them. An unwritable window does not stop the
-explainer: `recent.json` turns stale after 30 seconds. With
-`storage_failed: true`, restarting alone re-runs the same pending work, latches
-again and adds duplicate ledger records; follow the cursor removal procedure
-for `chain_broken` above (stop the service, remove only `cursor.json`, restart).
+`recent.json` (Issue #427). When a change would take the window over the bound,
+rows are reduced in a fixed order until it fits: first the row whose explanation
+just grew (a settled explanation or a slow analysis), then the other rows from the
+oldest, in the list's order (last seen, then first seen, then incident ID). A
+reduced row shows its slow analysis as `degraded` or, if that is not enough, its
+explanation as `unavailable` with the failure code `status_write_failed`. Pending
+rows are not reduced, and a new incident is always added to the list. Only the
+published window changes: the explanation ledger keeps every record, and
+`azazel-nexus handoff <id>` run as root or as an operator shows the ledger's
+explanation and guidance in full. The UI cannot read the ledger and shows the
+reduced row, and a slow analysis reduced to `degraded` reads as `degraded` in the
+package as well. The `refused.status_write_failed` counter adds up failed writes of
+the public files, polls in which the window could not be written, and reduction
+passes (one per pass however many rows it changed; settling an explanation and then
+attaching its slow analysis can count twice). A row whose slow analysis alone
+became `degraded` carries no failure code. None of this calls for removing the
+cursor. Only a window that still exceeded the bound with every row reduced would
+refuse a new incident (`refused.transition_refused`) or latch `storage_failed:
+true`, and the row limits rule that out today (twenty fully reduced rows with the
+largest traces measure about 30 KB). If it happens, follow the cursor removal
+procedure for `chain_broken` above.
 
 The intake's part ends with one line for the Deception Lite decoy
 (#196 P2). With the decoy socket open it reads

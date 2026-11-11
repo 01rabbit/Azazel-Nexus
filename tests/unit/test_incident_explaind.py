@@ -1342,13 +1342,18 @@ def _dsize(rows, written_at=0):
                           allow_nan=False).encode())
 
 
-def _scaled_row(n, fraction):
+def _scaled_row(n, fraction, bare=False):
     import math
     from test_full_node_trace import _maximal_row
 
+    steps = [0]
+
     def cut(node):
         if isinstance(node, list):
-            keep = max(1, math.ceil(len(node) * fraction)) if len(node) > 1 else 1
+            # Each list steps at its own point, so a row's size changes in small increments.
+            steps[0] += 1
+            phase = (steps[0] * 0.381966) % 1
+            keep = min(len(node), max(1, math.ceil(len(node) * fraction + phase - 1))) if len(node) > 1 else 1
             return [cut(x) for x in node[:keep]]
         if isinstance(node, dict):
             return {k: cut(v) for k, v in node.items()}
@@ -1356,35 +1361,38 @@ def _scaled_row(n, fraction):
     row = _maximal_row(n)
     row["explanation"] = cut(row["explanation"])
     row["explanation"]["summary"] = "a"
+    if bare:       # rows a reset leaves alone apart from the state word (+2 bytes each)
+        row.pop("full_node_trace", None)
+        row["explanation"].pop("fast_assistance", None)
     return row
 
 
-def _fit_rows(n, target, extra=()):
+def _fit_rows(n, target, extra=(), bare=False):
     """n valid rows whose window with `extra` measures exactly `target` bytes (written_at 0)."""
     from azazel_nexus.incident_explain import RECENT_SCHEMA, read_recent_incidents
     extra = list(extra)
     pattern = "Inspect the launch of the interpreter and check its parent " * 6
     text = lambda k: pattern[:k][:-1] + "a" if pattern[:k].endswith(" ") else pattern[:k]
     goal = target
-    for reserve in (2000, 1700, 1400, 1100, 2300, 800):
+    for reserve in (2000, 1700, 1400, 1100, 2300, 800, 2600, 2900, 3200, 500, 3500, 3800, 4100, 1250, 1550, 1850):
         lo, hi = 0.0, 1.0
         for _ in range(30):
             mid = (lo + hi) / 2
-            if _dsize([_scaled_row(i + 1, mid) for i in range(n)] + extra) <= goal - n * 270:
+            if _dsize([_scaled_row(i + 1, mid, bare) for i in range(n)] + extra) <= goal - n * 270:
                 lo = mid
             else:
                 hi = mid
-        rows = [_scaled_row(i + 1, lo) for i in range(n)]
+        rows = [_scaled_row(i + 1, lo, bare) for i in range(n)]
         for i in range(n):
             a, b = lo, 1.0
             for _ in range(25):
                 m = (a + b) / 2
-                trial = rows[:i] + [_scaled_row(i + 1, m)] + rows[i + 1:]
+                trial = rows[:i] + [_scaled_row(i + 1, m, bare)] + rows[i + 1:]
                 if _dsize(trial + extra) <= goal - reserve:
                     a = m
                 else:
                     b = m
-            rows[i] = _scaled_row(i + 1, a)
+            rows[i] = _scaled_row(i + 1, a, bare)
         need = goal - _dsize(rows + extra)
         if not 0 <= need <= n * 278:
             continue
@@ -1457,25 +1465,6 @@ def _bound_ok(tmp_path):
     return read_recent_incidents(raw)
 
 
-def test_window_stays_within_bound_status_survives_an_over_bound_window(tmp_path, monkeypatch):
-    from azazel_nexus.incident_explain import RECENT_BYTES
-    rows = _fit_rows(20, RECENT_BYTES)            # fits with written_at 0 (checkpoint, restore)
-    seed = _window(tmp_path, rows)
-    seed.recent_status()
-    kept = (tmp_path / "recent.json").read_bytes()
-    e = make(tmp_path, clock=lambda: 1061.0)       # "written_at": 1061.0 is 5 bytes longer: bound + 5
-    e.monotonic = lambda: 100
-    e.status()                                      # (a) no exception
-    assert e.refused["status_write_failed"] == 1
-    assert (tmp_path / "recent.json").read_bytes() == kept
-    assert json.loads((tmp_path / "status.json").read_text())["refused"]["status_write_failed"] == 1
-    monkeypatch.setattr(daemon, "POLL_SECONDS", 0.02)
-    calls = []
-    e2 = make(tmp_path, clock=lambda: 1061.0)
-    assert e2.serve(stop=lambda: calls.append(1) or len(calls) > 3) == 0
-    assert e2.refused["status_write_failed"] >= 1 and not e2.storage_failed
-
-
 def test_window_stays_within_bound_when_a_settle_overflows(tmp_path):
     from azazel_nexus.incident_explain import CODES, RECENT_BYTES
     settled = _settled_row()
@@ -1535,7 +1524,7 @@ def test_window_stays_within_bound_settling_incidents_one_at_a_time_with_large_r
     for the largest rows the path can make: from some n on, settled rows show as degraded.
     Only the first ten incidents are settled. The eleventh would add a pending row that no
     row in the window can give room for (a pending row becomes an unavailable row that is
-    25 bytes or more longer, more with a trace); that residual is DESIGN-427 section 5 and is deliberately not covered.
+    25 bytes or more longer, more with a trace); that case is covered by the section 5 tests below (settle_minimum_still_over_reduces_the_oldest).
     """
     from azazel_nexus.incident_explain import RECENT_BYTES, CODES
     maximal = _loose_rows(4, RECENT_BYTES - 16000)     # reader-bounded large rows, 30 KB left over
@@ -1559,11 +1548,203 @@ def test_window_stays_within_bound_settling_incidents_one_at_a_time_with_large_r
     assert len((tmp_path / "state" / "cursor.json").read_bytes()) <= RECENT_BYTES * 2
 
 
-def test_window_stays_within_bound_residual_latch_is_fixed_until_section_5(tmp_path):
-    """DESIGN-427 section 5 residual: the eleventh incident latches storage_failed, daemon lives.
+# ---- #427 section 5: a change the row cannot absorb takes room from the oldest rows ----
 
-    Expected values change once section 5 is approved and implemented.
-    """
+_Y = "inc-" + "c" * 16
+
+
+def _pending_row(t):
+    """The real pending row for `t` (calibration only; the formal path, in a scratch directory)."""
+    with tempfile.TemporaryDirectory() as d:
+        base = Path(d)
+        make(base).checkpoint()
+        e = make(base)
+        append(e, t)
+        e.poll()
+        return json.loads(json.dumps([r for r in e.recent if r["incident_id"] == t["incident_id"]][0]))
+
+
+def _key(r):
+    return (r["last_seen"], r["first_seen"], r["incident_id"])
+
+
+def _jb(r):
+    return json.dumps(r, sort_keys=True)
+
+
+def _old(n, **explanation):
+    """A reader-valid row that sorts before every _fit_rows row (last_seen 0)."""
+    from test_full_node_trace import _maximal_row
+    r = _maximal_row(n)
+    r["last_seen"] = 0
+    r["explanation"].update(explanation)
+    return r
+
+
+def _small_explained(n):
+    """An explained row with a short summary and nothing optional; unavailable is a little shorter."""
+    r = _old(n)
+    e = r["explanation"]
+    for k in ("slow_analysis", "fast_assistance", "guidance", "content_kind"):
+        e.pop(k, None)
+    e.update(summary=("Inspect the launch of the interpreter and check its parent " * 4)[:200].strip(),
+             knowledge_refs=[])
+    return r
+
+
+def _insert(tmp_path, d, rows=None, olds=(), settle=False, **kwargs):
+    """A window `d` bytes over the bound once a new pending incident joins; then the real poll."""
+    from azazel_nexus.incident_explain import RECENT_BYTES
+    t = transition(incident_id=_Y)
+    pending = _pending_row(t)
+    if rows is None:
+        rows = list(olds) + _fit_rows(19 - len(olds), RECENT_BYTES + d, [*olds, pending])
+    e = _window(tmp_path, rows, **kwargs)
+    before = {r["incident_id"]: _jb(r) for r in e.recent}
+    append(e, t)
+    e.poll()
+    if settle:
+        e.monotonic = lambda: 61
+        e.poll()
+    return e, before
+
+
+def _changed(e, before):
+    return sorted(r["incident_id"] for r in e.recent
+                  if r["incident_id"] in before and _jb(r) != before[r["incident_id"]])
+
+
+def _no_new_codes(e):
+    from azazel_nexus.incident_explain import CODES
+    assert set(e.refused) <= CODES
+    for r in e.recent:
+        assert set(r["explanation"].get("failure_codes", ())) <= CODES
+
+
+GONE = {"state": "unavailable", "route": "unavailable", "outcome": "unavailable", "summary": "",
+        "knowledge_refs": [], "failure_codes": ["status_write_failed"]}
+
+
+def test_window_stays_within_bound_s5_under_bound_is_untouched(tmp_path):
+    e, before = _insert(tmp_path, -1)
+    assert any(r["incident_id"] == _Y for r in e.recent) and len(e.recent) == 20
+    assert _changed(e, before) == [] and not e.refused
+    _no_new_codes(e)
+
+
+def test_window_stays_within_bound_s5_at_bound_is_untouched(tmp_path):
+    e, before = _insert(tmp_path, 0)
+    assert any(r["incident_id"] == _Y for r in e.recent) and len(e.recent) == 20
+    assert _changed(e, before) == [] and not e.refused
+    assert len(_bound_ok(tmp_path)["incidents"]) == 20
+
+
+def test_window_stays_within_bound_s5_one_over_reduces_the_oldest(tmp_path):
+    e, before = _insert(tmp_path, 1)
+    assert any(r["incident_id"] == _Y for r in e.recent) and len(e.recent) == 20
+    oldest = min((r for r in e.recent if r["incident_id"] != _Y), key=_key)["incident_id"]
+    assert _changed(e, before) == [oldest]
+    row = [r for r in e.recent if r["incident_id"] == oldest][0]
+    assert row["explanation"]["slow_analysis"] == {"state": "degraded", "usage": "unknown"}
+    assert e.refused["status_write_failed"] == 1 and "transition_refused" not in e.refused
+    assert not e.storage_failed
+    assert len(_bound_ok(tmp_path)["incidents"]) == 20
+    assert (tmp_path / "state" / "cursor.json").stat().st_size > 0
+    _no_new_codes(e)
+
+
+def test_window_stays_within_bound_s5_a_large_oldest_row_gives_up_its_slow_first(tmp_path):
+    e, before = _insert(tmp_path, 1, olds=[_old(0)])
+    assert _changed(e, before) == [f"inc-{0:016x}"]
+    row = [r for r in e.recent if r["incident_id"] == f"inc-{0:016x}"][0]
+    assert row["explanation"]["slow_analysis"] == {"state": "degraded", "usage": "unknown"}
+    rest = lambda r: {k: v for k, v in r["explanation"].items() if k != "slow_analysis"}
+    assert rest(row) == rest(_old(0))
+    assert row["explanation"]["state"] == "explained"
+    assert e.refused["status_write_failed"] == 1
+
+
+def test_window_stays_within_bound_s5_reductions_chain_from_the_oldest(tmp_path):
+    olds = [_small_explained(0), _small_explained(0x100), _small_explained(0x200)]
+    s1 = len(json.dumps(olds[0])) - len(json.dumps({**olds[0], "explanation": GONE}))
+    assert 0 < s1 < 380
+    e, before = _insert(tmp_path, s1 + 1, olds=olds)
+    assert _changed(e, before) == [f"inc-{0:016x}", f"inc-{0x100:016x}"]
+    for n in (0, 0x100):
+        row = [r for r in e.recent if r["incident_id"] == f"inc-{n:016x}"][0]
+        assert row["explanation"] == GONE
+    assert e.refused["status_write_failed"] == 1       # one pass, however many rows it changed
+    assert len(_bound_ok(tmp_path)["incidents"]) == 20
+
+
+def test_window_stays_within_bound_s5_rows_that_would_grow_are_skipped(tmp_path):
+    old = _pending_row(transition(incident_id=f"inc-{0:016x}"))
+    tiny = _small_explained(0x100)          # unavailable would not be shorter than this
+    tiny["explanation"].update(summary="a", failure_codes=[])
+    assert len(json.dumps(GONE)) >= len(json.dumps(tiny["explanation"]))
+    e, before = _insert(tmp_path, 1, olds=[old, tiny])
+    skipped = {old["incident_id"], tiny["incident_id"]}
+    oldest_fit = min((r for r in e.recent if r["incident_id"] not in skipped | {_Y}), key=_key)["incident_id"]
+    assert _changed(e, before) == [oldest_fit]
+    assert [r for r in e.recent if r["incident_id"] == old["incident_id"]][0]["explanation"]["state"] == "pending"
+
+
+def test_window_stays_within_bound_s5_ties_break_on_incident_id(tmp_path):
+    from azazel_nexus.incident_explain import RECENT_BYTES
+    pending = _pending_row(transition(incident_id=_Y))
+    raws = []
+    for k, order in enumerate((1, -1)):
+        base = tmp_path / str(k)
+        base.mkdir()
+        a, b = _scaled_row(0, 0.3), _scaled_row(0x100, 0.3)
+        a["last_seen"] = b["last_seen"] = 0
+        rows = [a, b] + _fit_rows(17, RECENT_BYTES + 1, [a, b, pending])
+        if order < 0:
+            rows = rows[::-1]
+        e = _window(base, rows)
+        append(e, transition(incident_id=_Y))
+        e.poll()
+        reduced = sorted(r["incident_id"] for r in e.recent
+                         if r["explanation"].get("slow_analysis") == {"state": "degraded", "usage": "unknown"})
+        assert reduced == [f"inc-{0:016x}"]
+        raws.append((base / "recent.json").read_bytes())
+    assert raws[0] == raws[1]
+
+
+def test_window_stays_within_bound_s5_reset_closing_reduces_the_oldest(tmp_path):
+    from azazel_nexus.incident_explain import RECENT_BYTES
+    rows = _fit_rows(20, RECENT_BYTES, bare=True)       # closing adds 2 bytes per row
+    assert all(r["state"] == "open" for r in rows)
+    e = _window(tmp_path, rows)
+    oldest = min(e.recent, key=_key)["incident_id"]
+    append(e, {"event_type": "edge.incident.reset", "at": 1, "reason": "intake_started"})
+    e.poll()
+    assert not e.storage_failed and all(r["state"] == "closed" for r in e.recent)
+    row = [r for r in e.recent if r["incident_id"] == oldest][0]
+    assert row["explanation"]["slow_analysis"] == {"state": "degraded", "usage": "unknown"}
+    assert e.refused["status_write_failed"] == 1
+    assert len(_bound_ok(tmp_path)["incidents"]) == 20
+
+
+def test_window_stays_within_bound_s5_unavailable_reduces_the_oldest(tmp_path):
+    from azazel_nexus.incident_explain import RECENT_BYTES
+    pending = _pending_row(transition(incident_id=_Y))
+    # The clock prints 3601 (3 bytes longer than 0): the window with the pending row measures the bound.
+    rows = _fit_rows(19, RECENT_BYTES - 3, [pending])
+    e = _window(tmp_path, rows)
+    e.clock = lambda: 3601
+    before = {r["incident_id"]: _jb(r) for r in e.recent}
+    append(e, transition(incident_id=_Y))
+    e.poll()
+    y = [r for r in e.recent if r["incident_id"] == _Y][0]
+    assert y["explanation"]["failure_codes"] == ["stale_skipped"]
+    oldest = min((r for r in e.recent if r["incident_id"] != _Y), key=_key)["incident_id"]
+    assert _changed(e, before) == [oldest]
+    assert e.refused["stale_skipped"] == 1 and e.refused["status_write_failed"] == 1
+    assert not e.storage_failed
+
+
+def test_window_stays_within_bound_s5_settle_minimum_still_over_reduces_the_oldest(tmp_path):
     maximal = _loose_rows(4, _RECENT_BYTES - 16000)
     e = _window(tmp_path, maximal)
     for n in range(11):
@@ -1571,9 +1752,139 @@ def test_window_stays_within_bound_residual_latch_is_fixed_until_section_5(tmp_p
         e.monotonic = lambda n=n: 61 * (n + 1)
         e.poll()
         e.poll()
-    assert e.storage_failed
-    assert e.refused["storage_failed"] == 1
-    assert json.loads((tmp_path / "status.json").read_text())["storage_failed"] is True
+        assert not e.storage_failed and "transition_refused" not in e.refused
+        _bound_ok(tmp_path)
+    assert len(records(e)) == 11
+    assert len({r["incident_id"] for r in records(e)}) == 11
+    assert e.refused["status_write_failed"] >= 1
+    assert (tmp_path / "state" / "cursor.json").stat().st_size > 0
+    reduced = [r for r in e.recent if r["explanation"].get("failure_codes") == ["status_write_failed"]
+               or r["explanation"].get("slow_analysis") == {"state": "degraded", "usage": "unknown"}]
+    assert reduced and len(e.recent) == 15
+    _no_new_codes(e)
+    assert json.loads((tmp_path / "status.json").read_text())["storage_failed"] is False
+
+
+def test_window_stays_within_bound_s5_restart_keeps_the_reduction(tmp_path):
+    e, _ = _insert(tmp_path, 1, settle=True)
+    assert e.refused["status_write_failed"] >= 1
+    n = len(records(e))
+    count = e.refused["status_write_failed"]
+    restarted = make(tmp_path)
+    assert restarted.recent == e.recent
+    for k in range(1, 4):
+        restarted.monotonic = lambda k=k: 100 * k
+        restarted.poll()
+    assert restarted.recent == e.recent
+    assert len(records(restarted)) == n
+    assert restarted.refused["status_write_failed"] == count
+
+
+def test_window_stays_within_bound_s5_status_reduces_a_restored_window(tmp_path, monkeypatch):
+    from azazel_nexus.incident_explain import RECENT_BYTES
+    rows = _fit_rows(20, RECENT_BYTES)             # fits with written_at 0 (checkpoint, restore)
+    seed = _window(tmp_path, rows)
+    e = make(tmp_path, clock=lambda: 1061.0)       # "written_at": 1061.0 is 5 bytes longer: bound + 5
+    e.monotonic = lambda: 100
+    e.status()                                      # no exception
+    assert e.refused["status_write_failed"] == 1
+    oldest = min(e.recent, key=_key)["incident_id"]
+    assert [r for r in e.recent if r["incident_id"] == oldest][0]["explanation"]["slow_analysis"] == {
+        "state": "degraded", "usage": "unknown"}
+    assert len(_bound_ok(tmp_path)["incidents"]) == 20
+    assert json.loads((tmp_path / "status.json").read_text())["refused"]["status_write_failed"] == 1
+    monkeypatch.setattr(daemon, "POLL_SECONDS", 0.02)
+    calls = []
+    e2 = make(tmp_path, clock=lambda: 1061.0)
+    assert e2.serve(stop=lambda: calls.append(1) or len(calls) > 3) == 0
+    assert not e2.storage_failed
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores directory modes")
+def test_window_stays_within_bound_s5_write_failure_counts_and_keeps_recent(tmp_path):
+    from azazel_nexus.incident_explain import RECENT_BYTES
+    pending = _pending_row(transition(incident_id=_Y))
+    e = _window(tmp_path, _fit_rows(19, RECENT_BYTES + 1, [pending]))
+    e.monotonic = lambda: 100
+    e.recent_status()
+    kept = (tmp_path / "recent.json").read_bytes()
+    append(e, transition(incident_id=_Y))
+    tmp_path.chmod(0o500)
+    try:
+        e.monotonic = lambda: 200
+        e.poll()
+    finally:
+        tmp_path.chmod(0o700)
+    assert e.refused["status_write_failed"] == 3     # reduction, recent.json, status.json
+    assert (tmp_path / "recent.json").read_bytes() == kept
+    assert not list(tmp_path.glob(".snapshot-*"))
+
+
+def test_window_stays_within_bound_s5_handoff_shows_the_ledger_text_of_a_reduced_row(tmp_path):
+    """The recent window reduces the oldest row; root's handoff still shows the ledger, the UI's shows the row."""
+    from test_handoff import example
+
+    from azazel_nexus import runtime_paths as paths
+    from azazel_nexus.handoff import build_package
+    from azazel_nexus.incident_explain import RECENT_BYTES
+    root = tmp_path / "root"
+    root.mkdir()
+    example.build_fixture(root)                    # the real Explainer explains example.INCIDENT
+    x_id = example.INCIDENT
+    clock = lambda: example.OPENED + 130.0         # not stale for the fixture's own history
+
+    def make_at():
+        return daemon.Explainer(
+            incidents=root / "var/lib/azazel/edge-incidents", state=root / "var/lib/azazel/incident-explain",
+            status_path=paths.snapshot_path("incident_explain_status", root), clock=clock,
+            monotonic=lambda: 100, mio=lambda _: handoff(), knowledge=lambda _: (),
+            audit=lambda event: None, guidance=lambda frame: None,
+            ui_recent_path=paths.ui_copy_path("incident_recent", root),
+            ui_status_path=paths.ui_copy_path("incident_explain_status", root))
+    ui_dir = paths.ui_copy_path("incident_recent", root).parent
+    ui_dir.mkdir(parents=True, exist_ok=True)
+    paths.ui_copy_path("incident_explain_status", root).parent.mkdir(parents=True, exist_ok=True)
+    seed = make_at()
+    seed.prepare()
+    x = json.loads(json.dumps(seed.recent[0]))
+    assert x["incident_id"] == x_id and x["explanation"]["state"] == "explained"
+    y = transition(incident_id=_Y, first_seen=example.OPENED + 110, last_seen=example.OPENED + 110)
+    pending = _pending_row(y)
+    over = len(json.dumps(clock())) - 1             # written_at prints longer than the checkpoint's 0
+    rows = _fit_rows(18, RECENT_BYTES + 1 - over, [x, pending])
+    shift = 0
+    for i, r in enumerate(rows):                    # newer than x, so x is the oldest row
+        before = len(json.dumps(r))
+        r["last_seen"] = example.OPENED + 200 + i
+        shift += len(json.dumps(r)) - before
+    rows = _fit_rows(18, RECENT_BYTES + 1 - over - shift, [x, pending])
+    for i, r in enumerate(rows):
+        r["last_seen"] = example.OPENED + 200 + i
+    seed.recent = [x] + rows
+    seed.checkpoint()
+    e = make_at()
+    e.prepare()
+    append(e, y, day="2026-10-29")
+    e.poll()
+    assert e.refused == {"status_write_failed": 1} and not e.storage_failed
+    row = [r for r in e.recent if r["incident_id"] == x_id][0]
+    assert row["explanation"] == GONE and any(r["incident_id"] == _Y for r in e.recent)
+    root_pkg = build_package(x_id, now=example.GENERATED, principal="root", root=root)
+    ai = root_pkg["ai_assessment"]
+    assert ai["source"] == "explanation_ledger" and ai["explanations"][0]["text"]
+    assert "status_write_failed" not in ai["explanations"][0]["failure_codes"]
+    assert [rec for rec in records(e) if rec["incident_id"] == x_id]     # the ledger kept the record
+    ui_pkg = build_package(x_id, now=example.GENERATED, principal="ui", root=root)
+    ui_ai = ui_pkg["ai_assessment"]
+    assert ui_ai["source"] == "recent_snapshot"
+    assert ui_ai["explanations"][0]["failure_codes"] == ["status_write_failed"]
+    assert ui_ai["explanations"][0]["text"] is None
+
+
+def test_window_stays_within_bound_s5_no_new_codes(tmp_path):
+    (tmp_path / "a").mkdir()
+    e, _ = _insert(tmp_path / "a", 1, settle=True)
+    _no_new_codes(e)
 
 
 def test_codes_are_unchanged():
