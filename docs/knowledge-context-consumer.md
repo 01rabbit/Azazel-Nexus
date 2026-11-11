@@ -134,6 +134,67 @@ the judging time and queried for the same set as now. It is an unverified
 advisory, not the answer to the current transition, and not an upgrade of
 `partial` or `stale`.
 
+## Candidates, retention table, replacement and trace (explaind, unit C)
+
+The explainer asks at most one observation-origin question (`mio.context.observe`,
+deadline 350 ms, plus the 250 ms caller margin) per candidate explanation, after
+`mio.advise` and Knowledge Lite and before the record is composed. It reads the
+rule file again for every explanation (`load_observation_rule()`); with no
+usable rule nothing below happens and rows, checkpoints and records are
+byte-for-byte as before.
+
+Candidate: the explained transition is `opened` or `updated`, has at least one
+technique id, the frame carries the structured projection, `mio.advise`
+returned a fast assistance, and the pair (incident, sorted technique set) is not
+in the retention table. The table is memory only: per incident, cleared when
+that incident's `closed` is observed or on an Edge reset, at most 4096 pairs
+(the oldest incident's oldest pair goes first). The pair is entered when the
+question is decided, before its result is known; a failure, `rate_limited`,
+`busy` or a rejected reply does not make the pair a candidate again. After an
+explainer restart, or after eviction, the same pair may be asked again, bounded
+by the explainer's six per minute and the broker's limit.
+
+The reply replaces the advise fast assistance only when everything outside the
+Full-derived fields is equal: `fabric_knowledge_context_advisory`,
+`full_node_context_status`, `full_node_context_received_at`, `handoff`,
+`reasoning_trace`, `dependency_outcome.knowledge`, the `KNOWLEDGE_CONTEXT_`
+items of `unknowns` and the incomplete-check text of `next_checks` may differ;
+`state`, `hypotheses`, `knowledge` and the rest must be equal. `trace`,
+`trace_id` and `frame_id` stay the advise side's. Otherwise the advise result is
+recorded with status `unavailable`; the broker's audit may still say
+`verified_advisory`. Whether a real Fabric reply leaves `state` and
+`hypotheses` unchanged is not established by unit tests (the pinned shared core
+is not installed in the test environment); acceptance S2 must show it, else
+the replacement always fails. The record gets `full_node_context_origin`
+(`observation_rule_v1`, `observation_rule_v1_repeat`, `none`) only while a rule
+is usable.
+
+`full_node_trace` is created only by an explanation made while a rule is usable
+and only when it is the row's latest transition. Observation copies it from the
+previous row and sets `transition_query` (`pending`, `not_explained`, `closed`)
+and `observed_sequence`. An explanation sets `queried`, `repeat`,
+`no_candidate` or (a row that already has a trace, rule gone) `rule_absent`,
+and `last_attempt`/`last_receipt`. `last_receipt` is replaced only by a reply
+with an advisory (`complete`, `partial`, `stale`); `received_not_adopted` is
+`rejected`, `expired` or received-but-`unavailable`, and a dropped reply is
+`unavailable`. The trace is never an input to a candidate decision, a frame, a
+request, the M.I.O. input, a record or the current-explanation fields. It
+survives close, reset and restart (checkpoint) and goes with the row when it
+leaves the 20-row window; it is not rebuilt when the incident returns.
+
+"Latest": an explanation belongs to the row's latest transition when the row is
+`open` and its ledger sequence equals the trace's `observed_sequence`; without a
+trace, the in-memory latest sequence; right after a restart (neither), the row's
+`count` and `first_seen`. A late explanation otherwise updates only `last_*` and
+gets the same conversion as a new unexplained transition (current fields
+`not_queried`). Known residuals: after a restart an incident reopened within the
+same second with the same count can be taken for the same transition; if
+`observe_transition` fails for a transition the row (and trace) stay as they
+were and the earlier explanation is still treated as latest; if the record
+cannot be written (`SegmentFull`) `last_attempt` is not recorded though the
+question was sent (the broker's audit has it); a late explanation on a row with
+no trace creates none.
+
 ## Process boundary
 
 Ordinary `mio.local.assess` requests still arrive at `azazel-mio-locald` over

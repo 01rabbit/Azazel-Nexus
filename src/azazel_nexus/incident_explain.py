@@ -1011,8 +1011,13 @@ RECOVERY_HINT = "inspect_incident_chain_then_remove_cursor_and_restart"
 CLOSE_REASONS = ("idle", "capacity", "shutdown")
 
 
-def build_recent_incident(transition, previous=None, record=None):
-    """Project a validated transition and optional validated explanation, without identities."""
+def build_recent_incident(transition, previous=None, record=None, sequence=None):
+    """Project a validated transition and optional validated explanation, without identities.
+
+    `sequence` is the ledger sequence of this transition. It only matters to a
+    row that already has a `full_node_trace` (DESIGN-M5 2.4): the trace is
+    copied from `previous`, and no row ever gets a trace here.
+    """
     t = read_transition(transition)
     clean = explanation_input(t)
     explanation = (previous["explanation"] if previous else
@@ -1037,7 +1042,55 @@ def build_recent_incident(transition, previous=None, record=None):
     # Audit records do not carry this; the ledger, recent rows and status do.
     if "evidence_stored" in t or previous and "evidence_stored" in previous:
         row["evidence_stored"] = False
+    if previous and "full_node_trace" in previous:
+        trace = json.loads(json.dumps(previous["full_node_trace"]))
+        if record is None:
+            if t["event_type"] == "edge.incident.closed":
+                trace["transition_query"] = "closed"
+            elif (t["event_type"] == "edge.incident.opened"
+                  or t["most_severe"] < previous["most_severe"]):
+                trace["transition_query"] = "pending"
+            else:
+                trace["transition_query"] = "not_explained"
+        if sequence is not None:
+            trace["observed_sequence"] = sequence
+        row["full_node_trace"] = trace
     return row
+
+
+def adopt_full_node_reply(advise, observed):
+    """The advise result with the Full-derived fields of `observed`, or None.
+
+    AP R1 section 5: everything outside the Full-derived fields must be the
+    same as the advise result. `unknowns` may differ only in
+    `KNOWLEDGE_CONTEXT_` items and `next_checks` only in the incomplete-check
+    text; `trace`, `trace_id` and `frame_id` stay the advise side's, and
+    `full_node_context_origin` is the explainer's own and not compared.
+    """
+    own = {"trace", "trace_id", "frame_id", "full_node_context_origin"}
+    full = {"fabric_knowledge_context_advisory", "full_node_context_status",
+            "full_node_context_received_at", "handoff", "reasoning_trace"}
+
+    def comparable(value):
+        out = {k: v for k, v in value.items() if k not in own | full}
+        out["dependency_outcome"] = {k: v for k, v in value["dependency_outcome"].items()
+                                     if k != "knowledge"}
+        out["unknowns"] = [u for u in value["unknowns"] if not u.startswith("KNOWLEDGE_CONTEXT_")]
+        out["next_checks"] = [c for c in value["next_checks"] if c != FULL_NODE_INCOMPLETE_CHECK]
+        return out
+
+    if observed.get("full_node_context_status") not in {"received", "unavailable"}:
+        return None
+    if comparable(advise) != comparable(observed):
+        return None
+    adopted = dict(observed)
+    adopted.pop("full_node_context_origin", None)
+    for key in own - {"full_node_context_origin"}:
+        if key in advise:
+            adopted[key] = advise[key]
+        else:
+            adopted.pop(key, None)
+    return adopted
 
 
 #: A displayed citation: what was cited, and from which verified bundle,

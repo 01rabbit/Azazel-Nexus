@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections import Counter, deque
+from collections import Counter, OrderedDict, deque
 from dataclasses import asdict
 from pathlib import Path
 
@@ -27,6 +27,7 @@ from azazel_nexus.incident_explain import (
     build_recent_incident, build_recent_incidents, read_recent_incidents, explanation_summary,
     SHOWN_STATES, closed_pairs, read_control, read_retention_boundary, read_mio_reply, read_record, read_transition, read_pending,
     slow_analysis_projection, guard_public_model_text,
+    adopt_full_node_reply, utc_seconds, without_current_full_node,
 )
 from azazel_nexus.lite_import import read_knowledge_refs
 from azazel_nexus.store_dirs import fsync_directory, store_directory
@@ -360,6 +361,21 @@ def advise(frame, *, caller_epoch=None, private_metadata=None):
     return reply
 
 
+#: Deadline of the explainer-only observation-origin request (AP T1).
+OBSERVE_DEADLINE_MS = 350
+#: Pairs (incident, technique set) already spent on a candidate, all incidents.
+CONSUMED_PAIRS_MAX = 4096
+#: Latest observed ledger sequence kept in memory per incident.
+LATEST_SEQUENCE_MAX = 4096
+
+
+def observe_context(frame):
+    """One `mio.context.observe`; the caller waits longer than entry's deadline."""
+    return _exchange(
+        "mio-advise", "azmioentry", "mio.context.observe", {"deadline_ms": OBSERVE_DEADLINE_MS},
+        payload=frame, deadline_s=(OBSERVE_DEADLINE_MS + ADVISE_CALLER_MARGIN_MS) / 1000)
+
+
 def poll_generation_result(receipt, *, deadline_s=0.05, caller_epoch=None, private_metadata=None):
     """Relay a bound result poll through entryd's explainer-only socket."""
     stale = {"state": "stale", "usage": "unknown"}
@@ -401,7 +417,8 @@ def poll_generation_result(receipt, *, deadline_s=0.05, caller_epoch=None, priva
 class Explainer:
     def __init__(self, *, incidents, state, status_path, clock=time.time,
                  monotonic=time.monotonic, mio=None, knowledge=None, store_limits=None, audit=None,
-                 ui_status_path=None, ui_recent_path=None, mio_result=None, guidance=None):
+                 ui_status_path=None, ui_recent_path=None, mio_result=None, guidance=None,
+                 context=None, observation_rule=None):
         self.incidents, self.state, self.status_path = incidents, state, status_path
         # The read-only UI's byte-identical copies (ADR-0007); optional.
         self.ui_status = UiCopy(ui_status_path, name="az-incident-explaind")
@@ -421,6 +438,14 @@ class Explainer:
         self.mio_result = mio_result or (lambda receipt, **kw: poll_generation_result(receipt,
             caller_epoch=self.restart_epoch, private_metadata=self._generation_metadata, **kw))
         self.knowledge = knowledge or (lambda ids: lookup_context(ids, deadline_s=KNOWLEDGE_MAX_S))
+        self.context = context or observe_context
+        if observation_rule is None:
+            from .knowledge_context_config import load_observation_rule as observation_rule
+        self.observation_rule = observation_rule
+        # Memory only (AP R1 section 4): pairs spent per incident, in the order
+        # the incidents were first spent, and the latest observed sequence.
+        self._consumed = OrderedDict()
+        self._latest_sequence = OrderedDict()
         self.store_limits = store_limits or {}
         self.generation_store = None
         self._generation_store_failed = False
@@ -503,7 +528,7 @@ class Explainer:
             if sequence is not None:
                 self._supersede_generation_for_transition(ident, sequence)
             previous = next((r for r in self.recent if r["incident_id"] == ident), None)
-            row = build_recent_incident(t, previous)
+            row = build_recent_incident(t, previous, sequence=sequence)
             if sequence is not None and isinstance(row.get("explanation"), dict):
                 if row["explanation"].get("slow_analysis") is not None:
                     row["explanation"] = {**row["explanation"],
@@ -511,6 +536,13 @@ class Explainer:
                                                              "usage": "unknown"}}
             self.recent = build_recent_incidents(
                 [r for r in self.recent if r["incident_id"] != ident] + [row], self.clock())["incidents"]
+            if sequence is not None:
+                self._latest_sequence.pop(ident, None)
+                self._latest_sequence[ident] = sequence
+                while len(self._latest_sequence) > LATEST_SEQUENCE_MAX:
+                    self._latest_sequence.popitem(last=False)
+            if t["event_type"] == "edge.incident.closed":
+                self._consumed.pop(ident, None)
         except Exception:  # noqa: BLE001 - display projection must not cost the audit record
             self.refuse("transition_refused")
         old = self.audit_severities.get(ident)
@@ -557,6 +589,8 @@ class Explainer:
                 row["explanation"] = {"state": "unavailable", "route": "unavailable",
                                       "outcome": "unavailable", "summary": "",
                                       "knowledge_refs": [], "failure_codes": [code]}
+                if "full_node_trace" in row:
+                    row["full_node_trace"]["transition_query"] = "not_explained"
 
     @staticmethod
     def _generation_binding(event):
@@ -1166,8 +1200,10 @@ class Explainer:
                                         if not self._record_generation_superseded(receipt):
                                             self._generation_replay_required = True
                                 self.audit_severities.clear()
+                                self._consumed.clear()
                                 for row in self.recent:
                                     row["state"] = "closed"
+                                    self._close_full_node(row)
                         else:
                             t = read_transition(event)
                             if seeding:
@@ -1208,6 +1244,124 @@ class Explainer:
     def break_chain(self):
         self.cursor["broken"] = self.chain_broken = True
         self.refuse("chain_broken")
+
+    # -- Full-node reference (DESIGN-M5, AP R1) -------------------------------
+
+    @staticmethod
+    def _rule_era(row):
+        """Whether this row's current Full-node fields come from an active rule."""
+        fast = row["explanation"].get("fast_assistance")
+        node = fast.get("full_node_context") if type(fast) is dict else None
+        return "full_node_trace" in row or (type(node) is dict and "query_origin" in node)
+
+    def _close_full_node(self, row):
+        """Edge reset: the row is closed; its current Full-node fields are not kept."""
+        if self._rule_era(row):
+            row["explanation"] = without_current_full_node(row["explanation"])
+        if "full_node_trace" in row:
+            row["full_node_trace"]["transition_query"] = "closed"
+
+    def _spend(self, ident, pair):
+        """Put a pair in the retention table; oldest incident's pairs go first."""
+        pairs = self._consumed.setdefault(ident, OrderedDict())
+        pairs[pair] = True
+        while sum(len(p) for p in self._consumed.values()) > CONSUMED_PAIRS_MAX:
+            oldest = next(iter(self._consumed))
+            self._consumed[oldest].popitem(last=False)
+            if not self._consumed[oldest]:
+                del self._consumed[oldest]
+
+    def _observe_full_node(self, t, frame, sequence, mio):
+        """Decide whether this explanation is a candidate and, if so, ask once.
+
+        Returns None when no rule is active (nothing about the record or the
+        row may change then), else a dict with the trace word, the origin and
+        the attempt's outcome. The trace is never an input here: the decision
+        uses the pending entry, the retention table, the rule and the reply.
+        """
+        if self.observation_rule() is None:
+            return {"word": "rule_absent", "origin": None, "queried": False, "adopted": False}
+        advise = mio.get("fast_assistance") if type(mio) is dict else None
+        ids = tuple(sorted(set(t["technique_ids"])))
+        result = {"word": "no_candidate", "origin": "none", "queried": False, "adopted": False}
+        has_projection = (t["event_type"] in {"edge.incident.opened", "edge.incident.updated"}
+                          and ids and type(advise) is dict
+                          and sequence <= MIO_TRACE_SEQUENCE_MAX)
+        if has_projection and ids in self._consumed.get(t["incident_id"], ()):
+            result.update(word="repeat", origin="observation_rule_v1_repeat")
+        elif has_projection:
+            self._spend(t["incident_id"], ids)
+            result.update(word="queried", origin="observation_rule_v1", queried=True)
+            try:
+                reply = self.context(frame)
+                observed = reply["fast_assistance"]
+                adopted = adopt_full_node_reply(advise, observed)
+            except Exception:  # noqa: BLE001 - a failed question costs nothing else
+                adopted = None
+            if adopted is None:
+                adopted = {**advise, "full_node_context_status": "unavailable"}
+                adopted.pop("fabric_knowledge_context_advisory", None)
+                adopted.pop("full_node_context_received_at", None)
+            else:
+                result["adopted"] = True
+            advise = adopted
+        result["received_at"] = (advise.get("full_node_context_received_at")
+                                 if type(advise) is dict else None)
+        if type(advise) is dict:
+            advise = {**advise, "full_node_context_origin": result["origin"]}
+            mio["fast_assistance"] = advise
+        return result
+
+    def _is_latest(self, row, ident, sequence, t):
+        """Whether an explanation of ledger `sequence` is of the row's latest transition."""
+        if row["state"] != "open":
+            return False
+        trace = row.get("full_node_trace")
+        if trace is not None:
+            return trace["observed_sequence"] == sequence
+        if ident in self._latest_sequence:
+            return self._latest_sequence[ident] == sequence
+        return row["count"] == t["count"] and row["first_seen"] == t["first_seen"]
+
+    def _settle_row(self, row, summary, t, sequence, attempt, explained_at):
+        """Write a finished explanation to the row (F3), and the trace if a rule is active."""
+        latest = self._is_latest(row, t["incident_id"], sequence, t)
+        quiet = attempt is None or attempt["word"] == "rule_absent"
+        row["explanation"] = summary if latest or quiet else without_current_full_node(summary)
+        if attempt is None:
+            return
+        trace = row.get("full_node_trace")
+        if quiet:
+            if trace is not None and latest:
+                trace["transition_query"] = "rule_absent"
+            return
+        if trace is None:
+            if not latest:
+                return
+            trace = {"transition_query": attempt["word"], "last_attempt": None,
+                     "last_receipt": None, "observed_sequence": sequence}
+            row["full_node_trace"] = trace
+        elif latest:
+            trace["transition_query"] = attempt["word"]
+        if not attempt["queried"]:
+            return
+        ids = sorted(set(t["technique_ids"]))
+        node = summary.get("fast_assistance", {}).get("full_node_context", {})
+        received_at = attempt.get("received_at")
+        outcome = node.get("outcome")
+        if not attempt["adopted"] or node.get("full_node_context_status") != "received":
+            result = "unavailable"
+        elif outcome in {"complete", "partial", "stale"} and received_at:
+            result = "received"
+        else:
+            result = "received_not_adopted"
+        trace["last_attempt"] = {"attempted_at": utc_seconds(explained_at), "result": result,
+                                 "technique_ids": ids}
+        if result == "received":
+            trace["last_receipt"] = {
+                "received_at": received_at, **{k: node[k] for k in (
+                    "outcome", "source_kind", "claim_status", "trust", "snapshot_state",
+                    "generated_at", "expires_at", "limitations")}, "technique_ids": ids}
 
     def explain(self, t, sequence):
         codes = []
@@ -1256,6 +1410,7 @@ class Explainer:
                 except Exception:  # noqa: BLE001 - caller cannot inject partial refs
                     refs, state = [], "unavailable"
                     codes.append("knowledge_reply_refused")
+        attempt = self._observe_full_node(t, frame, sequence, mio)
         record = {"incident_id": t["incident_id"], "incident_sequence": sequence,
                   "explained_at": self.clock(),
                   "transition": t["event_type"].removeprefix("edge.incident."),
@@ -1306,9 +1461,10 @@ class Explainer:
                 raise
             self.store.append_record(value)
         self._future()
+        summary = explanation_summary(value)
         for row in self.recent:
             if row["incident_id"] == t["incident_id"]:
-                row["explanation"] = explanation_summary(value)
+                self._settle_row(row, summary, t, sequence, attempt, value["explained_at"])
         handle = self._generation_current.get(t["incident_id"])
         if handle is not None:
             self._set_generation_projection(
