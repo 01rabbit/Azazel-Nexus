@@ -495,3 +495,24 @@ def test_the_advise_side_not_queried_check_may_be_replaced_by_the_incomplete_che
     assert adopt_full_node_reply(advise, received(next_checks=[FULL_NODE_INCOMPLETE_CHECK, others[1], others[0]])) is None
     assert adopt_full_node_reply(advise, received(next_checks=[FULL_NODE_INCOMPLETE_CHECK, *others, "extra"])) is None
     assert adopt_full_node_reply(advise, received(next_checks=[FULL_NODE_INCOMPLETE_CHECK, others[0]])) is None
+
+
+@pytest.mark.parametrize("damage", [
+    lambda f: f.update(unknowns="not a list"),
+    lambda f: f.update(next_checks=["x" * 5000]),
+    lambda f: f.update(full_node_context_status="bogus"),
+    lambda f: f.update(extra_key=1),
+    lambda f: f.update(reasoning_trace="bad"),
+    lambda f: f.update(fabric_knowledge_context_advisory={"authority": "advisory_only"})])
+def test_an_invalid_observe_reply_is_unavailable_and_keeps_the_advise_result(tmp_path, damage):
+    def observed(frame):
+        fast = received()
+        damage(fast)
+        return fast
+    r = Rig(tmp_path, observed=observed)
+    r.step(tx())
+    assert len(r.calls) == 1
+    assert r.trace["last_attempt"]["result"] == "unavailable" and r.trace["last_receipt"] is None
+    assert r.current()["full_node_context_status"] == "unavailable"
+    assert r.row["explanation"]["state"] != "unavailable" or r.row["explanation"]["failure_codes"] != ["mio_reply_refused"]
+    assert "mio_reply_refused" not in r.row["explanation"]["failure_codes"]

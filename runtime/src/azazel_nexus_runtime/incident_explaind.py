@@ -30,6 +30,7 @@ from azazel_nexus.incident_explain import (
     adopt_full_node_reply, utc_seconds, without_current_full_node,
 )
 from azazel_nexus.lite_import import read_knowledge_refs
+from azazel_nexus.local_advisory import read_fast_assistance
 from azazel_nexus.store_dirs import fsync_directory, store_directory
 
 from .edge_intaked import DailySegments, EvidenceStore, SegmentFull
@@ -1294,7 +1295,8 @@ class Explainer:
             result.update(word="queried", origin="observation_rule_v1", queried=True)
             try:
                 reply = self.context(frame)
-                observed = reply["fast_assistance"]
+                # The same delivery check as the advise result (review: Opus M4).
+                observed = read_fast_assistance(reply["fast_assistance"])
                 adopted = adopt_full_node_reply(advise, observed)
             except Exception:  # noqa: BLE001 - a failed question costs nothing else
                 adopted = None
