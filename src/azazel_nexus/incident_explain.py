@@ -1064,7 +1064,7 @@ def adopt_full_node_reply(advise, observed):
     AP R1 section 5: everything outside the Full-derived fields must be the
     same as the advise result. `unknowns` may differ only in
     `KNOWLEDGE_CONTEXT_` items and `next_checks` only in the incomplete-check
-    text; `trace`, `trace_id` and `frame_id` stay the advise side's, and
+    text and in the advise side's fixed "did not query Knowledge" text; `trace`, `trace_id` and `frame_id` stay the advise side's, and
     `full_node_context_origin` is the explainer's own and not compared.
     """
     own = {"trace", "trace_id", "frame_id", "full_node_context_origin"}
@@ -1076,7 +1076,8 @@ def adopt_full_node_reply(advise, observed):
         out["dependency_outcome"] = {k: v for k, v in value["dependency_outcome"].items()
                                      if k != "knowledge"}
         out["unknowns"] = [u for u in value["unknowns"] if not u.startswith("KNOWLEDGE_CONTEXT_")]
-        out["next_checks"] = [c for c in value["next_checks"] if c != FULL_NODE_INCOMPLETE_CHECK]
+        out["next_checks"] = [c for c in value["next_checks"]
+                              if c not in (FULL_NODE_INCOMPLETE_CHECK, MIO_KNOWLEDGE_NOT_QUERIED_CHECK)]
         return out
 
     if observed.get("full_node_context_status") not in {"received", "unavailable"}:
@@ -1104,6 +1105,14 @@ CITATION_DISPLAY_FIELDS = ("bundle_digest_short", "generation", "freshness", "as
 CITATION_STATES = ("shown", "none", "withheld")
 #: The escaped JSON budget for one row's displayed citations.
 CITATION_DISPLAY_BYTES = 6 * 1024
+
+#: The fixed next check the fast (advise) result carries when it did not query
+#: Knowledge. Produced by azazel_mio 4511f1fc; copied here character for
+#: character. If MIO changes the wording, replacement does not hold (the row
+#: shows `unavailable`), which closes on the safe side.
+MIO_KNOWLEDGE_NOT_QUERIED_CHECK = (
+    "This fast result did not query Knowledge; consult the separate validated Knowledge analysis "
+    "lane for Knowledge context before relying on this assessment.")
 
 FULL_NODE_INCOMPLETE_CHECK = (
     "Request an authorized current full-node Knowledge snapshot; this partial or stale advisory "

@@ -6,7 +6,7 @@ import pytest
 
 from azazel_nexus.audit import AuditLedger
 from azazel_nexus.incident_explain import (
-    FULL_NODE_INCOMPLETE_CHECK, adopt_full_node_reply, pending_entry, read_recent_incidents,
+    FULL_NODE_INCOMPLETE_CHECK, MIO_KNOWLEDGE_NOT_QUERIED_CHECK, adopt_full_node_reply, pending_entry, read_recent_incidents,
 )
 from azazel_nexus_runtime import incident_explaind as daemon
 from test_incident_explain import _core_full_node_fast, transition
@@ -482,3 +482,16 @@ def test_a_checkpoint_restores_the_same_trace(rig, tmp_path):
     assert again.recent == before
     again.checkpoint()
     assert (tmp_path / "state" / "cursor.json").read_bytes() == raw
+
+
+def test_the_advise_side_not_queried_check_may_be_replaced_by_the_incomplete_check():
+    others = ["Fix the time window of the main complaint.", "Line up the other log timestamps."]
+    advise = {**base_fast(), "next_checks": [MIO_KNOWLEDGE_NOT_QUERIED_CHECK, *others]}
+    observed = received(next_checks=[FULL_NODE_INCOMPLETE_CHECK, *others])
+    assert adopt_full_node_reply(advise, observed) is not None
+    # the incomplete check may also be absent, but nothing else may differ, in text or in order
+    assert adopt_full_node_reply(advise, received(next_checks=list(others))) is not None
+    assert adopt_full_node_reply(advise, received(next_checks=[FULL_NODE_INCOMPLETE_CHECK, others[0] + "."] + others[1:])) is None
+    assert adopt_full_node_reply(advise, received(next_checks=[FULL_NODE_INCOMPLETE_CHECK, others[1], others[0]])) is None
+    assert adopt_full_node_reply(advise, received(next_checks=[FULL_NODE_INCOMPLETE_CHECK, *others, "extra"])) is None
+    assert adopt_full_node_reply(advise, received(next_checks=[FULL_NODE_INCOMPLETE_CHECK, others[0]])) is None
