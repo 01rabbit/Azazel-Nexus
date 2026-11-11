@@ -133,10 +133,9 @@ class SystemdUnitCalls:
                 "the systemd client refused a unit outside the fixed allowlist"
             )
 
-        # The activation reader needs the non-grantable Knowledge broker in
-        # its verification scope. That does not give the controller authority
-        # to enable it: narrowing may mask a core unit, while the newly added
-        # non-grantable marker-guarded units cannot be unmasked or enabled.
+        # NON_GRANTABLE_MARKER_UNITS is empty at present (contextd is
+        # grantable since A1). The branch stays for a future unit that is
+        # marker-guarded but must never be unmasked or enabled by the pass.
         if method == "MaskUnitFiles" and unit not in _CORE_UNIT_NAMES:
             raise UnitOperationFailed("the systemd client refused a non-core mask")
         if (method in {"UnmaskUnitFiles", "EnableUnitFiles"}

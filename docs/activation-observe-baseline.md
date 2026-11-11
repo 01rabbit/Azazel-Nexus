@@ -515,11 +515,17 @@ fetchd stay excluded and a policy naming them is still refused as a whole.
   then sign a policy that names contextd. Withdraw: remove contextd from the
   policy and re-sign, check on the next pass that it is closed, and only then
   go back to an older release. An older release given a policy that names
-  contextd refuses that policy as a whole (allowlist), which stops the other
-  SUPPORTING units too.
-- *Rollback leaves nothing behind.* Markers live under `/run` and the pass
-  rebuilds markers and masks at every boot, so a rolled-back node carries no
-  contextd marker.
+  contextd refuses that policy as a whole (allowlist), which makes the other
+  SUPPORTING units lose their grant too (they are not stopped; they cannot
+  be started again).
+- *Dropping only contextd.* Changing the policy's `units` alone no longer
+  matches the published generation, so that pass grants nothing, the other
+  SUPPORTING units included. To keep them, republish a generation built for
+  the reduced unit list and sign a new approval for it (higher sequence).
+- *After a rollback.* Markers are removed and rewritten by every pass (they
+  live under `/run`), so a stale contextd marker does not survive a pass.
+  Masks are different: a unit the pass withholds stays masked, which is the
+  safe state; only granted units are unmasked and enabled.
 
 ## 7. P2 readers (inert)
 

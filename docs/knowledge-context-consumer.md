@@ -662,13 +662,21 @@ the unit re-masked on the next pass, and while the broker is still running
 that pass records a containment failure. The operator ends it with
 `systemctl stop azazel-knowledge-contextd.service` or a reboot; the next pass
 then confirms it inactive. Emergency stop: remove the unit from the policy
-and re-sign, then `systemctl stop`; stopping alone is undone by the next pass
-while the policy still names the unit. Introduce in this order: new release,
+and re-sign, then `systemctl stop`. Stopping alone is not durable: while the
+policy still names the unit, a later pass grants it again (marker written,
+unit unmasked and enabled). The pass never issues StartUnit, so the broker
+runs again only at the next boot or an operator start. Introduce in this order: new release,
 then a policy naming contextd. Withdraw in this order: remove contextd from
 the policy and re-sign, confirm on the next pass that it is closed, then
 return to an older release (an older release refuses a policy that names
-contextd as a whole). Markers and masks are rebuilt by the pass at every
-boot, so none remain after a rollback. Either way, FAST_ASSESS returns to
+contextd as a whole). A policy whose `units` changed no longer matches the
+published generation, so that pass grants nothing at all, the other
+SUPPORTING units included (they lose their grant and cannot be started
+again). To withdraw only contextd, republish a generation built for the
+reduced unit list and sign a new approval for it as well as the policy.
+Markers are removed and rewritten by every pass, so a stale contextd marker
+does not survive; a unit the pass withholds stays masked, and only granted
+units are unmasked. Either way, FAST_ASSESS returns to
 `unavailable` (the request fails closed) with Knowledge Lite and
 local assessment unchanged. The broker keeps no response cache, so there is nothing
 stale to clear after a restart. How a revoked or expired peer key is replaced

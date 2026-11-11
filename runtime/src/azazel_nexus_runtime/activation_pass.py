@@ -156,7 +156,7 @@ class PassProducers:
     #: measured now and refused on any override or drop-in.
     unit_files: Callable[[list], dict]
     #: `activation_loaded_units.verify_grantable_units` over every marker-
-    #: guarded unit (including the non-grantable Knowledge broker) and the
+    #: guarded unit (grantable or not; contextd is grantable since A1) and the
     #: controller's D-Bus session; raises on any unit or manager drift.
     loaded_units: Callable[[list], None]
     #: `load_observe_baseline_approval` (keyword arguments).

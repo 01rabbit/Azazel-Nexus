@@ -114,16 +114,23 @@ def test_contextd_lease_scope_follows_the_signed_units(ctx_world):
     _closed(ctx_world)
 
 
-def test_bundle_state_is_not_a_grant_input(ctx_world, tmp_path):
-    # No Knowledge Context bundle exists anywhere in this root, and the unit
-    # is granted anyway; adding an unreadable one changes nothing either.
-    first = ctx_world.run()
-    assert CTX in first.granted
-    bundle = ctx_world.root / "etc/azazel/knowledge-context"
-    bundle.mkdir(parents=True)
-    (bundle / "bundle.json").write_bytes(b"\xff not a bundle")
-    second = ctx_world.run()
-    assert sorted(second.granted) == sorted(first.granted)
+@pytest.mark.parametrize("bundle", ["absent", "defective", "present-empty"])
+def test_bundle_state_is_not_a_grant_input(ctx_world, monkeypatch, bundle):
+    # The broker reads runtime_paths.knowledge_context_commission_dir()
+    # (/etc/azazel/knowledge-context/commissioning/manifest.json); put the
+    # bundle there, under the world's root.
+    from azazel_nexus_runtime import runtime_paths
+    monkeypatch.setattr(runtime_paths, "ROOT", ctx_world.root)
+    directory = runtime_paths.knowledge_context_commission_dir()
+    if bundle != "absent":
+        directory.mkdir(parents=True)
+        (directory / "manifest.json").write_bytes(
+            b"\xff not a manifest" if bundle == "defective" else b"{}")
+        assert (ctx_world.root / "etc/azazel/knowledge-context/commissioning"
+                / "manifest.json").exists()
+    outcome = ctx_world.run()
+    assert sorted(outcome.granted) == list(CTX_SCOPE)
+    assert CTX in ctx_world.markers()
 
 
 def test_core_definition_has_no_wiring_and_wired_set_is_unchanged():
@@ -168,7 +175,7 @@ def _closing_cases():
         w.healthy = False
 
     def no_evidence(w):
-        w.evidence = None
+        pass  # the producer is replaced in run(), see `extra`
 
     return {"revoked": revoked, "lease-outside": lease_gone,
             "health-failed": unhealthy, "evidence-missing": no_evidence}
@@ -188,19 +195,69 @@ def test_closing_transitions_remove_marker_and_mask_when_contextd_is_inactive(ct
 
 
 @pytest.mark.parametrize("case", ["revoked", "lease-outside", "health-failed", "evidence-missing"])
-def test_closing_transitions_fail_loudly_while_contextd_still_runs(ctx_world, case):
+def test_revoking_a_granted_running_contextd_clears_its_marker_and_fails_loudly(ctx_world, case):
+    first = ctx_world.run()
+    assert CTX in first.granted and CTX in ctx_world.markers()
+    # contextd is now running under that grant, then the grant is revoked.
     running = _make_running(ctx_world)
     _closing_cases()[case](ctx_world)
     extra = {"commissioning_evidence": lambda: None} if case == "evidence-missing" else {}
     with pytest.raises(activated.RollbackFailed) as raised:
         ctx_world.run(**extra)
     assert CTX in str(raised.value)
-    # Next starts are closed even though the process cannot be stopped here.
-    assert ctx_world.manager.state(CTX) is UnitState.MASKED
+    # The existing marker is gone first and the next start is closed, though
+    # the process itself cannot be stopped by the pass.
     assert ctx_world.markers() is None or CTX not in ctx_world.markers()
-    # The pass has no stop authority: it only ever masked.
+    assert ctx_world.manager.state(CTX) is UnitState.MASKED
     assert {c[0] for c in running.calls} == {"mask"}
     # The operator stops it (systemctl stop or reboot); the next pass is clean.
     running.running = False
     again = ctx_world.run(**extra)
     assert CTX not in again.granted
+
+
+def test_a_running_contextd_that_was_never_granted_fails_the_preflight(ctx_world):
+    """No marker existed: the pass-start containment check alone refuses."""
+    running = _make_running(ctx_world)
+    assert ctx_world.markers() is None
+    with pytest.raises(activated.RollbackFailed, match="knowledge-contextd"):
+        ctx_world.run()
+    assert ctx_world.manager.state(CTX) is UnitState.MASKED
+    running.running = False
+
+
+def test_withdrawing_only_contextd_keeps_the_others_with_a_republished_generation(ctx_world):
+    """Changing the policy alone breaks the generation match and every grant;
+    keeping the other SUPPORTING units needs a matching generation and approval."""
+    from azazel_nexus.observe_baseline import (
+        build_observe_baseline,
+        evidence_commissioning_digest,
+    )
+    first = ctx_world.run()
+    assert CTX in first.granted
+    ctx_world.policy = make_policy(units=SCOPE)
+    ctx_world.units = SCOPE
+    ctx_world.generation = ctx_world.store.create(
+        build_observe_baseline(
+            units=list(SCOPE),
+            unit_files={u: ctx_world.unit_files[u] for u in SCOPE}),
+        created_at="2026-10-20T00:00:00Z",
+        commissioning_digest=evidence_commissioning_digest(ctx_world.evidence),
+        commissioning_evidence_binding=ctx_world.evidence.binding)
+    ctx_world.sign(units=SCOPE, approval_seq=6)
+    outcome = ctx_world.run()
+    assert CTX not in outcome.granted
+    assert sorted(outcome.granted) == list(SCOPE)
+    assert CTX not in ctx_world.markers()
+    assert ctx_world.manager.state(CTX) is UnitState.MASKED
+
+
+def test_dropping_contextd_from_the_allowlist_refuses_the_whole_policy(monkeypatch):
+    """The negative of the allowlist change: without it, a policy naming
+    contextd is refused as a whole (what an older release does)."""
+    from azazel_nexus import activation_policy
+    monkeypatch.setattr(
+        activation_policy, "ACTIVATION_UNIT_ALLOWLIST",
+        tuple(u for u in activation_policy.ACTIVATION_UNIT_ALLOWLIST if u != CTX))
+    with pytest.raises(ApprovalRefused):
+        make_policy(units=CTX_SCOPE)
