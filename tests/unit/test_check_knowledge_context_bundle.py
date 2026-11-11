@@ -192,3 +192,33 @@ def test_no_secret_value_path_or_env_in_output(root, capsys, monkeypatch):
         assert body not in text and "PRIVATE KEY" not in text
         assert "ENV-VALUE-SHOULD-NOT-APPEAR" not in text
         assert str(root) not in text and "client.key" not in text
+
+
+def _snapshot(directory):
+    return {p.name: (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_mode)
+            for p in sorted(Path(directory).iterdir())}
+
+
+def test_check_leaves_bundle_files_unchanged(root, capsys):
+    d = build(root)
+    before = _snapshot(d)
+    code, out = run(d, capsys, "--now", NOW)
+    assert code == 0 and out.startswith("commissioned")
+    assert _snapshot(d) == before
+
+
+def test_commissioned_without_any_socket_or_tls_creation(root, capsys, monkeypatch):
+    import ssl
+
+    def forbid(*a, **k):
+        raise AssertionError("pre-check created a socket, resolved a name or opened a TLS session")
+    d = build(root)
+    monkeypatch.setattr(socket, "socket", forbid)
+    monkeypatch.setattr(socket, "getaddrinfo", forbid)
+    # The loader may build an SSLContext to validate the identity locally; what
+    # must not happen is a TLS session over a socket or a memory BIO.
+    monkeypatch.setattr(ssl.SSLContext, "wrap_socket", forbid)
+    monkeypatch.setattr(ssl.SSLContext, "wrap_bio", forbid)
+    monkeypatch.setattr(ssl, "SSLSocket", forbid)
+    code, out = run(d, capsys, "--now", NOW)
+    assert code == 0 and out.startswith("commissioned"), out

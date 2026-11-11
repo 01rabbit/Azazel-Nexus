@@ -146,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         # The loader's checks depend on the caller's uid/gid; root would read
         # root:root 0600 secrets the service account cannot, and pass wrongly.
         print("usage: run as the service account and its group, not root "
-              "(sudo -u azknowledgeegress -g <service group> ...)", file=sys.stderr)
+              "(sudo -u azknowledgeegress -g azknowledgeegress ...; not azknowledge-context-client)", file=sys.stderr)
         return 2
     if args.pin:
         if args.directory or args.now:

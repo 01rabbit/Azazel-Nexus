@@ -7,7 +7,7 @@
   "peers": [
     {
       "endpoint": {
-        "provider_id": "example-knowledge-peer",
+        "provider_id": "azazel-knowledge",
         "host": "knowledge.example.test",
         "port": 443,
         "path_template": "/knowledge/v1",

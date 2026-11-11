@@ -465,7 +465,7 @@ configuration with read-only commands only (nothing here changes state):
 6. The bundle is root-owned and not group/other-writable, secrets have no other-user access:
    `stat -c '%U:%G %a %n' /etc/azazel/knowledge-context/commissioning /etc/azazel/knowledge-context/commissioning/*`
    (`stat -f '%Su:%Sg %Lp %N'` on macOS), and `ls -ld` on each parent directory.
-7. `sudo -u azknowledgeegress -g <service group> python3 tools/check_knowledge_context_bundle.py` (never as root; the loader's checks depend on the caller's uid and group) reports `commissioned` and its
+7. `sudo -u azknowledgeegress -g azknowledgeegress python3 tools/check_knowledge_context_bundle.py` (never as root; the group is the daemon's primary group `azknowledgeegress`, not the socket group `azknowledge-context-client`, or the pre-check passes where the daemon refuses with `perm_unsafe`; the loader's checks depend on the caller's uid and group) reports `commissioned` and its
    warnings are understood. `--pin <cert>` prints the Nexus (SPKI) and Knowledge
    (DER SHA-256) pin forms for comparison with each side's configuration.
 

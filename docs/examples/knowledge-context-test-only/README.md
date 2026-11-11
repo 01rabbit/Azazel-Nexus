@@ -11,7 +11,10 @@ The files show the shape of what an owner has to supply for
 `tools/check_knowledge_context_bundle.py` to check a real bundle read-only.
 Run it as the service account and its group, never as root, because the
 loader's checks depend on the caller:
-`sudo -u azknowledgeegress -g <service group> python3 tools/check_knowledge_context_bundle.py`.
+`sudo -u azknowledgeegress -g azknowledgeegress python3 tools/check_knowledge_context_bundle.py`.
+The group is the daemon's primary group `azknowledgeegress`, not the socket
+group `azknowledge-context-client`; with the wrong group the pre-check reports
+`commissioned` but the daemon refuses with `perm_unsafe`.
 This directory deliberately has no network allowance example; the endpoint
 allowlist is not designed here.
 
@@ -24,8 +27,9 @@ allowlist is not designed here.
 
 Points that are easy to get wrong:
 
-- `provider_id` in the registry, `peer_id` in the manifest and the Knowledge
-  side's provider id must be the same string.
+- Knowledge fixes `provider_id` to `azazel-knowledge` (not configurable); set
+  the manifest `peer_id` and the registry `provider_id` to that value. Nexus
+  rejects a mismatch (`src/azazel_nexus/knowledge_context_adapter.py`).
 - Nexus pins the server certificate's SubjectPublicKeyInfo (`sha256:<hex>`);
   Knowledge pins the whole client certificate (DER SHA-256, hex). Run
   `tools/check_knowledge_context_bundle.py --pin <cert>` to print both.

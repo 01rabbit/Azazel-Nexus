@@ -1,7 +1,7 @@
 {
   "schema": "azazel.knowledge-context.commissioning/1",
   "enabled": false,
-  "peer_id": "example-knowledge-peer",
+  "peer_id": "azazel-knowledge",
   "client_identity": "example-context-client",
   "commissioning_digest": "example-digest-replace-me",
   "max_ttl_seconds": 30,
