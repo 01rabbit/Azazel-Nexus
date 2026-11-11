@@ -209,6 +209,11 @@ def knowledge_context_commission_dir() -> Path:
     return _under("/etc/azazel/knowledge-context/commissioning")
 
 
+def knowledge_context_observation_rule_path() -> Path:
+    """Return the root-owned observation-query rule file (beside the bundle dir)."""
+    return _under("/etc/azazel/knowledge-context/observation-query.json")
+
+
 def knowledge_store_root() -> Path:
     """Return the Lite store, readable by operators and owned by azknowledge."""
     return _under("/var/lib/azazel/knowledge")

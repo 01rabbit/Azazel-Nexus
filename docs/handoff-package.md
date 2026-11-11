@@ -193,15 +193,17 @@ scans of the CLI.
   says `not_readable_by_principal`. Each snapshot carries its freshness, so a
   stale copy is labelled. Guidance and binding are read back strictly as for
   the CLI; a record that does not validate fails the request. No group,
-  privilege or output path is added.
+  privilege or output path is added. This scope is permanent: extending the
+  Web endpoint to return the ledger is a separate approval item.
 * **Display capabilities.** `/api/view` carries `capabilities.handoff` and
   `capabilities.full_context_from_observation` (`null` = unknown). They are
   display control derived from the source kind only (live or fixture). The
   server judges `401` and `404` on every request independently and never reads
-  them. `full_context_from_observation` is `false` in this version: no Full
-  Context query is generated from an observation. It says nothing about
-  commissioning, grants, peers or past receipts. The package and manifest are
-  unchanged.
+  them. `full_context_from_observation` is `true` when the UI reads a valid
+  observation-query rule file at that moment, `false` when the file is absent
+  or defective, and `null` for a fixture source. It says nothing about
+  commissioning, grants, peers or past receipts. The package and manifest do
+  not depend on it.
 * **Confidentiality.** `encode_files()` runs `scan_package()` and
   `scan_markdown()` on the package, the Markdown and the manifest. A finding,
   a serialization failure or any other error returns `500 handoff_refused`
@@ -228,7 +230,40 @@ scans of the CLI.
   web response returns the exact UTF-8 text of the three files in `files`;
   a client should check the two body files against the manifest's SHA-256
   and size, and `manifest.json` against `manifest_sha256`, before saving,
-  and save each string as UTF-8 without altering it.
+  and save each string as UTF-8 without altering it. **Added field, `ui`
+  only.** `knowledge` gains `full_node_context` (next item) for principal `ui`
+  and for no other principal. A consumer of the `ui` package must accept the
+  field; the schema version stays `handoff-package/1` for the same reason as
+  above. The `root` and `operator` bytes are unchanged, and that is checked, not
+  assumed: `tests/unit/test_handoff_full_context_row.py` (the P-3 vectors)
+  pins the SHA-256 of both files for a row carrying a Full projection in the
+  complete, unavailable, rejected and expired states, and
+  `tests/unit/test_handoff_full_context_ui.py` pins them for a row carrying a
+  `full_node_trace`.
+* **Full node context (ui only).** `knowledge.full_node_context` is built
+  for principal `ui` only, key by key from an allow-list; a value outside its
+  range refuses the package. It separates the current transition
+  (`full_node_context_status`, `outcome`, `query_origin`, `transition_query`)
+  from the row's last attempt (`last_attempt`) and last received reference
+  (`last_receipt`, with `expired_at_generation`, `technique_set_relation` and
+  `received_in_current_transition`). `reference_state`
+  (`not_recorded`, `none`, `unknown`, `expired`, `set_changed`, `in_window`) is
+  judged at the package's `generated_at` from the generating machine's wall
+  clock, which is not a trusted clock. `basis.judged_at` is written truncated to whole seconds, so at the
+  expiry boundary the printed time can read earlier than `expires_at` while the
+  state is already `expired`; the comparison itself uses the untruncated clock. A past reference is unverified advice,
+  not an answer to the current query; the fixed `limitations` say so. Subjects,
+  producer text, request and correlation identifiers, snapshot references,
+  raw envelopes and question text are never included. `basis` states where it
+  came from (the UI's recent snapshot row, that snapshot's freshness and the
+  judging time). A row with no trace, or no explanation, is still reported (status and
+  outcome `unknown`, `reference_state` `not_recorded`). The CLI (`root`,
+  `operator`) does not carry this section in this version; that difference is a
+  limit of this version, not a decision, and aligning the CLI needs a
+  separate schema decision. The ledger is root's and the `ui` package never
+  reads it, so only the row's single last attempt and last reference appear,
+  not the history. The Markdown has three parts: the current
+  transition, the last query and the last received reference.
 * **Errors.** `401 login_required`, `404 not_found`, `400
   query_or_fragment_refused`, `421 host_refused`, `429 handoff_busy`,
   `500 handoff_refused`, `500 handoff_too_large`; every body is

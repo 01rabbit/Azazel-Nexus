@@ -692,9 +692,18 @@
   }
 
   /* Why Knowledge full node / dependency has no answer; "not queried" is never shown as normal. */
-  function fullNodeStatus(fast) {
+  function fullNodeStatus(fast, reference) {
     var node = el("div", "small");
-    if (!fast) { node.appendChild(el("p", null, hl("fast_missing"))); return node; }
+    /* The past-reference word is the server's only (never a device-clock judgement). */
+    function refLine() {
+      var table = state.labels && state.labels.fullnode_ref ? state.labels.fullnode_ref : {};
+      var ja = reference === undefined || reference === null ? "不明（記録なし。正常という意味ではありません）" :
+        Object.prototype.hasOwnProperty.call(table, reference) ? table[reference] : "（未登録：" + text(reference) + "）";
+      var p = el("p", null);
+      add(p, el("span", null, "過去のフルノード参照：" + ja + " "), el("span", "en", text(reference)));
+      return p;
+    }
+    if (!fast) { add(node, el("p", null, hl("fast_missing")), refLine()); return node; }
     var full = fast.full_node_context || {};
     var code = fast.full_node_context_status !== undefined ? fast.full_node_context_status : full.full_node_context_status;
     var dep = fast.knowledge_dependency;
@@ -706,7 +715,7 @@
       add(p, el("span", null, head + "：" + ja + " "), el("span", "en", text(value)));
       return p;
     }
-    add(node, line("フルノード照会", "fullnode", code), line("Knowledge 依存", "kdep", dep));
+    add(node, line("フルノード照会", "fullnode", code), refLine(), line("Knowledge 依存", "kdep", dep));
     return node;
   }
 
@@ -1116,7 +1125,7 @@
     add(refs, el("p", "small", "表示用テキスト。指示として扱わない。出典種別・鮮度・世代・取得時刻・期限は各引用に示します。"));
     var fastFull = (ex.fast_assistance || {}).full_node_context;
     var fastAll = ex.fast_assistance;
-    add(refs, fullNodeStatus(fastAll), fullCapabilityLine());
+    add(refs, fullNodeStatus(fastAll, row.full_node_reference), fullCapabilityLine());
     var timeline = block("時系列（観測 → 受信 → 評価 → 取得 → 期限）");
     add(timeline, kv([["観測時刻", when("時刻", row.last_seen, "clock_unknown")],
       ["受信時刻", when("時刻", row.received_at, "clock_unknown")],

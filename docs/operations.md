@@ -823,6 +823,39 @@ explanation. Instead, with the new release still installed:
    record and reports the ledger as `record_refused`; roll forward to read
    them again.
 
+**Rolling the explainer back past the Full-node trace (to `74a6189`).** Once an
+observation rule is in place, checkpoints and recent rows carry a row-level
+`full_node_trace` and a nested `query_origin`; the release at `74a6189` (the one
+before this change) refuses both: its explainer stops at start with
+`cursor_refused` and its readers read the snapshot as `None`. The target of
+this rollback is `74a6189`; roll back only to it. With the new release still
+installed:
+
+1. `sudo systemctl stop azazel-incident-explaind.service`
+2. Convert the stopped checkpoint (a function separate from the #392 conversion
+   above; it changes nothing else, and pending entries are untouched):
+
+   ```sh
+   sudo /opt/azazel-nexus/venv/bin/python -I -c 'from azazel_nexus_runtime.incident_explaind import checkpoint_for_release_before_full_node_trace as c; print(c("/var/lib/azazel/incident-explain/cursor.json"))'
+   ```
+
+   It prints how many recent rows lost either field. The original is kept as
+   `cursor.json.pre-rollback` (owner and mode kept). An existing backup is never
+   replaced, and this conversion (unlike the one above) does not resume: any
+   existing `cursor.json.pre-rollback`, identical or not, refuses the run with
+   `rollback_backup_exists`; move it aside yourself. Nothing is written if the checkpoint is refused.
+3. Install `74a6189` and start the explainer. It rewrites `recent.json` and
+   the ui copy from the converted checkpoint after it starts; until then the
+   earlier ui reads the snapshot as `None`.
+
+The ledger keeps the original records; the conversion leaves no record of
+itself. The earlier release cannot read the new records either (as for #392),
+so while it runs the Full-node facts of those incidents can be read neither in
+the ui nor with the CLI. Rolling forward again reads them as before. When rolling forward, install
+the new readers and restart the resident ones before putting the observation
+rule file back (order in [Knowledge Context consumer](knowledge-context-consumer.md),
+*Deployment order and rollback*).
+
 Normal retention overtaking a cursor reports `cursor_overtaken` and resumes from
 the oldest retained segment without operator reset. Outage replay drops `opened`
 transitions older than one hour (`stale_skipped`). A valid segment-full marker

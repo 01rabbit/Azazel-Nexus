@@ -505,7 +505,7 @@ for _name, _fields in (
                     *(f"incidents[].{f}" for f in (
                         "incident_id", "state", "first_seen", "last_seen", "count",
                         "most_severe", "edge_would", "policy_reason", "technique_ids",
-                        "technique_ids[]", "evidence_stored", "explanation",
+                        "technique_ids[]", "evidence_stored", "full_node_reference", "explanation",
                         "explanation.state", "explanation.route", "explanation.outcome",
                         "explanation.summary", "explanation.failure_codes",
                         "explanation.failure_codes[]", "explanation.content_kind",

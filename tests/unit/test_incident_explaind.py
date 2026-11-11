@@ -369,7 +369,7 @@ def test_registration_and_only_allowed_connections():
     tree = ast.parse(text)
     exchanges = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_exchange"]
     assert {n.args[0].value for n in exchanges} == {"mio-advise", "audit-submit"}
-    assert len(exchanges) == 3
+    assert len(exchanges) == 4  # advise, generation poll, audit submit, observation-origin (unit C)
     assert 'lookup_context(ids, deadline_s=KNOWLEDGE_MAX_S)' in text
     assert not any(isinstance(n, ast.Attribute) and n.attr == "connect" for n in ast.walk(tree))
     assert not any(word in text for word in ("subprocess", "dbus", "systemctl", 'socket_path("edge'))
@@ -529,7 +529,8 @@ def test_explainer_reaches_only_its_own_listeners_not_operator_sockets():
         assert writers == (["azazel-auditd-loop.service", unit]
                            if name == "audit-submit" else [unit])
     assert auditd.SUBMIT_REGISTRY.names() == ("audit.append",)
-    assert mio_entryd.ADVISE_REGISTRY.names() == ("mio.advise", "mio.generation.result")
+    assert mio_entryd.ADVISE_REGISTRY.names() == (
+        "mio.advise", "mio.context.observe", "mio.generation.result")
 
 
 @pytest.mark.parametrize("resume", [False, True])

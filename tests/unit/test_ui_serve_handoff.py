@@ -336,3 +336,31 @@ def test_capabilities_live_and_fixture(ui, tmp_path, monkeypatch):
         assert get(h, f"/api/handoff/{INCIDENT}").status == 401
     finally:
         h.close()
+
+
+def test_capability_follows_observation_rule_file(ui, monkeypatch):
+    """U39 F: live reads the rule file (valid true; absent or defective false)."""
+    import os
+    from azazel_nexus_runtime import knowledge_context_config as cfg
+    from test_knowledge_context_config import put_rule, rule_file
+    monkeypatch.setattr(cfg, "_OWNER", os.getuid())
+    from azazel_nexus_runtime import runtime_paths as rt_paths
+    monkeypatch.setattr(rt_paths, "ROOT", ui.root)
+    sid, _ = ui.login()
+
+    def caps():
+        ui.app._view_cache = None
+        return get(ui, "/api/view", sid).json()["capabilities"]["full_context_from_observation"]
+
+    assert caps() is False
+    put_rule(ui.root)
+    assert caps() is True
+    put_rule(ui.root, raw=b"{not json")
+    assert caps() is False
+    rule_file(ui.root).unlink()
+    assert caps() is False
+
+
+def test_ui_serve_does_not_import_the_observation_constant():
+    assert "OBSERVATION_FULL_CONTEXT_QUERY" not in (
+        REPO / "runtime/src/azazel_nexus_runtime/ui_serve.py").read_text()

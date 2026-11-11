@@ -6,7 +6,7 @@ import math
 import re
 import unicodedata
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .explanation_claims import (
     EDGE_CLAIM_LIMITATION,
@@ -1011,8 +1011,13 @@ RECOVERY_HINT = "inspect_incident_chain_then_remove_cursor_and_restart"
 CLOSE_REASONS = ("idle", "capacity", "shutdown")
 
 
-def build_recent_incident(transition, previous=None, record=None):
-    """Project a validated transition and optional validated explanation, without identities."""
+def build_recent_incident(transition, previous=None, record=None, sequence=None):
+    """Project a validated transition and optional validated explanation, without identities.
+
+    `sequence` is the ledger sequence of this transition. It only matters to a
+    row that already has a `full_node_trace` (DESIGN-M5 2.4): the trace is
+    copied from `previous`, and no row ever gets a trace here.
+    """
     t = read_transition(transition)
     clean = explanation_input(t)
     explanation = (previous["explanation"] if previous else
@@ -1025,13 +1030,7 @@ def build_recent_incident(transition, previous=None, record=None):
         explanation = explanation_summary(r)
     elif previous and t["event_type"] in {"edge.incident.updated", "edge.incident.closed"}:
         # A newly observed transition cannot inherit a previous full-node receipt.
-        fast = explanation.get("fast_assistance")
-        if type(fast) is dict and "full_node_context" in fast:
-            fast = dict(fast)
-            fast["full_node_context"] = _full_node_projection(None, "not_queried", "not_queried")
-            fast["unknowns"] = [x for x in fast["unknowns"] if not x.startswith("KNOWLEDGE_CONTEXT_")]
-            fast["next_checks"] = [x for x in fast["next_checks"] if x != FULL_NODE_INCOMPLETE_CHECK]
-            explanation = {**explanation, "fast_assistance": fast}
+        explanation = without_current_full_node(explanation)
     if (record is None and previous and t["event_type"] == "edge.incident.updated"
             and t["most_severe"] < previous["most_severe"]):
         explanation = {"state": "pending", "route": "unavailable", "outcome": "unavailable",
@@ -1043,7 +1042,56 @@ def build_recent_incident(transition, previous=None, record=None):
     # Audit records do not carry this; the ledger, recent rows and status do.
     if "evidence_stored" in t or previous and "evidence_stored" in previous:
         row["evidence_stored"] = False
+    if previous and "full_node_trace" in previous:
+        trace = json.loads(json.dumps(previous["full_node_trace"]))
+        if record is None:
+            if t["event_type"] == "edge.incident.closed":
+                trace["transition_query"] = "closed"
+            elif (t["event_type"] == "edge.incident.opened"
+                  or t["most_severe"] < previous["most_severe"]):
+                trace["transition_query"] = "pending"
+            else:
+                trace["transition_query"] = "not_explained"
+        if sequence is not None:
+            trace["observed_sequence"] = sequence
+        row["full_node_trace"] = trace
     return row
+
+
+def adopt_full_node_reply(advise, observed):
+    """The advise result with the Full-derived fields of `observed`, or None.
+
+    AP R1 section 5: everything outside the Full-derived fields must be the
+    same as the advise result. `unknowns` may differ only in
+    `KNOWLEDGE_CONTEXT_` items and `next_checks` only in the incomplete-check
+    text and in the advise side's fixed "did not query Knowledge" text; `trace`, `trace_id` and `frame_id` stay the advise side's, and
+    `full_node_context_origin` is the explainer's own and not compared.
+    """
+    own = {"trace", "trace_id", "frame_id", "full_node_context_origin"}
+    full = {"fabric_knowledge_context_advisory", "full_node_context_status",
+            "full_node_context_received_at", "handoff", "reasoning_trace"}
+
+    def comparable(value):
+        out = {k: v for k, v in value.items() if k not in own | full}
+        out["dependency_outcome"] = {k: v for k, v in value["dependency_outcome"].items()
+                                     if k != "knowledge"}
+        out["unknowns"] = [u for u in value["unknowns"] if not u.startswith("KNOWLEDGE_CONTEXT_")]
+        out["next_checks"] = [c for c in value["next_checks"]
+                              if c not in (FULL_NODE_INCOMPLETE_CHECK, MIO_KNOWLEDGE_NOT_QUERIED_CHECK)]
+        return out
+
+    if observed.get("full_node_context_status") not in {"received", "unavailable"}:
+        return None
+    if comparable(advise) != comparable(observed):
+        return None
+    adopted = dict(observed)
+    adopted.pop("full_node_context_origin", None)
+    for key in own - {"full_node_context_origin"}:
+        if key in advise:
+            adopted[key] = advise[key]
+        else:
+            adopted.pop(key, None)
+    return adopted
 
 
 #: A displayed citation: what was cited, and from which verified bundle,
@@ -1058,6 +1106,14 @@ CITATION_STATES = ("shown", "none", "withheld")
 #: The escaped JSON budget for one row's displayed citations.
 CITATION_DISPLAY_BYTES = 6 * 1024
 
+#: The fixed next check the fast (advise) result carries when it did not query
+#: Knowledge. Produced by azazel_mio 4511f1fc; copied here character for
+#: character. If MIO changes the wording, replacement does not hold (the row
+#: shows `unavailable`), which closes on the safe side.
+MIO_KNOWLEDGE_NOT_QUERIED_CHECK = (
+    "This fast result did not query Knowledge; consult the separate validated Knowledge analysis "
+    "lane for Knowledge context before relying on this assessment.")
+
 FULL_NODE_INCOMPLETE_CHECK = (
     "Request an authorized current full-node Knowledge snapshot; this partial or stale advisory "
     "is not a complete current snapshot."
@@ -1070,12 +1126,112 @@ FULL_NODE_LIMITATIONS = (
 FULL_NODE_FRESHNESS_LIMITATION = "source-level freshness deadlines are not included in this projection"
 
 
-def _full_node_projection(advisory, status, knowledge_outcome):
+#: Who asked for the full-node reference (explaind writes it; AP R1 section 6).
+FULL_NODE_ORIGINS = ("observation_rule_v1", "observation_rule_v1_repeat", "none")
+FULL_NODE_TRACE_QUERIES = ("queried", "repeat", "no_candidate", "rule_absent",
+                           "pending", "not_explained", "closed")
+FULL_NODE_ATTEMPT_RESULTS = ("received", "received_not_adopted", "unavailable")
+FULL_NODE_REFERENCE_STATES = ("not_recorded", "none", "unknown", "expired", "set_changed", "in_window")
+_ISO_UTC = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z")
+_ISO_UTC_SECONDS = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+
+
+def without_current_full_node(explanation):
+    """The explanation with its current full-node projection set to `not_queried`.
+
+    One conversion for every place that must stop an explanation from claiming
+    a full-node reference for a transition it was not made for: a new
+    unexplained transition, an Edge reset, and a late explanation of an
+    earlier transition. It also drops the incomplete-check texts and the
+    origin (`query_origin`), which belongs to the dropped projection.
+    """
+    fast = explanation.get("fast_assistance")
+    if type(fast) is dict and "full_node_context" in fast:
+        fast = dict(fast)
+        fast["full_node_context"] = _full_node_projection(None, "not_queried", "not_queried")
+        fast["unknowns"] = [x for x in fast["unknowns"] if not x.startswith("KNOWLEDGE_CONTEXT_")]
+        fast["next_checks"] = [x for x in fast["next_checks"] if x != FULL_NODE_INCOMPLETE_CHECK]
+        return {**explanation, "fast_assistance": fast}
+    return explanation
+
+
+def utc_seconds(epoch):
+    """`YYYY-MM-DDTHH:MM:SSZ` from an epoch, truncated to whole seconds."""
+    if type(epoch) not in (int, float) or not math.isfinite(epoch) or epoch < 0:
+        raise ValueError("recent_refused")
+    return datetime.fromtimestamp(int(epoch), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _iso_epoch(text):
+    return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+
+
+def _technique_set(ids):
+    if (type(ids) is not list or not 1 <= len(ids) <= 8
+            or any(type(i) is not str or not TECHNIQUE_ID.fullmatch(i) for i in ids)
+            or ids != sorted(set(ids))):
+        raise ValueError("recent_refused")
+
+
+def read_full_node_trace(value):
+    """The row's `full_node_trace` (DESIGN-M5 2.2, 2.8), or ValueError."""
+    _shape(value, ("transition_query", "last_attempt", "last_receipt", "observed_sequence"))
+    if type(value["transition_query"]) is not str or value["transition_query"] not in FULL_NODE_TRACE_QUERIES:
+        raise ValueError("recent_refused")
+    _int(value["observed_sequence"], 2**63 - 1, 1)
+    attempt, receipt = value["last_attempt"], value["last_receipt"]
+    if attempt is not None:
+        _shape(attempt, ("attempted_at", "result", "technique_ids"))
+        if (type(attempt["attempted_at"]) is not str or not _ISO_UTC_SECONDS.fullmatch(attempt["attempted_at"])
+                or type(attempt["result"]) is not str or attempt["result"] not in FULL_NODE_ATTEMPT_RESULTS):
+            raise ValueError("recent_refused")
+        _iso_epoch(attempt["attempted_at"])
+        _technique_set(attempt["technique_ids"])
+    if receipt is not None:
+        _shape(receipt, ("received_at", "outcome", "source_kind", "claim_status", "trust",
+                         "snapshot_state", "generated_at", "expires_at", "limitations",
+                         "technique_ids"))
+        if (type(receipt["received_at"]) is not str or not _ISO_UTC.fullmatch(receipt["received_at"])
+                or type(receipt["outcome"]) is not str
+                or receipt["outcome"] not in {"complete", "partial", "stale"}):
+            raise ValueError("recent_refused")
+        _iso_epoch(receipt["received_at"])
+        _technique_set(receipt["technique_ids"])
+        _read_full_node_projection({
+            "full_node_context_status": "received", "outcome": receipt["outcome"],
+            **{k: receipt[k] for k in ("source_kind", "claim_status", "trust", "snapshot_state",
+                                      "generated_at", "expires_at", "limitations")}})
+    if value["transition_query"] == "queried" and attempt is None:
+        raise ValueError("recent_refused")
+    if attempt is not None and attempt["result"] == "received" and (
+            receipt is None or receipt["technique_ids"] != attempt["technique_ids"]):
+        raise ValueError("recent_refused")
+
+
+def full_node_reference_state(trace, technique_ids, now):
+    """The reader-side word for a stored trace (DESIGN-M5 2.3); never stored."""
+    if trace is None:
+        return "not_recorded"
+    receipt = trace["last_receipt"]
+    if receipt is None:
+        return "none"
+    if type(now) not in (int, float) or not math.isfinite(now) or now < 0:
+        return "unknown"
+    if now >= _iso_epoch(receipt["expires_at"]):
+        return "expired"
+    if set(receipt["technique_ids"]) != set(technique_ids):
+        return "set_changed"
+    return "in_window"
+
+
+def _full_node_projection(advisory, status, knowledge_outcome, query_origin=None):
     """Project only closed metadata; never copy source prose or subjects."""
     result = {"full_node_context_status": status, "outcome": "not_queried",
               "source_kind": None, "claim_status": None, "trust": None,
               "snapshot_state": None, "generated_at": None, "expires_at": None,
               "limitations": []}
+    if query_origin is not None:
+        result["query_origin"] = query_origin
     if advisory is not None:
         result.update(outcome=advisory["snapshot_state"],
                       source_kind=advisory["source_kind"], claim_status=advisory["claim_status"],
@@ -1097,7 +1253,10 @@ def _full_node_projection(advisory, status, knowledge_outcome):
 
 def _read_full_node_projection(value):
     _shape(value, ("full_node_context_status", "outcome", "source_kind", "claim_status", "trust",
-                   "snapshot_state", "generated_at", "expires_at", "limitations"))
+                   "snapshot_state", "generated_at", "expires_at", "limitations"), ("query_origin",))
+    if "query_origin" in value and (type(value["query_origin"]) is not str
+                                    or value["query_origin"] not in FULL_NODE_ORIGINS):
+        raise ValueError("recent_refused")
     status, outcome = value["full_node_context_status"], value["outcome"]
     if type(status) is not str or status not in {"unknown", "not_queried", "received", "unavailable"}:
         raise ValueError("recent_refused")
@@ -1187,7 +1346,7 @@ def explanation_summary(record):
         if "full_node_context_status" in fast or advisory is not None:
             summary["fast_assistance"]["full_node_context"] = _full_node_projection(
                 advisory, fast.get("full_node_context_status", "unknown"),
-                fast["dependency_outcome"]["knowledge"])
+                fast["dependency_outcome"]["knowledge"], fast.get("full_node_context_origin"))
     if GUIDANCE_FIELD in r:
         summary[GUIDANCE_FIELD] = public_guidance(r[GUIDANCE_FIELD])
     if omitted:
@@ -1679,7 +1838,9 @@ def read_recent_incidents(raw):
         for row in v["incidents"]:
             _shape(row, ("incident_id", "state", "first_seen", "last_seen", "count", "most_severe",
                          "edge_would", "policy_reason", "technique_ids", "explanation"),
-                   ("evidence_stored",))
+                   ("evidence_stored", "full_node_trace"))
+            if "full_node_trace" in row:
+                read_full_node_trace(row["full_node_trace"])
             if "evidence_stored" in row and row["evidence_stored"] is not False:
                 return None
             ident = row["incident_id"]
@@ -1863,7 +2024,3 @@ def read_explainer_status(raw):
     except (ValueError, TypeError, UnicodeError, RecursionError, OverflowError):
         return None
 
-
-# build_frame is fixed at P3 and this version generates no Full Context query
-# from an observation. The rule is undecided, so it stays disabled (U13 / R1).
-OBSERVATION_FULL_CONTEXT_QUERY = False

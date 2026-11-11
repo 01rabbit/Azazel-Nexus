@@ -804,12 +804,27 @@ def read_fast_assistance(value):
         'schema_version', 'trace_id', 'frame_id', 'generation_method', 'state',
         'dependency_outcome', 'observations', 'hypotheses', 'unknowns', 'next_checks',
         'knowledge', 'handoff', 'reasoning_trace'}
-    optional_keys = {'fabric_knowledge_context_advisory', 'full_node_context_status'}
+    optional_keys = {'fabric_knowledge_context_advisory', 'full_node_context_status',
+                     'full_node_context_received_at', 'full_node_context_origin'}
     require(type(value) is dict and required_keys <= set(value)
             and set(value) <= required_keys | optional_keys)
     if 'full_node_context_status' in value:
         require(type(value['full_node_context_status']) is str
                 and value['full_node_context_status'] in {'not_queried', 'received', 'unavailable'})
+    if 'full_node_context_origin' in value:
+        # Written by explaind into its own record only (never by M.I.O.).
+        require(type(value['full_node_context_origin']) is str
+                and value['full_node_context_origin'] in {
+                    'observation_rule_v1', 'observation_rule_v1_repeat', 'none'})
+    if 'full_node_context_received_at' in value:
+        # Written by locald's observation-origin request only, and only for a
+        # received response: an ISO UTC instant, never a caller-supplied claim.
+        stamp = value['full_node_context_received_at']
+        require(value.get('full_node_context_status') == 'received'
+                and type(stamp) is str and re.fullmatch(
+                    r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{6})?Z',
+                    stamp, flags=re.ASCII))
+        datetime.fromisoformat(stamp.replace('Z', '+00:00'))
     require(value['schema_version'] == 'mio.assistance.v1')
     require(value['generation_method'] == 'static_reference')
     require(type(value['trace_id']) is str and re.fullmatch(r'mio-[0-9a-f]{16}-[0-9]{1,12}', value['trace_id']))

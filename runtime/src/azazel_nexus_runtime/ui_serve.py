@@ -75,7 +75,7 @@ from azazel_nexus.ui_login import (
     CODE_ALPHABET, CODE_LENGTH, CODE_TTL_S, SCHEMA as LOGIN_SCHEMA, login_code_path,
     normalize_code,
 )
-from azazel_nexus.incident_explain import OBSERVATION_FULL_CONTEXT_QUERY
+from .knowledge_context_config import load_observation_rule
 from azazel_nexus.ui_model import browser_json, project
 
 __all__ = ["main"]
@@ -604,7 +604,7 @@ class UiApp:
         kind = self.source.kind
         if kind == "live":
             return {"handoff": True,
-                    "full_context_from_observation": OBSERVATION_FULL_CONTEXT_QUERY}
+                    "full_context_from_observation": load_observation_rule() is not None}
         if kind == "fixture":
             return {"handoff": False, "full_context_from_observation": None}
         return {"handoff": None, "full_context_from_observation": None}

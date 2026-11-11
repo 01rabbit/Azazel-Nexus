@@ -53,7 +53,8 @@ function handoff(id, tweak = () => ({})) {
 }
 function remanifest(b, edit) { const m = JSON.parse(b.files["manifest.json"]); edit(m); const t = JSON.stringify(m);
   return { files: Object.assign({}, b.files, { "manifest.json": t }), manifest_sha256: sha(t) }; }
-const row = id => ({ incident_id: id, state: "open", most_severe: 1, last_seen: 1, count: 3 });
+let ROWX = {};
+const row = id => Object.assign({ incident_id: id, state: "open", most_severe: 1, last_seen: 1, count: 3 }, ROWX);
 let CAPS = { handoff: true, full_context_from_observation: false };
 const model = () => { const m = JSON.parse(JSON.stringify(MODEL)); m.sections = m.sections || {};
   if (CAPS === undefined) { delete m.capabilities; } else { m.capabilities = CAPS; }
@@ -213,7 +214,7 @@ const res = {};
   t = await fetched(b => withBinding(pk(b, { time: { last_seen: "2024-02-29T00:00:00Z" } }), "r1")); assert.match(t, /別時点: 画面/, "leap day is valid (differs from row)");
   view = () => ok(model()); await advance(5000);
   // 11. Full-query capability line: three values, rendered in the incident detail.
-  for (const [v, re] of [[false, /この版は生成しない（既定無効・規則未決）/], [true, /観測起点の Full 照会: 有効/], [null, /観測起点の Full 照会: 不明/], [undefined, /観測起点の Full 照会: 不明/]]) {
+  for (const [v, re] of [[false, /観測起点の Full 照会: 無効（規則ファイルなし）/], [true, /観測起点の Full 照会: 規則ファイルが有効（UI が読んだ時点。broker・grant・peer の状態は示しません）/], [null, /観測起点の Full 照会: 不明/], [undefined, /観測起点の Full 照会: 不明/]]) {
     CAPS = v === undefined ? {} : { handoff: true, full_context_from_observation: v }; view = () => ok(model()); await advance(5000);
     assert.match(panel().textContent, re, String(v));
   }
@@ -224,5 +225,23 @@ const res = {};
   const w5 = []; routes["/api/handoff/"] = () => new Promise(r => w5.push(r)); fetchButtons()[0].ls.click(); await flush();
   view = () => ({ status: 421, body: {} }); await advance(5000); assert.equal(fetchButtons().length, 0, "421 discards");
   w5[0](ok(handoff(ID1))); await flush(); assert.ok(!/取得済み/.test(panel().textContent), "late answer after 421 dropped");
+  // 13. U39 F: past full-node reference line (server word only), also without fast_assistance.
+  CAPS = { handoff: true, full_context_from_observation: false };
+  const refText = async (extra) => { ROWX = extra; view = () => ok(model()); await advance(5000); return panel().textContent; };
+  for (const w of ["not_recorded", "none", "unknown", "expired", "set_changed", "in_window"]) {
+    const t = await refText({ full_node_reference: w });
+    assert.match(t, /過去のフルノード参照：/, w); assert.ok(t.includes(LABELS.fullnode_ref[w]), w);
+    assert.match(t, /fast_assistance なし/, "reference shown next to fast_missing: " + w);
+  }
+  let t13 = await refText({ full_node_reference: "in_window" });
+  assert.match(t13, /照会した集合と同じで期限内の過去の参照があります（未検証の助言。今回の照会結果ではありません）/);
+  assert.ok(!/(^|[^無])有効/.test(t13.replace(/観測起点[^\n]*/, "")), "in_window is not read as valid");
+  for (const w of ["not_recorded", "unknown", "expired", "set_changed"]) assert.ok(!/有効(です|な参照)/.test(LABELS.fullnode_ref[w]), w);
+  t13 = await refText({ full_node_reference: "bogus" }); assert.match(t13, /過去のフルノード参照：（未登録：bogus）/);
+  t13 = await refText({}); assert.match(t13, /過去のフルノード参照：不明（記録なし/);
+  const partial = await refText({ full_node_reference: "in_window", explanation: { fast_assistance: { full_node_context_status: "received",
+    full_node_context: { full_node_context_status: "received", outcome: "partial" } } } });
+  assert.match(partial, /過去のフルノード参照：照会した集合と同じ/); assert.match(partial, /今回の照会結果ではありません/);
+  ROWX = {};
   console.log(JSON.stringify(res));
 })().catch(e => { console.log(JSON.stringify({ harness_error: String(e && e.stack || e) })); process.exit(1); });

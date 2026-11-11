@@ -60,9 +60,321 @@ max_ttl_seconds, mission, sanitizer_policy; no defaults), `registry-keys.json`,
 writable, files are opened without following symlinks, must have one link and
 a bounded size, and `client.key`/`alias.key` must have no other-user access.
 A signed registry alone never enables egress. The loader performs no network
-I/O. A refusal is recorded once as `knowledge.context.commissioning` with a
-fixed `reason_code`, and the broker stays closed. Removing or replacing
-`manifest.json` while running closes the client until restart.
+I/O. Removing or replacing `manifest.json` while running closes the client until
+restart.
+
+Boundaries that this bundle does and does not settle:
+
+- Policy wording. Egress cannot be enabled by an environment variable or a
+  command-line option (the daemon takes no arguments); only a complete,
+  root-owned bundle can enable it.
+- Location and modes. The bundle is `/etc/azazel/knowledge-context/commissioning/`.
+  The optional observation rule file is its parent's
+  `observation-query.json`, not part of the bundle (see *Observation-origin
+  query*). The loader requires the bundle directory to be root-owned and not
+  group- or other-writable; within that, its mode (for example 0750) is the
+  operator's choice. The secret files keep the modes given above.
+- A defective bundle. The daemon still starts, the broker stays closed, and the
+  daemon records one `knowledge.context.commissioning` event: outcome
+  `refused` with a fixed `reason_code`, or `absent` when there is no bundle.
+  Nothing falls back to another source.
+- Verification is not activation. A bundle that loads as commissioned makes the
+  broker able to send; it does not grant the unit. The grant for
+  `azazel-knowledge-contextd.service` comes only through the existing
+  activation path, and `wired_capabilities()` does not list Knowledge Context.
+
+## Observation-origin query (technique-set/1)
+
+Nexus can ask the Knowledge peer one extra question from an observed incident:
+which ATT&CK techniques the incident carries. This is a separate contract
+(`technique-set/1`), off by default, and it adds no authority: the reply is an
+unverified advisory and never changes a decision field. Everything in this
+section applies only while a rule file (below) is in place. With no rule file
+the explainer asks nothing, no new record field is written, and rows,
+checkpoints and records are byte-for-byte what they were before.
+
+### Question shape and the rule file
+
+A question that is exactly `ATT&CK technique context: ` followed by one to eight
+technique ids (`T1234` or `T1234.567`, single spaces) is treated by the broker
+as observation-origin. The question is built by `azazel-mio-locald`, not by the
+explainer, from a sorted, validated set of ids. Other questions are handled as
+before.
+
+The rule file is `/etc/azazel/knowledge-context/observation-query.json`. It sits
+in the parent of the commissioning directory, outside the bundle, so the bundle's
+modes are unchanged and `azexplain` and `azui` still cannot read the bundle. The
+product does not ship it, and `install.sh` does not create the parent
+directory (it creates `/etc/azazel` only); the operator creates the directory
+root-owned and not group- or other-writable (0755) and places the file, intended
+mode 0644. The loader requires the file and every ancestor to be root-owned and
+not group- or other-writable; the file must be a regular file with one link and
+at most 4 KiB, and symlinks are not followed. It holds exactly `schema`
+(`azazel.knowledge-context.observation-query/1`), `rule` (`technique-set/1`) and
+`max_requests_per_minute` (an integer from 1 to 60, no default). Any absence
+or defect is simply "no rule"; the loader never says why. No environment
+variable or command-line option can supply a rule.
+
+### Who reads it, and when
+
+| Component | Role | When the file is read |
+| --- | --- | --- |
+| `azazel-incident-explaind` | candidate decision, retention table, the request, the replacement rule, the origin record | before every explanation, so adding, removing or replacing the file takes effect from the next one |
+| `azazel-mio-entryd`, `azazel-mio-locald` | relay the request; locald builds the question | not read. The rule is enforced by the broker |
+| `azazel-knowledge-contextd` (broker) | treats matching questions as observation-origin, counts them, refuses them without a rule | once at start. After that, on each observation-origin request, it checks that the file's identity (device, inode, mtime, ctime) is unchanged; a missing or changed file latches the broker closed to such questions until restart |
+| `azazel-ui` | `capabilities.full_context_from_observation`: true when it reads a valid rule at that moment, false when absent or defective, null for a fixture source | at every view build, so the `/api/view` cache (2 seconds) can delay it. It states only that the file was valid when the UI read it; it says nothing about the broker's latch, grants, the bundle or the peer |
+
+When the broker read a rule, `knowledge.context.commissioning` carries
+`observation_rule: loaded`. With no rule the key is absent, so the event is
+identical to the earlier one.
+
+### Stopping and resuming
+
+To stop, remove the rule file. The explainer stops asking from its next
+explanation. The broker closes at its next observation-origin check; it does
+not cancel a request that already passed the check and it has no watcher. To
+resume, or to change `max_requests_per_minute`, put the file back and restart
+`azazel-knowledge-contextd`; adding or replacing the file does not reopen a
+latched broker. Stopping the unit or removing its activation grant stops
+everything, as before.
+
+### When the three readers disagree
+
+- Explainer valid, broker not (file added without restarting contextd, broker
+  latched, or the bundle was refused): the request reaches the broker and is
+  refused as `refused_before_send`; the row shows `unavailable`.
+- Broker valid, explainer not (for example `azexplain` cannot read the file):
+  nothing is asked and the row stays `not_queried`. The UI reads the file by the
+  same rule and normally shows `false`.
+- UI only differs: during the 2 second cache, or when only `azui` lacks
+  permission. The capability value is a display control, so behaviour does not
+  change but the display can lag.
+
+### The limit and its reach
+
+The broker counts observation-origin requests that passed the rule and limit
+check in the last 60 seconds, including ones that later fail (for example
+`busy`). At `max_requests_per_minute` the request is refused as `rate_limited`.
+Both refusals are decided before the `knowledge.context.requested` event, before
+the in-flight slot and before any peer call. The window is in memory, so a
+broker restart empties it. The limit covers questions of this shape only; other
+P0 questions are never counted.
+
+The first stage is the explainer's existing six explanations per minute
+(`MAX_PER_MINUTE`), which the observation-origin candidates cannot exceed. The
+broker's limit is the second layer: it also bounds a restarted explainer and any
+caller that sends a question of this shape.
+
+Residual effects:
+
+- Occupancy. The broker has one in-flight slot with no queue. An
+  observation-origin request holds it for as long as the peer takes (at most the
+  caller's deadline, 350 ms), so an ordinary P0 request arriving then gets `busy`.
+  The reverse also happens: if an ordinary request holds the slot, an
+  observation-origin request gets `busy`, is counted, and its pair is not asked
+  again (below). Since a `busy` refusal still counts toward the limit,
+  repeated occupancy can use up the minute's allowance without a single send.
+- Effect on ordinary P0 callers. Without a rule, an ordinary P0 question whose
+  text happens to match the shape exactly is refused (`refused_before_send`),
+  and with a rule it is counted against the limit. The ordinary entry sends free
+  text questions, so this is not expected in normal use (推測です), but it
+  is the one place where the rule file changes the behaviour of the earlier path.
+
+### Audit `reason_code`
+
+`knowledge.context.completed` may carry an optional `reason_code`. `outcome` is
+unchanged. Success and unclassified failures carry none.
+
+| reason_code | outcome | Meaning |
+| --- | --- | --- |
+| `refused_before_send` | `unavailable` | Rejected before any send: frame, P0 label, not ready, no/changed rule file, `requested` audit write failed, client pre-send checks, changed manifest |
+| `rate_limited` | `unavailable` | Observation-origin limit reached; not sent |
+| `busy` | `timeout` | The single in-flight slot was occupied; not sent |
+| `transport` | `unavailable` | Failed while connecting, in TLS pinning, or in HTTP exchange; delivery is not guaranteed either way |
+| `verification` | `unavailable` | A response arrived but failed signature, binding, lifetime or schema checks, or the broker rejected it (not an object, over 48 KiB) |
+| `late` | `timeout` | A verified response arrived after the deadline |
+
+A missing `reason_code` on a record written before this field existed reads as
+"not recorded"; on a record written after, it reads as "unclassified". Neither
+is inferred. Events never contain exception text, the question or any response
+fragment.
+
+### The explainer's request: `mio.context.observe` and `mio.local.observe`
+
+The explainer asks at most one observation-origin question per candidate
+explanation, after `mio.advise` and Knowledge Lite and before the record is
+composed. It uses `mio.context.observe` on `azazel-mio-entryd` (deadline 350 ms,
+plus a 250 ms caller margin), which relays to `mio.local.observe` on
+`azazel-mio-locald`.
+
+- `mio.context.observe` is allowed to the explainer only; any other principal
+  is `PRINCIPAL_DENIED`. It requires a P3 frame with the structured projection
+  and at least one technique. It draws on the same per-caller rate allowance as
+  `mio.advise`, writes nothing to the entryd ledger, and does not change
+  `mio.advise`'s 500 ms budget, FAST_ASSESS or the ordinary P0 path.
+  `mio.local.observe` is a SERVICE verb under the existing `azmioentry`-only policy.
+- The 350 ms deadline is a candidate contract, not a measured one. The reply
+  carries a fixed-key `timing` (`context`: received or unavailable, `broker_ms`,
+  `total_ms` from locald; `entry_ms` from entryd) so that success, delay and
+  refusal can be measured. Nothing is logged or recorded from it yet, and no
+  measurement has been taken.
+- The explainer does not adopt the reply as it arrives: it re-validates the
+  returned `fast_assistance` with `read_fast_assistance` before the replacement
+  rule runs, and a reply that fails is treated as `unavailable`.
+- A broker refusal, an unreachable broker, a timeout or an exhausted budget all
+  return `unavailable` in the same shape. Locald does not submit generation.
+- Locald stamps `full_node_context_received_at` (UTC, a wall-clock time and not a
+  trusted clock) into the fast assistance only when the broker returned a
+  response. The reader accepts it as an optional key; a reader from before this
+  change reads the unknown key as `invalid_fast_assistance` (see the deployment
+  order below).
+
+### Candidates, retention table and replacement
+
+Candidate: the explained transition is `opened` or `updated`, has at least one
+technique id, the frame carries the structured projection, `mio.advise`
+returned a fast assistance, and the pair (incident, sorted technique set) is not
+in the retention table. If `mio.advise` returned none, the explanation is not a
+candidate. The table is memory only: per incident, cleared when that incident's
+`closed` is observed or on an Edge reset, at most 4096 pairs (the oldest
+incident's oldest pair goes first). The pair is entered when the question is
+decided, before its result is known; a failure, `rate_limited`, `busy` or a
+rejected reply does not make the pair a candidate again, and nothing is retried.
+After an explainer restart, or after eviction, the same pair may be asked again,
+bounded by the explainer's six per minute and the broker's limit.
+
+The reply replaces the advise fast assistance only when everything outside the
+Full-derived fields is equal: `fabric_knowledge_context_advisory`,
+`full_node_context_status`, `full_node_context_received_at`, `handoff`,
+`reasoning_trace`, `dependency_outcome.knowledge`, the `KNOWLEDGE_CONTEXT_`
+items of `unknowns` and two fixed `next_checks` texts may differ: the
+incomplete-check text, and the advise side's fixed "This fast result did not
+query Knowledge; ..." sentence (Nexus constant `MIO_KNOWLEDGE_NOT_QUERIED_CHECK`,
+copied from the pinned azazel_mio 4511f1fc). Both are removed before comparing
+and the remaining `next_checks` must be equal in order. If azazel_mio changes
+that sentence, the replacement stops holding and the row shows `unavailable`,
+which is the safe side. When the azazel_mio pin is updated, compare
+`MIO_KNOWLEDGE_NOT_QUERIED_CHECK` with the sentence the new wheel emits for a
+fast result that did not query Knowledge (the `tests/unit` comparison tests pin
+the Nexus side only); a mismatch is a release note item, not a silent change. `state`, `hypotheses`, `knowledge` and the rest must be
+equal. `trace`,
+`trace_id` and `frame_id` stay the advise side's. Otherwise the advise result is
+recorded with status `unavailable`. A reply that the broker verified but the
+explainer dropped this way therefore appears as `verified_advisory` in the
+broker's audit while the row says `unavailable`; this mismatch is expected.
+Whether a real Fabric reply leaves `state` and `hypotheses` unchanged is not
+established by unit tests (the pinned shared core is not installed in the test
+environment); acceptance S2 must show it, else the replacement always fails.
+
+The record gets `full_node_context_origin` (`observation_rule_v1`,
+`observation_rule_v1_repeat`, `none`) only while a rule is usable. The optional
+`full_node_context_received_at` comes from locald and is present only when the
+broker answered. The projection
+`explanation.fast_assistance.full_node_context` gains the optional `query_origin`
+(same three words), which explaind copies from the record. Old rows have neither
+and read unchanged.
+
+### Recorded Full-node reference: row trace and reader
+
+The explainer's recent rows may carry an optional row-level key
+`full_node_trace`. A row with a malformed trace refuses the whole snapshot, as any
+other unknown or invalid row key does. The trace has exactly four keys:
+`transition_query` (`queried`, `repeat`, `no_candidate`, `rule_absent`,
+`pending`, `not_explained`, `closed`), `last_attempt` (null or `attempted_at`,
+`result`, `technique_ids`; `result` is `received`, `received_not_adopted` or
+`unavailable`), `last_receipt` (null, or the nine closed projection fields with
+`outcome` `complete`/`partial`/`stale`, plus `received_at` and `technique_ids`)
+and `observed_sequence`. `received_not_adopted` means the record has status `received` and outcome
+`rejected`, `expired` or `unavailable`. A reply dropped by the replacement rule is
+`unavailable`, matching the row. An advisory (`complete`, `partial`, `stale`)
+whose receipt time is missing from the ledger side is also `unavailable`, and
+`last_receipt` is not replaced.
+
+`observed_sequence` is an internal value used only to decide whether a late
+explanation belongs to the row's latest transition. It is not copied to the
+status view, the handoff package or a peer. It is present in the ui's recent copy
+file (not a secret, and no view shows it). The trace is kept for the ui and
+operator display only; it is never an input to a candidate decision, a frame, a
+request, an M.I.O. input, a record or the current-explanation fields.
+
+How it is written. A trace is created only by an explanation made while a rule is
+usable. An explanation of the row's latest transition creates it with that
+transition's word. An explanation of an earlier transition (it was queued and a
+later one was observed first) also leaves its attempt and receipt: if the row
+has no trace yet, one is created with the narrowest word that fits (`closed` if
+the row is closed, `pending` if the row's explanation is still pending,
+otherwise `not_explained`) and the explainer's in-memory latest observed
+sequence. Right after an explainer restart that memory is empty, so such a first
+late explanation creates no trace. Observing
+a later transition copies the trace and sets `transition_query` (`pending`,
+`not_explained`, `closed`) and `observed_sequence`; `last_attempt` and
+`last_receipt` are not changed. An explanation sets `queried`, `repeat`,
+`no_candidate` or, on a row that already has a trace after the rule is gone,
+`rule_absent`, and updates `last_attempt`; `last_receipt` is replaced only by a
+reply with an advisory. The trace survives close, reset and restart (checkpoint)
+and goes with the row when it leaves the 20-row window; it is not rebuilt when
+the incident returns.
+
+"Latest". An explanation belongs to the row's latest transition when the row is
+`open` and its ledger sequence equals the trace's `observed_sequence`; without a
+trace, the in-memory latest sequence; right after a restart (neither), the row's
+`count` and `first_seen`. A late explanation otherwise updates only `last_*` and
+gets the same conversion as a new unexplained transition (current fields
+`not_queried`); a closed row is not reopened by it.
+
+Known residuals:
+
+- After a restart, with no trace and no in-memory sequence, "latest" is judged
+  from the row's `count` and `first_seen`; an incident reopened within the same
+  second with the same count can be taken for the same transition.
+- A late explanation of an earlier transition, as the first explanation after a
+  restart (no in-memory latest sequence), creates no trace, so that receipt is
+  not shown (the ledger has it).
+- If `observe_transition` raises for a transition, the row (and trace) stay as
+  they were and the earlier explanation is still treated as latest.
+- If the record cannot be written (`SegmentFull`), `last_attempt` is not recorded
+  though the question was sent; the broker's audit has it.
+- A row whose optional fields are all at their reader maximum is about 60 KB;
+  twenty such rows exceed the 256 KiB recent snapshot limit, with or without a
+  trace. This is a property of the existing limits (the trace adds under
+  1 KiB per row); ordinary rows are far smaller.
+- Rows that leave the 20-row window lose the trace for good.
+
+The ui reader's `/api/view` rows gain one closed word, `full_node_reference`
+(the operator and root views do not carry it), judged at the
+view's `as_of`: `not_recorded` (no trace), `none` (no receipt), `unknown`
+(no usable judging time), `expired` (judging time at or after `expires_at`),
+`set_changed` (the receipt's technique set differs from the row's, order
+ignored) and `in_window`. `in_window` means only: not past its expiry at the
+judging time and queried for the same set as now. It is an unverified advisory,
+not the answer to the current transition, and not an upgrade of `partial` or
+`stale`. All times in the trace and in the judgement are wall-clock times of the
+machine that wrote or judged them, not a trusted clock; a clock moved back can
+return `expired` to `in_window` (the open wall-clock-floor item below). The
+handoff package for principal `ui` carries the same facts; see
+[handoff package](handoff-package.md).
+
+### Deployment order and rollback
+
+Install the new readers first. A reader from before this change reads an unknown
+row key as a refusal of the whole recent snapshot (up to 20 rows) and an unknown
+fast-assistance key as `invalid_fast_assistance`, after which entryd replaces the
+whole fast assistance with a degraded one. So install the release, restart every
+resident reader (entryd, explaind, the ui and the daemons that write status;
+the CLI handoff reader is in the same package), and only then place the rule
+file.
+
+Rolling back past the trace goes to `74a6189` only. After the rule has been in
+place, checkpoints carry `full_node_trace` and `query_origin`, and the release at
+`74a6189` refuses both (`cursor_refused`, no READY). Convert the stopped
+checkpoint with `checkpoint_for_release_before_full_node_trace` and install
+`74a6189`; the steps are in [operations](operations.md) (Rolling the explainer
+back past the Full-node trace). The trace conversion refuses any existing
+`cursor.json.pre-rollback`, even an identical one (the conversion for #392
+still resumes an interrupted run). While the earlier release runs, the Full-node
+facts of those incidents can be read neither in the ui nor with the CLI, because
+it cannot read the new records either. The ledger keeps the original records and
+the conversion leaves no record of itself.
 
 ## Process boundary
 
@@ -304,9 +616,15 @@ satisfied by this software:
    caller holding both (see *Clocks*). This is distinct from the restart
    result above, which shows only that a different request is refused by
    binding; reuse of the same request is not prevented. Whether a floor,
-   persisted state or other measure is wanted is undecided.
+   persisted state or other measure is wanted is undecided. The Full-node
+   trace and its `reference_state` (also `full_node_reference` and
+   `expired_at_generation`) are judged on the same wall clock, so a clock moved
+   back can also return an `expired` reference to `in_window`; this change adds
+   no floor, and the item stays unresolved.
 7. The activation grant for `azazel-knowledge-contextd.service` is issued by
-   the existing activation path, not by editing the unit.
+   the existing activation path, not by editing the unit. A bundle that loads
+   as commissioned does not grant it, and Knowledge Context is not added to
+   `wired_capabilities()`.
 
 Stopping and recovery use mechanisms that already exist: the unit is preset
 disabled and starts only while its activation grant marker is present, so

@@ -138,7 +138,7 @@ def test_knowledge_dependency_and_fullnode_vocabulary_is_labelled():
     assert {"available", "partial", "absent", "not_queried", "timeout", "expired", "rejected",
             "unavailable", "unknown"} <= set(labels["kdep"])
     assert "fast_assistance なし" in labels["handoff"]["fast_missing"]
-    assert "fullNodeStatus(fastAll)" in _t("app.js")
+    assert "fullNodeStatus(fastAll, row.full_node_reference)" in _t("app.js")
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
@@ -166,3 +166,12 @@ def test_incident_state_and_denied_labels_are_defined_and_apart_from_generic_wor
     assert set(labels["denied_words"]) <= set(labels["words"])
     assert labels["words"]["open"][0] == "観測中"  # generic words keep their meaning
     assert len({t["mark"] for t in labels["tones"].values()}) == 5
+
+
+def test_fullnode_ref_vocabulary_never_reads_as_valid():
+    labels = json.loads(_t("labels.json"))
+    ref = labels["fullnode_ref"]
+    assert set(ref) == {"not_recorded", "none", "unknown", "expired", "set_changed", "in_window"}
+    assert "今回の照会結果ではありません" in ref["in_window"] and "未検証" in ref["in_window"]
+    for word in ("not_recorded", "unknown", "expired", "set_changed"):
+        assert "有効" not in ref[word].replace("有効という意味ではありません", "")

@@ -30,7 +30,8 @@ def test_submit_listener_registries_are_exact_by_name():
     assert auditd.SUBMIT_REGISTRY.names() == ("audit.append",)
     assert auditd.SUBMIT_REGISTRY.resolve("audit.append", SERVICE) is next(
         verb for verb in auditd.VERBS if verb.name == "audit.append")
-    assert mio_entryd.ADVISE_REGISTRY.names() == ("mio.advise", "mio.generation.result")
+    assert mio_entryd.ADVISE_REGISTRY.names() == (
+        "mio.advise", "mio.context.observe", "mio.generation.result")
 
 
 @pytest.mark.parametrize(("name", "group"), [("audit-submit", "azaudit-submit"),

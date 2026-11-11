@@ -11,8 +11,12 @@ commissioned client and synthetic trust material.
 from __future__ import annotations
 
 import json
+import os
+import re
 import sys
+import threading
 import time
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from threading import BoundedSemaphore
 from typing import Any
@@ -21,10 +25,12 @@ from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.sanitizer import PrivacyClass, SanitizerPolicy
 
 from .knowledge_context_socket import MAX_CONTEXT_FRAME_BYTES, read_context_frame
-from .knowledge_context_config import load_commissioning
+from .knowledge_context_config import load_commissioning, load_observation_rule
 from .principal import PrincipalClass, PrincipalPolicy
 from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
-from .runtime_paths import knowledge_context_state_dir, socket_path
+from .runtime_paths import (
+    knowledge_context_observation_rule_path, knowledge_context_state_dir, socket_path,
+)
 from .serve import serve_forever
 from .systemd_notify import runtime_ready_callback
 
@@ -44,6 +50,13 @@ CONTEXT_VERB = Verb(
     payload_contract="bounded frame; broker constructs a P0-public request",
 )
 REGISTRY = VerbRegistry([CONTEXT_VERB])
+# An observation-origin question: 1 to 8 technique ids, nothing else.
+_TECHNIQUE = r"T[0-9]{4}(?:\.[0-9]{3})?"
+_OBSERVATION_QUESTION = re.compile(
+    rf"ATT&CK technique context: {_TECHNIQUE}(?: {_TECHNIQUE}){{0,7}}")
+_RATE_WINDOW_S = 60.0
+# Fixed request sections a client may name on the refusal it raises.
+_CLIENT_STAGES = frozenset({"refused_before_send", "transport", "verification"})
 
 
 class KnowledgeContextBroker:
@@ -59,6 +72,8 @@ class KnowledgeContextBroker:
         enabled: bool = False,
         audit: Callable[[dict], Any] = lambda event: None,
         monotonic: Callable[[], float] = time.monotonic,
+        observation_rule: tuple | None = None,
+        observation_rule_path: Any = None,
     ) -> None:
         if type(enabled) is not bool:
             raise ValueError("Knowledge Context enablement must be explicit")
@@ -70,10 +85,41 @@ class KnowledgeContextBroker:
         self._audit = audit
         self._monotonic = monotonic
         self._slot = BoundedSemaphore(1)
+        # (rule, identity) read once at start-up, or None. Closed for good once
+        # the rule file is removed or replaced (latch, until restart).
+        self._observation = observation_rule
+        self._observation_path = observation_rule_path
+        self._latched = False
+        self._counted: deque = deque()
+        self._observation_lock = threading.Lock()
         self._ready = (enabled is True and client is not None
                        and isinstance(policy, SanitizerPolicy)
                        and type(mission) is str and bool(mission)
                        and type(alias_key) is bytes and len(alias_key) >= 32)
+
+    def _observation_gate(self, now: float) -> str | None:
+        """None to proceed (and count the request), else the reason_code."""
+        with self._observation_lock:
+            if self._observation is None:
+                return "refused_before_send"
+            rule, identity = self._observation
+            if not self._latched:
+                path = self._observation_path or knowledge_context_observation_rule_path()
+                try:
+                    info = os.lstat(path)
+                    current = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
+                except OSError:
+                    current = None
+                if current != identity:
+                    self._latched = True
+            if self._latched:
+                return "refused_before_send"
+            while self._counted and now - self._counted[0] >= _RATE_WINDOW_S:
+                self._counted.popleft()
+            if len(self._counted) >= rule.max_requests_per_minute:
+                return "rate_limited"
+            self._counted.append(now)
+            return None
 
     def handle(self, request) -> dict:
         if getattr(getattr(request, "verb", None), "name", None) != CONTEXT_VERB.name:
@@ -87,6 +133,8 @@ class KnowledgeContextBroker:
         deadline_s = deadline - start
         if deadline_s <= 0:
             return {"refusal": "timeout"}
+        reason = None
+        phase = "frame"
         try:
             wire_frame = read_context_frame(request.payload.get("frame"))
             if set(request.payload) != {"frame"} or not self._ready:
@@ -103,13 +151,23 @@ class KnowledgeContextBroker:
                     or len(wire_frame["question"]) > 2048):
                 raise ValueError
             frame = {"question": wire_frame["question"]}
+            if _OBSERVATION_QUESTION.fullmatch(frame["question"]):
+                # Judged before the `requested` event and before the slot.
+                phase = "gate"
+                reason = self._observation_gate(start)
+                if reason is not None:
+                    raise ValueError
+                phase = "frame"
             if not self._slot.acquire(blocking=False):
+                reason = "busy"
                 raise TimeoutError
             try:
                 # Record the sanitized request attempt before any egress. A
                 # failed audit sink must keep the optional network path closed.
+                phase = "audit"
                 self._audit({"event_type": "knowledge.context.requested",
                              "outcome": "attempted"})
+                phase = "client"
                 verified = self._client.request_context(
                     frame=frame,
                     privacy_class=PrivacyClass.P0_PUBLIC,
@@ -118,13 +176,16 @@ class KnowledgeContextBroker:
                     alias_key=self._alias_key,
                     deadline_s=deadline_s,
                 )
+                phase = "verified"
             finally:
                 self._slot.release()
             if self._monotonic() >= deadline:
+                reason = "late"
                 raise TimeoutError
             dump = getattr(verified, "model_dump", None)
             response = dump(mode="json") if callable(dump) else verified
             if type(response) is not dict:
+                reason = "verification"
                 raise ValueError
             encoded = json.dumps(
                 {"ok": True, "result": {"response": response}},
@@ -132,6 +193,7 @@ class KnowledgeContextBroker:
                 separators=(",", ":"),
             ).encode("utf-8")
             if not encoded or len(encoded) > MAX_RESPONSE_BYTES:
+                reason = "verification"
                 raise ValueError
             self._audit({"event_type": "knowledge.context.completed",
                          "outcome": "verified_advisory",
@@ -140,12 +202,19 @@ class KnowledgeContextBroker:
             return {"response": response}
         except TimeoutError:
             outcome = "timeout"
-        except Exception:  # refusal details may include caller data; never export them
+        except Exception as exc:  # refusal details may include caller data; never export them
             outcome = "unavailable"
+            if phase in ("frame", "audit"):
+                reason = "refused_before_send"
+            elif phase == "client":
+                stage = getattr(exc, "stage", None)
+                reason = stage if type(stage) is str and stage in _CLIENT_STAGES else None
+        event = {"event_type": "knowledge.context.completed", "outcome": outcome,
+                 "elapsed_ms": min(10_000, int((self._monotonic() - start) * 1000))}
+        if reason is not None:
+            event["reason_code"] = reason
         try:
-            self._audit({"event_type": "knowledge.context.completed",
-                         "outcome": outcome,
-                         "elapsed_ms": min(10_000, int((self._monotonic() - start) * 1000))})
+            self._audit(event)
         except Exception:
             pass
         return {"refusal": outcome}
@@ -167,18 +236,24 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
     # Enablement comes only from the root-owned commissioning bundle; any
     # absence or defect leaves the closed broker. Load performs no I/O to peers.
     commissioning = load_commissioning()
+    observation = load_observation_rule()
     event = {"event_type": "knowledge.context.commissioning",
              "outcome": commissioning.status}
     if commissioning.reason_code:
         event["reason_code"] = commissioning.reason_code
     if commissioning.registry_version is not None:
         event["registry_version"] = commissioning.registry_version
+    if observation is not None:
+        # Written only when a rule was read, so a node without the rule file
+        # records exactly what it recorded before.
+        event["observation_rule"] = "loaded"
     ledger.append(event)
     if commissioning.status == "commissioned":
         broker = KnowledgeContextBroker(
             client=commissioning.client, policy=commissioning.policy,
             mission=commissioning.mission, alias_key=commissioning.alias_key,
             enabled=True, audit=ledger.append,
+            observation_rule=observation,
         )
     else:
         broker = KnowledgeContextBroker(audit=ledger.append)

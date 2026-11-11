@@ -12,6 +12,7 @@ import json
 import os
 import stat
 import threading
+from collections import namedtuple
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -21,11 +22,18 @@ from azazel_nexus.sanitizer import PrivacyClass, SanitizerPolicy
 
 from .knowledge_egress import KnowledgeClient
 from . import runtime_paths
-from .runtime_paths import knowledge_context_commission_dir
+from .runtime_paths import (
+    knowledge_context_commission_dir, knowledge_context_observation_rule_path,
+)
 
-__all__ = ["CommissioningResult", "load_commissioning", "MANIFEST_SCHEMA"]
+__all__ = ["CommissioningResult", "load_commissioning", "MANIFEST_SCHEMA",
+           "ObservationRule", "load_observation_rule", "OBSERVATION_RULE_SCHEMA"]
 
 MANIFEST_SCHEMA = "azazel.knowledge-context.commissioning/1"
+OBSERVATION_RULE_SCHEMA = "azazel.knowledge-context.observation-query/1"
+_RULE_LIMIT = 4096
+_RULE_KEYS = {"schema", "rule", "max_requests_per_minute"}
+ObservationRule = namedtuple("ObservationRule", ("rule", "max_requests_per_minute"))
 _OWNER = 0  # structural: tests may monkeypatch to the current uid
 _FILES = {  # name -> (max bytes, secret)
     "manifest.json": (64 * 1024, False),
@@ -84,7 +92,9 @@ class _GuardedClient:
                 if current != self._identity:
                     self._latched = True
             if self._latched:
-                raise KnowledgeRefused("commissioning bundle changed")
+                refusal = KnowledgeRefused("commissioning bundle changed")
+                refusal.stage = "refused_before_send"
+                raise refusal
         return self._inner.request_context(**kwargs)
 
 
@@ -105,9 +115,10 @@ def _check(info, *, directory, secret=False, limit=0):
             raise _Refused("perm_unsafe")
 
 
-def _open_dir() -> int | None:
+def _open_dir(target=None) -> int | None:
     """Walk from the trust base; None means the bundle directory is absent."""
-    target = knowledge_context_commission_dir()
+    if target is None:
+        target = knowledge_context_commission_dir()
     base = runtime_paths.ROOT
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     fd = os.open(base if str(base) else "/", flags)
@@ -286,3 +297,57 @@ def load_commissioning(*, now: str | None = None) -> CommissioningResult:
         return CommissioningResult("refused", exc.code)
     except Exception:
         return CommissioningResult("refused", "path_unsafe")
+
+
+def _read_rule_file():
+    path = knowledge_context_observation_rule_path()
+    dirfd = _open_dir(path.parent)
+    if dirfd is None:
+        return None
+    try:
+        try:
+            fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                         dir_fd=dirfd)
+        except FileNotFoundError:
+            return None
+        try:
+            before = os.fstat(fd)
+            _check(before, directory=False, limit=_RULE_LIMIT)
+            data = os.read(fd, _RULE_LIMIT + 1)
+            after = os.fstat(fd)
+            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                    after.st_size, after.st_mtime_ns, after.st_ctime_ns) or len(data) != before.st_size:
+                raise _Refused("path_unsafe")
+            return data, before
+        finally:
+            os.close(fd)
+    finally:
+        os.close(dirfd)
+
+
+def load_observation_rule():
+    """Read the observation-query rule once.
+
+    Returns ``(ObservationRule, identity)`` with identity ``(dev, ino, mtime_ns,
+    ctime_ns)``, or None for absence or any defect. Never raises and never says
+    why: the caller may only learn "usable" or "not usable".
+    """
+    try:
+        found = _read_rule_file()
+        if found is None:
+            return None
+        data, info = found
+        doc = json.loads(data.decode("utf-8"))
+        if type(doc) is not dict or set(doc) != _RULE_KEYS:
+            return None
+        if doc["schema"] != OBSERVATION_RULE_SCHEMA or doc["rule"] != "technique-set/1":
+            return None
+        limit = doc["max_requests_per_minute"]
+        if type(limit) is not int or not 1 <= limit <= 60:
+            return None
+        return (ObservationRule("technique-set/1", limit),
+                (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns))
+    except BaseException as exc:  # noqa: BLE001 - never raise, never explain
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            raise
+        return None

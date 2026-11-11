@@ -17,6 +17,8 @@ def _broker(client, events, **kwargs):
 
 
 def test_peer_socket_timeout_is_unavailable_not_timeout():
+    # A refusal without the fixed stage attribute keeps its outcome and gets no
+    # reason_code (the fake client does not tag it).
     # knowledge_egress.request_context wraps OSError (socket.timeout included)
     # in KnowledgeContextRefused, which is not a TimeoutError.
     class Client:
@@ -31,6 +33,7 @@ def test_peer_socket_timeout_is_unavailable_not_timeout():
     assert [e["event_type"] for e in events] == [
         "knowledge.context.requested", "knowledge.context.completed"]
     assert events[-1]["outcome"] == "unavailable"
+    assert "reason_code" not in events[-1]
 
 
 def test_busy_slot_is_timeout_and_writes_no_requested_event():
@@ -44,6 +47,7 @@ def test_busy_slot_is_timeout_and_writes_no_requested_event():
     assert broker.handle(_request()) == {"refusal": "timeout"}
     assert [e["event_type"] for e in events] == ["knowledge.context.completed"]
     assert events[0]["outcome"] == "timeout"
+    assert events[0]["reason_code"] == "busy"
 
 
 def test_already_expired_request_returns_timeout_without_any_audit():
@@ -60,9 +64,7 @@ def test_already_expired_request_returns_timeout_without_any_audit():
 
 import pytest
 
-from test_knowledge_context_transport import (
-    POLICY as _TRANSPORT_POLICY, client as _egress_client, registry as _registry)
-
+from test_knowledge_context_reason_codes import real_client
 
 @pytest.mark.parametrize("raised", [socket.timeout("synthetic"),
                                     OSError("synthetic transport failure")])
@@ -70,8 +72,7 @@ def test_real_egress_wraps_transport_timeout_and_broker_reports_unavailable(
         monkeypatch, raised):
     # Real KnowledgeClient.request_context (registry, request building, slot);
     # only the send/receive section _post_path is replaced.
-    peer = _egress_client(_registry(443, deadline_seconds=5), enabled=True,
-                          max_ttl_seconds=30)
+    peer = real_client(monkeypatch)
 
     def fail(_peer, _path, _body, _deadline):
         raise raised
@@ -79,7 +80,7 @@ def test_real_egress_wraps_transport_timeout_and_broker_reports_unavailable(
     monkeypatch.setattr(peer, "_post_path", fail)
     events = []
     broker = KnowledgeContextBroker(
-        client=peer, policy=_TRANSPORT_POLICY, mission="lab",
+        client=peer, policy=_policy(), mission="lab",
         alias_key=b"x" * 32, enabled=True, audit=events.append)
     request = _request(payload={"frame": {
         "privacy_class": "P0-public", "question": "public question"}})
@@ -87,5 +88,6 @@ def test_real_egress_wraps_transport_timeout_and_broker_reports_unavailable(
     assert [e["event_type"] for e in events] == [
         "knowledge.context.requested", "knowledge.context.completed"]
     assert events[-1]["outcome"] == "unavailable"
+    assert events[-1]["reason_code"] == "transport"
     # the egress slot is released after the failure
     assert peer.slots.acquire(blocking=False)

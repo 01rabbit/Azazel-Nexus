@@ -781,6 +781,8 @@ def build_package(incident_id: str, *, now: float, principal: str, root=None,
 
     # Sections.
     knowledge = _knowledge(explanations, explanation_code, row, snaps, now, hide)
+    if ui:  # additional field for principal ui only (U39 E); root/operator bytes are unchanged
+        knowledge["full_node_context"] = _full_node_context(row, snaps, now)
     # Every reference read, before duplicates are merged or the display is
     # bounded: one future lookup time anywhere is a sign about the clock.
     every_ref = [ref for record in explanations for ref in record["knowledge_refs"]]
@@ -1240,6 +1242,100 @@ def _ai(explanations, explanation_code, row, mio, labels, hide, recent_fresh=Non
         "explanation_pending" if row is not None and row["explanation"]["state"] == "pending"
         else "no_explanation_recorded")
     return {**_unavailable(code), **base, "explanations": []}
+
+
+_FN_STATUS = ("not_queried", "received", "unavailable", "unknown")
+_FN_OUTCOME = ("not_queried", "unavailable", "rejected", "expired", "complete", "partial", "stale", "unknown")
+_FN_ORIGIN = ("observation_rule_v1", "observation_rule_v1_repeat", "none", "not_recorded")
+_FN_QUERY = ("queried", "repeat", "no_candidate", "rule_absent", "pending", "not_explained",
+             "closed", "not_recorded")
+_FN_RESULT = ("received", "received_not_adopted", "unavailable")
+_FN_RECEIPT_KEYS = ("source_kind", "claim_status", "trust", "snapshot_state")
+_FN_PAST_REFERENCE = ("The past reference is not an answer to the current query "
+                      "and has not been adopted without a new query.")
+FN_ISO = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z")
+
+
+def _full_node_context(row, snaps, now) -> dict:
+    """`knowledge.full_node_context` (principal ui only), built from a closed allow-list.
+
+    Everything is copied key by key from the row's closed projection and trace;
+    a value outside its range refuses the package.
+    """
+    from .incident_explain import FULL_NODE_LIMITATIONS, TECHNIQUE_ID, full_node_reference_state
+
+    def refuse():
+        raise HandoffRefused("full_node_context_refused")
+
+    def word(value, allowed):
+        if type(value) is not str or value not in allowed:
+            refuse()
+        return value
+
+    def stamp(value):
+        if type(value) is not str or not FN_ISO.fullmatch(value) or _epoch(value) is None:
+            refuse()
+        return value
+
+    def techniques(ids):
+        if (type(ids) is not list or not 1 <= len(ids) <= 8
+                or any(type(i) is not str or not TECHNIQUE_ID.fullmatch(i) for i in ids)):
+            refuse()
+        return list(ids)
+
+    fresh = snaps["recent_incidents_snapshot"][1]
+    full = None
+    if row is not None:
+        fast = (row.get("explanation") or {}).get("fast_assistance")
+        full = fast.get("full_node_context") if isinstance(fast, dict) else None
+    full = full if isinstance(full, dict) else None
+    status = word(full["full_node_context_status"], _FN_STATUS) if full else "unknown"
+    outcome = word(full["outcome"], _FN_OUTCOME) if full else "unknown"
+    origin = word(full.get("query_origin", "not_recorded"), _FN_ORIGIN) if full else "not_recorded"
+    trace = row.get("full_node_trace") if row is not None else None
+    current = list(row["technique_ids"]) if row is not None else []
+    out = {"full_node_context_status": status, "outcome": outcome, "query_origin": origin,
+           "transition_query": "not_recorded", "last_attempt": None, "last_receipt": None,
+           "reference_state": "not_recorded"}
+    if trace is not None:
+        out["transition_query"] = word(trace["transition_query"], _FN_QUERY)
+        attempt, receipt = trace["last_attempt"], trace["last_receipt"]
+        if attempt is not None:
+            out["last_attempt"] = {"attempted_at": stamp(attempt["attempted_at"]),
+                                   "result": word(attempt["result"], _FN_RESULT),
+                                   "technique_ids_at_query": techniques(attempt["technique_ids"])}
+        if receipt is not None:
+            limits = receipt["limitations"]
+            if (type(limits) is not list or any(l not in FULL_NODE_LIMITATIONS for l in limits)):
+                refuse()
+            expires = stamp(receipt["expires_at"])
+            ids = techniques(receipt["technique_ids"])
+            valid_now = type(now) in (int, float) and now == now and now not in (float("inf"), float("-inf")) and now >= 0
+            out["last_receipt"] = {
+                "received_at": stamp(receipt["received_at"]),
+                "outcome": word(receipt["outcome"], ("complete", "partial", "stale")),
+                "source_kind": word(receipt["source_kind"], ("fabric_knowledge_context_response_v1",)),
+                "claim_status": word(receipt["claim_status"], ("source_reported_unverified",)),
+                "trust": word(receipt["trust"], ("unverified_advisory_only",)),
+                "snapshot_state": word(receipt["snapshot_state"], (receipt["outcome"],)),
+                "generated_at": stamp(receipt["generated_at"]), "expires_at": expires,
+                "limitations": list(limits), "technique_ids_at_query": ids,
+                "expired_at_generation": (now >= _epoch(expires)) if valid_now else None,
+                "technique_set_relation": "same" if set(ids) == set(current) else "changed",
+                "received_in_current_transition": (
+                    out["transition_query"] == "queried" and attempt is not None
+                    and attempt["result"] == "received")}
+        out["reference_state"] = word(full_node_reference_state(trace, current, now),
+                                      ("none", "unknown", "expired", "set_changed", "in_window"))
+    limitations = full.get("limitations") if full else []
+    if type(limitations) is not list or any(type(l) is not str or l not in FULL_NODE_LIMITATIONS
+                                            for l in limitations):
+        refuse()
+    out["limitations"] = limitations + [_FN_PAST_REFERENCE]
+    out["basis"] = {"source": "recent_snapshot_row",
+                    "snapshot_freshness": fresh["freshness"] if fresh else None,
+                    "judged_at": _iso(now)}
+    return out
 
 
 def _knowledge(explanations, explanation_code, row, snaps, now, hide) -> dict:
@@ -1781,6 +1877,33 @@ def render_markdown(p: dict) -> str:
             f"参照時の鮮度 `{ref.get('freshness_at_lookup')}`、参照時刻 {_md(ref.get('looked_up_at'))}、"
             f"bundle `{digest}`" + superseded)
     add("")
+
+    fn = k.get("full_node_context")
+    if fn is not None:
+        add("### Full Node Context（ui のみ・未検証の助言）")
+        add("")
+        add("今回の遷移")
+        add(f"- 照会状態: `{fn['full_node_context_status']}`、評価結果: `{fn['outcome']}`、"
+            f"照会の由来: `{fn['query_origin']}`、この遷移の照会: `{fn['transition_query']}`")
+        add("")
+        add("最後の照会")
+        la = fn["last_attempt"]
+        add("- 記録なし" if la is None else
+            f"- 結果 `{la['result']}`、確定時刻 {_md(la['attempted_at'])}、"
+            f"技術 {_md(', '.join(la['technique_ids_at_query']))}")
+        add("")
+        add("最後に受け取った参照")
+        lr = fn["last_receipt"]
+        if lr is None:
+            add("- なし")
+        else:
+            add(f"- 評価 `{lr['outcome']}`、受信 {_md(lr['received_at'])}、生成 {_md(lr['generated_at'])}、"
+                f"期限 {_md(lr['expires_at'])}、技術 {_md(', '.join(lr['technique_ids_at_query']))}")
+            add(f"- 生成時点で期限切れ: `{lr['expired_at_generation']}`、集合: `{lr['technique_set_relation']}`、"
+                f"今回受信: `{lr['received_in_current_transition']}`")
+        add(f"- 参照の判定語: `{fn['reference_state']}`（判定時刻 {_md(fn['basis']['judged_at'])}）。"
+            "これは今回の照会の回答ではありません。")
+        add("")
 
     op = p["operator_actions"]
     add("## 9. 担当者の操作（監査記録）")
