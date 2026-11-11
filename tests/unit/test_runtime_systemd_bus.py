@@ -645,7 +645,7 @@ def test_loaded_unit_reads_only_fixed_properties_of_a_grantable_unit():
     ]
 
 
-def test_loaded_unit_reads_the_non_grantable_marker_guarded_context_broker():
+def test_loaded_unit_reads_the_marker_guarded_grantable_context_broker():
     from azazel_nexus_runtime.activation_markers import (
         GRANTABLE_UNITS,
         MARKER_GUARDED_UNITS,
@@ -653,7 +653,7 @@ def test_loaded_unit_reads_the_non_grantable_marker_guarded_context_broker():
 
     context = "azazel-knowledge-contextd.service"
     assert context in MARKER_GUARDED_UNITS
-    assert context not in GRANTABLE_UNITS
+    assert context in GRANTABLE_UNITS
     values = {
         "Id": ("s", context),
         "FragmentPath": ("s", f"/usr/lib/systemd/system/{context}"),
@@ -767,11 +767,15 @@ def test_bus_session_allows_context_broker_getall_but_not_sshd():
     assert len(bus.messages) == 1
 
 
-def test_context_broker_can_be_remasked_but_never_unmasked_or_enabled():
-    from azazel_nexus_runtime.activation_markers import GRANTABLE_UNITS
+def test_context_broker_is_governed_like_any_grantable_unit():
+    from azazel_nexus_runtime.activation_markers import (
+        GRANTABLE_UNITS,
+        NON_GRANTABLE_MARKER_UNITS,
+    )
 
     context = "azazel-knowledge-contextd.service"
-    assert context not in GRANTABLE_UNITS
+    assert context in GRANTABLE_UNITS
+    assert NON_GRANTABLE_MARKER_UNITS == frozenset()
     calls = []
 
     def exchange(interface, member, signature, body, **kwargs):
@@ -779,12 +783,14 @@ def test_context_broker_can_be_remasked_but_never_unmasked_or_enabled():
         return _Reply("a(sss)", [[]])
 
     client = SystemdUnitCalls(exchange)
-    client("MaskUnitFiles", context)
-    assert calls[0][1] == "MaskUnitFiles"
-    for method in ("UnmaskUnitFiles", "EnableUnitFiles"):
-        with pytest.raises(UnitOperationFailed):
-            client(method, context)
-    assert len(calls) == 1
+    for method in ("MaskUnitFiles", "UnmaskUnitFiles"):
+        client(method, context)
+    # Enable reaches the manager call too (the reply shape of this stub is
+    # not Enable's, so only the unit guard is being checked): not refused as
+    # "a non-grantable unit".
+    with pytest.raises(UnitOperationFailed, match="invalid EnableUnitFiles reply"):
+        client("EnableUnitFiles", context)
+    assert [c[1] for c in calls] == ["MaskUnitFiles", "UnmaskUnitFiles", "EnableUnitFiles"]
 
 
 def test_bus_session_sends_getall_of_the_unit_interface_for_a_grantable_unit():

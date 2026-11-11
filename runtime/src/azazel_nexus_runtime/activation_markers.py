@@ -76,20 +76,17 @@ GRANTABLE_UNITS = frozenset({
     "azazel-edge-intaked.service",
     "azazel-edge-probed.service",
     "azazel-incident-explaind.service",
+    "azazel-knowledge-contextd.service",
     "azazel-knowledge-lited.service",
     "azazel-mio-entryd.service",
     "azazel-mio-referenced.service",
 })
 
-#: Unit files in this set remain guarded by per-boot grant markers so that a
-#: queued/manual systemd start cannot bypass the activation controller. They
-#: are deliberately outside GRANTABLE_UNITS and the activation policy until
-#: the dedicated Knowledge commissioning loader and policy review exist.
-NON_GRANTABLE_MARKER_UNITS = frozenset({
-    # The unit needs the start guard but no pass may mint this marker until
-    # the dedicated commissioning loader and policy review exist.
-    "azazel-knowledge-contextd.service",
-})
+#: Unit files guarded by per-boot grant markers that no pass may ever mint.
+#: Empty since `azazel-knowledge-contextd.service` became grantable (#395
+#: preparation); the set and its branches stay so that a future unit can be
+#: guarded without being grantable.
+NON_GRANTABLE_MARKER_UNITS = frozenset()
 
 #: Units whose files and loaded systemd definitions must be checked for the
 #: per-boot marker guard. This includes units the pass can never grant.

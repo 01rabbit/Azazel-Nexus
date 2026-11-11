@@ -215,9 +215,11 @@ LOCAL_MODEL_PROVIDER = "local_model_provider"
 #: gained another.
 REMOTE_INFERENCE_TRANSPORT = "remote_inference_transport"
 
-#: Optional Nexus-to-Knowledge P0 context transport. Until its dedicated
-#: commissioned loader is installed, it is intentionally absent from wired
-#: capabilities and its service remains withheld.
+#: Optional Nexus-to-Knowledge P0 context transport. It is absent from wired
+#: capabilities and no unit definition requires it any more: the contextd unit
+#: is granted through the ordinary lease/health/policy path and its broker
+#: stays closed until a commissioned bundle exists. The constant is kept for
+#: callers and tests.
 KNOWLEDGE_CONTEXT_TRANSPORT = "knowledge_context_transport"
 
 
@@ -391,7 +393,6 @@ CORE_UNITS = (
         UnitTier.SUPPORTING,
         "azknowledgeegress",
         "optional P0-only Knowledge context egress broker",
-        wiring=KNOWLEDGE_CONTEXT_TRANSPORT,
     ),
     UnitDefinition(
         "azazel-mio-entryd.service",
