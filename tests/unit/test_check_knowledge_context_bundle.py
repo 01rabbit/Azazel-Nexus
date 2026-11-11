@@ -161,3 +161,34 @@ def test_usage_errors_do_not_echo_arguments(root, capsys):
         assert tool.main(argv) == 2
         seen = capsys.readouterr()
         assert mark not in seen.out + seen.err
+
+
+def test_from_loader_equals_default_loader_for_same_directory(root):
+    build(root)  # lands in the default commissioning directory under ROOT
+    default = cfg.load_commissioning(now=NOW)
+    explicit = cfg.load_commissioning_from(
+        root / "etc/azazel/knowledge-context/commissioning", now=NOW)
+    assert default.status == "commissioned"
+    for field in ("status", "reason_code", "registry_version", "policy", "mission", "alias_key"):
+        assert getattr(explicit, field, None) == getattr(default, field, None)
+
+
+def test_wrong_owner_refused(root, capsys, monkeypatch):
+    d = build(root)
+    monkeypatch.setattr(cfg, "_OWNER", os.getuid() + 1)
+    assert run(d, capsys, "--now", NOW) == (1, "refused: perm_unsafe\n")
+
+
+def test_no_secret_value_path_or_env_in_output(root, capsys, monkeypatch):
+    d = build(root)
+    monkeypatch.setenv("SECRET_PROBE_ENV", "ENV-VALUE-SHOULD-NOT-APPEAR")
+    key_text = (d / "client.key").read_text()
+    body = [ln for ln in key_text.splitlines() if ln and not ln.startswith("-----")][0]
+    for argv in ([str(d), "--now", NOW], [str(d), "--now", "2127-01-01T00:00:00+00:00"],
+                 ["--pin", str(d / "client.pem")], [str(d / "nonexistent")]):
+        tool.main(argv)
+        seen = capsys.readouterr()
+        text = seen.out + seen.err
+        assert body not in text and "PRIVATE KEY" not in text
+        assert "ENV-VALUE-SHOULD-NOT-APPEAR" not in text
+        assert str(root) not in text and "client.key" not in text

@@ -199,8 +199,10 @@ prerequisites and [hardware gates](hardware-gates.md) for HG-05.
 ### Full-node Knowledge Context broker
 
 The optional `azazel-knowledge-contextd.service` is shipped preset disabled
-and receives no activation grant in this build. It has no production peer
-commissioning loader, network address allowance, or live credential setup.
+and receives no activation grant in this build. The broker reads a
+root-owned commissioning bundle at start-up, but no bundle is placed, and
+there is no network address allowance or live credential. Bundle placement,
+activation, the address allowance and real credentials remain separate gates.
 Do not manually start it or add a systemd drop-in to enable egress. Installing
 the package only lays down the disabled unit, account and socket directory.
 See [the Knowledge Context consumer boundary](knowledge-context-consumer.md)
