@@ -1314,7 +1314,10 @@ def _full_node_context(row, snaps, now) -> dict:
             out["last_receipt"] = {
                 "received_at": stamp(receipt["received_at"]),
                 "outcome": word(receipt["outcome"], ("complete", "partial", "stale")),
-                **{k: word(receipt[k], (receipt[k],)) for k in _FN_RECEIPT_KEYS},
+                "source_kind": word(receipt["source_kind"], ("fabric_knowledge_context_response_v1",)),
+                "claim_status": word(receipt["claim_status"], ("source_reported_unverified",)),
+                "trust": word(receipt["trust"], ("unverified_advisory_only",)),
+                "snapshot_state": word(receipt["snapshot_state"], (receipt["outcome"],)),
                 "generated_at": stamp(receipt["generated_at"]), "expires_at": expires,
                 "limitations": list(limits), "technique_ids_at_query": ids,
                 "expired_at_generation": (now >= _epoch(expires)) if valid_now else None,
@@ -1324,7 +1327,10 @@ def _full_node_context(row, snaps, now) -> dict:
                     and attempt["result"] == "received")}
         out["reference_state"] = word(full_node_reference_state(trace, current, now),
                                       ("none", "unknown", "expired", "set_changed", "in_window"))
-    limitations = [l for l in (full["limitations"] if full else []) if l in FULL_NODE_LIMITATIONS]
+    limitations = full.get("limitations") if full else []
+    if type(limitations) is not list or any(type(l) is not str or l not in FULL_NODE_LIMITATIONS
+                                            for l in limitations):
+        refuse()
     out["limitations"] = limitations + [_FN_PAST_REFERENCE]
     out["basis"] = {"source": "recent_snapshot_row",
                     "snapshot_freshness": fresh["freshness"] if fresh else None,

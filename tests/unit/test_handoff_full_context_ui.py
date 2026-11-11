@@ -122,6 +122,27 @@ def test_out_of_range_value_refuses_generation(monkeypatch):
         handoff._full_node_context(row, snaps, NOW)
 
 
+@pytest.mark.parametrize("key,value", [
+    ("source_kind", "other"), ("claim_status", "verified"), ("trust", "trusted"),
+    ("snapshot_state", "stale"), ("outcome", "rejected"), ("outcome", "unavailable"),
+    ("source_kind", 5), ("trust", None)])
+def test_receipt_values_outside_the_fixed_ranges_refuse(key, value):
+    ids = ["T1046"]
+    node = {"full_node_context_status": "received", "outcome": "complete", "limitations": []}
+    row = {"technique_ids": ids, "explanation": {"fast_assistance": {"full_node_context": node}},
+           "full_node_trace": _trace("queried", None, _receipt(ids, **{key: value}))}
+    with pytest.raises(handoff.HandoffRefused):
+        handoff._full_node_context(row, {"recent_incidents_snapshot": (None, None)}, NOW)
+
+
+def test_current_limitations_outside_the_fixed_texts_refuse_instead_of_dropping():
+    node = {"full_node_context_status": "received", "outcome": "complete",
+            "limitations": [FULL_NODE_LIMITATIONS[0], "producer prose"]}
+    row = {"technique_ids": ["T1046"], "explanation": {"fast_assistance": {"full_node_context": node}}}
+    with pytest.raises(handoff.HandoffRefused):
+        handoff._full_node_context(row, {"recent_incidents_snapshot": (None, None)}, NOW)
+
+
 def test_hidden_strings_and_internal_values_absent(tmp_path, monkeypatch):
     def tweak(row):
         row["explanation"]["fast_assistance"]["unknowns"] = ["SYNTH-SUBJECT-MARK request_id"]
