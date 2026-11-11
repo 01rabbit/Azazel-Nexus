@@ -2,8 +2,9 @@
 
 This daemon is the only component that may hold a commissioned Knowledge
 peer client. It has no model, enforcement, or Knowledge store authority. The
-factory shipped here is deliberately uncommissioned; no files, credentials or
-environment switch can enable egress. Tests may inject an explicitly
+factory shipped here is uncommissioned unless a root-owned commissioning
+bundle is present; no environment switch or command-line option can enable
+egress. Tests may inject an explicitly
 commissioned client and synthetic trust material.
 """
 
@@ -20,6 +21,7 @@ from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.sanitizer import PrivacyClass, SanitizerPolicy
 
 from .knowledge_context_socket import MAX_CONTEXT_FRAME_BYTES, read_context_frame
+from .knowledge_context_config import load_commissioning
 from .principal import PrincipalClass, PrincipalPolicy
 from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
 from .runtime_paths import knowledge_context_state_dir, socket_path
@@ -162,9 +164,24 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
             pass
     except OSError as exc:
         raise AuditUnavailable("Knowledge Context ledger unavailable") from exc
-    # The production commissioning factory remains intentionally absent until
-    # credential ownership, expiry, revocation and recovery are commissioned.
-    broker = KnowledgeContextBroker(audit=ledger.append)
+    # Enablement comes only from the root-owned commissioning bundle; any
+    # absence or defect leaves the closed broker. Load performs no I/O to peers.
+    commissioning = load_commissioning()
+    event = {"event_type": "knowledge.context.commissioning",
+             "outcome": commissioning.status}
+    if commissioning.reason_code:
+        event["reason_code"] = commissioning.reason_code
+    if commissioning.registry_version is not None:
+        event["registry_version"] = commissioning.registry_version
+    ledger.append(event)
+    if commissioning.status == "commissioned":
+        broker = KnowledgeContextBroker(
+            client=commissioning.client, policy=commissioning.policy,
+            mission=commissioning.mission, alias_key=commissioning.alias_key,
+            enabled=True, audit=ledger.append,
+        )
+    else:
+        broker = KnowledgeContextBroker(audit=ledger.append)
     return serve_forever(
         path=socket_path(SOCKET_NAME), registry=REGISTRY,
         policy=PrincipalPolicy.resolve(

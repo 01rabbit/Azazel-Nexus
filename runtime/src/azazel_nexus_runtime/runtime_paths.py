@@ -204,6 +204,11 @@ def knowledge_context_state_dir() -> Path:
     return state_dir() / _STATE_LEAVES["knowledge-context"]
 
 
+def knowledge_context_commission_dir() -> Path:
+    """Return the root-owned, read-only Knowledge Context commissioning bundle."""
+    return _under("/etc/azazel/knowledge-context/commissioning")
+
+
 def knowledge_store_root() -> Path:
     """Return the Lite store, readable by operators and owned by azknowledge."""
     return _under("/var/lib/azazel/knowledge")
