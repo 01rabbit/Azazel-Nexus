@@ -102,31 +102,39 @@ def check_bundle(directory: Path, now: datetime) -> int:
     inner = result.client._inner
     peer = inner.registry.peers[inner.peer_id]
     ttl = inner.knowledge_context_max_ttl_seconds
+    try:
+        expiry = not_after(certificate_der((directory / "client.pem").read_bytes()))
+    except (OSError, ValueError, IndexError, spki.CertificateRefused):
+        print("refused: client_cert_unparsable")
+        return 1
+    if expiry <= now:
+        print("refused: client_cert_expired")
+        return 1
     print("commissioned")
     print(f"registry_version: {result.registry_version}")
     print(f"peer_id: {_digest(inner.peer_id)}")
     print(f"client_identity: {_digest(peer.endpoint.client_identity)}")
     print(f"server_pin: present ({_digest(peer.endpoint.certificate_pin)})")
     print(f"max_ttl_seconds: {ttl}")
-    status = 0
-    try:
-        expiry = not_after(certificate_der((directory / "client.pem").read_bytes()))
-    except (OSError, ValueError, IndexError, spki.CertificateRefused):
-        print("refused: client_cert_unparsable")
-        return 1
     print(f"client_cert_not_after: {expiry.isoformat()}")
-    if expiry <= now:
-        print("refused: client_cert_expired")
-        status = 1
     if ttl > KNOWLEDGE_TTL_CEILING:
         print(f"warning: ttl_above_knowledge_ceiling (max_ttl_seconds {ttl} > "
               f"{KNOWLEDGE_TTL_CEILING}, the Knowledge 41cad719 acceptance ceiling); "
               "compare with the Knowledge-side setting")
-    return status
+    return 0
+
+
+class _FixedUsageParser(argparse.ArgumentParser):
+    """argparse's default error echoes the offending argument; print a fixed line."""
+
+    def error(self, message):  # noqa: ARG002 - message may contain arguments
+        print("usage: check_knowledge_context_bundle.py [directory] [--now ISO8601] "
+              "| --pin CERT (arguments are not echoed)", file=sys.stderr)
+        raise SystemExit(2)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = _FixedUsageParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("directory", nargs="?", help="bundle directory (default: shipped path)")
     parser.add_argument("--now", help="ISO 8601 timestamp with offset (default: now)")
     parser.add_argument("--pin", metavar="CERT", help="print both pin forms for a PEM/DER certificate")

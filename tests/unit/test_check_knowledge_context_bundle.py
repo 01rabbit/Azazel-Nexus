@@ -153,3 +153,11 @@ def test_test_only_examples_are_marked_and_use_documentation_addresses():
     texts = "".join(p.read_text() for p in d.iterdir())
     for ip in re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", texts):
         assert ip.startswith("192.0.2."), ip
+
+
+def test_usage_errors_do_not_echo_arguments(root, capsys):
+    mark = "MARKER-SHOULD-NOT-APPEAR"
+    for argv in (["/a", f"/{mark}"], [f"--{mark}"], ["--now"], ["--pin", "x", f"/{mark}"]):
+        assert tool.main(argv) == 2
+        seen = capsys.readouterr()
+        assert mark not in seen.out + seen.err
