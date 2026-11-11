@@ -1,0 +1,5 @@
+{
+  "schema": "azazel.knowledge-context.observation-query/1",
+  "rule": "technique-set/1",
+  "max_requests_per_minute": 6
+}

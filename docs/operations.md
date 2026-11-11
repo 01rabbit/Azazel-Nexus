@@ -205,7 +205,9 @@ Do not manually start it or add a systemd drop-in to enable egress. Installing
 the package only lays down the disabled unit, account and socket directory.
 See [the Knowledge Context consumer boundary](knowledge-context-consumer.md)
 for the AF_UNIX process split and the credential, expiry, revocation and
-recovery decisions still required before live connection work.
+recovery decisions still required before live connection work. Its
+"Commissioning and credentials" section carries a read-only checklist of the
+start-up configuration to confirm before requesting activation.
 
 ## 1. Resource envelopes
 
