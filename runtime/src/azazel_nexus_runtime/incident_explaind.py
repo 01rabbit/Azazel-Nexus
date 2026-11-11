@@ -536,8 +536,8 @@ class Explainer:
         `own` (the row just rewritten) goes first when `own_first`, else it is
         left alone; then the other rows from the oldest in the builder's order.
         A row's slow analysis is reduced to degraded, then its explanation to
-        unavailable (status_write_failed) when that is shorter; pending rows keep
-        their explanation. The ledger and full_node_trace are not touched.
+        unavailable (status_write_failed) when that is shorter; pending rows are
+        left untouched in both steps. The ledger and full_node_trace are not touched.
         Returns whether any row changed.
         """
         if self._fits(rows):
@@ -553,13 +553,15 @@ class Explainer:
         changed = False
         for row in targets:
             e = row["explanation"]
+            if e["state"] == "pending":
+                continue  # pending rows are not reduced (#427 section 5)
             if "slow_analysis" in e and e["slow_analysis"] != _SLOW_REDUCED:
                 row["explanation"] = e = {**e, "slow_analysis": dict(_SLOW_REDUCED)}
                 changed = True
                 if self._fits(rows):
                     return True
             gone = _unavailable_explanation("status_write_failed")
-            if e["state"] != "pending" and len(json.dumps(gone)) < len(json.dumps(e)):
+            if len(json.dumps(gone)) < len(json.dumps(e)):
                 row["explanation"] = gone
                 changed = True
                 if self._fits(rows):

@@ -1689,6 +1689,33 @@ def test_window_stays_within_bound_s5_rows_that_would_grow_are_skipped(tmp_path)
     assert [r for r in e.recent if r["incident_id"] == old["incident_id"]][0]["explanation"]["state"] == "pending"
 
 
+def test_window_stays_within_bound_s5_pending_rows_with_slow_are_untouched(tmp_path):
+    from azazel_nexus.incident_explain import RECENT_BYTES
+    pending = _pending_row(transition(incident_id=_Y))
+    pending["last_seen"] = 0                         # the oldest row: the first one a reduction would pick
+    pending["explanation"]["slow_analysis"] = {"state": "queued", "usage": "unknown"}
+    assert pending["explanation"]["state"] == "pending"
+    rows = [pending] + _fit_rows(19, RECENT_BYTES, [pending])
+    _window(tmp_path, rows)                          # cursor.json as the reader accepts it (written_at 0)
+    e = make(tmp_path, clock=lambda: 1061.0)         # "written_at": 1061.0 is 5 bytes longer: bound + 5
+    e.monotonic = lambda: 100
+    before = {r["incident_id"]: _jb(r) for r in e.recent}
+    assert before[pending["incident_id"]] == _jb(pending)
+    e.status()
+    assert e.refused["status_write_failed"] == 1     # one pass, however many rows it reduced
+    assert _jb([r for r in e.recent if r["incident_id"] == pending["incident_id"]][0]) == before[
+        pending["incident_id"]]                      # (a) byte for byte
+    others = [r for r in e.recent if r["incident_id"] != pending["incident_id"]]
+    oldest = min(others, key=_key)["incident_id"]    # (b) the oldest non-pending row took the reduction
+    assert _changed(e, before) == [oldest]
+    assert [r for r in e.recent if r["incident_id"] == oldest][0]["explanation"]["slow_analysis"] == {
+        "state": "degraded", "usage": "unknown"}
+    assert len(_bound_ok(tmp_path)["incidents"]) == 20
+    e.monotonic = lambda: 200
+    e.poll()                                         # (c) a later pass that fits adds nothing
+    assert e.refused["status_write_failed"] == 1
+
+
 def test_window_stays_within_bound_s5_ties_break_on_incident_id(tmp_path):
     from azazel_nexus.incident_explain import RECENT_BYTES
     pending = _pending_row(transition(incident_id=_Y))
@@ -1697,7 +1724,8 @@ def test_window_stays_within_bound_s5_ties_break_on_incident_id(tmp_path):
         base = tmp_path / str(k)
         base.mkdir()
         a, b = _scaled_row(0, 0.3), _scaled_row(0x100, 0.3)
-        a["last_seen"] = b["last_seen"] = 0
+        a["last_seen"] = b["last_seen"] = 1            # ties with the row of incident 1 on last_seen
+        a["first_seen"], b["first_seen"] = 1, 0        # a (lowest id) is later on first_seen
         rows = [a, b] + _fit_rows(17, RECENT_BYTES + 1, [a, b, pending])
         if order < 0:
             rows = rows[::-1]
@@ -1706,7 +1734,7 @@ def test_window_stays_within_bound_s5_ties_break_on_incident_id(tmp_path):
         e.poll()
         reduced = sorted(r["incident_id"] for r in e.recent
                          if r["explanation"].get("slow_analysis") == {"state": "degraded", "usage": "unknown"})
-        assert reduced == [f"inc-{0:016x}"]
+        assert reduced == [f"inc-{1:016x}"]            # (1, 0, inc-1) < (1, 0, inc-100) < (1, 1, inc-0)
         raws.append((base / "recent.json").read_bytes())
     assert raws[0] == raws[1]
 
