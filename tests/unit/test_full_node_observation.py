@@ -363,6 +363,91 @@ def test_without_trace_or_memory_the_latest_check_uses_state_count_and_first_see
     assert not e._is_latest(row, row["incident_id"], 1, t)
 
 
+# ---- first query after a later transition (review M1) --------------------------------
+
+def _reset(e):
+    AuditLedger(e.incidents / "1970-01-01.jsonl").append(
+        {"event_type": "edge.incident.reset", "at": 0, "reason": "intake_started"})
+
+
+@pytest.mark.parametrize("later,word", [
+    ("updated", "not_explained"), ("escalation", "pending"),
+    ("closed", "closed"), ("reset", "closed")])
+def test_first_query_after_a_later_transition_still_leaves_the_receipt(rig, later, word):
+    from azazel_nexus.incident_explain import full_node_reference_state
+    append(rig.e, tx())
+    rig.e.ingest()                                             # seq 1 queued, not yet explained
+    if later == "updated":
+        append(rig.e, tx("updated", 3, count=2))
+    elif later == "escalation":
+        append(rig.e, tx("updated", 1, ids=("T1059", "T1059.001"), count=2))
+    elif later == "closed":
+        append(rig.e, tx("closed"))
+    if later != "reset":
+        rig.e.ingest()
+    else:
+        _reset(rig.e)
+        rig.e.ingest()
+    assert rig.trace is None
+    rig.e.monotonic = lambda: 61
+    if later == "escalation":                                  # the queue would take the escalation first
+        rig.e.explain(pending_entry(tx()), 1)
+    else:
+        rig.e.poll()                                           # explains seq 1, which is not the latest
+    assert len(rig.calls) == 1
+    t = rig.trace
+    assert t["transition_query"] == word and t["observed_sequence"] == (1 if later == "reset" else 2)
+    assert t["last_attempt"]["result"] == "received"
+    assert t["last_receipt"]["received_at"] == "2026-11-06T00:00:10Z"
+    assert rig.current()["full_node_context_status"] == "not_queried"
+    assert "query_origin" not in rig.current()
+    now = 1793923200 + 10
+    assert full_node_reference_state(t, rig.row["technique_ids"], now) == "in_window"
+
+
+def test_first_query_without_a_remembered_sequence_writes_no_trace(rig):
+    append(rig.e, tx())
+    rig.e.ingest()
+    append(rig.e, tx("updated", 3, count=2))
+    rig.e.ingest()
+    rig.e._latest_sequence.clear()
+    rig.e.monotonic = lambda: 61
+    rig.e.poll()
+    assert rig.trace is None and len(rig.calls) == 1
+
+
+# ---- receipt time and outcomes (review M2) ----------------------------------------------
+
+@pytest.mark.parametrize("case,has_time,expected", [
+    ("complete", True, "received"), ("partial", True, "received"), ("stale", True, "received"),
+    ("complete", False, "unavailable"), ("partial", False, "unavailable"),
+    ("stale", False, "unavailable")])
+def test_advisory_outcomes_with_and_without_the_receipt_time(tmp_path, case, has_time, expected):
+    def observed(frame):
+        fast = received(case)
+        if not has_time:
+            del fast["full_node_context_received_at"]
+        return fast
+    r = Rig(tmp_path, observed=observed)
+    r.step(tx())
+    assert r.trace["last_attempt"]["result"] == expected
+    assert (r.trace["last_receipt"] is not None) == (expected == "received")
+
+
+@pytest.mark.parametrize("outcome,status,expected", [
+    ("rejected", "received", "received_not_adopted"), ("expired", "received", "received_not_adopted"),
+    ("unavailable", "received", "received_not_adopted"), ("unavailable", "unavailable", "unavailable")])
+def test_non_advisory_outcomes(rig, outcome, status, expected):
+    rig.step(tx())
+    summary = {"fast_assistance": {"full_node_context": {"outcome": outcome,
+                                                          "full_node_context_status": status}}}
+    row = json.loads(json.dumps(rig.row))
+    attempt = {"word": "queried", "queried": True, "adopted": True,
+               "received_at": "2026-11-06T00:00:10Z"}
+    rig.e._settle_row(row, summary, tx(), 1, attempt, 100.0)
+    assert row["full_node_trace"]["last_attempt"]["result"] == expected
+
+
 # ---- the trace is never an input ----------------------------------------------------
 
 def test_the_trace_does_not_change_decisions_requests_or_records(tmp_path):

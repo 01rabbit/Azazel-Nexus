@@ -1326,6 +1326,7 @@ class Explainer:
     def _settle_row(self, row, summary, t, sequence, attempt, explained_at):
         """Write a finished explanation to the row (F3), and the trace if a rule is active."""
         latest = self._is_latest(row, t["incident_id"], sequence, t)
+        shown_before = row["explanation"].get("state")
         quiet = attempt is None or attempt["word"] == "rule_absent"
         row["explanation"] = summary if latest or quiet else without_current_full_node(summary)
         if attempt is None:
@@ -1336,10 +1337,21 @@ class Explainer:
                 trace["transition_query"] = "rule_absent"
             return
         if trace is None:
-            if not latest:
-                return
-            trace = {"transition_query": attempt["word"], "last_attempt": None,
-                     "last_receipt": None, "observed_sequence": sequence}
+            if latest:
+                word, seen = attempt["word"], sequence
+            else:
+                # DESIGN-M5 2.5: a valid explanation of an earlier transition still
+                # leaves its attempt and receipt. The row's own latest transition
+                # gives the word (closed row: closed; explanation still pending:
+                # pending; else not_explained) and the memory's latest sequence.
+                # Without that sequence (after a restart) nothing can be written.
+                seen = self._latest_sequence.get(t["incident_id"])
+                if seen is None:
+                    return
+                word = ("closed" if row["state"] != "open"
+                        else "pending" if shown_before == "pending" else "not_explained")
+            trace = {"transition_query": word, "last_attempt": None,
+                     "last_receipt": None, "observed_sequence": seen}
             row["full_node_trace"] = trace
         elif latest:
             trace["transition_query"] = attempt["word"]
@@ -1349,12 +1361,17 @@ class Explainer:
         node = summary.get("fast_assistance", {}).get("full_node_context", {})
         received_at = attempt.get("received_at")
         outcome = node.get("outcome")
-        if not attempt["adopted"] or node.get("full_node_context_status") != "received":
+        status_received = attempt["adopted"] and node.get("full_node_context_status") == "received"
+        if not status_received:
             result = "unavailable"
-        elif outcome in {"complete", "partial", "stale"} and received_at:
-            result = "received"
-        else:
+        elif outcome in {"complete", "partial", "stale"}:
+            # An advisory without the ledger's receipt time cannot be recorded as
+            # a receipt; it is not "received but not adopted" either.
+            result = "received" if received_at else "unavailable"
+        elif outcome in {"rejected", "expired", "unavailable"}:
             result = "received_not_adopted"
+        else:
+            result = "unavailable"
         trace["last_attempt"] = {"attempted_at": utc_seconds(explained_at), "result": result,
                                  "technique_ids": ids}
         if result == "received":
