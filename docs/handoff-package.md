@@ -249,7 +249,9 @@ scans of the CLI.
   `received_in_current_transition`). `reference_state`
   (`not_recorded`, `none`, `unknown`, `expired`, `set_changed`, `in_window`) is
   judged at the package's `generated_at` from the generating machine's wall
-  clock, which is not a trusted clock. A past reference is unverified advice,
+  clock, which is not a trusted clock. `basis.judged_at` is written truncated to whole seconds, so at the
+  expiry boundary the printed time can read earlier than `expires_at` while the
+  state is already `expired`; the comparison itself uses the untruncated clock. A past reference is unverified advice,
   not an answer to the current query; the fixed `limitations` say so. Subjects,
   producer text, request and correlation identifiers, snapshot references,
   raw envelopes and question text are never included. `basis` states where it

@@ -253,7 +253,10 @@ query Knowledge; ..." sentence (Nexus constant `MIO_KNOWLEDGE_NOT_QUERIED_CHECK`
 copied from the pinned azazel_mio 4511f1fc). Both are removed before comparing
 and the remaining `next_checks` must be equal in order. If azazel_mio changes
 that sentence, the replacement stops holding and the row shows `unavailable`,
-which is the safe side. `state`, `hypotheses`, `knowledge` and the rest must be
+which is the safe side. When the azazel_mio pin is updated, compare
+`MIO_KNOWLEDGE_NOT_QUERIED_CHECK` with the sentence the new wheel emits for a
+fast result that did not query Knowledge (the `tests/unit` comparison tests pin
+the Nexus side only); a mismatch is a release note item, not a silent change. `state`, `hypotheses`, `knowledge` and the rest must be
 equal. `trace`,
 `trace_id` and `frame_id` stay the advise side's. Otherwise the advise result is
 recorded with status `unavailable`. A reply that the broker verified but the
