@@ -1,0 +1,27 @@
+{
+  "schema": "azazel-nexus/knowledge-peer/1",
+  "commissioning_digest": "example-digest-replace-me",
+  "issued_at": "2026-01-01T00:00:00+00:00",
+  "expires_at": "2026-02-01T00:00:00+00:00",
+  "version": 1,
+  "peers": [
+    {
+      "endpoint": {
+        "provider_id": "azazel-knowledge",
+        "host": "knowledge.example.test",
+        "port": 443,
+        "path_template": "/knowledge/v1",
+        "model_id": "knowledge-v1",
+        "certificate_pin": "sha256:<64 hex digits: SPKI of the server certificate>",
+        "client_identity": "example-context-client",
+        "max_request_bytes": 4096,
+        "max_response_bytes": 65536,
+        "deadline_seconds": 5,
+        "allowed_privacy_classes": ["P0-public"]
+      },
+      "addresses": ["192.0.2.10"],
+      "public_key": "<64 hex digits: Knowledge response-signing public key>",
+      "max_inflight": 1
+    }
+  ]
+}

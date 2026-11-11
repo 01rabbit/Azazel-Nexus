@@ -26,7 +26,7 @@ from .runtime_paths import (
     knowledge_context_commission_dir, knowledge_context_observation_rule_path,
 )
 
-__all__ = ["CommissioningResult", "load_commissioning", "MANIFEST_SCHEMA",
+__all__ = ["CommissioningResult", "load_commissioning", "load_commissioning_from", "MANIFEST_SCHEMA",
            "ObservationRule", "load_observation_rule", "OBSERVATION_RULE_SCHEMA"]
 
 MANIFEST_SCHEMA = "azazel.knowledge-context.commissioning/1"
@@ -178,8 +178,10 @@ def _json(raw, code):
         raise _Refused(code) from None
 
 
-def _load(now: str) -> CommissioningResult:
-    dirfd = _open_dir()
+def _load(now: str, directory=None) -> CommissioningResult:
+    # directory=None is the shipped path; only load_commissioning_from sets it.
+    bundle = knowledge_context_commission_dir() if directory is None else directory
+    dirfd = _open_dir(bundle)
     if dirfd is None:
         return CommissioningResult("absent")
     try:
@@ -249,7 +251,7 @@ def _load(now: str) -> CommissioningResult:
         alias_key = _read(dirfd, "alias.key")[0]
         if len(alias_key) < 32:
             raise _Refused("alias_short")
-        base = knowledge_context_commission_dir()
+        base = bundle
         try:
             client = KnowledgeClient(
                 registry=registry, peer_id=manifest["peer_id"],
@@ -293,6 +295,22 @@ def load_commissioning(*, now: str | None = None) -> CommissioningResult:
     stamp = now if now is not None else datetime.now(UTC).isoformat()
     try:
         return _load(stamp)
+    except _Refused as exc:
+        return CommissioningResult("refused", exc.code)
+    except Exception:
+        return CommissioningResult("refused", "path_unsafe")
+
+
+def load_commissioning_from(directory, *, now: str | None = None) -> CommissioningResult:
+    """Same verification as load_commissioning() for an explicit directory.
+
+    For read-only pre-checks (tools/check_knowledge_context_bundle.py). The
+    service never calls this; it still uses load_commissioning().
+    """
+    from pathlib import Path
+    stamp = now if now is not None else datetime.now(UTC).isoformat()
+    try:
+        return _load(stamp, Path(directory))
     except _Refused as exc:
         return CommissioningResult("refused", exc.code)
     except Exception:

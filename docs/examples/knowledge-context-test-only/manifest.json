@@ -1,0 +1,15 @@
+{
+  "schema": "azazel.knowledge-context.commissioning/1",
+  "enabled": false,
+  "peer_id": "azazel-knowledge",
+  "client_identity": "example-context-client",
+  "commissioning_digest": "example-digest-replace-me",
+  "max_ttl_seconds": 30,
+  "mission": "test-only-not-for-production",
+  "sanitizer_policy": {
+    "version": "example-1",
+    "remote_default": "deny",
+    "classes": {"P0-public": {"remote": "allow", "fields": ["question"]}},
+    "limits": {"max_bytes": 4096}
+  }
+}
