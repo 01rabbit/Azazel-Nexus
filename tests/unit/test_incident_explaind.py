@@ -1327,3 +1327,298 @@ def test_a_record_that_read_mio_reply_accepted_but_read_record_refuses_is_contai
     (record,) = records(e)
     assert record["mio"]["route"] == "unavailable"
     assert record["failure_codes"][-1] == "mio_reply_refused"
+
+
+# ---- #427: the daemon keeps its window inside RECENT_BYTES ----------------
+# Windows are placed through cursor.json and restore(); increments come from the real
+# poll() -> explain() -> _settle_row() path with the same Mio/Knowledge doubles as above.
+
+def _dsize(rows, written_at=0):
+    from azazel_nexus.incident_explain import RECENT_SCHEMA
+    return len(json.dumps({"schema": RECENT_SCHEMA, "written_at": written_at, "incidents": rows},
+                          allow_nan=False).encode())
+
+
+def _scaled_row(n, fraction):
+    import math
+    from test_full_node_trace import _maximal_row
+
+    def cut(node):
+        if isinstance(node, list):
+            keep = max(1, math.ceil(len(node) * fraction)) if len(node) > 1 else 1
+            return [cut(x) for x in node[:keep]]
+        if isinstance(node, dict):
+            return {k: cut(v) for k, v in node.items()}
+        return node
+    row = _maximal_row(n)
+    row["explanation"] = cut(row["explanation"])
+    row["explanation"]["summary"] = "a"
+    return row
+
+
+def _fit_rows(n, target, extra=()):
+    """n valid rows whose window with `extra` measures exactly `target` bytes (written_at 0)."""
+    from azazel_nexus.incident_explain import RECENT_SCHEMA, read_recent_incidents
+    extra = list(extra)
+    pattern = "Inspect the launch of the interpreter and check its parent " * 6
+    text = lambda k: pattern[:k][:-1] + "a" if pattern[:k].endswith(" ") else pattern[:k]
+    goal = target
+    for reserve in (2000, 1700, 1400, 1100, 2300, 800):
+        lo, hi = 0.0, 1.0
+        for _ in range(30):
+            mid = (lo + hi) / 2
+            if _dsize([_scaled_row(i + 1, mid) for i in range(n)] + extra) <= goal - n * 270:
+                lo = mid
+            else:
+                hi = mid
+        rows = [_scaled_row(i + 1, lo) for i in range(n)]
+        for i in range(n):
+            a, b = lo, 1.0
+            for _ in range(25):
+                m = (a + b) / 2
+                trial = rows[:i] + [_scaled_row(i + 1, m)] + rows[i + 1:]
+                if _dsize(trial + extra) <= goal - reserve:
+                    a = m
+                else:
+                    b = m
+            rows[i] = _scaled_row(i + 1, a)
+        need = goal - _dsize(rows + extra)
+        if not 0 <= need <= n * 278:
+            continue
+        for i in range(n):
+            rows[i]["explanation"]["summary"] = text(1 + need // n + (1 if i < need % n else 0))
+        if _dsize(rows + extra) != goal:
+            continue
+        assert all(read_recent_incidents(json.dumps({
+            "schema": RECENT_SCHEMA, "written_at": 1, "incidents": [r]}).encode()) for r in rows)
+        return rows
+    raise AssertionError("no fit")
+
+
+def _loose_rows(n, target):
+    """n large valid rows (the largest uniform cut that keeps the window at or under target)."""
+    lo, hi = 0.0, 1.0
+    for _ in range(30):
+        mid = (lo + hi) / 2
+        if _dsize([_scaled_row(i + 1, mid) for i in range(n)]) <= target:
+            lo = mid
+        else:
+            hi = mid
+    return [_scaled_row(i + 1, lo) for i in range(n)]
+
+
+def _window(tmp_path, rows, **kwargs):
+    seed = make(tmp_path)
+    seed.recent = json.loads(json.dumps(rows))
+    seed.checkpoint()
+    return make(tmp_path, **kwargs)
+
+
+def _settled_row(**kwargs):
+    """The real settled row for the default transition (calibration only)."""
+    with tempfile.TemporaryDirectory() as d:
+        e = make(Path(d), **kwargs)
+        append(e)
+        e.poll()
+        return json.loads(json.dumps(e.recent[0]))
+
+
+SLOW_QUEUED = {"state": "queued", "usage": "unknown", "generation_id": "generation-1",
+               "result_handle": "a" * 64}
+
+
+def _complete_slow(receipt, *, deadline_s):
+    return {**receipt, "state": "complete", "usage": "known",
+            "calls": [{"usage": {"tokens_in": 1, "tokens_out": 2}, "timings": {}}],
+            "assistance": {
+                "schema_version": "mio.assistance.v1", "frame_id": receipt["frame_id"],
+                "trace_id": receipt["trace_id"], "generation_method": "model",
+                "hypotheses": [{"verification": "model_proposed_unverified",
+                                "statement": "Observed symptoms may reflect a benign change."}],
+                "unknowns": ["The approved change record is not present."],
+                "next_checks": ["Check the authorized change record."]}}
+
+
+def _slow_kwargs():
+    t = transition()
+    trace = f"mio-{t['incident_id'][4:]}-1"
+    queued = {**SLOW_QUEUED, "frame_id": trace + ":frame", "trace_id": trace}
+    return dict(mio=lambda _: {**handoff(), "slow_analysis": queued},
+                mio_result=_complete_slow)
+
+
+def _bound_ok(tmp_path):
+    from azazel_nexus.incident_explain import RECENT_BYTES, read_recent_incidents
+    raw = (tmp_path / "recent.json").read_bytes()
+    assert len(raw) <= RECENT_BYTES
+    return read_recent_incidents(raw)
+
+
+def test_window_stays_within_bound_status_survives_an_over_bound_window(tmp_path, monkeypatch):
+    from azazel_nexus.incident_explain import RECENT_BYTES
+    rows = _fit_rows(20, RECENT_BYTES)            # fits with written_at 0 (checkpoint, restore)
+    seed = _window(tmp_path, rows)
+    seed.recent_status()
+    kept = (tmp_path / "recent.json").read_bytes()
+    e = make(tmp_path, clock=lambda: 1061.0)       # "written_at": 1061.0 is 6 bytes longer: bound + 6
+    e.monotonic = lambda: 100
+    e.status()                                      # (a) no exception
+    assert e.refused["status_write_failed"] == 1
+    assert (tmp_path / "recent.json").read_bytes() == kept
+    assert json.loads((tmp_path / "status.json").read_text())["refused"]["status_write_failed"] == 1
+    monkeypatch.setattr(daemon, "POLL_SECONDS", 0.02)
+    calls = []
+    e2 = make(tmp_path, clock=lambda: 1061.0)
+    assert e2.serve(stop=lambda: calls.append(1) or len(calls) > 3) == 0
+    assert e2.refused["status_write_failed"] >= 1 and not e2.storage_failed
+
+
+def test_window_stays_within_bound_when_a_settle_overflows(tmp_path):
+    from azazel_nexus.incident_explain import CODES, RECENT_BYTES
+    settled = _settled_row()
+    rows = _fit_rows(19, RECENT_BYTES + 1, [settled])
+    e = _window(tmp_path, rows)
+    before = json.loads(json.dumps(e.recent))
+    append(e)
+    e.poll()
+    e.monotonic = lambda: 61                    # restore() holds the rate budget for 60 s
+    e.poll()
+    new = [r for r in e.recent if r["incident_id"] == settled["incident_id"]]
+    assert len(new) == 1
+    assert new[0]["explanation"]["failure_codes"] == ["status_write_failed"]
+    assert new[0]["explanation"]["state"] == "unavailable"
+    assert new[0].get("full_node_trace") == settled.get("full_node_trace")
+    others = [r for r in e.recent if r["incident_id"] != settled["incident_id"]]
+    key = lambda r: r["incident_id"]
+    assert [json.dumps(r, sort_keys=True) for r in sorted(others, key=key)] == [
+        json.dumps(r, sort_keys=True) for r in sorted(before, key=key)]
+    assert e.refused["status_write_failed"] == 1 and not e.storage_failed
+    assert set(e.refused) <= CODES
+    assert len(_bound_ok(tmp_path)["incidents"]) == 20
+    assert len(records(e)) == 1
+    # (c) the checkpoint advanced, so a restart does not explain the same transition again
+    assert e.selection.explained
+    restarted = make(tmp_path)
+    for k in range(1, 4):
+        restarted.monotonic = lambda k=k: 100 * k
+        restarted.poll()
+    assert len(records(restarted)) == 1
+    assert restarted.cursor["offset"] == e.cursor["offset"]
+
+
+def test_window_stays_within_bound_when_a_slow_projection_overflows(tmp_path):
+    from azazel_nexus.incident_explain import RECENT_BYTES
+    settled = _settled_row(**_slow_kwargs())
+    # The projection (degraded with its budget) is larger than the plain degraded form it is cut to.
+    assert "budget" in settled["explanation"]["slow_analysis"]
+    rows = _fit_rows(19, RECENT_BYTES + 1, [settled])
+    e = _window(tmp_path, rows, **_slow_kwargs())
+    append(e)
+    e.poll()
+    e.monotonic = lambda: 61
+    e.poll()
+    row = [r for r in e.recent if r["incident_id"] == settled["incident_id"]][0]
+    assert row["explanation"]["slow_analysis"] == {"state": "degraded", "usage": "unknown"}
+    rest = lambda r: {k: v for k, v in r["explanation"].items() if k != "slow_analysis"}
+    assert rest(row) == rest(settled)                # the fast explanation stays
+    assert e.refused["status_write_failed"] == 1 and not e.storage_failed
+    assert len(_bound_ok(tmp_path)["incidents"]) == 20
+
+
+def test_window_stays_within_bound_settling_incidents_one_at_a_time_with_large_rows_preloaded(tmp_path):
+    """Four reader-maximal rows are preloaded; the settled rows are real (a few KB), not maximal.
+
+    A maximal row cannot be produced by the real settle path, so this fixes the behaviour
+    for the largest rows the path can make: from some n on, settled rows show as degraded.
+    Only the first ten incidents are settled. The eleventh would add a pending row that no
+    row in the window can give room for (a pending row becomes an unavailable row that is
+    21 bytes longer); that residual is DESIGN-427 section 5 and is deliberately not covered.
+    """
+    from azazel_nexus.incident_explain import RECENT_BYTES, CODES
+    maximal = _loose_rows(4, RECENT_BYTES - 16000)     # reader-bounded large rows, 30 KB left over
+    e = _window(tmp_path, maximal)
+    shrunk = []
+    for n in range(10):
+        append(e, transition(incident_id=f"inc-{0xa00 + n:016x}"))
+        e.monotonic = lambda n=n: 61 * (n + 1)
+        e.poll()
+        e.poll()
+        assert not e.storage_failed
+        assert "transition_refused" not in e.refused
+        _bound_ok(tmp_path)
+        row = [r for r in e.recent if r["incident_id"] == f"inc-{0xa00 + n:016x}"][0]
+        shrunk.append(row["explanation"].get("failure_codes") == ["status_write_failed"])
+    assert not shrunk[0] and shrunk[-1]
+    assert shrunk == sorted(shrunk)                  # once shrinking starts it continues
+    assert e.refused["status_write_failed"] == sum(shrunk)
+    assert set(e.refused) <= CODES
+    assert len(records(e)) == 10
+    assert len((tmp_path / "state" / "cursor.json").read_bytes()) <= RECENT_BYTES * 2
+
+
+def test_codes_are_unchanged():
+    from azazel_nexus.incident_explain import CODES
+    assert CODES == frozenset({
+        "transition_refused", "chain_broken", "queue_full", "mio_unavailable", "mio_reply_refused",
+        "knowledge_unavailable", "knowledge_reply_refused", "storage_failed", "status_write_failed",
+        "explanation_segment_full", "cursor_refused", "read_failed", "cursor_overtaken",
+        "stale_skipped", "incident_segment_full", "ledger_tail_incomplete", "mio_gated",
+        "mio_handoff", "mio_local_non_advisory", "mio_fast_unavailable", "segment_from_future"})
+
+
+def test_window_stays_within_bound_and_ordinary_windows_are_untouched(tmp_path):
+    settled = _settled_row()
+    rows = []
+    for n in range(20):
+        copy_ = json.loads(json.dumps(settled))
+        copy_["incident_id"] = f"inc-{0xb00 + n:016x}"
+        copy_["last_seen"] = copy_["first_seen"] = n + 1
+        copy_["explanation"]["guidance"]["handoff"]["incident_id"] = copy_["incident_id"]
+        rows.append(copy_)
+    assert 2 * 1024 < len(json.dumps(rows[0])) < 8 * 1024        # ordinary rows, 20 of them
+    e = _window(tmp_path, rows)
+    before = json.loads(json.dumps(e.recent))
+    e._keep_window(before[0]["incident_id"])
+    assert e.recent == before and not e.refused
+    (tmp_path / "big").mkdir()
+    big = _window(tmp_path / "big", _fit_rows(20, 200000))        # 20 rows of about 10 KB
+    kept = json.loads(json.dumps(big.recent))
+    big._keep_window(kept[0]["incident_id"])
+    assert big.recent == kept and not big.refused
+    append(e)
+    e.poll()
+    assert not e.refused and not e.storage_failed
+    assert _bound_ok(tmp_path)["incidents"] == json.loads(json.dumps(e.recent))
+
+
+OLD_SRC = os.environ.get("NEXUS_ROLLBACK_TARGET_SRC")
+
+
+@pytest.mark.skipif(not OLD_SRC, reason="NEXUS_ROLLBACK_TARGET_SRC (a 74a6189 checkout) not set")
+def test_window_stays_within_bound_and_74a6189_reads_the_shrunk_checkpoint(tmp_path):
+    import subprocess
+    import sys
+    from azazel_nexus.incident_explain import RECENT_BYTES
+    settled = _settled_row()
+    e = _window(tmp_path, _fit_rows(19, RECENT_BYTES + 1, [settled]))
+    append(e)
+    e.poll()
+    e.monotonic = lambda: 61
+    e.poll()
+    assert e.refused["status_write_failed"] == 1
+    assert daemon.checkpoint_for_release_before_full_node_trace(tmp_path / "state" / "cursor.json") >= 0
+    script = (
+        f"import sys; sys.path[:0] = ['{OLD_SRC}/src', '{OLD_SRC}/runtime/src']\n"
+        "import pathlib\n"
+        "from azazel_nexus_runtime import incident_explaind as d\n"
+        "from azazel_nexus.incident_explain import read_recent_incidents\n"
+        "base = pathlib.Path(sys.argv[1])\n"
+        "print('FILE', d.__file__)\n"
+        "v = d.decode_checkpoint((base / 'state' / 'cursor.json').read_bytes())\n"
+        "print('DECODED', read_recent_incidents(d.canonical(v['recent'])) is not None)\n"
+        "x = d.Explainer(incidents=base / 'incidents', state=base / 'state', status_path=base / 'status2.json',\n"
+        "                clock=lambda: 0, monotonic=lambda: 0, mio=lambda _: None, knowledge=lambda _: ())\n"
+        "x.prepare(); print('PREPARED')\n")
+    out = subprocess.run([sys.executable, "-I", "-c", script, str(tmp_path)],
+                         capture_output=True, text=True)
+    assert OLD_SRC in out.stdout and "DECODED True" in out.stdout and "PREPARED" in out.stdout, out

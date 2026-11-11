@@ -415,6 +415,12 @@ def poll_generation_result(receipt, *, deadline_s=0.05, caller_epoch=None, priva
         return None
 
 
+def _unavailable_explanation(code):
+    return {"state": "unavailable", "route": "unavailable",
+            "outcome": "unavailable", "summary": "",
+            "knowledge_refs": [], "failure_codes": [code]}
+
+
 class Explainer:
     def __init__(self, *, incidents, state, status_path, clock=time.time,
                  monotonic=time.monotonic, mio=None, knowledge=None, store_limits=None, audit=None,
@@ -498,7 +504,7 @@ class Explainer:
         with self._audit_lock:
             setattr(self, name, getattr(self, name) + n)
 
-    def recent_status(self):
+    def _public_rows(self):
         # Guard at the actual public file/UI write boundary as well as during
         # library projection. Never rely on partial binding to hide model text.
         rows = copy.deepcopy(self.recent)
@@ -508,7 +514,45 @@ class Explainer:
                 for field in ("hypotheses", "unknowns", "next_checks"):
                     if type(slow.get(field)) is list:
                         slow[field] = [guard_public_model_text(text) for text in slow[field]]
-        value = build_recent_incidents(rows, self.clock())
+        return rows
+
+    def _keep_window(self, ident):
+        """Keep the in-memory window inside the published bound (#427).
+
+        Only the row just rewritten is shrunk, using forms that already exist:
+        slow analysis to degraded, then the explanation to unavailable. The
+        ledger record and full_node_trace are not touched.
+        """
+        try:
+            build_recent_incidents(self._public_rows(), self.clock())
+            return
+        except ValueError:
+            pass
+        shrunk = False
+        for row in self.recent:
+            if row["incident_id"] != ident:
+                continue
+            explanation = row.get("explanation", {})
+            if "slow_analysis" in explanation:
+                row["explanation"] = dict(explanation)
+                row["explanation"]["slow_analysis"] = {"state": "degraded", "usage": "unknown"}
+                shrunk = True
+                try:
+                    build_recent_incidents(self._public_rows(), self.clock())
+                    break
+                except ValueError:
+                    pass
+            row["explanation"] = _unavailable_explanation("status_write_failed")
+            shrunk = True
+        if shrunk:
+            self.refuse("status_write_failed")
+
+    def recent_status(self):
+        try:
+            value = build_recent_incidents(self._public_rows(), self.clock())
+        except ValueError:
+            self.refuse("status_write_failed")
+            return
         now = self.monotonic()
         # Rewrite unchanged rows every 20 s so a quiet node is not shown stale.
         if now - self._recent_at < 5 or (value["incidents"] == self._recent_value
@@ -587,9 +631,7 @@ class Explainer:
             if row["incident_id"] == ident:
                 if displaced and row["explanation"]["state"] in SHOWN_STATES:
                     continue
-                row["explanation"] = {"state": "unavailable", "route": "unavailable",
-                                      "outcome": "unavailable", "summary": "",
-                                      "knowledge_refs": [], "failure_codes": [code]}
+                row["explanation"] = _unavailable_explanation(code)
                 if "full_node_trace" in row:
                     row["full_node_trace"]["transition_query"] = "not_explained"
 
@@ -651,6 +693,7 @@ class Explainer:
                 explanation = dict(row["explanation"])
                 explanation["slow_analysis"] = projection
                 row["explanation"] = explanation
+        self._keep_window(receipt["incident_id"])
 
     def _generation_value(self, handle):
         if handle in self._generation_restart_unknown:
@@ -1484,6 +1527,7 @@ class Explainer:
         for row in self.recent:
             if row["incident_id"] == t["incident_id"]:
                 self._settle_row(row, summary, t, sequence, attempt, value["explained_at"])
+        self._keep_window(t["incident_id"])
         handle = self._generation_current.get(t["incident_id"])
         if handle is not None:
             self._set_generation_projection(

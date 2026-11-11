@@ -882,6 +882,21 @@ availability, `audit_forward_dropped` (delivery gave up or queue full) and
 `inspect_incident_chain_then_remove_cursor_and_restart`; follow the recovery
 procedure above before removing any cursor.
 
+The explainer keeps the recent window it publishes inside the 256 KiB bound of
+`recent.json` (Issue #427). When an incident's explanation is too large for the
+window, its row is shown with the slow analysis reduced to `degraded` or, if that
+is not enough, with the explanation `unavailable` and the failure code
+`status_write_failed`; the full explanation stays in the explanation ledger and
+`azazel-nexus handoff <id>` shows it in full. The `refused.status_write_failed`
+counter covers both a failed file write and this reduction: a row that carries
+`status_write_failed` was reduced, a counter increase without such a row is a
+write failure. If `refused.transition_refused` rises while the status open count
+differs from the list (`list_differs_from_intake`), the window may be full and
+new incidents are missing from the list even though it reads as fresh; check the
+ledger and the handoff for them. An unwritable window does not stop the
+explainer: `recent.json` turns stale after 30 seconds, and with
+`storage_failed: true` follow the existing procedure above.
+
 The intake's part ends with one line for the Deception Lite decoy
 (#196 P2). With the decoy socket open it reads
 `decoy (Deception Lite; Nexus's own observation, not Edge's; not hardware evidence): accepted 3; last accepted 12s ago; refused 5 (DECOY_SHAPE=4, decoy_rate_limited=1)`;

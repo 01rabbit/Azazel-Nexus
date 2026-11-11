@@ -232,7 +232,8 @@ def test_the_trace_adds_under_one_kib_to_a_maximal_row():
 @pytest.mark.xfail(strict=True, reason=(
     "FINDING (review M4): rows with every existing optional field at the reader's maximum "
     "(citations, guidance, slow_analysis, fast_assistance strings) are about 60 KiB each, so 20 of "
-    "them exceed RECENT_BYTES (256 KiB) even without the trace; the product is unchanged."))
+    "them exceed RECENT_BYTES (256 KiB) even without the trace; the library is unchanged. "
+    "The daemon keeps its window within the bound since #427 (see test_window_stays_within_bound_*)."))
 def test_twenty_maximal_rows_fit_in_the_bound():
     from azazel_nexus.incident_explain import RECENT_BYTES
     assert _recent_bytes([_maximal_row(n) for n in range(20)]) <= RECENT_BYTES
