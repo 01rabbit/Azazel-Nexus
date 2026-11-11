@@ -1733,6 +1733,34 @@ def test_window_stays_within_bound_s5_twenty_minimum_rows_fit_well_under_the_bou
     assert size < RECENT_BYTES * 0.15, size          # about 10% when written
 
 
+def test_window_stays_within_bound_s5_observe_uses_one_timestamp_per_pass(tmp_path):
+    from azazel_nexus.incident_explain import RECENT_BYTES
+    t = transition(incident_id=_Y)
+    pending = _pending_row(t)
+    # Written at 0 the window measures RECENT_BYTES - 5: "1061.1" (6 chars) adds 5 bytes and just
+    # fits, "1061.09" and "1061.11" (7 chars) add 6 and are one byte over.
+    rows = _fit_rows(19, RECENT_BYTES - 5, [pending])
+    armed = []
+    values = [1061.09, 1061.1, 1061.11]
+    reads = []
+
+    def clock():
+        if not armed:
+            return 1061.1
+        reads.append(1)
+        return values[(len(reads) - 1) % 3]
+    e = _window(tmp_path, rows, clock=clock)
+    before = {r["incident_id"]: _jb(r) for r in e.recent}
+    armed.append(1)
+    e.observe_transition(t)                          # one pass, however many times it would read the clock
+    assert "transition_refused" not in e.refused
+    assert _Y in {r["incident_id"] for r in e.recent}
+    assert len(e.recent) == 20
+    oldest = min(rows, key=_key)["incident_id"]
+    assert _changed(e, before) == [oldest]
+    assert e.refused["status_write_failed"] == 1
+
+
 def test_window_stays_within_bound_s5_ties_break_on_incident_id(tmp_path):
     from azazel_nexus.incident_explain import RECENT_BYTES
     pending = _pending_row(transition(incident_id=_Y))
@@ -1806,6 +1834,7 @@ def test_window_stays_within_bound_s5_settle_minimum_still_over_reduces_the_olde
     reduced = [r for r in e.recent if r["explanation"].get("failure_codes") == ["status_write_failed"]
                or r["explanation"].get("slow_analysis") == {"state": "degraded", "usage": "unknown"}]
     assert reduced and len(e.recent) == 15
+    assert min(e.recent, key=_key)["incident_id"] in {r["incident_id"] for r in reduced}  # the oldest gave way
     _no_new_codes(e)
     assert json.loads((tmp_path / "status.json").read_text())["storage_failed"] is False
 

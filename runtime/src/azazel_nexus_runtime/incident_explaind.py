@@ -521,16 +521,16 @@ class Explainer:
                         slow[field] = [guard_public_model_text(text) for text in slow[field]]
         return rows
 
-    def _fits(self, rows):
+    def _fits(self, rows, now):
         try:
-            build_recent_incidents(self._public_rows(rows), self.clock())
+            build_recent_incidents(self._public_rows(rows), now)
             # defensive: checkpoint measures the unguarded projection
             build_recent_incidents(copy.deepcopy(rows), 0)
             return True
         except ValueError:
             return False
 
-    def _shrink_to_fit(self, rows, own=None, own_first=True):
+    def _shrink_to_fit(self, rows, own=None, own_first=True, now=None):
         """Reduce rows in place, in a fixed order, until the window fits (#427).
 
         `own` (the row just rewritten) goes first when `own_first`, else it is
@@ -540,11 +540,12 @@ class Explainer:
         left untouched in both steps. The ledger and full_node_trace are not touched.
         Returns whether any row changed.
         """
-        if self._fits(rows):
+        now = self.clock() if now is None else now  # one reading per pass
+        if self._fits(rows, now):
             return False
         from azazel_nexus.incident_explain import RECENT_BYTES, RECENT_SCHEMA
         order = sorted(rows, key=_RECENT_ORDER)
-        sized = json.dumps({"schema": RECENT_SCHEMA, "written_at": self.clock(),
+        sized = json.dumps({"schema": RECENT_SCHEMA, "written_at": now,
                             "incidents": self._public_rows(order[::-1][:20])}, allow_nan=False)
         if len(sized.encode()) <= RECENT_BYTES:
             return False  # refused for a reason other than size: shrinking would not help
@@ -559,33 +560,34 @@ class Explainer:
                     and len(json.dumps(_SLOW_REDUCED)) < len(json.dumps(e["slow_analysis"]))):
                 row["explanation"] = e = {**e, "slow_analysis": dict(_SLOW_REDUCED)}
                 changed = True
-                if self._fits(rows):
+                if self._fits(rows, now):
                     return True
             gone = _unavailable_explanation("status_write_failed")
             if len(json.dumps(gone)) < len(json.dumps(e)):
                 row["explanation"] = gone
                 changed = True
-                if self._fits(rows):
+                if self._fits(rows, now):
                     return True
         return changed
 
-    def _keep_window(self, own=None, own_first=True):
+    def _keep_window(self, own=None, own_first=True, now=None):
         """Keep the in-memory window inside the published bound (#427)."""
-        if self._shrink_to_fit(self.recent, own, own_first):
+        if self._shrink_to_fit(self.recent, own, own_first, self.clock() if now is None else now):
             self.refuse("status_write_failed")
 
     def recent_status(self):
+        now = self.clock()  # one reading for the whole pass
         try:
-            value = build_recent_incidents(self._public_rows(), self.clock())
+            value = build_recent_incidents(self._public_rows(), now)
         except ValueError:
             try:
-                self._keep_window(None)
+                self._keep_window(None, now=now)
             except ValueError:
                 # Defensive only: the formal path cannot reach it; count one failed pass.
                 self.refuse("status_write_failed")
                 return
             try:
-                value = build_recent_incidents(self._public_rows(), self.clock())
+                value = build_recent_incidents(self._public_rows(), now)
             except ValueError:
                 self.refuse("status_write_failed")
                 return
@@ -616,14 +618,15 @@ class Explainer:
                                            "slow_analysis": {"state": "superseded",
                                                              "usage": "unknown"}}
             candidate = [r for r in self.recent if r["incident_id"] != ident] + [row]
+            now = self.clock()  # one reading for the whole pass
             try:
-                self.recent = build_recent_incidents(candidate, self.clock())["incidents"]
+                self.recent = build_recent_incidents(candidate, now)["incidents"]
             except ValueError:
                 # A full window gives room from its oldest rows (#427, DESIGN-427
                 # section 5); nothing changes unless the reduced window is accepted.
                 trial = sorted(copy.deepcopy(candidate), key=_RECENT_ORDER, reverse=True)[:20]
-                reduced = self._shrink_to_fit(trial, ident, own_first=False)
-                self.recent = build_recent_incidents(trial, self.clock())["incidents"]
+                reduced = self._shrink_to_fit(trial, ident, own_first=False, now=now)
+                self.recent = build_recent_incidents(trial, now)["incidents"]
                 if reduced:
                     self.refuse("status_write_failed")
             if sequence is not None:
