@@ -850,7 +850,10 @@ installed:
 The ledger keeps the original records; the conversion leaves no record of
 itself. The earlier release cannot read the new records either (as for #392),
 so while it runs the Full-node facts of those incidents can be read neither in
-the ui nor with the CLI. Rolling forward again reads them as before.
+the ui nor with the CLI. Rolling forward again reads them as before. When rolling forward, install
+the new readers and restart the resident ones before putting the observation
+rule file back (order in [Knowledge Context consumer](knowledge-context-consumer.md),
+*Deployment order and rollback*).
 
 Normal retention overtaking a cursor reports `cursor_overtaken` and resumes from
 the oldest retained segment without operator reset. Outage replay drops `opened`

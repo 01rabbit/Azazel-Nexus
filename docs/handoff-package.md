@@ -230,9 +230,16 @@ scans of the CLI.
   web response returns the exact UTF-8 text of the three files in `files`;
   a client should check the two body files against the manifest's SHA-256
   and size, and `manifest.json` against `manifest_sha256`, before saving,
-  and save each string as UTF-8 without altering it. For `ui` only,
-  `knowledge` gains the optional `full_node_context` field described above;
-  the CLI's output does not.
+  and save each string as UTF-8 without altering it. **Added field, `ui`
+  only.** `knowledge` gains `full_node_context` (next item) for principal `ui`
+  and for no other principal. A consumer of the `ui` package must accept the
+  field; the schema version stays `handoff-package/1` for the same reason as
+  above. The `root` and `operator` bytes are unchanged, and that is checked, not
+  assumed: `tests/unit/test_handoff_full_context_row.py` (the P-3 vectors)
+  pins the SHA-256 of both files for a row carrying a Full projection in the
+  complete, unavailable, rejected and expired states, and
+  `tests/unit/test_handoff_full_context_ui.py` pins them for a row carrying a
+  `full_node_trace`.
 * **Full node context (ui only).** `knowledge.full_node_context` is built
   for principal `ui` only, key by key from an allow-list; a value outside its
   range refuses the package. It separates the current transition
@@ -245,9 +252,15 @@ scans of the CLI.
   clock, which is not a trusted clock. A past reference is unverified advice,
   not an answer to the current query; the fixed `limitations` say so. Subjects,
   producer text, request and correlation identifiers, snapshot references,
-  raw envelopes and question text are never included. The CLI (`root`,
-  `operator`) does not carry this section in this version; aligning it needs a
-  separate schema decision. The Markdown has three parts: the current
+  raw envelopes and question text are never included. `basis` states where it
+  came from (the UI's recent snapshot row, that snapshot's freshness and the
+  judging time). A row with no trace, or no explanation, is still reported (status and
+  outcome `unknown`, `reference_state` `not_recorded`). The CLI (`root`,
+  `operator`) does not carry this section in this version; that difference is a
+  limit of this version, not a decision, and aligning the CLI needs a
+  separate schema decision. The ledger is root's and the `ui` package never
+  reads it, so only the row's single last attempt and last reference appear,
+  not the history. The Markdown has three parts: the current
   transition, the last query and the last received reference.
 * **Errors.** `401 login_required`, `404 not_found`, `400
   query_or_fragment_refused`, `421 host_refused`, `429 handoff_busy`,
