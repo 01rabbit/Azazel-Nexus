@@ -922,12 +922,15 @@ reduced row shows its slow analysis as `degraded` or, if that is not enough, its
 explanation as `unavailable` with the failure code `status_write_failed`. Pending
 rows are not reduced, and a new incident is always added to the list. Only the
 published window changes: the explanation ledger keeps every record, and
-`azazel-nexus handoff <id>` run as root or as an operator shows the ledger's
-explanation and guidance in full. The UI cannot read the ledger and shows the
-reduced row, and a slow analysis reduced to `degraded` reads as `degraded` in the
-package as well. The `refused.status_write_failed` counter adds up failed writes of
-the public files, polls in which the window could not be written, and reduction
-passes (one per pass however many rows it changed; settling an explanation and then
+`sudo azazel-nexus handoff export --incident <id> --output-dir DIR` (run as
+root) shows the ledger's explanation and guidance in full, subject to the
+package's own withholding rules. An operator's export reads the snapshots only
+and reports the ledger as `not_readable_by_principal`. The UI cannot read the
+ledger and shows the reduced row, and a slow analysis reduced to `degraded`
+reads as `degraded` in the package as well. The `refused.status_write_failed`
+counter adds up failed writes of the public files, polls in which the window
+could not be written, and reduction passes (one per pass however many rows it
+changed; settling an explanation and then
 attaching its slow analysis can count twice). A row whose slow analysis alone
 became `degraded` carries no failure code. None of this calls for removing the
 cursor. Only a window that still exceeded the bound with every row reduced would
