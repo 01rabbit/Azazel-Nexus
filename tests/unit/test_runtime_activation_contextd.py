@@ -200,11 +200,24 @@ def test_revoking_a_granted_running_contextd_clears_its_marker_and_fails_loudly(
     assert CTX in first.granted and CTX in ctx_world.markers()
     # contextd is now running under that grant, then the grant is revoked.
     running = _make_running(ctx_world)
+    marker = ctx_world.root / "run/azazel-activation/granted" / CTX
+    assert marker.exists()
+    at_mask = []
+    original_mask = running.mask
+
+    def recording_mask(unit):
+        if unit == CTX:
+            at_mask.append(marker.exists())
+        original_mask(unit)
+
+    running.mask = recording_mask
     _closing_cases()[case](ctx_world)
     extra = {"commissioning_evidence": lambda: None} if case == "evidence-missing" else {}
     with pytest.raises(activated.RollbackFailed) as raised:
         ctx_world.run(**extra)
     assert CTX in str(raised.value)
+    # The marker was already removed when the first mask of contextd ran.
+    assert at_mask and not any(at_mask)
     # The existing marker is gone first and the next start is closed, though
     # the process itself cannot be stopped by the pass.
     assert ctx_world.markers() is None or CTX not in ctx_world.markers()
