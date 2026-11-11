@@ -1761,6 +1761,50 @@ def test_window_stays_within_bound_s5_observe_uses_one_timestamp_per_pass(tmp_pa
     assert e.refused["status_write_failed"] == 1
 
 
+def test_window_stays_within_bound_s5_restore_reduces_a_reader_valid_window_the_builder_refuses(tmp_path):
+    from azazel_nexus.incident_explain import RECENT_BYTES
+    pending = _pending_row(transition(incident_id=_Y))
+    pending["last_seen"] = 0
+    pending["explanation"]["slow_analysis"] = {"state": "queued", "usage": "unknown"}
+    # A path citation ("/") is kept by the reader but withheld by the builder ("" and "withheld"
+    # instead of "/" and "shown"): 2 bytes more. The file is made exactly RECENT_BYTES long.
+    rows = [pending] + _fit_rows(19, RECENT_BYTES, [pending])
+    _window(tmp_path, rows)
+    path = tmp_path / "state" / "cursor.json"
+    value = json.loads(path.read_text())
+    incidents = value["recent"]["incidents"]
+    victim = min((r for r in incidents if r["explanation"]["state"] != "pending"), key=_key)["incident_id"]
+    for r in incidents:
+        if r["incident_id"] == victim:
+            r["explanation"]["knowledge_refs"][0].update(citation="/", citation_state="shown")
+    measure = lambda: len(json.dumps(value["recent"], allow_nan=False).encode())
+    deficit = RECENT_BYTES - measure()
+    assert 0 < deficit
+    for r in incidents:                              # give the freed bytes back in the other summaries
+        if r["incident_id"] != victim and r["explanation"]["state"] != "pending" and deficit:
+            k = len(r["explanation"]["summary"])
+            room = min(deficit, 279 - k)
+            text = ("Inspect the launch of the interpreter and check its parent " * 6)[:k + room]
+            r["explanation"]["summary"] = text[:-1] + "a" if text.endswith(" ") else text
+            deficit -= room
+    assert deficit == 0
+    path.write_bytes(daemon.canonical(value))        # the file as the reader and decode_checkpoint see it
+    assert measure() == RECENT_BYTES
+    daemon.decode_checkpoint(path.read_bytes())      # the reader's check accepts it
+    e = make(tmp_path)                               # restore
+    assert not e.storage_failed
+    assert e.refused["status_write_failed"] == 1
+    assert [r for r in e.recent if r["incident_id"] == victim][0]["explanation"]["slow_analysis"] == {
+        "state": "degraded", "usage": "unknown"}
+    assert [r for r in e.recent if r["incident_id"] == pending["incident_id"]][0] == pending
+    assert path.stat().st_size > 0 and daemon.decode_checkpoint(path.read_bytes())
+    e.monotonic = lambda: 100
+    e.status()
+    e.poll()
+    assert not e.storage_failed
+    _bound_ok(tmp_path)
+
+
 def test_window_stays_within_bound_s5_ties_break_on_incident_id(tmp_path):
     from azazel_nexus.incident_explain import RECENT_BYTES
     pending = _pending_row(transition(incident_id=_Y))
@@ -1947,7 +1991,8 @@ def test_window_stays_within_bound_s5_handoff_shows_the_ledger_text_of_a_reduced
     ai = root_pkg["ai_assessment"]
     assert ai["source"] == "explanation_ledger" and ai["explanations"][0]["text"]
     assert "status_write_failed" not in ai["explanations"][0]["failure_codes"]
-    assert [rec for rec in records(e) if rec["incident_id"] == x_id]     # the ledger kept the record
+    ledger = [rec for rec in records(e) if rec["incident_id"] == x_id]    # the ledger kept the record
+    assert ledger and ai["explanations"][0]["text"] == ledger[0]["mio"]["text"]
     ui_pkg = build_package(x_id, now=example.GENERATED, principal="ui", root=root)
     ui_ai = ui_pkg["ai_assessment"]
     assert ui_ai["source"] == "recent_snapshot"

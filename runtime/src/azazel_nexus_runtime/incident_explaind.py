@@ -543,10 +543,13 @@ class Explainer:
         now = self.clock() if now is None else now  # one reading per pass
         if self._fits(rows, now):
             return False
-        from azazel_nexus.incident_explain import RECENT_BYTES, RECENT_SCHEMA
+        from azazel_nexus.incident_explain import RECENT_BYTES, RECENT_SCHEMA, _public_refs
         order = sorted(rows, key=_RECENT_ORDER)
+        # Measured with the builder's own projection (_public_refs): a private function of
+        # the library, used so that there is a single definition of what the builder writes.
         sized = json.dumps({"schema": RECENT_SCHEMA, "written_at": now,
-                            "incidents": self._public_rows(order[::-1][:20])}, allow_nan=False)
+                            "incidents": [_public_refs(r) for r in self._public_rows(order[::-1][:20])]},
+                           allow_nan=False)
         if len(sized.encode()) <= RECENT_BYTES:
             return False  # refused for a reason other than size: shrinking would not help
         targets = ([r for r in order if r["incident_id"] == own] if own_first else []) + [
@@ -1175,6 +1178,7 @@ class Explainer:
                 self._generation_current.clear()
                 self.refuse("storage_failed")
         self._future()
+        self._keep_window(None)  # a reader-valid window the builder would refuse
         self.checkpoint()
 
     def _future(self):
