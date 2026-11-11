@@ -205,6 +205,16 @@ one of them to look wrong.
 | Knowledge | Knowledge Lite state, freshness, generation, what "functional" does and does not mean, the verified bundle's facts (shortened digest, signing key ids, static and dated claim counts, nearest expiry; a withheld fact says so), the cryptographic implementation status, the operator snapshot of `knowledge.status`, the external peer (absent by design) and the citations of recent incidents. | `knowledge_lite`, `knowledge_status`, `external_modules`, `edge_loop.recent` |
 | セットアップ・復旧 (setup and recovery) | The setup guide's steps and their next commands **as text** (the page runs nothing), provider admission, health, each unit's state and each storage location, the explainer's chain recovery hint and status's next actions. | `setup --json`, `health`, `services`, `storage`, `next_actions`, `enforcement` |
 
+### Reading the explainer right after a restart
+
+Shortly after `azazel-incident-explaind` restarts with a checkpoint, the
+explainer list may show it as behind (pending work) while the time of the last
+explanation does not move. That is the designed 60-second wait of the rolling
+rate budget, not a fault, and the rows already shown do not change. If it
+continues well beyond a minute, treat it as a different cause and look at the
+chain, storage and M.I.O. indicators and the recovery steps in
+[operations](operations.md). The page does not estimate the remaining time.
+
 ### When a refresh fails
 
 The page refreshes `/api/view` every 5 seconds (a request that has not answered within 8 seconds counts as timed out). What stays on screen depends on why it failed:
