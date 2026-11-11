@@ -218,6 +218,9 @@ plus a 250 ms caller margin), which relays to `mio.local.observe` on
   `total_ms` from locald; `entry_ms` from entryd) so that success, delay and
   refusal can be measured. Nothing is logged or recorded from it yet, and no
   measurement has been taken.
+- The explainer does not adopt the reply as it arrives: it re-validates the
+  returned `fast_assistance` with `read_fast_assistance` before the replacement
+  rule runs, and a reply that fails is treated as `unavailable`.
 - A broker refusal, an unreachable broker, a timeout or an exhausted budget all
   return `unavailable` in the same shape. Locald does not submit generation.
 - Locald stamps `full_node_context_received_at` (UTC, a wall-clock time and not a
@@ -244,8 +247,14 @@ The reply replaces the advise fast assistance only when everything outside the
 Full-derived fields is equal: `fabric_knowledge_context_advisory`,
 `full_node_context_status`, `full_node_context_received_at`, `handoff`,
 `reasoning_trace`, `dependency_outcome.knowledge`, the `KNOWLEDGE_CONTEXT_`
-items of `unknowns` and the incomplete-check text of `next_checks` may differ;
-`state`, `hypotheses`, `knowledge` and the rest must be equal. `trace`,
+items of `unknowns` and two fixed `next_checks` texts may differ: the
+incomplete-check text, and the advise side's fixed "This fast result did not
+query Knowledge; ..." sentence (Nexus constant `MIO_KNOWLEDGE_NOT_QUERIED_CHECK`,
+copied from the pinned azazel_mio 4511f1fc). Both are removed before comparing
+and the remaining `next_checks` must be equal in order. If azazel_mio changes
+that sentence, the replacement stops holding and the row shows `unavailable`,
+which is the safe side. `state`, `hypotheses`, `knowledge` and the rest must be
+equal. `trace`,
 `trace_id` and `frame_id` stay the advise side's. Otherwise the advise result is
 recorded with status `unavailable`. A reply that the broker verified but the
 explainer dropped this way therefore appears as `verified_advisory` in the
@@ -272,9 +281,11 @@ other unknown or invalid row key does. The trace has exactly four keys:
 `result`, `technique_ids`; `result` is `received`, `received_not_adopted` or
 `unavailable`), `last_receipt` (null, or the nine closed projection fields with
 `outcome` `complete`/`partial`/`stale`, plus `received_at` and `technique_ids`)
-and `observed_sequence`. `received_not_adopted` means the record's outcome is
-`rejected` or `expired`, or it is received but `unavailable`; a reply dropped by
-the replacement rule is `unavailable`, matching the row.
+and `observed_sequence`. `received_not_adopted` means the record has status `received` and outcome
+`rejected`, `expired` or `unavailable`. A reply dropped by the replacement rule is
+`unavailable`, matching the row. An advisory (`complete`, `partial`, `stale`)
+whose receipt time is missing from the ledger side is also `unavailable`, and
+`last_receipt` is not replaced.
 
 `observed_sequence` is an internal value used only to decide whether a late
 explanation belongs to the row's latest transition. It is not copied to the
@@ -284,7 +295,14 @@ operator display only; it is never an input to a candidate decision, a frame, a
 request, an M.I.O. input, a record or the current-explanation fields.
 
 How it is written. A trace is created only by an explanation made while a rule is
-usable, and only when that explanation is the row's latest transition. Observing
+usable. An explanation of the row's latest transition creates it with that
+transition's word. An explanation of an earlier transition (it was queued and a
+later one was observed first) also leaves its attempt and receipt: if the row
+has no trace yet, one is created with the narrowest word that fits (`closed` if
+the row is closed, `pending` if the row's explanation is still pending,
+otherwise `not_explained`) and the explainer's in-memory latest observed
+sequence. Right after an explainer restart that memory is empty, so such a first
+late explanation creates no trace. Observing
 a later transition copies the trace and sets `transition_query` (`pending`,
 `not_explained`, `closed`) and `observed_sequence`; `last_attempt` and
 `last_receipt` are not changed. An explanation sets `queried`, `repeat`,
@@ -303,16 +321,24 @@ gets the same conversion as a new unexplained transition (current fields
 
 Known residuals:
 
-- After a restart, an incident reopened within the same second with the same
-  count can be taken for the same transition.
+- After a restart, with no trace and no in-memory sequence, "latest" is judged
+  from the row's `count` and `first_seen`; an incident reopened within the same
+  second with the same count can be taken for the same transition.
+- A late explanation of an earlier transition, as the first explanation after a
+  restart (no in-memory latest sequence), creates no trace, so that receipt is
+  not shown (the ledger has it).
 - If `observe_transition` raises for a transition, the row (and trace) stay as
   they were and the earlier explanation is still treated as latest.
 - If the record cannot be written (`SegmentFull`), `last_attempt` is not recorded
   though the question was sent; the broker's audit has it.
-- A late explanation on a row with no trace creates none.
+- A row whose optional fields are all at their reader maximum is about 60 KB;
+  twenty such rows exceed the 256 KiB recent snapshot limit, with or without a
+  trace. This is a property of the existing limits (the trace adds under
+  1 KiB per row); ordinary rows are far smaller.
 - Rows that leave the 20-row window lose the trace for good.
 
-`/api/view` rows gain one closed word, `full_node_reference`, judged at the
+The ui reader's `/api/view` rows gain one closed word, `full_node_reference`
+(the operator and root views do not carry it), judged at the
 view's `as_of`: `not_recorded` (no trace), `none` (no receipt), `unknown`
 (no usable judging time), `expired` (judging time at or after `expires_at`),
 `set_changed` (the receipt's technique set differs from the row's, order
@@ -340,7 +366,9 @@ place, checkpoints carry `full_node_trace` and `query_origin`, and the release a
 `74a6189` refuses both (`cursor_refused`, no READY). Convert the stopped
 checkpoint with `checkpoint_for_release_before_full_node_trace` and install
 `74a6189`; the steps are in [operations](operations.md) (Rolling the explainer
-back past the Full-node trace). While the earlier release runs, the Full-node
+back past the Full-node trace). The trace conversion refuses any existing
+`cursor.json.pre-rollback`, even an identical one (the conversion for #392
+still resumes an interrupted run). While the earlier release runs, the Full-node
 facts of those incidents can be read neither in the ui nor with the CLI, because
 it cannot read the new records either. The ledger keeps the original records and
 the conversion leaves no record of itself.

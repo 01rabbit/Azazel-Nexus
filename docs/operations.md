@@ -841,8 +841,9 @@ installed:
 
    It prints how many recent rows lost either field. The original is kept as
    `cursor.json.pre-rollback` (owner and mode kept). An existing backup is never
-   replaced: any other backup refuses the run with `rollback_backup_exists`;
-   move an old one aside yourself. Nothing is written if the checkpoint is refused.
+   replaced, and this conversion (unlike the one above) does not resume: any
+   existing `cursor.json.pre-rollback`, identical or not, refuses the run with
+   `rollback_backup_exists`; move it aside yourself. Nothing is written if the checkpoint is refused.
 3. Install `74a6189` and start the explainer. It rewrites `recent.json` and
    the ui copy from the converted checkpoint after it starts; until then the
    earlier ui reads the snapshot as `None`.
