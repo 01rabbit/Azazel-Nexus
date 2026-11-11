@@ -1333,6 +1333,9 @@ def test_a_record_that_read_mio_reply_accepted_but_read_record_refuses_is_contai
 # Windows are placed through cursor.json and restore(); increments come from the real
 # poll() -> explain() -> _settle_row() path with the same Mio/Knowledge doubles as above.
 
+from azazel_nexus.incident_explain import RECENT_BYTES as _RECENT_BYTES  # noqa: E402
+
+
 def _dsize(rows, written_at=0):
     from azazel_nexus.incident_explain import RECENT_SCHEMA
     return len(json.dumps({"schema": RECENT_SCHEMA, "written_at": written_at, "incidents": rows},
@@ -1460,7 +1463,7 @@ def test_window_stays_within_bound_status_survives_an_over_bound_window(tmp_path
     seed = _window(tmp_path, rows)
     seed.recent_status()
     kept = (tmp_path / "recent.json").read_bytes()
-    e = make(tmp_path, clock=lambda: 1061.0)       # "written_at": 1061.0 is 6 bytes longer: bound + 6
+    e = make(tmp_path, clock=lambda: 1061.0)       # "written_at": 1061.0 is 5 bytes longer: bound + 5
     e.monotonic = lambda: 100
     e.status()                                      # (a) no exception
     assert e.refused["status_write_failed"] == 1
@@ -1532,7 +1535,7 @@ def test_window_stays_within_bound_settling_incidents_one_at_a_time_with_large_r
     for the largest rows the path can make: from some n on, settled rows show as degraded.
     Only the first ten incidents are settled. The eleventh would add a pending row that no
     row in the window can give room for (a pending row becomes an unavailable row that is
-    21 bytes longer); that residual is DESIGN-427 section 5 and is deliberately not covered.
+    25 bytes or more longer, more with a trace); that residual is DESIGN-427 section 5 and is deliberately not covered.
     """
     from azazel_nexus.incident_explain import RECENT_BYTES, CODES
     maximal = _loose_rows(4, RECENT_BYTES - 16000)     # reader-bounded large rows, 30 KB left over
@@ -1554,6 +1557,23 @@ def test_window_stays_within_bound_settling_incidents_one_at_a_time_with_large_r
     assert set(e.refused) <= CODES
     assert len(records(e)) == 10
     assert len((tmp_path / "state" / "cursor.json").read_bytes()) <= RECENT_BYTES * 2
+
+
+def test_window_stays_within_bound_residual_latch_is_fixed_until_section_5(tmp_path):
+    """DESIGN-427 section 5 residual: the eleventh incident latches storage_failed, daemon lives.
+
+    Expected values change once section 5 is approved and implemented.
+    """
+    maximal = _loose_rows(4, _RECENT_BYTES - 16000)
+    e = _window(tmp_path, maximal)
+    for n in range(11):
+        append(e, transition(incident_id=f"inc-{0xa00 + n:016x}"))
+        e.monotonic = lambda n=n: 61 * (n + 1)
+        e.poll()
+        e.poll()
+    assert e.storage_failed
+    assert e.refused["storage_failed"] == 1
+    assert json.loads((tmp_path / "status.json").read_text())["storage_failed"] is True
 
 
 def test_codes_are_unchanged():

@@ -888,14 +888,19 @@ window, its row is shown with the slow analysis reduced to `degraded` or, if tha
 is not enough, with the explanation `unavailable` and the failure code
 `status_write_failed`; the full explanation stays in the explanation ledger and
 `azazel-nexus handoff <id>` shows it in full. The `refused.status_write_failed`
-counter covers both a failed file write and this reduction: a row that carries
-`status_write_failed` was reduced, a counter increase without such a row is a
-write failure. If `refused.transition_refused` rises while the status open count
-differs from the list (`list_differs_from_intake`), the window may be full and
-new incidents are missing from the list even though it reads as fresh; check the
+counter adds up failed writes of the public files, polls in which the window
+exceeded the bound and could not be written (counted every poll), and row
+reductions. A `status_write_failed` in a row's `failure_codes` means that row's
+explanation was reduced because of the window; the ledger and the handoff hold
+it in full. A row whose slow analysis alone became `degraded` carries no such
+mark. If `refused.transition_refused` rises while the status open count differs
+from the list (`list_differs_from_intake`), the window may be full and new
+incidents are missing from the list even though it reads as fresh; check the
 ledger and the handoff for them. An unwritable window does not stop the
-explainer: `recent.json` turns stale after 30 seconds, and with
-`storage_failed: true` follow the existing procedure above.
+explainer: `recent.json` turns stale after 30 seconds. With
+`storage_failed: true`, restarting alone re-runs the same pending work, latches
+again and adds duplicate ledger records; follow the cursor removal procedure
+for `chain_broken` above (stop the service, remove only `cursor.json`, restart).
 
 The intake's part ends with one line for the Deception Lite decoy
 (#196 P2). With the decoy socket open it reads

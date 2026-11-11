@@ -528,6 +528,11 @@ class Explainer:
             return
         except ValueError:
             pass
+        from azazel_nexus.incident_explain import RECENT_BYTES, RECENT_SCHEMA
+        sized = json.dumps({"schema": RECENT_SCHEMA, "written_at": self.clock(),
+                            "incidents": self._public_rows()[:20]}, allow_nan=False)
+        if len(sized.encode()) <= RECENT_BYTES:
+            return  # refused for a reason other than size: shrinking would not help
         shrunk = False
         for row in self.recent:
             if row["incident_id"] != ident:
