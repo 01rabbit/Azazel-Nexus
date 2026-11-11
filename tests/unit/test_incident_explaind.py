@@ -1697,7 +1697,8 @@ def test_window_stays_within_bound_s5_pending_rows_with_slow_are_untouched(tmp_p
     assert pending["explanation"]["state"] == "pending"
     rows = [pending] + _fit_rows(19, RECENT_BYTES, [pending])
     _window(tmp_path, rows)                          # cursor.json as the reader accepts it (written_at 0)
-    e = make(tmp_path, clock=lambda: 1061.0)         # "written_at": 1061.0 is 5 bytes longer: bound + 5
+    e = make(tmp_path)                               # restored: fits with written_at 0
+    e.clock = lambda: 1061.0                         # "written_at": 1061.0 is 5 bytes longer: bound + 5
     e.monotonic = lambda: 100
     before = {r["incident_id"]: _jb(r) for r in e.recent}
     assert before[pending["incident_id"]] == _jb(pending)

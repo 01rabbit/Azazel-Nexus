@@ -417,6 +417,21 @@ def poll_generation_result(receipt, *, deadline_s=0.05, caller_epoch=None, priva
 
 #: The builder's order (incident_explain.py); ascending is oldest first.
 _RECENT_ORDER = lambda r: (r["last_seen"], r["first_seen"], r["incident_id"])  # noqa: E731
+def _withhold_path_citations(row):
+    """The builder's projection of a row (`_public_refs` in the library), by public names."""
+    from azazel_nexus.incident_explain import citation_names_a_path
+    explanation = row.get("explanation")
+    if not isinstance(explanation, dict) or not isinstance(explanation.get("knowledge_refs"), list):
+        return row
+    refs = []
+    for ref in explanation["knowledge_refs"]:
+        if (isinstance(ref, dict) and isinstance(ref.get("citation"), str)
+                and citation_names_a_path(ref["citation"])):
+            ref = {**ref, "citation": "", "citation_state": "withheld"}
+        refs.append(ref)
+    return {**row, "explanation": {**explanation, "knowledge_refs": refs}}
+
+
 _SLOW_REDUCED = {"state": "degraded", "usage": "unknown"}
 
 
@@ -543,12 +558,13 @@ class Explainer:
         now = self.clock() if now is None else now  # one reading per pass
         if self._fits(rows, now):
             return False
-        from azazel_nexus.incident_explain import RECENT_BYTES, RECENT_SCHEMA, _public_refs
+        from azazel_nexus.incident_explain import RECENT_BYTES, RECENT_SCHEMA
         order = sorted(rows, key=_RECENT_ORDER)
-        # Measured with the builder's own projection (_public_refs): a private function of
-        # the library, used so that there is a single definition of what the builder writes.
+        # Measured with the builder's projection: a path-naming citation is withheld there
+        # (_public_refs in the library, a private name the runtime may not import).
         sized = json.dumps({"schema": RECENT_SCHEMA, "written_at": now,
-                            "incidents": [_public_refs(r) for r in self._public_rows(order[::-1][:20])]},
+                            "incidents": [_withhold_path_citations(r)
+                                          for r in self._public_rows(order[::-1][:20])]},
                            allow_nan=False)
         if len(sized.encode()) <= RECENT_BYTES:
             return False  # refused for a reason other than size: shrinking would not help
