@@ -1656,11 +1656,12 @@ def checkpoint_for_previous_release(path):
     return stripped
 
 
-def _replace_keeping_backup(path, raw, value):
+def _replace_keeping_backup(path, raw, value, *, resume=True):
     """Replace a stopped checkpoint by `value`, keeping `raw` as `.pre-rollback`.
 
     Shared by both rollback conversions. An existing backup is never replaced;
-    one holding exactly `raw` (an interrupted run) lets the conversion go on.
+    one holding exactly `raw` (an interrupted run) lets the conversion go on
+    unless `resume` is false, which refuses any existing backup.
     """
     backup = path.with_name(path.name + ".pre-rollback")
     try:
@@ -1669,7 +1670,7 @@ def _replace_keeping_backup(path, raw, value):
         kept = None
     except (OSError, ValueError):
         raise ValueError("rollback_backup_exists") from None
-    if kept is not None and kept != raw:
+    if kept is not None and (kept != raw or not resume):
         raise ValueError("rollback_backup_exists")
     info = os.stat(path, follow_symlinks=False)
     writes = [(backup, raw, os.link)] if kept is None else []
@@ -1723,7 +1724,7 @@ def checkpoint_for_release_before_full_node_trace(path):
             hit = True
         changed += hit
     decode_checkpoint(canonical(value))
-    _replace_keeping_backup(path, raw, value)
+    _replace_keeping_backup(path, raw, value, resume=False)
     return changed
 
 

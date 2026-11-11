@@ -258,6 +258,18 @@ def test_rollback_conversion_strips_only_trace_and_origin(tmp_path):
     assert probe.exists()
 
 
+def test_an_existing_backup_is_refused_even_when_identical(tmp_path):
+    value, d = _checkpoint(tmp_path, [row_with(trace(), origin="observation_rule_v1")])
+    path = tmp_path / "cursor.json"
+    path.write_bytes(d.canonical(value) + b"\n")
+    backup = path.with_name("cursor.json.pre-rollback")
+    backup.write_bytes(path.read_bytes())                     # same bytes as the checkpoint
+    original = path.read_bytes()
+    with pytest.raises(ValueError, match="rollback_backup_exists"):
+        d.checkpoint_for_release_before_full_node_trace(path)
+    assert path.read_bytes() == original and backup.read_bytes() == original
+
+
 def d_convert(path):
     from azazel_nexus_runtime import incident_explaind as d
     return d.checkpoint_for_release_before_full_node_trace(path)
