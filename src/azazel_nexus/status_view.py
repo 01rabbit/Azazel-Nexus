@@ -795,6 +795,7 @@ def _recent_extra(value, snapshot, now=None):
     from .edge_intake import ACTIONS
     from .incident_explain import (
         CITATION_STATES, CODES, CONTENT_KINDS, LEGACY_HANDOFF, POLICY_REASONS, SHOWN_STATES,
+        full_node_reference_state,
     )
     from .lite_import import TECHNIQUE_ID
     from .local_advisory import HANDOFF_NOTICE
@@ -827,6 +828,9 @@ def _recent_extra(value, snapshot, now=None):
         omitted = explanation.get("knowledge_refs_omitted", 1)
         _require(type(omitted) is int and 1 <= omitted <= 16)
         copy = _pick(row, INCIDENT_FIELDS)
+        # One closed word from the stored trace (never the trace itself), judged at `as_of`.
+        copy["full_node_reference"] = full_node_reference_state(
+            row.get("full_node_trace"), row["technique_ids"], now)
         copy["explanation"] = _pick(explanation, EXPLANATION_FIELDS)
         if isinstance(explanation.get("fast_assistance"), dict):
             copy["explanation"]["fast_assistance"] = _fast_assistance_availability(

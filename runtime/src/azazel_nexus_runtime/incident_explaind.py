@@ -1479,6 +1479,16 @@ def checkpoint_for_previous_release(path):
     if any(set(row[0]) != PENDING_FIELDS for row in value["pending"]):
         raise ValueError("cursor_refused")
     decode_checkpoint(canonical(value))
+    _replace_keeping_backup(path, raw, value)
+    return stripped
+
+
+def _replace_keeping_backup(path, raw, value):
+    """Replace a stopped checkpoint by `value`, keeping `raw` as `.pre-rollback`.
+
+    Shared by both rollback conversions. An existing backup is never replaced;
+    one holding exactly `raw` (an interrupted run) lets the conversion go on.
+    """
     backup = path.with_name(path.name + ".pre-rollback")
     try:
         kept = read_file(backup, CHECKPOINT_BYTES)
@@ -1511,7 +1521,37 @@ def checkpoint_for_previous_release(path):
             if os.path.exists(name):
                 os.unlink(name)
     fsync_directory(path.parent)
-    return stripped
+
+
+def checkpoint_for_release_before_full_node_trace(path):
+    """Rewrite a stopped explainer's checkpoint for the release before the
+    full-node trace (74a6189; DESIGN-M5 2.9). Separate from the #392 conversion.
+
+    Drops, from every recent row, the row-level `full_node_trace` and the
+    nested `explanation.fast_assistance.full_node_context.query_origin`; pending
+    entries are not changed. The release before this change refuses either
+    (`cursor_refused`, no READY). The checkpoint is validated first and nothing
+    is written if it is refused. The original is kept as `cursor.json.pre-rollback`
+    with the checkpoint's owner and mode; an existing backup is never replaced
+    (the same rule as the #392 conversion). Run it as root with the explainer
+    stopped. Returns how many recent rows lost either field. The ledger keeps
+    the original records; the conversion itself leaves no record.
+    """
+    path = Path(path)
+    raw = read_file(path, CHECKPOINT_BYTES)
+    value = decode_checkpoint(raw)
+    changed = 0
+    for row in value.get("recent", {"incidents": []})["incidents"]:
+        hit = row.pop("full_node_trace", None) is not None
+        fast = row["explanation"].get("fast_assistance")
+        node = fast.get("full_node_context") if type(fast) is dict else None
+        if type(node) is dict and "query_origin" in node:
+            del node["query_origin"]
+            hit = True
+        changed += hit
+    decode_checkpoint(canonical(value))
+    _replace_keeping_backup(path, raw, value)
+    return changed
 
 
 def main(argv=None):

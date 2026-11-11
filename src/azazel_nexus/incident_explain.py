@@ -6,7 +6,7 @@ import math
 import re
 import unicodedata
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .explanation_claims import (
     EDGE_CLAIM_LIMITATION,
@@ -1025,13 +1025,7 @@ def build_recent_incident(transition, previous=None, record=None):
         explanation = explanation_summary(r)
     elif previous and t["event_type"] in {"edge.incident.updated", "edge.incident.closed"}:
         # A newly observed transition cannot inherit a previous full-node receipt.
-        fast = explanation.get("fast_assistance")
-        if type(fast) is dict and "full_node_context" in fast:
-            fast = dict(fast)
-            fast["full_node_context"] = _full_node_projection(None, "not_queried", "not_queried")
-            fast["unknowns"] = [x for x in fast["unknowns"] if not x.startswith("KNOWLEDGE_CONTEXT_")]
-            fast["next_checks"] = [x for x in fast["next_checks"] if x != FULL_NODE_INCOMPLETE_CHECK]
-            explanation = {**explanation, "fast_assistance": fast}
+        explanation = without_current_full_node(explanation)
     if (record is None and previous and t["event_type"] == "edge.incident.updated"
             and t["most_severe"] < previous["most_severe"]):
         explanation = {"state": "pending", "route": "unavailable", "outcome": "unavailable",
@@ -1070,12 +1064,112 @@ FULL_NODE_LIMITATIONS = (
 FULL_NODE_FRESHNESS_LIMITATION = "source-level freshness deadlines are not included in this projection"
 
 
-def _full_node_projection(advisory, status, knowledge_outcome):
+#: Who asked for the full-node reference (explaind writes it; AP R1 section 6).
+FULL_NODE_ORIGINS = ("observation_rule_v1", "observation_rule_v1_repeat", "none")
+FULL_NODE_TRACE_QUERIES = ("queried", "repeat", "no_candidate", "rule_absent",
+                           "pending", "not_explained", "closed")
+FULL_NODE_ATTEMPT_RESULTS = ("received", "received_not_adopted", "unavailable")
+FULL_NODE_REFERENCE_STATES = ("not_recorded", "none", "unknown", "expired", "set_changed", "in_window")
+_ISO_UTC = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z")
+_ISO_UTC_SECONDS = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+
+
+def without_current_full_node(explanation):
+    """The explanation with its current full-node projection set to `not_queried`.
+
+    One conversion for every place that must stop an explanation from claiming
+    a full-node reference for a transition it was not made for: a new
+    unexplained transition, an Edge reset, and a late explanation of an
+    earlier transition. It also drops the incomplete-check texts and the
+    origin (`query_origin`), which belongs to the dropped projection.
+    """
+    fast = explanation.get("fast_assistance")
+    if type(fast) is dict and "full_node_context" in fast:
+        fast = dict(fast)
+        fast["full_node_context"] = _full_node_projection(None, "not_queried", "not_queried")
+        fast["unknowns"] = [x for x in fast["unknowns"] if not x.startswith("KNOWLEDGE_CONTEXT_")]
+        fast["next_checks"] = [x for x in fast["next_checks"] if x != FULL_NODE_INCOMPLETE_CHECK]
+        return {**explanation, "fast_assistance": fast}
+    return explanation
+
+
+def utc_seconds(epoch):
+    """`YYYY-MM-DDTHH:MM:SSZ` from an epoch, truncated to whole seconds."""
+    if type(epoch) not in (int, float) or not math.isfinite(epoch) or epoch < 0:
+        raise ValueError("recent_refused")
+    return datetime.fromtimestamp(int(epoch), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _iso_epoch(text):
+    return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+
+
+def _technique_set(ids):
+    if (type(ids) is not list or not 1 <= len(ids) <= 8
+            or any(type(i) is not str or not TECHNIQUE_ID.fullmatch(i) for i in ids)
+            or ids != sorted(set(ids))):
+        raise ValueError("recent_refused")
+
+
+def read_full_node_trace(value):
+    """The row's `full_node_trace` (DESIGN-M5 2.2, 2.8), or ValueError."""
+    _shape(value, ("transition_query", "last_attempt", "last_receipt", "observed_sequence"))
+    if type(value["transition_query"]) is not str or value["transition_query"] not in FULL_NODE_TRACE_QUERIES:
+        raise ValueError("recent_refused")
+    _int(value["observed_sequence"], 2**63 - 1, 1)
+    attempt, receipt = value["last_attempt"], value["last_receipt"]
+    if attempt is not None:
+        _shape(attempt, ("attempted_at", "result", "technique_ids"))
+        if (type(attempt["attempted_at"]) is not str or not _ISO_UTC_SECONDS.fullmatch(attempt["attempted_at"])
+                or type(attempt["result"]) is not str or attempt["result"] not in FULL_NODE_ATTEMPT_RESULTS):
+            raise ValueError("recent_refused")
+        _iso_epoch(attempt["attempted_at"])
+        _technique_set(attempt["technique_ids"])
+    if receipt is not None:
+        _shape(receipt, ("received_at", "outcome", "source_kind", "claim_status", "trust",
+                         "snapshot_state", "generated_at", "expires_at", "limitations",
+                         "technique_ids"))
+        if (type(receipt["received_at"]) is not str or not _ISO_UTC.fullmatch(receipt["received_at"])
+                or type(receipt["outcome"]) is not str
+                or receipt["outcome"] not in {"complete", "partial", "stale"}):
+            raise ValueError("recent_refused")
+        _iso_epoch(receipt["received_at"])
+        _technique_set(receipt["technique_ids"])
+        _read_full_node_projection({
+            "full_node_context_status": "received", "outcome": receipt["outcome"],
+            **{k: receipt[k] for k in ("source_kind", "claim_status", "trust", "snapshot_state",
+                                      "generated_at", "expires_at", "limitations")}})
+    if value["transition_query"] == "queried" and attempt is None:
+        raise ValueError("recent_refused")
+    if attempt is not None and attempt["result"] == "received" and (
+            receipt is None or receipt["technique_ids"] != attempt["technique_ids"]):
+        raise ValueError("recent_refused")
+
+
+def full_node_reference_state(trace, technique_ids, now):
+    """The reader-side word for a stored trace (DESIGN-M5 2.3); never stored."""
+    if trace is None:
+        return "not_recorded"
+    receipt = trace["last_receipt"]
+    if receipt is None:
+        return "none"
+    if type(now) not in (int, float) or not math.isfinite(now) or now < 0:
+        return "unknown"
+    if now >= _iso_epoch(receipt["expires_at"]):
+        return "expired"
+    if set(receipt["technique_ids"]) != set(technique_ids):
+        return "set_changed"
+    return "in_window"
+
+
+def _full_node_projection(advisory, status, knowledge_outcome, query_origin=None):
     """Project only closed metadata; never copy source prose or subjects."""
     result = {"full_node_context_status": status, "outcome": "not_queried",
               "source_kind": None, "claim_status": None, "trust": None,
               "snapshot_state": None, "generated_at": None, "expires_at": None,
               "limitations": []}
+    if query_origin is not None:
+        result["query_origin"] = query_origin
     if advisory is not None:
         result.update(outcome=advisory["snapshot_state"],
                       source_kind=advisory["source_kind"], claim_status=advisory["claim_status"],
@@ -1097,7 +1191,10 @@ def _full_node_projection(advisory, status, knowledge_outcome):
 
 def _read_full_node_projection(value):
     _shape(value, ("full_node_context_status", "outcome", "source_kind", "claim_status", "trust",
-                   "snapshot_state", "generated_at", "expires_at", "limitations"))
+                   "snapshot_state", "generated_at", "expires_at", "limitations"), ("query_origin",))
+    if "query_origin" in value and (type(value["query_origin"]) is not str
+                                    or value["query_origin"] not in FULL_NODE_ORIGINS):
+        raise ValueError("recent_refused")
     status, outcome = value["full_node_context_status"], value["outcome"]
     if type(status) is not str or status not in {"unknown", "not_queried", "received", "unavailable"}:
         raise ValueError("recent_refused")
@@ -1187,7 +1284,7 @@ def explanation_summary(record):
         if "full_node_context_status" in fast or advisory is not None:
             summary["fast_assistance"]["full_node_context"] = _full_node_projection(
                 advisory, fast.get("full_node_context_status", "unknown"),
-                fast["dependency_outcome"]["knowledge"])
+                fast["dependency_outcome"]["knowledge"], fast.get("full_node_context_origin"))
     if GUIDANCE_FIELD in r:
         summary[GUIDANCE_FIELD] = public_guidance(r[GUIDANCE_FIELD])
     if omitted:
@@ -1679,7 +1776,9 @@ def read_recent_incidents(raw):
         for row in v["incidents"]:
             _shape(row, ("incident_id", "state", "first_seen", "last_seen", "count", "most_severe",
                          "edge_would", "policy_reason", "technique_ids", "explanation"),
-                   ("evidence_stored",))
+                   ("evidence_stored", "full_node_trace"))
+            if "full_node_trace" in row:
+                read_full_node_trace(row["full_node_trace"])
             if "evidence_stored" in row and row["evidence_stored"] is not False:
                 return None
             ident = row["incident_id"]

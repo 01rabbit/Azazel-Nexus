@@ -805,12 +805,17 @@ def read_fast_assistance(value):
         'dependency_outcome', 'observations', 'hypotheses', 'unknowns', 'next_checks',
         'knowledge', 'handoff', 'reasoning_trace'}
     optional_keys = {'fabric_knowledge_context_advisory', 'full_node_context_status',
-                     'full_node_context_received_at'}
+                     'full_node_context_received_at', 'full_node_context_origin'}
     require(type(value) is dict and required_keys <= set(value)
             and set(value) <= required_keys | optional_keys)
     if 'full_node_context_status' in value:
         require(type(value['full_node_context_status']) is str
                 and value['full_node_context_status'] in {'not_queried', 'received', 'unavailable'})
+    if 'full_node_context_origin' in value:
+        # Written by explaind into its own record only (never by M.I.O.).
+        require(type(value['full_node_context_origin']) is str
+                and value['full_node_context_origin'] in {
+                    'observation_rule_v1', 'observation_rule_v1_repeat', 'none'})
     if 'full_node_context_received_at' in value:
         # Written by locald's observation-origin request only, and only for a
         # received response: an ISO UTC instant, never a caller-supplied claim.

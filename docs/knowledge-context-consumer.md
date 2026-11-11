@@ -102,6 +102,38 @@ is unchanged. Success and unclassified failures carry none.
 
 Events never contain exception text, the question or any response fragment.
 
+## Recorded Full-node reference: row trace and reader (unit D)
+
+The explainer's recent rows may carry an optional row-level key
+`full_node_trace`; the reader accepts rows with and without it, and
+`explanation.fast_assistance.full_node_context` may carry an optional
+`query_origin` (`observation_rule_v1`, `observation_rule_v1_repeat`, `none`),
+which explaind copies from the record's `full_node_context_origin`. Old rows
+have neither and read unchanged. A row that has a malformed trace refuses the
+whole snapshot, as any other unknown or invalid row key does.
+
+The trace has exactly four keys: `transition_query` (`queried`, `repeat`,
+`no_candidate`, `rule_absent`, `pending`, `not_explained`, `closed`),
+`last_attempt` (null or `attempted_at`, `result`, `technique_ids`),
+`last_receipt` (null, or the nine closed projection fields with `outcome`
+`complete`/`partial`/`stale`, plus `received_at` and `technique_ids`) and
+`observed_sequence` (an internal value used only to decide whether a late
+explanation belongs to the row's latest transition). `observed_sequence` is
+not copied to the status view, the handoff package or a peer; it is present in
+the ui's recent copy file (an internal value, not a secret, which no view
+shows). The trace is kept for the ui and operator display only; it is never an
+input to a candidate decision, a frame, a request, an M.I.O. input, a record or
+the current-explanation fields.
+
+`/api/view` rows gain one closed word, `full_node_reference`, judged at the
+view's `as_of`: `not_recorded` (no trace), `none` (no receipt), `unknown`
+(no usable judging time), `expired` (judging time at or after `expires_at`),
+`set_changed` (the receipt's technique set differs from the row's, order
+ignored) and `in_window`. `in_window` means only: not past its expiry at
+the judging time and queried for the same set as now. It is an unverified
+advisory, not the answer to the current transition, and not an upgrade of
+`partial` or `stale`.
+
 ## Process boundary
 
 Ordinary `mio.local.assess` requests still arrive at `azazel-mio-locald` over
