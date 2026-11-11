@@ -762,10 +762,8 @@ class MioEntryService:
         if transition is None or not transition["technique_ids"]:
             raise RequestRefused(Refusal.MALFORMED_FRAME, "edge_transition_context")
         remaining = deadline_at - self.router.monotonic() - ENTRY_DELIVERY_RESERVE_MS / 1000
-        self.local.last_observe_timing = None
-        fast = self.local.observe_context(frame, deadline_s=remaining)
+        fast, timing = self.local.observe_context_timed(frame, deadline_s=remaining)
         fast = read_fast_assistance(fast)
-        timing = getattr(self.local, "last_observe_timing", None)
         reply = {"outcome": "context_observed", "fast_assistance": fast}
         # Fixed keys, integer milliseconds, no incident data: success, delay
         # and refusal can be measured by the caller without a ledger write.

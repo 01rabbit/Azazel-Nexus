@@ -95,12 +95,11 @@ def ledger_rows(service):
 def stub_relay(service, monkeypatch, result=None):
     calls = []
 
-    def observe_context(frame, *, deadline_s):
+    def observe_context_timed(frame, *, deadline_s):
         calls.append((frame, deadline_s))
-        service.local.last_observe_timing = {"context": "received", "broker_ms": 12, "total_ms": 30}
-        return result or good_fast("received")
+        return result or good_fast("received"), {"context": "received", "broker_ms": 12, "total_ms": 30}
 
-    monkeypatch.setattr(service.local, "observe_context", observe_context, raising=False)
+    monkeypatch.setattr(service.local, "observe_context_timed", observe_context_timed, raising=False)
     return calls
 
 
@@ -424,3 +423,27 @@ def test_real_core_unavailable_rerun_matches_advise_outside_full_fields(monkeypa
     observed = reply["fast_assistance"]
     assert observed["full_node_context_status"] == "unavailable"
     assert comparable(observed) == comparable(advise)
+
+
+def test_timing_is_local_to_each_request(monkeypatch):
+    """Review O1: two interleaved requests keep their own timing (no shared attribute)."""
+    import threading
+    gate = threading.Barrier(2)
+
+    def exchange(leaf, account, verb, arguments, *, payload=None, deadline_s):
+        gate.wait(timeout=5)                                   # both are inside before either returns
+        return {"outcome": "context_observed", "fast_assistance": good_fast("received"),
+                "timing": {"context": "received", "broker_ms": arguments["deadline_ms"],
+                           "total_ms": arguments["deadline_ms"]}}
+
+    monkeypatch.setattr(client, "_exchange", exchange)
+    local = client.LocalSocketClient()
+    frame, out = obs_frame(), {}
+
+    def run(ms):
+        out[ms] = local.observe_context_timed(frame, deadline_s=ms / 1000)[1]
+
+    threads = [threading.Thread(target=run, args=(ms,)) for ms in (100, 200)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert out[100]["broker_ms"] == 100 and out[200]["broker_ms"] == 200
