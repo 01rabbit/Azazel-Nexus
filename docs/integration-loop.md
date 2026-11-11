@@ -590,7 +590,11 @@ nothing in intake, detection or Edge's observe-only decisions.
   `opened` transition more than one hour past `first_seen` is dropped and
   counted as `stale_skipped`. At most six attempts occur in any rolling
   monotonic minute. A resumed cursor conservatively waits 60 seconds before
-  further calls, so restarting cannot reset that budget. The wait applies only when a checkpoint exists and covers every queued candidate (resumed, escalation and new openings); polling, checkpointing, the recent list and audit forwarding continue meanwhile, and status exposes no remaining time. Record append precedes
+  further calls, so restarting cannot reset that budget. The wait applies only
+  when a checkpoint exists and covers every queued candidate (resumed,
+  escalation and new openings); polling, checkpointing, the recent list and
+  audit forwarding continue meanwhile, and status exposes no remaining time.
+  Record append precedes
   cursor checkpoint: a crash between the two can duplicate the last explanation
   (at-least-once processing), without affecting Edge.
 - **Frame and privacy.** Frames use exactly `read_frame`'s four fields, with

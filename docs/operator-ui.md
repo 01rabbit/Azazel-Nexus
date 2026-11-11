@@ -210,10 +210,12 @@ one of them to look wrong.
 Shortly after `azazel-incident-explaind` restarts with a checkpoint, the
 explainer list may show it as behind (pending work) while the time of the last
 explanation does not move. That is the designed 60-second wait of the rolling
-rate budget, not a fault, and the rows already shown do not change. If it
-continues well beyond a minute, treat it as a different cause and look at the
-chain, storage and M.I.O. indicators and the recovery steps in
-[operations](operations.md). The page does not estimate the remaining time.
+rate budget, not a fault; the restart itself does not alter the rows already
+shown, and they keep updating from new transitions. If it continues well
+beyond a minute, treat it as a different cause: check that the explainer
+snapshot is still fresh, the storage indicator, and the refusal counts, with
+the recovery steps in [operations](operations.md). The page does not estimate
+the remaining time.
 
 ### When a refresh fails
 

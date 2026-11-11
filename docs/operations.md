@@ -783,13 +783,17 @@ rolling six-per-minute budget as fully used and waits 60 seconds before the
 next explanation attempt; a restart cannot reset that budget. During the wait
 status shows `pending` rising (or unchanged) and `last_explained_at` not
 advancing, and this is expected. Only explaining stops: ingest, checkpoints,
-the recent list, close handling, audit forwarding and status writes continue,
-and existing explanations and handoff packages are unchanged. A first start or
-a start after the cursor reset above has no checkpoint and does not wait. If
-`pending` stays above 0 and `last_explained_at` does not advance well beyond a
-minute, the cause is something else: check `chain_broken`, `storage_failed`,
-`mio_available` and the unit's journal. Status carries no restart time or
-remaining wait, so none is shown.
+the recent list, close handling, audit forwarding and status writes continue;
+recorded explanations are not altered by the restart, and recent rows keep
+updating from new transitions. A first start or a start after the cursor reset
+above has no checkpoint and does not wait. If `pending` stays above 0 and
+`last_explained_at` does not advance well beyond a minute, the cause is
+something else: check that status's `written_at` is still fresh (the unit's
+state and journal), `storage_failed`, and `refused` for
+`explanation_segment_full` or `stale_skipped`. (An unavailable M.I.O. or a
+broken chain does not produce this picture: the explainer still records an
+explanation without content, and a broken chain shows as `cursor_lag`.)
+Status carries no restart time or remaining wait, so none is shown.
 
 **Rolling the explainer back past #392.** From #392 the checkpoint's pending
 entries carry Edge evidence pointers (digests and receive instants), and
