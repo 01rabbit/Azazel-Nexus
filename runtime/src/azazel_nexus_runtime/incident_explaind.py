@@ -555,7 +555,8 @@ class Explainer:
             e = row["explanation"]
             if e["state"] == "pending":
                 continue  # pending rows are not reduced (#427 section 5)
-            if "slow_analysis" in e and e["slow_analysis"] != _SLOW_REDUCED:
+            if ("slow_analysis" in e and e["slow_analysis"] != _SLOW_REDUCED
+                    and len(json.dumps(_SLOW_REDUCED)) < len(json.dumps(e["slow_analysis"]))):
                 row["explanation"] = e = {**e, "slow_analysis": dict(_SLOW_REDUCED)}
                 changed = True
                 if self._fits(rows):
@@ -577,7 +578,12 @@ class Explainer:
         try:
             value = build_recent_incidents(self._public_rows(), self.clock())
         except ValueError:
-            self._keep_window(None)
+            try:
+                self._keep_window(None)
+            except ValueError:
+                # Defensive only: the formal path cannot reach it; count one failed pass.
+                self.refuse("status_write_failed")
+                return
             try:
                 value = build_recent_incidents(self._public_rows(), self.clock())
             except ValueError:

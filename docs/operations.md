@@ -902,8 +902,10 @@ became `degraded` carries no failure code. None of this calls for removing the
 cursor. Only a window that still exceeded the bound with every row reduced would
 refuse a new incident (`refused.transition_refused`) or latch `storage_failed:
 true`, and the row limits rule that out today (twenty fully reduced rows with the
-largest traces measure about 30 KB). If it happens, follow the cursor removal
-procedure for `chain_broken` above.
+largest traces measure about 30 KB). If the window latches `storage_failed:
+true`, follow the cursor removal procedure for `chain_broken` above. A refused new
+incident alone (the window unchanged, no latch) needs no cursor removal: the ledger
+and the handoff still hold it.
 
 The intake's part ends with one line for the Deception Lite decoy
 (#196 P2). With the decoy socket open it reads

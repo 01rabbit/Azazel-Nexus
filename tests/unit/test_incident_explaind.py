@@ -1716,6 +1716,23 @@ def test_window_stays_within_bound_s5_pending_rows_with_slow_are_untouched(tmp_p
     assert e.refused["status_write_failed"] == 1
 
 
+def test_window_stays_within_bound_s5_twenty_minimum_rows_fit_well_under_the_bound():
+    """Pins a fact about the bound (design 6.4), not a daemon path: the library is called directly."""
+    from azazel_nexus.incident_explain import RECENT_BYTES, build_recent_incidents
+    from test_full_node_trace import _maximal_row
+    rows = []
+    for n in range(1, 21):
+        r = _maximal_row(n)                          # non-explanation fields and the largest trace stay
+        r["technique_ids"] = [f"T{1000 + i}" for i in range(8)]
+        r["explanation"] = {"state": "unavailable", "route": "unavailable", "outcome": "unavailable",
+                            "summary": "", "knowledge_refs": [], "failure_codes": ["status_write_failed"]}
+        rows.append(r)
+    value = build_recent_incidents(rows, 0)
+    assert len(value["incidents"]) == 20
+    size = len(json.dumps(value, allow_nan=False).encode())
+    assert size < RECENT_BYTES * 0.15, size          # about 10% when written
+
+
 def test_window_stays_within_bound_s5_ties_break_on_incident_id(tmp_path):
     from azazel_nexus.incident_explain import RECENT_BYTES
     pending = _pending_row(transition(incident_id=_Y))
