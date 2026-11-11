@@ -199,7 +199,8 @@ prerequisites and [hardware gates](hardware-gates.md) for HG-05.
 ### Full-node Knowledge Context broker
 
 The optional `azazel-knowledge-contextd.service` is shipped preset disabled
-and receives no activation grant in this build. The broker reads a
+and receives no activation grant until a signed activation policy names it
+(it is grantable since A1; no production policy does). The broker reads a
 root-owned commissioning bundle at start-up, but no bundle is placed, and
 there is no network address allowance or live credential. Bundle placement,
 activation, the address allowance and real credentials remain separate gates.
@@ -209,7 +210,11 @@ See [the Knowledge Context consumer boundary](knowledge-context-consumer.md)
 for the AF_UNIX process split and the credential, expiry, revocation and
 recovery decisions still required before live connection work. Its
 "Commissioning and credentials" section carries a read-only checklist of the
-start-up configuration to confirm before requesting activation.
+start-up configuration to confirm before requesting activation. Withdrawing a
+grant (drop the unit from the policy and re-sign) closes the next start only;
+a running broker needs `systemctl stop` or a reboot, and the next pass
+reports a containment failure until then. Roll back in this order: policy
+first, confirm closed on the next pass, then the release.
 
 ## 1. Resource envelopes
 

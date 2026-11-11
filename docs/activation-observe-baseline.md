@@ -491,6 +491,36 @@ Knowledge Lite operating entry to be completed.
   the head as it is then, and if the writer stops it is back only at the next
   boot (a same-boot `systemctl start` re-runs the pass, §10.2 M-5).
 
+**Change to decision 2, 2026-11-12 (A1, #395 preparation).** Adds
+`azazel-knowledge-contextd.service`, the optional Knowledge Context egress
+broker, to `ACTIVATION_UNIT_ALLOWLIST` and `activation_markers.GRANTABLE_UNITS`
+(`NON_GRANTABLE_MARKER_UNITS` stays, empty). It is SUPPORTING, loses its
+`knowledge_context_transport` wiring requirement, and is granted by the same
+lease, health, policy and commissioning-evidence checks as the other
+SUPPORTING units; `wired_capabilities()` is unchanged. Locald, remoted and
+fetchd stay excluded and a policy naming them is still refused as a whole.
+
+- *The bundle is not a grant input.* A grant only lets the unit start. With
+  no commissioned bundle (or a defective one) the broker starts and stays
+  closed (`knowledge-context-consumer.md`). The unit stays masked, preset
+  disabled and without an address allowance until a policy names it.
+- *Closing.* The pass has no StopUnit authority. Removing the unit from the
+  policy (re-signed), a lease that does not list it, or failed health or
+  commissioning evidence clears the marker and re-masks the unit on the next
+  pass, which only prevents a new start. A running broker is reported as a
+  containment failure (`RollbackFailed`) until the operator runs
+  `systemctl stop azazel-knowledge-contextd.service` or the node reboots; the
+  next pass then confirms it inactive.
+- *Order.* Introduce: install the release that carries this change first,
+  then sign a policy that names contextd. Withdraw: remove contextd from the
+  policy and re-sign, check on the next pass that it is closed, and only then
+  go back to an older release. An older release given a policy that names
+  contextd refuses that policy as a whole (allowlist), which stops the other
+  SUPPORTING units too.
+- *Rollback leaves nothing behind.* Markers live under `/run` and the pass
+  rebuilds markers and masks at every boot, so a rolled-back node carries no
+  contextd marker.
+
 ## 7. P2 readers (inert)
 
 Phase P2 adds the readers of §3 without wiring them; `az-activated` imports
@@ -503,7 +533,8 @@ none of them (P4 then wired them, §8; `tests/unit/test_activation_p4_wiring.py`
   canonical bytes themselves (sorted keys, no whitespace, **no trailing
   newline**); anything else is refused rather than normalized. `units` must be a subset
   of the code-fixed `ACTIVATION_UNIT_ALLOWLIST` (the five SUPPORTING loop
-  units and edge-core); `max_lease_seconds` ≤ 72 h and
+  units, edge-core, the reference service, the loop audit writer and, since
+  A1, the Knowledge Context broker); `max_lease_seconds` ≤ 72 h and
   `max_clock_skew_seconds` ≤ 300 are capped in code. `state_floors` and
   `resource_floors` use the field names of the bootstrap capacity and resource
   checks. Reusing them means the capacity floors measure
@@ -741,8 +772,8 @@ masked and not started.
 
 ### 8.1 P5: edge-core in the pass
 
-`activation_markers.GRANTABLE_UNITS` now holds the five SUPPORTING loop units
-and `azazel-edge-core.service`; it is still the one set behind the pass's
+`activation_markers.GRANTABLE_UNITS` now holds the five SUPPORTING loop units,
+`azazel-edge-core.service` and (A1) `azazel-knowledge-contextd.service`; it is still the one set behind the pass's
 policy check (`activation_pass.UNIT_SCOPE` is the same object), the tripwire
 and the marker writer, and it equals the policy's `ACTIVATION_UNIT_ALLOWLIST`.
 (Since #196 P1 it also holds the Deception Lite exposure units, tier

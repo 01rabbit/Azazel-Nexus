@@ -28,7 +28,7 @@ peer, client identity, CA and pin configured. The opt-in boolean is caller
 configuration; it is not a Context capability in the signed peer registry.
 The default-disabled broker composes that method behind the ordinary local path.
 It is enabled only by the root-owned commissioning bundle described below;
-live credentials are not supplied and activation remains withheld. Importing this module or installing the package
+live credentials are not supplied and no production policy names the unit. Importing this module or installing the package
 does not connect, load commissioned state, install a trust anchor, or alter
 service startup. The response is a bounded advisory object; it cannot grant
 authority or alter Edge's deterministic decision path.
@@ -83,9 +83,10 @@ Boundaries that this bundle does and does not settle:
   `refused` with a fixed `reason_code`, or `absent` when there is no bundle.
   Nothing falls back to another source.
 - Verification is not activation. A bundle that loads as commissioned makes the
-  broker able to send; it does not grant the unit. The grant for
-  `azazel-knowledge-contextd.service` comes only through the existing
-  activation path, and `wired_capabilities()` does not list Knowledge Context.
+  broker able to send; it does not grant the unit, and the bundle is not an
+  input to the grant. `azazel-knowledge-contextd.service` is grantable through
+  the existing activation path (a policy may name it, A1); the grant only
+  lets it start, and `wired_capabilities()` does not list Knowledge Context.
 
 ## Observation-origin query (technique-set/1)
 
@@ -647,14 +648,28 @@ satisfied by this software:
    back can also return an `expired` reference to `in_window`; this change adds
    no floor, and the item stays unresolved.
 7. The activation grant for `azazel-knowledge-contextd.service` is issued by
-   the existing activation path, not by editing the unit. A bundle that loads
-   as commissioned does not grant it, and Knowledge Context is not added to
-   `wired_capabilities()`.
+   the existing activation path, not by editing the unit: a signed policy
+   names the unit and the lease lists it. A bundle that loads as commissioned
+   does not grant it, an absent bundle does not withhold it, and Knowledge
+   Context is not added to `wired_capabilities()`.
 
 Stopping and recovery use mechanisms that already exist: the unit is preset
-disabled and starts only while its activation grant marker is present, so
-removing the grant through the activation path or stopping the unit returns
-FAST_ASSESS to `unavailable` (the request fails closed) with Knowledge Lite and
+disabled and starts only while its activation grant marker is present. The
+activation pass has no stop authority, so removing the grant (the unit
+dropped from the policy, a lease that does not list it, failed health or
+commissioning evidence) only prevents a new start: the marker is cleared and
+the unit re-masked on the next pass, and while the broker is still running
+that pass records a containment failure. The operator ends it with
+`systemctl stop azazel-knowledge-contextd.service` or a reboot; the next pass
+then confirms it inactive. Emergency stop: remove the unit from the policy
+and re-sign, then `systemctl stop`; stopping alone is undone by the next pass
+while the policy still names the unit. Introduce in this order: new release,
+then a policy naming contextd. Withdraw in this order: remove contextd from
+the policy and re-sign, confirm on the next pass that it is closed, then
+return to an older release (an older release refuses a policy that names
+contextd as a whole). Markers and masks are rebuilt by the pass at every
+boot, so none remain after a rollback. Either way, FAST_ASSESS returns to
+`unavailable` (the request fails closed) with Knowledge Lite and
 local assessment unchanged. The broker keeps no response cache, so there is nothing
 stale to clear after a restart. How a revoked or expired peer key is replaced
 is one of the open items above and is not defined here.
