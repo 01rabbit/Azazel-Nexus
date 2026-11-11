@@ -214,7 +214,8 @@ rate budget, not a fault. Recorded explanations are not changed by the
 restart and rows keep updating from new transitions. A handoff exported
 from this page cannot read the explanation ledger and reports
 `not_readable_by_principal` as before; see [operations](operations.md) for
-what a sudo export shows meanwhile. Only an asynchronous model proposal that was still running at the restart can change
+what a sudo export shows meanwhile. Only an asynchronous model proposal,
+whether still running or already completed before the restart, can change
 state: after restore its `slow_analysis` becomes degraded
 (`unavailable_after_restart`). If the behind state continues well beyond a
 minute, treat it as a different cause: check that the explainer card's

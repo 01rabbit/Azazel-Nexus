@@ -787,8 +787,9 @@ cannot reset that budget. During the wait the explainer's `status.json`
 `last_explained_at`) shows `pending` rising (or unchanged) and
 `last_explained_at` not advancing, and this is expected. A handoff exported
 meanwhile with sudo reports the AI assessment of an incident that has no
-recorded explanation yet as `explanation_pending`; an incident already
-explained keeps showing its recorded explanations. Only explaining stops:
+recorded explanation yet and whose recent row is still `pending` as
+`explanation_pending`; an incident already explained keeps showing its
+recorded explanations. Only explaining stops:
 ingest, checkpoints, the recent list, close handling, audit forwarding and
 status writes continue;
 recorded explanations are not altered by the restart, and recent rows keep
@@ -796,11 +797,11 @@ updating from new transitions. A first start or a start after the cursor reset
 above has no checkpoint and does not wait. If `pending` stays above 0 and
 `last_explained_at` does not advance well beyond a minute, the cause is
 something else: check that status's `written_at` is still fresh (the unit's
-state and journal), `storage_failed`, and `refused` (the text `status` lists only the top four) for
-`explanation_segment_full` or `stale_skipped`. (An unavailable M.I.O. or a
-broken chain does not produce this picture: the explainer still records an
-explanation without content, and a broken chain shows as `chain_broken` with
-the recovery hint above.)
+state and journal), `storage_failed`, and `refused` (the text `status` does
+not list every code) for `explanation_segment_full` or `stale_skipped`. (An
+unavailable M.I.O. does not produce this picture: the explainer still records
+an explanation without content. A broken chain stops ingest and shows as
+`chain_broken` with the recovery hint above.)
 Status carries no restart time or remaining wait, so none is shown.
 
 **Rolling the explainer back past #392.** From #392 the checkpoint's pending
