@@ -56,6 +56,7 @@ import hmac
 import io
 import json
 import os
+import re
 import secrets
 import socket
 import socketserver
@@ -74,6 +75,7 @@ from azazel_nexus.ui_login import (
     CODE_ALPHABET, CODE_LENGTH, CODE_TTL_S, SCHEMA as LOGIN_SCHEMA, login_code_path,
     normalize_code,
 )
+from azazel_nexus.incident_explain import OBSERVATION_FULL_CONTEXT_QUERY
 from azazel_nexus.ui_model import browser_json, project
 
 __all__ = ["main"]
@@ -556,7 +558,56 @@ class UiApp:
             route: (resources.files(__package__).joinpath("ui_static", name).read_bytes(), kind)
             for route, (name, kind) in STATIC_FILES.items()}
         self._view_lock = threading.Lock()
+        self._handoff_lock = threading.Lock()
         self._view_cache: Optional[tuple[float, bytes]] = None
+
+    def handoff_document(self, incident_id: str) -> bytes:
+        """One incident's handoff package for an authenticated viewer, or `Refused`.
+
+        Read-only: nothing is written. Built as the `ui` principal, which
+        reads only the UI's snapshot copies; the root-only ledgers are
+        reported as not readable. The same leak scans as the CLI run first.
+        """
+        from azazel_nexus import handoff
+
+        if not HANDOFF_ID.fullmatch(incident_id) or self.source.kind != "live":
+            raise Refused(404, "not_found")  # a fixture is another provenance
+        if not self._handoff_lock.acquire(blocking=False):
+            raise Refused(429, "handoff_busy")
+        try:
+            now = self.clock()
+            try:
+                package = handoff.build_package(incident_id, now=now, principal="ui")
+                files = handoff.encode_files(package)
+                texts = {name: raw.decode("utf-8") for name, raw in files.items()}
+                document = browser_json({
+                    "incident_id": incident_id, "generated_at": package["generated_at"],
+                    "principal_class": "ui", "package": package,
+                    "markdown": texts[handoff.MARKDOWN_NAME], "files": texts,
+                    "manifest": json.loads(files[handoff.MANIFEST_NAME]),
+                    "manifest_sha256": hashlib.sha256(files[handoff.MANIFEST_NAME]).hexdigest()})
+            except handoff.HandoffRefused as refused:
+                if refused.code == "incident_not_found":
+                    raise Refused(404, "not_found") from None
+                raise Refused(500, "handoff_refused") from None
+            except Exception:  # noqa: BLE001 - fixed code only
+                raise Refused(500, "handoff_refused") from None
+        finally:
+            self._handoff_lock.release()
+        if len(document) > HANDOFF_MAX_BYTES:
+            raise Refused(500, "handoff_too_large")
+        return document
+
+    def _capabilities(self) -> dict:
+        """Display control only, from the source kind alone. /api/handoff
+        decides 401/404 on its own and never reads this."""
+        kind = self.source.kind
+        if kind == "live":
+            return {"handoff": True,
+                    "full_context_from_observation": OBSERVATION_FULL_CONTEXT_QUERY}
+        if kind == "fixture":
+            return {"handoff": False, "full_context_from_observation": None}
+        return {"handoff": None, "full_context_from_observation": None}
 
     def view_document(self) -> bytes:
         now = self.clock()
@@ -569,13 +620,19 @@ class UiApp:
                     read["view"], origin=read["origin"], served_at=_now_iso(now),
                     setup=read["setup"], setup_reason=read["setup_reason"],
                     access=read["access"], read_reason=read["read_reason"],
-                    observers=read.get("observers")))
+                    observers=read.get("observers"),
+                    capabilities=self._capabilities()))
             except Exception:  # noqa: BLE001 - shown as a fixed code
                 document = browser_json(project(
                     None, origin={"kind": self.source.kind}, served_at=_now_iso(now),
-                    read_reason="internal_error"))
+                    read_reason="internal_error",
+                    capabilities=self._capabilities()))
             self._view_cache = (now, document)
             return document
+
+
+HANDOFF_ID = re.compile(r"inc-[0-9a-f]{16}", re.ASCII)
+HANDOFF_MAX_BYTES = 2 * 1024 * 1024
 
 
 # -- HTTP --------------------------------------------------------------------------
@@ -718,6 +775,11 @@ class UiHandler(BaseHTTPRequestHandler):
                 if self.app.sessions.get(self._cookie(SESSION_COOKIE), now) is None:
                     raise Refused(401, "login_required")
                 self._send(200, self.app.view_document(), "application/json; charset=utf-8")
+            elif route.startswith("/api/handoff/"):
+                if self.app.sessions.get(self._cookie(SESSION_COOKIE), now) is None:
+                    raise Refused(401, "login_required")
+                self._send(200, self.app.handoff_document(route[len("/api/handoff/"):]),
+                           "application/json; charset=utf-8")
             else:
                 raise Refused(404, "not_found")
         except Refused as refused:

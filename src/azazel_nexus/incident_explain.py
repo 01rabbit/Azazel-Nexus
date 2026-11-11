@@ -1862,3 +1862,8 @@ def read_explainer_status(raw):
         return v
     except (ValueError, TypeError, UnicodeError, RecursionError, OverflowError):
         return None
+
+
+# build_frame is fixed at P3 and this version generates no Full Context query
+# from an observation. The rule is undecided, so it stays disabled (U13 / R1).
+OBSERVATION_FULL_CONTEXT_QUERY = False

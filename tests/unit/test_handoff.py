@@ -1680,3 +1680,23 @@ def test_malformed_binding_still_has_a_safe_withhold_reason(root, mutation):
     assert shown['state'] == 'degraded' and shown['reason_code'] == 'binding_unverified'
     advisory = package(root)['ai_assessment']['slow_advisory']
     assert advisory['status'] == 'unavailable' and advisory['reason_code'] == shown['reason_code']
+
+
+@pytest.mark.parametrize("text", ["sha256:1f7e1545ee81", "bundle sha256:2a3b4c5d6e7f 参照",
+                                  "sha512:" + "1a" * 32, "sha256:1f7e1545ee81."])
+def test_digest_short_forms_are_not_host_ports(text):
+    from azazel_nexus.handoff import detect
+
+    assert "host_port" not in detect(text)
+
+
+@pytest.mark.parametrize("text", ["host:8080", "10.0.0.1:443", "example.internal:22",
+                                  "sha256:8080", "sha256:80 x", "foosha256:1f7e1545ee81",
+                                  "md5:1f7e1545ee81", "sha256x:1f7e1545ee81",
+                                  "sha256:1f7e1545ee81.example:22"])
+def test_ports_are_still_detected(text):
+    from azazel_nexus.handoff import detect
+
+    assert detect(text), text
+    if text != "10.0.0.1:443":
+        assert "host_port" in detect(text), text

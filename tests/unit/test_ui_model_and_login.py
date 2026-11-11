@@ -231,3 +231,13 @@ def test_the_epoch_used_above_is_the_one_the_dates_name():
     from datetime import datetime
 
     assert datetime.fromisoformat("2027-01-15T08:00:00Z").timestamp() == 1_800_000_000.0
+
+
+def test_capabilities_default_unknown_and_other_keys_unchanged():
+    old = ui_model.project(_demo(), origin={"kind": "live"}, served_at="t")
+    assert old["capabilities"] == {"handoff": None, "full_context_from_observation": None}
+    new = ui_model.project(_demo(), origin={"kind": "live"}, served_at="t",
+                           capabilities={"handoff": True, "full_context_from_observation": False})
+    assert new["capabilities"] == {"handoff": True, "full_context_from_observation": False}
+    assert {k: v for k, v in old.items() if k != "capabilities"} == \
+        {k: v for k, v in new.items() if k != "capabilities"}

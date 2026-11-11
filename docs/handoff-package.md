@@ -163,3 +163,107 @@ fixture は `tools/build_handoff_example.py` が作る: intake と同じ形式�
 - 監査記録は、インシデントの 1 時間前の日より前の segment があるとき、読んだ範囲の連続性だけを確かめる（`anchored: false`）。全体の検証は auditd の起動時検証による。
 - Knowledge の名前・要約・出典文は出さない。検証済み bundle の語彙と照合して出す方式は今後の課題。
 - 失敗時に残る未完成のディレクトリは自動では消さない（場所を表示する）。
+
+## Web retrieval (`GET /api/handoff/<incident_id>`)
+
+The read-only UI (`az-ui`) can return the same package to a logged-in viewer.
+It is a product path, not a second generator: it calls `build_package()` and
+`encode_files()` and so keeps the schema, the digest manifest and the leak
+scans of the CLI.
+
+* **Live node only.** A UI started with `--fixture` answers `404 not_found`
+  before anything is built: a package of another provenance is never returned.
+* **Authentication.** The existing session cookie, as for `/api/view`. No
+  valid session (never logged in, expired, or logged out) is `401
+  login_required`. The request is a `GET` with no side effect: nothing is
+  written, no CSRF token is needed or put in the URL. Every response,
+  including every error, carries `Cache-Control: no-store`. `POST` and other
+  methods are refused as for every other route.
+* **One at a time.** Generation is serialized by a non-waiting lock; a second
+  request while one runs is `429 handoff_busy`.
+* **Identifier.** Only `inc-` and 16 lowercase hexadecimal digits. `latest`,
+  paths, other lengths and anything else are `404 not_found`, the same fixed
+  answer as an identifier that is well formed but not in the UI's snapshot.
+  A query string is `400 query_or_fragment_refused`; a wrong `Host` is `421`.
+* **Authorization.** The package is built as principal `ui`. It reads only the
+  UI's snapshot copies (`/var/lib/azazel/run/ui-read/...`), which `azui` is
+  already permitted to open, and never falls back to the operator paths when a
+  copy is missing. The incident ledger, the explanation ledger, the audit
+  chain and the clock floor are root's; they are not opened, and each source
+  says `not_readable_by_principal`. Each snapshot carries its freshness, so a
+  stale copy is labelled. Guidance and binding are read back strictly as for
+  the CLI; a record that does not validate fails the request. No group,
+  privilege or output path is added.
+* **Display capabilities.** `/api/view` carries `capabilities.handoff` and
+  `capabilities.full_context_from_observation` (`null` = unknown). They are
+  display control derived from the source kind only (live or fixture). The
+  server judges `401` and `404` on every request independently and never reads
+  them. `full_context_from_observation` is `false` in this version: no Full
+  Context query is generated from an observation. It says nothing about
+  commissioning, grants, peers or past receipts. The package and manifest are
+  unchanged.
+* **Confidentiality.** `encode_files()` runs `scan_package()` and
+  `scan_markdown()` on the package, the Markdown and the manifest. A finding,
+  a serialization failure or any other error returns `500 handoff_refused`
+  with no content. A response above 2 MiB is `500 handoff_too_large`.
+* **Response.** JSON with `incident_id`, `generated_at`, `principal_class`
+  (`ui`), `files`, `package`, `markdown`, `manifest` and `manifest_sha256`.
+  `files` holds `handoff.json`, `handoff.ja.md` and `manifest.json` as UTF-8
+  strings exactly as `encode_files()` made them: saving each string as UTF-8
+  reproduces the bytes whose SHA-256 and size the manifest lists for the two
+  body files (`handoff.json`, `handoff.ja.md`); `manifest.json` itself is
+  checked against `manifest_sha256`. `package`,
+  `markdown` and `manifest` are conveniences for display. A receipt from an
+  earlier transition is not carried over; the package is rebuilt from the
+  current records on each request.
+* **Schema.** `generator.principal_class` may now be `ui`. For `ui` only,
+  `generator.command` is `null` (a string for `root` and `operator`) and a
+  new field `generator.entry` is the fixed word `ui_get_handoff`, so that the
+  record does not read as a runnable command. This is a type change of
+  `command` for that principal and an added field, not an unchanged shape.
+  The schema version stays `handoff-package/1` because the CLI's package is
+  not affected: the output of `root` and `operator` is byte-for-byte
+  unchanged (tested against fixed digests). A consumer must accept
+  `principal_class` `ui`, a `null` `command` and the extra `entry` field. The
+  web response returns the exact UTF-8 text of the three files in `files`;
+  a client should check the two body files against the manifest's SHA-256
+  and size, and `manifest.json` against `manifest_sha256`, before saving,
+  and save each string as UTF-8 without altering it.
+* **Errors.** `401 login_required`, `404 not_found`, `400
+  query_or_fragment_refused`, `421 host_refused`, `429 handoff_busy`,
+  `500 handoff_refused`, `500 handoff_too_large`; every body is
+  `{"error": code}`.
+
+### Reading `guidance_digest` and `playbook_digest`
+
+A package that carries deterministic guidance (`ai_assessment.guidance`) shows
+two digests, and they say different things.
+
+* `guidance_digest` is the SHA-256 of M.I.O.'s guidance vocabulary, returned by
+  `guidance_digest()` in M.I.O.'s `guidance.py`: the schema version, the
+  content kind, the topics, the patterns and the limits, all constants. It
+  does not depend on the incident or on the playbook text. Every guidance made by the same M.I.O.
+  build therefore has the same value, by design. It is not an incident
+  identifier and says nothing about whether a record belongs to an incident.
+* `playbook_digest` is the SHA-256 of the playbook content on M.I.O.'s side
+  and goes with the record's `playbook_id`. Different playbooks give different
+  values.
+* Nexus does not verify that a `playbook_id` and a `playbook_digest` belong
+  together. `read_guidance()` in `guidance_record.py` checks only the form of
+  each digest (`sha256:` followed by 64 lowercase hexadecimal digits); it neither recomputes a
+  digest nor compares digests with each other, and `bind_guidance()` does not
+  look at them. A swapped or altered `playbook_digest` of the right form passes
+  both checks. Read these two fields as what M.I.O. reported, not as checked.
+* The only incident check on a guidance is `bind_guidance()` (called from
+  `read_record` in `incident_explain.py`), and it is partial. It always
+  compares the guidance's handoff `incident_id` with the record's. It compares
+  `request_id`, `trace_id` and `frame_id` with the values derived from the
+  incident id and the sequence only when the record has an
+  `incident_sequence`. It compares the guidance's evidence references with the
+  record's only when the record has an evidence field. The evidence references
+  of the competing explanations are compared with the guidance's own handoff
+  `evidence_refs`, not with the incident's record. A mismatch does not refuse
+  the explanation record: the guidance alone is dropped and the record stays,
+  so a package can show an explanation without guidance. Where a check is
+  skipped, nothing else covers it; do not read a present guidance as proof that
+  it was checked against its incident in every respect.

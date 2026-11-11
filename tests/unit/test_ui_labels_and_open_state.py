@@ -106,3 +106,63 @@ def test_poll_behaviour_against_a_stub_dom(tmp_path, mode):
     assert "harness_error" not in result, result
     failed = [k for k, v in result.items() if k != "conn_debug" and v is not True]
     assert not failed and len(result) >= 1, result
+
+
+def test_handoff_card_uses_epoch_seq_and_labels():
+    import json
+    js, labels = _t("app.js"), json.loads(_t("labels.json"))
+    assert "state.epoch++" in js[js.index("function discardView"):js.index("function showRefused")]
+    fetch = js[js.index("function fetchHandoff"):js.index("function handoffCard")]
+    assert "epoch === state.epoch && seq === state.hseq" in fetch and "state.gen" not in fetch
+    assert "/api/handoff/" in fetch and "X-CSRF" not in fetch
+    for key in ("fetch", "busy", "not_found", "failed", "save_json", "save_md", "unexecuted", "reported_none", "time_note"):
+        assert labels["handoff"][key], key
+    assert "取得できませんでした" in labels["handoff"]["failed"]
+    assert set(labels["basis_titles"]) == {"observed", "reported", "mio_inference", "knowledge_ref",
+                                           "edge_decision", "execution_result"}
+    assert "not_queried" in labels["fullnode"]
+
+
+def test_handoff_save_uses_server_strings_and_checks_digest():
+    js = _t("app.js")
+    card = js[js.index("function handoffCard"):js.index("function short(")]
+    assert "JSON.stringify" not in card and 'd.files[spec[0]]' in card
+    assert "crypto.subtle.digest" in js and "照合" in card and "保存不可（契約不一致）" in _t("labels.json")
+    assert "r.status === 429" in js
+
+
+def test_knowledge_dependency_and_fullnode_vocabulary_is_labelled():
+    import json
+    labels = json.loads(_t("labels.json"))
+    assert {"not_queried", "received", "unavailable", "unknown"} <= set(labels["fullnode"])
+    assert {"available", "partial", "absent", "not_queried", "timeout", "expired", "rejected",
+            "unavailable", "unknown"} <= set(labels["kdep"])
+    assert "fast_assistance なし" in labels["handoff"]["fast_missing"]
+    assert "fullNodeStatus(fastAll)" in _t("app.js")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_handoff_card_behaviour_in_a_stub_dom(tmp_path):
+    """Legacy-layout fetch, stale seq/epoch/refusal handling, verified-only save, timeout with previous result."""
+    from azazel_nexus.ui_model import project
+    from azazel_nexus_runtime.ui_serve import browser_json
+
+    model = tmp_path / "model.json"
+    model.write_bytes(browser_json(project(None, origin={"kind": "fixture", "notice": "n"},
+                                           served_at="2026-11-10T00:00:00Z", read_reason="status_read_failed")))
+    out = subprocess.run(["node", str(Path(__file__).resolve().parents[2] / "tests" / "js" / "handoff_card.test.js"),
+                          str(STATIC / "app.js"), str(STATIC / "labels.json"), str(model)],
+                         capture_output=True, text=True, timeout=60, check=False)
+    result = json.loads(out.stdout.strip().splitlines()[-1])
+    assert "harness_error" not in result, result
+    assert len(result) == 8 and all(v is True for v in result.values()), result
+
+
+def test_incident_state_and_denied_labels_are_defined_and_apart_from_generic_words():
+    import json
+    labels = json.loads(_t("labels.json"))
+    assert labels["incident_states"] == {"open": ["◉", "未解決"], "closed": ["○", "終了（Edge 観測グループ終了）"]}
+    assert labels["incident_state_unknown"] == "不明" and labels["words"]["unknown"][0] != "未定義の語"
+    assert set(labels["denied_words"]) <= set(labels["words"])
+    assert labels["words"]["open"][0] == "観測中"  # generic words keep their meaning
+    assert len({t["mark"] for t in labels["tones"].values()}) == 5

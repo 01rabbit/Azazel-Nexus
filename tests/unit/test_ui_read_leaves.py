@@ -863,7 +863,7 @@ def test_slow_ui_renders_dispatch_and_fence_fields():
 
 def test_slow_ui_renders_binding_withhold_reason_and_recovery_in_native_card():
     script = (REPO / 'runtime/src/azazel_nexus_runtime/ui_static/app.js').read_text()
-    card = script[script.index('var slow = ex.slow_analysis;'):script.index('var refs = block("参照根拠")')]
+    card = script[script.index('var slow = ex.slow_analysis;'):script.index('var refs = block(bt("knowledge_ref"))')]
     for field in ('reason_code', 'reason_ja', 'incident_id', 'request_id', 'frame_id',
                   'template_version', 'created_at', 'expires_at', 'completeness',
                   'hypothesis_ids', 'advisory_refs', 'evidence_refs', 'valid_until'):

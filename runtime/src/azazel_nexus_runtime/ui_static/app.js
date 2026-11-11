@@ -15,7 +15,7 @@
   var UI_MODEL_SCHEMA = "azazel-nexus/ui-model/1";
   // gen: every login/logout/refusal/poll bumps it, so a response that arrives late never repaints.
   var state = { labels: null, csrf: null, loginToken: null, model: null,
-    lastOk: null, timer: null, announced: "", failing: false, open: {}, gen: 0, fail: null,
+    lastOk: null, timer: null, announced: "", failing: false, open: {}, gen: 0, fail: null, epoch: 0, hseq: 0, handoff: null,
     socLayout: false, incidentFilter: "all", incidentSort: "severity", selectedIncident: null };
 
   var LOGIN_ERRORS = {
@@ -56,6 +56,18 @@
     return { ja: entry[0], tone: entry[1], en: String(value) };
   }
 
+  /* Incident state (05 section 3b): its own symbols, apart from the data-state badge. Only incident views call this. */
+  function incidentState(value) {
+    var table = state.labels && state.labels.incident_states ? state.labels.incident_states : {};
+    var known = typeof value === "string" && Object.prototype.hasOwnProperty.call(table, value);
+    var node = el("span", "badge tone-" + (known ? "info" : "unknown") + " incident-state");
+    var m = el("span", "mark", known ? table[value][0] : "？");
+    m.setAttribute("aria-hidden", "true");
+    var ja = known ? table[value][1] : ((state.labels && state.labels.incident_state_unknown) || "不明");
+    add(node, m, el("span", "ja", ja), el("span", "en", value === null || value === undefined ? "null" : String(value)));
+    return node;
+  }
+
   function reasonText(code) {
     if (code === null || code === undefined) { return null; }
     var table = state.labels ? state.labels.reasons : {};
@@ -66,11 +78,13 @@
     var w = word(value);
     var tone = toneOverride || w.tone;
     var mark = state.labels && state.labels.tones[tone] ? state.labels.tones[tone].mark : "？";
+    var denied = state.labels && Array.isArray(state.labels.denied_words) && state.labels.denied_words.indexOf(value) !== -1;
+    if (denied) { mark = "⊘"; }
     var node = el("span", "badge tone-" + tone);
     var m = el("span", "mark", mark);
     m.setAttribute("aria-hidden", "true");
-    var toneWord = state.labels && state.labels.tones[tone] ? state.labels.tones[tone].ja : "不明";
-    add(node, m, el("span", "sr-only", toneWord + "："), el("span", "ja", w.ja), el("span", "en", w.en));
+    var toneWord = denied ? "権限なし" : state.labels && state.labels.tones[tone] ? state.labels.tones[tone].ja : "不明";
+    add(node, m, denied && w.ja === toneWord ? null : el("span", "sr-only", toneWord + "："), el("span", "ja", w.ja), el("span", "en", w.en));
     return node;
   }
 
@@ -511,13 +525,13 @@
     head.appendChild(hr); var tbody=el("tbody");
     rows.forEach(function (row) {
       var tr=el("tr"), d=row.edge_decision || {}, ex=row.explanation || {};
-      [when("時刻", row.last_seen), text(row.most_severe), badge(row.state), "would " + text(d.action), badge(ex.state)].forEach(function (value) {
+      [when("時刻", row.last_seen), text(row.most_severe), incidentState(row.state), "would " + text(d.action), badge(ex.state)].forEach(function (value) {
         var td=el("td"); if (typeof value === "object") td.appendChild(value); else td.textContent=value; tr.appendChild(td);
       });
       var td=el("td"), button=el("button", null, "根拠を見る"); button.type="button";
       button.dataset.focusKey="incident:" + row.incident_id;
       button.setAttribute("aria-pressed", String(state.selectedIncident === row.incident_id));
-      button.addEventListener("click", function () { state.selectedIncident=row.incident_id; render(); var box=$("soc-incident-detail"); if(box)box.focus(); });
+      button.addEventListener("click", function () { if (state.selectedIncident !== row.incident_id) { state.hseq++; state.handoff = null; } state.selectedIncident=row.incident_id; render(); var box=$("soc-incident-detail"); if(box)box.focus(); });
       add(td,button); add(tr,td); tbody.appendChild(tr);
     });
     add(table,caption,head,tbody); add(wrap,table); add(panel,controls,wrap);
@@ -670,6 +684,242 @@
   /* One citation (#362): what it cites, and -- when the row carries them --
      the bundle it came from, its generation, freshness, lookup time and
      source. A row written before #362 says those were not recorded. */
+  function bt(kind) {
+    var t = state.labels && state.labels.basis_titles; return t && t[kind] ? t[kind] : kind;
+  }
+  function hl(key) {
+    var t = state.labels && state.labels.handoff; return t && t[key] ? t[key] : key;
+  }
+
+  /* Why Knowledge full node / dependency has no answer; "not queried" is never shown as normal. */
+  function fullNodeStatus(fast) {
+    var node = el("div", "small");
+    if (!fast) { node.appendChild(el("p", null, hl("fast_missing"))); return node; }
+    var full = fast.full_node_context || {};
+    var code = fast.full_node_context_status !== undefined ? fast.full_node_context_status : full.full_node_context_status;
+    var dep = fast.knowledge_dependency;
+    function line(head, group, value) {
+      var table = state.labels && state.labels[group] ? state.labels[group] : {};
+      var p = el("p", null);
+      var ja = value === undefined || value === null ? "不明（記録なし。正常という意味ではありません）" :
+        Object.prototype.hasOwnProperty.call(table, value) ? table[value] : "（未登録：" + text(value) + "）";
+      add(p, el("span", null, head + "：" + ja + " "), el("span", "en", text(value)));
+      return p;
+    }
+    add(node, line("フルノード照会", "fullnode", code), line("Knowledge 依存", "kdep", dep));
+    return node;
+  }
+
+  // -- handoff card (GET /api/handoff/<id>, display and save only) ---------------
+
+  function saveBlob(name, body, type) {
+    var blob = new Blob([body], { type: type });
+    var url = URL.createObjectURL(blob);
+    var a = el("a"); a.setAttribute("href", url); a.setAttribute("download", name); a.rel = "noopener";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  var HANDOFF_TIMEOUT_MS = 20000;
+  var HANDOFF_FILES = ["handoff.json", "handoff.ja.md", "manifest.json"];
+
+  function sha256Hex(body) {
+    var bytes = new TextEncoder().encode(body);
+    return crypto.subtle.digest("SHA-256", bytes).then(function (buf) {
+      return { hex: Array.prototype.map.call(new Uint8Array(buf), function (x) { return (x < 16 ? "0" : "") + x.toString(16); }).join(""), size: bytes.length };
+    });
+  }
+
+  /* Every file the server sent must match the manifest (sha256 and size) and the manifest itself must match
+     manifest_sha256, before any save button is enabled. Resolves to {ok, reasons[]}. */
+  function verifyHandoff(d) {
+    var reasons = [], f = d.files, entries = [];
+    if (!f || typeof f !== "object" || HANDOFF_FILES.some(function (n) { return typeof f[n] !== "string"; })) {
+      return Promise.resolve({ ok: false, contract: true, reasons: ["files に 3 ファイル（handoff.json／handoff.ja.md／manifest.json）が揃っていない"] });
+    }
+    if (!window.crypto || !crypto.subtle || typeof TextEncoder === "undefined") {
+      return Promise.resolve({ ok: false, reasons: ["この環境では sha256 を計算できない"] });
+    }
+    return Promise.all(HANDOFF_FILES.map(function (n) { return sha256Hex(f[n]); })).then(function (r) {
+      try { var parsed = JSON.parse(f["manifest.json"]); entries = parsed && Array.isArray(parsed.files) ? parsed.files : []; }
+      catch (e) { reasons.push("manifest.json を読めない"); }
+      HANDOFF_FILES.forEach(function (n, i) {
+        if (n === "manifest.json") {
+          if (r[i].hex !== d.manifest_sha256) { reasons.push("manifest.json の sha256 が manifest_sha256 と一致しない"); }
+          return;
+        }
+        var e = entries.filter(function (x) { return x && x.name === n; })[0];
+        if (!e) { reasons.push(n + " の manifest エントリが無い"); }
+        else if (e.sha256 !== r[i].hex) { reasons.push(n + " の sha256 が一致しない"); }
+        else if (e.bytes !== r[i].size) { reasons.push(n + " の大きさが一致しない"); }
+      });
+      return { ok: reasons.length === 0, reasons: reasons };
+    }, function () { return { ok: false, reasons: ["sha256 の計算に失敗した"] }; });
+  }
+
+  /* The target incident is fixed when the request is made (the card's own row). The response is applied only
+     while epoch, seq and that target are all still current; a refusal obeys the same rule before it changes anything. */
+  function fetchHandoff(id) {
+    if (!/^inc-[0-9a-f]{16}$/.test(id)) { return; }
+    var prev = state.handoff && state.handoff.id === id ? (state.handoff.status === "ok" ? state.handoff : state.handoff.prev) : null;
+    var seq = ++state.hseq, epoch = state.epoch;
+    state.handoff = { id: id, status: "busy", prev: prev || null };
+    render();
+    function mine() { return epoch === state.epoch && seq === state.hseq && state.handoff !== null && state.handoff.id === id; }
+    function settle(status, data) {
+      if (!mine()) { return; }
+      state.handoff = { id: id, status: status, data: data, prev: status === "ok" ? null : prev || null, at: Date.now(), verify: status === "ok" ? null : undefined };
+      render();
+      if (status !== "ok") { return; }
+      var held = state.handoff;
+      verifyHandoff(data).then(function (v) { if (mine() && state.handoff === held) { held.verify = v; render(); } });
+    }
+    var options = { method: "GET", credentials: "same-origin", cache: "no-store", redirect: "error",
+      referrerPolicy: "no-referrer", headers: { "Accept": "application/json" } };
+    var timer = null;
+    if (typeof AbortController === "function") {
+      var controller = new AbortController();
+      options.signal = controller.signal;
+      timer = setTimeout(function () { controller.abort(); }, HANDOFF_TIMEOUT_MS);
+    }
+    fetch("/api/handoff/" + id, options).then(function (response) {
+      return response.json().then(function (data) { return { status: response.status, data: data }; },
+        function () { return { status: response.status, data: null, invalid: true }; });
+    }).then(function (r) {
+      if (timer) { clearTimeout(timer); }
+      if (!mine()) { return; }
+      if (r.status === 401) { showLogin("セッションが終了しました。もう一度ログインしてください。"); return; }
+      if (r.status === 403 || r.status === 421) { showRefused(r.status); return; }
+      if (r.status === 200 && !r.invalid && r.data && r.data.incident_id === id && r.data.package && typeof r.data.markdown === "string" &&
+          r.data.manifest && typeof r.data.manifest_sha256 === "string" &&
+          r.data.package.incident && r.data.package.incident.incident_id === id && r.data.manifest.incident_id === id) { settle("ok", r.data); }
+      else if (r.status === 404) { settle("not_found"); }
+      else if (r.status === 429) { settle("busy429"); }
+      else { settle("failed"); }
+    }, function () { if (timer) { clearTimeout(timer); } settle("network"); });
+  }
+
+  function rowBindingId(row) {
+    var ex = row.explanation || {};
+    var b = ex.slow_analysis && ex.slow_analysis.binding;
+    return b && typeof b.request_id === "string" ? b.request_id : null;
+  }
+
+  function isoSeconds(v) {
+    if (typeof v !== "string") { return null; }
+    var m = /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(\.\d+)?(Z|[+-](\d\d):(\d\d))$/.exec(v);
+    if (!m) { return null; }
+    var y = parseInt(m[1], 10), mo = parseInt(m[2], 10), d = parseInt(m[3], 10);
+    var hh = parseInt(m[4], 10), mi = parseInt(m[5], 10), ss = parseInt(m[6], 10);
+    var leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+    var dim = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if (mo < 1 || mo > 12 || d < 1 || d > dim[mo - 1] || hh > 23 || mi > 59 || ss > 59) { return null; }
+    if (m[9] !== undefined && (parseInt(m[9], 10) > 23 || parseInt(m[10], 10) > 59)) { return null; }  // offset hh:mm (m[8] is the whole zone)
+    var t = Date.parse(v);
+    return typeof t === "number" && isFinite(t) ? Math.floor(t / 1000) : null;
+  }
+
+  /* Returns the label key: match_full / match_nobinding / match_diff / match_unverifiable. No coercion of values. */
+  function handoffMatch(row, pkg) {
+    var inc = pkg.incident, obs = pkg.observed_facts && pkg.observed_facts.summary, tm = pkg.time;
+    if (!inc || !obs || !tm) { return "match_unverifiable"; }
+    var rs = typeof row.state === "string" ? row.state : null, rl = typeof row.last_seen === "number" && isFinite(row.last_seen) ? Math.floor(row.last_seen) : null;
+    var rc = typeof row.count === "number" && isFinite(row.count) ? row.count : null, rm = typeof row.most_severe === "number" && isFinite(row.most_severe) ? row.most_severe : null;
+    var pl = isoSeconds(tm.last_seen);
+    var ps = typeof inc.state === "string" ? inc.state : null;
+    var pc = typeof obs.count === "number" ? obs.count : null, pm = typeof obs.most_severe === "number" ? obs.most_severe : null;
+    if (rs === null || rl === null || rc === null || rm === null || ps === null || pl === null || pc === null || pm === null) { return "match_unverifiable"; }
+    if (rs !== ps || rl !== pl || rc !== pc || rm !== pm) { return "match_diff"; }
+    var slow = pkg.ai_assessment && pkg.ai_assessment.slow_advisory;
+    var pkgReq = slow && slow.binding && typeof slow.binding.request_id === "string" ? slow.binding.request_id : null;
+    var rowReq = rowBindingId(row);
+    if (pkgReq === null || rowReq === null) { return "match_nobinding"; }
+    return pkgReq === rowReq ? "match_full" : "match_diff";
+  }
+
+  function fullCapabilityLine() {
+    var c = state.model && state.model.capabilities;
+    var v = c && typeof c === "object" ? c.full_context_from_observation : null;
+    return el("p", "small", hl(v === false ? "full_query_off" : v === true ? "full_query_on" : "full_query_unknown"));
+  }
+
+  function handoffCard(row) {
+    var id = text(row.incident_id);
+    var h = state.handoff && state.handoff.id === id ? state.handoff : null;
+    var node = block("引継ぎ（取得と保存のみ・何も実行しません）");
+    node.id = "soc-handoff";
+    node.setAttribute("aria-busy", h && h.status === "busy" ? "true" : "false");
+    var caps = state.model && state.model.capabilities;
+    var can = caps && typeof caps === "object" ? caps.handoff : null;
+    if (can !== true) {
+      add(node, el("p", "small", hl(can === false ? "cap_off" : "cap_unknown")));
+      return node;
+    }
+    var button = el("button", "primary", hl("fetch"));
+    button.type = "button"; button.dataset.focusKey = "handoff-fetch:" + id;
+    if (h && h.status === "busy") { button.disabled = true; }
+    button.addEventListener("click", function () { fetchHandoff(id); });
+    add(node, button);
+    var status = el("p", "small", "状態：" + (!h ? hl("idle") : h.status === "busy" ? "◆ " + hl("busy") :
+      h.status === "ok" ? "● " + hl("ok") : h.status === "not_found" ? "？ " + hl("not_found") : h.status === "busy429" ? "◆ " + hl("busy_retry") : "■ " + hl("failed")));
+    status.setAttribute("role", "status");
+    node.appendChild(status);
+    var view = !h ? null : h.status === "ok" ? h : h.prev;
+    if (!view) { return node; }
+    if (view !== h) {
+      node.appendChild(el("p", "small warn", "以下は別時点の結果（取得時刻 " + new Date(view.at).toLocaleString("ja-JP") + "）です。今回の取得は成功していません。"));
+    }
+    var d = view.data, pkg = d.package || {}, m = d.manifest || {};
+    var ai = pkg.ai_assessment || {}, slow = ai.slow_advisory || {}, kn = pkg.knowledge || {};
+    var unknowns = Array.isArray(slow.unknowns) ? slow.unknowns.length : null;
+    var checks = Array.isArray(slow.next_checks) ? slow.next_checks.length : null;
+    var unconf = Array.isArray(pkg.unconfirmed) ? pkg.unconfirmed.length : null;
+    var dg = ai.deterministic_guidance || {}, dgv = dg.view && dg.view.summary && Array.isArray(dg.view.summary.required_checks) ? dg.view.summary.required_checks :
+      (dg.guidance && Array.isArray(dg.guidance.next_checks) ? dg.guidance.next_checks.filter(function (c) { return c && c.tier === "required"; }) : null);
+    var reqChecks = dgv ? dgv.length : null;
+    var aiText = slow.status !== "available" ? hl("ai_none") + (slow.status ? "（status " + text(slow.status) + "）" : "") :
+      (unknowns === null ? "不明" : unknowns + " 件") + "／" + (checks === null ? "不明" : checks + " 件");
+    var matchKey = handoffMatch(row, pkg);
+    var bindingText = hl(matchKey);
+    add(node, kv([["incident_id", d.incident_id], ["generated_at", d.generated_at], ["principal_class", d.principal_class],
+      [hl("lbl_unconfirmed"), unconf === null ? "不明" : unconf + " 件"], [hl("lbl_required"), reqChecks === null ? "不明" : reqChecks + " 件"],
+      [hl("lbl_ai"), aiText],
+      ["Knowledge 参照", kn.status ? (kn.status === "available" ? "あり（未検証・advisory_only）" : "なし／一部（status " + text(kn.status) + "）") : "不明"],
+      ["画面の行との突合せ（ID・観測値。保存物の hash 照合とは別）", bindingText],
+      ["manifest_sha256", short(d.manifest_sha256)]]), el("p", null, hl("unexecuted")));
+    var files = Array.isArray(m.files) ? m.files : [];
+    var ul = el("ul", "plain");
+    files.forEach(function (f) {
+      var li = el("li", null, text(f.name) + "（" + text(f.bytes) + " bytes）sha256 ");
+      var sh = el("code", null, short(f.sha256)); sh.title = text(f.sha256);
+      add(li, sh); ul.appendChild(li);
+    });
+    add(node, el("p", "small", "manifest（ファイル名・大きさ・sha256 先頭 12 桁。全文は桁にポインタを載せると表示）："), ul);
+    var v = view.verify;
+    if (v === null || v === undefined) { add(node, el("p", "small", "◆ 照合中…（照合が済むまで保存できません）")); return node; }
+    if (v.contract) { add(node, el("p", "small", "■ " + hl("no_save") + "（" + v.reasons.join("、") + "）")); return node; }
+    if (!v.ok) {
+      add(node, el("p", "small", "■ 照合に失敗したため保存できません。この資料を信用しないでください："), list(v.reasons));
+      return node;
+    }
+    var stamp = String(d.generated_at).replace(/[^0-9A-Za-z._-]/g, "-");
+    var base = "azazel-handoff-" + id + "-" + stamp;
+    var buttons = el("div", "actions");
+    [["handoff.json", ".json", "application/json", "save_json"], ["handoff.ja.md", ".ja.md", "text/markdown;charset=utf-8", "save_md"],
+      ["manifest.json", ".manifest.json", "application/json", "save_manifest"]].forEach(function (spec) {
+      var b = el("button", null, hl(spec[3])); b.type = "button";
+      b.dataset.focusKey = "handoff-save:" + id + ":" + spec[0];
+      b.addEventListener("click", function () { saveBlob(base + spec[1], d.files[spec[0]], spec[2]); });
+      buttons.appendChild(b);
+    });
+    if (matchKey === "match_diff") { add(node, el("p", "small warn", "▲ " + hl("match_diff"))); }
+    add(node, el("p", "small", "● 照合：本体 2 点（handoff.json・handoff.ja.md）が manifest の sha256・大きさと一致、manifest.json が manifest_sha256 と一致"), buttons,
+      el("p", "small", "保存はサーバーが返した文字列をそのまま UTF-8 で書き出します（作り直しません）。"));
+    return node;
+  }
+
+  function short(hex) { return typeof hex === "string" ? hex.slice(0, 12) : "不明"; }
+
   function citation(r) {
     var node = el("div", "citation");
     node.appendChild(el("p", null, text(r.technique_id) + " " + text(r.name) + "（claim " + text(r.claim_id) + "）"));
@@ -692,21 +942,21 @@
   function incidentCard(row) {
     var node = el("article", "card tone-info");
     node.appendChild(el("h3", null, "インシデント " + text(row.incident_id)));
-    var facts = block("観測事実");
-    add(facts, kv([["状態", badge(row.state)], ["最初の観測", when("時刻", row.first_seen)],
+    var facts = block(bt("observed"));
+    add(facts, kv([["状態", incidentState(row.state)], ["最初の観測", when("時刻", row.first_seen)],
       ["最後の観測", when("時刻", row.last_seen)], ["件数", row.count], ["重大度（最大）", row.most_severe],
       ["手法 ID", row.technique_ids],
       ["証拠の保存", row.evidence_stored === false ? "保存できなかった" : "保存の失敗なし"]]));
     var decision = row.edge_decision || {};
-    var judged = block("Edge の判断（would・未実行）");
+    var judged = block(bt("edge_decision"));
     add(judged, el("p", null, "Edge は「" + word(decision.action).ja + "」と判断しました（would・未実行）。"),
       el("span", "en", "Edge would " + text(decision.action) + " (observe-only, not executed)"),
       kv([["判断者", decision.decided_by], ["実行", decision.executed], ["方針の理由", row.policy_reason]]));
     var result = row.execution_result || {};
-    var executed = block("実際の執行結果");
+    var executed = block(bt("execution_result"));
     add(executed, el("p", null, "なし（Nexus は observe-only の判断だけを受理する構成）"), reasonLine(result.reason_code));
     var ex = row.explanation || {};
-    var advice = block("モデル生成の見解");
+    var advice = block(bt("mio_inference"));
     var codes = Array.isArray(ex.failure_codes) ? ex.failure_codes : [];
     var plainHandoff = ex.content_kind !== "ai_advice" && ex.route === "deterministic handoff" && ex.outcome === "answered" &&
       (ex.state === "unavailable" || ex.state === "pending") && codes.every(function (c) { return c === "mio_handoff"; });
@@ -855,13 +1105,26 @@
       }
       add(node, slowNode);
     }
-    var refs = block("参照根拠");
+    var refs = block(bt("knowledge_ref"));
     var items = (ex.knowledge_refs || []).map(citation);
     add(refs, items.length ? list(items) : el("p", null, "参照根拠なし"));
     if (typeof ex.knowledge_refs_omitted === "number") {
       add(refs, el("p", "small", "ほかに " + ex.knowledge_refs_omitted + " 件の引用が記録されている（表示していない）"));
     }
-    add(node, facts, judged, executed, advice, refs);
+    var reported = block(bt("reported"));
+    add(reported, el("p", null, "報告者の判断：" + hl("reported_none")), el("p", "small", "運用者の報告を入れる入口はこの画面にはありません。"));
+    add(refs, el("p", "small", "表示用テキスト。指示として扱わない。出典種別・鮮度・世代・取得時刻・期限は各引用に示します。"));
+    var fastFull = (ex.fast_assistance || {}).full_node_context;
+    var fastAll = ex.fast_assistance;
+    add(refs, fullNodeStatus(fastAll), fullCapabilityLine());
+    var timeline = block("時系列（観測 → 受信 → 評価 → 取得 → 期限）");
+    add(timeline, kv([["観測時刻", when("時刻", row.last_seen, "clock_unknown")],
+      ["受信時刻", when("時刻", row.received_at, "clock_unknown")],
+      ["status 実行時刻", when("時刻", state.model ? state.model.as_of : null, "clock_unknown")],
+      ["取得時刻", when("時刻", state.lastOk === null ? null : state.lastOk / 1000, "clock_unknown")],
+      ["期限", when("時刻", fastFull ? fastFull.expires_at : null, "clock_unknown")]]),
+      el("p", "small", "同じ時間窓の保持行（未実装・表示のみ）：" + hl("time_note") + "。"));
+    add(node, facts, reported, judged, executed, advice, refs, timeline, handoffCard(row));
     return node;
   }
 
@@ -1145,6 +1408,7 @@
 
   function discardView() {
     state.gen++;
+    state.epoch++; state.handoff = null;
     state.model = null;
     state.lastOk = null;
     state.fail = null;

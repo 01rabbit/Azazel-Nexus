@@ -828,5 +828,78 @@
       "not-found": "unit ファイルが見つからない",
       "masked": "masked（起動を禁止）"
     }
-  }
+  },
+  "handoff": {
+    "title": "引継ぎ",
+    "fetch": "引継ぎを取得",
+    "busy": "取得中…（引継ぎを生成しています）",
+    "idle": "未取得（ボタンを押すと、この端末の保存記録から引継ぎ資料を生成して取得します。何も実行せず、保存もしません）",
+    "ok": "取得済み",
+    "not_found": "引継ぎ記録が見つかりません（この起動では利用できない場合があります）",
+    "failed": "取得できませんでした",
+    "network": "取得できませんでした",
+    "save_json": "JSON を保存",
+    "save_md": "Markdown を保存",
+    "unexecuted": "未実行（OBSERVE、executable=false）：この資料は記録であり、実行指示ではありません",
+    "reported_none": "記録なし（入口未実装）",
+    "time_note": "時間的に近いだけで因果ではありません",
+    "clock_unknown": "不明（clock_unknown）",
+    "busy_retry": "生成中です。しばらくして再試行してください（「引継ぎを取得」で再試行できます）",
+    "no_save": "保存不可（契約不一致）：サーバーの応答に保存用の原文（files）が無いため、保存ボタンを出しません。上の要約表示のみです",
+    "fast_missing": "照会状態不明（fast_assistance なし）。正常という意味ではありません",
+    "save_manifest": "manifest.json を保存",
+    "cap_off": "この起動では引継ぎを取得できません",
+    "cap_unknown": "引継ぎの可否は不明",
+    "lbl_unconfirmed": "未確認事項（引継ぎ資料の unconfirmed）",
+    "lbl_required": "必須の確認（決定論案内）",
+    "lbl_ai": "AI 助言の未確認／確認候補",
+    "ai_none": "なし（AI 回答なし。未確認事項が無いという意味ではない）",
+    "match_full": "観測 4 項目一致（state・last_seen・count・most_severe。同一遷移・説明内容・真正性の証明ではない）",
+    "match_nobinding": "観測 4 項目一致／binding 照合不可（片側または両側に無し）",
+    "match_diff": "別時点: 画面の行と package の観測値が異なる。再取得してください",
+    "match_unverifiable": "照合不可（必要な欄の欠落・形式不正のため、画面の行と比べられない）",
+    "full_query_off": "観測起点の Full 照会: この版は生成しない（既定無効・規則未決）",
+    "full_query_on": "観測起点の Full 照会: 有効",
+    "full_query_unknown": "観測起点の Full 照会: 不明"
+  },
+  "fullnode": {
+    "not_queried": "未照会（Knowledge フルノードに問い合わせていません。正常という意味ではありません）",
+    "unavailable": "利用不能（Knowledge フルノードから回答を得られませんでした）",
+    "received": "回答受領（フルノードから助言を受け取りました。未検証の助言です）",
+    "unknown": "不明（照会状態を判定できません。正常という意味ではありません）"
+  },
+  "basis_titles": {
+    "observed": "◎ 観測事実",
+    "reported": "✎ 報告者の判断（未検証）",
+    "mio_inference": "◇ M.I.O. の判定（推論・助言のみ）",
+    "knowledge_ref": "▣ Knowledge 参照（出典つき・未検証・advisory_only）",
+    "edge_decision": "⚑ Edge の判断（would・未実行）",
+    "execution_result": "✔ 実行結果"
+  },
+  "kdep": {
+    "available": "利用可能",
+    "partial": "一部のみ",
+    "absent": "なし（未設定）",
+    "not_queried": "未照会（正常という意味ではありません）",
+    "timeout": "時間切れ",
+    "expired": "期限切れ",
+    "rejected": "拒否",
+    "unavailable": "利用不能",
+    "unknown": "不明"
+  },
+  "incident_states": {
+    "open": [
+      "◉",
+      "未解決"
+    ],
+    "closed": [
+      "○",
+      "終了（Edge 観測グループ終了）"
+    ]
+  },
+  "incident_state_unknown": "不明",
+  "denied_words": [
+    "permission_denied",
+    "not_read"
+  ]
 }
