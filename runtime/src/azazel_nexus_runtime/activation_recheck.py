@@ -86,6 +86,14 @@ _CONTEXTD_DEFINITION = next(d for d in CORE_UNITS if d.name == CONTEXTD_UNIT)
 _RETIREMENT_OUTCOMES = ("none", "retired", "resumed")
 
 
+#: The labels `contextd_verdict` gives a withhold (its own, and the library's
+#: `common_withholding_reason` / `lease_refusal` prefixes).
+_WITHHOLD_LABELS = frozenset({
+    "retirement_pending", "inputs_unavailable", "inputs_incomplete", "tier_not_supporting",
+    "wiring_absent", "health_not_established", "lease_absent", "lease_expired",
+    "lease_generation_mismatch", "outside_lease_scope"})
+
+
 @dataclass(frozen=True)
 class ContextdVerdict:
     """Whether the pass would grant the broker now, and why not."""
@@ -306,9 +314,12 @@ def run_recheck(
             if type(verdict) is not ContextdVerdict or type(verdict.granted) is not bool:
                 raise TypeError("unexpected verdict")
             granted, label = verdict.granted, verdict.label
-            if (type(label) is not str or type(verdict.reason) is not str
-                    or (granted and (verdict.reason != "granted" or label != "granted"))):
-                # The only grant the verdict produces is (True, "granted").
+            if type(label) is not str or type(verdict.reason) is not str:
+                raise TypeError("unexpected verdict")
+            # granted and label agree both ways: the one grant is (True, "granted");
+            # a withhold carries one of the labels a withhold really produces.
+            if granted != (verdict.reason == "granted" and label == "granted") or (
+                    not granted and label not in _WITHHOLD_LABELS):
                 raise TypeError("unexpected verdict")
         except Exception as exc:  # noqa: BLE001 - not granted: withdraw, exit 1
             print(f"az-activation-recheck: the verdict failed ({type(exc).__name__})",

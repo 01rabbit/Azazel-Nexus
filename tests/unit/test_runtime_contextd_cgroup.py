@@ -538,7 +538,8 @@ def test_a_look_alike_retirement_result_is_a_withhold(granted, outcome):
 
 @pytest.mark.parametrize("verdict", [
     ContextdVerdict(True, "bogus"), ContextdVerdict(True, "granted:extra"),
-    ContextdVerdict(True, 5), ContextdVerdict(False, 5)])
+    ContextdVerdict(True, 5), ContextdVerdict(False, 5), ContextdVerdict(False, "granted"),
+    ContextdVerdict(False, "made_up: x")])
 def test_a_verdict_that_does_not_match_what_a_grant_looks_like_is_a_withhold(
         granted, monkeypatch, verdict):
     monkeypatch.setattr(activation_recheck, "contextd_verdict", lambda *a, **k: verdict)
@@ -557,3 +558,29 @@ def test_a_duck_typed_granted_verdict_is_not_trusted(granted, monkeypatch):
     assert withdrawn(granted)
     [event] = [e for e in events_after(granted) if e["event_type"] == "activation.grant_withdrawn"]
     assert event["reason"] == "recheck:verdict_error"
+
+
+@pytest.mark.parametrize("reason,label", [
+    ("retirement_pending", "retirement_pending"),
+    ("lease_expired: the lease ran from a to b", "lease_expired"),
+    ("health_not_established: x", "health_not_established")])
+def test_a_real_withhold_keeps_its_label_in_the_record(granted, monkeypatch, reason, label):
+    monkeypatch.setattr(activation_recheck, "contextd_verdict",
+                        lambda *a, **k: ContextdVerdict(False, reason))
+    assert _rc(granted, None) == 0
+    assert withdrawn(granted)
+    [event] = [e for e in events_after(granted) if e["event_type"] == "activation.grant_withdrawn"]
+    assert event["reason"] == f"recheck:{label}"
+
+
+def test_a_failed_narrowing_is_named_on_stderr_and_the_original_is_raised(
+        queued, monkeypatch, capsys):
+    error = ValueError("original")
+    monkeypatch.setattr(activated, "retirement_pending", _boom(error))
+    monkeypatch.setattr(activated, "_narrow_final", _boom(OSError("secret detail")))
+    with pytest.raises(ValueError) as seen:
+        _pass(queued)
+    assert seen.value is error and isinstance(error.__cause__, OSError)
+    err = capsys.readouterr().err
+    assert ("az-activated the narrowing after an unexpected error failed (OSError)\n" in err)
+    assert "secret detail" not in err

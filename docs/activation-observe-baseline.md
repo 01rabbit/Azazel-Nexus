@@ -1144,14 +1144,16 @@ record or a status line never stands for more than the one it states.
   for "already withdrawn" and for `activation.grant_withdrawn`. It is read from
   one fixed file (cgroup v2, `/sys/fs/cgroup/system.slice/azazel-knowledge-contextd.service/cgroup.events`),
   walked from `/` one component at a time (`openat`, `O_NOFOLLOW`,
-  `O_DIRECTORY`). It is trusted only when the last `/proc/self/mountinfo` entry
-  with mount point `/sys/fs/cgroup` is `cgroup2` with mount root `/` and the
-  major:minor of the directory that was opened, and the reader's own
+  `O_DIRECTORY`). It is trusted only when the `mnt_id` of the opened `/sys/fs/cgroup` directory
+  (from `/proc/self/fdinfo`) names a `/proc/self/mountinfo` line that is `cgroup2`,
+  has mount root `/` and mount point `/sys/fs/cgroup`, and carries the device of
+  that directory (position in the file plays no part), and the reader's own
   `/proc/self/cgroup` is the single line `0::/system.slice/<name>.service`
   (systemd's cgroup root is then this namespace's root). `system.slice` must
   exist; only the broker's own directory may be absent, and then the answer is
-  `empty` only if the unit is `inactive` or `failed` and the mount entry, the
-  device and the reader's own cgroup read again afterwards are unchanged.
+  `empty` only if the unit is `inactive` or `failed`. Both that case and a
+  `populated 0` are checked again after the read: the mount ID, its mountinfo line,
+  the device and the reader's own cgroup must be unchanged.
   Anything else is `unknown`, which is neither empty nor quiet. No D-Bus
   property is added for it.
 - Traffic is closed: the broker's `IPAddress*` settings are enforced by a BPF
@@ -1177,6 +1179,14 @@ the broker's cgroup away from the fixed path (the loaded-unit check at grant tim
 rejects them, and later edits by root are outside this control), and a host whose
 cgroup root is not the namespace root (a container with the host cgroup namespace,
 cgroup v1) reads `unknown` and so cannot confirm any withdrawal.
+A root-level process that runs on its own can start a task or move one into the
+broker's cgroup right after the judgment; the cgroup reader cannot prevent that
+(root is inside the trust boundary of this control).
+The recheck's protection against unexpected errors covers the retirement and the
+verdict (their calls, results and fields); other steps of the recheck keep their
+own handling. On a host where the reader is structurally `unknown` (a mountinfo
+over its size limit, cgroup v1, a container with the host cgroup namespace), the
+recheck records `withdrawal_unconfirmed` every period and exits non-zero.
 `KeyboardInterrupt` and `SystemExit` are outside this containment: the narrowing
 catches `Exception` only. In the service's context SIGTERM is not turned into an
 exception; Python's default ends the process at once. What that leaves depends on
@@ -1184,10 +1194,12 @@ where the process is.
 
 - Before READY (the whole pass, up to the READY notification): fail-closed. READY
   is not sent, so `Requires=` fails the start job of every dependent (including a
-  held start job of the broker), and this boot's grant markers were removed at the
-  start of the pass, so the units' `ConditionPathExists=` refuses them. A broker
-  that is already running is not withdrawn by this; the next pass or the recheck
-  does that.
+  held start job of the broker). The units' `ConditionPathExists=` refuses them
+  once this boot's grant markers are removed, which the pass does first
+  (`reset_grant_markers`); a SIGTERM or `BaseException` before that point can leave
+  the markers of the previous pass in place, and then only the missing READY (and
+  the next pass) protects. A broker that is already running is not withdrawn by
+  this; the next pass or the recheck does that.
 - After READY has been sent, before or during its barrier: READY goes out before
   the barrier, and the grant markers of the decision are already written. If a
   SIGTERM, `SystemExit` or `KeyboardInterrupt` ends the process there, nothing is

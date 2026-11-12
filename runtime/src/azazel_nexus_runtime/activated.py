@@ -1836,6 +1836,8 @@ def _locked_pass(
                         # object is the one that comes out, with the narrowing chained
                         # to it, marked narrowed so no outer layer contains it again.
                         error.narrowed = True
+                        print("az-activated the narrowing after an unexpected error failed "
+                              f"({type(narrowing).__name__})", file=sys.stderr)
                         raise error from narrowing
                 raise
             if expired:
