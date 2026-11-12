@@ -650,7 +650,7 @@ NO_LOCK_NO_RECORD_MESSAGE = (
 
 
 def _contextd_aids(root: Path, *, now: str, actor: str, invocation_id: str,
-                   until: float, clock, sleep, record: bool, hold_state=None, fresh=None):
+                   until: float, clock, sleep, record: bool, hold_state=None, fresh):
     """`(withdrawn_for, clear_for, before_for)`: builders bound to a stop authority.
 
     `withdrawn_for(authority)` is the already-withdrawn test; `clear_for(authority)
@@ -852,7 +852,7 @@ def _run_once(
     aids = _contextd_aids(
         root, now=now, actor=actor, invocation_id=invocation_id,
         until=deadline + _AFTER_PHASES, clock=clock, sleep=sleep, record=True,
-        hold_state=hold_state)
+        hold_state=hold_state, fresh=fresh_manager)
     withdrawn = aids[0](stop_authority)
     # The hook the verdict's own mask, a rollback and a wider narrowing reach runs
     # while the bus session is still bound to the end of the PHASES, so its job
@@ -860,7 +860,8 @@ def _run_once(
     # a narrowing that rebinds to the end of the whole budget builds its own.
     phase_aids = _contextd_aids(
         root, now=now, actor=actor, invocation_id=invocation_id, until=deadline,
-        clock=clock, sleep=sleep, record=True, hold_state=hold_state)
+        clock=clock, sleep=sleep, record=True, hold_state=hold_state,
+        fresh=fresh_manager)
     release_job = phase_aids[2](stop_authority, manager)
     daemon = ActivationDaemon(
         generations=GenerationStore(root / "var/lib/azazel/generations"),

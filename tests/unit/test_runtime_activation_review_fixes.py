@@ -317,7 +317,7 @@ def test_a_mask_that_failed_once_is_masked_by_the_finalizer(stage):
     _flaky_mask(stage.manager, 1)
     stage.model.running = True
     with pytest.raises(WithdrawalUnconfirmed):
-        withdraw_contextd(
+        withdraw_contextd(fresh=None, 
             reason="t", manager=stage.manager, authority=authority(stage.model),
             root=stage.world.root, ledger=AuditLedger(stage.world.ledger_path), now=NOW,
             actor="t", invocation_id="1" * 32, clock=stage.clock, sleep=stage.clock.sleep)
@@ -333,7 +333,7 @@ def test_a_mask_that_failed_once_is_masked_by_the_finalizer(stage):
 def test_a_mask_that_never_works_is_recorded_as_not_masked(stage):
     _flaky_mask(stage.manager, 10)
     with pytest.raises(WithdrawalUnconfirmed):
-        withdraw_contextd(
+        withdraw_contextd(fresh=None, 
             reason="t", manager=stage.manager, authority=authority(stage.model),
             root=stage.world.root, ledger=AuditLedger(stage.world.ledger_path), now=NOW,
             actor="t", invocation_id="1" * 32, clock=stage.clock, sleep=stage.clock.sleep)
@@ -348,7 +348,7 @@ def test_removing_the_finalizer_is_caught(stage, monkeypatch):
                         lambda **kw: {"final_masked": False, "final_quiet": False})
     _flaky_mask(stage.manager, 1)
     with pytest.raises(WithdrawalUnconfirmed):
-        withdraw_contextd(
+        withdraw_contextd(fresh=None, 
             reason="t", manager=stage.manager, authority=authority(stage.model),
             root=stage.world.root, ledger=AuditLedger(stage.world.ledger_path), now=NOW,
             actor="t", invocation_id="1" * 32, clock=stage.clock, sleep=stage.clock.sleep)
@@ -509,7 +509,7 @@ def test_a_boot_ephemeral_mask_is_not_a_masked_broker(granted):
     # ... and a withdrawal that only reaches it is not confirmed
     stage.world.healthy = False
     with pytest.raises(WithdrawalUnconfirmed):
-        withdraw_contextd(
+        withdraw_contextd(fresh=None, 
             reason="t", manager=stage.manager, authority=guard, root=stage.world.root,
             ledger=AuditLedger(stage.world.ledger_path), now=NOW, actor="t",
             invocation_id="1" * 32, clock=stage.clock, sleep=stage.clock.sleep)
@@ -789,7 +789,7 @@ def test_a_job_read_that_fails_once_is_read_again(stage):
     guard = ContextdStopAuthority(stop=stage.model.stop, job=flaky,
                                   state=stage.model.active_state,
                                   file_state=stage.model.file_state_of)
-    withdraw_contextd(
+    withdraw_contextd(fresh=None, 
         reason="t", manager=stage.manager, authority=guard, root=stage.world.root,
         ledger=AuditLedger(stage.world.ledger_path), now=NOW, actor="t",
         invocation_id="1" * 32, clock=stage.clock, sleep=stage.clock.sleep)
@@ -1849,7 +1849,8 @@ def test_the_fresh_session_narrowing_uses_the_authority_of_the_fresh_session(
     (marker_dir / CTX).chmod(0o644)
     aids = activated._contextd_aids(
         fresh.world.root, now=NOW, actor="t", invocation_id="1" * 32,
-        until=fresh.clock() + 8.0, clock=fresh.clock, sleep=fresh.clock.sleep, record=True)
+        until=fresh.clock() + 8.0, clock=fresh.clock, sleep=fresh.clock.sleep, record=True,
+        fresh=None)
     with pytest.raises(RuntimeError, match="used its whole"):
         activated._narrow_final(
             DbusUnitManager(call=old_session), fresh.world.root, "used its whole",
@@ -1879,7 +1880,8 @@ def test_with_the_old_authority_the_fresh_narrowing_would_not_stop_the_broker(fr
 
     aids = activated._contextd_aids(
         fresh.world.root, now=NOW, actor="t", invocation_id="1" * 32,
-        until=fresh.clock() + 8.0, clock=fresh.clock, sleep=fresh.clock.sleep, record=True)
+        until=fresh.clock() + 8.0, clock=fresh.clock, sleep=fresh.clock.sleep, record=True,
+        fresh=None)
     with pytest.raises(RuntimeError):
         activated._narrow_final(
             DbusUnitManager(call=old_session), fresh.world.root, "x",
@@ -1971,7 +1973,7 @@ def test_a_full_withdrawal_replaces_a_pending_job_before_it_masks(queued):
     """The withdrawal itself (recheck, narrowing): job first, then mask and reload."""
     from azazel_nexus_runtime.activation_withdraw import withdraw_contextd as withdraw
     queued.manager.timeline.clear()
-    withdraw(reason="t", manager=queued.manager, authority=authority(queued.model),
+    withdraw(fresh=None, reason="t", manager=queued.manager, authority=authority(queued.model),
              root=queued.world.root, ledger=AuditLedger(queued.world.ledger_path),
              now=NOW, actor="t", invocation_id="1" * 32, clock=queued.clock,
              sleep=queued.clock.sleep)
@@ -2059,7 +2061,7 @@ def test_the_finalizer_replaces_the_job_when_the_withdrawal_fails_before_its_job
 
     monkeypatch.setattr(activation_withdraw, "remove_contextd_marker", fail)
     with pytest.raises(WithdrawalUnconfirmed):
-        withdraw_contextd(
+        withdraw_contextd(fresh=None, 
             reason="t", manager=queued.manager, authority=authority(queued.model),
             root=queued.world.root, ledger=AuditLedger(queued.world.ledger_path), now=NOW,
             actor="t", invocation_id="1" * 32, clock=queued.clock, sleep=queued.clock.sleep)
@@ -2072,7 +2074,7 @@ def test_the_finalizer_replaces_the_job_when_the_deadline_stops_the_job_stage(qu
     final deadline) still replaces the job first."""
     start = queued.clock()
     with pytest.raises(WithdrawalUnconfirmed):
-        withdraw_contextd(
+        withdraw_contextd(fresh=None, 
             reason="t", manager=queued.manager, authority=authority(queued.model),
             root=queued.world.root, ledger=AuditLedger(queued.world.ledger_path), now=NOW,
             actor="t", invocation_id="1" * 32, deadline=start - 1.0,
@@ -2529,8 +2531,8 @@ def test_each_step_may_use_its_own_fresh_session(poisoned):
 def test_a_narrowing_that_begins_broken_and_poisons_its_first_fresh_session_masks_on_a_second(
         poisoned):
     """The narrowing starts on a finished session, runs on a first fresh one, whose queued-job
-    settlement finishes it too: the masking completes on a second fresh session and the
-    replaced job is recorded exactly once."""
+    Job read finishes it too: the masking completes on a second fresh session and the
+    job's fate is recorded exactly once."""
     p = poisoned
     p.manager.call.broken = True
     first = TransportManager(p.model, enabled=[d.name for d in CORE_UNITS])
@@ -2557,8 +2559,49 @@ def test_a_narrowing_that_begins_broken_and_poisons_its_first_fresh_session_mask
     assert p.model.file_state == "masked"
     assert second.state(CTX) is UnitState.MASKED
     events = p.world.events()
-    # the held job's fate is recorded once (its replacement ran out of its allowance),
-    # never replaced a second time; the last record says the broker ended masked
-    assert [e["reason"] for e in events if e.get("reason") == "before_mask"] == ["before_mask"]
+    # The held job's fate is recorded once: its replacement ran out of its allowance
+    # (stage "job", reason "before_mask"). It is never replaced a second time, and the
+    # last record says the broker ended masked.
+    job_fate = [e for e in events if e.get("reason") == "before_mask"]
+    assert len(job_fate) == 1
+    assert job_fate[0]["event_type"] == "activation.withdrawal_unconfirmed"
+    assert job_fate[0]["stage"] == "job"
     assert not [e for e in events if e["event_type"] == "activation.queued_job_replaced"]
     assert events[-1]["final_masked"] is True
+
+
+def test_the_fresh_session_factory_has_no_default_anywhere():
+    """A call site that forgets the factory fails at once instead of silently losing the
+    fresh-session policy. A caller with no second session passes `fresh=None` explicitly."""
+    import inspect
+    for function in (activated._contextd_aids, activation_withdraw.withdraw_contextd,
+                     activation_withdraw._contain):
+        parameter = inspect.signature(function).parameters["fresh"]
+        assert parameter.default is inspect.Parameter.empty, function.__name__
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def test_run_once_narrowing_with_a_broken_start_masks_on_a_second_fresh_session(
+        edge, monkeypatch):
+    """_run_once's own narrowing (`_narrow_now`): the first fresh session is finished by the
+    Job read of the held job; the second one masks the broker."""
+    model = edge.model
+    first = TransportManager(model, enabled=[d.name for d in CORE_UNITS])
+    second = TransportManager(model, enabled=[d.name for d in CORE_UNITS])
+    queue = [(first, _transport_authority(first, model, edge.clock, poison_on="job")),
+             (second, authority(model))]
+    used = []
+
+    @contextlib.contextmanager
+    def fresh():
+        used.append(1)
+        yield queue[len(used) - 1]
+
+    def refuse(*args, **kwargs):
+        raise UnitOperationFailed("grant markers refused")
+
+    monkeypatch.setattr(activated, "write_grant_markers", refuse)
+    edge.manager.call.broken = True
+    with pytest.raises(RuntimeError):
+        _locked_edge(edge, fresh_manager=fresh)
+    assert len(used) == 2

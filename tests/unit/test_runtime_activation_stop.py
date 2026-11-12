@@ -372,7 +372,7 @@ def stage(lock_root):
 
 
 def _withdraw(stage, *, deadline=None, reason="recheck", authority_=None):
-    return withdraw_contextd(
+    return withdraw_contextd(fresh=None, 
         reason=reason, manager=stage.manager, authority=authority_ or stage.authority,
         root=stage.root, ledger=stage.ledger, now=NOW, actor="test",
         invocation_id="f" * 32, deadline=deadline, clock=stage.clock, sleep=stage.clock.sleep)

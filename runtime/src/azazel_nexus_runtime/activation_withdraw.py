@@ -191,7 +191,7 @@ def _record(ledger: AuditLedger, event: dict) -> None:
 def _contain(*, manager: UnitManager, authority: ContextdStopAuthority, root: Path,
              stop_sent: bool, give_up: Optional[float] = None,
              clock: Callable[[], float] = time.monotonic, settle=None,
-             fresh=None) -> dict:
+             fresh) -> dict:
     """Contextd-only finalizer: reach the masked, quiet state as far as possible.
 
     Marker removed (local, not a bus call), masked, reloaded, and one stop if
@@ -340,7 +340,7 @@ def withdraw_contextd(
     final_deadline: Optional[float] = None,
     bind_deadline: Optional[Callable[[float], None]] = None,
     sink: Optional[Callable[[dict], None]] = None,
-    fresh=None,
+    fresh,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict:
