@@ -444,6 +444,9 @@ class SystemdBusSession:
         self._admitted_owner = getattr(bus, "_azazel_systemd_owner", None)
         self.calls = SystemdUnitCalls(self._exchange)
         self._remaining: Optional[Callable[[], float]] = None
+        #: True after a call timed out or was cancelled: the session sends
+        #: nothing more and must be replaced.
+        self.broken = False
 
     def set_remaining(self, remaining: Optional[Callable[[], float]]) -> None:
         """Seconds left of the caller's budget; each call is limited to it."""
@@ -515,8 +518,12 @@ class SystemdBusSession:
                     pending = asyncio.all_tasks(loop)
                     for task in pending:
                         task.cancel()
-                    if pending:
-                        loop.run_until_complete(asyncio.wait(pending, timeout=_BUS_TIMEOUT_SECONDS))
+                    # The cleanup is charged to the caller's budget too: no
+                    # fixed ten seconds that nobody counted.
+                    left = (_BUS_TIMEOUT_SECONDS if remaining is None
+                            else max(0.0, min(_BUS_TIMEOUT_SECONDS, remaining())))
+                    if pending and left > 0:
+                        loop.run_until_complete(asyncio.wait(pending, timeout=left))
                 finally:
                     try:
                         loop.close()
@@ -601,6 +608,9 @@ class SystemdBusSession:
             signature=signature,
             body=list(body),
         )
+        if self.broken:
+            raise UnitOperationFailed(
+                "the bus session is finished after a call did not complete")
         timeout = _BUS_TIMEOUT_SECONDS
         if self._remaining is not None:
             timeout = min(timeout, self._remaining())
@@ -612,7 +622,7 @@ class SystemdBusSession:
                 asyncio.wait_for(self._bus.call(message), timeout)
             )
         except Exception as exc:  # noqa: BLE001 - translated at the trust boundary
-            self._drain()
+            self._poison()
             raise UnitOperationFailed(
                 f"systemd D-Bus call {member} did not complete"
             ) from exc
@@ -633,22 +643,27 @@ class SystemdBusSession:
             raise UnitOperationFailed("systemd D-Bus reply owner refused")
         return _Reply(reply.signature, reply.body)
 
-    def _drain(self) -> None:
-        """A call did not complete: cancel what is still pending and let it finish.
+    def _poison(self) -> None:
+        """A call did not complete: this session is finished.
 
-        `wait_for` has already cancelled the call it timed out; this cancels
-        anything else left on the loop and runs it to completion (bounded to a
-        second) before the loop is used again. A reply that arrives later for
-        the cancelled call is ignored by the client (its future is done), so
-        the session stays usable for the narrowing that may still be needed.
+        Pending work is cancelled and given a bounded moment to unwind (never
+        more than the time that is left), the bus is disconnected, and from
+        here on no call is sent on this session. A session is never reused
+        after a timeout or a cancellation: the caller narrows on a new one.
         """
+        self.broken = True
+        limit = 1.0 if self._remaining is None else max(0.0, min(1.0, self._remaining()))
         try:
             pending = asyncio.all_tasks(self._loop)
             for task in pending:
                 task.cancel()
-            if pending:
-                self._loop.run_until_complete(asyncio.wait(pending, timeout=1.0))
-        except Exception:  # noqa: BLE001 - best effort; the failure is already raised
+            if pending and limit > 0:
+                self._loop.run_until_complete(asyncio.wait(pending, timeout=limit))
+        except Exception:  # noqa: BLE001 - the session is finished whatever this does
+            pass
+        try:
+            self._bus.disconnect()
+        except Exception:  # noqa: BLE001
             pass
 
     def __call__(self, method: str, unit: str) -> object:

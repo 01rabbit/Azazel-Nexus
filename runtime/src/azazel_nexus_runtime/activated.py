@@ -44,6 +44,7 @@ start gates remain refusing pending their separate admission obligations.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sys
@@ -601,6 +602,31 @@ MAIN_PASS_RESERVE_SECONDS = 8.0
 PASS_LOCK_WAIT_SECONDS = 25.0
 
 
+def _narrow_final(manager: UnitManager, root: Path, message: str, *, until: float,
+                  clock=time.monotonic, fresh_manager=None) -> None:
+    """Narrow under the end of the whole budget, on a new session if this one is finished.
+
+    `until` is the monotonic end of the full budget (phases plus reserve), so
+    the narrowing may spend the reserve; every bus call it makes is limited to
+    what is left. A session whose call timed out or was cancelled is finished
+    (`SystemdBusSession.broken`): when `fresh_manager` (a context manager that
+    yields a manager on a new session, connecting inside the same deadline) is
+    available the narrowing runs there. Always raises, like `_emergency_narrow`.
+    """
+    if fresh_manager is not None and getattr(getattr(manager, "call", None), "broken", False):
+        stack = contextlib.ExitStack()
+        try:
+            other = stack.enter_context(fresh_manager())
+        except Exception:  # noqa: BLE001 - narrow on what there is
+            stack.close()
+        else:
+            with stack:
+                bind_remaining(other, until, clock)
+                _emergency_narrow(other, root, message)
+    bind_remaining(manager, until, clock)
+    _emergency_narrow(manager, root, message)
+
+
 def _emergency_narrow(manager: UnitManager, root: Path, message: str) -> None:
     """Remove every grant marker, mask every governed unit, then raise."""
     failures: list[str] = []
@@ -619,14 +645,16 @@ def _emergency_narrow(manager: UnitManager, root: Path, message: str) -> None:
         manager.reload()  # the masks above are one batch
     except Exception as exc:  # noqa: BLE001 - recorded, then raised below
         failures.append(f"manager reload: {type(exc).__name__}")
-    raise RuntimeError(f"{message}; emergency remask failures: {sorted(failures)}")
+    error = RuntimeError(f"{message}; emergency remask failures: {sorted(failures)}")
+    error.narrowed = True  # a narrowing was attempted: callers do not repeat it
+    raise error
 
 
 def _run_once(
     *, manager: UnitManager, root: Path, now: str, actor: str, producers=None,
     stop_authority: Optional[ContextdStopAuthority] = None,
     deadline: Optional[float] = None, clock=time.monotonic, sleep=time.sleep,
-    invocation_id: str = "",
+    invocation_id: str = "", fresh_manager=None,
 ) -> ActivationOutcome:
     """One observe-baseline pass (#206 §3.6): SUPPORTING (P4) and edge-core (P5).
 
@@ -669,8 +697,9 @@ def _run_once(
         # Narrowing may spend the reserve held back from the phases: the bus
         # calls it makes are bounded by the end of the whole budget, not by
         # the end of the phases.
-        bind_remaining(narrowing_manager, deadline + MAIN_PASS_RESERVE_SECONDS, clock)
-        _emergency_narrow(narrowing_manager, narrowing_root, message)
+        _narrow_final(narrowing_manager, narrowing_root, message,
+                      until=deadline + MAIN_PASS_RESERVE_SECONDS, clock=clock,
+                      fresh_manager=fresh_manager)
 
     daemon = ActivationDaemon(
         generations=GenerationStore(root / "var/lib/azazel/generations"),
@@ -1426,7 +1455,7 @@ def _locked_pass(
     clock=time.monotonic, sleep=time.sleep, producers=None,
     budget_seconds: float = MAIN_PASS_BUDGET_SECONDS,
     reserve_seconds: float = MAIN_PASS_RESERVE_SECONDS,
-    started: Optional[float] = None,
+    started: Optional[float] = None, fresh_manager=None,
 ) -> ActivationOutcome:
     """The main pass under the pass lock, from the lock to READY's barrier.
 
@@ -1440,33 +1469,42 @@ def _locked_pass(
     phases end `reserve_seconds` before it and are checked between each other,
     and every bus call is limited to the time that remains (`bind_remaining`).
     Nothing is interrupted asynchronously, so a ledger append or a high-water
-    commit always completes. A bus call that times out is cancelled and
-    drained before the session is used again. Past the budget the pass records
-    the expiry, removes every marker, masks every governed unit, reloads and
-    fails, spending the reserve.
+    commit always completes. Every way out that narrows (the lock, an expired
+    budget, a failed READY or barrier, an emergency narrowing in the pass, a
+    finished bus session) does so under the end of the whole budget, so the
+    reserve is really available to it. A bus session whose call timed out is
+    finished and never reused: the narrowing runs on `fresh_manager()` (a new
+    session, connected inside the same deadline).
     """
     begin = clock() if started is None else started
     final = begin + budget_seconds
     work = final - reserve_seconds
+
+    def narrow(message: str) -> None:
+        _narrow_final(manager, root, message, until=final, clock=clock,
+                      fresh_manager=fresh_manager)
+
     bind_remaining(manager, work, clock)
     try:
         wait = max(0.0, min(PASS_LOCK_WAIT_SECONDS, work - clock()))
         try:
             lock = acquire_pass_lock(root, wait_seconds=wait, clock=clock, sleep=sleep)
         except (PassLockBusy, PassLockRefused):
-            _emergency_narrow(manager, root, "the activation pass lock could not be taken")
+            narrow("the activation pass lock could not be taken")
         with lock:
             outcome = _run_once(
                 manager=manager, root=root, now=now, actor=actor, producers=producers,
                 stop_authority=stop_authority, deadline=work, clock=clock,
-                sleep=sleep, invocation_id=invocation_id)
+                sleep=sleep, invocation_id=invocation_id, fresh_manager=fresh_manager)
             check_budget(work, clock)
             # Type=notify: without READY the controller's start fails and
             # every unit with Requires=/After= on it fails as a dependency.
             # READY is sent only after the pass, its markers and its record
             # are complete, and the lock is kept until its barrier has
             # returned.
-            _notify_ready_or_withdraw(manager, root, now=now, actor=actor)
+            _notify_ready_or_withdraw(manager, root, now=now, actor=actor,
+                                      until=final, clock=clock,
+                                      fresh_manager=fresh_manager)
     except PassBudgetExpired:
         try:
             _activation_ledger(root).append({
@@ -1475,8 +1513,15 @@ def _locked_pass(
             })
         except Exception:  # noqa: BLE001 - narrowing below is unconditional
             pass
-        bind_remaining(manager, final, clock)  # the reserve is for this
-        _emergency_narrow(manager, root, "the activation pass used its whole time budget")
+        narrow("the activation pass used its whole time budget")
+    except Exception as error:
+        # A pass that failed on a finished session (its own rollback was
+        # refused) is narrowed on a new one. An error that already came out of
+        # a narrowing is not narrowed again.
+        if (fresh_manager is not None and not getattr(error, "narrowed", False)
+                and getattr(getattr(manager, "call", None), "broken", False)):
+            narrow("the bus session finished during the activation pass")
+        raise
     return outcome
 
 
@@ -1542,6 +1587,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         def work_left(begin=started) -> float:
             return begin + MAIN_PASS_BUDGET_SECONDS - MAIN_PASS_RESERVE_SECONDS - time.monotonic()
 
+        @contextlib.contextmanager
+        def fresh_manager():
+            # A new session for a narrowing after a call timed out. Its connect
+            # is bounded by what is left of the whole 45 s.
+            with SystemdBusSession.connect(
+                    lambda: started + MAIN_PASS_BUDGET_SECONDS - time.monotonic()) as other:
+                yield DbusUnitManager(call=other)
+
         with SystemdBusSession.connect(work_left) as session:
             manager = DbusUnitManager(call=session)
             # READY is sent only after the pass, its markers and its record
@@ -1555,6 +1608,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 stop_authority=ContextdStopAuthority.from_session(session),
                 invocation_id=invocation_id,
                 started=started,
+                fresh_manager=fresh_manager,
             )
     except Exception as exc:  # noqa: BLE001 - the service boundary fails closed
         from .bootstrap_entrypoint import EMERGENCY_UNCONFIRMED
@@ -1576,7 +1630,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 def _notify_ready_or_withdraw(manager: UnitManager, root: Path, *, now: str,
-                              actor: str) -> None:
+                              actor: str, until: Optional[float] = None,
+                              clock=time.monotonic, fresh_manager=None) -> None:
     """Send READY and wait for its barrier; on any failure withdraw, then raise.
 
     A refused READY, or a barrier that fails or times out, leaves it unknown
@@ -1611,6 +1666,9 @@ def _notify_ready_or_withdraw(manager: UnitManager, root: Path, *, now: str,
             })
         except Exception:  # noqa: BLE001 - narrowing below is unconditional
             pass
+        if until is not None:
+            _narrow_final(manager, root, "activation readiness notification unavailable",
+                          until=until, clock=clock, fresh_manager=fresh_manager)
         _emergency_narrow(manager, root, "activation readiness notification unavailable")
 
 

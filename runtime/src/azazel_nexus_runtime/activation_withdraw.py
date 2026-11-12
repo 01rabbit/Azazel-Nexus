@@ -110,9 +110,10 @@ def _wait_until(done: Callable[[], bool], *, give_up: float,
     while True:
         if done():
             return True
-        if clock() >= give_up:
+        left = give_up - clock()
+        if left <= 0:
             return False
-        sleep(_POLL_SECONDS)
+        sleep(min(_POLL_SECONDS, left))  # never oversleeps the deadline
 
 
 def _record(ledger: AuditLedger, event: dict) -> None:

@@ -62,17 +62,21 @@ __all__ = ["ContextdVerdict", "contextd_triggers", "contextd_verdict", "main", "
 
 ACTOR = "azazel-activation-recheck"
 #: One monotonic budget for a whole recheck, from before the bus connects.
-#: It is also the longest the recheck holds the pass lock, so it is strictly
-#: less than `activated.PASS_LOCK_WAIT_SECONDS` (25 s): a main pass that
-#: arrives during a recheck gets the lock. `azazel-activation-recheck.service`
-#: has `TimeoutStartSec=40s`: 20 s budget plus margin.
-RECHECK_BUDGET_SECONDS = 20.0
-#: Held back from the budget for the finalizer of an unconfirmed withdrawal
-#: (and its record); the withdrawal's own steps end 6 s earlier.
-RECHECK_RESERVE_SECONDS = 6.0
+#: It bounds how long the recheck holds the pass lock, so it is strictly less
+#: than `activated.PASS_LOCK_WAIT_SECONDS` (25 s): a main pass that arrives
+#: during a recheck gets the lock. Of it, the last `RECHECK_RECORD_SECONDS`
+#: are for the final ledger record (a local append and fsync; it is not
+#: interruptible, so the reserve is what it is allowed to take), and the
+#: `RECHECK_FINALIZER_SECONDS` before that for the finalizer of an unconfirmed
+#: withdrawal; the withdrawal's own steps end before both. Hold <= 18 s plus
+#: the record's overshoot, which the tests bound at 2 s: 20 s < 25 s.
+#: `azazel-activation-recheck.service` has `TimeoutStartSec=40s`.
+RECHECK_BUDGET_SECONDS = 18.0
+RECHECK_RECORD_SECONDS = 2.0
+RECHECK_FINALIZER_SECONDS = 5.0
 #: Retirement and input collection end this long after the start; collection
 #: that has not finished is a withhold.
-RECHECK_COLLECT_SECONDS = 8.0
+RECHECK_COLLECT_SECONDS = 6.0
 #: The wiring set is read only to answer "is this capability built in".
 _CONTEXTD_DEFINITION = next(d for d in CORE_UNITS if d.name == CONTEXTD_UNIT)
 
@@ -166,7 +170,8 @@ def run_recheck(
     sleep: Callable[[float], None] = time.sleep,
     started: Optional[float] = None,
     budget_seconds: float = RECHECK_BUDGET_SECONDS,
-    reserve_seconds: float = RECHECK_RESERVE_SECONDS,
+    record_seconds: float = RECHECK_RECORD_SECONDS,
+    finalizer_seconds: float = RECHECK_FINALIZER_SECONDS,
     collect_seconds: float = RECHECK_COLLECT_SECONDS,
 ) -> int:
     """One recheck under the pass lock; the process exit status.
@@ -178,12 +183,13 @@ def run_recheck(
     shortened to the time that is left (`bind_remaining`), the finalizer's
     included. Retirement and collection end by `collect_seconds`; collection
     that did not finish is a withhold. The withdrawal's steps end
-    `reserve_seconds` before the budget; what remains is for the finalizer and
-    the record, so an unconfirmed withdrawal is recorded before the exit.
+    `finalizer_seconds` before the finalizer's end, which is
+    `record_seconds` before the budget; the last seconds are for the record,
+    so an unconfirmed withdrawal is recorded before the exit.
     """
     start = clock() if started is None else started
-    final = start + budget_seconds
-    work = final - reserve_seconds
+    final = start + budget_seconds - record_seconds  # the finalizer ends here
+    work = final - finalizer_seconds  # the withdrawal's own steps end here
     collect = min(work, start + collect_seconds)
     try:
         lock = acquire_pass_lock(root, wait_seconds=0.0, clock=clock, sleep=sleep)
@@ -325,8 +331,8 @@ def main(argv=None) -> int:
     started = time.monotonic()  # before the connect: connecting counts
     try:
         with SystemdBusSession.connect(
-                lambda: started + RECHECK_BUDGET_SECONDS - RECHECK_RESERVE_SECONDS
-                - time.monotonic()) as session:
+                lambda: started + RECHECK_BUDGET_SECONDS - RECHECK_RECORD_SECONDS
+                - RECHECK_FINALIZER_SECONDS - time.monotonic()) as session:
             return run_recheck(
                 manager=DbusUnitManager(call=session),
                 authority=ContextdStopAuthority.from_session(session),

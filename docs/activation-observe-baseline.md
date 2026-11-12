@@ -1126,19 +1126,22 @@ recheck notices it. `t_marker`, `t_reload`, `t_stop` and `t_inactive` follow as
 above. The recheck runs 30 s after boot and 30 s after each start
 (`OnBootSec=30s`, `OnUnitActiveSec=30s`, `AccuracySec=1s`); that is a
 configured value, not a bound: a run that finds the lock held changes nothing,
-and a run can be late. The recheck has one budget of 20 s, counted from before
-it connects to the bus: 14 s for retirement, collection and the withdrawal's
-steps, and a reserve of 6 s for the finalizer and the record. Every bus call is
-refused once the budget has passed and is otherwise limited to the time that
-is left (at most its usual 10 s), the finalizer's included, so the recheck
-holds the pass lock for at most 20 s, strictly less than the 25 s a main pass
-waits for it, and `TimeoutStartSec=40s` leaves 20 s of margin. A budget that
-ends mid-withdrawal gives `activation.withdrawal_unconfirmed`, recorded before
-the exit; the marker is already removed (a local step) and the finalizer masks
-the broker where it still can. Retirement and input collection end by 8 s
-after the start; collection that does not finish is a withhold. The stop wait
-is at most 20 s and never more than the time that is left. `t_loss` to
-`t_detect` has no bound.
+and a run can be late. The recheck has one budget of 18 s, counted from before
+it connects to the bus. Retirement and input collection end by 6 s; the
+withdrawal's steps end at 11 s; the finalizer of an unconfirmed withdrawal runs
+until 16 s; the last 2 s are for the final ledger record. Every bus call is
+refused once its deadline has passed and is otherwise limited to the time that
+is left (at most its usual 10 s), the finalizer's included, and the poll sleeps
+never run past a deadline. The ledger append is a local write and fsync that
+cannot be interrupted, so the 2 s reserve is what it is allowed to take; the
+tests bound the whole hold at 20 s with a slow manager and a slow ledger. That
+is strictly less than the 25 s a main pass waits for the lock, and
+`TimeoutStartSec=40s` leaves 20 s of margin. A budget that ends
+mid-withdrawal gives `activation.withdrawal_unconfirmed`, recorded before the
+exit; the marker is already removed (a local step) and the finalizer masks the
+broker where it still can. Collection that does not finish is a withhold. The
+stop wait is at most 20 s and never more than the time that is left.
+`t_loss` to `t_detect` has no bound.
 
 **Adoption contract (weakened).** The broker reads its marker when it accepts a
 request and again before it adopts the peer's answer
@@ -1165,12 +1168,20 @@ To bring the broker back, in this order:
    exists. If the pass failed or did not grant it, do not go on.
 3. `systemctl start azazel-knowledge-contextd.service`.
 
-Caveat (not verified for this unit): the loop units carry
-`Requires=azazel-activated.service`, and `docs/hil-runbooks/integration-loop-rehearsal.md`
-records that starting a granted unit by hand started the controller again in
-the same boot, whose second pass re-masked every governed unit. If step 3
-does that, the broker is masked again; reboot and let the boot pass start it.
-Check this on a node before relying on the order above.
+What step 3 does, expected (to be confirmed on the clone, unit 45 S1; the
+result is recorded there: clone result placeholder, IMPL-REPORT.md section
+"clone S1"). The broker has `Requires=azazel-activated.service` and the
+controller has exited after step 1, so starting the broker queues a second
+controller pass first. That second pass is the designed behaviour, not a
+failure: its preflight masks every governed unit and reloads the manager (the
+queued start job for the broker is preserved by a mask and a reload, VM-confirmed
+in `activation-observe-baseline.md` section 5), the pass grants the broker
+again (unmask, enable, reload, marker written) as long as nothing else has
+changed and no other governed unit is running, and then the queued start job
+runs and finds its marker. If the queued job is instead cancelled on a real
+host, the supported recovery is a reboot after the grant of step 1: the broker
+is enabled, and the boot pass writes its marker before the broker's start job
+is evaluated.
 
 **Main pass.** The pass takes `/run/azazel-activation/pass.lock` (root `0600`,
 no-follow, `flock`), waiting at most 25 s, and holds it until READY's barrier;
@@ -1186,8 +1197,13 @@ The budget is kept by the code, not by interrupting it. The pass checks it
 between its phases (before input collection, after it, after the decision,
 before READY), and every D-Bus call is refused once the phase deadline has
 passed and is otherwise limited to the time that is left. A call that times out
-is cancelled and drained before the session is used again; a late reply to it
-is ignored. Nothing is raised asynchronously, so a ledger append or a
+has finished its session: pending work is cancelled with a bounded moment to
+unwind, the bus is disconnected, and no further call is sent on it, ever.
+Narrowing then opens a new session, connecting inside the same deadline (the
+cleanup after a failed connection is charged to it too). Every way out that
+narrows does so under the end of the whole 45 s: the lock failing, the budget
+ending, READY or its barrier failing, an emergency narrowing in the pass, and
+a finished session. Nothing is raised asynchronously, so a ledger append or a
 high-water commit always completes. When the budget ends the pass writes
 `activation.pass_budget_expired`, removes every marker, masks every governed
 unit, reloads, spending the reserve, and exits non-zero. What this cannot bound

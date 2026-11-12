@@ -688,12 +688,20 @@ To bring the broker back, in this order:
    exists. If the pass failed or did not grant it, do not go on.
 3. `systemctl start azazel-knowledge-contextd.service`.
 
-Caveat (not verified for this unit): the loop units carry
-`Requires=azazel-activated.service`, and `docs/hil-runbooks/integration-loop-rehearsal.md`
-records that starting a granted unit by hand started the controller again in
-the same boot, whose second pass re-masked every governed unit. If step 3
-does that, the broker is masked again; reboot and let the boot pass start it.
-Check this on a node before relying on the order above.
+What step 3 does, expected (to be confirmed on the clone, unit 45 S1; the
+result is recorded there: clone result placeholder, IMPL-REPORT.md section
+"clone S1"). The broker has `Requires=azazel-activated.service` and the
+controller has exited after step 1, so starting the broker queues a second
+controller pass first. That second pass is the designed behaviour, not a
+failure: its preflight masks every governed unit and reloads the manager (the
+queued start job for the broker is preserved by a mask and a reload, VM-confirmed
+in `activation-observe-baseline.md` section 5), the pass grants the broker
+again (unmask, enable, reload, marker written) as long as nothing else has
+changed and no other governed unit is running, and then the queued start job
+runs and finds its marker. If the queued job is instead cancelled on a real
+host, the supported recovery is a reboot after the grant of step 1: the broker
+is enabled, and the boot pass writes its marker before the broker's start job
+is evaluated.
 Introduce in this order: new release,
 then a policy naming contextd. Withdraw in this order: remove contextd from
 the policy and re-sign, confirm on the next pass that it is closed, then

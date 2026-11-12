@@ -222,11 +222,24 @@ def test_a_bus_failure_is_recorded_as_the_client_fixed_reason(first_pass_root, f
     events = _events(first_pass_root)
     assert [event["event_type"] for event in events] == [
         "activation.evidence_preflight_masked", "activation.rollback_failed"]
-    assert events[0]["remask_failures"] == [f"{unit}: UnitOperationFailed" for unit in RUNNING]
-    assert events[1]["still_unreachable"] == [f"{unit}: {reason}" for unit in RUNNING]
+    # A call that did not complete finishes its session: the reload that ends
+    # each round of masks is refused on it (and nothing more is sent).
+    finished = ["manager reload: UnitOperationFailed"] if fault == "incomplete" else []
+    assert events[0]["remask_failures"] == (
+        [f"{unit}: UnitOperationFailed" for unit in RUNNING] + finished)
+    if fault == "incomplete":
+        # The wider narrowing finds the session finished: nothing is sent on
+        # it, every unit is reported unreached (the real pass narrows on a new
+        # session in this case: see test_runtime_activation_review_fixes).
+        reason_finished = "the bus session is finished after a call did not complete"
+        assert events[1]["still_unreachable"] == sorted(
+            [f"{unit}: {reason_finished}" for unit in NAMES] + finished)
+    else:
+        assert events[1]["still_unreachable"] == [f"{unit}: {reason}" for unit in RUNNING]
     ledger = (first_pass_root / "var/lib/azazel/state/activation.jsonl").read_text()
     assert FREE_TEXT not in ledger and "secret" not in ledger
-    assert all(state == "masked" for state in systemd.files.values())
+    if fault != "incomplete":
+        assert all(state == "masked" for state in systemd.files.values())
     assert set(systemd.members) <= READ_AND_MASK
 
 

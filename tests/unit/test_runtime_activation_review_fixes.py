@@ -254,20 +254,34 @@ def test_a_call_after_the_deadline_is_not_sent():
     assert bus.messages == []
 
 
-def test_a_timed_out_call_is_cancelled_and_drained_before_the_session_is_used_again():
+def test_a_session_whose_call_timed_out_is_finished_and_refuses_every_call():
     import asyncio
     bus = _Bus(hang=True)
     session, loop = _session(bus)
     session.set_remaining(lambda: 0.2)
     with pytest.raises(UnitOperationFailed):
         session("GetUnitFileState", "azazel-auditd.service")
-    # nothing is left pending on the loop
+    assert session.broken is True
     assert [t for t in asyncio.all_tasks(loop) if not t.done()] == []
-    # and the session still works, for the narrowing that may be needed
+    sent = len(bus.messages)
     bus.hang = False
     session.set_remaining(lambda: 5.0)
-    assert session("GetUnitFileState", "azazel-auditd.service") == "masked"
-    assert len(bus.messages) == 2
+    for call in (lambda: session("GetUnitFileState", "azazel-auditd.service"),
+                 session.reload, lambda: session.unit_job(CTX)):
+        with pytest.raises(UnitOperationFailed, match="finished"):
+            call()
+    assert len(bus.messages) == sent  # nothing more was sent on it
+
+
+def test_the_cleanup_of_a_session_that_timed_out_is_bounded_by_the_time_left():
+    bus = _Bus(hang=True)
+    session, _ = _session(bus)
+    left = [0.2]
+    session.set_remaining(lambda: left[0])
+    started = time.monotonic()
+    with pytest.raises(UnitOperationFailed):
+        session("GetUnitFileState", "azazel-auditd.service")
+    assert time.monotonic() - started < 1.0  # not a fixed second, still less ten
 
 
 def test_a_session_without_a_deadline_keeps_the_ten_second_bound():
@@ -584,11 +598,13 @@ def test_a_broker_the_manager_does_not_hold_is_inactive_and_garbage_is_refused()
 def test_the_budgets_fit_the_unit_timeouts_and_the_lock_wait():
     # a recheck holds the lock for less than the main pass waits for it
     assert activation_recheck.RECHECK_BUDGET_SECONDS < activated.PASS_LOCK_WAIT_SECONDS
+    # budget + the record's overshoot (bounded below at 2 s) < the main wait
+    assert activation_recheck.RECHECK_BUDGET_SECONDS + 2 <= 20 < activated.PASS_LOCK_WAIT_SECONDS
     assert activation_recheck.RECHECK_BUDGET_SECONDS + 15 <= 40  # TimeoutStartSec=40s
-    assert (activation_recheck.RECHECK_RESERVE_SECONDS
-            < activation_recheck.RECHECK_BUDGET_SECONDS)
-    assert activation_recheck.RECHECK_COLLECT_SECONDS < (
-        activation_recheck.RECHECK_BUDGET_SECONDS - activation_recheck.RECHECK_RESERVE_SECONDS)
+    work = (activation_recheck.RECHECK_BUDGET_SECONDS
+            - activation_recheck.RECHECK_RECORD_SECONDS
+            - activation_recheck.RECHECK_FINALIZER_SECONDS)
+    assert 0 < activation_recheck.RECHECK_COLLECT_SECONDS < work
     # the main pass: phases + reserve = budget, and budget + margin <= TimeoutStartSec=60s
     assert activated.PASS_LOCK_WAIT_SECONDS < (
         activated.MAIN_PASS_BUDGET_SECONDS - activated.MAIN_PASS_RESERVE_SECONDS)
@@ -931,3 +947,276 @@ def test_the_recovery_order_is_documented(document):
     third = text.index("`systemctl start azazel-knowledge-contextd.service`", second)
     assert first < second < third
     assert "is refused" in text and "masked" in text and "pulls in no pass" in text
+
+
+# -- Codex 1 (05): every narrowing path runs under the final deadline ------------------------------------
+
+
+class BoundModelManager(ModelManager):
+    """A modelled manager whose calls fail once the session's remaining time is gone."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._left = None
+        self.call = SimpleNamespace(set_remaining=self._set, broken=False)
+        self.refused = 0
+
+    def _set(self, remaining):
+        self._left = remaining
+
+    def _check(self):
+        if self._left is not None and self._left() <= 0:
+            self.refused += 1
+            raise UnitOperationFailed("the time budget ended before a call")
+
+    def mask(self, unit):
+        self._check()
+        super().mask(unit)
+
+    def reload(self):
+        self._check()
+        super().reload()
+
+    def is_inactive(self, unit):
+        self._check()
+        return super().is_inactive(unit)
+
+
+@pytest.fixture
+def bound(ctx_world):
+    clock = FakeClock()
+    model = ContextdModel(clock)
+    manager = BoundModelManager(model, enabled=[d.name for d in CORE_UNITS])
+    ctx_world.manager = manager
+    return SimpleNamespace(world=ctx_world, clock=clock, model=model, manager=manager,
+                           begin=clock())
+
+
+def _locked_bound(bound, *, started=None, producers=None, fresh_manager=None):
+    return activated._locked_pass(
+        manager=bound.manager, root=bound.world.root, now=NOW, actor="test",
+        stop_authority=authority(bound.model), invocation_id="b" * 32,
+        clock=bound.clock, sleep=bound.clock.sleep,
+        producers=producers or bound.world.producers(), started=started,
+        fresh_manager=fresh_manager)
+
+
+def _narrowed_after_the_phases(bound):
+    elapsed = bound.clock() - bound.begin
+    work = activated.MAIN_PASS_BUDGET_SECONDS - activated.MAIN_PASS_RESERVE_SECONDS
+    assert elapsed >= work, elapsed  # the narrowing happened after second 37
+    assert bound.manager.refused == 0, "a narrowing call was refused for lack of time"
+    assert bound.world.markers() is None
+    assert all(bound.manager.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
+    assert bound.manager.timeline[-1] == ("reload", "")
+
+
+def test_the_lock_failure_narrows_after_second_37(bound):
+    holder = acquire_pass_lock(bound.world.root)
+    started = bound.clock() - 30.0  # 30 s were spent before the lock was asked for
+    with pytest.raises(RuntimeError, match="pass lock could not be taken"):
+        _locked_bound(bound, started=started)
+    holder.release()
+    bound.begin = started
+    _narrowed_after_the_phases(bound)
+
+
+def test_a_failed_ready_narrows_after_second_37(bound, monkeypatch):
+    from azazel_nexus_runtime import systemd_notify
+
+    def late_failure():
+        bound.clock.sleep(38.0 - (bound.clock() - bound.begin))
+        raise UnitOperationFailed("systemd notification refused")
+
+    monkeypatch.setattr(systemd_notify, "notify_ready", late_failure)
+    with pytest.raises(RuntimeError, match="readiness notification unavailable"):
+        _locked_bound(bound)
+    _narrowed_after_the_phases(bound)
+
+
+def test_an_expired_budget_narrows_after_second_37(bound):
+    def slow():
+        bound.clock.sleep(38.0)
+        return bound.world.evidence
+
+    with pytest.raises(RuntimeError, match="used its whole time budget"):
+        _locked_bound(bound, producers=bound.world.producers(commissioning_evidence=slow))
+    _narrowed_after_the_phases(bound)
+
+
+def test_an_emergency_narrowing_inside_the_pass_runs_after_second_37(bound, monkeypatch):
+    def late_marker_failure(units, root):
+        bound.clock.sleep(38.0)
+        raise OSError("synthetic")
+
+    monkeypatch.setattr(activated, "write_grant_markers", late_marker_failure)
+    with pytest.raises(RuntimeError, match="markers could not be written"):
+        _locked_bound(bound)
+    _narrowed_after_the_phases(bound)
+
+
+def test_a_narrowing_that_stays_bound_to_the_phase_deadline_is_caught(bound, monkeypatch):
+    """Negative check: without the rebinding every path above is refused."""
+    monkeypatch.setattr(activated, "bind_remaining", lambda *a, **k: None)
+    real = activated.bind_remaining
+
+    def slow():
+        bound.clock.sleep(38.0)
+        return bound.world.evidence
+
+    # bound once to the phases by the test, as _locked_pass does, then never moved
+    bound.manager._set(lambda: bound.begin + 37.0 - bound.clock())
+    with pytest.raises(RuntimeError):
+        _locked_bound(bound, producers=bound.world.producers(commissioning_evidence=slow))
+    assert bound.manager.refused > 0
+    assert real is not None
+
+
+# -- a finished session is replaced for the narrowing ---------------------------------------------------------
+
+
+def _fresh(bound):
+    model = ContextdModel(bound.clock)
+    other = BoundModelManager(model, enabled=[d.name for d in CORE_UNITS])
+    used = []
+
+    @contextlib.contextmanager
+    def factory():
+        used.append("fresh")
+        yield other
+
+    return other, used, factory
+
+
+def test_a_poisoned_session_narrows_on_a_fresh_one_on_every_path(bound, monkeypatch):
+    bound.manager.call.broken = True  # a call on this session timed out
+    other, used, factory = _fresh(bound)
+
+    # the pass fails on the finished session: its own rollback is refused
+    def refused(**kwargs):
+        raise activated.RollbackFailed("synthetic: refused on a finished session")
+
+    monkeypatch.setattr(activated, "_run_once", refused)
+    with pytest.raises(RuntimeError, match="bus session finished"):
+        _locked_bound(bound, fresh_manager=factory)
+    assert used == ["fresh"]
+    assert all(other.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
+    assert not any(op in ("mask", "reload") for op, _ in bound.manager.timeline)
+
+
+def test_a_lock_failure_on_a_poisoned_session_narrows_on_a_fresh_one(bound):
+    bound.manager.call.broken = True
+    other, used, factory = _fresh(bound)
+    holder = acquire_pass_lock(bound.world.root)
+    with pytest.raises(RuntimeError, match="pass lock could not be taken"):
+        _locked_bound(bound, started=bound.clock() - 30.0, fresh_manager=factory)
+    holder.release()
+    assert used == ["fresh"] and other.refused == 0
+    assert all(other.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
+
+
+def test_a_failed_ready_on_a_poisoned_session_narrows_on_a_fresh_one(bound, monkeypatch):
+    from azazel_nexus_runtime import systemd_notify
+    other, used, factory = _fresh(bound)
+
+    def fail():
+        bound.manager.call.broken = True
+        raise UnitOperationFailed("systemd notification refused")
+
+    monkeypatch.setattr(systemd_notify, "notify_ready", fail)
+    with pytest.raises(RuntimeError, match="readiness notification unavailable"):
+        _locked_bound(bound, fresh_manager=factory)
+    assert used == ["fresh"]
+    assert all(other.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
+
+
+def test_a_fresh_session_that_cannot_connect_falls_back_to_the_old_one(bound):
+    bound.manager.call.broken = True
+
+    @contextlib.contextmanager
+    def failing():
+        raise UnitOperationFailed("could not connect to the system D-Bus service manager")
+        yield
+
+    holder = acquire_pass_lock(bound.world.root)
+    with pytest.raises(RuntimeError, match="pass lock could not be taken"):
+        _locked_bound(bound, started=bound.clock() - 30.0, fresh_manager=failing)
+    holder.release()
+
+
+def test_the_connection_cleanup_is_charged_to_the_deadline():
+    import inspect
+    from azazel_nexus_runtime.systemd_bus import SystemdBusSession
+    source = inspect.getsource(SystemdBusSession.connect)
+    cleanup = source[source.index("pending = asyncio.all_tasks(loop)"):]
+    assert "timeout=_BUS_TIMEOUT_SECONDS" not in cleanup  # no uncharged fixed ten seconds
+    assert "remaining()" in cleanup
+
+
+# -- Codex 3 (05): the recheck's lock hold is provably below the main wait ----------------------------------------
+
+
+@pytest.mark.parametrize("cost,ledger_cost", [(0.5, 0.0), (3.0, 1.5), (7.0, 1.9), (9.5, 1.9)])
+def test_the_recheck_holds_the_lock_at_most_twenty_seconds_with_slow_manager_and_ledger(
+        granted, monkeypatch, cost, ledger_cost):
+    stage, guard = _slow(granted, cost)
+    stage.world.healthy = False
+    real_append = AuditLedger.append
+
+    def slow_append(self, event, *args, **kwargs):
+        stage.clock.sleep(ledger_cost)  # a local fsync, bounded by the record reserve
+        return real_append(self, event, *args, **kwargs)
+
+    monkeypatch.setattr(AuditLedger, "append", slow_append)
+    started = stage.clock()
+    activation_recheck.run_recheck(
+        manager=stage.manager, authority=guard, root=stage.world.root, now=NOW,
+        producers=stage.world.producers(), invocation_id="c" * 32,
+        clock=stage.clock, sleep=stage.clock.sleep)
+    held = stage.clock() - started
+    assert held <= 20.0, held
+    assert held < activated.PASS_LOCK_WAIT_SECONDS
+
+
+def test_the_poll_sleep_never_oversleeps_the_deadline(granted):
+    stage = granted
+    stage.model.stop_works = False
+    stage.world.healthy = False
+    sleeps = []
+    real_sleep = stage.clock.sleep
+
+    def recording_sleep(seconds):
+        sleeps.append((seconds, deadline_left()))
+        real_sleep(seconds)
+
+    final = stage.clock() + activation_recheck.RECHECK_BUDGET_SECONDS \
+        - activation_recheck.RECHECK_RECORD_SECONDS
+    work = final - activation_recheck.RECHECK_FINALIZER_SECONDS
+
+    def deadline_left():
+        return work - stage.clock()
+
+    activation_recheck.run_recheck(
+        manager=stage.manager, authority=authority(stage.model), root=stage.world.root,
+        now=NOW, producers=stage.world.producers(), invocation_id="c" * 32,
+        clock=stage.clock, sleep=recording_sleep)
+    assert sleeps and all(seconds <= left + 1e-9 for seconds, left in sleeps), sleeps
+    assert stage.clock() <= final + 1e-9 + 0.1
+
+
+def test_the_budget_constants_leave_the_record_its_reserve():
+    total = activation_recheck.RECHECK_BUDGET_SECONDS
+    assert total == 18.0 and activation_recheck.RECHECK_RECORD_SECONDS == 2.0
+    assert total + activation_recheck.RECHECK_RECORD_SECONDS <= 20.0 < activated.PASS_LOCK_WAIT_SECONDS
+
+
+@pytest.mark.parametrize("document", ["docs/knowledge-context-consumer.md",
+                                      "docs/activation-observe-baseline.md"])
+def test_the_recovery_text_states_the_second_pass_and_the_fallback(document):
+    text = " ".join(open(document, encoding="utf-8").read().split())
+    assert "That second pass is the designed behaviour, not a failure" in text
+    assert "queued start job for the broker is preserved" in text
+    assert "(unmask, enable, reload, marker written)" in text
+    assert "to be confirmed on the clone, unit 45 S1" in text
+    assert "the supported recovery is a reboot after the grant" in text
+    assert "may re-mask" not in text and "is masked again" not in text
