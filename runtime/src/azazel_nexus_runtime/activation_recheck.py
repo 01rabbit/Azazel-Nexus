@@ -50,7 +50,9 @@ from .activation_pass import PassInputs, collect_pass_inputs
 from .activation_retire import (
     RetireRefused, resume_pending_retirement, retire_if_revoked, retirement_pending,
 )
-from .activation_withdraw import NO_JOB, WithdrawalUnconfirmed, withdraw_contextd
+from .activation_withdraw import (
+    NO_JOB, WithdrawalUnconfirmed, flush_records, withdraw_contextd,
+)
 from .units import (
     CONTEXTD_UNIT,
     ContextdStopAuthority,
@@ -208,11 +210,16 @@ def run_recheck(
         print("az-activation-recheck: the activation pass lock is unusable",
               file=sys.stderr)
         return 1
-    with lock:
+    ledger = AuditLedger(root / "var/lib/azazel/state/activation.jsonl")
+    #: Records made while the lock is held. They are appended after it has
+    #: been released: an append is a write and an fsync that cannot be
+    #: interrupted, and it must not lengthen the hold.
+    pending: list[dict] = []
+
+    def evaluate() -> int:
         status = 0
         retirement_blocked = False
         inputs = None
-        ledger = AuditLedger(root / "var/lib/azazel/state/activation.jsonl")
         try:
             bind_remaining(manager, collect, clock)
             if retirement is not None:
@@ -227,7 +234,7 @@ def run_recheck(
                     status, retirement_blocked = 1, True
                 else:
                     if outcome != "none":
-                        _retired_record(root, outcome, now, invocation_id)
+                        pending.append(_retired_event(outcome, now, invocation_id))
             check_budget(collect, clock)
             triggers = contextd_triggers(manager, authority, root)
             if not triggers:
@@ -262,7 +269,7 @@ def run_recheck(
                 root=root, ledger=ledger, now=now, actor=ACTOR,
                 invocation_id=invocation_id, deadline=work, final_deadline=final,
                 bind_deadline=lambda d: bind_remaining(manager, d, clock),
-                clock=clock, sleep=sleep)
+                sink=pending.append, clock=clock, sleep=sleep)
         except WithdrawalUnconfirmed:
             # Already recorded and left masked as far as it could be. Other
             # units are not narrowed from here: this process decides for the
@@ -270,17 +277,20 @@ def run_recheck(
             print("az-activation-recheck: withdrawal of the Knowledge Context broker "
                   "is unconfirmed", file=sys.stderr)
             return 1
+        return status
+
+    with lock:
+        status = evaluate()
+    # The lock is released: now the records. A slow or failing ledger changes
+    # neither the state nor the exit status.
+    flush_records(ledger, pending)
     return status
 
 
-def _retired_record(root: Path, outcome: str, now: str, invocation_id: str) -> None:
-    try:
-        AuditLedger(root / "var/lib/azazel/state/activation.jsonl").append({
-            "event_type": "activation.approval_retired", "outcome": outcome,
-            "invocation_id": invocation_id, "occurred_at": now, "actor": ACTOR})
-    except Exception:  # noqa: BLE001 - the retirement does not depend on its record
-        print("az-activation-recheck could not append a retirement record",
-              file=sys.stderr)
+def _retired_event(outcome: str, now: str, invocation_id: str) -> dict:
+    return {
+        "event_type": "activation.approval_retired", "outcome": outcome,
+        "invocation_id": invocation_id, "occurred_at": now, "actor": ACTOR}
 
 
 def production_retirement(root: Path = Path("/")):

@@ -49,6 +49,7 @@ __all__ = [
     "clear_contextd_job",
     "QUIET_STATES",
     "contextd_is_quiet",
+    "flush_records",
     "contextd_is_running",
     "withdraw_contextd",
 ]
@@ -163,16 +164,28 @@ def _contain(*, manager: UnitManager, authority: ContextdStopAuthority, root: Pa
     return {"final_masked": masked, "final_quiet": quiet}
 
 
+def flush_records(ledger: AuditLedger, events) -> None:
+    """Append records a locked caller deferred; a failure changes nothing."""
+    for event in events:
+        _record(ledger, event)
+
+
 def withdraw_contextd(
     *, reason: str, manager: UnitManager, authority: ContextdStopAuthority,
     root: Path, ledger: AuditLedger, now: str, actor: str, invocation_id: str,
     deadline: Optional[float] = None,
     final_deadline: Optional[float] = None,
     bind_deadline: Optional[Callable[[float], None]] = None,
+    sink: Optional[Callable[[dict], None]] = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict:
     """Withdraw the broker; returns the recorded timings, or raises.
+
+    The record is handed to `sink` when one is given, and appended to
+    `ledger` immediately otherwise. A caller that holds the pass lock (the
+    recheck) passes a sink and appends after it has released the lock, so a
+    slow ledger cannot lengthen the hold.
 
     `deadline` is the monotonic instant the withdrawal's steps must end by
     (the caller's budget less its reserve); the stop wait is also capped at
@@ -183,6 +196,7 @@ def withdraw_contextd(
     the time that is left.
     """
     started = clock()
+    emit = sink if sink is not None else (lambda event: _record(ledger, event))
     timings: dict = {"t_marker_ms": None, "t_reload_ms": None,
                      "t_stop_ms": None, "t_inactive_ms": None}
     stage = "marker"
@@ -197,7 +211,7 @@ def withdraw_contextd(
             bind_deadline(final_deadline)
         reached = _contain(manager=manager, authority=authority, root=root,
                            stop_sent=stop_sent, give_up=final_deadline, clock=clock)
-        _record(ledger, {
+        emit({
             "event_type": "activation.withdrawal_unconfirmed",
             "unit": CONTEXTD_UNIT, "reason": reason, "stage": stage, "why": why,
             "invocation_id": invocation_id, **timings, **reached,
@@ -245,7 +259,7 @@ def withdraw_contextd(
         timings["t_inactive_ms"] = _ms(started, clock)
     except Exception as exc:  # noqa: BLE001 - recorded as a class name, then raised
         raise unconfirmed(type(exc).__name__) from None
-    _record(ledger, {
+    emit({
         "event_type": "activation.grant_withdrawn",
         "unit": CONTEXTD_UNIT, "reason": reason, "stopped": needs_stop,
         "quiet_state": quiet_state,
@@ -258,6 +272,7 @@ def withdraw_contextd(
 def clear_contextd_job(
     *, authority: ContextdStopAuthority, ledger: AuditLedger, now: str, actor: str,
     reason: str, invocation_id: str, deadline: Optional[float] = None,
+    sink: Optional[Callable[[dict], None]] = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> bool:
@@ -267,6 +282,7 @@ def clear_contextd_job(
     read or replaced within the budget raises `WithdrawalUnconfirmed`.
     """
     started = clock()
+    emit = sink if sink is not None else (lambda event: _record(ledger, event))
     try:
         if authority.job(CONTEXTD_UNIT) == NO_JOB:
             return False
@@ -278,7 +294,7 @@ def clear_contextd_job(
                            give_up=give_up, clock=clock, sleep=sleep):
             raise TimeoutError("the queued job did not clear in time")
     except Exception as exc:  # noqa: BLE001 - recorded as a class name, then raised
-        _record(ledger, {
+        emit({
             "event_type": "activation.withdrawal_unconfirmed",
             "unit": CONTEXTD_UNIT, "reason": reason, "stage": "job",
             "why": type(exc).__name__, "invocation_id": invocation_id,
@@ -286,7 +302,7 @@ def clear_contextd_job(
         })
         raise WithdrawalUnconfirmed(
             "queued job of the Knowledge Context broker unconfirmed") from None
-    _record(ledger, {
+    emit({
         "event_type": "activation.queued_job_replaced",
         "unit": CONTEXTD_UNIT, "reason": reason, "t_ms": _ms(started, clock),
         "invocation_id": invocation_id, "occurred_at": now, "actor": actor,

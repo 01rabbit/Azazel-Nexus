@@ -1220,3 +1220,131 @@ def test_the_recovery_text_states_the_second_pass_and_the_fallback(document):
     assert "to be confirmed on the clone, unit 45 S1" in text
     assert "the supported recovery is a reboot after the grant" in text
     assert "may re-mask" not in text and "is masked again" not in text
+
+
+# -- the recheck appends to the ledger only after it has released the lock ---------------------------------------
+
+
+def _watch_appends(monkeypatch, stage, *, cost):
+    """Every append must find the pass lock free; each takes `cost` seconds of fake time."""
+    seen = []
+    real = AuditLedger.append
+    started = stage.clock()
+
+    def append(self, event, *args, **kwargs):
+        try:
+            free = acquire_pass_lock(stage.world.root)
+        except Exception:  # held: the record is being written under the lock
+            free = None
+        else:
+            free.release()
+        seen.append((event["event_type"], free is not None, stage.clock() - started))
+        stage.clock.sleep(cost)
+        return real(self, event, *args, **kwargs)
+
+    monkeypatch.setattr(AuditLedger, "append", append)
+    return seen
+
+
+def test_a_withdrawal_is_recorded_after_the_lock_is_released(granted, monkeypatch):
+    stage = granted
+    stage.world.healthy = False
+    seen = _watch_appends(monkeypatch, stage, cost=30.0)  # a ledger that stalls for 30 s
+    assert recheck(stage) == 0
+    kinds = [kind for kind, free, _ in seen if kind == "activation.grant_withdrawn"]
+    assert kinds == ["activation.grant_withdrawn"]
+    assert all(free for _, free, _ in seen), seen
+    # the lock was released inside the bound, before the 30 s append began
+    assert all(at <= 20.0 for _, _, at in seen), seen
+
+
+def test_an_unconfirmed_withdrawal_is_recorded_after_the_lock_is_released(granted, monkeypatch):
+    stage = granted
+    stage.model.stop_works = False
+    stage.world.healthy = False
+    seen = _watch_appends(monkeypatch, stage, cost=30.0)
+    assert recheck(stage) == 1
+    assert [k for k, _, _ in seen] == ["activation.withdrawal_unconfirmed"]
+    assert all(free for _, free, _ in seen) and all(at <= 20.0 for _, _, at in seen)
+
+
+def test_a_retirement_record_is_written_after_the_lock_is_released(granted, monkeypatch):
+    stage = granted
+    seen = _watch_appends(monkeypatch, stage, cost=30.0)
+    code = activation_recheck.run_recheck(
+        manager=stage.manager, authority=authority(stage.model), root=stage.world.root,
+        now=NOW, producers=stage.world.producers(), invocation_id="c" * 32,
+        retirement=lambda **kw: "retired", clock=stage.clock, sleep=stage.clock.sleep)
+    assert code == 0
+    assert [k for k, _, _ in seen] == ["activation.approval_retired"]
+    assert all(free for _, free, _ in seen)
+
+
+def test_a_slow_ledger_does_not_change_the_state_or_the_exit_status(granted, monkeypatch):
+    stage = granted
+    stage.world.healthy = False
+
+    def failing(self, event, *args, **kwargs):
+        raise OSError("synthetic: the ledger is unwritable")
+
+    monkeypatch.setattr(AuditLedger, "append", failing)
+    assert recheck(stage) == 0 and withdrawn(stage)
+
+
+def test_with_a_sink_nothing_is_appended_by_the_withdrawal_or_the_job_clear(granted, monkeypatch):
+    stage = granted
+    appended = []
+    monkeypatch.setattr(AuditLedger, "append", lambda self, event, *a, **k: appended.append(event))
+    sink = []
+    withdraw_contextd(
+        reason="t", manager=stage.manager, authority=authority(stage.model),
+        root=stage.world.root, ledger=AuditLedger(stage.world.ledger_path), now=NOW,
+        actor="t", invocation_id="1" * 32, sink=sink.append,
+        clock=stage.clock, sleep=stage.clock.sleep)
+    stage.model.job = JOB
+    stage.model.running = False
+    stage.model.stopped_at = None  # the earlier stop has settled; this is a new queued job
+    activation_withdraw.clear_contextd_job(
+        authority=authority(stage.model), ledger=AuditLedger(stage.world.ledger_path),
+        now=NOW, actor="t", reason="withheld", invocation_id="1" * 32, sink=sink.append,
+        clock=stage.clock, sleep=stage.clock.sleep)
+    assert appended == []
+    assert [e["event_type"] for e in sink] == [
+        "activation.grant_withdrawn", "activation.queued_job_replaced"]
+    # the unconfirmed record travels the same way
+    stage.model.running = True
+    stage.model.stopped_at = None
+    stage.model.stop_works = False
+    with pytest.raises(WithdrawalUnconfirmed):
+        withdraw_contextd(
+            reason="t", manager=stage.manager, authority=authority(stage.model),
+            root=stage.world.root, ledger=AuditLedger(stage.world.ledger_path), now=NOW,
+            actor="t", invocation_id="1" * 32, sink=sink.append,
+            clock=stage.clock, sleep=stage.clock.sleep)
+    assert appended == [] and sink[-1]["event_type"] == "activation.withdrawal_unconfirmed"
+
+
+def test_without_a_sink_the_main_pass_still_records_inline(granted):
+    stage = granted
+    stage.world.healthy = False
+    withdraw_contextd(
+        reason="t", manager=stage.manager, authority=authority(stage.model),
+        root=stage.world.root, ledger=AuditLedger(stage.world.ledger_path), now=NOW,
+        actor="t", invocation_id="1" * 32, clock=stage.clock, sleep=stage.clock.sleep)
+    assert stage.world.events()[-1]["event_type"] == "activation.grant_withdrawn"
+
+
+def test_an_append_under_the_lock_would_be_caught(granted, monkeypatch):
+    """Negative check: if the recheck recorded inline, the watcher sees a held lock."""
+    stage = granted
+    stage.world.healthy = False
+    real = activation_recheck.withdraw_contextd
+
+    def inline(**kwargs):
+        kwargs.pop("sink", None)  # the mutation: record while the lock is held
+        return real(**kwargs)
+
+    monkeypatch.setattr(activation_recheck, "withdraw_contextd", inline)
+    seen = _watch_appends(monkeypatch, stage, cost=0.0)
+    recheck(stage)
+    assert any(not free for _, free, _ in seen)
