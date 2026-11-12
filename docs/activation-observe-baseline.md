@@ -1125,6 +1125,16 @@ broker that is unmasked, has a job or has a marker is not that shape;
    offsets from the start of the withdrawal, not from detection) and the
    invocation id.
 
+The bootstrap-stage narrowing (a selected-bootstrap restart or an invalid
+selection) runs the same withdrawal for the broker, with the contextd-only stop
+authority and a fresh session per step, before it masks the other governed units
+(on a new session if the first one finished). It is recorded in the journal only,
+by fixed messages ("withdrew the Knowledge Context broker" or "could not confirm
+the withdrawal"), and an unconfirmed withdrawal makes the narrowing fail closed.
+No activation-ledger record is appended there: that stage holds no `pass.lock`
+and has no documented ledger writer, and appending without the lock could race
+the head of the pass or the recheck that owns it.
+
 The mask is confirmed by the exact unit-file state: `masked`, not
 `masked-runtime`, which does not survive a reboot. A step that cannot be
 confirmed first runs a finalizer for this one unit (marker removed, mask,

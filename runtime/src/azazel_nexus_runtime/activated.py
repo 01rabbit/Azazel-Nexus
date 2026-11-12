@@ -1224,15 +1224,68 @@ def _narrow_bootstrap_core_units():
         failures.append("grant_markers")
         print("az-activated could not remove grant markers during bootstrap narrowing",
               file=sys.stderr)
-    with SystemdBusSession.connect() as session:
+    began = time.monotonic()
+
+    def left() -> float:
+        return began + _BOOTSTRAP_NARROWING_SECONDS - time.monotonic()
+
+    @contextlib.contextmanager
+    def fresh_session():
+        with SystemdBusSession.connect(left) as other:
+            yield DbusUnitManager(call=other), ContextdStopAuthority.from_session(other)
+
+    def journal(event: dict) -> None:
+        # Journal only (option b): this stage holds no pass.lock and documents no
+        # ledger writer, so no activation-ledger record is appended here. The
+        # strings are fixed; nothing from the event is interpolated.
+        if event.get("event_type") == "activation.grant_withdrawn":
+            print("az-activated bootstrap narrowing withdrew the Knowledge Context broker",
+                  file=sys.stderr)
+        else:
+            print("az-activated bootstrap narrowing could not confirm the withdrawal of "
+                  "the Knowledge Context broker", file=sys.stderr)
+
+    with SystemdBusSession.connect(left) as session:
         manager = DbusUnitManager(call=session)
-        for definition in CORE_UNITS:
+        # The broker first, through the one withdrawal (marker, held-job settlement,
+        # mask, reload, stop, exact masked-and-quiet confirmation, a fresh session per
+        # step when one finishes), with the contextd-only stop authority.
+        try:
+            withdraw_contextd(
+                reason="bootstrap_narrowing", manager=manager,
+                authority=ContextdStopAuthority.from_session(session), root=Path("/"),
+                ledger=_activation_ledger(Path("/")), now=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                actor="azazel-activated", invocation_id="",
+                deadline=began + _BOOTSTRAP_NARROWING_SECONDS - 10.0,
+                final_deadline=began + _BOOTSTRAP_NARROWING_SECONDS,
+                bind_deadline=lambda d: bind_remaining(manager, d, time.monotonic),
+                sink=journal, fresh=fresh_session)
+        except Exception:  # noqa: BLE001 - the other units are still narrowed
+            failures.append(CONTEXTD_UNIT)
+        others = [d.name for d in CORE_UNITS if d.name != CONTEXTD_UNIT]
+        if getattr(session, "broken", False):
+            # The session finished during the withdrawal: the rest goes to a new one.
             try:
-                _mask_and_confirm_inactive(manager, definition.name)
-            except Exception:
-                failures.append(definition.name)
+                with fresh_session() as (other_manager, _authority):
+                    for name in others:
+                        try:
+                            _mask_and_confirm_inactive(other_manager, name)
+                        except Exception:  # noqa: BLE001
+                            failures.append(name)
+            except Exception:  # noqa: BLE001
+                failures.extend(others)
+        else:
+            for name in others:
+                try:
+                    _mask_and_confirm_inactive(manager, name)
+                except Exception:  # noqa: BLE001
+                    failures.append(name)
     if failures:
         raise UnitOperationFailed("bootstrap initial/emergency narrowing unconfirmed")
+
+
+#: Time the bootstrap-stage narrowing may use (bus connection included).
+_BOOTSTRAP_NARROWING_SECONDS = 30.0
 
 
 # Reviewed static messages of the bootstrap path, including the library's

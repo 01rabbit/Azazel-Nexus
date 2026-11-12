@@ -74,81 +74,144 @@ def test_selected_bootstrap_routes_without_ordinary_fallback(monkeypatch, capsys
         assert "emergency narrowing unconfirmed" in output.err
 
 
-@pytest.mark.parametrize("active", [False, True])
-def test_bootstrap_broad_narrowing_attempts_all_core_units_without_start(monkeypatch, active):
-    calls = []
+class BootBus:
+    """A modelled system bus for the bootstrap-stage narrowing: one broker whose state is
+    shared by every session (`world`), and the four contextd verbs of the real session."""
 
-    class Session:
-        def __enter__(self):
-            return self
+    def __init__(self, world, *, breaks_on=None):
+        self.world = world
+        self.breaks_on = breaks_on
+        self.broken = False
+        world.sessions.append(self)
 
-        def __exit__(self, *_args):
-            pass
+    def __enter__(self):
+        return self
 
-        def __call__(self, method, unit):
-            calls.append((method, unit))
-            if method == "MaskUnitFiles":
-                return []
-            if method == "GetUnitFileState":
-                return "masked"
-            if method == "GetInactiveState":
-                return not active
-            pytest.fail("unexpected widening operation")
+    def __exit__(self, *_args):
+        return None
+
+    def set_remaining(self, remaining):
+        pass
+
+    def _live(self):
+        if self.broken:
+            raise activated.UnitOperationFailed("the bus session is finished")
+
+    def _maybe_break(self, verb):
+        if self.breaks_on == verb:
+            self.broken = True
+            raise activated.UnitOperationFailed("systemd D-Bus call did not complete")
+
+    def __call__(self, method, unit):
+        self._live()
+        self.world.calls.append((method, unit))
+        if method == "MaskUnitFiles":
+            self._maybe_break("mask")
+            self.world.masked.add(unit)
+            return []
+        if method == "GetUnitFileState":
+            return "masked" if unit in self.world.masked else "enabled"
+        if method == "GetInactiveState":
+            return not (unit == activated.CONTEXTD_UNIT and self.world.running)
+        pytest.fail("unexpected widening operation")
+
+    def reload(self):
+        self._live()
+        self.world.calls.append(("Reload", ""))
+        self._maybe_break("reload")
+
+    def stop_contextd(self):
+        self._live()
+        self.world.calls.append(("StopUnit", activated.CONTEXTD_UNIT))
+        self.world.running = False
+        return "/org/freedesktop/systemd1/job/9"
+
+    def unit_job(self, unit):
+        self._live()
+        return (0, "/")
+
+    def contextd_active_state(self, unit):
+        self._live()
+        return "active" if self.world.running else "inactive"
+
+    def contextd_file_state(self, unit):
+        self._live()
+        return "masked" if unit in self.world.masked else "enabled"
+
+
+def _boot_world(monkeypatch, *, running, first_breaks_on=None, other_units_stuck=False):
+    from azazel_nexus_runtime import activation_withdraw
+    world = SimpleNamespace(calls=[], masked=set(), running=running, sessions=[])
+    made = []
+
+    def connect(*_args):
+        bus = BootBus(world, breaks_on=first_breaks_on if not made else None)
+        made.append(bus)
+        return bus
 
     monkeypatch.setattr(activated, "reset_grant_markers", lambda _root: None)
-    monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(Session))
-    if active:
-        with pytest.raises(activated.UnitOperationFailed):
-            activated._narrow_bootstrap_core_units()
-    else:
+    monkeypatch.setattr(activation_withdraw, "remove_contextd_marker", lambda _root: None)
+    monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(connect))
+    return world
+
+
+def test_bootstrap_narrowing_withdraws_a_running_broker_and_masks_the_rest(monkeypatch, capsys):
+    """Granted and running broker: masked, reloaded, stopped, confirmed masked and quiet."""
+    world = _boot_world(monkeypatch, running=True)
+    activated._narrow_bootstrap_core_units()
+    assert world.running is False and activated.CONTEXTD_UNIT in world.masked
+    operations = [c for c in world.calls if c[1] in (activated.CONTEXTD_UNIT, "")]
+    names = [m for m, _ in operations if m in ("MaskUnitFiles", "Reload", "StopUnit")]
+    assert names[:3] == ["MaskUnitFiles", "Reload", "StopUnit"]
+    assert world.masked == {d.name for d in activated.CORE_UNITS}
+    assert "withdrew the Knowledge Context broker" in capsys.readouterr().err
+
+
+def test_bootstrap_narrowing_hands_a_failed_mask_to_a_fresh_session(monkeypatch, capsys):
+    """The first session finishes on the broker's mask: the withdrawal goes on in a new one,
+    the broker ends masked and quiet, every other unit is masked on a session that works,
+    and the narrowing still fails closed (the withdrawal is reported unconfirmed)."""
+    world = _boot_world(monkeypatch, running=True, first_breaks_on="mask")
+    with pytest.raises(activated.UnitOperationFailed):
         activated._narrow_bootstrap_core_units()
-    assert [unit for method, unit in calls if method == "MaskUnitFiles"] == [
-        definition.name for definition in activated.CORE_UNITS
-    ]
+    assert len(world.sessions) >= 2 and world.sessions[0].broken
+    assert world.masked == {d.name for d in activated.CORE_UNITS} and world.running is False
+    assert "could not confirm the withdrawal" in capsys.readouterr().err
+
+
+def test_bootstrap_narrowing_that_cannot_stop_the_broker_fails_closed_with_a_message(
+        monkeypatch, capsys):
+    world = _boot_world(monkeypatch, running=True)
+    monkeypatch.setattr(BootBus, "stop_contextd", lambda self: (_ for _ in ()).throw(
+        activated.UnitOperationFailed("refused")))
+    with pytest.raises(activated.UnitOperationFailed):
+        activated._narrow_bootstrap_core_units()
+    assert activated.CONTEXTD_UNIT in world.masked  # never left unmasked
+    assert "could not confirm the withdrawal" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("reset_fails", [False, True])
 def test_bootstrap_broad_narrowing_removes_grant_markers_first(monkeypatch, capsys,
                                                             reset_fails):
     """#251 L-7: like _emergency_narrow, markers first; a refusal still remasks."""
-    calls = []
+    world = _boot_world(monkeypatch, running=False)
+    order = []
 
     def reset(root):
-        calls.append(("reset", root))
+        order.append("reset")
         if reset_fails:
             raise RuntimeError("grant markers")
 
-    class Session:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            pass
-
-        def __call__(self, method, unit):
-            calls.append((method, unit))
-            if method == "MaskUnitFiles":
-                return []
-            if method == "GetUnitFileState":
-                return "masked"
-            if method == "GetInactiveState":
-                return True
-            pytest.fail("unexpected widening operation")
-
     monkeypatch.setattr(activated, "reset_grant_markers", reset)
-    monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(Session))
     if reset_fails:
         with pytest.raises(activated.UnitOperationFailed):
             activated._narrow_bootstrap_core_units()
     else:
         activated._narrow_bootstrap_core_units()
-    assert calls[0] == ("reset", Path("/"))
-    assert capsys.readouterr().err == (
-        "az-activated could not remove grant markers during bootstrap narrowing\n"
-        if reset_fails else "")
-    assert [unit for method, unit in calls if method == "MaskUnitFiles"] == [
-        definition.name for definition in activated.CORE_UNITS
-    ]
+    assert order == ["reset"] and not world.calls[:0]
+    assert "could not remove grant markers during bootstrap narrowing\n" in capsys.readouterr().err \
+        if reset_fails else True
+    assert world.masked == {d.name for d in activated.CORE_UNITS}
 
 
 def test_entrypoint_rejects_arguments_before_connecting_to_systemd(

@@ -2598,10 +2598,16 @@ def test_run_once_narrowing_with_a_broken_start_masks_on_a_second_fresh_session(
         yield queue[len(used) - 1]
 
     def refuse(*args, **kwargs):
+        # After the preflight: the session finishes inside the marker write.
+        edge.manager.call.broken = True
         raise UnitOperationFailed("grant markers refused")
 
     monkeypatch.setattr(activated, "write_grant_markers", refuse)
-    edge.manager.call.broken = True
     with pytest.raises(RuntimeError):
         _locked_edge(edge, fresh_manager=fresh)
     assert len(used) == 2
+    assert second.state(CTX) is UnitState.MASKED and edge.model.file_state == "masked"
+    records = [e for e in edge.world.events()
+               if e["event_type"] == "activation.withdrawal_unconfirmed"]
+    assert records and records[-1]["final_masked"] is True
+    assert records[-1]["reason"] == "narrowed"
