@@ -2442,3 +2442,55 @@ def test_a_session_that_breaks_while_narrowing_hands_the_rest_to_a_fresh_one(edg
     assert used == [1]
     assert all(other.state(name) is UnitState.MASKED for name in order)
     assert other.refused == 0
+
+
+# -- Codex 19: the finalizer's own settlement can poison the session --------------------------------------------------
+
+def test_a_settlement_that_poisons_the_session_hands_mask_and_reload_to_a_fresh_one(poisoned):
+    """The finalizer starts on a healthy session; its own settle() (a Job read or StopUnit)
+    uses its allowance and finishes it. Mask, reload and the confirmation move to a new one."""
+    p = poisoned
+    fresh_guard = authority(p.model)
+    used = []
+
+    @contextlib.contextmanager
+    def fresh():
+        used.append(1)
+        yield p.fresh, fresh_guard
+
+    def settle(final):
+        p.manager.call.broken = True  # the bounded call timed out
+        raise UnitOperationFailed("systemd D-Bus call did not complete")
+
+    result = activation_withdraw._contain(
+        manager=p.manager, authority=_transport_authority(p.manager, p.model, p.clock, poison_on=None),
+        root=p.world.root, stop_sent=False, give_up=p.clock() + 10.0, clock=p.clock,
+        settle=settle, fresh=fresh)
+    assert used == [1]
+    assert result["final_masked"] is True and p.model.file_state == "masked"
+    assert p.manager.refused == 0
+
+
+def test_a_mask_that_poisons_the_session_hands_the_reload_to_a_fresh_one(poisoned):
+    p = poisoned
+    used = []
+
+    @contextlib.contextmanager
+    def fresh():
+        used.append(1)
+        yield p.fresh, authority(p.model)
+
+    def mask(unit):
+        p.manager.call.broken = True
+        raise UnitOperationFailed("systemd D-Bus call did not complete")
+
+    p.manager.mask = mask
+    result = activation_withdraw._contain(
+        manager=p.manager, authority=authority(p.model), root=p.world.root, stop_sent=True,
+        give_up=p.clock() + 10.0, clock=p.clock, settle=None, fresh=fresh)
+    assert used == [1] and result["final_masked"] is True
+
+
+def test_the_process_age_is_a_bounded_number():
+    age = activated._process_age_seconds()
+    assert 0.0 <= age <= 30.0

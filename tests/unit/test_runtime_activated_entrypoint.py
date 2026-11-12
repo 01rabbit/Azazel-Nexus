@@ -301,8 +301,11 @@ def test_entrypoint_passes_the_system_bus_manager_to_one_fail_closed_pass(
     assert not calls
     # The lock is taken with a bounded wait before the pass, and the pass is
     # given the authority to stop the Knowledge Context broker alone.
-    assert taken == [(Path("/"), {"wait_seconds": activated.PASS_LOCK_WAIT_SECONDS,
-                                  "clock": time.monotonic, "sleep": time.sleep})]
+    # the wait is counted from the start of the process (its age is charged)
+    assert len(taken) == 1 and taken[0][0] == Path("/")
+    options = dict(taken[0][1])
+    assert 0 < options.pop("wait_seconds") <= activated.PASS_LOCK_WAIT_SECONDS
+    assert options == {"clock": time.monotonic, "sleep": time.sleep}
     assert isinstance(observed["stop_authority"], ContextdStopAuthority)
     assert observed["invocation_id"] == "a" * 32
     assert "granted=0" in capsys.readouterr().out

@@ -203,53 +203,74 @@ def _contain(*, manager: UnitManager, authority: ContextdStopAuthority, root: Pa
     def late() -> bool:
         return give_up is not None and clock() >= give_up
 
-    if fresh is not None and getattr(getattr(manager, "call", None), "broken", False):
-        # The session finished (a job operation ran out of its transport allowance):
-        # the reserved mask, reload and exact-masked confirmation run on a new one.
-        stack = contextlib.ExitStack()
+    stack = contextlib.ExitStack()
+    cur = {"manager": manager, "authority": authority, "swapped": False}
+
+    def usable() -> None:
+        """Before every step: a session that finished (a job operation ran out of its
+        transport allowance, in the finalizer's own settlement too) is replaced by a
+        new one, so the reserved mask, reload and exact-masked confirmation run on a
+        session that can still send them."""
+        if fresh is None or cur["swapped"] or late():
+            return
+        if not getattr(getattr(cur["manager"], "call", None), "broken", False):
+            return
+        cur["swapped"] = True
         try:
-            manager, authority = stack.enter_context(fresh())
+            m, a = stack.enter_context(fresh())
         except Exception:  # noqa: BLE001 - go on with the old session
-            stack.close()
-        else:
-            with stack:
-                if give_up is not None:
-                    bind_remaining(manager, give_up, clock)
-                return _contain(manager=manager, authority=authority, root=root,
-                                stop_sent=stop_sent, give_up=give_up, clock=clock,
-                                settle=None, fresh=None)
+            return
+        if give_up is not None:
+            bind_remaining(m, give_up, clock)
+        cur["manager"], cur["authority"] = m, a
+
     try:
-        remove_contextd_marker(root)
-    except Exception:  # noqa: BLE001
-        pass
-    if settle is not None and not late():
-        # A job still pending (or never looked at, when the withdrawal failed
-        # before its job stage) is replaced and recorded BEFORE the mask and the
-        # reload, which would make systemd fail it. Once: `settle` knows.
         try:
-            settle(True)
-        except Exception:  # noqa: BLE001 - the mask goes on
-            pass
-    for step in (lambda: manager.mask(CONTEXTD_UNIT), manager.reload):
-        if late():
-            break
-        try:
-            step()
-        except Exception:  # noqa: BLE001 - every step is tried
-            pass
-    try:
-        if not late() and not stop_sent and not contextd_is_quiet(authority):
-            authority.stop(CONTEXTD_UNIT)
-    except Exception:  # noqa: BLE001
-        pass
-    masked = quiet = False
-    if not late():
-        try:
-            masked = authority.file_state(CONTEXTD_UNIT) == "masked"
+            remove_contextd_marker(root)
         except Exception:  # noqa: BLE001
-            masked = False
-        quiet = contextd_is_quiet(authority)
-    return {"final_masked": masked, "final_quiet": quiet}
+            pass
+        usable()
+        if settle is not None and not late():
+            # A job still pending (or never looked at, when the withdrawal failed
+            # before its job stage) is replaced and recorded BEFORE the mask and the
+            # reload, which would make systemd fail it. Once: `settle` knows.
+            try:
+                settle(True)
+            except Exception:  # noqa: BLE001 - the mask goes on
+                pass
+        for step in (lambda m: m.mask(CONTEXTD_UNIT), lambda m: m.reload()):
+            usable()
+            if late():
+                break
+            try:
+                step(cur["manager"])
+            except Exception:  # noqa: BLE001 - every step is tried
+                # The call itself finished the session: the same step, once more,
+                # on a new one.
+                before = cur["manager"]
+                usable()
+                if cur["manager"] is not before and not late():
+                    try:
+                        step(cur["manager"])
+                    except Exception:  # noqa: BLE001
+                        pass
+        usable()
+        try:
+            if not late() and not stop_sent and not contextd_is_quiet(cur["authority"]):
+                cur["authority"].stop(CONTEXTD_UNIT)
+        except Exception:  # noqa: BLE001
+            pass
+        usable()
+        masked = quiet = False
+        if not late():
+            try:
+                masked = cur["authority"].file_state(CONTEXTD_UNIT) == "masked"
+            except Exception:  # noqa: BLE001
+                masked = False
+            quiet = contextd_is_quiet(cur["authority"])
+        return {"final_masked": masked, "final_quiet": quiet}
+    finally:
+        stack.close()
 
 
 class QueuedJobState:

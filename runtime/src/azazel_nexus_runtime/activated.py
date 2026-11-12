@@ -709,6 +709,22 @@ def _contextd_aids(root: Path, *, now: str, actor: str, invocation_id: str,
     return withdrawn_for, clear_for, before_for
 
 
+def _process_age_seconds() -> float:
+    """Seconds since this process was started (interpreter start, imports, bootstrap
+    selection included), so the pass budget is counted from the process's start and
+    `TimeoutStartSec` is checked end to end. Unreadable: 0 (the margin remains)."""
+    try:
+        with open("/proc/self/stat", "rb") as handle:
+            stat = handle.read().rsplit(b")", 1)[1].split()
+        ticks = int(stat[19])  # field 22, starttime, in clock ticks since boot
+        with open("/proc/uptime", "rb") as handle:
+            uptime = float(handle.read().split()[0])
+        age = uptime - ticks / os.sysconf("SC_CLK_TCK")
+        return min(max(age, 0.0), 30.0)
+    except (OSError, ValueError, IndexError):
+        return 0.0
+
+
 def _narrow_final(manager: UnitManager, root: Path, message: str, *, until: float,
                   clock=time.monotonic, fresh_manager=None, authority=None,
                   aids=None) -> None:
@@ -1798,7 +1814,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print("az-activated supporting bootstrap stopped after confirmed containment")
             return 0
         # The budget starts here, so that connecting to the bus counts.
-        started = time.monotonic()
+        started = time.monotonic() - _process_age_seconds()
 
         def work_left(begin=started) -> float:
             return begin + MAIN_PASS_BUDGET_SECONDS - _AFTER_PHASES - time.monotonic()
