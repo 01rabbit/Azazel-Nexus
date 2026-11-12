@@ -10,6 +10,7 @@ bundle and from the wheel built from it, and the installed `az-ui` refused with
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -210,25 +211,51 @@ def test_the_selection_is_sorted(tmp_path):
     assert names == sorted(names)
 
 
+#: What a build prints when it has no compiler or no Python headers.
+_NO_COMPILER = re.compile(
+    r"(command '[^']*(?:gcc|cc|clang|c\+\+)[^']*' failed: No such file"
+    r"|unable to execute '[^']*(?:gcc|cc|clang)[^']*': No such file"
+    r"|error: command '[^']*(?:gcc|cc|clang)[^']*' not found"
+    r"|No such file or directory: '[^']*(?:gcc|cc|clang)'"
+    r"|Python\.h: No such file or directory"
+    r"|[Uu]nable to find a (?:C )?compiler)")
+
+
 def _build_wheel(source: Path, out: Path, name: str) -> Path:
-    """Build a wheel offline from `source`. The test is skipped only when the build
-    prerequisites are demonstrably missing (setuptools or wheel cannot be imported or
-    there is no C compiler for the runtime's native extension); any other failure of
-    the build is a test failure, with the build's stderr shown."""
+    """Build a wheel offline from `source`. The test is skipped only when a build
+    prerequisite is demonstrably missing: setuptools or wheel cannot be imported, or
+    the build itself reports a missing compiler or Python headers in a message this
+    test recognises. Any other failure is a test failure with the build's stderr; the
+    mere absence of `cc`/`gcc` on PATH proves nothing (CC, sysconfig, other names)."""
     import importlib.util
     missing = [module for module in ("setuptools", "wheel")
                if importlib.util.find_spec(module) is None]
-    if name == "azazel_nexus_runtime" and shutil.which("cc") is None and shutil.which("gcc") is None:
-        missing.append("a C compiler")
     if missing:
         pytest.skip("the offline wheel build is not possible here: " + ", ".join(missing))
     result = subprocess.run(
         [sys.executable, "-m", "pip", "wheel", "--no-build-isolation", "--no-deps",
-         "-q", "-w", str(out), str(source)],
+         "-w", str(out), str(source)],
         capture_output=True, text=True, env={**os.environ, "PIP_DISABLE_PIP_VERSION_CHECK": "1"})
-    assert result.returncode == 0, result.stderr[-2000:]
+    if result.returncode != 0:
+        output = result.stdout + result.stderr
+        if _NO_COMPILER.search(output):
+            pytest.skip("the build reports a missing compiler or Python headers")
+        pytest.fail("the offline wheel build failed:\n" + output[-3000:])
     [wheel] = list(out.glob(f"{name}-*.whl"))
     return wheel
+
+
+def test_the_missing_compiler_patterns_recognise_real_messages_and_nothing_else():
+    for message in ("error: command '/usr/bin/gcc' failed: No such file or directory",
+                    "error: unable to execute 'gcc': No such file or directory",
+                    "fatal error: Python.h: No such file or directory",
+                    "error: Microsoft Visual C++ 14.0 or greater is required "
+                    "Unable to find a compiler"):
+        assert _NO_COMPILER.search(message), message
+    for message in ("error: invalid command 'bdist_wheel'",
+                    "SyntaxError: invalid syntax", "ModuleNotFoundError: No module named 'x'",
+                    "ERROR: Failed building wheel for azazel-nexus-runtime"):
+        assert not _NO_COMPILER.search(message), message
 
 
 def _wheel_of_checkout(source_runtime: Path, out: Path) -> Path:
@@ -345,7 +372,8 @@ def _contents_of(path: Path):
 def _nothing_leaked(output: Path) -> None:
     """Neither designated output exists, and nothing else in the output directory
     holds the sentinel's NAME or BYTES: archives are opened and their member names
-    and decompressed contents searched, not their compressed bytes."""
+    and decompressed contents searched, not their compressed bytes. Each kind of
+    finding has its own message, so a control can pin the one path it exercises."""
     manifest = Path(f"{output}.manifest.json")
     assert not output.exists(), "the archive was produced"
     assert not manifest.exists(), "the manifest was produced"
@@ -353,32 +381,78 @@ def _nothing_leaked(output: Path) -> None:
         if not path.is_file():
             continue
         names, blobs = _contents_of(path)
-        assert SENTINEL_NAME not in path.name, path
-        assert all(SENTINEL_NAME not in name for name in names), (path, names)
+        assert SENTINEL_NAME not in path.name, f"a file name carries the sentinel: {path}"
+        assert all(SENTINEL_NAME not in name for name in names), \
+            f"a member name carries the sentinel: {path} {names}"
         assert all(SENTINEL_NAME.encode() not in blob and SENTINEL_BYTES not in blob
-                   for blob in blobs), path
+                   for blob in blobs), f"decompressed content carries the sentinel: {path}"
 
 
-def test_the_leak_check_itself_finds_the_sentinel_inside_an_archive_and_a_manifest(tmp_path):
-    """Positive controls: the check must fail when the sentinel is really there."""
+def _gz_tar(path: Path, member: str, content: bytes) -> None:
     import io
+    with tarfile.open(path, "w:gz") as archive:
+        info = tarfile.TarInfo(member)
+        info.size = len(content)
+        archive.addfile(info, io.BytesIO(content))
+
+
+def _zip(path: Path, member: str, content: bytes) -> None:
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(member, content)
+
+
+@pytest.mark.parametrize("writer", [_gz_tar, _zip], ids=["gzip-tar", "zip"])
+def test_the_leak_check_finds_sentinel_bytes_only_inside_a_compressed_archive(
+        tmp_path, writer):
+    """Isolated path: a differently named archive, an innocuous member name, the
+    sentinel only in the DECOMPRESSED content. The designated archive and the manifest
+    are absent, so only the content search can fire; the raw compressed bytes do not
+    hold the sentinel, so a scan of those would pass."""
     output = _out(tmp_path)
-    with tarfile.open(output, "w:gz") as archive:
-        info = tarfile.TarInfo("x/inner.txt")
-        info.size = len(SENTINEL_BYTES)
-        archive.addfile(info, io.BytesIO(SENTINEL_BYTES))
-    with pytest.raises(AssertionError):
+    other = output.with_name("other.bin")
+    writer(other, "x/inner.txt", SENTINEL_BYTES * 20)
+    raw = other.read_bytes()
+    assert SENTINEL_BYTES not in raw and SENTINEL_NAME.encode() not in raw
+    assert not output.exists() and not Path(f"{output}.manifest.json").exists()
+    with pytest.raises(AssertionError, match="decompressed content carries the sentinel"):
         _nothing_leaked(output)
-    output.unlink()
-    with tarfile.open(output.with_name("other.tar.gz"), "w:gz") as archive:
-        info = tarfile.TarInfo(f"deep/{SENTINEL_NAME}")
-        info.size = 1
-        archive.addfile(info, io.BytesIO(b"x"))
-    with pytest.raises(AssertionError):
-        _nothing_leaked(output)  # a member NAME, not bytes
-    output.with_name("other.tar.gz").unlink()
+    # the same archive without the sentinel is clean (the control is not trivially red)
+    writer(other, "x/inner.txt", b"harmless")
+    _nothing_leaked(output)
+
+
+@pytest.mark.parametrize("writer", [_gz_tar, _zip], ids=["gzip-tar", "zip"])
+def test_the_leak_check_finds_a_sentinel_member_name_only(tmp_path, writer):
+    output = _out(tmp_path)
+    other = output.with_name("other.bin")
+    writer(other, f"deep/{SENTINEL_NAME}", b"harmless")
+    assert not output.exists() and not Path(f"{output}.manifest.json").exists()
+    with pytest.raises(AssertionError, match="a member name carries the sentinel"):
+        _nothing_leaked(output)
+
+
+def test_the_leak_check_finds_a_sentinel_file_name(tmp_path):
+    output = _out(tmp_path)
+    output.with_name(SENTINEL_NAME).write_bytes(b"harmless")
+    with pytest.raises(AssertionError, match="a file name carries the sentinel"):
+        _nothing_leaked(output)
+
+
+def test_the_leak_check_finds_sentinel_bytes_in_a_plain_file(tmp_path):
+    output = _out(tmp_path)
+    output.with_name("notes.txt").write_bytes(b"prefix " + SENTINEL_BYTES)
+    with pytest.raises(AssertionError, match="decompressed content carries the sentinel"):
+        _nothing_leaked(output)
+
+
+def test_the_leak_check_finds_a_produced_archive_and_a_produced_manifest(tmp_path):
+    output = _out(tmp_path)
     Path(f"{output}.manifest.json").write_bytes(b"{}")
-    with pytest.raises(AssertionError, match="manifest"):
+    with pytest.raises(AssertionError, match="the manifest was produced"):
+        _nothing_leaked(output)
+    Path(f"{output}.manifest.json").unlink()
+    _gz_tar(output, "x/inner.txt", b"harmless")
+    with pytest.raises(AssertionError, match="the archive was produced"):
         _nothing_leaked(output)
 
 
