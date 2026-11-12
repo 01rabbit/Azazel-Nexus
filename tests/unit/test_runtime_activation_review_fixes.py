@@ -1624,3 +1624,65 @@ def test_a_failed_broker_that_is_not_masked_is_withdrawn_at_preflight(fresh):
     assert CTX not in outcome.granted
     assert fresh.manager.state(CTX) is UnitState.MASKED
     assert any(e["event_type"] == "activation.grant_withdrawn" for e in fresh.world.events())
+
+
+# -- Codex 10: READY may have released the held start job --------------------------------------------------------------
+
+
+def _ready_releases_then(queued, monkeypatch, failing):
+    from azazel_nexus_runtime import systemd_notify
+
+    def ready():
+        queued.manager.release_after_ready(queued.world.root)  # READY=1 ran the held job
+        if failing == "ready":
+            raise UnitOperationFailed("systemd notification refused")
+
+    def barrier():
+        if failing == "barrier":
+            raise UnitOperationFailed("systemd notification barrier refused")
+        if failing == "barrier_timeout":
+            raise UnitOperationFailed("systemd notification barrier timed out")
+
+    monkeypatch.setattr(systemd_notify, "notify_ready", ready)
+    monkeypatch.setattr(systemd_notify, "notify_barrier", barrier)
+
+
+@pytest.mark.parametrize("failing", ["ready", "barrier", "barrier_timeout"])
+def test_a_failed_ready_or_barrier_stops_a_broker_the_ready_already_started(
+        queued, monkeypatch, failing):
+    _ready_releases_then(queued, monkeypatch, failing)
+    with pytest.raises(RuntimeError, match="readiness notification unavailable"):
+        _pass(queued)
+    assert queued.model.stops >= 1  # the broker that started was stopped ...
+    model = queued.model
+    assert model.running is True or model.stopped_at is not None
+    queued.clock.sleep(2.0)  # ... and settles
+    assert model.inactive() and model.job == NO_JOB
+    assert queued.manager.state(CTX) is UnitState.MASKED
+    assert model.file_state == "masked"
+    assert queued.world.markers() is None
+    events = queued.world.events()
+    kinds = [e["event_type"] for e in events]
+    assert "activation.readiness_unconfirmed" in kinds
+    withdrawn_events = [e for e in events if e["event_type"] == "activation.grant_withdrawn"]
+    assert len(withdrawn_events) == 1 and withdrawn_events[0]["reason"] == "narrowed"
+    assert withdrawn_events[0]["stopped"] is True
+
+
+def test_the_job_clear_alone_would_have_left_the_started_broker_running(queued, monkeypatch):
+    """Negative check: with only the job clear (the earlier behaviour) the broker runs on."""
+    _ready_releases_then(queued, monkeypatch, "barrier")
+    real = activated.withdraw_contextd
+
+    def job_clear_only(**kwargs):
+        from azazel_nexus_runtime.activation_withdraw import clear_contextd_job
+        return clear_contextd_job(
+            authority=kwargs["authority"], ledger=kwargs["ledger"], now=kwargs["now"],
+            actor=kwargs["actor"], reason="narrowed", invocation_id=kwargs["invocation_id"],
+            sink=kwargs.get("sink"), clock=kwargs["clock"], sleep=kwargs["sleep"])
+
+    monkeypatch.setattr(activated, "withdraw_contextd", job_clear_only)
+    with pytest.raises(RuntimeError, match="readiness notification unavailable"):
+        _pass(queued)
+    assert queued.model.running is True  # started by READY and never stopped
+    assert real is not None

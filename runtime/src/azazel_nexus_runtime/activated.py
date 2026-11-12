@@ -634,9 +634,10 @@ def _contextd_aids(stop_authority, root: Path, *, now: str, actor: str,
                    invocation_id: str, until: float, clock, sleep, record: bool):
     """`(withdrawn, clear_job)` for the Knowledge Context broker, or `(None, None)`.
 
-    `withdrawn()` is the already-withdrawn test; `clear_job(manager)` replaces a
-    start job still queued for the broker. With `record=False` (a pass that
-    never held `pass.lock`) the clear writes nothing to the ledger.
+    `withdrawn()` is the already-withdrawn test; `clear_job(manager)` is the full
+    contextd withdrawal (marker, mask, reload, stop, confirm quiet) run after a
+    narrowing. With `record=False` (a pass that never held `pass.lock`) it
+    writes nothing to the ledger.
     """
     if stop_authority is None:
         return None, None
@@ -644,12 +645,19 @@ def _contextd_aids(stop_authority, root: Path, *, now: str, actor: str,
     def withdrawn() -> bool:
         return contextd_already_withdrawn(stop_authority, root)
 
-    def clear_job(_manager) -> None:
-        clear_contextd_job(
-            authority=stop_authority, ledger=_activation_ledger(root), now=now,
-            actor=actor, reason="narrowed", invocation_id=invocation_id,
-            deadline=until, sink=None if record else (lambda event: None),
-            clock=clock, sleep=sleep)
+    def clear_job(target) -> None:
+        # The FULL withdrawal, not just a job clear: on a path where READY may
+        # already have been sent (READY or its barrier failed), the held start
+        # job may have run and the broker may be active. Unlink marker, mask,
+        # reload, stop if it is not quiet or a job is present, confirm quiet.
+        # It is also what a path before any READY needs: with nothing running
+        # it reduces to mask, reload, replace the job, confirm none is left.
+        withdraw_contextd(
+            reason="narrowed", manager=target, authority=stop_authority, root=root,
+            ledger=_activation_ledger(root), now=now, actor=actor,
+            invocation_id=invocation_id, deadline=until, final_deadline=until,
+            bind_deadline=lambda d: bind_remaining(target, d, clock),
+            sink=None if record else (lambda event: None), clock=clock, sleep=sleep)
 
     return withdrawn, clear_job
 

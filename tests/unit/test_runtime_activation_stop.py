@@ -717,7 +717,8 @@ def test_the_pass_budget_caps_the_broker_stop(main_pass):
     started = main_pass.clock()
     with pytest.raises(RuntimeError, match="could not be withdrawn at preflight"):
         main_pass.run(deadline=started + 2.0)
-    assert main_pass.clock() - started < 2.5
+    # the phases ended at 2 s; the narrowing's own withdrawal may spend the reserve
+    assert main_pass.clock() - started < 2.5 + activated.MAIN_PASS_RESERVE_SECONDS
 
 
 def test_the_main_pass_wiring_is_the_locked_pass():

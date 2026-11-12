@@ -575,10 +575,22 @@ def _ordinary_context(monkeypatch):
             return (0, "/")  # a narrowing confirms no start job is left queued
 
         def contextd_active_state(self, unit):
-            raise AssertionError("no state read in this test")
+            return "inactive"  # the broker is quiet after the narrowing
 
         def contextd_file_state(self, unit):
-            raise AssertionError("no state read in this test")
+            return "masked"
+
+        def __call__(self, method, unit):
+            if method == "MaskUnitFiles":
+                return [[(unit, "", "")]]
+            if method == "GetUnitFileState":
+                return "masked"
+            if method == "GetInactiveState":
+                return True
+            raise AssertionError(f"unexpected service-manager call: {method}")
+
+        def reload(self):
+            return None
 
         def __enter__(self):
             return self
@@ -641,7 +653,10 @@ def test_ready_and_barrier_follow_a_recorded_pass(monkeypatch, capsys, failing, 
     expected = ["pass", "ready"] if failing == "ready" else ["pass", "ready", "barrier"]
     assert order == expected + [
         ("record", "activation.readiness_unconfirmed", "azazel-activated"),
-        ("narrow", Path("/"), "activation readiness notification unavailable")]
+        ("narrow", Path("/"), "activation readiness notification unavailable"),
+        # READY may already have released the held start job: the full
+        # withdrawal of the broker follows the narrowing and is recorded.
+        ("record", "activation.grant_withdrawn", "azazel-activated")]
     # The success line is never printed before (or without) READY.
     assert "completed safely" not in captured.out
     assert "readiness notification unavailable; withdrawing grants" in captured.err

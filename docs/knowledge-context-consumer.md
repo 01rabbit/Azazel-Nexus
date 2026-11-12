@@ -703,7 +703,10 @@ designed to keep the broker's queued start job and to re-grant it:
   withheld (the approval, the policy, health or evidence no longer allow it, or a
   retirement is pending, which makes the pass withhold every unit), or the pass
   narrows for any reason or runs out of budget, the broker is masked, the manager
-  is reloaded and the queued job is replaced with `StopUnit` before the pass ends;
+  is reloaded and the queued job is replaced with `StopUnit` before the pass ends.
+  Every narrowing of the pass runs the full broker withdrawal afterwards, because
+  when READY or its barrier failed, READY may already have released the held job
+  and started the broker;
 - if the pass dies, `Requires=` fails the job, which is the fail-closed side.
 
 Other conditions can also make the second pass withhold or narrow, for example a
