@@ -19,6 +19,7 @@ from azazel_nexus_runtime.activation_retire import RetireRefused
 from azazel_nexus_runtime.activation_withdraw import (
     WithdrawalUnconfirmed, contextd_already_withdrawn, contextd_is_quiet, contextd_is_running,
 )
+from azazel_nexus_runtime.activation_recheck import ContextdVerdict
 from azazel_nexus_runtime.contextd_cgroup import read_contextd_cgroup
 from azazel_nexus_runtime.units import ContextdStopAuthority
 from stop_helpers import CTX, JOB, NO_JOB, ContextdModel, FakeClock, authority
@@ -35,9 +36,21 @@ SELF_OK = "0::/system.slice/run-abc.service\n"
 DEFAULT = object()
 
 
-def mountinfo_for(base, *, fstype="cgroup2", mount_root="/", point="/sys/fs/cgroup", device=None):
+def mount_id_of(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for line in open(f"/proc/self/fdinfo/{fd}"):
+            if line.startswith("mnt_id:"):
+                return int(line.split(":")[1])
+    finally:
+        os.close(fd)
+
+
+def mountinfo_for(base, *, fstype="cgroup2", mount_root="/", point="/sys/fs/cgroup",
+                  device=None, mount_id=None):
     dev = os.stat(base).st_dev if device is None else device
-    return (f"30 25 {os.major(dev)}:{os.minor(dev)} {mount_root} {point} rw,nosuid - {fstype} cgroup2 rw\n"
+    mid = mount_id_of(base) if mount_id is None else mount_id
+    return (f"{mid} 25 {os.major(dev)}:{os.minor(dev)} {mount_root} {point} rw,nosuid - {fstype} cgroup2 rw\n"
             "31 25 0:5 / /proc rw - proc proc rw\n")
 
 
@@ -111,18 +124,17 @@ def test_a_cgroup_root_that_is_not_ours_is_unknown(tmp_path, kwargs, state):
     assert read_contextd_cgroup(state, root=make_root(tmp_path / "b", unit_dir=False, **kwargs)) == "unknown"
 
 
-@pytest.mark.parametrize("variant", ["mount_root", "fstype", "shadowed_by_later_entry",
-                                     "device"])
-def test_the_last_mount_entry_must_be_our_cgroup2(tmp_path, variant):
+@pytest.mark.parametrize("variant", ["mount_root", "fstype", "point", "device", "id_absent"])
+def test_the_mount_of_the_opened_directory_must_be_our_cgroup2(tmp_path, variant):
     root = make_root(tmp_path, events="populated 0\n")
     base = root / "sys/fs/cgroup"
     good = mountinfo_for(base)
     text = {
         "mount_root": mountinfo_for(base, mount_root="/docker/x"),
         "fstype": mountinfo_for(base, fstype="tmpfs"),
-        # an earlier cgroup2 entry does not count when a later one is mounted over it
-        "shadowed_by_later_entry": good + mountinfo_for(base, fstype="tmpfs").split("\n")[0] + "\n",
+        "point": mountinfo_for(base, point="/sys/fs/cgroup/unified"),
         "device": mountinfo_for(base, device=os.makedev(0, 4242)),
+        "id_absent": mountinfo_for(base, mount_id=mount_id_of(base) + 100000),
     }[variant]
     (root / "proc/self/mountinfo").write_text(text)
     assert read_contextd_cgroup("inactive", root=root) == "unknown"
@@ -130,12 +142,47 @@ def test_the_last_mount_entry_must_be_our_cgroup2(tmp_path, variant):
     assert read_contextd_cgroup("inactive", root=root) == "empty"
 
 
-def test_the_later_matching_entry_is_the_one_used(tmp_path):
+def test_stacked_mounts_are_told_apart_by_mount_id_not_by_position(tmp_path):
     root = make_root(tmp_path, events="populated 0\n")
     base = root / "sys/fs/cgroup"
-    (root / "proc/self/mountinfo").write_text(
-        mountinfo_for(base, fstype="tmpfs") + mountinfo_for(base))
+    mine = mountinfo_for(base).split("\n")[0] + "\n"
+    other = mountinfo_for(base, mount_id=mount_id_of(base) + 7).split("\n")[0] + "\n"
+    # a decoy cgroup2 line with another ID, later in the file, does not matter ...
+    (root / "proc/self/mountinfo").write_text(mine + other)
     assert read_contextd_cgroup("active", root=root) == "empty"
+    # ... and a cgroup2 line that is not the opened directory's mount does not rescue a
+    # tmpfs mounted over it (the opened directory belongs to the tmpfs line)
+    tmpfs = mountinfo_for(base, fstype="tmpfs").split("\n")[0] + "\n"
+    decoy = mountinfo_for(base, mount_id=mount_id_of(base) + 7).split("\n")[0] + "\n"
+    (root / "proc/self/mountinfo").write_text(decoy + tmpfs)
+    assert read_contextd_cgroup("active", root=root) == "unknown"
+
+
+def test_an_unreadable_mount_id_is_unknown(tmp_path, monkeypatch):
+    from azazel_nexus_runtime import contextd_cgroup
+    root = make_root(tmp_path, events="populated 0\n")
+    monkeypatch.setattr(contextd_cgroup, "_mount_id", lambda fd: None)
+    assert read_contextd_cgroup("active", root=root) == "unknown"
+
+
+def test_a_populated_zero_is_empty_only_if_the_mount_is_unchanged_afterwards(tmp_path, monkeypatch):
+    from azazel_nexus_runtime import contextd_cgroup
+    root = make_root(tmp_path, events="populated 0\n")
+    assert read_contextd_cgroup("active", root=root) == "empty"
+    real = contextd_cgroup._trust
+    seen = []
+
+    def changing(r, fd):
+        seen.append(1)
+        return real(r, fd) if len(seen) == 1 else None
+
+    monkeypatch.setattr(contextd_cgroup, "_trust", changing)
+    assert read_contextd_cgroup("active", root=root) == "unknown"
+    assert len(seen) == 2
+    # a populated 1 is reported as it is
+    seen.clear()
+    root = make_root(tmp_path / "p", events="populated 1\n")
+    assert read_contextd_cgroup("active", root=root) == "populated"
 
 
 @pytest.mark.parametrize("case", ["populated", "empty_file", "absent", "unknown_root",
@@ -487,6 +534,18 @@ def test_a_look_alike_retirement_result_is_a_withhold(granted, outcome):
     assert _rc(granted, lambda **k: outcome) == 1
     assert withdrawn(granted)
     assert not [e for e in events_after(granted) if e["event_type"] == "activation.approval_retired"]
+
+
+@pytest.mark.parametrize("verdict", [
+    ContextdVerdict(True, "bogus"), ContextdVerdict(True, "granted:extra"),
+    ContextdVerdict(True, 5), ContextdVerdict(False, 5)])
+def test_a_verdict_that_does_not_match_what_a_grant_looks_like_is_a_withhold(
+        granted, monkeypatch, verdict):
+    monkeypatch.setattr(activation_recheck, "contextd_verdict", lambda *a, **k: verdict)
+    assert _rc(granted, None) == 1
+    assert withdrawn(granted)
+    [event] = [e for e in events_after(granted) if e["event_type"] == "activation.grant_withdrawn"]
+    assert event["reason"] == "recheck:verdict_error"
 
 
 def test_a_duck_typed_granted_verdict_is_not_trusted(granted, monkeypatch):

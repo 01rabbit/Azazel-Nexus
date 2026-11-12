@@ -1179,12 +1179,25 @@ cgroup root is not the namespace root (a container with the host cgroup namespac
 cgroup v1) reads `unknown` and so cannot confirm any withdrawal.
 `KeyboardInterrupt` and `SystemExit` are outside this containment: the narrowing
 catches `Exception` only. In the service's context SIGTERM is not turned into an
-exception; Python's default ends the process at once. That path is fail-closed on
-other grounds: READY is not sent, so `Requires=` fails the start job of every
-dependent (including a held start job of the broker), and the pass has removed
-this boot's grant markers first, so the units' `ConditionPathExists=` refuses
-them. It does not withdraw a broker that is already running; the next pass or the
-recheck does.
+exception; Python's default ends the process at once. What that leaves depends on
+where the process is.
+
+- Before READY (the whole pass, up to the READY notification): fail-closed. READY
+  is not sent, so `Requires=` fails the start job of every dependent (including a
+  held start job of the broker), and this boot's grant markers were removed at the
+  start of the pass, so the units' `ConditionPathExists=` refuses them. A broker
+  that is already running is not withdrawn by this; the next pass or the recheck
+  does that.
+- After READY has been sent, before or during its barrier: READY goes out before
+  the barrier, and the grant markers of the decision are already written. If a
+  SIGTERM, `SystemExit` or `KeyboardInterrupt` ends the process there, nothing is
+  contained by the controller: no marker is removed and nothing is masked. The grant
+  at that moment is a regular one, a complete decision that was recorded and whose
+  markers were written; it is not a half-finished state. What is not guaranteed is
+  that an exception after READY causes a withdrawal. The grant then ends the way
+  any grant does: the next pass, or the recheck (every 30 s as configured, not a
+  bound), withdraws it when the decision no longer holds. An `Exception` in the
+  barrier, in contrast, is contained (`_notify_ready_or_withdraw`).
 
 **Unexpected errors.** An error the main pass did not expect (the ledger's chain
 broken, a state file unreadable, anything outside the named refusals) narrows

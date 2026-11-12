@@ -306,7 +306,9 @@ def run_recheck(
             if type(verdict) is not ContextdVerdict or type(verdict.granted) is not bool:
                 raise TypeError("unexpected verdict")
             granted, label = verdict.granted, verdict.label
-            if type(label) is not str:
+            if (type(label) is not str or type(verdict.reason) is not str
+                    or (granted and (verdict.reason != "granted" or label != "granted"))):
+                # The only grant the verdict produces is (True, "granted").
                 raise TypeError("unexpected verdict")
         except Exception as exc:  # noqa: BLE001 - not granted: withdraw, exit 1
             print(f"az-activation-recheck: the verdict failed ({type(exc).__name__})",

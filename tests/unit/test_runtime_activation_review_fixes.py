@@ -2464,8 +2464,9 @@ def test_a_session_that_breaks_while_narrowing_hands_the_rest_to_a_fresh_one(edg
 
     monkeypatch.setattr(systemd_notify, "notify_ready", refuse)
     edge.manager.mask = mask
-    with pytest.raises(activated.RollbackFailed):  # the original error, narrowing chained
+    with pytest.raises(activated.RollbackFailed) as seen:  # the original error
         _locked_edge(edge, fresh_manager=factory)
+    assert isinstance(seen.value.__cause__, RuntimeError)  # the narrowing, chained
     assert used == [1]
     assert all(other.state(name) is UnitState.MASKED for name in order)
     assert other.refused == 0
