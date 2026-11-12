@@ -709,10 +709,15 @@ def _contextd_aids(root: Path, *, now: str, actor: str, invocation_id: str,
     return withdrawn_for, clear_for, before_for
 
 
+class ProcessAgeUnknown(RuntimeError):
+    """The process's age could not be established, so the end-to-end budget is unknown."""
+
+
 def _process_age_seconds() -> float:
-    """Seconds since this process was started (interpreter start, imports, bootstrap
+    """Seconds since this process was started (interpreter start, imports and bootstrap
     selection included), so the pass budget is counted from the process's start and
-    `TimeoutStartSec` is checked end to end. Unreadable: 0 (the margin remains)."""
+    `TimeoutStartSec` is checked end to end. No cap. Unreadable: `ProcessAgeUnknown`
+    (the caller fails closed; it never falls back to a clock that starts later)."""
     try:
         with open("/proc/self/stat", "rb") as handle:
             stat = handle.read().rsplit(b")", 1)[1].split()
@@ -720,9 +725,11 @@ def _process_age_seconds() -> float:
         with open("/proc/uptime", "rb") as handle:
             uptime = float(handle.read().split()[0])
         age = uptime - ticks / os.sysconf("SC_CLK_TCK")
-        return min(max(age, 0.0), 30.0)
-    except (OSError, ValueError, IndexError):
-        return 0.0
+    except (OSError, ValueError, IndexError) as exc:
+        raise ProcessAgeUnknown(type(exc).__name__) from exc
+    if age < 0:
+        raise ProcessAgeUnknown("negative age")
+    return age
 
 
 def _narrow_final(manager: UnitManager, root: Path, message: str, *, until: float,
@@ -1814,10 +1821,34 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print("az-activated supporting bootstrap stopped after confirmed containment")
             return 0
         # The budget starts here, so that connecting to the bus counts.
-        started = time.monotonic() - _process_age_seconds()
+        try:
+            age = _process_age_seconds()
+        except ProcessAgeUnknown as exc:
+            # The end-to-end budget cannot be counted. Fail closed before any bus
+            # call or mutation: nothing is granted, READY is not sent, the exit is
+            # non-zero (the service fails; the dependents' Requires= and the
+            # grant-marker conditions keep every governed unit from starting).
+            print("az-activated failed before completing a safe pass: "
+                  f"process age unknown ({exc})", file=sys.stderr)
+            return 1
+        started = time.monotonic() - age
 
         def work_left(begin=started) -> float:
             return begin + MAIN_PASS_BUDGET_SECONDS - _AFTER_PHASES - time.monotonic()
+
+        if work_left() <= 0:
+            # The time before the budget started (interpreter, imports, selection)
+            # already used the phase window. Minimal fail-closed action that fits:
+            # remove every grant marker (a local unlink, no bus call), grant
+            # nothing, send no READY, exit non-zero.
+            try:
+                reset_grant_markers(Path("/"))
+            except Exception:  # noqa: BLE001
+                print("az-activated could not remove grant markers", file=sys.stderr)
+            print("az-activated failed before completing a safe pass: the phase "
+                  f"window was used up before the pass began (process age {age:.1f} s)",
+                  file=sys.stderr)
+            return 1
 
         @contextlib.contextmanager
         def fresh_manager():

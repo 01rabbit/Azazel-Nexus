@@ -1271,13 +1271,21 @@ before the broker's start job is evaluated.
 **Main pass.** The pass takes `/run/azazel-activation/pass.lock` (root `0600`,
 no-follow, `flock`), waiting at most 25 s, and holds it until READY's barrier;
 without the lock it changes nothing and exits non-zero. One budget of 53 s covers the
-whole pass, counted from the start of the process (interpreter start, imports and bootstrap selection count; at most 30 s of such age is charged) and before the bus connects (connecting counts, each of
+whole pass, counted from the start of the process (interpreter start, imports and bootstrap selection count; the age is read from `/proc` and is not capped) and before the bus connects (connecting counts, each of
 its steps limited to the time that is left). The phases of the pass end 16 s
 before it (at 37 s); then come an 8 s window for READY and its barrier and an 8 s
 reserve that nothing else uses, kept for the narrowing a failed pass needs and
 its record. `azazel-activated.service` has `TimeoutStartSec=60s`
 (was 30 s): 37 s of phases + 8 s of READY window + 8 s of reserve = 53 s, plus 7 s of
 margin for the exit.
+
+If the process age cannot be read, the pass fails closed before any bus call or
+change: nothing is granted, READY is not sent, the exit is non-zero (the
+dependents' `Requires=` and marker conditions keep the governed units from
+starting). If the age already uses up the phase window (37 s), the only action
+is removing every grant marker (a local unlink, no bus call); nothing is
+granted, no READY, exit non-zero. A shorter window shortens the lock wait to
+what is left of it.
 
 The budget is kept by the code, not by interrupting it. The pass checks it
 between its phases (before input collection, after it, after the decision,

@@ -204,18 +204,19 @@ def _contain(*, manager: UnitManager, authority: ContextdStopAuthority, root: Pa
         return give_up is not None and clock() >= give_up
 
     stack = contextlib.ExitStack()
-    cur = {"manager": manager, "authority": authority, "swapped": False}
+    cur = {"manager": manager, "authority": authority}
+    swaps = [0]
 
     def usable() -> None:
         """Before every step: a session that finished (a job operation ran out of its
         transport allowance, in the finalizer's own settlement too) is replaced by a
         new one, so the reserved mask, reload and exact-masked confirmation run on a
         session that can still send them."""
-        if fresh is None or cur["swapped"] or late():
-            return
+        if fresh is None or swaps[0] >= 4 or late():
+            return  # bounded: at most one new session per step, and never past give_up
         if not getattr(getattr(cur["manager"], "call", None), "broken", False):
             return
-        cur["swapped"] = True
+        swaps[0] += 1
         try:
             m, a = stack.enter_context(fresh())
         except Exception:  # noqa: BLE001 - go on with the old session
