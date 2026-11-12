@@ -25,11 +25,15 @@ import stat
 from dataclasses import replace
 from pathlib import Path
 
+import re
+
 from . import activation_markers
+from .activation_markers import GRANTABLE_UNITS
 
 __all__ = [
     "RetireRefused",
     "read_accepted_grant",
+    "resume_pending_retirement",
     "retirement_pending",
     "retire_if_revoked",
     "write_accepted_grant",
@@ -43,6 +47,9 @@ _LEAF = "activation"
 _DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _LIMIT = 8192
 _FIELDS = {"schema", "operator", "approval_seq", "approval_id", "payload_sha256", "units"}
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_OPERATOR = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
+_MAX_SKEW = 86400
 
 
 class RetireRefused(Exception):
@@ -104,19 +111,33 @@ def _read(leaf: int, name: str) -> dict | None:
 
 
 def _check(document, *, pending: bool) -> dict:
-    fields = _FIELDS | ({"target_seq"} if pending else set())
+    """The record is exactly what `write_accepted_grant` writes, or it is refused.
+
+    Canonical lowercase SHA-256, an operator label, a non-empty sorted unique
+    subset of the grantable units, and a sequence that can still be advanced.
+    """
+    fields = _FIELDS | ({"target_seq", "skew_seconds"} if pending else set())
     if (type(document) is not dict or set(document) != fields
             or document["schema"] != SCHEMA
-            or type(document["operator"]) is not str or not document["operator"]
+            or type(document["operator"]) is not str
+            or _OPERATOR.fullmatch(document["operator"]) is None
             or type(document["approval_id"]) is not str
+            or not 0 < len(document["approval_id"]) <= 128
             or type(document["payload_sha256"]) is not str
+            or _SHA256.fullmatch(document["payload_sha256"]) is None
             or type(document["units"]) is not list
+            or not document["units"]
             or any(type(u) is not str for u in document["units"])
+            or document["units"] != sorted(set(document["units"]))
+            or not set(document["units"]) <= GRANTABLE_UNITS
             or type(document["approval_seq"]) is not int
             or not 0 <= document["approval_seq"] < 2**63 - 1):
         raise RetireRefused("accepted-grant record inconsistent")
-    if pending and document["target_seq"] != document["approval_seq"] + 1:
-        raise RetireRefused("retirement target inconsistent")
+    if pending:
+        skew = document["skew_seconds"]
+        if (document["target_seq"] != document["approval_seq"] + 1
+                or type(skew) is not int or not 0 <= skew <= _MAX_SKEW):
+            raise RetireRefused("retirement target inconsistent")
     return document
 
 
@@ -131,7 +152,12 @@ def _write(leaf: int, name: str, document: dict) -> None:
                  | os.O_CLOEXEC, 0o600, dir_fd=leaf)
     try:
         os.fchmod(fd, 0o600)
-        os.write(fd, raw)
+        view = memoryview(raw)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError("short write that makes no progress")
+            view = view[written:]
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -200,14 +226,29 @@ def retirement_pending(root: Path) -> bool:
         return True
 
 
-def retire_if_revoked(*, root: Path, trust, read_floor, raise_floor, now: str,
-                      skew_seconds: int) -> str:
-    """Retire the accepted approval if its operator is explicitly revoked.
+def _advance(leaf: int, record: dict, *, read_floor, raise_floor, now: str) -> None:
+    """Raise the floor to the record's target, confirm it, then clear both files."""
+    current = read_floor()
+    if current is None:
+        raise RetireRefused("activation floor absent")
+    target = max(current.approval_seq, record["target_seq"])
+    if target >= 2**63:
+        raise RetireRefused("approval sequence cannot be advanced")
+    raise_floor(replace(current, approval_seq=target), now=now,
+                skew_seconds=record["skew_seconds"])
+    confirmed = read_floor()
+    if confirmed is None or confirmed.approval_seq < record["target_seq"]:
+        raise RetireRefused("raised floor not confirmed")
+    _remove(leaf, ACCEPTED)
+    _remove(leaf, PENDING)
 
-    Returns ``"none"``, ``"retired"`` or ``"resumed"``. `trust` is a freshly
-    loaded `OperatorTrust`; `read_floor()` and `raise_floor(value, now=,
-    skew_seconds=)` are the high-water readers. Raises `RetireRefused` when
-    the state cannot be advanced; nothing is granted by this function.
+
+def resume_pending_retirement(*, root: Path, read_floor, raise_floor, now: str) -> str:
+    """Finish a retirement that was already classified; needs no trust and no policy.
+
+    `"none"` when nothing is pending, `"resumed"` when it was completed. The
+    clock skew the floor raise needs is in the pending record, so a trust or
+    policy that cannot be loaded now does not stop the resume.
     """
     try:
         leaf = _leaf(root, create=False)
@@ -215,37 +256,57 @@ def retire_if_revoked(*, root: Path, trust, read_floor, raise_floor, now: str,
             return "none"
         try:
             pending = _read(leaf, PENDING)
-            resumed = pending is not None
-            if resumed:
-                record = _check(pending, pending=True)
-            else:
-                accepted = _read(leaf, ACCEPTED)
-                if accepted is None:
-                    return "none"
-                accepted = _check(accepted, pending=False)
-                if accepted["operator"] not in trust.revoked:
-                    return "none"
-                record = dict(accepted, target_seq=accepted["approval_seq"] + 1)
-                if record["target_seq"] >= 2**63:
-                    raise RetireRefused("approval sequence cannot be advanced")
-                _write(leaf, PENDING, record)
-            current = read_floor()
-            if current is None:
-                raise RetireRefused("activation floor absent")
-            target = max(current.approval_seq, record["target_seq"])
-            if target >= 2**63:
-                raise RetireRefused("approval sequence cannot be advanced")
-            raise_floor(replace(current, approval_seq=target), now=now,
-                        skew_seconds=skew_seconds)
-            confirmed = read_floor()
-            if confirmed is None or confirmed.approval_seq < record["target_seq"]:
-                raise RetireRefused("raised floor not confirmed")
-            _remove(leaf, ACCEPTED)
-            _remove(leaf, PENDING)
+            if pending is None:
+                return "none"
+            _advance(leaf, _check(pending, pending=True), read_floor=read_floor,
+                     raise_floor=raise_floor, now=now)
         finally:
             os.close(leaf)
     except RetireRefused:
         raise
     except Exception:
         raise RetireRefused("approval retirement failed") from None
-    return "resumed" if resumed else "retired"
+    return "resumed"
+
+
+def retire_if_revoked(*, root: Path, trust, read_floor, raise_floor, now: str,
+                      skew_seconds: int) -> str:
+    """Retire the accepted approval if its operator is explicitly revoked.
+
+    Returns ``"none"``, ``"retired"`` or ``"resumed"``. `trust` is a freshly
+    loaded `OperatorTrust`; `read_floor()` and `raise_floor(value, now=,
+    skew_seconds=)` are the high-water readers. A pending retirement is
+    resumed first, whatever `trust` says. Raises `RetireRefused` when the
+    state cannot be advanced; nothing is granted by this function.
+    """
+    resumed = resume_pending_retirement(root=root, read_floor=read_floor,
+                                        raise_floor=raise_floor, now=now)
+    if resumed != "none":
+        return resumed
+    try:
+        leaf = _leaf(root, create=False)
+        if leaf is None:
+            return "none"
+        try:
+            accepted = _read(leaf, ACCEPTED)
+            if accepted is None:
+                return "none"
+            accepted = _check(accepted, pending=False)
+            if accepted["operator"] not in trust.revoked:
+                return "none"
+            if type(skew_seconds) is not int or not 0 <= skew_seconds <= _MAX_SKEW:
+                raise RetireRefused("clock skew bound refused")
+            record = dict(accepted, target_seq=accepted["approval_seq"] + 1,
+                          skew_seconds=skew_seconds)
+            if record["target_seq"] >= 2**63:
+                raise RetireRefused("approval sequence cannot be advanced")
+            _write(leaf, PENDING, record)
+            _advance(leaf, record, read_floor=read_floor, raise_floor=raise_floor,
+                     now=now)
+        finally:
+            os.close(leaf)
+    except RetireRefused:
+        raise
+    except Exception:
+        raise RetireRefused("approval retirement failed") from None
+    return "retired"

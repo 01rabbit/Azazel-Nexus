@@ -623,7 +623,8 @@ def test_the_pass_refuses_a_v3_result_even_from_its_approval_producer(world):
         verified = approval(**kwargs)
         return ObserveBaselineApproval(
             lease=verified.lease, approval_id=verified.approval_id,
-            approval_seq=verified.approval_seq, security_epoch=verified.security_epoch)
+            approval_seq=verified.approval_seq, security_epoch=verified.security_epoch,
+            payload_sha256=hashlib.sha256(world.payload).hexdigest())
 
     _assert_granted(world, world.run(approval=as_v2))
 

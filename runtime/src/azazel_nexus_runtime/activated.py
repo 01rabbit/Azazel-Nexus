@@ -83,11 +83,15 @@ from .mio_remoted import TRANSPORT
 from .model_fetch import ENDPOINT_FOR
 from .node_config import load_declared_node
 from .activation_markers import GRANTABLE_UNITS, reset_grant_markers, write_grant_markers
-from .activation_retire import RetireRefused, retirement_pending, write_accepted_grant
+from .activation_budget import PassBudgetExpired, alarm_budget, check_budget
+from .activation_retire import (
+    RetireRefused, read_accepted_grant, retirement_pending, write_accepted_grant,
+)
 from .activation_lock import PassLockBusy, PassLockRefused, acquire_pass_lock
 from .activation_withdraw import (
     WithdrawalUnconfirmed,
     clear_contextd_job,
+    contextd_is_running,
     withdraw_contextd,
 )
 from .units import (
@@ -586,8 +590,13 @@ _ALL_PRODUCERS = (
 #: (hardening.py), leaving 15 s for READY and its barrier. The wait for the
 #: broker to stop is capped by what remains, and by 20 s in any case.
 MAIN_PASS_BUDGET_SECONDS = 45.0
-#: How long the main pass waits for the pass lock before it narrows.
-PASS_LOCK_WAIT_SECONDS = 5.0
+#: How long the main pass waits for the pass lock before it narrows. The
+#: recheck holds the lock for at most `activation_recheck.RECHECK_BUDGET_SECONDS`
+#: (35 s), which is longer: a pass that arrives during a long withdrawal can
+#: still run out of wait, and then narrows and fails (documented in
+#: activation-observe-baseline.md 8.3). It is inside the 45 s budget, so a pass
+#: that gets the lock late has the rest of it.
+PASS_LOCK_WAIT_SECONDS = 25.0
 
 
 def _emergency_narrow(manager: UnitManager, root: Path, message: str) -> None:
@@ -671,11 +680,7 @@ def _run_once(
         # a mask in place, before the masks below are confirmed. One that is
         # inactive (even with a start job queued) is not touched: its marker
         # is gone and it is masked below, so the queued start is skipped.
-        try:
-            running = manager.is_inactive(CONTEXTD_UNIT) is not True
-        except Exception:  # noqa: BLE001 - unreadable (e.g. not loaded and not masked)
-            running = False  # the mask below makes it readable
-        if running:
+        if contextd_is_running(stop_authority):
             try:
                 withdraw_contextd(
                     reason="preflight", manager=manager, authority=stop_authority,
@@ -697,6 +702,7 @@ def _run_once(
         })
         raise RuntimeError("stale activation grant markers could not be removed")
 
+    check_budget(deadline, clock)
     inputs = None
     try:
         from .activation_pass import (
@@ -713,14 +719,24 @@ def _run_once(
                                          ledger=daemon.ledger, now=now)
     except Exception:  # noqa: BLE001 - collection failure is absent evidence
         inputs = None
+    check_budget(deadline, clock)
     lease = inputs.lease if inputs is not None else None
     healthy = inputs is not None and lease is not None and inputs.healthy is True
     if not healthy:
         lease = None
-    if lease is not None and retirement_pending(root):
-        # An approval retirement (operator revoked) is unfinished: nothing is
-        # granted until the recheck has raised the floor and cleared it.
-        lease, healthy = None, False
+    if lease is not None:
+        # An approval retirement (operator revoked) that is unfinished, or an
+        # accepted-grant record that is not exactly what a grant writes,
+        # withholds everything: nothing is granted until the recheck has
+        # finished the retirement, or the record has been looked at. The
+        # record is never overwritten here.
+        try:
+            blocked = retirement_pending(root)
+            read_accepted_grant(root)
+        except RetireRefused:
+            blocked = True
+        if blocked:
+            lease, healthy = None, False
     # The pass's own Edge evidence (P5), never the daemon's host read: a
     # lease-bearing pass without it hands the library nothing launchable.
     edge = inputs.edge if inputs is not None else None
@@ -737,6 +753,7 @@ def _run_once(
         commissioning_evidence=inputs.evidence if inputs is not None else None,
         require_commissioning_evidence=True,
     )
+    check_budget(deadline, clock)
     granted = set(outcome.granted)
     if granted and (lease is None or not healthy or lease.units is None
                     or not granted <= lease.units or not granted <= GRANTABLE_UNITS):
@@ -1011,7 +1028,8 @@ _STATIC_FAILURE_MESSAGES = frozenset({
     'protected bootstrap selection refused: selection or source changed during read',
     'protected bootstrap selection refused: required bootstrap input missing',
     'additional controller command refused',
-    'a stop authority needs its two verbs',
+    'a stop authority needs its four verbs',
+    'systemd returned an invalid unit-file state result',
     'manager reload failed',
     'systemd returned an invalid job result',
     'systemd returned an invalid stop result',
@@ -1393,31 +1411,51 @@ def _locked_pass(
     *, manager: UnitManager, root: Path, now: str, actor: str,
     stop_authority: Optional[ContextdStopAuthority], invocation_id: str,
     clock=time.monotonic, sleep=time.sleep, producers=None,
+    budget_seconds: float = MAIN_PASS_BUDGET_SECONDS,
 ) -> ActivationOutcome:
     """The main pass under the pass lock, from the lock to READY's barrier.
 
     The lock is taken with a bounded wait; if it cannot be, the pass narrows
     (markers removed, every governed unit masked, reload) and fails. The
     recheck holds the same lock while it evaluates, so the two never change
-    markers and unit state at once. The monotonic budget starts before the
-    wait.
+    markers and unit state at once.
+
+    One budget covers everything from before the lock wait to the end of
+    READY's barrier. It is checked between the phases of the pass with
+    `clock` and also armed as a real-time alarm, so a slow producer, a slow
+    bus call or a slow barrier is abandoned too. Past the budget the pass
+    narrows (before systemd's 60 s timeout kills it with no narrowing) and
+    fails.
     """
-    deadline = clock() + MAIN_PASS_BUDGET_SECONDS
+    deadline = clock() + budget_seconds
     try:
-        lock = acquire_pass_lock(root, wait_seconds=PASS_LOCK_WAIT_SECONDS,
-                                 clock=clock, sleep=sleep)
-    except (PassLockBusy, PassLockRefused):
-        _emergency_narrow(manager, root, "the activation pass lock could not be taken")
-    with lock:
-        outcome = _run_once(
-            manager=manager, root=root, now=now, actor=actor, producers=producers,
-            stop_authority=stop_authority, deadline=deadline, clock=clock,
-            sleep=sleep, invocation_id=invocation_id)
-        # Type=notify: without READY the controller's start fails and every
-        # unit with Requires=/After= on it fails as a dependency. READY is
-        # sent only after the pass, its markers and its record are complete,
-        # and the lock is kept until its barrier has returned.
-        _notify_ready_or_withdraw(manager, root, now=now, actor=actor)
+        with alarm_budget(budget_seconds):
+            try:
+                lock = acquire_pass_lock(root, wait_seconds=PASS_LOCK_WAIT_SECONDS,
+                                         clock=clock, sleep=sleep)
+            except (PassLockBusy, PassLockRefused):
+                _emergency_narrow(manager, root, "the activation pass lock could not be taken")
+            with lock:
+                outcome = _run_once(
+                    manager=manager, root=root, now=now, actor=actor, producers=producers,
+                    stop_authority=stop_authority, deadline=deadline, clock=clock,
+                    sleep=sleep, invocation_id=invocation_id)
+                check_budget(deadline, clock)
+                # Type=notify: without READY the controller's start fails and
+                # every unit with Requires=/After= on it fails as a dependency.
+                # READY is sent only after the pass, its markers and its
+                # record are complete, and the lock is kept until its barrier
+                # has returned.
+                _notify_ready_or_withdraw(manager, root, now=now, actor=actor)
+    except PassBudgetExpired:
+        try:
+            _activation_ledger(root).append({
+                "event_type": "activation.pass_budget_expired",
+                "occurred_at": now, "actor": actor,
+            })
+        except Exception:  # noqa: BLE001 - narrowing below is unconditional
+            pass
+        _emergency_narrow(manager, root, "the activation pass used its whole time budget")
     return outcome
 
 

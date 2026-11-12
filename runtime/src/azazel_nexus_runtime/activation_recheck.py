@@ -35,18 +35,22 @@ from typing import Callable, Optional
 
 from azazel_nexus.activation import (
     CORE_UNITS,
-    UnitState,
     UnitTier,
     common_withholding_reason,
 )
 from azazel_nexus.audit import AuditLedger
 from azazel_nexus.generation import GenerationStore
 
-from .activation_lock import PassLockBusy, PassLockRefused, acquire_pass_lock
+from .activation_budget import PassBudgetExpired, alarm_budget
+from .activation_lock import (
+    PassLockBusy, PassLockDirectoryMissing, PassLockRefused, acquire_pass_lock,
+)
 from .activation_markers import contextd_marker_present
 from .activation_pass import PassInputs, collect_pass_inputs
-from .activation_retire import RetireRefused, retire_if_revoked
-from .activation_withdraw import NO_JOB, WithdrawalUnconfirmed, withdraw_contextd
+from .activation_retire import (
+    RetireRefused, resume_pending_retirement, retire_if_revoked, retirement_pending,
+)
+from .activation_withdraw import NO_JOB, QUIET_STATES, WithdrawalUnconfirmed, withdraw_contextd
 from .units import (
     CONTEXTD_UNIT,
     ContextdStopAuthority,
@@ -57,6 +61,13 @@ from .units import (
 __all__ = ["ContextdVerdict", "contextd_triggers", "contextd_verdict", "main", "run_recheck"]
 
 ACTOR = "azazel-activation-recheck"
+#: One monotonic budget for a recheck. `azazel-activation-recheck.service` has
+#: `TimeoutStartSec=40s`; 35 s leaves 5 s for the record and the exit. It also
+#: bounds how long the pass lock is held (the main pass waits
+#: `activated.PASS_LOCK_WAIT_SECONDS` for it).
+RECHECK_BUDGET_SECONDS = 35.0
+#: Of which at most this long for retirement and collecting the inputs.
+RECHECK_COLLECT_SECONDS = 15.0
 #: The wiring set is read only to answer "is this capability built in".
 _CONTEXTD_DEFINITION = next(d for d in CORE_UNITS if d.name == CONTEXTD_UNIT)
 
@@ -75,7 +86,7 @@ class ContextdVerdict:
 
 
 def contextd_verdict(inputs: Optional[PassInputs], now: str, *,
-                     wired=None) -> ContextdVerdict:
+                     wired=None, retirement_blocked: bool = False) -> ContextdVerdict:
     """Would the main pass grant the Knowledge Context broker, given `inputs`?
 
     Pure: it reads `inputs` and the wiring set and nothing else, and it calls
@@ -83,8 +94,17 @@ def contextd_verdict(inputs: Optional[PassInputs], now: str, *,
     The conditions are the library's own (`common_withholding_reason`, the
     ones a SUPPORTING unit meets in `ActivationController`), applied to the
     verified lease, health and generation digest the collection produced.
-    Missing or incomplete inputs withhold.
+    Missing or incomplete inputs withhold, and so does an approval
+    retirement that is pending or failed (`retirement_blocked`): the main
+    pass grants nothing in that state either.
+
+    Differences from the main pass that are not modelled here: Edge evidence
+    and the floors are inputs to `complete` (collection), not re-derived; a
+    pass that would withhold for a reason `collect_pass_inputs` accepts is
+    not matched, which can only leave the broker running, never grant it.
     """
+    if retirement_blocked:
+        return ContextdVerdict(False, "retirement_pending")
     if type(inputs) is not PassInputs:
         return ContextdVerdict(False, "inputs_unavailable")
     if (not inputs.complete or inputs.lease is None or inputs.healthy is not True
@@ -107,9 +127,10 @@ def contextd_triggers(manager: UnitManager, authority: ContextdStopAuthority,
                       root: Path) -> tuple[str, ...]:
     """What, if anything, makes the broker worth evaluating.
 
-    A marker, a file state other than masked, or a state other than inactive
-    or a job. A read that fails counts: an unreadable broker is evaluated, not
-    assumed quiet.
+    A marker, a unit-file state other than exactly `masked` (`masked-runtime`
+    is not it), or an ActiveState other than `inactive`/`failed`, or a job. A
+    read that fails counts: an unreadable broker is evaluated, not assumed
+    quiet.
     """
     found: list[str] = []
     try:
@@ -118,12 +139,12 @@ def contextd_triggers(manager: UnitManager, authority: ContextdStopAuthority,
     except Exception:  # noqa: BLE001 - unreadable is evaluated
         found.append("marker_unreadable")
     try:
-        if manager.state(CONTEXTD_UNIT) is not UnitState.MASKED:
+        if authority.file_state(CONTEXTD_UNIT) != "masked":
             found.append("not_masked")
     except Exception:  # noqa: BLE001
         found.append("state_unreadable")
     try:
-        if manager.is_inactive(CONTEXTD_UNIT) is not True:
+        if authority.active_state(CONTEXTD_UNIT) not in QUIET_STATES:
             found.append("not_inactive")
         elif authority.job(CONTEXTD_UNIT) != NO_JOB:
             found.append("job")
@@ -137,53 +158,89 @@ def run_recheck(
     producers, invocation_id: str, retirement=None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    budget_seconds: float = RECHECK_BUDGET_SECONDS,
+    collect_seconds: float = RECHECK_COLLECT_SECONDS,
 ) -> int:
-    """One recheck under the pass lock; the process exit status."""
+    """One recheck under the pass lock; the process exit status.
+
+    The whole recheck has one monotonic budget (`RECHECK_BUDGET_SECONDS`,
+    inside the unit's `TimeoutStartSec=40s`), so the withdrawal's record is
+    written before systemd would kill the process. Collecting inputs is
+    limited by an alarm (`RECHECK_COLLECT_SECONDS`); collection that does not
+    finish is a withhold, and the withdrawal gets what is left.
+    """
+    deadline = clock() + budget_seconds
     try:
         lock = acquire_pass_lock(root, wait_seconds=0.0, clock=clock, sleep=sleep)
     except PassLockBusy:
         print("az-activation-recheck: the activation pass lock is held; nothing changed")
         return 0
+    except PassLockDirectoryMissing:
+        # No directory, so no marker and no lock to take. Only a broker that
+        # is nevertheless there is worth a failure.
+        if contextd_triggers(manager, authority, root) == ():
+            return 0
+        print("az-activation-recheck: the activation directory is missing",
+              file=sys.stderr)
+        return 1
     except PassLockRefused:
         print("az-activation-recheck: the activation pass lock is unusable",
               file=sys.stderr)
         return 1
     with lock:
         status = 0
-        if retirement is not None:
-            # Independent of whether the broker needs withdrawing: an approval
-            # whose operator was explicitly revoked is retired either way.
-            try:
-                outcome = retirement(root=root, now=now)
-            except RetireRefused:
-                print("az-activation-recheck: approval retirement did not complete",
-                      file=sys.stderr)
-                status = 1
-            else:
-                if outcome != "none":
-                    _retired_record(root, outcome, now, invocation_id)
-        triggers = contextd_triggers(manager, authority, root)
-        if not triggers:
-            return status
-        ledger = AuditLedger(root / "var/lib/azazel/state/activation.jsonl")
+        retirement_blocked = False
+        inputs = None
         try:
-            inputs = collect_pass_inputs(
-                producers=producers,
-                generations=GenerationStore(root / "var/lib/azazel/generations"),
-                ledger=ledger, now=now)
-        except Exception:  # noqa: BLE001 - a collection that failed is a withhold
+            with alarm_budget(collect_seconds):
+                if retirement is not None:
+                    # Independent of whether the broker needs withdrawing: an
+                    # approval whose operator was explicitly revoked is
+                    # retired either way.
+                    try:
+                        outcome = retirement(root=root, now=now)
+                    except RetireRefused:
+                        print("az-activation-recheck: approval retirement did not "
+                              "complete", file=sys.stderr)
+                        status, retirement_blocked = 1, True
+                    else:
+                        if outcome != "none":
+                            _retired_record(root, outcome, now, invocation_id)
+                triggers = contextd_triggers(manager, authority, root)
+                if not triggers:
+                    return status
+                ledger = AuditLedger(root / "var/lib/azazel/state/activation.jsonl")
+                try:
+                    inputs = collect_pass_inputs(
+                        producers=producers,
+                        generations=GenerationStore(root / "var/lib/azazel/generations"),
+                        ledger=ledger, now=now)
+                except Exception:  # noqa: BLE001 - a collection that failed is a withhold
+                    inputs = None
+        except PassBudgetExpired:
+            # Retirement or collection did not finish: withhold and withdraw.
+            print("az-activation-recheck: collection did not finish in time",
+                  file=sys.stderr)
+            status, retirement_blocked = 1, retirement_blocked or retirement is not None
             inputs = None
-        verdict = contextd_verdict(inputs, now)
+            ledger = AuditLedger(root / "var/lib/azazel/state/activation.jsonl")
+        if not retirement_blocked:
+            try:
+                retirement_blocked = retirement_pending(root)
+            except Exception:  # noqa: BLE001 - unreadable counts as pending
+                retirement_blocked = True
+        verdict = contextd_verdict(inputs, now, retirement_blocked=retirement_blocked)
         if verdict.granted:
             return status
         try:
             withdraw_contextd(
                 reason=f"recheck:{verdict.label}", manager=manager, authority=authority,
                 root=root, ledger=ledger, now=now, actor=ACTOR,
-                invocation_id=invocation_id, clock=clock, sleep=sleep)
+                invocation_id=invocation_id, deadline=deadline, clock=clock, sleep=sleep)
         except WithdrawalUnconfirmed:
-            # Already recorded and left masked. Other units are not narrowed
-            # from here: this process decides for the broker alone.
+            # Already recorded and left masked as far as it could be. Other
+            # units are not narrowed from here: this process decides for the
+            # broker alone.
             print("az-activation-recheck: withdrawal of the Knowledge Context broker "
                   "is unconfirmed", file=sys.stderr)
             return 1
@@ -208,6 +265,12 @@ def production_retirement(root: Path = Path("/")):
     from .activation_high_water import raise_high_water, read_high_water
 
     def retire(*, root: Path, now: str) -> str:
+        # A retirement that was already classified is finished first, with no
+        # trust and no policy: the clock skew it needs is in the record.
+        resumed = resume_pending_retirement(
+            root=root, read_floor=read_high_water, raise_floor=raise_high_water, now=now)
+        if resumed != "none":
+            return resumed
         try:
             trust = load_operator_trust()
             skew = load_activation_policy().max_clock_skew_seconds

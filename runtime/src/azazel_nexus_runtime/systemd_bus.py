@@ -256,6 +256,33 @@ class SystemdUnitCalls:
             raise UnitOperationFailed("systemd returned an invalid stop job")
         return path
 
+    def contextd_active_state(self, unit: str) -> str:
+        """The broker's exact `ActiveState`; `inactive` when systemd holds no object."""
+        if unit != CONTEXTD_UNIT:
+            raise UnitOperationFailed(
+                "the systemd client refused a state read outside the stop scope")
+        unit_reply = self._exchange(
+            MANAGER_INTERFACE, "GetUnit", "s", [unit], allow_no_such_unit=True)
+        if getattr(unit_reply, "no_such_unit", False) is True:
+            return "inactive"
+        expected_path = _unit_object_path(unit)
+        if self._one(unit_reply, "o", "GetUnit") != expected_path:
+            raise UnitOperationFailed("systemd returned an invalid unit object")
+        reply = self._exchange(
+            PROPERTIES_INTERFACE, "Get", "ss", [UNIT_INTERFACE, "ActiveState"],
+            path=expected_path)
+        value = getattr(self._one(reply, "v", "Properties.Get"), "value", None)
+        if not isinstance(value, str) or value not in _ACTIVE_STATES:
+            raise UnitOperationFailed("systemd returned an invalid active state")
+        return value
+
+    def contextd_file_state(self, unit: str) -> str:
+        """The broker's exact `UnitFileState`, as systemd spells it."""
+        if unit != CONTEXTD_UNIT:
+            raise UnitOperationFailed(
+                "the systemd client refused a state read outside the stop scope")
+        return self("GetUnitFileState", unit)
+
     def unit_job(self, unit: str) -> tuple:
         """The broker's `Job` property as `(id, path)`; `(0, "/")` is no job.
 
@@ -606,6 +633,14 @@ class SystemdBusSession:
     def unit_job(self, unit: str) -> tuple:
         """The broker's pending job; see `SystemdUnitCalls.unit_job`."""
         return self.calls.unit_job(unit)
+
+    def contextd_active_state(self, unit: str) -> str:
+        """The broker's exact ActiveState; see `SystemdUnitCalls`."""
+        return self.calls.contextd_active_state(unit)
+
+    def contextd_file_state(self, unit: str) -> str:
+        """The broker's exact UnitFileState; see `SystemdUnitCalls`."""
+        return self.calls.contextd_file_state(unit)
 
     def close(self) -> None:
         try:

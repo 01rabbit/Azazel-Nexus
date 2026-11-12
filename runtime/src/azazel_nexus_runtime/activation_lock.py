@@ -25,7 +25,8 @@ from typing import Callable
 
 from . import activation_markers
 
-__all__ = ["PassLock", "PassLockBusy", "PassLockRefused", "acquire_pass_lock"]
+__all__ = ["PassLock", "PassLockBusy", "PassLockDirectoryMissing", "PassLockRefused",
+           "acquire_pass_lock"]
 
 LOCK_NAME = "pass.lock"
 _POLL_SECONDS = 0.05
@@ -37,6 +38,10 @@ class PassLockBusy(Exception):
 
 class PassLockRefused(Exception):
     """The lock file or its directory is missing, foreign or loosened."""
+
+
+class PassLockDirectoryMissing(PassLockRefused):
+    """`/run/azazel-activation` does not exist (so no marker can either)."""
 
 
 class PassLock:
@@ -60,7 +65,7 @@ class PassLock:
 def _open_lock(root: Path) -> int:
     parent = activation_markers._open_parent(root)
     if parent is None:
-        raise PassLockRefused("pass lock directory unavailable")
+        raise PassLockDirectoryMissing("pass lock directory unavailable")
     try:
         fd = os.open(
             LOCK_NAME,

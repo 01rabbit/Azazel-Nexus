@@ -334,25 +334,32 @@ class ContextdStopAuthority:
     """The authority to stop the Knowledge Context broker, and nothing else.
 
     A separate type, not a method of `DbusUnitManager`: the watchdog and the
-    other users of the manager adapter are not handed a stop. It holds two
-    callables (the session's fixed `stop_contextd` and `unit_job`) and
+    other users of the manager adapter are not handed a stop. It holds four
+    callables (the session's fixed `stop_contextd`, `unit_job` and the two
+    exact state reads) and
     refuses any unit but the broker before either is called, so a caller
     cannot turn it into a way to stop another unit. The session below it
     refuses a second time and sends a constant body.
     """
 
     def __init__(self, *, stop: Callable[[], object],
-                 job: Callable[[str], object]) -> None:
-        if not callable(stop) or not callable(job):
-            raise UnitOperationFailed("a stop authority needs its two verbs")
+                 job: Callable[[str], object],
+                 state: Callable[[str], object],
+                 file_state: Callable[[str], object]) -> None:
+        if not all(callable(verb) for verb in (stop, job, state, file_state)):
+            raise UnitOperationFailed("a stop authority needs its four verbs")
         self._stop = stop
         self._job = job
+        self._state = state
+        self._file_state = file_state
 
     @classmethod
     def from_session(cls, session) -> "ContextdStopAuthority":
         """Built from the controller's own D-Bus session."""
         return cls(stop=getattr(session, "stop_contextd", None),
-                   job=getattr(session, "unit_job", None))
+                   job=getattr(session, "unit_job", None),
+                   state=getattr(session, "contextd_active_state", None),
+                   file_state=getattr(session, "contextd_file_state", None))
 
     @staticmethod
     def _check(unit: str) -> str:
@@ -368,6 +375,20 @@ class ContextdStopAuthority:
                 or type(answer[0]) is not int or type(answer[1]) is not str):
             raise UnitOperationFailed("systemd returned an invalid job result")
         return (answer[0], answer[1])
+
+    def active_state(self, unit: str) -> str:
+        """The broker's exact `ActiveState` (`inactive` when it is not loaded)."""
+        answer = self._state(self._check(unit))
+        if type(answer) is not str or not answer:
+            raise UnitOperationFailed("systemd returned an invalid active-state result")
+        return answer
+
+    def file_state(self, unit: str) -> str:
+        """The broker's exact `UnitFileState` (`masked` is not `masked-runtime`)."""
+        answer = self._file_state(self._check(unit))
+        if type(answer) is not str or not answer:
+            raise UnitOperationFailed("systemd returned an invalid unit-file state result")
+        return answer
 
     def stop(self, unit: str) -> str:
         """Ask the manager to stop the broker (mode `replace`); the job path."""

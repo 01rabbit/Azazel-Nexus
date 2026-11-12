@@ -661,7 +661,7 @@ ends (the unit dropped from the policy, a lease that does not list it, an
 expired approval, a revoked operator, failed health or commissioning
 evidence), the next pass, or the periodic recheck (every 30 s as configured,
 not a bound), removes the marker, masks the unit, reloads the manager and
-sends `StopUnit`, then confirms the unit inactive with no job. The broker also
+sends `StopUnit`, then confirms the unit quiet (inactive, or `failed` after a kill, with no job). The broker also
 reads its marker when it accepts a request and again before it adopts the
 peer's answer: after the marker is gone it accepts nothing and adopts no
 answer (`reason_code` `withdrawn`). An answer adopted earlier may still reach

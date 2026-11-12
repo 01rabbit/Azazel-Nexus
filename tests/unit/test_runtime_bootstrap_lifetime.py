@@ -100,4 +100,8 @@ def test_lifetime_binding_adds_no_dependencies_or_lifecycle_changes_elsewhere():
             assert "KillMode" not in settings
         else:
             assert settings["KillMode"] == ["control-group"]
+            assert settings["TimeoutStopSec"] == ["10s"]
+            assert settings["KillSignal"] == ["SIGTERM"]
+            assert settings["FinalKillSignal"] == ["SIGKILL"]
+            assert settings["SendSIGKILL"] == ["yes"]
         assert "NotifyAccess" not in settings

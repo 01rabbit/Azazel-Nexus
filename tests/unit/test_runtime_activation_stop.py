@@ -54,24 +54,33 @@ ROOT_DIRECTORY = Path(__file__).resolve().parents[2]
 def test_the_authority_refuses_any_other_unit_before_calling_anything(unit):
     called = []
     guard = ContextdStopAuthority(stop=lambda: called.append("stop"),
-                                  job=lambda u: called.append("job"))
+                                  job=lambda u: called.append("job"),
+                                  state=lambda u: called.append("state"),
+                                  file_state=lambda u: called.append("file_state"))
     with pytest.raises(UnitOperationFailed, match="outside its scope"):
         guard.stop(unit)
     with pytest.raises(UnitOperationFailed, match="outside its scope"):
         guard.job(unit)
+    with pytest.raises(UnitOperationFailed, match="outside its scope"):
+        guard.active_state(unit)
+    with pytest.raises(UnitOperationFailed, match="outside its scope"):
+        guard.file_state(unit)
     assert called == []
 
 
-def test_an_authority_needs_both_verbs_of_the_session():
-    with pytest.raises(UnitOperationFailed, match="two verbs"):
+def test_an_authority_needs_all_four_verbs_of_the_session():
+    with pytest.raises(UnitOperationFailed, match="four verbs"):
         ContextdStopAuthority.from_session(object())
-    with pytest.raises(UnitOperationFailed, match="two verbs"):
-        ContextdStopAuthority(stop=None, job=lambda unit: NO_JOB)
+    with pytest.raises(UnitOperationFailed, match="four verbs"):
+        ContextdStopAuthority(stop=None, job=lambda unit: NO_JOB,
+                              state=lambda unit: "inactive", file_state=lambda unit: "masked")
 
 
 @pytest.mark.parametrize("answer", [None, (1,), "x", (1, 2), ("1", "/"), [1, "/", 3]])
 def test_the_authority_refuses_a_malformed_job_answer(answer):
-    guard = ContextdStopAuthority(stop=lambda: "/x", job=lambda unit: answer)
+    guard = ContextdStopAuthority(stop=lambda: "/x", job=lambda unit: answer,
+                                  state=lambda unit: "inactive",
+                                  file_state=lambda unit: "masked")
     with pytest.raises(UnitOperationFailed, match="invalid job"):
         guard.job(CTX)
 
@@ -452,7 +461,12 @@ def test_a_step_that_fails_leaves_the_broker_masked_and_unconfirmed(stage, faili
     elif failing == "reload":
         stage.manager._fail_reload = True
     else:
-        stage.authority = failing_authority()
+        def refuse():
+            raise UnitOperationFailed("systemd D-Bus call did not complete")
+
+        stage.authority = ContextdStopAuthority(
+            stop=refuse, job=stage.model.current_job, state=stage.model.active_state,
+            file_state=stage.model.file_state_of)
     with pytest.raises(WithdrawalUnconfirmed):
         _withdraw(stage)
     [event] = [e for e in events(stage) if e["event_type"] == "activation.withdrawal_unconfirmed"]
@@ -679,7 +693,8 @@ def test_a_pass_that_cannot_take_the_lock_narrows_and_fails(main_pass, monkeypat
             _locked(main_pass)
         waited = main_pass.clock() - started
     assert called == []
-    assert 5.0 <= waited < 5.2  # a bounded wait, then narrow
+    wait = activated.PASS_LOCK_WAIT_SECONDS
+    assert wait <= waited < wait + 0.2  # a bounded wait, then narrow
     assert main_pass.world.markers() is None
     assert all(first.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
     assert first.timeline[-1] == ("reload", "")

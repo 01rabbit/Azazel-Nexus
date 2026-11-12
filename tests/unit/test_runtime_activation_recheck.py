@@ -218,9 +218,8 @@ def test_an_unreadable_broker_is_evaluated_not_assumed_quiet(granted):
     def unreadable(unit):
         raise RuntimeError("synthetic")
 
-    stage.manager.is_inactive = unreadable
-    stage.manager.state = unreadable
-    found = contextd_triggers(stage.manager, authority(stage.model), stage.world.root)
+    from stop_helpers import failing_authority
+    found = contextd_triggers(stage.manager, failing_authority(), stage.world.root)
     assert "state_unreadable" in found and "activity_unreadable" in found
 
 
@@ -405,6 +404,12 @@ def test_the_entry_point_wires_the_session_the_authority_and_the_producers(monke
             raise AssertionError
 
         def unit_job(self, unit):
+            raise AssertionError
+
+        def contextd_active_state(self, unit):
+            raise AssertionError
+
+        def contextd_file_state(self, unit):
             raise AssertionError
 
         def __enter__(self):

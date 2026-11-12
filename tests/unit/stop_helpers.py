@@ -45,8 +45,13 @@ class ContextdModel:
 
     def __init__(self, clock: FakeClock, *, running: bool = False, job=NO_JOB,
                  stop_takes: float = 1.0, stop_works: bool = True,
-                 timeline: list | None = None) -> None:
+                 timeline: list | None = None, ends_failed: bool = False) -> None:
         self.clock = clock
+        #: After the stop the unit stays loaded as `failed` (a SIGKILL final kill).
+        self.ends_failed = ends_failed
+        self.failed = False
+        #: The exact UnitFileState string the manager reports.
+        self.file_state = "masked"
         self.running = running
         self.job = job
         self.stop_takes = stop_takes
@@ -60,10 +65,20 @@ class ContextdModel:
                 and self.clock() >= self.stopped_at + self.stop_takes):
             self.running = False
             self.job = NO_JOB
+            self.failed = self.ends_failed
 
     def inactive(self) -> bool:
         self._settle()
-        return not self.running
+        return not self.running and not self.failed
+
+    def active_state(self, unit: str) -> str:
+        self._settle()
+        if self.running:
+            return "active"
+        return "failed" if self.failed else "inactive"
+
+    def file_state_of(self, unit: str) -> str:
+        return self.file_state
 
     def current_job(self, unit: str):
         self._settle()
@@ -81,17 +96,24 @@ class ModelManager(RecordingUnitManager):
 
     def __init__(self, model: ContextdModel, *, enabled=(), **kwargs) -> None:
         super().__init__((d.name for d in CORE_UNITS), **kwargs)
+        self.model = model
+        self.on_mask = None
         for unit in enabled:
             self.unmask_and_enable(unit)
         self.calls.clear()
-        self.model = model
         self.timeline = model.timeline
-        self.on_mask = None
 
     def mask(self, unit: str) -> None:
         if self.on_mask is not None:
             self.on_mask(unit)
         super().mask(unit)
+        if unit == CTX:
+            self.model.file_state = "masked"
+
+    def unmask_and_enable(self, unit: str) -> None:
+        super().unmask_and_enable(unit)
+        if unit == CTX:
+            self.model.file_state = "enabled"
 
     def is_inactive(self, unit: str) -> bool:
         if unit == CTX:
@@ -105,14 +127,15 @@ class ModelManager(RecordingUnitManager):
 
 
 def authority(model: ContextdModel) -> ContextdStopAuthority:
-    return ContextdStopAuthority(stop=model.stop, job=model.current_job)
+    return ContextdStopAuthority(stop=model.stop, job=model.current_job,
+                                 state=model.active_state, file_state=model.file_state_of)
 
 
 def failing_authority() -> ContextdStopAuthority:
     def fail(*_args):
         raise UnitOperationFailed("systemd D-Bus call did not complete")
 
-    return ContextdStopAuthority(stop=fail, job=fail)
+    return ContextdStopAuthority(stop=fail, job=fail, state=fail, file_state=fail)
 
 
 def granted_marker():

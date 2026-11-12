@@ -1097,14 +1097,26 @@ caller.
 2. mask the broker and reload the manager (`t_reload`);
 3. if its `ActiveState` is not `inactive` or it has a job, send `StopUnit`
    (`replace`) (`t_stop`);
-4. wait until `ActiveState` is `inactive` and the job is `(0, "/")`
-   (`t_inactive`), at most 20 s and within the remaining pass budget;
+4. wait until the broker is quiet, that is `ActiveState` is `inactive` and the
+   job is `(0, "/")` (`t_inactive`), at most 20 s and within the remaining
+   budget. `failed` with no job also counts as quiet, for this confirmation
+   only: after a SIGKILL final kill systemd keeps the unit loaded as `failed`
+   and `StopUnit` does not return it to `inactive`, although the process is
+   gone. The record carries `quiet_state`. The generic inactivity check of the
+   masks does not accept `failed`, so a broker left `failed` in the same boot
+   still makes the next main pass report a containment failure until it is
+   reset;
 5. record `activation.grant_withdrawn` with the reason, the timings in
    milliseconds since detection and the invocation id.
 
-A step that cannot be confirmed leaves the broker masked and records
-`activation.withdrawal_unconfirmed` (the record failing changes nothing); the
-exit is non-zero. The recheck does not narrow other units in that case.
+The mask is confirmed by the exact unit-file state: `masked`, not
+`masked-runtime`, which does not survive a reboot. A step that cannot be
+confirmed first runs a finalizer for this one unit (marker removed, mask,
+reload, one stop if it is not quiet), then records
+`activation.withdrawal_unconfirmed` with what the finalizer reached
+(`final_masked`, `final_quiet`; the record failing changes nothing); the exit
+is non-zero. The recheck does not narrow other units in that case. A step is
+not started after its budget has ended.
 
 **Timeline.** `t_loss` is when the condition is lost (an expiry instant, a
 revocation, a health change); it is not observed. `t_detect` is when a pass or
@@ -1112,7 +1124,13 @@ recheck notices it. `t_marker`, `t_reload`, `t_stop` and `t_inactive` follow as
 above. The recheck runs 30 s after boot and 30 s after each start
 (`OnBootSec=30s`, `OnUnitActiveSec=30s`, `AccuracySec=1s`); that is a
 configured value, not a bound: a run that finds the lock held changes nothing,
-and a run can be late. The withdrawal itself is bounded at 20 s after
+and a run can be late. The recheck has its own budget of 35 s inside its
+`TimeoutStartSec=40s` (retirement and input collection take at most 15 s of
+it, by alarm; collection that does not finish is a withhold), so its record is
+written before systemd would kill it, and it holds the pass lock for at most
+that long. A main pass that arrives while a recheck withdraws waits up to 25 s
+for the lock; a withdrawal that really takes the full 35 s can therefore still
+make that pass narrow and fail, which is fail-closed and is not retried. The withdrawal itself is bounded at 20 s after
 `t_stop`; each bus call has its own 10 s timeout. `t_loss` to `t_detect` has
 no bound.
 
@@ -1126,10 +1144,19 @@ and written again inside one kernel timestamp tick could keep the identity
 than a tick (推測です, not measured on a node).
 
 **Main pass.** The pass takes `/run/azazel-activation/pass.lock` (root `0600`,
-no-follow, `flock`), waiting at most 5 s, and holds it until READY's barrier;
-without the lock it narrows and exits non-zero. One monotonic budget of 45 s
-covers the pass, and `azazel-activated.service` has `TimeoutStartSec=60s`
-(was 30 s). At preflight a broker that is running is withdrawn before the masks
+no-follow, `flock`), waiting at most 25 s, and holds it until READY's barrier;
+without the lock it narrows and exits non-zero. One budget of 45 s covers the
+whole pass, from before the lock wait to the end of READY's barrier, and
+`azazel-activated.service` has `TimeoutStartSec=60s` (was 30 s). The budget is
+enforced in two ways: it is checked between the phases of the pass (before
+input collection, after it, after the decision, before READY), and it is armed
+as a real-time alarm (`SIGALRM`), so a producer, a D-Bus call or the barrier
+that does not return is abandoned too. When it ends the pass writes
+`activation.pass_budget_expired`, removes every marker, masks every governed
+unit, reloads and exits non-zero. The narrowing itself needs time and the
+alarm cannot interrupt a call that is stuck in the kernel; the 15 s between
+the budget and the unit's timeout is what it has. Before this fix the budget
+only capped the broker's stop wait. At preflight a broker that is running is withdrawn before the masks
 are confirmed; an inactive broker with a queued start job is not stopped (its
 marker is gone and it is masked, so the job is skipped). If the pass does not
 grant the broker and a start job is queued for it, the job is replaced with
@@ -1156,10 +1183,17 @@ unmasked, inactive) is withdrawn with marker removal, mask and reload and no
 `state/activation/accepted-grant.json` (root `0600`) before any marker or
 READY. When a freshly loaded operator trust lists that approval's operator in
 `revoked` (an explicit entry; a loader failure proves nothing), the recheck
-retires the approval: it writes `retirement-pending.json`, raises the approval
-sequence floor to `approval_seq + 1` (other fields kept), reads the floor back,
-and removes the accepted record and the pending file. A pending file is
-resumed by the next recheck and blocks grants in the main pass. The same
+retires the approval: it writes `retirement-pending.json` (with the clock skew
+the floor raise needs), raises the approval sequence floor to
+`approval_seq + 1` (other fields kept), reads the floor back, and removes the
+accepted record and the pending file. A pending file is resumed by the next
+recheck before any trust or policy is loaded, so a trust store that cannot be
+read does not stop it. While one is pending, or a retirement failed, the
+recheck's verdict is withhold and the main pass grants nothing. The main pass
+also reads an existing accepted-grant record before admission and withholds if
+it is not exactly what a grant writes (canonical SHA-256, a sorted unique
+subset of the grantable units, a sequence that can be advanced); it never
+overwrites such a record, so the operator has to look at it. The same
 approval is then refused for every unit it names. Expiry, health and evidence
 loss retire nothing: when the condition returns, the same approval can grant
 again.

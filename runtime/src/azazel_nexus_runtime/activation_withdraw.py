@@ -11,14 +11,23 @@ the periodic recheck:
 2. mask the broker and reload the manager (`t_reload`);
 3. if the broker is not inactive, or has a job, send StopUnit in mode
    `replace` (`t_stop`);
-4. wait, within the remaining budget (at most 20 s), until its ActiveState is
-   `inactive` and its job is `(0, "/")` (`t_inactive`);
+4. wait, within the remaining budget (at most 20 s), until it is quiet: its
+   ActiveState is `inactive` (or `failed`, see below) and its job is
+   `(0, "/")` (`t_inactive`);
 5. record `activation.grant_withdrawn` with the reason and the timings in
    milliseconds since detection.
 
-Any step that cannot be confirmed leaves the broker masked and records
-`activation.withdrawal_unconfirmed` (the record failing changes nothing),
-then raises `WithdrawalUnconfirmed`. The caller exits non-zero.
+`failed` counts as quiet for this confirmation only. After a SIGKILL final
+kill systemd keeps the unit loaded as `failed` (result `timeout`) and
+`StopUnit` does not return it to `inactive`; the process is gone, and waiting
+for `inactive` would make the withdrawal permanently unconfirmed. The record
+says so (`quiet_state`). Nothing else treats `failed` as inactive.
+
+Any step that cannot be confirmed first runs a containment finalizer for this
+one unit (remove the marker, mask, reload, one stop if it is not quiet), then
+records `activation.withdrawal_unconfirmed` with what the finalizer reached
+(`final_masked`, `final_quiet`; the record failing changes nothing), then
+raises `WithdrawalUnconfirmed`. The caller exits non-zero.
 """
 
 from __future__ import annotations
@@ -31,14 +40,16 @@ from typing import Callable, Optional
 from azazel_nexus.audit import AuditLedger
 
 from .activation_markers import remove_contextd_marker
-from .units import CONTEXTD_UNIT, ContextdStopAuthority, UnitManager
+from .units import CONTEXTD_UNIT, ContextdStopAuthority, UnitManager, UnitOperationFailed
 
 __all__ = [
     "NO_JOB",
     "STOP_WAIT_SECONDS",
     "WithdrawalUnconfirmed",
     "clear_contextd_job",
+    "QUIET_STATES",
     "contextd_is_quiet",
+    "contextd_is_running",
     "withdraw_contextd",
 ]
 
@@ -57,13 +68,34 @@ def _ms(since: float, clock: Callable[[], float]) -> int:
     return max(0, int((clock() - since) * 1000))
 
 
-def contextd_is_quiet(manager: UnitManager, authority: ContextdStopAuthority) -> bool:
-    """Inactive and without a job. Anything unreadable is not quiet."""
+#: ActiveStates in which no process of the broker remains.
+QUIET_STATES = ("inactive", "failed")
+
+
+def contextd_is_quiet(authority: ContextdStopAuthority) -> bool:
+    """No process (`inactive`, or `failed` after a kill) and no job. Unreadable is not quiet."""
     try:
-        return (manager.is_inactive(CONTEXTD_UNIT) is True
+        return (authority.active_state(CONTEXTD_UNIT) in QUIET_STATES
                 and authority.job(CONTEXTD_UNIT) == NO_JOB)
     except Exception:  # noqa: BLE001 - unreadable is not confirmed quiet
         return False
+
+
+def contextd_is_running(authority: ContextdStopAuthority) -> bool:
+    """Whether a process of the broker may exist. Unreadable counts as not running here
+    (the caller's own mask makes the unit readable and its checks refuse otherwise)."""
+    try:
+        return authority.active_state(CONTEXTD_UNIT) not in QUIET_STATES
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _job_twice(authority: ContextdStopAuthority) -> tuple:
+    """The job, read again once: the unit can be dropped between GetUnit and Get."""
+    try:
+        return authority.job(CONTEXTD_UNIT)
+    except Exception:  # noqa: BLE001
+        return authority.job(CONTEXTD_UNIT)
 
 
 def _wait_until(done: Callable[[], bool], *, give_up: float,
@@ -83,6 +115,33 @@ def _record(ledger: AuditLedger, event: dict) -> None:
         print("az-activation could not append a withdrawal record", file=sys.stderr)
 
 
+def _contain(*, manager: UnitManager, authority: ContextdStopAuthority, root: Path,
+             stop_sent: bool) -> dict:
+    """Contextd-only finalizer: reach the masked, quiet state as far as possible.
+
+    Marker removed, masked, reloaded, and one stop if the broker is not
+    quiet and none was sent. Every step is tried whatever the others did; the
+    result states what was reached, read back from the manager.
+    """
+    for step in (lambda: remove_contextd_marker(root),
+                 lambda: manager.mask(CONTEXTD_UNIT),
+                 manager.reload):
+        try:
+            step()
+        except Exception:  # noqa: BLE001 - every step is tried
+            pass
+    try:
+        if not stop_sent and not contextd_is_quiet(authority):
+            authority.stop(CONTEXTD_UNIT)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        masked = authority.file_state(CONTEXTD_UNIT) == "masked"
+    except Exception:  # noqa: BLE001
+        masked = False
+    return {"final_masked": masked, "final_quiet": contextd_is_quiet(authority)}
+
+
 def withdraw_contextd(
     *, reason: str, manager: UnitManager, authority: ContextdStopAuthority,
     root: Path, ledger: AuditLedger, now: str, actor: str, invocation_id: str,
@@ -93,52 +152,73 @@ def withdraw_contextd(
     """Withdraw the broker; returns the recorded timings, or raises.
 
     `deadline` is a monotonic instant the whole withdrawal must end by (the
-    main pass's overall budget); the stop wait is also capped at 20 s.
+    main pass's budget, or the recheck's); the stop wait is also capped at
+    20 s. A step started after the deadline is not started: the finalizer
+    runs instead.
     """
     started = clock()
     timings: dict = {"t_marker_ms": None, "t_reload_ms": None,
                      "t_stop_ms": None, "t_inactive_ms": None}
     stage = "marker"
+    stop_sent = False
+
+    def over() -> None:
+        if deadline is not None and clock() >= deadline:
+            raise TimeoutError("the budget for the withdrawal is used")
 
     def unconfirmed(why: str) -> WithdrawalUnconfirmed:
+        reached = _contain(manager=manager, authority=authority, root=root,
+                           stop_sent=stop_sent)
         _record(ledger, {
             "event_type": "activation.withdrawal_unconfirmed",
             "unit": CONTEXTD_UNIT, "reason": reason, "stage": stage, "why": why,
-            "invocation_id": invocation_id, **timings,
+            "invocation_id": invocation_id, **timings, **reached,
             "occurred_at": now, "actor": actor,
         })
         return WithdrawalUnconfirmed(
             f"withdrawal of the Knowledge Context broker unconfirmed at {stage}")
 
     needs_stop = False
+    quiet_state = "inactive"
     try:
         remove_contextd_marker(root)
         timings["t_marker_ms"] = _ms(started, clock)
         stage = "mask"
+        over()
         manager.mask(CONTEXTD_UNIT)
         stage = "reload"
+        over()
         manager.reload()
         timings["t_reload_ms"] = _ms(started, clock)
+        stage = "verify_mask"
+        # Persistent `masked` exactly: `masked-runtime` goes at the next boot.
+        if authority.file_state(CONTEXTD_UNIT) != "masked":
+            raise UnitOperationFailed("the broker is not persistently masked")
         stage = "read"
-        needs_stop = (manager.is_inactive(CONTEXTD_UNIT) is not True
-                      or authority.job(CONTEXTD_UNIT) != NO_JOB)
+        over()
+        needs_stop = (authority.active_state(CONTEXTD_UNIT) not in QUIET_STATES
+                      or _job_twice(authority) != NO_JOB)
         if needs_stop:
             stage = "stop"
+            over()
             authority.stop(CONTEXTD_UNIT)
+            stop_sent = True
             timings["t_stop_ms"] = _ms(started, clock)
             stage = "inactive"
             give_up = clock() + STOP_WAIT_SECONDS
             if deadline is not None:
                 give_up = min(give_up, deadline)
-            if not _wait_until(lambda: contextd_is_quiet(manager, authority),
+            if not _wait_until(lambda: contextd_is_quiet(authority),
                                give_up=give_up, clock=clock, sleep=sleep):
-                raise TimeoutError("the broker did not become inactive in time")
+                raise TimeoutError("the broker did not become quiet in time")
+        quiet_state = authority.active_state(CONTEXTD_UNIT)
         timings["t_inactive_ms"] = _ms(started, clock)
     except Exception as exc:  # noqa: BLE001 - recorded as a class name, then raised
         raise unconfirmed(type(exc).__name__) from None
     _record(ledger, {
         "event_type": "activation.grant_withdrawn",
         "unit": CONTEXTD_UNIT, "reason": reason, "stopped": needs_stop,
+        "quiet_state": quiet_state,
         "invocation_id": invocation_id, **timings,
         "occurred_at": now, "actor": actor,
     })

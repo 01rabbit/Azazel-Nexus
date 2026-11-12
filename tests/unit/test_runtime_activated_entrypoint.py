@@ -261,6 +261,12 @@ def test_entrypoint_passes_the_system_bus_manager_to_one_fail_closed_pass(
         def unit_job(self, unit):
             raise AssertionError("the pass was replaced; nothing may be read")
 
+        def contextd_active_state(self, unit):
+            raise AssertionError("the pass was replaced; nothing may be read")
+
+        def contextd_file_state(self, unit):
+            raise AssertionError("the pass was replaced; nothing may be read")
+
         def __enter__(self):
             return self
 
@@ -567,6 +573,12 @@ def _ordinary_context(monkeypatch):
 
         def unit_job(self, unit):
             raise AssertionError("no job read in this test")
+
+        def contextd_active_state(self, unit):
+            raise AssertionError("no state read in this test")
+
+        def contextd_file_state(self, unit):
+            raise AssertionError("no state read in this test")
 
         def __enter__(self):
             return self
