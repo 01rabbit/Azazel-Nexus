@@ -50,9 +50,7 @@ from .activation_pass import PassInputs, collect_pass_inputs
 from .activation_retire import (
     RetireRefused, resume_pending_retirement, retire_if_revoked, retirement_pending,
 )
-from .activation_withdraw import (
-    NO_JOB, WithdrawalUnconfirmed, flush_records, withdraw_contextd,
-)
+from .activation_withdraw import NO_JOB, WithdrawalUnconfirmed, withdraw_contextd
 from .units import (
     CONTEXTD_UNIT,
     ContextdStopAuthority,
@@ -63,15 +61,13 @@ from .units import (
 __all__ = ["ContextdVerdict", "contextd_triggers", "contextd_verdict", "main", "run_recheck"]
 
 ACTOR = "azazel-activation-recheck"
-#: One monotonic budget for a whole recheck, from before the bus connects.
-#: It bounds how long the recheck holds the pass lock, so it is strictly less
-#: than `activated.PASS_LOCK_WAIT_SECONDS` (25 s): a main pass that arrives
-#: during a recheck gets the lock. Of it, the last `RECHECK_RECORD_SECONDS`
-#: are for the final ledger record (a local append and fsync; it is not
-#: interruptible, so the reserve is what it is allowed to take), and the
-#: `RECHECK_FINALIZER_SECONDS` before that for the finalizer of an unconfirmed
-#: withdrawal; the withdrawal's own steps end before both. Hold <= 18 s plus
-#: the record's overshoot, which the tests bound at 2 s: 20 s < 25 s.
+#: One monotonic budget for the recheck's bus work, from before the bus
+#: connects. Bus work and the finalizer end by `budget - RECHECK_RECORD_SECONDS`
+#: (16 s), which keeps the hold at 20 s or less before the records, strictly
+#: less than `activated.PASS_LOCK_WAIT_SECONDS` (25 s). The records are
+#: appended inside the lock (the ledger's append has no lock of its own); the
+#: append is local file I/O and is not time-bounded. The last
+#: `RECHECK_RECORD_SECONDS` of the budget are left for it.
 #: `azazel-activation-recheck.service` has `TimeoutStartSec=40s`.
 RECHECK_BUDGET_SECONDS = 18.0
 RECHECK_RECORD_SECONDS = 2.0
@@ -210,16 +206,29 @@ def run_recheck(
         print("az-activation-recheck: the activation pass lock is unusable",
               file=sys.stderr)
         return 1
-    ledger = AuditLedger(root / "var/lib/azazel/state/activation.jsonl")
-    #: Records made while the lock is held. They are appended after it has
-    #: been released: an append is a write and an fsync that cannot be
-    #: interrupted, and it must not lengthen the hold.
-    pending: list[dict] = []
-
-    def evaluate() -> int:
+    with lock:
         status = 0
         retirement_blocked = False
         inputs = None
+        ledger = AuditLedger(root / "var/lib/azazel/state/activation.jsonl")
+        unrecorded: list[str] = []
+
+        def record(event: dict) -> None:
+            # Appended here, with the lock held, in the order the transitions
+            # happen: the ledger's append reads the head and then writes, with
+            # no lock of its own, so only this lock keeps two writers from
+            # extending the same head. A record that cannot be written is
+            # reported, never swallowed: the exit status becomes non-zero.
+            try:
+                ledger.append(event)
+            except Exception:  # noqa: BLE001 - reported through the exit status
+                unrecorded.append(event.get("event_type", "?"))
+                print("az-activation-recheck could not append a record "
+                      f"({event.get('event_type', '?')})", file=sys.stderr)
+
+        def finish(code: int) -> int:
+            return 1 if unrecorded else code
+
         try:
             bind_remaining(manager, collect, clock)
             if retirement is not None:
@@ -234,11 +243,11 @@ def run_recheck(
                     status, retirement_blocked = 1, True
                 else:
                     if outcome != "none":
-                        pending.append(_retired_event(outcome, now, invocation_id))
+                        record(_retired_event(outcome, now, invocation_id))
             check_budget(collect, clock)
             triggers = contextd_triggers(manager, authority, root)
             if not triggers:
-                return status
+                return finish(status)
             check_budget(collect, clock)
             try:
                 inputs = collect_pass_inputs(
@@ -262,14 +271,14 @@ def run_recheck(
                 retirement_blocked = True
         verdict = contextd_verdict(inputs, now, retirement_blocked=retirement_blocked)
         if verdict.granted:
-            return status
+            return finish(status)
         try:
             withdraw_contextd(
                 reason=f"recheck:{verdict.label}", manager=manager, authority=authority,
                 root=root, ledger=ledger, now=now, actor=ACTOR,
                 invocation_id=invocation_id, deadline=work, final_deadline=final,
                 bind_deadline=lambda d: bind_remaining(manager, d, clock),
-                sink=pending.append, clock=clock, sleep=sleep)
+                sink=record, clock=clock, sleep=sleep)
         except WithdrawalUnconfirmed:
             # Already recorded and left masked as far as it could be. Other
             # units are not narrowed from here: this process decides for the
@@ -277,14 +286,7 @@ def run_recheck(
             print("az-activation-recheck: withdrawal of the Knowledge Context broker "
                   "is unconfirmed", file=sys.stderr)
             return 1
-        return status
-
-    with lock:
-        status = evaluate()
-    # The lock is released: now the records. A slow or failing ledger changes
-    # neither the state nor the exit status.
-    flush_records(ledger, pending)
-    return status
+        return finish(status)
 
 
 def _retired_event(outcome: str, now: str, invocation_id: str) -> dict:

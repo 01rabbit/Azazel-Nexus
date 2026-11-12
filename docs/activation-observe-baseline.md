@@ -1126,34 +1126,42 @@ recheck notices it. `t_marker`, `t_reload`, `t_stop` and `t_inactive` follow as
 above. The recheck runs 30 s after boot and 30 s after each start
 (`OnBootSec=30s`, `OnUnitActiveSec=30s`, `AccuracySec=1s`); that is a
 configured value, not a bound: a run that finds the lock held changes nothing,
-and a run can be late. The recheck has one budget of 18 s, counted from before
-it connects to the bus. Retirement and input collection end by 6 s; the
-withdrawal's steps end at 11 s; the finalizer of an unconfirmed withdrawal runs
-until 16 s; the last 2 s remain for the records, which are appended after the lock
-is released. Every bus call is
-refused once its deadline has passed and is otherwise limited to the time that
-is left (at most its usual 10 s), the finalizer's included, and the poll sleeps
-never run past a deadline. The recheck does not write to the ledger while it
-holds the lock: the withdrawal, the finalizer and the retirement hand their
-records back, and the recheck appends them after it has released
-`pass.lock`. The hold is therefore the marker unlink, the bus work (bounded by
-the 18 s deadline, each call by `min(10 s, remaining)`) and the finalizer
-(bounded by its own end at 16 s): at most 20 s, strictly less than the 25 s a
-main pass waits for the lock, and `TimeoutStartSec=40s` leaves margin. The
-tests bound it with a ledger that stalls for 30 s and check that the lock is
-free whenever an append starts. What the bound does not cover is a filesystem
-stall (a file read, the marker unlink, the high-water commit of a retirement,
-which has to stay under the lock): such a stall is not interrupted, and it is
-fail-closed, because a main pass whose 25 s lock wait expires narrows and
-fails. A consequence of appending after the release is that the ledger order
-of a recheck's record and a concurrent main pass's record follows the order in
-which they are appended, not the order in which they held the lock; every
-record carries `occurred_at` and `invocation_id` to tell them apart. A budget
-that ends mid-withdrawal gives `activation.withdrawal_unconfirmed`, appended
-right after the release; the marker is already removed (a local step) and the
-finalizer masks the broker where it still can. Collection that does not finish
-is a withhold. The stop wait is at most 20 s and never more than the time that
-is left. `t_loss` to `t_detect` has no bound.
+and a run can be late. The recheck has one budget of 18 s for its bus work,
+counted from before it connects to the bus. Retirement and input collection
+end by 6 s; the withdrawal's steps end at 11 s; the finalizer of an
+unconfirmed withdrawal runs until 16 s. Every bus call is refused once its
+deadline has passed and is otherwise limited to the time that is left (at most
+its usual 10 s), the finalizer's included, and the poll sleeps never run past a
+deadline. Bus work and finalizer therefore end by 16 s of the 18 s budget, and
+the 2 s that remain are for the records.
+
+**What the lock hold is, honestly.** The recheck writes its records inside
+`pass.lock`, in the order the transitions happen: the withdrawal, or its
+unconfirmed outcome, and the approval retirement. `AuditLedger.append` reads
+the head and then writes with no lock of its own
+(`src/azazel_nexus/audit.py`, `append`), so only `pass.lock` stops a recheck and
+a main pass from extending the same head and writing duplicate sequence links.
+So the hold is the bus work and the finalizer (at most 20 s, enforced, which is
+below the 25 s a main pass waits for the lock) plus the ledger append, which is
+a local write and fsync and is not time-bounded. If filesystem I/O stalls, the
+main pass's 25 s lock wait expires and it narrows: every marker removed, every
+governed unit masked, nothing granted (fail-closed; see
+`test_a_pass_that_cannot_take_the_lock_narrows_and_fails` and
+`test_the_lock_failure_narrows_after_second_37`). A record that cannot be
+appended is not swallowed: the recheck's exit status is non-zero, although the
+state change it describes has been made. A recheck killed by
+`TimeoutStartSec=40s` in the middle of an append can leave a torn last line.
+Nothing repairs that: the ledger repairs only a write that failed inside a
+running process (`_withdraw`, `audit.py:346-363`), while `head()`
+(`audit.py:138-190`) cannot parse a torn last line, so every later append
+refuses (`AuditChainBroken`, shown by
+`test_a_torn_tail_makes_the_next_append_refuse_and_nothing_repairs_it`) until an
+operator repairs the ledger. That is fail-closed for the controller (a pass
+that cannot record narrows) and costs availability. A budget that ends
+mid-withdrawal gives `activation.withdrawal_unconfirmed`; the marker is already
+removed (a local step) and the finalizer masks the broker where it still can.
+Collection that does not finish is a withhold. The stop wait is at most 20 s and
+never more than the time that is left. `t_loss` to `t_detect` has no bound.
 
 **Adoption contract (weakened).** The broker reads its marker when it accepts a
 request and again before it adopts the peer's answer

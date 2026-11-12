@@ -49,7 +49,6 @@ __all__ = [
     "clear_contextd_job",
     "QUIET_STATES",
     "contextd_is_quiet",
-    "flush_records",
     "contextd_is_running",
     "withdraw_contextd",
 ]
@@ -164,12 +163,6 @@ def _contain(*, manager: UnitManager, authority: ContextdStopAuthority, root: Pa
     return {"final_masked": masked, "final_quiet": quiet}
 
 
-def flush_records(ledger: AuditLedger, events) -> None:
-    """Append records a locked caller deferred; a failure changes nothing."""
-    for event in events:
-        _record(ledger, event)
-
-
 def withdraw_contextd(
     *, reason: str, manager: UnitManager, authority: ContextdStopAuthority,
     root: Path, ledger: AuditLedger, now: str, actor: str, invocation_id: str,
@@ -183,9 +176,9 @@ def withdraw_contextd(
     """Withdraw the broker; returns the recorded timings, or raises.
 
     The record is handed to `sink` when one is given, and appended to
-    `ledger` immediately otherwise. A caller that holds the pass lock (the
-    recheck) passes a sink and appends after it has released the lock, so a
-    slow ledger cannot lengthen the hold.
+    `ledger` (failures swallowed) otherwise. The recheck passes a sink that
+    appends under the pass lock and remembers a failure, so that an unwritten
+    record makes its exit status non-zero.
 
     `deadline` is the monotonic instant the withdrawal's steps must end by
     (the caller's budget less its reserve); the stop wait is also capped at
