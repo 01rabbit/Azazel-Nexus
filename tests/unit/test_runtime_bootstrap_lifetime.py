@@ -93,5 +93,11 @@ def test_lifetime_binding_adds_no_dependencies_or_lifecycle_changes_elsewhere():
         settings = _settings(profile.unit)
         assert "BindsTo" not in settings
         assert "Restart" not in settings
-        assert "KillMode" not in settings
+        if profile.unit != "azazel-knowledge-contextd.service":
+            # The broker alone carries the stop profile (KillMode=control-group,
+            # TimeoutStopSec, KillSignal, FinalKillSignal, SendSIGKILL) that
+            # its withdrawal depends on (activation stop contract).
+            assert "KillMode" not in settings
+        else:
+            assert settings["KillMode"] == ["control-group"]
         assert "NotifyAccess" not in settings
