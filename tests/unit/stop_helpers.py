@@ -113,3 +113,4 @@ def failing_authority() -> ContextdStopAuthority:
         raise UnitOperationFailed("systemd D-Bus call did not complete")
 
     return ContextdStopAuthority(stop=fail, job=fail)
+

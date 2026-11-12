@@ -429,7 +429,7 @@ def test_copied_installer_clears_python_environment_and_retains_destdir_for_stag
     destdir = tmp_path / "image"
     env_report = destdir / "stager-environment.json"
     entrypoints = (
-        "az-activated", "az-commissiond", "az-auditd", "az-auditd-loop", "az-watchdog",
+        "az-activated", "az-activation-recheck", "az-commissiond", "az-auditd", "az-auditd-loop", "az-watchdog",
         "az-edge-probed", "az-edge-intaked", "az-incident-explaind", "az-model-fetchd", "az-mio-locald", "az-mio-identity", "az-mio-remoted",
         "az-mio-entryd", "az-mio-referenced", "az-knowledge-lited", "az-knowledge-contextd",
         "az-decoy-netd", "az-decoyd",

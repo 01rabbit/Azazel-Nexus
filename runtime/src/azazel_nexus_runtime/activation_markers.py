@@ -48,6 +48,7 @@ __all__ = [
     "MARKER_GUARDED_UNITS",
     "GRANT_MARKER_DIRECTORY",
     "GrantMarkerRefused",
+    "contextd_marker_present",
     "grant_marker_path",
     "remove_contextd_marker",
     "reset_grant_markers",
@@ -196,6 +197,32 @@ def reset_grant_markers(root: Path = Path("/")) -> None:
         finally:
             os.close(leaf)
         os.rmdir(_LEAF, dir_fd=parent)
+    finally:
+        os.close(parent)
+
+
+def contextd_marker_present(root: Path = Path("/")) -> bool:
+    """Whether anything named like the broker's marker is in `granted/`.
+
+    Read-only, no-follow at every directory. An entry of any type counts as
+    present (the recheck then evaluates); a foreign directory raises.
+    """
+    name = _check_unit(CONTEXTD_MARKER_UNIT)
+    parent = _open_parent(root)
+    if parent is None:
+        return False
+    try:
+        try:
+            leaf = os.open(_LEAF, _DIR_FLAGS, dir_fd=parent)
+        except FileNotFoundError:
+            return False
+        try:
+            os.stat(name, dir_fd=leaf, follow_symlinks=False)
+            return True
+        except FileNotFoundError:
+            return False
+        finally:
+            os.close(leaf)
     finally:
         os.close(parent)
 

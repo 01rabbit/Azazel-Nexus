@@ -177,8 +177,8 @@ installer masks `azazel-commissiond.service`, `azazel-auditd.service`,
 `azazel-knowledge-lited.service`, `azazel-knowledge-contextd.service`,
 `azazel-decoy-nsd.service`,
 `azazel-decoy-netd.service` and `azazel-decoyd.service` — and only
-`azazel-activated.service` and `azazel-edge-probe-preflight.service`
-`enabled`. Cross-check the masked set against the installed
+`azazel-activated.service`, `azazel-edge-probe-preflight.service` and
+`azazel-activation-recheck.timer` `enabled`. Cross-check the masked set against the installed
 `packaging/install.sh` from the bundle, not against this list alone. The venv
 must read `root 755`. Continue with [HG-01](hg-01.md) steps 3–6 (the
 `az-hil-capture hg-01` acquisition, a reboot without activation, the capture

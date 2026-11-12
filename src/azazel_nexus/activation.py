@@ -54,6 +54,8 @@ from .commissioning_evidence import CommissioningEvidence
 from .generation import GenerationRefused, GenerationStore
 
 __all__ = [
+    "common_withholding_reason",
+    "lease_refusal",
     "ACTIVATION_CONTROLLER_UNIT",
     "ARTIFACT_TRANSPORT",
     "LOCAL_MODEL_PROVIDER",
@@ -827,6 +829,72 @@ class ActivationOutcome:
     _enforcement_units: frozenset[str] = frozenset()
 
 
+def lease_refusal(lease: Optional["ActivationLease"], generation_digest: str,
+                  now: str) -> Optional[str]:
+    """Why a lease does not cover this generation now, or None. Pure."""
+    if lease is None:
+        return (
+            "lease_absent: no operator has granted permission to activate "
+            "this generation"
+        )
+    if not lease.valid_at(now):
+        return (
+            f"lease_expired: the lease ran from {lease.granted_at} to "
+            f"{lease.expires_at} and it is now {now}"
+        )
+    if lease.generation_digest != generation_digest:
+        return (
+            "lease_generation_mismatch: permission was granted for another "
+            "configuration, not the verified current generation"
+        )
+    return None
+
+
+def common_withholding_reason(
+    definition: "UnitDefinition", *, wired: Iterable[str], healthy: bool,
+    lease: Optional["ActivationLease"], now: str, generation_digest: str,
+) -> Optional[str]:
+    """The conditions every tier shares, as a pure function (no I/O, no record).
+
+    Wiring first, then health, then the lease (present, valid now, for this
+    generation) and its unit scope. `ActivationController._withholding_reason`
+    applies exactly this before its per-tier conditions, and the periodic
+    recheck of the Knowledge Context broker reads its verdict from it, so the
+    two cannot disagree about a SUPPORTING unit.
+
+    Wiring comes first, ahead of even health. Every other reason here is
+    something an operator can go and fix on this node; an unwired
+    capability is a property of the build they installed, and no amount of
+    fixing the node changes it. Reporting a fixable reason while an
+    unfixable one also holds sends them to do work that will not help, and
+    then tells them the real answer afterwards.
+    """
+    if definition.wiring is not None and definition.wiring not in wired:
+        return (
+            f"wiring_absent: this build has no {definition.wiring}, so "
+            f"{definition.name} would start and exit. The unit, its "
+            "account and its hardening ship; what it would serve does not"
+        )
+
+    # Required by every tier. A node that cannot answer for its own
+    # health does not get to widen on the strength of not having noticed.
+    if not healthy:
+        return (
+            "health_not_established: this node did not confirm its own "
+            "health, and an unchecked node is not a healthy one"
+        )
+    refusal = lease_refusal(lease, generation_digest, now)
+    if refusal is not None:
+        return refusal
+    # Narrowing only: a scoped lease removes units, never adds one.
+    if lease.units is not None and definition.name not in lease.units:
+        return (
+            "outside_lease_scope: the approval behind this lease does not "
+            f"name {definition.name}"
+        )
+    return None
+
+
 class ActivationController:
     """Validates, records, then widens -- in that order."""
 
@@ -1077,29 +1145,11 @@ class ActivationController:
         then tells them the real answer afterwards.
         """
 
-        if definition.wiring is not None and definition.wiring not in self._wired:
-            return (
-                f"wiring_absent: this build has no {definition.wiring}, so "
-                f"{definition.name} would start and exit. The unit, its "
-                "account and its hardening ship; what it would serve does not"
-            )
-
-        # Required by every tier. A node that cannot answer for its own
-        # health does not get to widen on the strength of not having noticed.
-        if not self._healthy:
-            return (
-                "health_not_established: this node did not confirm its own "
-                "health, and an unchecked node is not a healthy one"
-            )
-        lease_refusal = self._lease_refusal(generation_digest)
-        if lease_refusal is not None:
-            return lease_refusal
-        # Narrowing only: a scoped lease removes units, never adds one.
-        if self._lease.units is not None and definition.name not in self._lease.units:
-            return (
-                "outside_lease_scope: the approval behind this lease does not "
-                f"name {definition.name}"
-            )
+        common = common_withholding_reason(
+            definition, wired=self._wired, healthy=self._healthy,
+            lease=self._lease, now=self._now, generation_digest=generation_digest)
+        if common is not None:
+            return common
 
         if definition.tier is UnitTier.SUPPORTING:
             return None
@@ -1181,22 +1231,7 @@ class ActivationController:
         return None
 
     def _lease_refusal(self, generation_digest: str) -> Optional[str]:
-        if self._lease is None:
-            return (
-                "lease_absent: no operator has granted permission to activate "
-                "this generation"
-            )
-        if not self._lease.valid_at(self._now):
-            return (
-                f"lease_expired: the lease ran from {self._lease.granted_at} to "
-                f"{self._lease.expires_at} and it is now {self._now}"
-            )
-        if self._lease.generation_digest != generation_digest:
-            return (
-                "lease_generation_mismatch: permission was granted for another "
-                "configuration, not the verified current generation"
-            )
-        return None
+        return lease_refusal(self._lease, generation_digest, self._now)
 
     def _withhold_everything(
         self, generation_number: Optional[int], reason: str, *, now: str, actor: str

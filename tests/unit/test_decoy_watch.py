@@ -146,8 +146,9 @@ def test_every_other_unit_keeps_its_install_section():
         if profile.unit in (DECOY_VERIFY_UNIT, "azazel-ui.service"):
             assert _sections(render_unit(profile))[-1] != "[Install]", profile.unit
             continue
-        if profile.unit in OBSERVER_SERVICE_UNITS:
-            # Started by its own timer (U2), which carries the [Install].
+        if profile.unit in OBSERVER_SERVICE_UNITS or profile.unit == "azazel-activation-recheck.service":
+            # Started by its own timer (U2; the recheck's likewise), which
+            # carries the [Install].
             assert "[Install]" not in _sections(render_unit(profile)), profile.unit
             continue
         assert _sections(render_unit(profile))[-1] == "[Install]", profile.unit

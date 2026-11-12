@@ -285,7 +285,7 @@ def test_offline_runbook_states_the_report_and_the_systemd_stage():
     masked = re.findall(r"^systemctl mask (\S+)$", installer, flags=re.MULTILINE)
     enabled = re.findall(r"^systemctl enable (\S+)$", installer, flags=re.MULTILINE)
     assert masked and enabled
-    stated = set(re.findall(r"`(azazel-[a-z-]+\.service)`",
+    stated = set(re.findall(r"`(azazel-[a-z-]+\.(?:service|timer))`",
                             text.split("Expect every governed operational unit", 1)[1]
                             .split("`enabled`", 1)[0]))
     assert stated == set(masked) | set(enabled)

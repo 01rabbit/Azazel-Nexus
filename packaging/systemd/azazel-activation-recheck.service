@@ -1,0 +1,49 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# Runs once per period of azazel-activation-recheck.timer and withdraws the Knowledge Context broker's grant when the pass would no longer grant it: an expired or revoked approval, lost health or evidence.
+# It evaluates the same inputs as the controller without deciding for any other unit, and only narrows: it removes the broker's marker, masks it, reloads the manager and stops that one unit.
+# It is root with the controller's single capability and group, writes only the state directory and the markers' directory, and does not publish unit files.
+# It is not governed, has no [Install] section, and requires neither the controller nor the broker.
+
+[Unit]
+Description=Azazel-Nexus activation recheck
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/activation-observe-baseline.md
+After=azazel-activated.service
+
+[Service]
+Type=oneshot
+User=root
+SupplementaryGroups=azazel-operator
+ExecStart=/usr/libexec/azazel/az-activation-recheck
+TimeoutStartSec=40s
+TimeoutStopSec=10s
+KillMode=control-group
+KillSignal=SIGTERM
+FinalKillSignal=SIGKILL
+SendSIGKILL=yes
+SetLoginEnvironment=no
+MemoryPressureWatch=off
+UnsetEnvironment=GCONV_PATH GLIBC_TUNABLES LD_ASSUME_KERNEL LD_AUDIT LD_BIND_NOT LD_BIND_NOW LD_DEBUG LD_DEBUG_OUTPUT LD_DYNAMIC_WEAK LD_HWCAP_MASK LD_LIBRARY_PATH LD_ORIGIN_PATH LD_POINTER_GUARD LD_PREFER_MAP_32BIT_EXEC LD_PRELOAD LD_PROFILE LD_PROFILE_OUTPUT LD_SHOW_AUXV LD_TRACE_LOADED_OBJECTS LD_TRACE_PRELINKING LD_USE_LOAD_BIAS LD_VERBOSE LD_WARN LOCPATH MALLOC_TRACE NLSPATH PYTHONEXECUTABLE PYTHONHOME PYTHONPATH TZDIR __PYVENV_LAUNCHER__
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+ReadWritePaths=/var/lib/azazel/state
+ReadWritePaths=-/run/azazel-activation
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+AmbientCapabilities=
+IPAddressDeny=any
+UMask=0027
