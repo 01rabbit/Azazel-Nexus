@@ -1810,16 +1810,32 @@ def _locked_pass(
             except PassBudgetExpired:
                 expired = True
             except Exception as error:
-                # A pass that failed on a finished session (its own rollback was
-                # refused) is narrowed on a new one, still under the lock. An
-                # error that already came out of a narrowing is not narrowed again.
-                if (not getattr(error, "narrowed", False)
-                        and (clock() >= work or (
+                # Any error that did not already come out of a narrowing is narrowed
+                # here, still under the lock, whatever it is (a ledger that is
+                # unavailable or whose chain is broken, a state file, a finished
+                # bus session, a spent time budget) and whether or not a start job
+                # is being held: the held job is replaced before the broker is
+                # masked, then the units are masked, the manager reloaded and the
+                # broker withdrawn. The original error is then raised again; a
+                # failure of the narrowing is chained to it, never replacing it.
+                # (SIGTERM ends the process by Python's default and raises
+                # nothing, so no exception is involved there.)
+                if not getattr(error, "narrowed", False):
+                    if (clock() >= work or (
                             fresh_manager is not None
-                            and getattr(getattr(manager, "call", None), "broken", False)))):
-                    # The session is finished, or the phases' time is gone (a mask
-                    # or a poll refused at the edge): the reserve is for this.
-                    narrow("the bus session finished or the time ended during the activation pass")
+                            and getattr(getattr(manager, "call", None), "broken", False))):
+                        # The session is finished, or the phases' time is gone (a mask
+                        # or a poll refused at the edge): the reserve is for this.
+                        narrow("the bus session finished or the time ended during "
+                               "the activation pass")
+                    try:
+                        narrow("the activation pass failed unexpectedly")
+                    except Exception as narrowing:  # noqa: BLE001 - chained, then raised
+                        # `narrow` raises its own error; the original is the one
+                        # that comes out, with the narrowing chained to it, and it
+                        # is marked narrowed so no outer layer contains it again.
+                        error.narrowed = True
+                        raise error from narrowing
                 raise
             if expired:
                 # Every ledger append of the pass happens while pass.lock is

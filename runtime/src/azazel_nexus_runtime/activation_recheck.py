@@ -52,7 +52,8 @@ from .activation_retire import (
     RetireRefused, resume_pending_retirement, retire_if_revoked, retirement_pending,
 )
 from .activation_withdraw import (
-    NO_JOB, WithdrawalUnconfirmed, contextd_already_withdrawn, withdraw_contextd,
+    NO_JOB, WithdrawalUnconfirmed, contextd_already_withdrawn, contextd_cgroup,
+    withdraw_contextd,
 )
 from .units import (
     CONTEXTD_UNIT,
@@ -137,9 +138,10 @@ def contextd_triggers(manager: UnitManager, authority: ContextdStopAuthority,
     """What, if anything, makes the broker worth evaluating.
 
     A marker, a unit-file state other than exactly `masked` (`masked-runtime`
-    is not it), or an ActiveState other than `inactive`/`failed`, or a job. A
-    read that fails counts: an unreadable broker is evaluated, not assumed
-    quiet.
+    is not it), or an ActiveState other than `inactive`/`failed`, or a job, or
+    an `inactive`/`failed` unit whose cgroup is not confirmed empty (`populated`
+    or `unknown`). A read that fails counts: an unreadable broker is evaluated,
+    not assumed quiet.
     """
     found: list[str] = []
     try:
@@ -162,6 +164,9 @@ def contextd_triggers(manager: UnitManager, authority: ContextdStopAuthority,
             found.append("not_inactive")
         elif authority.job(CONTEXTD_UNIT) != NO_JOB:
             found.append("job")
+        elif state == "inactive" and contextd_cgroup(authority) != "empty":
+            # Inactive for systemd, but the cgroup is not confirmed empty.
+            found.append("cgroup_not_empty")
     except Exception:  # noqa: BLE001
         found.append("activity_unreadable")
     return tuple(found)
@@ -249,9 +254,20 @@ def run_recheck(
                 # either way.
                 try:
                     outcome = retirement(root=root, now=now)
+                    if outcome not in ("none", "retired", "resumed"):
+                        raise ValueError("unexpected retirement outcome")
                 except RetireRefused:
                     print("az-activation-recheck: approval retirement did not "
                           "complete", file=sys.stderr)
+                    status, retirement_blocked = 1, True
+                except PassBudgetExpired:
+                    raise  # the budget's own handling below
+                except Exception as exc:  # noqa: BLE001 - withhold, withdraw, exit 1
+                    # Not a refusal the retirement chose, but the same outcome: the
+                    # approval could not be retired, so the broker is withdrawn
+                    # (below) and the exit status says so. Never skipped.
+                    print("az-activation-recheck: approval retirement failed "
+                          f"({type(exc).__name__})", file=sys.stderr)
                     status, retirement_blocked = 1, True
                 else:
                     if outcome != "none":
@@ -281,12 +297,21 @@ def run_recheck(
                 retirement_blocked = retirement_pending(root)
             except Exception:  # noqa: BLE001 - unreadable counts as pending
                 retirement_blocked = True
-        verdict = contextd_verdict(inputs, now, retirement_blocked=retirement_blocked)
-        if verdict.granted:
+        try:
+            verdict = contextd_verdict(inputs, now, retirement_blocked=retirement_blocked)
+            granted, label = verdict.granted is True, verdict.label
+            if not isinstance(label, str):
+                raise TypeError("unexpected verdict")
+        except Exception as exc:  # noqa: BLE001 - not granted: withdraw, exit 1
+            print(f"az-activation-recheck: the verdict failed ({type(exc).__name__})",
+                  file=sys.stderr)
+            granted, label = False, "verdict_error"
+            status = 1
+        if granted:
             return finish(status)
         try:
             withdraw_contextd(
-                reason=f"recheck:{verdict.label}", manager=manager, authority=authority,
+                reason=f"recheck:{label}", manager=manager, authority=authority,
                 root=root, ledger=ledger, now=now, actor=ACTOR,
                 invocation_id=invocation_id, deadline=work, final_deadline=final,
                 bind_deadline=lambda d: bind_remaining(manager, d, clock),

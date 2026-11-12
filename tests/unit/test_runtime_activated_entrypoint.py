@@ -19,6 +19,17 @@ from azazel_nexus_runtime.units import ContextdStopAuthority, DbusUnitManager
 
 
 @pytest.fixture(autouse=True)
+def host_cgroup(monkeypatch):
+    """These tests drive `main` with fake bus sessions on a host that is not a
+    cgroup-v2 systemd node. The reader of the host's cgroup (tested on its own in
+    test_runtime_contextd_cgroup.py) answers as a stopped unit's cgroup would."""
+    from azazel_nexus_runtime import contextd_cgroup
+    monkeypatch.setattr(
+        contextd_cgroup, "read_contextd_cgroup",
+        lambda active, root=None: "empty" if active in ("inactive", "failed") else "populated")
+
+
+@pytest.fixture(autouse=True)
 def no_host_bootstrap_selection(monkeypatch):
     from azazel_nexus import bootstrap_selection_optional as bootstrap_selection_store
     monkeypatch.setattr(bootstrap_selection_store, "load_optional_bootstrap_selection", lambda: None)
@@ -698,7 +709,9 @@ def test_ready_and_barrier_follow_a_recorded_pass(monkeypatch, capsys, failing, 
 
     def narrow(manager, root, message, **_options):
         order.append(("narrow", root, message))
-        raise RuntimeError(f"{message}; emergency remask failures: []")
+        error = RuntimeError(f"{message}; emergency remask failures: []")
+        error.narrowed = True  # as the real `_emergency_narrow` marks its error
+        raise error
 
     class Ledger:
         def append(self, event):
