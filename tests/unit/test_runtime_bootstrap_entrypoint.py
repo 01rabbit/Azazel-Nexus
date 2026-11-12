@@ -19,6 +19,16 @@ from test_runtime_bootstrap import (
 )
 
 
+@pytest.fixture(autouse=True)
+def host_cgroup(monkeypatch):
+    """Fake bus sessions on a host that is not a cgroup-v2 systemd node: the reader of
+    the host's cgroup (tested in test_runtime_contextd_cgroup.py) answers as a stopped
+    unit's cgroup would."""
+    from azazel_nexus_runtime import contextd_cgroup
+    monkeypatch.setattr(
+        contextd_cgroup, "read_contextd_cgroup",
+        lambda active, root=None: "empty" if active in ("inactive", "failed") else "populated")
+
 def _evidence():
     return harness_evidence.__wrapped__(None)
 
