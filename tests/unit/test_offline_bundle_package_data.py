@@ -114,21 +114,13 @@ def test_the_selection_is_byte_identical_between_runs(tmp_path):
 
 
 def test_a_wheel_built_from_the_bundle_selection_contains_ui_static(tmp_path):
-    """Built offline from exactly the selected inputs. Skipped where the build tools
-    (setuptools, wheel, a C compiler for the native extension) are not available."""
+    """Built offline from exactly the selected inputs."""
     tree = tmp_path / "tree"
     for source, name in _inputs(REAL):
         destination = tree / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
-    out = tmp_path / "wheel"
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "wheel", "--no-build-isolation", "--no-deps",
-         "-q", "-w", str(out), str(tree / "runtime")],
-        capture_output=True, text=True, env={**os.environ, "PIP_DISABLE_PIP_VERSION_CHECK": "1"})
-    if result.returncode != 0:
-        pytest.skip("the offline wheel build is not available here")
-    [wheel] = list(out.glob("azazel_nexus_runtime-*.whl"))
+    wheel = _build_wheel(tree / "runtime", tmp_path / "wheel", "azazel_nexus_runtime")
     members = set(zipfile.ZipFile(wheel).namelist())
     assert {name.removeprefix("runtime/src/") for name in DECLARED_UI} <= members
 
@@ -195,9 +187,10 @@ def test_a_symlink_refusal_is_a_non_zero_failure_of_the_build(tmp_path):
     (root / UI / "index.html").unlink()
     (root / "elsewhere.html").write_text("x")
     (root / UI / "index.html").symlink_to(root / "elsewhere.html")
+    output = _out(tmp_path)
     with pytest.raises(ValueError, match="symlink"):
-        build_bundle(root, tmp_path / "source.tar.gz")
-    assert not (tmp_path / "source.tar.gz").exists()
+        build_bundle(root, output)
+    _nothing_leaked(output)
 
 
 def test_hidden_files_are_not_matched_by_a_wildcard_but_a_named_one_is(tmp_path):
@@ -217,17 +210,29 @@ def test_the_selection_is_sorted(tmp_path):
     assert names == sorted(names)
 
 
-def _wheel_of_checkout(source_runtime: Path, out: Path) -> Path:
-    """A wheel built straight from a checkout's runtime directory, offline. The
-    build is the oracle: nothing here uses the bundler's selection code."""
+def _build_wheel(source: Path, out: Path, name: str) -> Path:
+    """Build a wheel offline from `source`. The test is skipped only when the build
+    prerequisites are demonstrably missing (setuptools or wheel cannot be imported or
+    there is no C compiler for the runtime's native extension); any other failure of
+    the build is a test failure, with the build's stderr shown."""
+    import importlib.util
+    missing = [module for module in ("setuptools", "wheel")
+               if importlib.util.find_spec(module) is None]
+    if name == "azazel_nexus_runtime" and shutil.which("cc") is None and shutil.which("gcc") is None:
+        missing.append("a C compiler")
+    if missing:
+        pytest.skip("the offline wheel build is not possible here: " + ", ".join(missing))
     result = subprocess.run(
         [sys.executable, "-m", "pip", "wheel", "--no-build-isolation", "--no-deps",
-         "-q", "-w", str(out), str(source_runtime)],
+         "-q", "-w", str(out), str(source)],
         capture_output=True, text=True, env={**os.environ, "PIP_DISABLE_PIP_VERSION_CHECK": "1"})
-    if result.returncode != 0:
-        pytest.skip("the offline wheel build is not available here")
-    [wheel] = list(out.glob("azazel_nexus_runtime-*.whl"))
+    assert result.returncode == 0, result.stderr[-2000:]
+    [wheel] = list(out.glob(f"{name}-*.whl"))
     return wheel
+
+
+def _wheel_of_checkout(source_runtime: Path, out: Path) -> Path:
+    return _build_wheel(source_runtime, out, "azazel_nexus_runtime")
 
 
 def _copy_runtime(destination: Path) -> Path:
@@ -314,13 +319,67 @@ def _outside(tmp_path: Path) -> Path:
     return outside
 
 
-def _nothing_leaked(tmp_path: Path) -> None:
-    """No archive or manifest was produced, and none holds the sentinel."""
-    for path in tmp_path.rglob("*"):
-        if path.is_file() and not path.is_symlink() and "repo" not in path.parts:
-            if path.name.endswith((".tar.gz", ".json")) and path.name != SENTINEL_NAME:
-                assert SENTINEL_BYTES not in path.read_bytes(), path
-    assert not (tmp_path / "source.tar.gz").exists()
+def _out(tmp_path: Path) -> Path:
+    """A dedicated output directory; the designated archive is `out/source.tar.gz`."""
+    directory = tmp_path / "out"
+    directory.mkdir(exist_ok=True)
+    return directory / "source.tar.gz"
+
+
+def _contents_of(path: Path):
+    """`(member names, byte strings)` of a file, looking INSIDE archives."""
+    if tarfile.is_tarfile(path):
+        names, blobs = [], []
+        with tarfile.open(path, "r:*") as archive:
+            for member in archive.getmembers():
+                names.append(member.name)
+                if member.isfile():
+                    blobs.append(archive.extractfile(member).read())
+        return names, blobs
+    if zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as archive:
+            return archive.namelist(), [archive.read(name) for name in archive.namelist()]
+    return [], [path.read_bytes()]
+
+
+def _nothing_leaked(output: Path) -> None:
+    """Neither designated output exists, and nothing else in the output directory
+    holds the sentinel's NAME or BYTES: archives are opened and their member names
+    and decompressed contents searched, not their compressed bytes."""
+    manifest = Path(f"{output}.manifest.json")
+    assert not output.exists(), "the archive was produced"
+    assert not manifest.exists(), "the manifest was produced"
+    for path in output.parent.rglob("*"):
+        if not path.is_file():
+            continue
+        names, blobs = _contents_of(path)
+        assert SENTINEL_NAME not in path.name, path
+        assert all(SENTINEL_NAME not in name for name in names), (path, names)
+        assert all(SENTINEL_NAME.encode() not in blob and SENTINEL_BYTES not in blob
+                   for blob in blobs), path
+
+
+def test_the_leak_check_itself_finds_the_sentinel_inside_an_archive_and_a_manifest(tmp_path):
+    """Positive controls: the check must fail when the sentinel is really there."""
+    import io
+    output = _out(tmp_path)
+    with tarfile.open(output, "w:gz") as archive:
+        info = tarfile.TarInfo("x/inner.txt")
+        info.size = len(SENTINEL_BYTES)
+        archive.addfile(info, io.BytesIO(SENTINEL_BYTES))
+    with pytest.raises(AssertionError):
+        _nothing_leaked(output)
+    output.unlink()
+    with tarfile.open(output.with_name("other.tar.gz"), "w:gz") as archive:
+        info = tarfile.TarInfo(f"deep/{SENTINEL_NAME}")
+        info.size = 1
+        archive.addfile(info, io.BytesIO(b"x"))
+    with pytest.raises(AssertionError):
+        _nothing_leaked(output)  # a member NAME, not bytes
+    output.with_name("other.tar.gz").unlink()
+    Path(f"{output}.manifest.json").write_bytes(b"{}")
+    with pytest.raises(AssertionError, match="manifest"):
+        _nothing_leaked(output)
 
 
 @pytest.mark.parametrize("shape", ["package-data-dir", "package-dir", "ancestor"])
@@ -346,10 +405,10 @@ def test_no_file_outside_the_repository_can_enter_the_bundle(tmp_path, shape):
         (real_src / "azazel_nexus_runtime/ui_static" / "index.html").write_bytes(SENTINEL_BYTES)
         shutil.rmtree(root / "runtime/src")
         (root / "runtime/src").symlink_to(real_src, target_is_directory=True)
-    output = tmp_path / "source.tar.gz"
+    output = _out(tmp_path)
     with pytest.raises(ValueError, match="symlink|unsafe"):
         build_bundle(root, output)
-    _nothing_leaked(tmp_path)
+    _nothing_leaked(output)
 
 
 @pytest.mark.parametrize("shape", ["package-data-dir", "ancestor"])
@@ -371,9 +430,106 @@ def test_the_command_fails_non_zero_and_leaks_nothing_for_a_symlinked_directory(
         (root / "runtime/src").symlink_to(real_src, target_is_directory=True)
     real = module.build_bundle
     monkeypatch.setattr(module, "build_bundle", lambda _root, output: real(root, output))
+    output = _out(tmp_path)
     with pytest.raises(SystemExit) as raised:
-        module.main(["--output", str(tmp_path / "source.tar.gz")])
+        module.main(["--output", str(output)])
     assert raised.value.code == 2
     err = capsys.readouterr().err
     assert "symlink" in err or "unsafe" in err
-    _nothing_leaked(tmp_path)
+    _nothing_leaked(output)
+
+
+# -- Codex 14: the checker needs the package on BOTH sides ------------------------------------------------------
+
+
+def _archive(tmp_path: Path, name: str, prefix: str = "") -> Path:
+    path = tmp_path / name
+    with tarfile.open(path, "w:gz") as handle:
+        for source, member in _inputs(REAL):
+            handle.add(source, arcname=prefix + member)
+    return path
+
+
+def _library_wheel(tmp_path: Path) -> Path:
+    tree = tmp_path / "library"
+    tree.mkdir()
+    for name in ("pyproject.toml", "README.md", "LICENSE"):
+        shutil.copy2(REAL / name, tree / name)
+    shutil.copytree(REAL / "src", tree / "src", ignore=shutil.ignore_patterns(
+        "__pycache__", "*.egg-info", "*.pyc"))
+    return _build_wheel(tree, tmp_path / "library_wheel", "azazel_nexus")
+
+
+@pytest.fixture(scope="module")
+def runtime_wheel(tmp_path_factory):
+    base = tmp_path_factory.mktemp("runtime_wheel")
+    return _wheel_of_checkout(_copy_runtime(base / "runtime"), base / "wheel")
+
+
+def test_a_package_that_does_not_exist_is_exit_2_not_a_match(tmp_path, runtime_wheel, capsys):
+    archive = _archive(tmp_path, "source.tar.gz")
+    assert oracle.main(["--wheel", str(runtime_wheel), "--bundle", str(archive),
+                        "--package", "azazel_nexus_runtim"]) == 2
+    assert "no default source prefix" in capsys.readouterr().err
+    assert oracle.main(["--wheel", str(runtime_wheel), "--bundle", str(archive),
+                        "--package", "azazel_nexus_runtim", "--source", "runtime/src"]) == 2
+    err = capsys.readouterr().err
+    assert "no such package" in err or "__init__.py" in err
+
+
+def test_a_wrong_source_prefix_is_exit_2_not_a_match(tmp_path, runtime_wheel, capsys):
+    archive = _archive(tmp_path, "source.tar.gz")
+    assert oracle.main(["--wheel", str(runtime_wheel), "--bundle", str(archive),
+                        "--source", "runtime/srcx"]) == 2
+    assert "__init__.py" in capsys.readouterr().err
+
+
+def test_the_install_bundle_layout_is_detected_and_checked(tmp_path, runtime_wheel):
+    archive = _archive(tmp_path, "install.tar.gz", prefix="source/")
+    assert oracle.main(["--wheel", str(runtime_wheel), "--bundle", str(archive)]) == 0
+    assert oracle.detect_source(archive, "azazel_nexus_runtime", None) == "source/runtime/src"
+    assert oracle.main(["--wheel", str(runtime_wheel), "--bundle", str(archive),
+                        "--source", "runtime/src"]) == 2  # not that layout
+
+
+def test_both_layouts_at_once_or_neither_is_ambiguous(tmp_path, runtime_wheel):
+    both = tmp_path / "both.tar.gz"
+    with tarfile.open(both, "w:gz") as handle:
+        for source, member in _inputs(REAL):
+            handle.add(source, arcname=member)
+            handle.add(source, arcname="source/" + member)
+    assert oracle.main(["--wheel", str(runtime_wheel), "--bundle", str(both)]) == 2
+    assert oracle.main(["--wheel", str(runtime_wheel), "--bundle", str(both),
+                        "--source", "source/runtime/src"]) == 0  # explicit is fine
+    empty = tmp_path / "empty.tar.gz"
+    with tarfile.open(empty, "w:gz"):
+        pass
+    assert oracle.main(["--wheel", str(runtime_wheel), "--bundle", str(empty)]) == 2
+
+
+def test_a_package_with_no_data_files_passes_when_it_exists_on_both_sides(tmp_path, capsys):
+    wheel = _library_wheel(tmp_path)
+    for prefix in ("", "source/"):
+        archive = _archive(tmp_path, f"lib{len(prefix)}.tar.gz", prefix=prefix)
+        assert oracle.main(["--wheel", str(wheel), "--bundle", str(archive),
+                            "--package", "azazel_nexus"]) == 0
+    assert "(0 files)" in capsys.readouterr().out
+    assert oracle.wheel_package_data(wheel, "azazel_nexus") == set()
+
+
+def test_a_wheel_without_the_package_is_exit_2(tmp_path, runtime_wheel, capsys):
+    archive = _archive(tmp_path, "source.tar.gz")
+    assert oracle.main(["--wheel", str(runtime_wheel), "--bundle", str(archive),
+                        "--package", "azazel_nexus"]) == 2  # the library is not in this wheel
+    assert "no such package" in capsys.readouterr().err
+
+
+def test_record_is_parsed_as_csv(tmp_path):
+    """A RECORD path containing a comma is quoted, which `split(",")` would break."""
+    wheel = tmp_path / "x-1-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("pkg/__init__.py", "")
+        archive.writestr("pkg/data,odd.json", "{}")
+        archive.writestr("x-1.dist-info/RECORD",
+                         'pkg/__init__.py,sha256=a,0\n"pkg/data,odd.json",sha256=b,2\n')
+    assert oracle.wheel_package_data(wheel, "pkg") == {"data,odd.json"}
