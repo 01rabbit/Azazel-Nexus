@@ -1132,13 +1132,19 @@ authority and a fresh session per step, before it masks the other governed units
 by fixed messages ("withdrew the Knowledge Context broker" or "could not confirm
 the withdrawal"), and an unconfirmed withdrawal makes the narrowing fail closed.
 The bootstrap narrowings of one process (the first and the emergency retry)
-share one absolute end, 50 s after the first one began, and each is limited to
-25 s: with `TimeoutStartSec=60s` that leaves at least 10 s for the interpreter
-start, imports and selection before the first call and for the exit. A bus
-connection that fails, or time that is already gone, is reported at once with the
-fixed "could not confirm" message, one terminal message per narrowing, so a line
-exists before any kill. After the broker, the session is bound to the final
-deadline again and is replaced unit by unit if it finishes.
+share one absolute end, 50 s after the entry of `main` (so the selection, the
+bootstrap transaction, the marker reset and the claim that come first are
+counted), and each is limited to 25 s. With `TimeoutStartSec=60s` the 10 s that
+remain must absorb the interpreter start and imports before the entry and the
+shutdown after the end; that is a documented residual limit to be measured on the
+clone. Local filesystem I/O (the marker reset) is not time-bounded, like the
+lock-held file I/O elsewhere in this document. A bus connection that fails, or
+time that is already gone, is reported at once with the fixed "could not
+confirm" message; otherwise the one terminal message per narrowing states how the
+withdrawal ended (a job-stage failure followed by a withdrawn broker is
+"withdrew"). Every session, the first and each replacement, is bound to the
+governing end as soon as it is connected (`SystemdBusSession.connect(remaining)`
+binds it), and a session that finishes is replaced unit by unit.
 No activation-ledger record is appended there: that stage holds no `pass.lock`
 and has no documented ledger writer, and appending without the lock could race
 the head of the pass or the recheck that owns it.

@@ -538,13 +538,17 @@ class SystemdBusSession:
             raise UnitOperationFailed(
                 "could not connect to the system D-Bus service manager"
             ) from exc
-        return cls(
+        session = cls(
             bus=bus,
             loop=loop,
             previous_loop=previous_loop,
             message_type=MessageType,
             message_factory=Message,
         )
+        # A session connected under a deadline is bound to it from the start: a
+        # replacement session never gets a fresh, unbounded allowance per exchange.
+        session.set_remaining(remaining)
+        return session
 
     def _exchange(
         self,

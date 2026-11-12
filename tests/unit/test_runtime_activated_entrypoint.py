@@ -82,6 +82,7 @@ class BootBus:
         self.world = world
         self.breaks_on = breaks_on
         self.broken = False
+        self.limit = None
         world.sessions.append(self)
 
     def __enter__(self):
@@ -91,6 +92,7 @@ class BootBus:
         return None
 
     def set_remaining(self, remaining):
+        self.limit = remaining
         self.world.bound.append((len(self.world.calls), remaining))
 
     def _live(self):
@@ -864,3 +866,64 @@ def test_a_session_that_finishes_among_the_other_units_is_replaced(monkeypatch):
         pass  # the unit that was in flight is reported
     assert len(world.sessions) >= 2
     assert len(world.masked) == len(activated.CORE_UNITS) - 1  # only the one in flight
+
+
+def test_every_replacement_session_is_bound_to_the_governing_end(monkeypatch):
+    world = _boot_world(monkeypatch, running=False)
+    real_call = BootBus.__call__
+    state = {"n": 0}
+
+    def call(self, method, unit):
+        if method == "MaskUnitFiles" and unit != activated.CONTEXTD_UNIT:
+            state["n"] += 1
+            if state["n"] == 2 and not self.broken:
+                self.broken = True
+                raise activated.UnitOperationFailed("systemd D-Bus call did not complete")
+        return real_call(self, method, unit)
+
+    monkeypatch.setattr(BootBus, "__call__", call)
+    with pytest.raises(activated.UnitOperationFailed):
+        activated._narrow_bootstrap_core_units()
+    assert len(world.sessions) >= 2
+    for session in world.sessions[1:]:
+        assert session.limit is not None, "a replacement session was never bound"
+        assert 0 < session.limit() <= activated._BOOTSTRAP_NARROWING_SECONDS
+
+
+def test_a_job_stage_failure_followed_by_a_withdrawn_broker_says_withdrew(monkeypatch, capsys):
+    world = _boot_world(monkeypatch, running=True)
+    real = activated.withdraw_contextd
+
+    def with_unconfirmed_job(**kwargs):
+        kwargs["sink"]({"event_type": "activation.withdrawal_unconfirmed", "stage": "job"})
+        return real(**kwargs)
+
+    monkeypatch.setattr(activated, "withdraw_contextd", with_unconfirmed_job)
+    activated._narrow_bootstrap_core_units()
+    err = capsys.readouterr().err
+    assert err.count("az-activated bootstrap narrowing") == 1 and "withdrew" in err
+
+
+def test_main_anchors_the_shared_end_at_its_entry(monkeypatch):
+    """Not at the first narrowing and not at the process start: at the entry of main."""
+    import time as clock_module
+    monkeypatch.setattr(activated.os, "geteuid", lambda: 0)
+    monkeypatch.setenv("INVOCATION_ID", "a" * 32)
+    monkeypatch.setattr(runtime_paths, "ROOT", Path("/"))
+    original_is_dir = Path.is_dir
+    monkeypatch.setattr(Path, "is_dir", lambda path: True if path == Path(
+        "/run/systemd/system") else original_is_dir(path))
+    seen = []
+
+    def load():
+        seen.append(activated._bootstrap_shared_end)
+        raise RuntimeError("stop after the anchor")
+
+    import azazel_nexus.bootstrap_selection_optional as optional
+    monkeypatch.setattr(optional, "load_optional_bootstrap_selection", load)
+    monkeypatch.setattr("azazel_nexus_runtime.bootstrap_entrypoint.narrow_invalid_selection",
+                        lambda primary, narrow: None)
+    before = clock_module.monotonic()
+    activated.main([])
+    after = clock_module.monotonic()
+    assert seen and before + 50.0 <= seen[0] <= after + 50.0

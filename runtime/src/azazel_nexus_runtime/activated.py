@@ -1227,10 +1227,7 @@ def _narrow_bootstrap_core_units():
     global _bootstrap_shared_end
     began = time.monotonic()
     if _bootstrap_shared_end is None:
-        # ONE absolute end for every bootstrap narrowing of this process (the first and
-        # the emergency retry): TimeoutStartSec=60s, the first call starts after the
-        # interpreter start, imports and selection (a few seconds), 50 s of narrowing
-        # leaves at least 10 s for that start and for the exit.
+        # Called without `main` (a direct caller): count from this call.
         _bootstrap_shared_end = began + _BOOTSTRAP_PROCESS_SECONDS
     shared_end = _bootstrap_shared_end
     end = min(shared_end, began + _BOOTSTRAP_NARROWING_SECONDS)
@@ -1254,16 +1251,18 @@ def _narrow_bootstrap_core_units():
               "the Knowledge Context broker", file=sys.stderr)
 
     def journal(event: dict) -> None:
-        kind = event.get("event_type")
-        if kind == "activation.grant_withdrawn":
-            say(True)
-        elif kind == "activation.withdrawal_unconfirmed":
-            say(False)  # the queued-job records are not terminal
+        # Only the outcome is kept here; the terminal message is printed once, when the
+        # withdrawal ends (a job-stage "unconfirmed" followed by a withdrawn broker is
+        # a withdrawn broker). The queued-job records are not outcomes.
+        pass
 
     @contextlib.contextmanager
     def fresh_session():
         with SystemdBusSession.connect(left) as other:
-            yield DbusUnitManager(call=other), ContextdStopAuthority.from_session(other)
+            replacement = DbusUnitManager(call=other)
+            # Bound to the governing end at once (never a fresh allowance per exchange).
+            bind_remaining(replacement, end, time.monotonic)
+            yield replacement, ContextdStopAuthority.from_session(other)
 
     if left() <= 0:
         say(False)  # the shared time is gone: a message exists before anything is killed
@@ -1322,8 +1321,10 @@ def _narrow_bootstrap_core_units():
 
 #: Time one bootstrap-stage narrowing may use (bus connection included).
 _BOOTSTRAP_NARROWING_SECONDS = 25.0
-#: The shared absolute end, counted from the first narrowing of the process, for the
-#: first narrowing and the emergency retry together (60 s TimeoutStartSec - 10 s).
+#: The shared absolute end, counted from the entry of `main` (before the selection, the
+#: transaction, the marker reset and the claim), for every bootstrap narrowing of the
+#: process together (60 s TimeoutStartSec - 10 s; the start before `main` and the exit
+#: after the end are the margin, to be measured on the clone).
 _BOOTSTRAP_PROCESS_SECONDS = 50.0
 _bootstrap_shared_end = None
 
@@ -1847,6 +1848,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     marker, and never starts it.
     """
 
+    entered = time.monotonic()  # the anchor of the bootstrap path's absolute end
     if argv is None:
         argv = sys.argv[1:]
     if argv:
@@ -1870,6 +1872,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     from .systemd_bus import SystemdBusSession
 
+    global _bootstrap_shared_end
+    # ONE absolute end for every bootstrap narrowing of this process, counted from
+    # the entry of main (not from the first narrowing: the selection, the
+    # transaction, the marker reset and the claim come first).
+    _bootstrap_shared_end = entered + _BOOTSTRAP_PROCESS_SECONDS
     now = (
         datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     )
