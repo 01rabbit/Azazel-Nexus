@@ -50,7 +50,9 @@ from .activation_pass import PassInputs, collect_pass_inputs
 from .activation_retire import (
     RetireRefused, resume_pending_retirement, retire_if_revoked, retirement_pending,
 )
-from .activation_withdraw import NO_JOB, WithdrawalUnconfirmed, withdraw_contextd
+from .activation_withdraw import (
+    NO_JOB, WithdrawalUnconfirmed, contextd_already_withdrawn, withdraw_contextd,
+)
 from .units import (
     CONTEXTD_UNIT,
     ContextdStopAuthority,
@@ -150,9 +152,12 @@ def contextd_triggers(manager: UnitManager, authority: ContextdStopAuthority,
     except Exception:  # noqa: BLE001
         found.append("state_unreadable")
     try:
-        # Exactly `inactive`: a unit left `failed` is a trigger too (it is
-        # withdrawn, and a withdrawal accepts `failed` as quiet).
-        if authority.active_state(CONTEXTD_UNIT) != "inactive":
+        # Exactly `inactive`: a unit left `failed` is a trigger too, except the
+        # one already-withdrawn shape (failed, no job, exactly `masked`, no
+        # marker), which would otherwise be withdrawn again every period.
+        state = authority.active_state(CONTEXTD_UNIT)
+        if state != "inactive" and not (
+                state == "failed" and contextd_already_withdrawn(authority, root)):
             found.append("not_inactive")
         elif authority.job(CONTEXTD_UNIT) != NO_JOB:
             found.append("job")

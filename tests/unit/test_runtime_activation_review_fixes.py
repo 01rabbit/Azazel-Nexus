@@ -526,13 +526,14 @@ def test_a_broker_left_failed_by_a_kill_is_quiet_for_the_withdrawal(granted):
     event = [e for e in events_after(stage) if e["event_type"] == "activation.grant_withdrawn"][0]
     assert event["quiet_state"] == "failed" and event["stopped"] is True
     assert stage.model.failed is True
-    # `failed` is quiet for the confirmation only: a later recheck still sees a
-    # trigger and withdraws it again (idempotent; no StopUnit is needed)
-    assert "not_inactive" in activation_recheck.contextd_triggers(
-        stage.manager, authority(stage.model), stage.world.root)
-    stops = stage.model.stops
+    # The already-withdrawn shape (failed, no job, exactly masked, no marker) is
+    # left alone from now on: no trigger and no new record every period.
+    assert activation_recheck.contextd_triggers(
+        stage.manager, authority(stage.model), stage.world.root) == ()
+    before = stage.world.ledger_path.read_bytes()
     assert recheck(stage) == 0
-    assert stage.model.stops == stops
+    assert stage.world.ledger_path.read_bytes() == before
+    assert stage.model.stops == 1
 
 
 def test_failed_with_a_job_is_not_quiet_and_failed_is_not_running():
@@ -1218,12 +1219,12 @@ def test_the_budget_constants_leave_the_record_its_reserve():
                                       "docs/activation-observe-baseline.md"])
 def test_the_recovery_text_states_the_second_pass_and_the_fallback(document):
     text = " ".join(open(document, encoding="utf-8").read().split())
-    assert "That second pass is the designed behaviour, not a failure" in text
-    assert "queued start job for the broker is preserved" in text
-    assert "(unmask, enable, reload, marker written)" in text
-    assert "to be confirmed on the clone, unit 45 S1" in text
+    assert "The second pass is designed to keep the broker's queued start job" in text
+    assert "(unmask, enable, reload, marker" in text
+    assert "only once the same-boot procedure has been run on a clone (unit 45 S1)" in text
     assert "the supported recovery is a reboot after the grant" in text
-    assert "may re-mask" not in text and "is masked again" not in text
+    assert "placeholder" not in text and "is masked again" not in text
+    assert "MASKED broker is refused" in text and "UNMASKED, granted broker is different" in text
 
 
 # -- the recheck records inside the lock, in order, and never swallows a failure ------------------------------
@@ -1402,7 +1403,7 @@ def test_a_new_holder_cannot_race_the_budget_record(fresh, monkeypatch):
     held_during_narrow = []
     real = activated._emergency_narrow
 
-    def watching(manager, root, message):
+    def watching(manager, root, message, **options):
         try:
             other = acquire_pass_lock(root)
         except Exception:
@@ -1410,7 +1411,7 @@ def test_a_new_holder_cannot_race_the_budget_record(fresh, monkeypatch):
         else:
             other.release()
             held_during_narrow.append(False)
-        return real(manager, root, message)
+        return real(manager, root, message, **options)
 
     monkeypatch.setattr(activated, "_emergency_narrow", watching)
 
@@ -1449,3 +1450,177 @@ def test_the_ledger_appends_of_the_controller_and_the_recheck_are_all_under_the_
     assert "pass_budget_expired" not in source[:source.index("with lock:")]
     tail = source[outer:]
     assert ".append(" not in tail  # outside the lock nothing is appended
+
+
+# -- S1 on a real host: a queued start job of the broker survives the preflight --------------------------------------
+
+
+class QueuedManager(ModelManager):
+    """systemd as the clone showed it: masking the broker and reloading FAILS its
+    queued start job ("Failed to start"). A job left alone runs after READY, if the
+    broker's marker exists (its Condition), and is skipped otherwise."""
+
+    def reload(self):
+        super().reload()
+        if self.model.file_state == "masked" and self.model.job != NO_JOB:
+            self.model.job = NO_JOB
+            self.model.start_job_failed = True
+
+    def release_after_ready(self, root):
+        model = self.model
+        if model.job != NO_JOB and model.file_state != "masked":
+            marker = root / "run/azazel-activation/granted" / CTX
+            if marker.exists():
+                model.running = True
+            model.job = NO_JOB
+
+
+@pytest.fixture
+def queued(ctx_world, monkeypatch):
+    from azazel_nexus_runtime import systemd_notify
+    clock = FakeClock()
+    model = ContextdModel(clock, job=JOB)
+    model.start_job_failed = False
+    manager = QueuedManager(model, enabled=[d.name for d in CORE_UNITS])
+    ctx_world.manager = manager
+    model.job = JOB  # an enabled broker with a start job waiting for the controller
+    monkeypatch.setattr(systemd_notify, "notify_ready",
+                        lambda: manager.release_after_ready(ctx_world.root))
+    monkeypatch.setattr(systemd_notify, "notify_barrier", lambda: None)
+    return SimpleNamespace(world=ctx_world, clock=clock, model=model, manager=manager)
+
+
+def _pass(queued, **kwargs):
+    return activated._locked_pass(
+        manager=queued.manager, root=queued.world.root, now=NOW, actor="test",
+        stop_authority=authority(queued.model), invocation_id="b" * 32,
+        clock=queued.clock, sleep=queued.clock.sleep,
+        producers=kwargs.pop("producers", None) or queued.world.producers(), **kwargs)
+
+
+def test_a_queued_start_is_kept_on_grant_and_runs_after_ready(queued):
+    outcome = _pass(queued)
+    assert CTX in outcome.granted
+    assert queued.model.start_job_failed is False
+    assert queued.model.running is True  # the job ran, with the marker in place
+    assert CTX in queued.world.markers()
+    assert queued.manager.state(CTX) is UnitState.ENABLED
+
+
+def test_the_old_preflight_fails_the_queued_start(queued, monkeypatch):
+    """Negative check: masking the broker at preflight fails its job (the S1 finding)."""
+    monkeypatch.setattr(activated, "contextd_start_is_queued", lambda authority_: False)
+    outcome = _pass(queued)
+    assert CTX in outcome.granted  # re-granted ...
+    assert queued.model.start_job_failed is True  # ... but its start job had failed
+    assert queued.model.running is False  # granted, unmasked, marker, inactive
+
+
+def test_a_queued_start_is_replaced_when_the_broker_is_withheld(queued):
+    queued.world.sign(units=SCOPE)  # the approval no longer names the broker
+    outcome = _pass(queued)
+    assert CTX not in outcome.granted
+    assert queued.model.job == NO_JOB and queued.model.running is False
+    assert queued.manager.state(CTX) is UnitState.MASKED
+    assert CTX not in (queued.world.markers() or [])
+
+
+def test_a_queued_start_is_replaced_when_the_budget_ends(queued):
+    def slow():
+        queued.clock.sleep(38.0)
+        return queued.world.evidence
+
+    with pytest.raises(RuntimeError, match="used its whole time budget"):
+        _pass(queued, producers=queued.world.producers(commissioning_evidence=slow))
+    assert queued.model.job == NO_JOB and queued.model.running is False
+    assert queued.manager.state(CTX) is UnitState.MASKED
+    assert queued.world.markers() is None
+
+
+def test_a_queued_start_is_replaced_when_the_pass_narrows_for_another_reason(queued, monkeypatch):
+    def fail_marker_write(units, root):
+        raise OSError("synthetic")
+
+    monkeypatch.setattr(activated, "write_grant_markers", fail_marker_write)
+    with pytest.raises(RuntimeError, match="markers could not be written"):
+        _pass(queued)
+    assert queued.model.job == NO_JOB and queued.model.running is False
+    assert queued.manager.state(CTX) is UnitState.MASKED
+
+
+def test_the_job_clear_on_a_narrowing_does_not_write_without_the_lock(queued):
+    holder = acquire_pass_lock(queued.world.root)
+    before = (queued.world.ledger_path.read_bytes()
+              if queued.world.ledger_path.exists() else None)
+    with pytest.raises(RuntimeError, match="pass lock could not be taken"):
+        _pass(queued, started=queued.clock() - 30.0)
+    holder.release()
+    after = (queued.world.ledger_path.read_bytes()
+             if queued.world.ledger_path.exists() else None)
+    assert after == before
+    assert queued.model.job == NO_JOB and queued.manager.state(CTX) is UnitState.MASKED
+
+
+def test_a_running_broker_is_still_stopped_at_preflight(queued):
+    queued.model.running = True
+    queued.model.job = NO_JOB
+    outcome = _pass(queued)
+    assert queued.model.stops == 1 and CTX in outcome.granted
+
+
+# -- B: `failed` is consistent --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("shape,triggers", [
+    ("withdrawn", False), ("unmasked", True), ("job", True), ("marker", True),
+])
+def test_only_the_already_withdrawn_failed_shape_is_left_alone(granted, shape, triggers):
+    stage = granted
+    from azazel_nexus_runtime.activation_markers import remove_contextd_marker
+    remove_contextd_marker(stage.world.root)
+    stage.manager.mask(CTX)
+    stage.model.running = False
+    stage.model.failed = True
+    stage.model.stopped_at = None
+    if shape == "unmasked":
+        stage.manager.unmask_and_enable(CTX)
+    elif shape == "job":
+        stage.model.job = JOB
+    elif shape == "marker":
+        (stage.world.root / "run/azazel-activation/granted" / CTX).write_text("")
+    found = activation_recheck.contextd_triggers(
+        stage.manager, authority(stage.model), stage.world.root)
+    assert bool(found) is triggers, found
+
+
+def test_a_failed_masked_broker_without_job_or_marker_is_accepted_by_the_preflight(fresh):
+    fresh.model.failed = True
+    fresh.manager.mask(CTX)  # exactly masked, no marker, no job
+    outcome = activated._run_once(
+        manager=fresh.manager, root=fresh.world.root, now=NOW, actor="test",
+        producers=fresh.world.producers(), stop_authority=authority(fresh.model),
+        clock=fresh.clock, sleep=fresh.clock.sleep, invocation_id="a" * 32)
+    assert outcome is not None  # no containment failure
+    assert not any(e["event_type"] == "activation.rollback_failed"
+                   for e in fresh.world.events())
+
+
+def test_without_the_authority_a_failed_broker_is_still_a_containment_failure(fresh):
+    fresh.model.failed = True
+    fresh.manager.mask(CTX)
+    with pytest.raises(activated.RollbackFailed):
+        activated._run_once(
+            manager=fresh.manager, root=fresh.world.root, now=NOW, actor="test",
+            producers=fresh.world.producers())
+
+
+def test_a_failed_broker_that_is_not_masked_is_withdrawn_at_preflight(fresh):
+    fresh.model.failed = True  # still enabled
+    fresh.world.sign(units=SCOPE)  # and not granted again
+    outcome = activated._run_once(
+        manager=fresh.manager, root=fresh.world.root, now=NOW, actor="test",
+        producers=fresh.world.producers(), stop_authority=authority(fresh.model),
+        clock=fresh.clock, sleep=fresh.clock.sleep, invocation_id="a" * 32)
+    assert CTX not in outcome.granted
+    assert fresh.manager.state(CTX) is UnitState.MASKED
+    assert any(e["event_type"] == "activation.grant_withdrawn" for e in fresh.world.events())

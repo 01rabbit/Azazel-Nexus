@@ -674,8 +674,9 @@ StartUnit, so the broker runs again only at the next boot or an operator start
 as below.
 
 Recovery after a withdrawal. A withdrawn broker is masked, with its marker
-removed. A plain `systemctl start azazel-knowledge-contextd.service` is
-refused (`Unit ... is masked`) and pulls in no pass, so it changes nothing.
+removed. A plain `systemctl start azazel-knowledge-contextd.service` of that MASKED
+broker is refused (`Unit ... is masked`) and pulls in no pass, so it changes
+nothing. (Starting an UNMASKED, granted broker is different: see step 3.)
 To bring the broker back, in this order:
 
 1. `systemctl start azazel-activated.service`, which runs a pass. It grants
@@ -688,20 +689,30 @@ To bring the broker back, in this order:
    exists. If the pass failed or did not grant it, do not go on.
 3. `systemctl start azazel-knowledge-contextd.service`.
 
-What step 3 does, expected (to be confirmed on the clone, unit 45 S1; the
-result is recorded there: clone result placeholder, IMPL-REPORT.md section
-"clone S1"). The broker has `Requires=azazel-activated.service` and the
-controller has exited after step 1, so starting the broker queues a second
-controller pass first. That second pass is the designed behaviour, not a
-failure: its preflight masks every governed unit and reloads the manager (the
-queued start job for the broker is preserved by a mask and a reload, VM-confirmed
-in `activation-observe-baseline.md` section 5), the pass grants the broker
-again (unmask, enable, reload, marker written) as long as nothing else has
-changed and no other governed unit is running, and then the queued start job
-runs and finds its marker. If the queued job is instead cancelled on a real
-host, the supported recovery is a reboot after the grant of step 1: the broker
-is enabled, and the boot pass writes its marker before the broker's start job
-is evaluated.
+What step 3 does. The broker has `Requires=azazel-activated.service`, and
+the controller has exited after step 1 (it has no `RemainAfterExit`), so
+starting the broker queues a second controller pass first. The second pass is
+designed to keep the broker's queued start job and to re-grant it:
+
+- its preflight removes the markers and masks and reloads every governed unit
+  except a broker that is inactive with a start job queued, which it leaves as
+  it is (masking and reloading would make systemd fail that job; the job cannot
+  run before READY, because the broker is ordered after the controller);
+- it decides: if the broker is granted again (unmask, enable, reload, marker
+  written) the queued job runs once READY is sent and finds its marker; if it is
+  withheld (the approval, the policy, health or evidence no longer allow it, or a
+  retirement is pending, which makes the pass withhold every unit), or the pass
+  narrows for any reason or runs out of budget, the broker is masked, the manager
+  is reloaded and the queued job is replaced with `StopUnit` before the pass ends;
+- if the pass dies, `Requires=` fails the job, which is the fail-closed side.
+
+Other conditions can also make the second pass withhold or narrow, for example a
+governed unit that is running (a containment failure). This sequence is the
+design; it counts as confirmed only once the same-boot procedure has been run on
+a clone (unit 45 S1) and its result recorded there. If the queued job is
+instead cancelled or failed on a host, the supported recovery is a reboot after
+the grant of step 1: the broker is enabled, and the boot pass writes its marker
+before the broker's start job is evaluated.
 Introduce in this order: new release,
 then a policy naming contextd. Withdraw in this order: remove contextd from
 the policy and re-sign, confirm on the next pass that it is closed, then

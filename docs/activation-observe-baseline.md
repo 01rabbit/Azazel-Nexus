@@ -1102,14 +1102,18 @@ caller.
    budget. `failed` with no job also counts as quiet, for this confirmation
    only: after a SIGKILL final kill systemd keeps the unit loaded as `failed`
    and `StopUnit` does not return it to `inactive`, although the process is
-   gone. The record carries `quiet_state`. Nowhere else is `failed` taken as inactive:
-   the main pass's preflight and the recheck's trigger test for exactly
-   `inactive`, so a broker left `failed` is a trigger and is withdrawn again
-   (no `StopUnit` is needed for it), and the generic inactivity check of the
-   masks does not accept it, so the next main pass in the same boot reports a
-   containment failure until the unit is reset;
+   gone. The record carries `quiet_state`. Elsewhere exact `inactive` is the rule,
+with one exception. A broker left `failed` is a trigger for the recheck and is
+withdrawn (no `StopUnit` is needed for it), and the main pass's preflight
+withdraws it too, unless it is already withdrawn: `failed`, no job, the
+unit-file state exactly `masked` and no marker. That shape is left alone: the
+recheck does not trigger on it (no new record every period) and the preflight's
+mask check accepts it instead of reporting a containment failure. A `failed`
+broker that is unmasked, has a job or has a marker is not that shape;
 5. record `activation.grant_withdrawn` with the reason, the timings in
-   milliseconds since detection and the invocation id.
+   milliseconds since the withdrawal started (`t_marker_ms` and the others are
+   offsets from the start of the withdrawal, not from detection) and the
+   invocation id.
 
 The mask is confirmed by the exact unit-file state: `masked`, not
 `masked-runtime`, which does not survive a reboot. A step that cannot be
@@ -1122,8 +1126,10 @@ not started after its budget has ended.
 
 **Timeline.** `t_loss` is when the condition is lost (an expiry instant, a
 revocation, a health change); it is not observed. `t_detect` is when a pass or
-recheck notices it. `t_marker`, `t_reload`, `t_stop` and `t_inactive` follow as
-above. The recheck runs 30 s after boot and 30 s after each start
+recheck notices it, and the withdrawal starts right after. `t_marker`,
+`t_reload`, `t_stop` and `t_inactive` follow as above; the recorded `t_*_ms`
+fields are offsets from the start of the withdrawal, so `t_detect` to the start
+of the withdrawal is not in them. The recheck runs 30 s after boot and 30 s after each start
 (`OnBootSec=30s`, `OnUnitActiveSec=30s`, `AccuracySec=1s`); that is a
 configured value, not a bound: a run that finds the lock held changes nothing,
 and a run can be late. The recheck has one budget of 18 s for its bus work,
@@ -1188,8 +1194,9 @@ and written again inside one kernel timestamp tick could keep the identity
 than a tick (推測です, not measured on a node).
 
 **Recovery after a withdrawal.** A withdrawn broker is masked, with its marker
-removed. A plain `systemctl start azazel-knowledge-contextd.service` is
-refused (`Unit ... is masked`) and pulls in no pass, so it changes nothing.
+removed. A plain `systemctl start azazel-knowledge-contextd.service` of that MASKED
+broker is refused (`Unit ... is masked`) and pulls in no pass, so it changes
+nothing. (Starting an UNMASKED, granted broker is different: see step 3.)
 To bring the broker back, in this order:
 
 
@@ -1203,20 +1210,30 @@ To bring the broker back, in this order:
    exists. If the pass failed or did not grant it, do not go on.
 3. `systemctl start azazel-knowledge-contextd.service`.
 
-What step 3 does, expected (to be confirmed on the clone, unit 45 S1; the
-result is recorded there: clone result placeholder, IMPL-REPORT.md section
-"clone S1"). The broker has `Requires=azazel-activated.service` and the
-controller has exited after step 1, so starting the broker queues a second
-controller pass first. That second pass is the designed behaviour, not a
-failure: its preflight masks every governed unit and reloads the manager (the
-queued start job for the broker is preserved by a mask and a reload, VM-confirmed
-in `activation-observe-baseline.md` section 5), the pass grants the broker
-again (unmask, enable, reload, marker written) as long as nothing else has
-changed and no other governed unit is running, and then the queued start job
-runs and finds its marker. If the queued job is instead cancelled on a real
-host, the supported recovery is a reboot after the grant of step 1: the broker
-is enabled, and the boot pass writes its marker before the broker's start job
-is evaluated.
+What step 3 does. The broker has `Requires=azazel-activated.service`, and
+the controller has exited after step 1 (it has no `RemainAfterExit`), so
+starting the broker queues a second controller pass first. The second pass is
+designed to keep the broker's queued start job and to re-grant it:
+
+- its preflight removes the markers and masks and reloads every governed unit
+  except a broker that is inactive with a start job queued, which it leaves as
+  it is (masking and reloading would make systemd fail that job; the job cannot
+  run before READY, because the broker is ordered after the controller);
+- it decides: if the broker is granted again (unmask, enable, reload, marker
+  written) the queued job runs once READY is sent and finds its marker; if it is
+  withheld (the approval, the policy, health or evidence no longer allow it, or a
+  retirement is pending, which makes the pass withhold every unit), or the pass
+  narrows for any reason or runs out of budget, the broker is masked, the manager
+  is reloaded and the queued job is replaced with `StopUnit` before the pass ends;
+- if the pass dies, `Requires=` fails the job, which is the fail-closed side.
+
+Other conditions can also make the second pass withhold or narrow, for example a
+governed unit that is running (a containment failure). This sequence is the
+design; it counts as confirmed only once the same-boot procedure has been run on
+a clone (unit 45 S1) and its result recorded there. If the queued job is
+instead cancelled or failed on a host, the supported recovery is a reboot after
+the grant of step 1: the broker is enabled, and the boot pass writes its marker
+before the broker's start job is evaluated.
 
 **Main pass.** The pass takes `/run/azazel-activation/pass.lock` (root `0600`,
 no-follow, `flock`), waiting at most 25 s, and holds it until READY's barrier;
@@ -1246,8 +1263,8 @@ is work that is neither a bus call nor between two checks, for example a file
 read that blocks in the kernel, or the READY barrier's own wait. An earlier
 version armed a `SIGALRM`; it was removed because it could stop a ledger write
 or a high-water rename half way. At preflight a broker that is running is withdrawn before the masks
-are confirmed; an inactive broker with a queued start job is not stopped (its
-marker is gone and it is masked, so the job is skipped). If the pass does not
+are confirmed; an inactive broker with a queued start job is neither stopped
+nor masked there (see the recovery text above): it is decided at the verdict. If the pass does not
 grant the broker and a start job is queued for it, the job is replaced with
 `StopUnit` (`replace`) and `Job` is confirmed `(0, "/")`. Any other governed
 unit that is running is still a containment failure, and re-granting the

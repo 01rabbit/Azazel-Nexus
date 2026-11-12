@@ -572,7 +572,7 @@ def _ordinary_context(monkeypatch):
             raise AssertionError("no stop in this test")
 
         def unit_job(self, unit):
-            raise AssertionError("no job read in this test")
+            return (0, "/")  # a narrowing confirms no start job is left queued
 
         def contextd_active_state(self, unit):
             raise AssertionError("no state read in this test")
@@ -616,7 +616,7 @@ def test_ready_and_barrier_follow_a_recorded_pass(monkeypatch, capsys, failing, 
         if failing == "barrier_timeout":
             raise UnitOperationFailed("systemd notification barrier timed out")
 
-    def narrow(manager, root, message):
+    def narrow(manager, root, message, **_options):
         order.append(("narrow", root, message))
         raise RuntimeError(f"{message}; emergency remask failures: []")
 

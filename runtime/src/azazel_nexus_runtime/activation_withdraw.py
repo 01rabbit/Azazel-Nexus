@@ -39,7 +39,7 @@ from typing import Callable, Optional
 
 from azazel_nexus.audit import AuditLedger
 
-from .activation_markers import remove_contextd_marker
+from .activation_markers import contextd_marker_present, remove_contextd_marker
 from .units import CONTEXTD_UNIT, ContextdStopAuthority, UnitManager, UnitOperationFailed
 
 __all__ = [
@@ -48,8 +48,10 @@ __all__ = [
     "WithdrawalUnconfirmed",
     "clear_contextd_job",
     "QUIET_STATES",
+    "contextd_already_withdrawn",
     "contextd_is_quiet",
     "contextd_is_running",
+    "contextd_start_is_queued",
     "withdraw_contextd",
 ]
 
@@ -81,18 +83,57 @@ def contextd_is_quiet(authority: ContextdStopAuthority) -> bool:
         return False
 
 
-def contextd_is_running(authority: ContextdStopAuthority) -> bool:
-    """Anything but exactly `inactive`: a process may exist, or the unit is `failed`.
+def contextd_already_withdrawn(authority: ContextdStopAuthority, root: Path) -> bool:
+    """`failed`, no job, unit-file state exactly `masked` and no marker.
 
-    `failed` is deliberately not quiet here. It counts as quiet only in
-    `contextd_is_quiet`, to confirm a withdrawal that was already done (a unit
-    left `failed` by a kill has no process, but nothing else may treat it as
-    inactive: a preflight or a recheck still withdraws it). Unreadable counts
-    as not running (the caller's own mask makes the unit readable and its
-    checks refuse otherwise).
+    A broker a kill left `failed` after its withdrawal. Nothing runs, nothing
+    is queued and nothing can start it, so there is nothing to withdraw again:
+    the recheck does not trigger on it and the main pass's preflight accepts it.
+    Every other `failed` (unmasked, a marker, a job) is still a trigger.
+    Unreadable is not "already withdrawn".
     """
     try:
-        return authority.active_state(CONTEXTD_UNIT) != "inactive"
+        return (authority.active_state(CONTEXTD_UNIT) == "failed"
+                and authority.job(CONTEXTD_UNIT) == NO_JOB
+                and authority.file_state(CONTEXTD_UNIT) == "masked"
+                and not contextd_marker_present(root))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def contextd_is_running(authority: ContextdStopAuthority,
+                        root: Optional[Path] = None) -> bool:
+    """Anything but exactly `inactive`: a process may exist, or the unit is `failed`.
+
+    `failed` is not quiet here, except the one already-withdrawn shape
+    (`contextd_already_withdrawn`, which needs `root` for the marker). It counts
+    as quiet in `contextd_is_quiet`, to confirm a withdrawal that was just done.
+    Unreadable counts as not running (the caller's own mask makes the unit
+    readable and its checks refuse otherwise).
+    """
+    try:
+        state = authority.active_state(CONTEXTD_UNIT)
+    except Exception:  # noqa: BLE001
+        return False
+    if state == "inactive":
+        return False
+    if state == "failed" and root is not None and contextd_already_withdrawn(authority, root):
+        return False
+    return True
+
+
+def contextd_start_is_queued(authority: ContextdStopAuthority) -> bool:
+    """Exactly `inactive`, not masked, with a start job waiting.
+
+    Such a start job cannot run before READY (the broker is `After=` and
+    `Requires=` the controller); masking the unit and reloading would make
+    systemd fail it, so the main pass's preflight leaves the unit alone and
+    decides at the verdict. Unreadable is not queued.
+    """
+    try:
+        return (authority.active_state(CONTEXTD_UNIT) == "inactive"
+                and authority.job(CONTEXTD_UNIT) != NO_JOB
+                and authority.file_state(CONTEXTD_UNIT) != "masked")
     except Exception:  # noqa: BLE001
         return False
 
