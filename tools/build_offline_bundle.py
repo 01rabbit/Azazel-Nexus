@@ -26,6 +26,7 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import tomllib
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Optional, Sequence
 
@@ -72,6 +73,47 @@ def _walk(root: Path, directory: Path, *, python_only: bool) -> Iterable[Path]:
                 yield path
         else:
             raise ValueError(f"non-regular file is not allowed in bundle inputs: {path}")
+
+
+#: Where each pyproject's `[tool.setuptools.package-data]` packages live,
+#: relative to the repository root: (pyproject, package source directory).
+_PACKAGE_DATA_SOURCES = (
+    (("pyproject.toml",), ("src",)),
+    (("runtime", "pyproject.toml"), ("runtime", "src")),
+)
+
+
+def package_data_files(root: Path) -> list[Path]:
+    """Exactly the files the pyprojects declare as package data, nothing wider.
+
+    The bundle keeps only `.py` files from the source trees, so a package-data
+    file (the read-only UI's `ui_static/*`) was dropped from the bundle and from
+    the wheel built from it. The selection is derived from the declaration
+    itself (`[tool.setuptools.package-data]`: package name to glob patterns
+    relative to the package directory), never from a list kept here, so the two
+    cannot diverge; a pattern that matches nothing is an error, and so is a
+    symlink or a non-regular match.
+    """
+    found: list[Path] = []
+    for pyproject, source in _PACKAGE_DATA_SOURCES:
+        path = root.joinpath(*pyproject)
+        declared = tomllib.loads(path.read_text(encoding="utf-8")).get(
+            "tool", {}).get("setuptools", {}).get("package-data", {})
+        for package, patterns in sorted(declared.items()):
+            package_dir = root.joinpath(*source, *package.split("."))
+            for pattern in patterns:
+                relative = PurePosixPath(pattern)
+                if relative.is_absolute() or ".." in relative.parts:
+                    raise ValueError(f"package-data pattern is not a relative path: {pattern}")
+                matches = sorted(package_dir.glob(pattern), key=lambda item: item.as_posix())
+                if not matches:
+                    raise ValueError(f"package-data pattern matches no file: {package} {pattern}")
+                for match in matches:
+                    if _excluded(match.relative_to(root)):
+                        continue
+                    _regular_file(match)
+                    found.append(match)
+    return found
 
 
 def _inputs(root: Path) -> list[tuple[Path, str]]:
@@ -137,6 +179,12 @@ def _inputs(root: Path) -> list[tuple[Path, str]]:
             raise ValueError(f"required input directory is missing or unsafe: {source_dir}")
         for source in _walk(root, source_dir, python_only=python_only):
             candidates.append((source, source.relative_to(root).as_posix()))
+    taken = {name for _, name in candidates}
+    for source in package_data_files(root):
+        name = source.relative_to(root).as_posix()
+        if name not in taken:  # a declared file that the walk already took
+            candidates.append((source, name))
+            taken.add(name)
 
     candidates.sort(key=lambda item: item[1])
     names = [name for _, name in candidates]
