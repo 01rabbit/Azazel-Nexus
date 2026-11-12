@@ -24,6 +24,7 @@ from typing import Any
 from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.sanitizer import PrivacyClass, SanitizerPolicy
 
+from .activation_markers import inspect_grant_marker
 from .knowledge_context_socket import MAX_CONTEXT_FRAME_BYTES, read_context_frame
 from .knowledge_context_config import load_commissioning, load_observation_rule
 from .principal import PrincipalClass, PrincipalPolicy
@@ -57,6 +58,13 @@ _OBSERVATION_QUESTION = re.compile(
 _RATE_WINDOW_S = 60.0
 # Fixed request sections a client may name on the refusal it raises.
 _CLIENT_STAGES = frozenset({"refused_before_send", "transport", "verification"})
+#: The unit whose grant marker admits a request (the broker's own unit).
+_UNIT = "azazel-knowledge-contextd.service"
+
+
+def _production_grant_marker():
+    """The identity of this unit's grant marker as the pass wrote it, or None."""
+    return inspect_grant_marker(_UNIT)
 
 
 class KnowledgeContextBroker:
@@ -74,6 +82,7 @@ class KnowledgeContextBroker:
         monotonic: Callable[[], float] = time.monotonic,
         observation_rule: tuple | None = None,
         observation_rule_path: Any = None,
+        grant_marker: Callable[[], Any] = _production_grant_marker,
     ) -> None:
         if type(enabled) is not bool:
             raise ValueError("Knowledge Context enablement must be explicit")
@@ -84,6 +93,9 @@ class KnowledgeContextBroker:
         self._alias_key = alias_key
         self._audit = audit
         self._monotonic = monotonic
+        #: Reads the identity of the grant marker (None: no grant). Taken when
+        #: a request is accepted and again before the answer is adopted.
+        self._grant_marker = grant_marker
         self._slot = BoundedSemaphore(1)
         # (rule, identity) read once at start-up, or None. Closed for good once
         # the rule file is removed or replaced (latch, until restart).
@@ -136,6 +148,15 @@ class KnowledgeContextBroker:
         reason = None
         phase = "frame"
         try:
+            # The grant this request is accepted under. A broker whose grant
+            # was withdrawn (marker removed) accepts nothing, even in the
+            # seconds before the manager has stopped it.
+            phase = "grant"
+            admitted = self._grant_marker()
+            if admitted is None:
+                reason = "withdrawn"
+                raise ValueError
+            phase = "frame"
             wire_frame = read_context_frame(request.payload.get("frame"))
             if set(request.payload) != {"frame"} or not self._ready:
                 raise ValueError
@@ -195,6 +216,17 @@ class KnowledgeContextBroker:
             if not encoded or len(encoded) > MAX_RESPONSE_BYTES:
                 reason = "verification"
                 raise ValueError
+            # The adoption point. The answer is used only if the marker is
+            # still the one this request was accepted under; after the marker
+            # was removed (or removed and written again) nothing from the
+            # peer is adopted, recorded as verified or returned. An answer
+            # adopted before this check may still be on its way to the
+            # caller after the marker is gone: delivery is not undone.
+            phase = "grant"
+            if self._grant_marker() != admitted:
+                reason = "withdrawn"
+                raise ValueError
+            phase = "verified"
             self._audit({"event_type": "knowledge.context.completed",
                          "outcome": "verified_advisory",
                          "response_bytes": len(encoded),

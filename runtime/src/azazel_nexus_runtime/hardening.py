@@ -1464,7 +1464,18 @@ PROFILES: tuple[ServiceProfile, ...] = (
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         conditions=_grant_condition("azazel-knowledge-contextd.service"),
         is_knowledge_context_transport=True,
-        extra=(("LogRateLimitIntervalSec", "30"),
+        # The stop profile: when the controller withdraws the grant it sends
+        # StopUnit, and the broker must be gone soon after. SIGTERM to the
+        # whole control group, ten seconds, then SIGKILL (also for a stop
+        # that times out). The broker also refuses a request or an answer
+        # once its grant marker is gone (knowledge_contextd), so the
+        # seconds between the withdrawal and the exit adopt nothing new.
+        extra=(("KillMode", "control-group"),
+               ("TimeoutStopSec", "10s"),
+               ("KillSignal", "SIGTERM"),
+               ("FinalKillSignal", "SIGKILL"),
+               ("SendSIGKILL", "yes"),
+               ("LogRateLimitIntervalSec", "30"),
                ("LogRateLimitBurst", "30"),
                ("LogExtraFields", "AZ_SERVICE=knowledge-context")),
         rationale=(

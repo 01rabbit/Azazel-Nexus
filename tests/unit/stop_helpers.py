@@ -114,3 +114,9 @@ def failing_authority() -> ContextdStopAuthority:
 
     return ContextdStopAuthority(stop=fail, job=fail)
 
+
+def granted_marker():
+    """A broker's grant marker that exists and never changes (for tests that
+    are about something else than the grant)."""
+    from azazel_nexus_runtime.activation_markers import MarkerIdentity
+    return MarkerIdentity(1, 2, 3)

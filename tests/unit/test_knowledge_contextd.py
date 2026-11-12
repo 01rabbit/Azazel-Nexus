@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "runtime" / "src"))
 
 from azazel_nexus.sanitizer import PrivacyClass, SanitizerPolicy
+from stop_helpers import granted_marker
 from azazel_nexus_runtime.knowledge_contextd import (
     CONTEXT_VERB, MAX_RESPONSE_BYTES, KnowledgeContextBroker,
 )
@@ -45,7 +46,7 @@ def test_uncommissioned_broker_refuses_and_does_not_call_a_peer():
             pytest.fail("disabled broker attempted Knowledge egress")
 
     events = []
-    broker = KnowledgeContextBroker(client=Forbidden(), policy=_policy(),
+    broker = KnowledgeContextBroker(grant_marker=granted_marker, client=Forbidden(), policy=_policy(),
                                     mission="lab", alias_key=b"x" * 32,
                                     audit=events.append)
     assert broker.handle(_request()) == {"refusal": "unavailable"}
@@ -57,7 +58,7 @@ def test_expired_queued_request_does_not_reach_knowledge():
         def request_context(self, **kwargs):
             pytest.fail("expired request reached Knowledge")
 
-    broker = KnowledgeContextBroker(
+    broker = KnowledgeContextBroker(grant_marker=granted_marker, 
         client=Forbidden(), policy=_policy(), mission="lab", alias_key=b"x" * 32,
         enabled=True, monotonic=lambda: 20.0,
     )
@@ -76,7 +77,7 @@ def test_audit_failure_prevents_knowledge_egress():
     def broken_audit(_event):
         raise OSError("synthetic audit failure")
 
-    broker = KnowledgeContextBroker(
+    broker = KnowledgeContextBroker(grant_marker=granted_marker, 
         client=Client(), policy=_policy(), mission="lab", alias_key=b"x" * 32,
         enabled=True, audit=broken_audit,
     )
@@ -243,7 +244,7 @@ def test_late_knowledge_response_is_not_delivered():
             clock[0] = 10.01
             return {"authority": "advisory_only"}
 
-    broker = KnowledgeContextBroker(
+    broker = KnowledgeContextBroker(grant_marker=granted_marker, 
         client=LateClient(), policy=_policy(), mission="lab", alias_key=b"x" * 32,
         enabled=True, monotonic=lambda: clock[0],
     )
@@ -259,7 +260,7 @@ def test_late_response_cannot_outlive_relative_deadline():
             clock[0] = 10.01
             return {"authority": "advisory_only"}
 
-    broker = KnowledgeContextBroker(
+    broker = KnowledgeContextBroker(grant_marker=granted_marker, 
         client=LateClient(), policy=_policy(), mission="lab", alias_key=b"x" * 32,
         enabled=True, monotonic=lambda: clock[0],
     )
@@ -272,7 +273,7 @@ def test_broker_size_limit_matches_escaped_wire_encoding():
         def request_context(self, **_kwargs):
             return {"text": "秘密" * 5_000}
 
-    broker = KnowledgeContextBroker(
+    broker = KnowledgeContextBroker(grant_marker=granted_marker, 
         client=UnicodeClient(), policy=_policy(), mission="lab", alias_key=b"x" * 32,
         enabled=True,
     )
@@ -288,7 +289,7 @@ def test_commissioned_broker_hardcodes_p0_and_bounds_response():
             calls.append(kwargs)
             return response
 
-    broker = KnowledgeContextBroker(client=Client(), policy=_policy(), mission="lab",
+    broker = KnowledgeContextBroker(grant_marker=granted_marker, client=Client(), policy=_policy(), mission="lab",
                                     alias_key=b"x" * 32, enabled=True)
     assert broker.handle(_request()) == {"response": response}
     assert calls[0]["privacy_class"] is PrivacyClass.P0_PUBLIC
@@ -299,7 +300,7 @@ def test_commissioned_broker_hardcodes_p0_and_bounds_response():
         def request_context(self, **kwargs):
             return {"oversize": "x" * MAX_RESPONSE_BYTES}
 
-    oversized = KnowledgeContextBroker(client=Oversized(), policy=_policy(), mission="lab",
+    oversized = KnowledgeContextBroker(grant_marker=granted_marker, client=Oversized(), policy=_policy(), mission="lab",
                                        alias_key=b"x" * 32, enabled=True)
     assert oversized.handle(_request()) == {"refusal": "unavailable"}
 
@@ -309,7 +310,7 @@ def test_broker_refuses_non_p0_without_calling_the_peer():
         def request_context(self, **kwargs):
             pytest.fail("non-P0 request reached Knowledge egress")
 
-    broker = KnowledgeContextBroker(client=Forbidden(), policy=_policy(),
+    broker = KnowledgeContextBroker(grant_marker=granted_marker, client=Forbidden(), policy=_policy(),
                                     mission="lab", alias_key=b"x" * 32, enabled=True)
     request = _request({"frame": {"privacy_class": "P2-mission",
                                   "question": "synthetic mission question"}})

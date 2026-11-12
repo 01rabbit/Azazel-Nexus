@@ -34,6 +34,7 @@ from azazel_nexus.provider_registry import ProviderRecord
 from azazel_nexus.sanitizer import PrivacyClass, SanitizerPolicy
 from azazel_nexus_runtime import mio_locald
 from azazel_nexus_runtime.knowledge_context_socket import KnowledgeContextUnavailable
+from stop_helpers import granted_marker
 from azazel_nexus_runtime.knowledge_contextd import CONTEXT_VERB, KnowledgeContextBroker
 from azazel_nexus_runtime.knowledge_egress import KnowledgeClient
 
@@ -163,7 +164,7 @@ class Chain:
             knowledge_context_max_ttl_seconds=300,
             utc_now=_ts,
         )
-        self.broker = KnowledgeContextBroker(
+        self.broker = KnowledgeContextBroker(grant_marker=granted_marker, 
             client=client, policy=POLICY, mission="acceptance", alias_key=b"k" * 32,
             enabled=True, audit=self.audit.append)
 
@@ -327,7 +328,7 @@ def test_non_p0_and_disabled_paths_never_query_the_producer(monkeypatch):
     assert not calls and fast["full_node_context_status"] == "not_queried"
     assert "fabric_knowledge_context_advisory" not in fast
     # The shipped broker factory is closed: no client, no egress.
-    closed = KnowledgeContextBroker(audit=lambda e: None)
+    closed = KnowledgeContextBroker(grant_marker=granted_marker, audit=lambda e: None)
     out = closed.handle(SimpleNamespace(
         verb=CONTEXT_VERB, arguments={"deadline_ms": 500,
                                       "deadline_monotonic_ns": int((time.monotonic() + .5) * 1e9)},

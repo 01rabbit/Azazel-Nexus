@@ -20,6 +20,11 @@ Requires=azazel-activated.service
 Type=notify
 User=azknowledgeegress
 ExecStart=/usr/libexec/azazel/az-knowledge-contextd
+KillMode=control-group
+TimeoutStopSec=10s
+KillSignal=SIGTERM
+FinalKillSignal=SIGKILL
+SendSIGKILL=yes
 LogRateLimitIntervalSec=30
 LogRateLimitBurst=30
 LogExtraFields=AZ_SERVICE=knowledge-context
