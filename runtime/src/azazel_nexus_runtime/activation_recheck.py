@@ -189,7 +189,7 @@ def run_recheck(
     under the lock is not: the records appended to the ledger, the retirement's
     state files and high-water commit, the marker and input reads. A stall in
     it is not interrupted; it is fail-closed, because the main pass's lock wait
-    expires, and it narrows and grants nothing. Retirement and collection end
+    expires, and it changes nothing, grants nothing and fails. Retirement and collection end
     by `collect_seconds` only as far as they are cooperative. The withdrawal's
     steps end `finalizer_seconds` before the finalizer's end, which is
     `record_seconds` before the budget; the last seconds are left for the

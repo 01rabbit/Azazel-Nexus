@@ -1154,10 +1154,9 @@ withdrawal or its unconfirmed outcome, and the approval retirement):
 (`src/azazel_nexus/audit.py`, `append`), so only `pass.lock` stops a recheck and
 a main pass from extending the same head and writing duplicate sequence links.
 If filesystem I/O stalls, nothing interrupts it; the main pass's 25 s lock wait
-expires and the main pass narrows: every marker removed, every governed unit
-masked, nothing granted (fail-closed; see
-`test_a_pass_that_cannot_take_the_lock_narrows_and_fails` and
-`test_the_lock_failure_narrows_after_second_37`). A record that cannot be
+expires and the main pass changes nothing, grants nothing and exits non-zero
+(see the next paragraph and
+`test_a_pass_that_cannot_take_the_lock_changes_nothing_and_fails`). A record that cannot be
 appended is not swallowed: the recheck's exit status is non-zero, although the
 state change it describes has been made. A recheck killed by
 `TimeoutStartSec=40s` in the middle of an append can leave a torn last line.
@@ -1173,11 +1172,18 @@ that cannot record narrows) and costs availability.
 recheck is made while `pass.lock` is held. The main pass's budget-expired
 record (`activation.pass_budget_expired`) is appended inside the lock, and so is
 the narrowing that follows it. A main pass that never obtained the lock (its
-wait expired) appends nothing: it prints
-`az-activated: the activation pass lock was not held; nothing was written to the
-ledger; narrowing and failing` to the journal, narrows, and exits non-zero. That
-failure is therefore visible in the journal and in the unit's exit status, not
-in the ledger.
+wait expired) does not own the state, so it changes nothing at all: no marker is
+removed, no unit is masked, reloaded or stopped, no ledger record is written and
+no READY is sent. It prints `az-activated: the activation pass lock was not held;
+nothing was changed or written; failing` to the journal and exits non-zero. The
+reason is that the holder owns the markers, the units and the ledger head: a
+loser removing a marker, for example, could do so between the holder's marker
+publication and its record. This pass never sent READY, so a start job that
+pulled it in (the broker's, through `Requires=`) fails: the fail-closed side. A
+running broker is the holder's or the recheck's responsibility. The failure is
+visible in the journal and in the unit's exit status, not in the ledger. Nothing
+before the acquisition mutates: the preflight (marker removal, masks, reload,
+the broker's withdrawal) starts after it.
 
 A budget that ends mid-withdrawal gives `activation.withdrawal_unconfirmed`; the
 marker is already removed (a local step) and the finalizer masks the broker
@@ -1242,7 +1248,7 @@ before the broker's start job is evaluated.
 
 **Main pass.** The pass takes `/run/azazel-activation/pass.lock` (root `0600`,
 no-follow, `flock`), waiting at most 25 s, and holds it until READY's barrier;
-without the lock it narrows and exits non-zero. One budget of 45 s covers the
+without the lock it changes nothing and exits non-zero. One budget of 45 s covers the
 whole pass, counted from before the bus connects (connecting counts, each of
 its steps limited to the time that is left). The phases of the pass end 8 s
 before it (at 37 s); the 8 s reserve is kept for the narrowing a failed pass
@@ -1257,10 +1263,12 @@ passed and is otherwise limited to the time that is left. A call that times out
 has finished its session: pending work is cancelled with a bounded moment to
 unwind, the bus is disconnected, and no further call is sent on it, ever.
 Narrowing then opens a new session, connecting inside the same deadline (the
-cleanup after a failed connection is charged to it too). Every way out that
-narrows does so under the end of the whole 45 s: the lock failing, the budget
+cleanup after a failed connection is charged to it too), and uses that
+session's manager and its stop authority together; the old authority is bound
+to the finished session and refuses every read and stop. Every way out that
+narrows does so under the lock and under the end of the whole 45 s: the budget
 ending, READY or its barrier failing, an emergency narrowing in the pass, and
-a finished session. Nothing is raised asynchronously, so a ledger append or a
+a finished session. (A pass that never held the lock does not narrow.) Nothing is raised asynchronously, so a ledger append or a
 high-water commit always completes. When the budget ends the pass writes
 `activation.pass_budget_expired`, removes every marker, masks every governed
 unit, reloads, spending the reserve, and exits non-zero. What this cannot bound

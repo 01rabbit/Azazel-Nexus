@@ -1012,14 +1012,16 @@ def _narrowed_after_the_phases(bound):
     assert bound.manager.timeline[-1] == ("reload", "")
 
 
-def test_the_lock_failure_narrows_after_second_37(bound):
+def test_the_lock_failure_changes_nothing_even_after_second_37(bound):
     holder = acquire_pass_lock(bound.world.root)
     started = bound.clock() - 30.0  # 30 s were spent before the lock was asked for
-    with pytest.raises(RuntimeError, match="pass lock could not be taken"):
+    bound.manager.timeline.clear()
+    with pytest.raises(RuntimeError, match="nothing was changed"):
         _locked_bound(bound, started=started)
     holder.release()
-    bound.begin = started
-    _narrowed_after_the_phases(bound)
+    assert bound.clock() - started >= 37.0
+    assert bound.manager.timeline == [] and bound.manager.refused == 0
+    assert all(bound.manager.state(d.name) is UnitState.ENABLED for d in CORE_UNITS)
 
 
 def test_a_failed_ready_narrows_after_second_37(bound, monkeypatch):
@@ -1084,7 +1086,7 @@ def _fresh(bound):
     @contextlib.contextmanager
     def factory():
         used.append("fresh")
-        yield other
+        yield other, authority(model)
 
     return other, used, factory
 
@@ -1105,15 +1107,16 @@ def test_a_poisoned_session_narrows_on_a_fresh_one_on_every_path(bound, monkeypa
     assert not any(op in ("mask", "reload") for op, _ in bound.manager.timeline)
 
 
-def test_a_lock_failure_on_a_poisoned_session_narrows_on_a_fresh_one(bound):
+def test_a_lock_failure_on_a_poisoned_session_changes_nothing_anywhere(bound):
     bound.manager.call.broken = True
     other, used, factory = _fresh(bound)
     holder = acquire_pass_lock(bound.world.root)
-    with pytest.raises(RuntimeError, match="pass lock could not be taken"):
+    bound.manager.timeline.clear()
+    with pytest.raises(RuntimeError, match="nothing was changed"):
         _locked_bound(bound, started=bound.clock() - 30.0, fresh_manager=factory)
     holder.release()
-    assert used == ["fresh"] and other.refused == 0
-    assert all(other.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
+    assert used == []  # no fresh session is even opened
+    assert bound.manager.timeline == [] and other.timeline == []
 
 
 def test_a_failed_ready_on_a_poisoned_session_narrows_on_a_fresh_one(bound, monkeypatch):
@@ -1131,7 +1134,8 @@ def test_a_failed_ready_on_a_poisoned_session_narrows_on_a_fresh_one(bound, monk
     assert all(other.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
 
 
-def test_a_fresh_session_that_cannot_connect_falls_back_to_the_old_one(bound):
+def test_a_fresh_session_that_cannot_connect_falls_back_to_the_old_one(bound, monkeypatch):
+    from azazel_nexus_runtime import systemd_notify
     bound.manager.call.broken = True
 
     @contextlib.contextmanager
@@ -1139,10 +1143,10 @@ def test_a_fresh_session_that_cannot_connect_falls_back_to_the_old_one(bound):
         raise UnitOperationFailed("could not connect to the system D-Bus service manager")
         yield
 
-    holder = acquire_pass_lock(bound.world.root)
-    with pytest.raises(RuntimeError, match="pass lock could not be taken"):
-        _locked_bound(bound, started=bound.clock() - 30.0, fresh_manager=failing)
-    holder.release()
+    monkeypatch.setattr(systemd_notify, "notify_ready",
+                        lambda: (_ for _ in ()).throw(UnitOperationFailed("refused")))
+    with pytest.raises(RuntimeError, match="readiness notification unavailable"):
+        _locked_bound(bound, fresh_manager=failing)
 
 
 def test_the_connection_cleanup_is_charged_to_the_deadline():
@@ -1424,10 +1428,11 @@ def test_a_new_holder_cannot_race_the_budget_record(fresh, monkeypatch):
     assert held_during_narrow and all(held_during_narrow)
 
 
-def test_a_pass_that_never_held_the_lock_writes_no_ledger_record(fresh, capsys):
+def test_a_pass_that_never_held_the_lock_writes_no_ledger_record_and_changes_nothing(fresh, capsys):
     holder = acquire_pass_lock(fresh.world.root)
     before = fresh.world.ledger_path.exists() and fresh.world.ledger_path.read_bytes()
-    with pytest.raises(RuntimeError, match="pass lock could not be taken"):
+    fresh.manager.timeline.clear()
+    with pytest.raises(RuntimeError, match="nothing was changed"):
         activated._locked_pass(
             manager=fresh.manager, root=fresh.world.root, now=NOW, actor="test",
             stop_authority=authority(fresh.model), invocation_id="b" * 32,
@@ -1437,7 +1442,7 @@ def test_a_pass_that_never_held_the_lock_writes_no_ledger_record(fresh, capsys):
     after = fresh.world.ledger_path.exists() and fresh.world.ledger_path.read_bytes()
     assert after == before  # nothing was appended without the lock
     assert activated.NO_LOCK_NO_RECORD_MESSAGE in capsys.readouterr().err
-    assert all_masked_and_unmarked(fresh)
+    assert fresh.manager.timeline == []  # nothing was masked, reloaded or stopped
 
 
 def test_the_ledger_appends_of_the_controller_and_the_recheck_are_all_under_the_lock():
@@ -1548,17 +1553,18 @@ def test_a_queued_start_is_replaced_when_the_pass_narrows_for_another_reason(que
     assert queued.manager.state(CTX) is UnitState.MASKED
 
 
-def test_the_job_clear_on_a_narrowing_does_not_write_without_the_lock(queued):
+def test_a_pass_that_lost_the_lock_leaves_the_queued_job_and_the_state_alone(queued):
     holder = acquire_pass_lock(queued.world.root)
     before = (queued.world.ledger_path.read_bytes()
               if queued.world.ledger_path.exists() else None)
-    with pytest.raises(RuntimeError, match="pass lock could not be taken"):
+    with pytest.raises(RuntimeError, match="nothing was changed"):
         _pass(queued, started=queued.clock() - 30.0)
     holder.release()
     after = (queued.world.ledger_path.read_bytes()
              if queued.world.ledger_path.exists() else None)
     assert after == before
-    assert queued.model.job == NO_JOB and queued.manager.state(CTX) is UnitState.MASKED
+    assert queued.model.job == JOB and queued.manager.state(CTX) is UnitState.ENABLED
+    assert queued.model.start_job_failed is False
 
 
 def test_a_running_broker_is_still_stopped_at_preflight(queued):
@@ -1686,3 +1692,177 @@ def test_the_job_clear_alone_would_have_left_the_started_broker_running(queued, 
         _pass(queued)
     assert queued.model.running is True  # started by READY and never stopped
     assert real is not None
+
+
+# -- Codex 11: a loser leaves the holder's transaction alone; the fresh session brings its authority --------------
+
+
+def test_a_loser_does_not_touch_a_marker_the_holder_publishes_meanwhile(fresh, monkeypatch):
+    """The holder publishes its marker while the loser waits for the lock: the loser's
+    give-up must leave marker, units and ledger as the holder left them."""
+    holder = acquire_pass_lock(fresh.world.root)
+    published = []
+
+    def sleep(seconds):
+        fresh.clock.sleep(seconds)
+        if not published:  # the holder's marker publication, mid-wait
+            activation_markers_dir = fresh.world.root / "run/azazel-activation/granted"
+            activation_markers_dir.mkdir(exist_ok=True)
+            activation_markers_dir.chmod(0o755)
+            marker = activation_markers_dir / CTX
+            marker.write_text("")
+            marker.chmod(0o644)
+            published.append(marker)
+
+    ledger = fresh.world.ledger_path
+    fresh.manager.timeline.clear()
+    with pytest.raises(RuntimeError, match="nothing was changed"):
+        activated._locked_pass(
+            manager=fresh.manager, root=fresh.world.root, now=NOW, actor="loser",
+            stop_authority=authority(fresh.model), invocation_id="b" * 32,
+            clock=fresh.clock, sleep=sleep, producers=fresh.world.producers(),
+            started=fresh.clock() - 30.0)
+    holder.release()
+    assert published and published[0].exists()  # the holder's marker survived
+    assert fresh.manager.timeline == []
+    assert not ledger.exists() or all(e["actor"] != "loser" for e in fresh.world.events())
+
+
+def test_nothing_in_the_pass_mutates_before_the_lock_is_taken():
+    import inspect
+    source = inspect.getsource(activated._locked_pass)
+    # from the start of the acquisition to the `with lock:` block
+    before = source[source.index("bind_remaining(manager, work, clock)"):source.index("with lock:")]
+    for word in ("reset_grant_markers", "_emergency_narrow", "_narrow_final", "narrow(",
+                 ".mask(", "reload(", "stop(", ".append(", "notify_"):
+        assert word not in before, word
+    assert "not_the_holder(" in before  # the loser only reports
+
+
+class _ScriptedBus:
+    """A system bus that answers the broker's reads and stop, statefully."""
+
+    def __init__(self, name, active=False):
+        self.name = name
+        self.active = active
+        self.messages = []
+        self.masked = set()
+
+    async def call(self, message):
+        from azazel_nexus_runtime.systemd_bus import _unit_object_path
+        self.messages.append((message.member, list(message.body)))
+        member = message.member
+        reply = lambda signature, body: SimpleNamespace(  # noqa: E731
+            message_type=1, signature=signature, body=body, sender=None)
+        if member == "GetUnit":
+            return reply("o", [_unit_object_path(message.body[0])])
+        if member == "Get":
+            prop = message.body[1]
+            if prop == "ActiveState":
+                is_ctx = message.path == _unit_object_path(CTX)
+                return reply("v", [SimpleNamespace(
+                    signature="s", value="active" if (is_ctx and self.active) else "inactive")])
+            if prop == "Job":
+                return reply("v", [SimpleNamespace(signature="(uo)", value=[0, "/"])])
+        if member == "GetUnitFileState":
+            return reply("s", ["masked" if message.body[0] in self.masked else "enabled"])
+        if member == "MaskUnitFiles":
+            self.masked.update(message.body[0])
+            return reply("a(sss)", [[]])
+        if member == "StopUnit":
+            self.active = False
+            return reply("o", ["/org/freedesktop/systemd1/job/7"])
+        if member == "Reload":
+            return reply("", [])
+        raise AssertionError(member)
+
+    def disconnect(self):
+        pass
+
+
+def _real_session(bus):
+    import asyncio
+    from azazel_nexus_runtime.systemd_bus import SystemdBusSession
+    return SystemdBusSession(
+        bus=bus, loop=asyncio.new_event_loop(), previous_loop=None,
+        message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1),
+        message_factory=lambda **values: SimpleNamespace(**values))
+
+
+def test_the_fresh_session_narrowing_uses_the_authority_of_the_fresh_session(
+        fresh, monkeypatch):
+    """The authority is genuinely bound to a poisoned session (a real
+    SystemdBusSession whose call timed out), so every read and stop on it is refused;
+    the narrowing must stop the running broker through the fresh session's authority."""
+    from azazel_nexus_runtime.units import ContextdStopAuthority, DbusUnitManager
+    old_bus = _ScriptedBus("old", active=True)
+    old_session = _real_session(old_bus)
+    old_session.set_remaining(lambda: 0.2)
+
+    async def hang(message):  # the call that times out and poisons the session
+        import asyncio
+        await asyncio.sleep(30)
+
+    old_bus.call, real_call = hang, old_bus.call
+    with pytest.raises(UnitOperationFailed):
+        old_session("GetUnitFileState", CTX)
+    assert old_session.broken is True
+    old_authority = ContextdStopAuthority.from_session(old_session)
+    with pytest.raises(UnitOperationFailed, match="finished"):
+        old_authority.active_state(CTX)  # genuinely refused, not a fake that ignores poisoning
+    with pytest.raises(UnitOperationFailed, match="finished"):
+        old_authority.stop(CTX)
+    old_bus.call = real_call
+    sent_to_old = len(old_bus.messages)
+
+    new_bus = _ScriptedBus("new", active=True)
+    new_session = _real_session(new_bus)
+
+    @contextlib.contextmanager
+    def factory():
+        yield DbusUnitManager(call=new_session), ContextdStopAuthority.from_session(new_session)
+
+    marker_dir = fresh.world.root / "run/azazel-activation/granted"
+    marker_dir.mkdir(exist_ok=True)
+    marker_dir.chmod(0o755)
+    (marker_dir / CTX).write_text("")
+    (marker_dir / CTX).chmod(0o644)
+    aids = activated._contextd_aids(
+        fresh.world.root, now=NOW, actor="t", invocation_id="1" * 32,
+        until=fresh.clock() + 8.0, clock=fresh.clock, sleep=fresh.clock.sleep, record=True)
+    with pytest.raises(RuntimeError, match="used its whole"):
+        activated._narrow_final(
+            DbusUnitManager(call=old_session), fresh.world.root, "used its whole",
+            until=fresh.clock() + 8.0, clock=fresh.clock, fresh_manager=factory,
+            authority=old_authority, aids=aids)
+    members = [m for m, _ in new_bus.messages]
+    assert "StopUnit" in members and "MaskUnitFiles" in members  # the broker was stopped
+    assert new_bus.active is False and CTX in new_bus.masked
+    assert len(old_bus.messages) == sent_to_old  # nothing more went to the poisoned session
+    assert not (marker_dir / CTX).exists()
+    event = [e for e in fresh.world.events() if e["event_type"] == "activation.grant_withdrawn"]
+    assert len(event) == 1 and event[0]["stopped"] is True
+
+
+def test_with_the_old_authority_the_fresh_narrowing_would_not_stop_the_broker(fresh):
+    """Negative check: refreshing only the manager leaves the stop refused."""
+    from azazel_nexus_runtime.units import ContextdStopAuthority, DbusUnitManager
+    old_session = _real_session(_ScriptedBus("old", active=True))
+    old_session.broken = True  # finished
+    old_authority = ContextdStopAuthority.from_session(old_session)
+    new_bus = _ScriptedBus("new", active=True)
+    new_session = _real_session(new_bus)
+
+    @contextlib.contextmanager
+    def factory():
+        yield DbusUnitManager(call=new_session), old_authority  # the mutation
+
+    aids = activated._contextd_aids(
+        fresh.world.root, now=NOW, actor="t", invocation_id="1" * 32,
+        until=fresh.clock() + 8.0, clock=fresh.clock, sleep=fresh.clock.sleep, record=True)
+    with pytest.raises(RuntimeError):
+        activated._narrow_final(
+            DbusUnitManager(call=old_session), fresh.world.root, "x",
+            until=fresh.clock() + 8.0, clock=fresh.clock, fresh_manager=factory,
+            authority=old_authority, aids=aids)
+    assert new_bus.active is True  # still running: the scenario above is not met

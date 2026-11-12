@@ -677,27 +677,35 @@ def test_the_pass_holds_the_lock_until_after_ready_and_its_barrier(main_pass, mo
         pass
 
 
-def test_a_pass_that_cannot_take_the_lock_narrows_and_fails(main_pass, monkeypatch):
+def test_a_pass_that_cannot_take_the_lock_changes_nothing_and_fails(main_pass, monkeypatch):
+    """The holder owns the state: a loser removes no marker, masks nothing, reloads
+    nothing, writes no ledger record, sends no READY, and exits non-zero."""
     from azazel_nexus_runtime import systemd_notify
-    monkeypatch.setattr(systemd_notify, "notify_ready", lambda: None)
-    monkeypatch.setattr(systemd_notify, "notify_barrier", lambda: None)
+    sent = []
+    monkeypatch.setattr(systemd_notify, "notify_ready", lambda: sent.append("ready"))
+    monkeypatch.setattr(systemd_notify, "notify_barrier", lambda: sent.append("barrier"))
     called = []
     monkeypatch.setattr(activated, "_run_once", lambda **kw: called.append(kw))
     first = main_pass.manager
     for unit in (CTX, "azazel-mio-entryd.service"):
         first.unmask_and_enable(unit)
     _markers(main_pass.world.root, CTX)
+    first.timeline.clear()
+    states = {d.name: first.state(d.name) for d in CORE_UNITS}
+    ledger = main_pass.world.ledger_path
+    ledger_before = ledger.read_bytes() if ledger.exists() else None
     with acquire_pass_lock(main_pass.world.root):
         started = main_pass.clock()
-        with pytest.raises(RuntimeError, match="pass lock could not be taken"):
+        with pytest.raises(RuntimeError, match="nothing was changed"):
             _locked(main_pass)
         waited = main_pass.clock() - started
-    assert called == []
+    assert called == [] and sent == []
     wait = activated.PASS_LOCK_WAIT_SECONDS
-    assert wait <= waited < wait + 0.2  # a bounded wait, then narrow
-    assert main_pass.world.markers() is None
-    assert all(first.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
-    assert first.timeline[-1] == ("reload", "")
+    assert wait <= waited < wait + 0.2  # a bounded wait, then give up
+    assert main_pass.world.markers() == [CTX]  # the holder's marker is intact
+    assert {d.name: first.state(d.name) for d in CORE_UNITS} == states
+    assert first.timeline == []  # no mask, no reload, no stop
+    assert (ledger.read_bytes() if ledger.exists() else None) == ledger_before
 
 
 def test_the_budget_is_below_the_start_timeout_of_the_unit():

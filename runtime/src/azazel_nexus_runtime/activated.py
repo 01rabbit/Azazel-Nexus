@@ -619,67 +619,76 @@ MAIN_PASS_RESERVE_SECONDS = 8.0
 #: arrives during a recheck normally gets the lock. The recheck's local
 #: filesystem I/O under the lock (ledger appends, retirement state, marker and
 #: input reads) is not time-bounded; if it stalls this wait expires and the
-#: pass narrows and grants nothing (fail-closed).
+#: pass changes nothing, grants nothing and fails (fail-closed).
 PASS_LOCK_WAIT_SECONDS = 25.0
 
 
 #: The journal line for a pass that could not take `pass.lock`. Stable text;
-#: no ledger record is written on that path.
+#: nothing is changed and no ledger record is written on that path.
 NO_LOCK_NO_RECORD_MESSAGE = (
-    "az-activated: the activation pass lock was not held; nothing was written to "
-    "the ledger; narrowing and failing")
+    "az-activated: the activation pass lock was not held; nothing was changed or "
+    "written; failing")
 
 
-def _contextd_aids(stop_authority, root: Path, *, now: str, actor: str,
-                   invocation_id: str, until: float, clock, sleep, record: bool):
-    """`(withdrawn, clear_job)` for the Knowledge Context broker, or `(None, None)`.
+def _contextd_aids(root: Path, *, now: str, actor: str, invocation_id: str,
+                   until: float, clock, sleep, record: bool):
+    """`(withdrawn_for, clear_for)`: builders bound to a stop authority.
 
-    `withdrawn()` is the already-withdrawn test; `clear_job(manager)` is the full
-    contextd withdrawal (marker, mask, reload, stop, confirm quiet) run after a
-    narrowing. With `record=False` (a pass that never held `pass.lock`) it
-    writes nothing to the ledger.
+    `withdrawn_for(authority)` is the already-withdrawn test and
+    `clear_for(authority)(manager)` the full contextd withdrawal (marker, mask,
+    reload, stop, confirm quiet) run after a narrowing. They take the authority
+    as an argument because a narrowing on a fresh bus session must use the
+    authority of THAT session: the first one belongs to a session that is
+    finished and refuses every read and stop. With `record=False` the
+    withdrawal writes nothing to the ledger.
     """
-    if stop_authority is None:
-        return None, None
+    def withdrawn_for(authority):
+        if authority is None:
+            return None
+        return lambda: contextd_already_withdrawn(authority, root)
 
-    def withdrawn() -> bool:
-        return contextd_already_withdrawn(stop_authority, root)
+    def clear_for(authority):
+        if authority is None:
+            return None
 
-    def clear_job(target) -> None:
-        # The FULL withdrawal, not just a job clear: on a path where READY may
-        # already have been sent (READY or its barrier failed), the held start
-        # job may have run and the broker may be active. Unlink marker, mask,
-        # reload, stop if it is not quiet or a job is present, confirm quiet.
-        # It is also what a path before any READY needs: with nothing running
-        # it reduces to mask, reload, replace the job, confirm none is left.
-        withdraw_contextd(
-            reason="narrowed", manager=target, authority=stop_authority, root=root,
-            ledger=_activation_ledger(root), now=now, actor=actor,
-            invocation_id=invocation_id, deadline=until, final_deadline=until,
-            bind_deadline=lambda d: bind_remaining(target, d, clock),
-            sink=None if record else (lambda event: None), clock=clock, sleep=sleep)
+        def clear_job(target) -> None:
+            # The FULL withdrawal, not just a job clear: on a path where READY
+            # may already have been sent, the held start job may have run and
+            # the broker may be active.
+            withdraw_contextd(
+                reason="narrowed", manager=target, authority=authority, root=root,
+                ledger=_activation_ledger(root), now=now, actor=actor,
+                invocation_id=invocation_id, deadline=until, final_deadline=until,
+                bind_deadline=lambda d: bind_remaining(target, d, clock),
+                sink=None if record else (lambda event: None), clock=clock, sleep=sleep)
 
-    return withdrawn, clear_job
+        return clear_job
+
+    return withdrawn_for, clear_for
 
 
 def _narrow_final(manager: UnitManager, root: Path, message: str, *, until: float,
-                  clock=time.monotonic, fresh_manager=None, withdrawn=None,
-                  clear_job=None) -> None:
+                  clock=time.monotonic, fresh_manager=None, authority=None,
+                  aids=None) -> None:
     """Narrow under the end of the whole budget, on a new session if this one is finished.
 
     `until` is the monotonic end of the full budget (phases plus reserve), so
     the narrowing may spend the reserve; every bus call it makes is limited to
     what is left. A session whose call timed out or was cancelled is finished
     (`SystemdBusSession.broken`): when `fresh_manager` (a context manager that
-    yields a manager on a new session, connecting inside the same deadline) is
-    available the narrowing runs there. `withdrawn` is the broker's
-    already-withdrawn test; `clear_job(manager)` replaces a start job queued for
-    the broker (masking and reloading fail it already; this confirms none is
-    left), best effort, before the narrowing raises. Always raises, like
-    `_emergency_narrow`.
+    yields `(manager, stop_authority)` on a NEW session, connecting inside the
+    same deadline) is available the narrowing runs there with that session's
+    manager AND authority together; the old authority would refuse everything.
+    `aids` are the `_contextd_aids` builders; the full broker withdrawal runs
+    after the masks, best effort, before the narrowing raises. Always raises,
+    like `_emergency_narrow`.
     """
-    def narrow(target) -> None:
+    withdrawn_for, clear_for = aids if aids is not None else (lambda a: None, lambda a: None)
+
+    def narrow(target, target_authority) -> None:
         bind_remaining(target, until, clock)
+        withdrawn = withdrawn_for(target_authority)
+        clear_job = clear_for(target_authority)
         options = {} if withdrawn is None else {"withdrawn": withdrawn}
         try:
             _emergency_narrow(target, root, message, **options)
@@ -694,13 +703,13 @@ def _narrow_final(manager: UnitManager, root: Path, message: str, *, until: floa
     if fresh_manager is not None and getattr(getattr(manager, "call", None), "broken", False):
         stack = contextlib.ExitStack()
         try:
-            other = stack.enter_context(fresh_manager())
+            other, other_authority = stack.enter_context(fresh_manager())
         except Exception:  # noqa: BLE001 - narrow on what there is
             stack.close()
         else:
             with stack:
-                narrow(other)
-    narrow(manager)
+                narrow(other, other_authority)
+    narrow(manager, authority)
 
 
 def _emergency_narrow(manager: UnitManager, root: Path, message: str, *,
@@ -776,12 +785,12 @@ def _run_once(
         # the end of the phases.
         _narrow_final(narrowing_manager, narrowing_root, message,
                       until=deadline + MAIN_PASS_RESERVE_SECONDS, clock=clock,
-                      fresh_manager=fresh_manager, withdrawn=withdrawn,
-                      clear_job=clear_job)
+                      fresh_manager=fresh_manager, authority=stop_authority, aids=aids)
 
-    withdrawn, clear_job = _contextd_aids(
-        stop_authority, root, now=now, actor=actor, invocation_id=invocation_id,
+    aids = _contextd_aids(
+        root, now=now, actor=actor, invocation_id=invocation_id,
         until=deadline + MAIN_PASS_RESERVE_SECONDS, clock=clock, sleep=sleep, record=True)
+    withdrawn = aids[0](stop_authority)
     daemon = ActivationDaemon(
         generations=GenerationStore(root / "var/lib/azazel/generations"),
         ledger=_activation_ledger(root),
@@ -1550,36 +1559,49 @@ def _locked_pass(
 ) -> ActivationOutcome:
     """The main pass under the pass lock, from the lock to READY's barrier.
 
-    The lock is taken with a bounded wait; if it cannot be, the pass narrows
-    (markers removed, every governed unit masked, reload) and fails. The
-    recheck holds the same lock while it evaluates, so the two never change
-    markers and unit state at once.
+    The lock is taken with a bounded wait; if it cannot be, the pass changes
+    nothing (no marker, mask, reload, stop, ledger record or READY), prints a
+    stable journal line and fails: the holder owns the state. Nothing before
+    the acquisition mutates. The recheck holds the same lock while it
+    evaluates, so the two never change markers and unit state at once.
 
     One budget covers everything from `started` (taken by `main` before the
     bus connects) to the end of any narrowing. It is kept cooperatively: the
     phases end `reserve_seconds` before it and are checked between each other,
     and every bus call is limited to the time that remains (`bind_remaining`).
     Nothing is interrupted asynchronously, so a ledger append or a high-water
-    commit always completes. Every way out that narrows (the lock, an expired
-    budget, a failed READY or barrier, an emergency narrowing in the pass, a
-    finished bus session) does so under the end of the whole budget, so the
+    commit always completes. Every way out that narrows (an expired budget, a
+    failed READY or barrier, an emergency narrowing in the pass, a finished
+    bus session) does so under the lock and under the end of the whole budget, so the
     reserve is really available to it. A bus session whose call timed out is
     finished and never reused: the narrowing runs on `fresh_manager()` (a new
-    session, connected inside the same deadline).
+    session, connected inside the same deadline) with that session's manager
+    and stop authority.
     """
     begin = clock() if started is None else started
     final = begin + budget_seconds
     work = final - reserve_seconds
 
-    def narrow(message: str, *, locked: bool = True) -> None:
-        # `locked` False: the lock was never held, so nothing may be written
-        # to the ledger (the queued-job clear then records nothing).
-        withdrawn, clear_job = _contextd_aids(
-            stop_authority, root, now=now, actor=actor, invocation_id=invocation_id,
-            until=final, clock=clock, sleep=sleep, record=locked)
+    def narrow(message: str) -> None:
+        # Only ever called while pass.lock is held: the holder owns the state.
+        aids = _contextd_aids(
+            root, now=now, actor=actor, invocation_id=invocation_id,
+            until=final, clock=clock, sleep=sleep, record=True)
         _narrow_final(manager, root, message, until=final, clock=clock,
-                      fresh_manager=fresh_manager, withdrawn=withdrawn,
-                      clear_job=clear_job)
+                      fresh_manager=fresh_manager, authority=stop_authority, aids=aids)
+
+    def not_the_holder(why: str) -> None:
+        # A pass that does not own pass.lock changes NOTHING: no marker removal,
+        # no mask, reload or stop, no ledger record, no READY. The holder (the
+        # recheck, or another pass) owns the state and the ledger head, and
+        # touching either could race its transaction. The journal line and the
+        # non-zero exit are the whole report. This pass never sent READY, so a
+        # start job that pulled it in fails through Requires= (fail-closed); a
+        # running broker is the holder's or the recheck's to handle.
+        print(NO_LOCK_NO_RECORD_MESSAGE, file=sys.stderr)
+        error = RuntimeError(f"{why}; nothing was changed")
+        error.narrowed = True  # nothing to narrow again
+        raise error
 
     bind_remaining(manager, work, clock)
     try:
@@ -1587,11 +1609,7 @@ def _locked_pass(
         try:
             lock = acquire_pass_lock(root, wait_seconds=wait, clock=clock, sleep=sleep)
         except (PassLockBusy, PassLockRefused):
-            # The lock was never held, so nothing is appended to the ledger
-            # (an append without the lock could extend a head another holder
-            # is extending). The journal line and the non-zero exit report it.
-            print(NO_LOCK_NO_RECORD_MESSAGE, file=sys.stderr)
-            narrow("the activation pass lock could not be taken", locked=False)
+            not_the_holder("the activation pass lock could not be taken")
         expired = False
         with lock:
             try:
@@ -1613,6 +1631,14 @@ def _locked_pass(
                                           invocation_id=invocation_id, sleep=sleep)
             except PassBudgetExpired:
                 expired = True
+            except Exception as error:
+                # A pass that failed on a finished session (its own rollback was
+                # refused) is narrowed on a new one, still under the lock. An
+                # error that already came out of a narrowing is not narrowed again.
+                if (fresh_manager is not None and not getattr(error, "narrowed", False)
+                        and getattr(getattr(manager, "call", None), "broken", False)):
+                    narrow("the bus session finished during the activation pass")
+                raise
             if expired:
                 # Every ledger append of the pass happens while pass.lock is
                 # held, so a new holder cannot extend the same head.
@@ -1625,19 +1651,8 @@ def _locked_pass(
                     pass
                 narrow("the activation pass used its whole time budget")
     except PassBudgetExpired:
-        # Only before the lock was held (nothing in that region checks the
-        # budget, so this is a safety net): no ledger record is written
-        # without the lock; the journal and the exit status carry the report.
-        print(NO_LOCK_NO_RECORD_MESSAGE, file=sys.stderr)
-        narrow("the activation pass used its whole time budget", locked=False)
-    except Exception as error:
-        # A pass that failed on a finished session (its own rollback was
-        # refused) is narrowed on a new one. An error that already came out of
-        # a narrowing is not narrowed again.
-        if (fresh_manager is not None and not getattr(error, "narrowed", False)
-                and getattr(getattr(manager, "call", None), "broken", False)):
-            narrow("the bus session finished during the activation pass")
-        raise
+        # Before the lock was held (nothing there checks the budget; a safety net).
+        not_the_holder("the activation pass budget ended before the lock was held")
     return outcome
 
 
@@ -1709,7 +1724,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             # is bounded by what is left of the whole 45 s.
             with SystemdBusSession.connect(
                     lambda: started + MAIN_PASS_BUDGET_SECONDS - time.monotonic()) as other:
-                yield DbusUnitManager(call=other)
+                yield DbusUnitManager(call=other), ContextdStopAuthority.from_session(other)
 
         with SystemdBusSession.connect(work_left) as session:
             manager = DbusUnitManager(call=session)
@@ -1785,12 +1800,12 @@ def _notify_ready_or_withdraw(manager: UnitManager, root: Path, *, now: str,
         except Exception:  # noqa: BLE001 - narrowing below is unconditional
             pass
         if until is not None:
-            withdrawn, clear_job = _contextd_aids(
-                stop_authority, root, now=now, actor=actor, invocation_id=invocation_id,
+            aids = _contextd_aids(
+                root, now=now, actor=actor, invocation_id=invocation_id,
                 until=until, clock=clock, sleep=sleep, record=True)
             _narrow_final(manager, root, "activation readiness notification unavailable",
                           until=until, clock=clock, fresh_manager=fresh_manager,
-                          withdrawn=withdrawn, clear_job=clear_job)
+                          authority=stop_authority, aids=aids)
         _emergency_narrow(manager, root, "activation readiness notification unavailable")
 
 
