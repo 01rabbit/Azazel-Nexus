@@ -663,7 +663,7 @@ evidence), the next pass, or the periodic recheck (every 30 s as configured,
 not a bound), removes the marker, replaces a start job that is pending for the unit
 (`StopUnit`, recorded as `queued_job_replaced`; before the mask, because the mask
 and the reload would make systemd fail it), masks the unit, reloads the manager,
-sends `StopUnit` if it is running, then confirms the unit quiet (inactive, or, for this confirmation only, `failed` after a kill, with no job). The broker also
+sends `StopUnit` if it is running, then confirms the unit quiet (inactive, or, for this confirmation only, `failed` after a kill, with no job, and in both cases its cgroup confirmed empty; `failed` alone does not show that no process remains, see "What a stop does and does not show" in activation-observe-baseline.md §8.3). The broker also
 reads its marker when it accepts a request and again before it adopts the
 peer's answer: after the marker is gone it accepts nothing and adopts no
 answer (`reason_code` `withdrawn`). An answer adopted earlier may still reach

@@ -46,6 +46,18 @@ from test_runtime_activation_recheck import (  # noqa: F401 - fixture
 from test_runtime_activation_retire import leaf, revoked_trust, tools
 
 
+
+@pytest.fixture(autouse=True)
+def host_cgroup(monkeypatch):
+    """Tests that build the authority from a fake bus session (`from_session`) run on a
+    host that is not a cgroup-v2 systemd node. The reader of the host's cgroup (tested
+    on its own in test_runtime_contextd_cgroup.py) answers as a stopped unit's cgroup would."""
+    from azazel_nexus_runtime import contextd_cgroup
+    monkeypatch.setattr(
+        contextd_cgroup, "read_contextd_cgroup",
+        lambda active, root=None: "empty" if active in ("inactive", "failed") else "populated")
+
+
 @pytest.fixture
 def stage(granted):
     """A node a real pass granted, the broker running (see `granted`)."""
@@ -502,7 +514,8 @@ def test_a_boot_ephemeral_mask_is_not_a_masked_broker(granted):
     stage.model.file_state_of = lambda unit: "masked-runtime"
     guard = ContextdStopAuthority(
         stop=stage.model.stop, job=stage.model.current_job,
-        state=stage.model.active_state, file_state=lambda unit: "masked-runtime")
+        state=stage.model.active_state, file_state=lambda unit: "masked-runtime",
+        cgroup=stage.model.cgroup_of)
     # it triggers the recheck ...
     assert "not_masked" in activation_recheck.contextd_triggers(
         stage.manager, guard, stage.world.root)
@@ -661,7 +674,8 @@ def _slow(granted, cost):
 
     guard = ContextdStopAuthority(
         stop=slow(stage.model.stop), job=slow(stage.model.current_job),
-        state=slow(stage.model.active_state), file_state=slow(stage.model.file_state_of))
+        state=slow(stage.model.active_state), file_state=slow(stage.model.file_state_of),
+        cgroup=stage.model.cgroup_of)
     stage.session = session
     return stage, guard
 
@@ -788,7 +802,8 @@ def test_a_job_read_that_fails_once_is_read_again(stage):
 
     guard = ContextdStopAuthority(stop=stage.model.stop, job=flaky,
                                   state=stage.model.active_state,
-                                  file_state=stage.model.file_state_of)
+                                  file_state=stage.model.file_state_of,
+                                  cgroup=stage.model.cgroup_of)
     withdraw_contextd(fresh=None, 
         reason="t", manager=stage.manager, authority=guard, root=stage.world.root,
         ledger=AuditLedger(stage.world.ledger_path), now=NOW, actor="t",
@@ -2272,7 +2287,8 @@ def _transport_authority(manager, model, clock, *, poison_on):
 
     return ContextdStopAuthority(
         stop=verb("stop", model.stop), job=verb("job", model.current_job),
-        state=model.active_state, file_state=model.file_state_of)
+        state=model.active_state, file_state=model.file_state_of,
+        cgroup=model.cgroup_of)
 
 
 @pytest.fixture

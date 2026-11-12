@@ -14,16 +14,20 @@ the periodic recheck:
 3. if the broker is not inactive, or has a job, send StopUnit in mode
    `replace` (`t_stop`);
 4. wait, within the remaining budget (at most 20 s), until it is quiet: its
-   ActiveState is `inactive` (or `failed`, see below) and its job is
-   `(0, "/")` (`t_inactive`);
-5. record `activation.grant_withdrawn` with the reason and the timings in
-   milliseconds since detection.
+   ActiveState is `inactive` (or `failed`, see below), its job is
+   `(0, "/")` and its cgroup is confirmed empty (`contextd_cgroup`:
+   `empty`, `populated` or `unknown`; only `empty` counts) (`t_inactive`);
+5. record `activation.grant_withdrawn` with the reason, the cgroup state and
+   the timings in milliseconds since detection.
 
-`failed` counts as quiet for this confirmation only. After a SIGKILL final
-kill systemd keeps the unit loaded as `failed` (result `timeout`) and
-`StopUnit` does not return it to `inactive`; the process is gone, and waiting
-for `inactive` would make the withdrawal permanently unconfirmed. The record
-says so (`quiet_state`). Nothing else treats `failed` as inactive.
+`failed` counts as quiet for this confirmation only, and only with an empty
+cgroup. After a SIGKILL final kill systemd keeps the unit loaded as `failed`
+(result `timeout`) and `StopUnit` does not return it to `inactive`; waiting
+for `inactive` would make the withdrawal permanently unconfirmed. But systemd
+can also leave a unit `failed` while a process is still in its cgroup, so
+`failed` alone says nothing about processes: a cgroup that is `populated` or
+`unknown` leaves the withdrawal unconfirmed. The record says which state it
+found (`quiet_state`, `cgroup`). Nothing else treats `failed` as inactive.
 
 Any step that cannot be confirmed first runs a containment finalizer for this
 one unit (remove the marker, mask, reload, one stop if it is not quiet), then
@@ -98,49 +102,71 @@ def _ms(since: float, clock: Callable[[], float]) -> int:
 QUIET_STATES = ("inactive", "failed")
 
 
+def contextd_cgroup(authority: ContextdStopAuthority) -> str:
+    """`empty`, `populated` or `unknown`: the broker's cgroup. Unreadable is `unknown`."""
+    try:
+        state = authority.cgroup_state(CONTEXTD_UNIT)
+    except Exception:  # noqa: BLE001 - unreadable is unknown
+        return "unknown"
+    return state if state in ("empty", "populated") else "unknown"
+
+
 def contextd_is_quiet(authority: ContextdStopAuthority) -> bool:
-    """No process (`inactive`, or `failed` after a kill) and no job. Unreadable is not quiet."""
+    """`inactive` or `failed`, no job, and the cgroup confirmed empty.
+
+    `ActiveState` is what systemd believes; a `failed` unit can still have
+    processes. Only an empty cgroup completes the confirmation. Unreadable, and
+    `unknown`, are not quiet.
+    """
     try:
         return (authority.active_state(CONTEXTD_UNIT) in QUIET_STATES
-                and authority.job(CONTEXTD_UNIT) == NO_JOB)
+                and authority.job(CONTEXTD_UNIT) == NO_JOB
+                and contextd_cgroup(authority) == "empty")
     except Exception:  # noqa: BLE001 - unreadable is not confirmed quiet
         return False
 
 
 def contextd_already_withdrawn(authority: ContextdStopAuthority, root: Path) -> bool:
-    """`failed`, no job, unit-file state exactly `masked` and no marker.
+    """`failed`, no job, unit-file state exactly `masked`, no marker and an empty cgroup.
 
     A broker a kill left `failed` after its withdrawal. Nothing runs, nothing
     is queued and nothing can start it, so there is nothing to withdraw again:
     the recheck does not trigger on it and the main pass's preflight accepts it.
     Every other `failed` (unmasked, a marker, a job) is still a trigger.
+    A `failed` unit whose cgroup is `populated` or `unknown` is not withdrawn:
+    a process may remain, and the recheck keeps reporting it.
     Unreadable is not "already withdrawn".
     """
     try:
         return (authority.active_state(CONTEXTD_UNIT) == "failed"
                 and authority.job(CONTEXTD_UNIT) == NO_JOB
                 and authority.file_state(CONTEXTD_UNIT) == "masked"
-                and not contextd_marker_present(root))
+                and not contextd_marker_present(root)
+                and contextd_cgroup(authority) == "empty")
     except Exception:  # noqa: BLE001
         return False
 
 
 def contextd_is_running(authority: ContextdStopAuthority,
                         root: Optional[Path] = None) -> bool:
-    """Anything but exactly `inactive`: a process may exist, or the unit is `failed`.
+    """Anything but `inactive` with an empty cgroup: a process may exist, or the unit is `failed`.
 
     `failed` is not quiet here, except the one already-withdrawn shape
     (`contextd_already_withdrawn`, which needs `root` for the marker). It counts
     as quiet in `contextd_is_quiet`, to confirm a withdrawal that was just done.
-    Unreadable counts as not running (the caller's own mask makes the unit
-    readable and its checks refuse otherwise).
+    `inactive` is not running only when the cgroup is confirmed `empty`; a
+    `populated` or `unknown` cgroup counts as running (the safe side: the caller
+    then withdraws, and a withdrawal that cannot confirm an empty cgroup fails
+    closed).
+    An ActiveState that cannot be read counts as running too: nothing says
+    that no process exists, so the withdrawal (which fails closed) is needed.
     """
     try:
         state = authority.active_state(CONTEXTD_UNIT)
-    except Exception:  # noqa: BLE001
-        return False
+    except Exception:  # noqa: BLE001 - unreadable: a withdrawal is needed
+        return True
     if state == "inactive":
-        return False
+        return contextd_cgroup(authority) != "empty"
     if state == "failed" and root is not None and contextd_already_withdrawn(authority, root):
         return False
     return True
@@ -269,7 +295,8 @@ def _contain(*, manager: UnitManager, authority: ContextdStopAuthority, root: Pa
             except Exception:  # noqa: BLE001
                 masked = False
             quiet = contextd_is_quiet(cur["authority"])
-        return {"final_masked": masked, "final_quiet": quiet}
+        cgroup = contextd_cgroup(cur["authority"]) if not late() else "unknown"
+        return {"final_masked": masked, "final_quiet": quiet, "cgroup": cgroup}
     finally:
         stack.close()
 
@@ -387,6 +414,7 @@ def withdraw_contextd(
 
     needs_stop = False
     quiet_state = "inactive"
+    cgroup = "unknown"
     job_attempted = False
 
     def settle_job(in_finalizer: bool = False) -> bool:
@@ -441,7 +469,8 @@ def withdraw_contextd(
         stage = "read"
         over()
         needs_stop = (authority.active_state(CONTEXTD_UNIT) not in QUIET_STATES
-                      or _job_twice(authority) != NO_JOB)
+                      or _job_twice(authority) != NO_JOB
+                      or contextd_cgroup(authority) != "empty")
         if needs_stop:
             stage = "stop"
             over()
@@ -456,13 +485,17 @@ def withdraw_contextd(
                                give_up=give_up, clock=clock, sleep=sleep):
                 raise TimeoutError("the broker did not become quiet in time")
         quiet_state = authority.active_state(CONTEXTD_UNIT)
+        stage = "cgroup"
+        cgroup = contextd_cgroup(authority)
+        if quiet_state not in QUIET_STATES or cgroup != "empty":
+            raise UnitOperationFailed("the broker's cgroup is not confirmed empty")
         timings["t_inactive_ms"] = _ms(started, clock)
     except Exception as exc:  # noqa: BLE001 - recorded as a class name, then raised
         raise unconfirmed(type(exc).__name__) from None
     emit({
         "event_type": "activation.grant_withdrawn",
         "unit": CONTEXTD_UNIT, "reason": reason, "stopped": needs_stop,
-        "quiet_state": quiet_state,
+        "quiet_state": quiet_state, "cgroup": cgroup,
         "invocation_id": invocation_id, **timings,
         "occurred_at": now, "actor": actor,
     })

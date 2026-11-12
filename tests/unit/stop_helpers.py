@@ -52,6 +52,10 @@ class ContextdModel:
         self.failed = False
         #: The exact UnitFileState string the manager reports.
         self.file_state = "masked"
+        #: Processes that stay in the cgroup after the stop (a `failed` unit that is not empty).
+        self.leftover = False
+        #: Forces the cgroup answer: "empty", "populated" or "unknown".
+        self.cgroup_override: str | None = None
         self.running = running
         self.job = job
         self.stop_takes = stop_takes
@@ -76,6 +80,13 @@ class ContextdModel:
         if self.running:
             return "active"
         return "failed" if self.failed else "inactive"
+
+    def cgroup_of(self, active_state: str) -> str:
+        """The broker's cgroup as the reader reports it (empty unless a process is left)."""
+        if self.cgroup_override is not None:
+            return self.cgroup_override
+        self._settle()
+        return "populated" if (self.running or self.leftover) else "empty"
 
     def file_state_of(self, unit: str) -> str:
         return self.file_state
@@ -132,7 +143,8 @@ class ModelManager(RecordingUnitManager):
 
 def authority(model: ContextdModel) -> ContextdStopAuthority:
     return ContextdStopAuthority(stop=model.stop, job=model.current_job,
-                                 state=model.active_state, file_state=model.file_state_of)
+                                 state=model.active_state, file_state=model.file_state_of,
+                                 cgroup=model.cgroup_of)
 
 
 def failing_authority() -> ContextdStopAuthority:

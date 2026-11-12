@@ -466,7 +466,7 @@ def test_a_step_that_fails_leaves_the_broker_masked_and_unconfirmed(stage, faili
 
         stage.authority = ContextdStopAuthority(
             stop=refuse, job=stage.model.current_job, state=stage.model.active_state,
-            file_state=stage.model.file_state_of)
+            file_state=stage.model.file_state_of, cgroup=stage.model.cgroup_of)
     with pytest.raises(WithdrawalUnconfirmed):
         _withdraw(stage)
     [event] = [e for e in events(stage) if e["event_type"] == "activation.withdrawal_unconfirmed"]

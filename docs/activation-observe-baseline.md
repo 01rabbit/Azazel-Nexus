@@ -1107,23 +1107,80 @@ caller.
    unit-file state `masked`;
    if its `ActiveState` is not `inactive` or it still has a job, send `StopUnit`
    (`replace`) (`t_stop`);
-4. wait until the broker is quiet, that is `ActiveState` is `inactive` and the
-   job is `(0, "/")` (`t_inactive`), at most 20 s and within the remaining
-   budget. `failed` with no job also counts as quiet, for this confirmation
-   only: after a SIGKILL final kill systemd keeps the unit loaded as `failed`
-   and `StopUnit` does not return it to `inactive`, although the process is
-   gone. The record carries `quiet_state`. Elsewhere exact `inactive` is the rule,
-with one exception. A broker left `failed` is a trigger for the recheck and is
-withdrawn (no `StopUnit` is needed for it), and the main pass's preflight
-withdraws it too, unless it is already withdrawn: `failed`, no job, the
-unit-file state exactly `masked` and no marker. That shape is left alone: the
-recheck does not trigger on it (no new record every period) and the preflight's
-mask check accepts it instead of reporting a containment failure. A `failed`
-broker that is unmasked, has a job or has a marker is not that shape;
-5. record `activation.grant_withdrawn` with the reason, the timings in
+4. wait until the broker is quiet, that is `ActiveState` is `inactive`, the
+   job is `(0, "/")` and its cgroup is confirmed empty (`t_inactive`), at most
+   20 s and within the remaining budget. `failed` with no job also counts as
+   quiet, for this confirmation only and only with an empty cgroup: after a
+   SIGKILL final kill systemd keeps the unit loaded as `failed` and `StopUnit`
+   does not return it to `inactive`. `failed` alone is not proof that the
+   process is gone: systemd can leave a unit `failed` while a process (for
+   example one in uninterruptible sleep) is still in its cgroup. The record
+   carries `quiet_state` and `cgroup`. Elsewhere `inactive` with an empty
+   cgroup is the rule, with one exception. A broker left `failed` is a trigger for
+   the recheck and is withdrawn (no `StopUnit` is needed for it), and the main
+   pass's preflight withdraws it too, unless it is already withdrawn: `failed`,
+   no job, the unit-file state exactly `masked`, no marker and an empty cgroup.
+   That shape is left alone: the recheck does not trigger on it (no new record
+   every period) and the preflight's mask check accepts it instead of
+   reporting a containment failure. A `failed` broker that is unmasked, has a
+   job, has a marker or whose cgroup is not empty is not that shape;
+5. record `activation.grant_withdrawn` with the reason, the cgroup state
+   (always `empty` here), the timings in
    milliseconds since the withdrawal started (`t_marker_ms` and the others are
    offsets from the start of the withdrawal, not from detection) and the
    invocation id.
+
+**What a stop does and does not show.** Four things are kept apart, and a
+record or a status line never stands for more than the one it states.
+
+- The stop request succeeded: `StopUnit` was accepted and a job was created.
+  Nothing follows about the processes.
+- The unit is not running: systemd's `ActiveState` is `inactive` (or `failed`).
+  That is systemd's belief about its own state.
+- The cgroup is empty: `cgroup.events` of the broker's cgroup says `populated 0`,
+  or systemd removed the cgroup of a stopped unit. This is the only evidence
+  that no process of the broker remains, and it is the condition for `quiet`,
+  for "already withdrawn" and for `activation.grant_withdrawn`. It is read from
+  one fixed file (cgroup v2, `/sys/fs/cgroup/system.slice/azazel-knowledge-contextd.service/cgroup.events`),
+  walked component by component without following links, and trusted only when
+  `/sys/fs/cgroup` is a `cgroup2` mount and the reader's own
+  `/proc/self/cgroup` is the single line `0::/system.slice/<name>.service`
+  (systemd's cgroup root is then this namespace's root). Anything else is
+  `unknown`, which is neither empty nor quiet. No D-Bus property is added for it.
+- Traffic is closed: the broker's `IPAddress*` settings are enforced by a BPF
+  program attached to its cgroup, so they apply as long as the cgroup exists,
+  also while a leftover process is in it. This is an inference from how systemd
+  implements them (a guess, not verified on a host here); the controller does
+  not check it, and it is not a substitute for an empty cgroup.
+
+A `failed` broker with a `populated` or `unknown` cgroup is therefore never
+"withdrawn": the withdrawal is `withdrawal_unconfirmed` (with `cgroup`) and exits
+non-zero, the recheck reports it again every period, and the main pass's
+preflight narrows everything and fails. Nothing in the controller kills a
+process or touches another unit's cgroup; that is for the operator. Find the
+leftover process (`systemd-cgls -u azazel-knowledge-contextd.service`, the
+cgroup's `cgroup.procs`), establish why it does not exit (typically a
+process blocked in the kernel on storage or a network file system), and
+remove the cause; if it cannot be cleared, reboot. The broker stays masked
+with no marker meanwhile, so it cannot be started again; only after the cgroup
+is empty is the next recheck or pass able to confirm the withdrawal.
+Two limits remain: a drop-in or `Slice=` written after the grant (by root) moves
+the broker's cgroup away from the fixed path (the loaded-unit check at grant time
+rejects them, and later edits by root are outside this control), and a host whose
+cgroup root is not the namespace root (a container with the host cgroup namespace,
+cgroup v1) reads `unknown` and so cannot confirm any withdrawal.
+A signal that ends the process (SIGTERM) raises no exception in the main pass, so
+there is nothing to narrow on; the unit's own conditions and `Requires=` apply.
+
+**Unexpected errors.** An error the main pass did not expect (the ledger's chain
+broken, a state file unreadable, anything outside the named refusals) narrows
+under the lock, with or without a held start job: the job is replaced first,
+then the units are masked, the manager reloaded and the broker withdrawn, and the
+original error is raised again with any failure of the narrowing chained to it.
+In the recheck, an unexpected error from the retirement (or a result that is not
+`none`, `retired` or `resumed`) or from the verdict is a withhold: the broker is
+withdrawn all the same, with reason `retirement_pending` or `verdict_error`, and
+the exit status is 1.
 
 The bootstrap-stage narrowing (a selected-bootstrap restart or an invalid
 selection) runs the same withdrawal for the broker, with the contextd-only stop

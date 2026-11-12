@@ -35,6 +35,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 from azazel_nexus.activation import UnitState
@@ -345,21 +346,30 @@ class ContextdStopAuthority:
     def __init__(self, *, stop: Callable[[], object],
                  job: Callable[[str], object],
                  state: Callable[[str], object],
-                 file_state: Callable[[str], object]) -> None:
+                 file_state: Callable[[str], object],
+                 cgroup: Optional[Callable[[str], object]] = None) -> None:
         if not all(callable(verb) for verb in (stop, job, state, file_state)):
             raise UnitOperationFailed("a stop authority needs its four verbs")
         self._stop = stop
         self._job = job
         self._state = state
         self._file_state = file_state
+        #: Takes the broker's ActiveState; None reads nothing, so the answer is `unknown`.
+        self._cgroup = cgroup if callable(cgroup) else None
 
     @classmethod
-    def from_session(cls, session) -> "ContextdStopAuthority":
-        """Built from the controller's own D-Bus session."""
+    def from_session(cls, session, *, cgroup_root: Path = Path("/")) -> "ContextdStopAuthority":
+        """Built from the controller's own D-Bus session.
+
+        The cgroup is read from files under `cgroup_root` (`/` in production),
+        not from the session: no D-Bus property is added for it.
+        """
+        from .contextd_cgroup import read_contextd_cgroup
         return cls(stop=getattr(session, "stop_contextd", None),
                    job=getattr(session, "unit_job", None),
                    state=getattr(session, "contextd_active_state", None),
-                   file_state=getattr(session, "contextd_file_state", None))
+                   file_state=getattr(session, "contextd_file_state", None),
+                   cgroup=lambda active: read_contextd_cgroup(active, root=cgroup_root))
 
     @staticmethod
     def _check(unit: str) -> str:
@@ -389,6 +399,21 @@ class ContextdStopAuthority:
         if type(answer) is not str or not answer:
             raise UnitOperationFailed("systemd returned an invalid unit-file state result")
         return answer
+
+    def cgroup_state(self, unit: str) -> str:
+        """`empty`, `populated` or `unknown` for the broker's cgroup.
+
+        Anything this cannot establish (no reader, an unreadable ActiveState, a
+        reader that fails or answers something else) is `unknown`, never `empty`.
+        """
+        self._check(unit)
+        if self._cgroup is None:
+            return "unknown"
+        try:
+            answer = self._cgroup(self.active_state(unit))
+        except Exception:  # noqa: BLE001 - unreadable is unknown
+            return "unknown"
+        return answer if answer in ("empty", "populated") else "unknown"
 
     def stop(self, unit: str) -> str:
         """Ask the manager to stop the broker (mode `replace`); the job path."""
