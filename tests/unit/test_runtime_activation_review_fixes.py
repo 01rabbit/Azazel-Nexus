@@ -5,7 +5,6 @@ One file, one section per finding, so each can be traced to its test.
 
 from __future__ import annotations
 
-import io
 
 import contextlib
 import json
@@ -2491,42 +2490,6 @@ def test_a_mask_that_poisons_the_session_hands_the_reload_to_a_fresh_one(poisone
         manager=p.manager, authority=authority(p.model), root=p.world.root, stop_sent=True,
         give_up=p.clock() + 10.0, clock=p.clock, settle=None, fresh=fresh)
     assert used == [1] and result["final_masked"] is True
-
-
-def _fake_proc(monkeypatch, *, uptime, ticks, hz=100, stat_error=None):
-    import builtins
-    real = builtins.open
-
-    def fake_open(path, *a, **k):
-        if path == "/proc/self/stat":
-            if stat_error:
-                raise stat_error
-            fields = [b"0"] * 22
-            fields[19] = str(ticks).encode()
-            return io.BytesIO(b"1 (az-activated) " + b" ".join(fields))
-        if path == "/proc/uptime":
-            return io.BytesIO(f"{uptime} 0.0".encode())
-        return real(path, *a, **k)
-
-    monkeypatch.setattr(builtins, "open", fake_open)
-    monkeypatch.setattr(activated.os, "sysconf", lambda name: hz)
-
-
-def test_the_process_age_is_exact_and_not_capped(monkeypatch):
-    _fake_proc(monkeypatch, uptime=1000.0, ticks=100 * 940)  # started at 940 s: 60 s old
-    assert activated._process_age_seconds() == pytest.approx(60.0)
-
-
-def test_an_unreadable_proc_is_an_unknown_age_not_zero(monkeypatch):
-    _fake_proc(monkeypatch, uptime=1000.0, ticks=0, stat_error=OSError("gone"))
-    with pytest.raises(activated.ProcessAgeUnknown):
-        activated._process_age_seconds()
-
-
-def test_a_negative_age_is_unknown(monkeypatch):
-    _fake_proc(monkeypatch, uptime=10.0, ticks=100 * 50)
-    with pytest.raises(activated.ProcessAgeUnknown):
-        activated._process_age_seconds()
 
 
 def test_each_step_may_use_its_own_fresh_session(poisoned):

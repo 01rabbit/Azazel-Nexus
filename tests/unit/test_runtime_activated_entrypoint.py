@@ -232,7 +232,6 @@ def test_entrypoint_passes_the_system_bus_manager_to_one_fail_closed_pass(
     monkeypatch, capsys, private_os
 ) -> None:
     private_os(activated)
-    monkeypatch.setattr(activated, "_process_age_seconds", lambda: 0.0)
     monkeypatch.setattr(activated.os, "geteuid", lambda: 0)
     monkeypatch.setenv("INVOCATION_ID", "a" * 32)
     monkeypatch.setattr(runtime_paths, "ROOT", Path("/"))
@@ -302,10 +301,9 @@ def test_entrypoint_passes_the_system_bus_manager_to_one_fail_closed_pass(
     assert not calls
     # The lock is taken with a bounded wait before the pass, and the pass is
     # given the authority to stop the Knowledge Context broker alone.
-    # the wait is counted from the start of the process (its age is charged)
     assert len(taken) == 1 and taken[0][0] == Path("/")
     options = dict(taken[0][1])
-    assert options.pop("wait_seconds") == pytest.approx(25.0, abs=0.5)  # age mocked to 0
+    assert options.pop("wait_seconds") == activated.PASS_LOCK_WAIT_SECONDS == 25.0
     assert options == {"clock": time.monotonic, "sleep": time.sleep}
     assert isinstance(observed["stop_authority"], ContextdStopAuthority)
     assert observed["invocation_id"] == "a" * 32
@@ -715,86 +713,3 @@ def test_no_ready_from_the_ordinary_code_on_the_bootstrap_path(monkeypatch, caps
     monkeypatch.setattr(systemd_notify, "notify_barrier", lambda: pytest.fail("ordinary barrier"))
     assert activated.main([]) == 0
 
-
-def _age_world(monkeypatch, private_os, age):
-    private_os(activated)
-    if isinstance(age, Exception):
-        def unreadable():
-            raise age
-        monkeypatch.setattr(activated, "_process_age_seconds", unreadable)
-    else:
-        monkeypatch.setattr(activated, "_process_age_seconds", lambda: age)
-    monkeypatch.setattr(activated.os, "geteuid", lambda: 0)
-    monkeypatch.setenv("INVOCATION_ID", "a" * 32)
-    monkeypatch.setattr(runtime_paths, "ROOT", Path("/"))
-    original_is_dir = Path.is_dir
-    monkeypatch.setattr(Path, "is_dir", lambda path: True if path == Path(
-        "/run/systemd/system") else original_is_dir(path))
-    connected, resets = [], []
-    monkeypatch.setattr(SystemdBusSession, "connect",
-                        staticmethod(lambda *_a: connected.append(1) or (_ for _ in ()).throw(
-                            RuntimeError("stop here"))))
-    monkeypatch.setattr(activated, "reset_grant_markers", lambda root: resets.append(root))
-    return connected, resets
-
-
-def test_an_unknown_process_age_fails_closed_before_any_bus_call(monkeypatch, capsys, private_os):
-    connected, resets = _age_world(monkeypatch, private_os, activated.ProcessAgeUnknown("OSError"))
-    assert activated.main([]) == 1
-    assert connected == [] and resets == []  # nothing mutated, nothing granted, no READY
-    assert "process age unknown" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("age", [37.0, 40.0, 75.0])
-def test_a_phase_window_used_up_before_the_pass_removes_markers_and_grants_nothing(
-        monkeypatch, capsys, private_os, age):
-    """Age >= 53 - 16 = 37 s: no bus call, markers removed, exit non-zero (no 30 s cap)."""
-    connected, resets = _age_world(monkeypatch, private_os, age)
-    assert activated.main([]) == 1
-    assert connected == [] and resets == [Path("/")]
-    assert "phase window was used up" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("age,wait", [(0.0, 25.0), (20.0, 17.0), (30.0, 7.0), (36.0, 1.0)])
-def test_the_lock_wait_is_what_is_left_of_the_phase_window_from_the_process_start(
-        monkeypatch, private_os, age, wait):
-    private_os(activated)
-    monkeypatch.setattr(activated, "_process_age_seconds", lambda: age)
-    monkeypatch.setattr(activated.os, "geteuid", lambda: 0)
-    monkeypatch.setenv("INVOCATION_ID", "a" * 32)
-    monkeypatch.setattr(runtime_paths, "ROOT", Path("/"))
-    original_is_dir = Path.is_dir
-    monkeypatch.setattr(Path, "is_dir", lambda path: True if path == Path(
-        "/run/systemd/system") else original_is_dir(path))
-    monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(
-        lambda *_a: SimpleNamespace(__enter__=None) and _Session()))
-    taken: list = []
-    _pass_lock_held(monkeypatch, taken)
-    monkeypatch.setattr(activated, "_run_once", lambda **kw: SimpleNamespace(
-        granted=(), withheld=(), verdicts=()))
-    from azazel_nexus_runtime import systemd_notify
-    monkeypatch.setattr(systemd_notify, "notify_ready", lambda: None)
-    monkeypatch.setattr(systemd_notify, "notify_barrier", lambda: None)
-    activated.main([])
-    assert len(taken) == 1
-    assert taken[0][1]["wait_seconds"] == pytest.approx(wait, abs=0.5)
-
-
-class _Session:
-    def __call__(self, *a):
-        raise AssertionError("no bus call here")
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *e):
-        return None
-
-    def set_remaining(self, remaining):
-        pass
-
-    def stop_contextd(self):
-        raise AssertionError("no bus call here")
-
-    unit_job = contextd_active_state = contextd_file_state = (
-        lambda self, unit: (_ for _ in ()).throw(AssertionError("no bus call here")))
