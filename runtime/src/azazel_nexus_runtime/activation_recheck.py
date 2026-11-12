@@ -82,6 +82,10 @@ RECHECK_COLLECT_SECONDS = 6.0
 #: The wiring set is read only to answer "is this capability built in".
 _CONTEXTD_DEFINITION = next(d for d in CORE_UNITS if d.name == CONTEXTD_UNIT)
 
+#: What a retirement may report. Anything else (also a look-alike) is a withhold.
+_RETIREMENT_OUTCOMES = ("none", "retired", "resumed")
+
+
 @dataclass(frozen=True)
 class ContextdVerdict:
     """Whether the pass would grant the broker now, and why not."""
@@ -254,7 +258,7 @@ def run_recheck(
                 # either way.
                 try:
                     outcome = retirement(root=root, now=now)
-                    if outcome not in ("none", "retired", "resumed"):
+                    if type(outcome) is not str or outcome not in _RETIREMENT_OUTCOMES:
                         raise ValueError("unexpected retirement outcome")
                 except RetireRefused:
                     print("az-activation-recheck: approval retirement did not "
@@ -299,8 +303,10 @@ def run_recheck(
                 retirement_blocked = True
         try:
             verdict = contextd_verdict(inputs, now, retirement_blocked=retirement_blocked)
-            granted, label = verdict.granted is True, verdict.label
-            if not isinstance(label, str):
+            if type(verdict) is not ContextdVerdict or type(verdict.granted) is not bool:
+                raise TypeError("unexpected verdict")
+            granted, label = verdict.granted, verdict.label
+            if type(label) is not str:
                 raise TypeError("unexpected verdict")
         except Exception as exc:  # noqa: BLE001 - not granted: withdraw, exit 1
             print(f"az-activation-recheck: the verdict failed ({type(exc).__name__})",

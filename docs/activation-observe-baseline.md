@@ -1105,8 +1105,9 @@ caller.
    finalizer of an unconfirmed withdrawal does the same before its own mask;
 3. mask the broker and reload the manager (`t_reload`), and confirm the exact
    unit-file state `masked`;
-   if its `ActiveState` is not `inactive` or it still has a job, send `StopUnit`
-   (`replace`) (`t_stop`);
+   if its `ActiveState` is not `inactive`/`failed`, it still has a job, or its
+   cgroup is `populated` or `unknown` (also when it is `inactive` or `failed`),
+   send `StopUnit` (`replace`) (`t_stop`);
 4. wait until the broker is quiet, that is `ActiveState` is `inactive`, the
    job is `(0, "/")` and its cgroup is confirmed empty (`t_inactive`), at most
    20 s and within the remaining budget. `failed` with no job also counts as
@@ -1142,11 +1143,17 @@ record or a status line never stands for more than the one it states.
   that no process of the broker remains, and it is the condition for `quiet`,
   for "already withdrawn" and for `activation.grant_withdrawn`. It is read from
   one fixed file (cgroup v2, `/sys/fs/cgroup/system.slice/azazel-knowledge-contextd.service/cgroup.events`),
-  walked component by component without following links, and trusted only when
-  `/sys/fs/cgroup` is a `cgroup2` mount and the reader's own
+  walked from `/` one component at a time (`openat`, `O_NOFOLLOW`,
+  `O_DIRECTORY`). It is trusted only when the last `/proc/self/mountinfo` entry
+  with mount point `/sys/fs/cgroup` is `cgroup2` with mount root `/` and the
+  major:minor of the directory that was opened, and the reader's own
   `/proc/self/cgroup` is the single line `0::/system.slice/<name>.service`
-  (systemd's cgroup root is then this namespace's root). Anything else is
-  `unknown`, which is neither empty nor quiet. No D-Bus property is added for it.
+  (systemd's cgroup root is then this namespace's root). `system.slice` must
+  exist; only the broker's own directory may be absent, and then the answer is
+  `empty` only if the unit is `inactive` or `failed` and the mount entry, the
+  device and the reader's own cgroup read again afterwards are unchanged.
+  Anything else is `unknown`, which is neither empty nor quiet. No D-Bus
+  property is added for it.
 - Traffic is closed: the broker's `IPAddress*` settings are enforced by a BPF
   program attached to its cgroup, so they apply as long as the cgroup exists,
   also while a leftover process is in it. This is an inference from how systemd
@@ -1156,8 +1163,9 @@ record or a status line never stands for more than the one it states.
 A `failed` broker with a `populated` or `unknown` cgroup is therefore never
 "withdrawn": the withdrawal is `withdrawal_unconfirmed` (with `cgroup`) and exits
 non-zero, the recheck reports it again every period, and the main pass's
-preflight narrows everything and fails. Nothing in the controller kills a
-process or touches another unit's cgroup; that is for the operator. Find the
+preflight narrows everything and fails. The controller does not kill the
+leftover process directly and does not touch any other unit's cgroup (its only
+action on the broker is the contextd-only `StopUnit`); the rest is for the operator. Find the
 leftover process (`systemd-cgls -u azazel-knowledge-contextd.service`, the
 cgroup's `cgroup.procs`), establish why it does not exit (typically a
 process blocked in the kernel on storage or a network file system), and
@@ -1169,8 +1177,14 @@ the broker's cgroup away from the fixed path (the loaded-unit check at grant tim
 rejects them, and later edits by root are outside this control), and a host whose
 cgroup root is not the namespace root (a container with the host cgroup namespace,
 cgroup v1) reads `unknown` and so cannot confirm any withdrawal.
-A signal that ends the process (SIGTERM) raises no exception in the main pass, so
-there is nothing to narrow on; the unit's own conditions and `Requires=` apply.
+`KeyboardInterrupt` and `SystemExit` are outside this containment: the narrowing
+catches `Exception` only. In the service's context SIGTERM is not turned into an
+exception; Python's default ends the process at once. That path is fail-closed on
+other grounds: READY is not sent, so `Requires=` fails the start job of every
+dependent (including a held start job of the broker), and the pass has removed
+this boot's grant markers first, so the units' `ConditionPathExists=` refuses
+them. It does not withdraw a broker that is already running; the next pass or the
+recheck does.
 
 **Unexpected errors.** An error the main pass did not expect (the ledger's chain
 broken, a state file unreadable, anything outside the named refusals) narrows

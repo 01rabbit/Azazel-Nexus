@@ -1821,19 +1821,20 @@ def _locked_pass(
                 # (SIGTERM ends the process by Python's default and raises
                 # nothing, so no exception is involved there.)
                 if not getattr(error, "narrowed", False):
-                    if (clock() >= work or (
+                    # One reason, one call. A finished session or spent time is named
+                    # as such; anything else is "unexpected".
+                    reason = (
+                        "the bus session finished or the time ended during the activation pass"
+                        if (clock() >= work or (
                             fresh_manager is not None
-                            and getattr(getattr(manager, "call", None), "broken", False))):
-                        # The session is finished, or the phases' time is gone (a mask
-                        # or a poll refused at the edge): the reserve is for this.
-                        narrow("the bus session finished or the time ended during "
-                               "the activation pass")
+                            and getattr(getattr(manager, "call", None), "broken", False)))
+                        else "the activation pass failed unexpectedly")
                     try:
-                        narrow("the activation pass failed unexpectedly")
-                    except Exception as narrowing:  # noqa: BLE001 - chained, then raised
-                        # `narrow` raises its own error; the original is the one
-                        # that comes out, with the narrowing chained to it, and it
-                        # is marked narrowed so no outer layer contains it again.
+                        narrow(reason)
+                    except Exception as narrowing:  # noqa: BLE001 - chained, then the original
+                        # `narrow` raises its own error (it always does); the original
+                        # object is the one that comes out, with the narrowing chained
+                        # to it, marked narrowed so no outer layer contains it again.
                         error.narrowed = True
                         raise error from narrowing
                 raise

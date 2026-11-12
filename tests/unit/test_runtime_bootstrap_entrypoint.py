@@ -19,7 +19,7 @@ from test_runtime_bootstrap import (
 )
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def host_cgroup(monkeypatch):
     """Fake bus sessions on a host that is not a cgroup-v2 systemd node: the reader of
     the host's cgroup (tested in test_runtime_contextd_cgroup.py) answers as a stopped
@@ -685,6 +685,7 @@ def test_marker_reset_failure_refuses_without_claim_and_still_narrows(monkeypatc
         "az-activated could not remove grant markers before the bootstrap claim\n")
 
 
+@pytest.mark.usefixtures("host_cgroup")
 def test_marker_refusal_through_the_real_bootstrap_narrowing(tmp_path, monkeypatch, capsys):
     """#251 L-7 end to end: the real marker reset refuses (a directory among
     the markers), no claim is written, the real broad narrowing still masks

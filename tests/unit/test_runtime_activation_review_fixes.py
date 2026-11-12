@@ -47,7 +47,7 @@ from test_runtime_activation_retire import leaf, revoked_trust, tools
 
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def host_cgroup(monkeypatch):
     """Tests that build the authority from a fake bus session (`from_session`) run on a
     host that is not a cgroup-v2 systemd node. The reader of the host's cgroup (tested
@@ -1110,6 +1110,7 @@ def _fresh(bound):
     return other, used, factory
 
 
+@pytest.mark.usefixtures("host_cgroup")
 def test_a_poisoned_session_narrows_on_a_fresh_one_on_every_path(bound, monkeypatch):
     bound.manager.call.broken = True  # a call on this session timed out
     other, used, factory = _fresh(bound)
@@ -1119,8 +1120,9 @@ def test_a_poisoned_session_narrows_on_a_fresh_one_on_every_path(bound, monkeypa
         raise activated.RollbackFailed("synthetic: refused on a finished session")
 
     monkeypatch.setattr(activated, "_run_once", refused)
-    with pytest.raises(RuntimeError, match="bus session finished"):
+    with pytest.raises(activated.RollbackFailed) as seen:  # the original error comes out
         _locked_bound(bound, fresh_manager=factory)
+    assert "bus session finished" in str(seen.value.__cause__)  # with the narrowing chained to it
     assert used == ["fresh"]
     assert all(other.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
     assert not any(op in ("mask", "reload") for op, _ in bound.manager.timeline)
@@ -1824,6 +1826,7 @@ def _real_session(bus):
         message_factory=lambda **values: SimpleNamespace(**values))
 
 
+@pytest.mark.usefixtures("host_cgroup")
 def test_the_fresh_session_narrowing_uses_the_authority_of_the_fresh_session(
         fresh, monkeypatch):
     """The authority is genuinely bound to a poisoned session (a real
@@ -2143,6 +2146,7 @@ def test_a_wider_narrowing_replaces_the_held_job_once_and_before_the_mask(queued
     _one_replacement_before_the_mask(queued)
 
 
+@pytest.mark.usefixtures("host_cgroup")
 def test_a_fresh_session_recovers_the_held_job_with_its_own_authority(queued, monkeypatch):
     """The first session finished after the preflight held the job: the narrowing runs on
     a new session, whose authority replaces the job before its mask."""
@@ -2163,8 +2167,9 @@ def test_a_fresh_session_recovers_the_held_job_with_its_own_authority(queued, mo
         raise activated.RollbackFailed("synthetic: refused on a finished session")
 
     monkeypatch.setattr(activated.ActivationDaemon, "activate", finished)
-    with pytest.raises(RuntimeError, match="finished or the time ended"):
+    with pytest.raises(activated.RollbackFailed) as seen:  # the original error comes out
         _pass(queued, fresh_manager=factory)
+    assert "finished or the time ended" in str(seen.value.__cause__)  # with the narrowing chained to it
     assert used == [1] and real is not None
     assert other.state(CTX) is UnitState.MASKED
     _one_replacement_before_the_mask(queued)
@@ -2219,6 +2224,7 @@ def test_the_job_wait_is_capped_below_the_deadline_by_the_mask_reserve():
         clock() + activation_withdraw.JOB_WAIT_SECONDS)
 
 
+@pytest.mark.usefixtures("host_cgroup")
 def test_a_mask_refused_at_the_edge_is_narrowed_with_the_reserve(edge, monkeypatch):
     """The phases' time is gone when the mask is refused: the pass narrows under the
     reserve instead of leaving the broker stopped but unmasked."""
@@ -2227,8 +2233,9 @@ def test_a_mask_refused_at_the_edge_is_narrowed_with_the_reserve(edge, monkeypat
         raise activated.RollbackFailed("synthetic: the mask was refused at the edge")
 
     monkeypatch.setattr(activated, "_run_once", refused_at_the_edge)
-    with pytest.raises(RuntimeError, match="finished or the time ended"):
+    with pytest.raises(activated.RollbackFailed) as seen:  # the original error comes out
         _locked_edge(edge)
+    assert "finished or the time ended" in str(seen.value.__cause__)  # with the narrowing chained to it
     assert edge.manager.state(CTX) is UnitState.MASKED
     assert edge.manager.refused == 0
 
@@ -2426,6 +2433,7 @@ def test_a_barrier_that_times_out_leaves_the_full_reserve_for_the_narrowing(edge
     assert edge.manager.state(CTX) is UnitState.MASKED
 
 
+@pytest.mark.usefixtures("host_cgroup")
 def test_a_session_that_breaks_while_narrowing_hands_the_rest_to_a_fresh_one(edge, monkeypatch):
     """A mask call times out in the middle of the all-unit narrowing: the units not yet
     masked are masked on a new session, within the reserve."""
@@ -2456,7 +2464,7 @@ def test_a_session_that_breaks_while_narrowing_hands_the_rest_to_a_fresh_one(edg
 
     monkeypatch.setattr(systemd_notify, "notify_ready", refuse)
     edge.manager.mask = mask
-    with pytest.raises(RuntimeError):
+    with pytest.raises(activated.RollbackFailed):  # the original error, narrowing chained
         _locked_edge(edge, fresh_manager=factory)
     assert used == [1]
     assert all(other.state(name) is UnitState.MASKED for name in order)

@@ -18,7 +18,7 @@ from azazel_nexus_runtime.systemd_bus import SystemdBusSession
 from azazel_nexus_runtime.units import ContextdStopAuthority, DbusUnitManager
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def host_cgroup(monkeypatch):
     """These tests drive `main` with fake bus sessions on a host that is not a
     cgroup-v2 systemd node. The reader of the host's cgroup (tested on its own in
@@ -168,6 +168,7 @@ def _boot_world(monkeypatch, *, running, first_breaks_on=None, other_units_stuck
     return world
 
 
+@pytest.mark.usefixtures("host_cgroup")
 def test_bootstrap_narrowing_withdraws_a_running_broker_and_masks_the_rest(monkeypatch, capsys):
     """Granted and running broker: masked, reloaded, stopped, confirmed masked and quiet."""
     world = _boot_world(monkeypatch, running=True)
@@ -204,6 +205,7 @@ def test_bootstrap_narrowing_that_cannot_stop_the_broker_fails_closed_with_a_mes
 
 
 @pytest.mark.parametrize("reset_fails", [False, True])
+@pytest.mark.usefixtures("host_cgroup")
 def test_bootstrap_broad_narrowing_removes_grant_markers_first(monkeypatch, capsys,
                                                             reset_fails):
     """#251 L-7: like _emergency_narrow, markers first; a refusal still remasks."""
@@ -682,6 +684,7 @@ def _ordinary_context(monkeypatch):
 
 
 @pytest.mark.parametrize("failing", [None, "ready", "barrier", "barrier_timeout"])
+@pytest.mark.usefixtures("host_cgroup")
 def test_ready_and_barrier_follow_a_recorded_pass(monkeypatch, capsys, failing, private_os):
     """#251 L-2: READY or its barrier failing withdraws every grant and exits 1."""
     private_os(activated)
@@ -807,6 +810,7 @@ def test_a_connect_that_fails_says_so_at_once_and_fails_closed(monkeypatch, caps
     assert err.count("could not confirm the withdrawal") == 1
 
 
+@pytest.mark.usefixtures("host_cgroup")
 def test_the_emergency_retry_shares_the_first_narrowings_absolute_end(monkeypatch, capsys):
     """One end for the process: once it has passed, a further narrowing says so at once and
     makes no bus call."""
@@ -828,6 +832,7 @@ def test_the_shared_end_fits_inside_the_unit_timeout():
     assert activated._BOOTSTRAP_NARROWING_SECONDS <= activated._BOOTSTRAP_PROCESS_SECONDS
 
 
+@pytest.mark.usefixtures("host_cgroup")
 def test_queued_job_records_are_not_a_terminal_message(monkeypatch, capsys):
     """Exactly one terminal message per invocation, and a job record alone is none."""
     world = _boot_world(monkeypatch, running=True)
@@ -845,6 +850,7 @@ def test_queued_job_records_are_not_a_terminal_message(monkeypatch, capsys):
     assert "withdrew the Knowledge Context broker" in err
 
 
+@pytest.mark.usefixtures("host_cgroup")
 def test_the_session_is_bound_to_the_final_deadline_before_the_other_units(monkeypatch):
     """After the withdrawal (bound to its own, shorter deadline) the other masks run under
     the final deadline: the reserve is not lost."""
@@ -903,6 +909,7 @@ def test_every_replacement_session_is_bound_to_the_governing_end(monkeypatch):
         assert 0 < session.limit() <= activated._BOOTSTRAP_NARROWING_SECONDS
 
 
+@pytest.mark.usefixtures("host_cgroup")
 def test_a_job_stage_failure_followed_by_a_withdrawn_broker_says_withdrew(monkeypatch, capsys):
     world = _boot_world(monkeypatch, running=True)
     real = activated.withdraw_contextd

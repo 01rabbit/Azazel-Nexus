@@ -32,20 +32,27 @@ from test_runtime_activation_review_fixes import (  # noqa: F401 - fixtures
 
 UNIT = "azazel-knowledge-contextd.service"
 SELF_OK = "0::/system.slice/run-abc.service\n"
-MOUNTINFO = ("30 25 0:27 / /sys/fs/cgroup rw,nosuid - cgroup2 cgroup2 rw\n"
-             "31 25 0:5 / /proc rw - proc proc rw\n")
+DEFAULT = object()
 
 
-def make_root(tmp_path, *, self_cgroup=SELF_OK, mountinfo=MOUNTINFO, slice_dir=True,
+def mountinfo_for(base, *, fstype="cgroup2", mount_root="/", point="/sys/fs/cgroup", device=None):
+    dev = os.stat(base).st_dev if device is None else device
+    return (f"30 25 {os.major(dev)}:{os.minor(dev)} {mount_root} {point} rw,nosuid - {fstype} cgroup2 rw\n"
+            "31 25 0:5 / /proc rw - proc proc rw\n")
+
+
+def make_root(tmp_path, *, self_cgroup=SELF_OK, mountinfo=DEFAULT, slice_dir=True,
               unit_dir=True, events="populated 1\nfrozen 0\n"):
     root = tmp_path / "r"
     (root / "proc/self").mkdir(parents=True)
     if self_cgroup is not None:
         (root / "proc/self/cgroup").write_text(self_cgroup)
-    if mountinfo is not None:
-        (root / "proc/self/mountinfo").write_text(mountinfo)
     base = root / "sys/fs/cgroup"
     base.mkdir(parents=True)
+    if mountinfo is DEFAULT:
+        mountinfo = mountinfo_for(base)
+    if mountinfo is not None:
+        (root / "proc/self/mountinfo").write_text(mountinfo)
     if slice_dir:
         (base / "system.slice").mkdir()
         if unit_dir:
@@ -95,12 +102,70 @@ def test_an_absent_system_slice_is_unknown(tmp_path, state):
     dict(mountinfo="30 25 0:27 / /sys/fs/cgroup rw - cgroup cgroup rw\n"),   # v1
     dict(mountinfo="30 25 0:27 / /sys/fs/cgroup/unified rw - cgroup2 cgroup2 rw\n"),
     dict(mountinfo="31 25 0:5 / /proc rw - proc proc rw\n"),
+    dict(mountinfo="30 25 0:99999 / /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n"),  # other device
 ])
 @pytest.mark.parametrize("state", ["inactive", "failed", "active"])
 def test_a_cgroup_root_that_is_not_ours_is_unknown(tmp_path, kwargs, state):
     # even where the file says `populated 0` and the directory is absent
     assert read_contextd_cgroup(state, root=make_root(tmp_path, events="populated 0\n", **kwargs)) == "unknown"
     assert read_contextd_cgroup(state, root=make_root(tmp_path / "b", unit_dir=False, **kwargs)) == "unknown"
+
+
+@pytest.mark.parametrize("variant", ["mount_root", "fstype", "shadowed_by_later_entry",
+                                     "device"])
+def test_the_last_mount_entry_must_be_our_cgroup2(tmp_path, variant):
+    root = make_root(tmp_path, events="populated 0\n")
+    base = root / "sys/fs/cgroup"
+    good = mountinfo_for(base)
+    text = {
+        "mount_root": mountinfo_for(base, mount_root="/docker/x"),
+        "fstype": mountinfo_for(base, fstype="tmpfs"),
+        # an earlier cgroup2 entry does not count when a later one is mounted over it
+        "shadowed_by_later_entry": good + mountinfo_for(base, fstype="tmpfs").split("\n")[0] + "\n",
+        "device": mountinfo_for(base, device=os.makedev(0, 4242)),
+    }[variant]
+    (root / "proc/self/mountinfo").write_text(text)
+    assert read_contextd_cgroup("inactive", root=root) == "unknown"
+    (root / "proc/self/mountinfo").write_text(good)
+    assert read_contextd_cgroup("inactive", root=root) == "empty"
+
+
+def test_the_later_matching_entry_is_the_one_used(tmp_path):
+    root = make_root(tmp_path, events="populated 0\n")
+    base = root / "sys/fs/cgroup"
+    (root / "proc/self/mountinfo").write_text(
+        mountinfo_for(base, fstype="tmpfs") + mountinfo_for(base))
+    assert read_contextd_cgroup("active", root=root) == "empty"
+
+
+@pytest.mark.parametrize("case", ["populated", "empty_file", "absent", "unknown_root",
+                                  "no_events"])
+def test_no_descriptor_is_left_open(tmp_path, case):
+    kwargs = {"populated": {}, "empty_file": dict(events="populated 0\n"),
+              "absent": dict(unit_dir=False), "unknown_root": dict(self_cgroup="x\n"),
+              "no_events": dict(events=None)}[case]
+    root = make_root(tmp_path, **kwargs)
+    before = len(os.listdir("/proc/self/fd"))
+    for _ in range(5):
+        read_contextd_cgroup("inactive", root=root)
+    assert len(os.listdir("/proc/self/fd")) == before
+
+
+def test_an_absent_leaf_is_empty_only_if_the_mount_is_unchanged_afterwards(tmp_path, monkeypatch):
+    from azazel_nexus_runtime import contextd_cgroup
+    root = make_root(tmp_path, unit_dir=False)
+    assert read_contextd_cgroup("inactive", root=root) == "empty"
+    real = contextd_cgroup._trust
+    seen = []
+
+    def changing(r, fd):
+        seen.append(1)
+        answer = real(r, fd)
+        return answer if len(seen) == 1 else None  # the second read finds another state
+
+    monkeypatch.setattr(contextd_cgroup, "_trust", changing)
+    assert read_contextd_cgroup("inactive", root=root) == "unknown"
+    assert len(seen) == 2
 
 
 def test_a_symlinked_component_is_unknown(tmp_path):
@@ -331,6 +396,104 @@ def test_a_verdict_error_is_not_granted_and_still_withdraws(granted, monkeypatch
     else:
         monkeypatch.setattr(activation_recheck, "contextd_verdict",
                             lambda *a, **k: type("V", (), {"granted": 1, "label": 5})())
+    assert _rc(granted, None) == 1
+    assert withdrawn(granted)
+    [event] = [e for e in events_after(granted) if e["event_type"] == "activation.grant_withdrawn"]
+    assert event["reason"] == "recheck:verdict_error"
+
+
+# -- more S-B (deadline, broken session), R look-alikes, the default is fail-closed ----------------------
+
+
+def _fresh_for(queued):
+    import contextlib
+
+    @contextlib.contextmanager
+    def fresh():
+        yield queued.manager, authority(queued.model)
+    return fresh
+
+
+@pytest.mark.parametrize("cause", ["deadline", "broken_session"])
+def test_a_spent_deadline_or_a_broken_session_still_raises_the_original_error(
+        queued, monkeypatch, cause):
+    from types import SimpleNamespace
+    original = ValueError("original")
+    kwargs = {}
+
+    def fail(*a, **k):
+        if cause == "deadline":
+            queued.clock.sleep(activated.MAIN_PASS_BUDGET_SECONDS
+                               - activated.MAIN_PASS_RESERVE_SECONDS
+                               - activated.MAIN_PASS_READY_SECONDS + 0.5)
+        else:
+            queued.manager.call = SimpleNamespace(broken=True)
+        raise original
+
+    if cause == "broken_session":
+        kwargs["fresh_manager"] = _fresh_for(queued)
+    monkeypatch.setattr(activated, "retirement_pending", fail)
+    with pytest.raises(ValueError) as seen:
+        _pass(queued, **kwargs)
+    assert seen.value is original
+    assert original.narrowed is True
+    assert isinstance(original.__cause__, RuntimeError)
+    assert "finished or the time ended" in str(original.__cause__)
+    assert queued.manager.state(CTX) is UnitState.MASKED
+
+
+def test_the_default_authority_without_a_readable_cgroup_fails_closed(granted, tmp_path):
+    """No fake of the cgroup reader: a node whose cgroup root is not ours (here a
+    stand-in tree) reads `unknown`, so a failed broker is never called withdrawn."""
+    from azazel_nexus_runtime.activation_recheck import run_recheck
+
+    class Session:
+        stop_contextd = staticmethod(granted.model.stop)
+        unit_job = staticmethod(granted.model.current_job)
+        contextd_active_state = staticmethod(granted.model.active_state)
+        contextd_file_state = staticmethod(granted.model.file_state_of)
+
+    root = make_root(tmp_path, self_cgroup="0::/docker/x/system.slice/a.service\n",
+                     events="populated 0\n")
+    guard = ContextdStopAuthority.from_session(Session, cgroup_root=root)
+    granted.model.ends_failed = True
+    granted.world.healthy = False
+    rc = run_recheck(manager=granted.manager, authority=guard, root=granted.world.root,
+                     now=NOW, producers=granted.world.producers(), invocation_id="c" * 32,
+                     clock=granted.clock, sleep=granted.clock.sleep)
+    assert rc == 1
+    [event] = [e for e in events_after(granted)
+               if e["event_type"] == "activation.withdrawal_unconfirmed"]
+    assert event["cgroup"] == "unknown"
+
+
+class _EqualsEverything:
+    def __eq__(self, other):
+        return True
+
+    def __hash__(self):
+        return 1
+
+
+class _Retired(str):
+    def __eq__(self, other):
+        return True
+
+    __hash__ = str.__hash__
+
+
+@pytest.mark.parametrize("outcome", [_EqualsEverything(), _Retired("retired"), b"retired"])
+def test_a_look_alike_retirement_result_is_a_withhold(granted, outcome):
+    assert _rc(granted, lambda **k: outcome) == 1
+    assert withdrawn(granted)
+    assert not [e for e in events_after(granted) if e["event_type"] == "activation.approval_retired"]
+
+
+def test_a_duck_typed_granted_verdict_is_not_trusted(granted, monkeypatch):
+    class Duck:
+        granted = True
+        label = "granted"
+    monkeypatch.setattr(activation_recheck, "contextd_verdict", lambda *a, **k: Duck())
     assert _rc(granted, None) == 1
     assert withdrawn(granted)
     [event] = [e for e in events_after(granted) if e["event_type"] == "activation.grant_withdrawn"]
