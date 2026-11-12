@@ -3,7 +3,8 @@
 This module does not accept D-Bus destinations, interfaces, object paths,
 signatures, or unit names from callers. It maps the runtime's narrow semantic
 verbs onto the systemd system-bus API and validates every reply. In
-particular, it never exposes ``StartUnit``.
+particular, it never exposes ``StartUnit``. The one ``StopUnit`` it can send
+has the Knowledge Context broker and mode ``replace`` as constants.
 
 ``EdgeUnitStateReader`` is the narrower, read-only view handed to
 ``az-edge-probed``: one verb, one unit, three properties, and no route to the
@@ -27,7 +28,7 @@ from .activation_markers import (
 )
 from .bootstrap_systemd_profile import observe_bootstrap_systemd_profile
 from .systemd_socket import FixedSystemBusSocket, SYSTEM_BUS_ADDRESS, require_supported_dbus_next
-from .units import UNIT_NAMES, UnitOperationFailed
+from .units import CONTEXTD_UNIT, UNIT_NAMES, UnitOperationFailed
 
 __all__ = ["EdgeUnitStateReader", "SystemdBusSession", "SystemdUnitCalls", "UnitStatesReader"]
 
@@ -116,6 +117,11 @@ class _Reply:
 
 
 _NO_SUCH_UNIT = "org.freedesktop.systemd1.NoSuchUnit"
+
+#: The one body StopUnit is ever sent with. A constant, not an argument: the
+#: stop authority is for the Knowledge Context broker and for nothing else.
+_STOP_CONTEXTD_BODY = (CONTEXTD_UNIT, "replace")
+_JOB_PATH = re.compile(r"/org/freedesktop/systemd1/job/([1-9][0-9]{0,18})")
 
 
 class SystemdUnitCalls:
@@ -234,6 +240,57 @@ class SystemdUnitCalls:
         reply = self._exchange(MANAGER_INTERFACE, "Reload", "", [])
         if reply.signature != "" or list(reply.body) != []:
             raise UnitOperationFailed("systemd returned an invalid Reload reply")
+
+    def stop_contextd(self) -> str:
+        """Manager.StopUnit for the Knowledge Context broker, mode `replace`.
+
+        No argument: the unit and the mode are the constants above. The reply
+        is a job object path of the form `/org/freedesktop/systemd1/job/<n>`
+        (not a unit path); anything else is refused. `replace` also replaces
+        a start job the manager has queued for the broker.
+        """
+        reply = self._exchange(
+            MANAGER_INTERFACE, "StopUnit", "ss", list(_STOP_CONTEXTD_BODY))
+        path = self._one(reply, "o", "StopUnit")
+        if type(path) is not str or _JOB_PATH.fullmatch(path) is None:
+            raise UnitOperationFailed("systemd returned an invalid stop job")
+        return path
+
+    def unit_job(self, unit: str) -> tuple:
+        """The broker's `Job` property as `(id, path)`; `(0, "/")` is no job.
+
+        Read-only and for the Knowledge Context broker alone. A unit systemd
+        holds no object for has no job.
+        """
+        if unit != CONTEXTD_UNIT:
+            raise UnitOperationFailed(
+                "the systemd client refused a job read outside the stop scope")
+        unit_reply = self._exchange(
+            MANAGER_INTERFACE, "GetUnit", "s", [unit], allow_no_such_unit=True)
+        if getattr(unit_reply, "no_such_unit", False) is True:
+            return (0, "/")
+        expected_path = _unit_object_path(unit)
+        if self._one(unit_reply, "o", "GetUnit") != expected_path:
+            raise UnitOperationFailed("systemd returned an invalid unit object")
+        reply = self._exchange(
+            PROPERTIES_INTERFACE, "Get", "ss", [UNIT_INTERFACE, "Job"],
+            path=expected_path)
+        variant = self._one(reply, "v", "Properties.Get")
+        value = getattr(variant, "value", None)
+        if (getattr(variant, "signature", None) != "(uo)"
+                or type(value) not in (list, tuple) or len(value) != 2):
+            raise UnitOperationFailed("systemd returned an invalid job property")
+        number, path = value
+        if type(number) is not int or type(path) is not str or number < 0:
+            raise UnitOperationFailed("systemd returned an invalid job property")
+        if number == 0:
+            if path != "/":
+                raise UnitOperationFailed("systemd returned an invalid job property")
+            return (0, "/")
+        match = _JOB_PATH.fullmatch(path)
+        if match is None or int(match.group(1)) != number:
+            raise UnitOperationFailed("systemd returned an invalid job property")
+        return (number, path)
 
     def loaded_unit(self, unit: str) -> Optional[dict]:
         """The manager's loaded definition of one marker-guarded unit, or None.
@@ -460,10 +517,13 @@ class SystemdBusSession:
                 "UnmaskUnitFiles": "asb",
                 "EnableUnitFiles": "asbb",
                 "Reload": "",
+                "StopUnit": "ss",
             }
             if allowed.get(member) != signature or path != MANAGER_PATH:
                 raise UnitOperationFailed("the systemd client refused a call shape")
             if member == "Reload" and list(body) != []:
+                raise UnitOperationFailed("the systemd client refused a call shape")
+            if member == "StopUnit" and tuple(body) != _STOP_CONTEXTD_BODY:
                 raise UnitOperationFailed("the systemd client refused a call shape")
         elif member == "GetAll":
             # The pass's loaded-definition read: the Unit interface of a
@@ -484,6 +544,9 @@ class SystemdBusSession:
                 and body[0] == UNIT_INTERFACE and type(body[1]) is str
                 and body[1] in _EDGE_UNIT_PROPERTIES):
             pass  # The three state reads, on a fixed unit's object only.
+        elif (path == _unit_object_path(CONTEXTD_UNIT)
+                and list(body) == [UNIT_INTERFACE, "Job"]):
+            pass  # The broker's pending job, for the stop authority.
         elif (path not in {_unit_object_path(unit) for unit in _UNITS}
                 or list(body) != [UNIT_INTERFACE, "ActiveState"]):
             raise UnitOperationFailed("the systemd client refused a property path")
@@ -535,6 +598,14 @@ class SystemdBusSession:
     def reload(self) -> None:
         """Manager.Reload (argument-less); see `SystemdUnitCalls.reload`."""
         self.calls.reload()
+
+    def stop_contextd(self) -> str:
+        """Stop the Knowledge Context broker; see `SystemdUnitCalls.stop_contextd`."""
+        return self.calls.stop_contextd()
+
+    def unit_job(self, unit: str) -> tuple:
+        """The broker's pending job; see `SystemdUnitCalls.unit_job`."""
+        return self.calls.unit_job(unit)
 
     def close(self) -> None:
         try:

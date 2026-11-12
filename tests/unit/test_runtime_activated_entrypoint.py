@@ -7,6 +7,7 @@ root without touching host unit state or the fixed host ledger paths.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,7 +15,7 @@ import pytest
 
 from azazel_nexus_runtime import activated, runtime_paths
 from azazel_nexus_runtime.systemd_bus import SystemdBusSession
-from azazel_nexus_runtime.units import DbusUnitManager
+from azazel_nexus_runtime.units import ContextdStopAuthority, DbusUnitManager
 
 
 @pytest.fixture(autouse=True)
@@ -208,6 +209,25 @@ def test_entrypoint_refuses_outside_root_systemd_context_without_bus_access(
     assert calls == []
 
 
+def _pass_lock_held(monkeypatch, taken=None):
+    """The main pass takes the pass lock; here a lock that is always free."""
+
+    class Lock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc_info):
+            return None
+
+    def acquire(root, **kwargs):
+        if taken is not None:
+            taken.append((root, kwargs))
+        return Lock()
+
+    monkeypatch.setattr(activated, "acquire_pass_lock", acquire)
+
+
+
 def test_entrypoint_passes_the_system_bus_manager_to_one_fail_closed_pass(
     monkeypatch, capsys, private_os
 ) -> None:
@@ -235,6 +255,12 @@ def test_entrypoint_passes_the_system_bus_manager_to_one_fail_closed_pass(
                 return "masked"
             raise AssertionError(f"unexpected service-manager call: {method}")
 
+        def stop_contextd(self):
+            raise AssertionError("the pass was replaced; nothing may be stopped")
+
+        def unit_job(self, unit):
+            raise AssertionError("the pass was replaced; nothing may be read")
+
         def __enter__(self):
             return self
 
@@ -243,10 +269,12 @@ def test_entrypoint_passes_the_system_bus_manager_to_one_fail_closed_pass(
 
     session = ReadOnlySession()
     monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(lambda: session))
+    taken: list = []
+    _pass_lock_held(monkeypatch, taken)
     observed: dict[str, object] = {}
 
-    def run_once(*, manager, root, now, actor):
-        observed.update(manager=manager, root=root, now=now, actor=actor)
+    def run_once(*, manager, root, now, actor, **extra):
+        observed.update(manager=manager, root=root, now=now, actor=actor, **extra)
         return SimpleNamespace(
             granted=(),
             withheld=("commissiond",),
@@ -265,6 +293,12 @@ def test_entrypoint_passes_the_system_bus_manager_to_one_fail_closed_pass(
     assert observed["actor"] == "azazel-activated"
     assert str(observed["now"]).endswith("Z")
     assert not calls
+    # The lock is taken with a bounded wait before the pass, and the pass is
+    # given the authority to stop the Knowledge Context broker alone.
+    assert taken == [(Path("/"), {"wait_seconds": activated.PASS_LOCK_WAIT_SECONDS,
+                                  "clock": time.monotonic, "sleep": time.sleep})]
+    assert isinstance(observed["stop_authority"], ContextdStopAuthority)
+    assert observed["invocation_id"] == "a" * 32
     assert "granted=0" in capsys.readouterr().out
 
 
@@ -528,6 +562,12 @@ def _ordinary_context(monkeypatch):
     monkeypatch.setattr(Path, "is_dir", lambda path: path == Path("/run/systemd/system"))
 
     class Session:
+        def stop_contextd(self):
+            raise AssertionError("no stop in this test")
+
+        def unit_job(self, unit):
+            raise AssertionError("no job read in this test")
+
         def __enter__(self):
             return self
 
@@ -535,6 +575,7 @@ def _ordinary_context(monkeypatch):
             return None
 
     monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(lambda: Session()))
+    _pass_lock_held(monkeypatch)
 
 
 @pytest.mark.parametrize("failing", [None, "ready", "barrier", "barrier_timeout"])

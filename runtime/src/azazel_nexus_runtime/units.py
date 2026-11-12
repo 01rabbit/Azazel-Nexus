@@ -40,6 +40,8 @@ from typing import Callable, Iterable, Optional
 from azazel_nexus.activation import UnitState
 
 __all__ = [
+    "CONTEXTD_UNIT",
+    "ContextdStopAuthority",
     "UNIT_NAMES",
     "DbusUnitManager",
     "RecordingUnitManager",
@@ -106,6 +108,10 @@ UNIT_NAMES: dict[UnitKey, str] = {
     UnitKey.DECOY_NETWORK: "azazel-decoy-netd.service",
     UnitKey.DECOY_LISTENER: "azazel-decoyd.service",
 }
+
+
+#: The Knowledge Context broker: the one unit anything here may stop.
+CONTEXTD_UNIT = UNIT_NAMES[UnitKey.KNOWLEDGE_CONTEXT]
 
 
 def resolve(key: str) -> str:
@@ -322,3 +328,51 @@ class DbusUnitManager(UnitManager):
         if not callable(reload):
             raise UnitOperationFailed("the service manager adapter cannot reload")
         reload()
+
+
+class ContextdStopAuthority:
+    """The authority to stop the Knowledge Context broker, and nothing else.
+
+    A separate type, not a method of `DbusUnitManager`: the watchdog and the
+    other users of the manager adapter are not handed a stop. It holds two
+    callables (the session's fixed `stop_contextd` and `unit_job`) and
+    refuses any unit but the broker before either is called, so a caller
+    cannot turn it into a way to stop another unit. The session below it
+    refuses a second time and sends a constant body.
+    """
+
+    def __init__(self, *, stop: Callable[[], object],
+                 job: Callable[[str], object]) -> None:
+        if not callable(stop) or not callable(job):
+            raise UnitOperationFailed("a stop authority needs its two verbs")
+        self._stop = stop
+        self._job = job
+
+    @classmethod
+    def from_session(cls, session) -> "ContextdStopAuthority":
+        """Built from the controller's own D-Bus session."""
+        return cls(stop=getattr(session, "stop_contextd", None),
+                   job=getattr(session, "unit_job", None))
+
+    @staticmethod
+    def _check(unit: str) -> str:
+        if unit != CONTEXTD_UNIT:
+            raise UnitOperationFailed(
+                "the stop authority was asked about a unit outside its scope")
+        return unit
+
+    def job(self, unit: str) -> tuple:
+        """The broker's pending job as `(id, path)`; `(0, "/")` means none."""
+        answer = self._job(self._check(unit))
+        if (type(answer) not in (tuple, list) or len(answer) != 2
+                or type(answer[0]) is not int or type(answer[1]) is not str):
+            raise UnitOperationFailed("systemd returned an invalid job result")
+        return (answer[0], answer[1])
+
+    def stop(self, unit: str) -> str:
+        """Ask the manager to stop the broker (mode `replace`); the job path."""
+        self._check(unit)
+        answer = self._stop()
+        if type(answer) is not str or not answer:
+            raise UnitOperationFailed("systemd returned an invalid stop result")
+        return answer

@@ -49,6 +49,7 @@ __all__ = [
     "GRANT_MARKER_DIRECTORY",
     "GrantMarkerRefused",
     "grant_marker_path",
+    "remove_contextd_marker",
     "reset_grant_markers",
     "write_grant_markers",
 ]
@@ -104,6 +105,11 @@ EXPOSURE_UNITS = frozenset({
     "azazel-decoy-nsd.service",
     "azazel-decoyd.service",
 })
+
+#: The Knowledge Context broker's unit: the one marker a withdrawal removes
+#: on its own (restated from `units.CONTEXTD_UNIT`; this module imports
+#: nothing, and a test compares the two).
+CONTEXTD_MARKER_UNIT = "azazel-knowledge-contextd.service"
 
 #: The fixed marker directory; `hardening.py` renders the same path into
 #: each governed loop unit's `ConditionPathExists=`.
@@ -190,6 +196,39 @@ def reset_grant_markers(root: Path = Path("/")) -> None:
         finally:
             os.close(leaf)
         os.rmdir(_LEAF, dir_fd=parent)
+    finally:
+        os.close(parent)
+
+
+def remove_contextd_marker(root: Path = Path("/")) -> None:
+    """Unlink the Knowledge Context broker's marker alone, then confirm it is gone.
+
+    The fixed unit name, no-follow at every directory, and nothing else in
+    `granted/` is touched. Absent already is success. An entry that is not a
+    file we can unlink (a directory) or that is still there afterwards
+    refuses; the caller treats a refusal as an unconfirmed withdrawal.
+    """
+    name = _check_unit(CONTEXTD_MARKER_UNIT)
+    parent = _open_parent(root)
+    if parent is None:
+        return
+    try:
+        try:
+            leaf = os.open(_LEAF, _DIR_FLAGS, dir_fd=parent)
+        except FileNotFoundError:
+            return
+        try:
+            try:
+                os.unlink(name, dir_fd=leaf)
+            except FileNotFoundError:
+                pass
+            try:
+                os.stat(name, dir_fd=leaf, follow_symlinks=False)
+            except FileNotFoundError:
+                return
+            raise GrantMarkerRefused("the Knowledge Context marker is still present")
+        finally:
+            os.close(leaf)
     finally:
         os.close(parent)
 

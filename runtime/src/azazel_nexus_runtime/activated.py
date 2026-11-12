@@ -13,6 +13,9 @@ failure re-masks everything this pass widened -- including the units that
 succeeded -- and requires a positive inactive-state observation. Masking does
 not stop an already running service. Without reviewed stop authority, such a
 service produces an explicit containment failure, not a successful rollback.
+The one exception is the Knowledge Context broker: the controller holds a
+separate, fixed authority to stop that unit alone (`units.ContextdStopAuthority`,
+`activation_withdraw.withdraw_contextd`), used when its grant is withdrawn.
 An inactive observation is not proof of continuing inactivity or an empty
 cgroup; supervision and job/lifetime guarantees remain separate gates.
 
@@ -44,6 +47,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timezone
 from pathlib import Path
@@ -79,7 +83,19 @@ from .mio_remoted import TRANSPORT
 from .model_fetch import ENDPOINT_FOR
 from .node_config import load_declared_node
 from .activation_markers import GRANTABLE_UNITS, reset_grant_markers, write_grant_markers
-from .units import DbusUnitManager, UnitManager, UnitOperationFailed
+from .activation_lock import PassLockBusy, PassLockRefused, acquire_pass_lock
+from .activation_withdraw import (
+    WithdrawalUnconfirmed,
+    clear_contextd_job,
+    withdraw_contextd,
+)
+from .units import (
+    CONTEXTD_UNIT,
+    ContextdStopAuthority,
+    DbusUnitManager,
+    UnitManager,
+    UnitOperationFailed,
+)
 
 __all__ = [
     "ActivationDaemon",
@@ -564,6 +580,15 @@ _ALL_PRODUCERS = (
     "activation_approval_loader", "node_health",
 )
 
+#: One monotonic budget for a whole main pass, from before the lock wait to
+#: the end of the pass. `azazel-activated.service` allows `TimeoutStartSec=60s`
+#: (hardening.py), leaving 15 s for READY and its barrier. The wait for the
+#: broker to stop is capped by what remains, and by 20 s in any case.
+MAIN_PASS_BUDGET_SECONDS = 45.0
+#: How long the main pass waits for the pass lock before it narrows.
+PASS_LOCK_WAIT_SECONDS = 5.0
+
+
 def _emergency_narrow(manager: UnitManager, root: Path, message: str) -> None:
     """Remove every grant marker, mask every governed unit, then raise."""
     failures: list[str] = []
@@ -587,6 +612,9 @@ def _emergency_narrow(manager: UnitManager, root: Path, message: str) -> None:
 
 def _run_once(
     *, manager: UnitManager, root: Path, now: str, actor: str, producers=None,
+    stop_authority: Optional[ContextdStopAuthority] = None,
+    deadline: Optional[float] = None, clock=time.monotonic, sleep=time.sleep,
+    invocation_id: str = "",
 ) -> ActivationOutcome:
     """One observe-baseline pass (#206 §3.6): SUPPORTING (P4) and edge-core (P5).
 
@@ -612,7 +640,17 @@ def _run_once(
     high-water floors are raised and the per-boot grant markers written for
     exactly the granted units. ``producers`` is a test seam; ``main`` never
     passes it, and a relocated root reads no host producer.
+
+    The caller holds the pass lock (``_locked_pass``). ``stop_authority`` is
+    the authority to stop the Knowledge Context broker alone, built by
+    ``main`` from the controller's session: a broker still running at
+    preflight is withdrawn (marker, mask, reload, StopUnit) before the masks
+    are confirmed, and a start job queued for a broker that is not granted is
+    replaced. Without it a running broker is a containment failure, as
+    before. ``deadline`` is the pass's monotonic end (``MAIN_PASS_BUDGET_SECONDS``).
     """
+    if deadline is None:
+        deadline = clock() + MAIN_PASS_BUDGET_SECONDS
 
     daemon = ActivationDaemon(
         generations=GenerationStore(root / "var/lib/azazel/generations"),
@@ -627,6 +665,26 @@ def _run_once(
         reset_grant_markers(root)
     except Exception as exc:  # noqa: BLE001 - refuses below, after narrowing
         marker_failure = type(exc).__name__
+    if stop_authority is not None:
+        # A broker that is running is stopped here, with its marker gone and
+        # a mask in place, before the masks below are confirmed. One that is
+        # inactive (even with a start job queued) is not touched: its marker
+        # is gone and it is masked below, so the queued start is skipped.
+        try:
+            running = manager.is_inactive(CONTEXTD_UNIT) is not True
+        except Exception:  # noqa: BLE001 - unreadable (e.g. not loaded and not masked)
+            running = False  # the mask below makes it readable
+        if running:
+            try:
+                withdraw_contextd(
+                    reason="preflight", manager=manager, authority=stop_authority,
+                    root=root, ledger=daemon.ledger, now=now, actor=actor,
+                    invocation_id=invocation_id, deadline=deadline,
+                    clock=clock, sleep=sleep)
+            except WithdrawalUnconfirmed:
+                _emergency_narrow(
+                    manager, root,
+                    "the Knowledge Context broker could not be withdrawn at preflight")
     failures = daemon._remask_all(now=now, actor=actor,
         event_type="activation.evidence_preflight_masked", error_type="preflight")
     if failures:
@@ -722,6 +780,19 @@ def _run_once(
                 manager, root,
                 "granted units were not verified as loaded after the manager reload",
             )
+    if stop_authority is not None and CONTEXTD_UNIT not in granted:
+        # A broker the pass does not grant must not start: a start job the
+        # manager queued for it before this pass is replaced, not left to be
+        # skipped by a condition.
+        try:
+            clear_contextd_job(
+                authority=stop_authority, ledger=daemon.ledger, now=now, actor=actor,
+                reason="withheld", invocation_id=invocation_id, deadline=deadline,
+                clock=clock, sleep=sleep)
+        except WithdrawalUnconfirmed:
+            _emergency_narrow(
+                manager, root,
+                "a start job queued for the Knowledge Context broker could not be replaced")
     rolled_back = any(_is_failure(verdict) for verdict in outcome.verdicts)
     high_water = "not_attempted"
     if lease is not None and inputs.approval is not None:
@@ -917,8 +988,12 @@ _STATIC_FAILURE_MESSAGES = frozenset({
     'protected bootstrap selection refused: selection or source changed during read',
     'protected bootstrap selection refused: required bootstrap input missing',
     'additional controller command refused',
+    'a stop authority needs its two verbs',
     'manager reload failed',
+    'systemd returned an invalid job result',
+    'systemd returned an invalid stop result',
     'the service manager adapter cannot reload',
+    'the stop authority was asked about a unit outside its scope',
     'admitted resource thresholds required',
     'audit binding admission unconfirmed',
     'audit chain evidence unavailable',
@@ -1291,6 +1366,38 @@ def _failure_label(exc: BaseException) -> str:
     return f"{name}: " + " <- ".join(reasons)
 
 
+def _locked_pass(
+    *, manager: UnitManager, root: Path, now: str, actor: str,
+    stop_authority: Optional[ContextdStopAuthority], invocation_id: str,
+    clock=time.monotonic, sleep=time.sleep, producers=None,
+) -> ActivationOutcome:
+    """The main pass under the pass lock, from the lock to READY's barrier.
+
+    The lock is taken with a bounded wait; if it cannot be, the pass narrows
+    (markers removed, every governed unit masked, reload) and fails. The
+    recheck holds the same lock while it evaluates, so the two never change
+    markers and unit state at once. The monotonic budget starts before the
+    wait.
+    """
+    deadline = clock() + MAIN_PASS_BUDGET_SECONDS
+    try:
+        lock = acquire_pass_lock(root, wait_seconds=PASS_LOCK_WAIT_SECONDS,
+                                 clock=clock, sleep=sleep)
+    except (PassLockBusy, PassLockRefused):
+        _emergency_narrow(manager, root, "the activation pass lock could not be taken")
+    with lock:
+        outcome = _run_once(
+            manager=manager, root=root, now=now, actor=actor, producers=producers,
+            stop_authority=stop_authority, deadline=deadline, clock=clock,
+            sleep=sleep, invocation_id=invocation_id)
+        # Type=notify: without READY the controller's start fails and every
+        # unit with Requires=/After= on it fails as a dependency. READY is
+        # sent only after the pass, its markers and its record are complete,
+        # and the lock is kept until its barrier has returned.
+        _notify_ready_or_withdraw(manager, root, now=now, actor=actor)
+    return outcome
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Run one fail-closed activation pass against systemd's system bus.
 
@@ -1349,18 +1456,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 0
         with SystemdBusSession.connect() as session:
             manager = DbusUnitManager(call=session)
-            outcome = _run_once(
+            # READY is sent only after the pass, its markers and its record
+            # are complete. The process exits right after READY, so it waits
+            # (bounded) for systemd to process it first (BARRIER=1).
+            outcome = _locked_pass(
                 manager=manager,
                 root=Path("/"),
                 now=now,
                 actor="azazel-activated",
+                stop_authority=ContextdStopAuthority.from_session(session),
+                invocation_id=invocation_id,
             )
-            # Type=notify: without READY the controller's start fails and
-            # every unit with Requires=/After= on it fails as a dependency.
-            # READY is sent only after the pass, its markers and its record
-            # are complete. The process exits right after READY, so it waits
-            # (bounded) for systemd to process it first (BARRIER=1).
-            _notify_ready_or_withdraw(manager, Path("/"), now=now, actor="azazel-activated")
     except Exception as exc:  # noqa: BLE001 - the service boundary fails closed
         from .bootstrap_entrypoint import EMERGENCY_UNCONFIRMED
         if EMERGENCY_UNCONFIRMED in getattr(exc, "__notes__", ()):
@@ -1392,9 +1498,10 @@ def _notify_ready_or_withdraw(manager: UnitManager, root: Path, *, now: str,
     Best effort, not a guarantee: if systemd had already processed READY, the
     dependents' ``ConditionPathExists=`` may be evaluated concurrently with
     this withdrawal. A start job evaluated after the marker is gone is
-    skipped; a unit that started inside that window is not stopped (there is
-    no StopUnit authority), and its remask fails with "masked unit has no
-    confirmed inactive state", which still exits non-zero.
+    skipped; a unit that started inside that window is not stopped (the stop
+    authority covers the Knowledge Context broker alone), and its remask fails
+    with "masked unit has no confirmed inactive state", which still exits
+    non-zero.
 
     The failure is recorded as ``activation.readiness_unconfirmed`` when the
     ledger can be written; a record that fails never stands between this

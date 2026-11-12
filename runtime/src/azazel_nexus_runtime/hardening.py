@@ -1267,7 +1267,10 @@ PROFILES: tuple[ServiceProfile, ...] = (
         extra=(("Restart", "no"), ("KillMode", "control-group"),
                ("NotifyAccess", "main"), ("WatchdogSec", "30s"),
                ("WatchdogSignal", "SIGKILL"),
-               ("TimeoutStartSec", "30s"), ("TimeoutStopSec", "10s"),
+               # 60 s: the main pass has one 45 s monotonic budget (a wait of
+               # up to 5 s for the pass lock, up to 20 s for the Knowledge Context
+               # broker to stop), leaving 15 s for READY and its barrier.
+               ("TimeoutStartSec", "60s"), ("TimeoutStopSec", "10s"),
                ("TimeoutStartFailureMode", "kill"),
                ("TimeoutStopFailureMode", "kill"),
                ("KillSignal", "SIGTERM"), ("FinalKillSignal", "SIGKILL"),
