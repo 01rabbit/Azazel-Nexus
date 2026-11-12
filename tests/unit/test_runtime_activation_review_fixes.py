@@ -19,8 +19,9 @@ from azazel_nexus_runtime import (
     activated, activation_markers, activation_recheck, activation_retire,
     activation_withdraw,
 )
+from azazel_nexus_runtime import activation_budget
 from azazel_nexus_runtime.activation_budget import (
-    PassBudgetExpired, alarm_budget, check_budget,
+    PassBudgetExpired, bind_remaining, check_budget,
 )
 from azazel_nexus_runtime.activation_lock import acquire_pass_lock
 from azazel_nexus_runtime.activation_retire import (
@@ -80,24 +81,25 @@ def all_masked_and_unmarked(fresh) -> bool:
             and all(fresh.manager.state(d.name) is UnitState.MASKED for d in CORE_UNITS))
 
 
-# -- Codex 1: the budget holds in every phase --------------------------------------------
+# -- Codex 1 (04): a cooperative budget, no asynchronous interruption ---------------------------
 
 
-def test_the_budget_helpers():
+def test_the_budget_is_cooperative_and_no_code_arms_a_timer():
+    import inspect
     clock = FakeClock()
     check_budget(clock() + 1, clock)
     with pytest.raises(PassBudgetExpired):
         check_budget(clock(), clock)
-    assert not issubclass(PassBudgetExpired, Exception)  # no broad handler swallows it
-    started = time.monotonic()
-    with pytest.raises(PassBudgetExpired):
-        with alarm_budget(0.1):
-            time.sleep(2)
-    assert time.monotonic() - started < 1.0
+    assert not issubclass(PassBudgetExpired, Exception)
+    assert not hasattr(activation_budget, "alarm_budget")
+    for module in (activation_budget, activated, activation_recheck):
+        code = inspect.getsource(module)
+        for word in ("setitimer", "SIGALRM", "signal.alarm", "import signal"):
+            assert word not in code, (module.__name__, word)
 
 
 def test_a_slow_collection_between_phases_ends_in_narrowing(fresh):
-    """The clock passes the deadline inside a producer: the next phase check narrows."""
+    """The clock passes the phase deadline inside a producer: the next check narrows."""
     def slow():
         fresh.clock.sleep(100)
         return fresh.world.evidence
@@ -109,50 +111,42 @@ def test_a_slow_collection_between_phases_ends_in_narrowing(fresh):
     assert fresh.manager.timeline[-1] == ("reload", "")
 
 
-def test_a_producer_that_does_not_return_is_abandoned_by_the_alarm(fresh):
-    def hangs():
-        time.sleep(5)
-        return fresh.world.evidence
-
-    started = time.monotonic()
-    with pytest.raises(RuntimeError, match="used its whole time budget"):
-        locked(fresh, budget_seconds=0.3,
-               producers=fresh.world.producers(commissioning_evidence=hangs))
-    assert time.monotonic() - started < 2.0
-    assert all_masked_and_unmarked(fresh)
-
-
-def test_a_slow_manager_call_is_abandoned_by_the_alarm(fresh):
+def test_a_slow_manager_call_ends_the_phases_and_the_pass_narrows(fresh):
     original = fresh.manager.reload
-    slow = {"first": True}
+    state = {"first": True}
 
     def reload():
-        if slow.pop("first", False):
-            time.sleep(5)
+        if state.pop("first", False):
+            fresh.clock.sleep(100)  # one call that took the whole budget
         original()
 
     fresh.manager.reload = reload
-    started = time.monotonic()
     with pytest.raises(RuntimeError, match="used its whole time budget"):
-        locked(fresh, budget_seconds=0.3)
-    assert time.monotonic() - started < 2.0
+        locked(fresh)
     assert all_masked_and_unmarked(fresh)
 
 
-@pytest.mark.parametrize("which", ["ready", "barrier"])
-def test_a_slow_ready_or_barrier_is_abandoned_and_narrowed(fresh, monkeypatch, which):
-    from azazel_nexus_runtime import systemd_notify
+def test_the_phases_end_a_reserve_before_the_budget(fresh):
+    """A pass that finishes its phases after budget - reserve is narrowed."""
+    def at_the_edge():
+        fresh.clock.sleep(activated.MAIN_PASS_BUDGET_SECONDS
+                          - activated.MAIN_PASS_RESERVE_SECONDS + 1)
+        return fresh.world.evidence
 
-    def slow():
-        time.sleep(5)
-
-    monkeypatch.setattr(systemd_notify, "notify_ready" if which == "ready" else "notify_barrier",
-                        slow)
-    started = time.monotonic()
     with pytest.raises(RuntimeError, match="used its whole time budget"):
-        locked(fresh, budget_seconds=0.5)
-    assert time.monotonic() - started < 3.0
+        locked(fresh, producers=fresh.world.producers(commissioning_evidence=at_the_edge))
     assert all_masked_and_unmarked(fresh)
+
+
+def test_the_narrowing_is_bound_to_the_end_of_the_whole_budget(fresh):
+    given = []
+    fresh.manager.call = SimpleNamespace(set_remaining=given.append)
+    with pytest.raises(RuntimeError, match="used its whole time budget"):
+        locked(fresh, producers=fresh.world.producers(
+            commissioning_evidence=lambda: (fresh.clock.sleep(100), fresh.world.evidence)[1]))
+    # first bound to the end of the phases, last to the end of the whole budget
+    first, last = given[0], given[-1]
+    assert last() - first() == pytest.approx(activated.MAIN_PASS_RESERVE_SECONDS)
 
 
 def test_a_pass_whose_budget_ended_before_ready_does_not_send_it(fresh, monkeypatch):
@@ -176,9 +170,8 @@ def test_a_pass_inside_its_budget_is_unaffected(fresh):
     assert CTX in locked(fresh).granted
 
 
-def test_without_the_alarm_and_the_checks_the_slow_pass_would_complete(fresh, monkeypatch):
-    """Negative check: with the enforcement removed the scenario above is not caught."""
-    monkeypatch.setattr(activated, "alarm_budget", lambda seconds: contextlib.nullcontext())
+def test_without_the_phase_checks_the_slow_pass_would_complete(fresh, monkeypatch):
+    """Negative check: with the checks removed the scenario above is not caught."""
     monkeypatch.setattr(activated, "check_budget", lambda deadline, clock: None)
 
     def slow():
@@ -187,6 +180,106 @@ def test_without_the_alarm_and_the_checks_the_slow_pass_would_complete(fresh, mo
 
     outcome = locked(fresh, producers=fresh.world.producers(commissioning_evidence=slow))
     assert CTX in outcome.granted  # granted after 100 s on a 45 s budget
+
+
+def test_the_budget_starts_before_the_bus_connects(fresh):
+    """`started` is taken by main before connect: time already spent counts."""
+    started = fresh.clock() - 40.0  # the connect took 40 s
+    with pytest.raises(RuntimeError, match="used its whole time budget"):
+        activated._locked_pass(
+            manager=fresh.manager, root=fresh.world.root, now=NOW, actor="test",
+            stop_authority=authority(fresh.model), invocation_id="b" * 32,
+            clock=fresh.clock, sleep=fresh.clock.sleep, producers=fresh.world.producers(),
+            started=started)
+    assert all_masked_and_unmarked(fresh)
+
+
+def test_bind_remaining_gives_a_session_its_time_and_leaves_recording_managers_alone():
+    clock = FakeClock()
+    given = []
+    manager = SimpleNamespace(call=SimpleNamespace(set_remaining=given.append))
+    bind_remaining(manager, clock() + 5, clock)
+    assert given[0]() == 5
+    clock.sleep(2)
+    assert given[0]() == 3
+    bind_remaining(SimpleNamespace(), clock() + 1, clock)  # no session: nothing to do
+
+
+# -- the bus session: per-call limits, cancelled and drained -------------------------------------
+
+
+class _Bus:
+    def __init__(self, hang=False):
+        self.hang = hang
+        self.messages = []
+
+    async def call(self, message):
+        import asyncio
+        self.messages.append(message)
+        if self.hang:
+            await asyncio.sleep(30)
+        return SimpleNamespace(message_type=1, signature="s", body=["masked"], sender=None)
+
+    def disconnect(self):
+        pass
+
+
+def _session(bus):
+    import asyncio
+    from azazel_nexus_runtime.systemd_bus import SystemdBusSession
+    loop = asyncio.new_event_loop()
+    session = SystemdBusSession(
+        bus=bus, loop=loop, previous_loop=None,
+        message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1),
+        message_factory=lambda **values: SimpleNamespace(**values))
+    return session, loop
+
+
+def test_a_call_is_limited_to_the_time_that_is_left():
+    bus = _Bus(hang=True)
+    session, _ = _session(bus)
+    session.set_remaining(lambda: 0.3)
+    started = time.monotonic()
+    with pytest.raises(UnitOperationFailed, match="did not complete"):
+        session("GetUnitFileState", "azazel-auditd.service")
+    assert time.monotonic() - started < 2.0  # not the 10 s bound
+
+
+def test_a_call_after_the_deadline_is_not_sent():
+    bus = _Bus()
+    session, _ = _session(bus)
+    session.set_remaining(lambda: 0.0)
+    with pytest.raises(UnitOperationFailed, match="time budget ended"):
+        session("GetUnitFileState", "azazel-auditd.service")
+    assert bus.messages == []
+
+
+def test_a_timed_out_call_is_cancelled_and_drained_before_the_session_is_used_again():
+    import asyncio
+    bus = _Bus(hang=True)
+    session, loop = _session(bus)
+    session.set_remaining(lambda: 0.2)
+    with pytest.raises(UnitOperationFailed):
+        session("GetUnitFileState", "azazel-auditd.service")
+    # nothing is left pending on the loop
+    assert [t for t in asyncio.all_tasks(loop) if not t.done()] == []
+    # and the session still works, for the narrowing that may be needed
+    bus.hang = False
+    session.set_remaining(lambda: 5.0)
+    assert session("GetUnitFileState", "azazel-auditd.service") == "masked"
+    assert len(bus.messages) == 2
+
+
+def test_a_session_without_a_deadline_keeps_the_ten_second_bound():
+    bus = _Bus()
+    session, _ = _session(bus)
+    assert session("GetUnitFileState", "azazel-auditd.service") == "masked"
+
+
+def test_connecting_counts_against_the_budget():
+    from azazel_nexus_runtime.systemd_bus import SystemdBusSession
+    with pytest.raises(UnitOperationFailed):
+        SystemdBusSession.connect(lambda: 0.0)
 
 
 # -- Codex 2: the finalizer reaches masked ---------------------------------------------------
@@ -419,10 +512,13 @@ def test_a_broker_left_failed_by_a_kill_is_quiet_for_the_withdrawal(granted):
     event = [e for e in events_after(stage) if e["event_type"] == "activation.grant_withdrawn"][0]
     assert event["quiet_state"] == "failed" and event["stopped"] is True
     assert stage.model.failed is True
-    # and the next recheck does not withdraw it again
-    stage.manager.timeline.clear()
+    # `failed` is quiet for the confirmation only: a later recheck still sees a
+    # trigger and withdraws it again (idempotent; no StopUnit is needed)
+    assert "not_inactive" in activation_recheck.contextd_triggers(
+        stage.manager, authority(stage.model), stage.world.root)
+    stops = stage.model.stops
     assert recheck(stage) == 0
-    assert stage.manager.timeline == []
+    assert stage.model.stops == stops
 
 
 def test_failed_with_a_job_is_not_quiet_and_failed_is_not_running():
@@ -430,7 +526,8 @@ def test_failed_with_a_job_is_not_quiet_and_failed_is_not_running():
     model = ContextdModel(clock)
     model.failed = True
     guard = authority(model)
-    assert contextd_is_quiet(guard) and not contextd_is_running(guard)
+    assert contextd_is_quiet(guard)  # for the withdrawal confirmation only
+    assert contextd_is_running(guard)  # preflight and recheck use exact `inactive`
     model.job = JOB
     assert not contextd_is_quiet(guard)
 
@@ -485,14 +582,99 @@ def test_a_broker_the_manager_does_not_hold_is_inactive_and_garbage_is_refused()
 
 
 def test_the_budgets_fit_the_unit_timeouts_and_the_lock_wait():
-    assert activation_recheck.RECHECK_BUDGET_SECONDS + 5 <= 40  # TimeoutStartSec=40s
-    assert activation_recheck.RECHECK_COLLECT_SECONDS < activation_recheck.RECHECK_BUDGET_SECONDS
-    assert activated.PASS_LOCK_WAIT_SECONDS < activated.MAIN_PASS_BUDGET_SECONDS
-    assert activated.MAIN_PASS_BUDGET_SECONDS + 15 <= 60  # TimeoutStartSec=60s
-    unit = open("packaging/systemd/azazel-activation-recheck.service").read() \
-        if os.path.exists("packaging/systemd/azazel-activation-recheck.service") else None
-    if unit is not None:
-        assert "TimeoutStartSec=40s" in unit
+    # a recheck holds the lock for less than the main pass waits for it
+    assert activation_recheck.RECHECK_BUDGET_SECONDS < activated.PASS_LOCK_WAIT_SECONDS
+    assert activation_recheck.RECHECK_BUDGET_SECONDS + 15 <= 40  # TimeoutStartSec=40s
+    assert (activation_recheck.RECHECK_RESERVE_SECONDS
+            < activation_recheck.RECHECK_BUDGET_SECONDS)
+    assert activation_recheck.RECHECK_COLLECT_SECONDS < (
+        activation_recheck.RECHECK_BUDGET_SECONDS - activation_recheck.RECHECK_RESERVE_SECONDS)
+    # the main pass: phases + reserve = budget, and budget + margin <= TimeoutStartSec=60s
+    assert activated.PASS_LOCK_WAIT_SECONDS < (
+        activated.MAIN_PASS_BUDGET_SECONDS - activated.MAIN_PASS_RESERVE_SECONDS)
+    assert activated.MAIN_PASS_BUDGET_SECONDS + 15 <= 60
+    for name, seconds in (("azazel-activation-recheck.service", 40),
+                          ("azazel-activated.service", 60)):
+        path = "packaging/systemd/" + name
+        if os.path.exists(path):
+            assert f"TimeoutStartSec={seconds}s" in open(path).read()
+
+
+class SlowSession:
+    """Every call takes `cost` seconds of fake time, limited by the remaining time
+    the way the real session limits it (a call that outlasts it fails)."""
+
+    def __init__(self, clock, cost):
+        self.clock, self.cost = clock, cost
+        self.remaining = None
+
+    def set_remaining(self, remaining):
+        self.remaining = remaining
+
+    def spend(self):
+        left = self.remaining() if self.remaining else 10.0
+        if left <= 0:
+            raise UnitOperationFailed("the time budget ended before a call")
+        self.clock.sleep(min(self.cost, 10.0, left))
+        if self.cost > left:
+            raise UnitOperationFailed("systemd D-Bus call did not complete")
+
+
+def _slow(granted, cost):
+    stage = granted
+    session = SlowSession(stage.clock, cost)
+    manager = stage.manager
+    manager.call = session
+    for name in ("mask", "reload"):
+        real = getattr(manager, name)
+
+        def call(*args, _real=real):
+            session.spend()
+            return _real(*args)
+
+        setattr(manager, name, call)
+
+    def slow(method):
+        def call(*args):
+            session.spend()
+            return method(*args)
+        return call
+
+    guard = ContextdStopAuthority(
+        stop=slow(stage.model.stop), job=slow(stage.model.current_job),
+        state=slow(stage.model.active_state), file_state=slow(stage.model.file_state_of))
+    return stage, guard
+
+
+@pytest.mark.parametrize("cost", [0.5, 3.0, 7.0, 9.5])
+def test_the_recheck_never_holds_the_lock_longer_than_its_budget(granted, cost):
+    stage, guard = _slow(granted, cost)
+    stage.world.healthy = False
+    started = stage.clock()
+    code = activation_recheck.run_recheck(
+        manager=stage.manager, authority=guard, root=stage.world.root, now=NOW,
+        producers=stage.world.producers(), invocation_id="c" * 32,
+        clock=stage.clock, sleep=stage.clock.sleep)
+    held = stage.clock() - started
+    assert held <= activation_recheck.RECHECK_BUDGET_SECONDS + 1e-6
+    assert held < activated.PASS_LOCK_WAIT_SECONDS
+    assert code in (0, 1)
+    kinds = [e["event_type"] for e in events_after(stage)]
+    assert kinds and kinds[-1] in ("activation.grant_withdrawn",
+                                   "activation.withdrawal_unconfirmed"), kinds
+    assert CTX not in (stage.world.markers() or [])  # the marker is removed first
+
+
+def test_a_recheck_whose_budget_ends_mid_withdrawal_is_unconfirmed_and_recorded(granted):
+    stage, guard = _slow(granted, 9.5)
+    stage.world.healthy = False
+    code = activation_recheck.run_recheck(
+        manager=stage.manager, authority=guard, root=stage.world.root, now=NOW,
+        producers=stage.world.producers(), invocation_id="c" * 32,
+        clock=stage.clock, sleep=stage.clock.sleep)
+    assert code == 1
+    assert events_after(stage)[-1]["event_type"] == "activation.withdrawal_unconfirmed"
+    assert CTX not in (stage.world.markers() or [])
 
 
 def test_a_recheck_that_cannot_stop_the_broker_ends_inside_its_budget(granted):
@@ -501,25 +683,21 @@ def test_a_recheck_that_cannot_stop_the_broker_ends_inside_its_budget(granted):
     stage.world.healthy = False
     started = stage.clock()
     assert recheck(stage) == 1
-    held = stage.clock() - started
-    assert held <= activation_recheck.RECHECK_BUDGET_SECONDS + 0.2
-    last = events_after(stage)[-1]
-    assert last["event_type"] == "activation.withdrawal_unconfirmed"  # recorded before any kill
+    assert stage.clock() - started <= activation_recheck.RECHECK_BUDGET_SECONDS + 1e-6
+    assert events_after(stage)[-1]["event_type"] == "activation.withdrawal_unconfirmed"
 
 
 def test_a_collection_that_does_not_finish_is_a_withhold_and_the_withdrawal_still_runs(granted):
     stage = granted
 
-    def hangs():
-        time.sleep(5)
+    def slow():
+        stage.clock.sleep(activation_recheck.RECHECK_COLLECT_SECONDS + 1)
+        return stage.world.evidence
 
-    started = time.monotonic()
     code = activation_recheck.run_recheck(
         manager=stage.manager, authority=authority(stage.model), root=stage.world.root,
-        now=NOW, producers=stage.world.producers(commissioning_evidence=hangs),
-        invocation_id="c" * 32, clock=stage.clock, sleep=stage.clock.sleep,
-        collect_seconds=0.3)
-    assert time.monotonic() - started < 2.0
+        now=NOW, producers=stage.world.producers(commissioning_evidence=slow),
+        invocation_id="c" * 32, clock=stage.clock, sleep=stage.clock.sleep)
     assert code == 1 and withdrawn(stage)
 
 
@@ -608,3 +786,148 @@ def test_a_missing_activation_directory_is_nothing_to_do_without_a_broker(tmp_pa
     assert activation_recheck.run_recheck(**kwargs) == 0
     model.running = True
     assert activation_recheck.run_recheck(**kwargs) == 1
+
+
+# -- Codex 4 (04): strict parsing of the records ----------------------------------------------------
+
+
+def _valid_record(world, **change):
+    _state_dir(world)
+    write_accepted_grant(world.root, operator="operator-a", approval_seq=5,
+                         approval_id="approval-1", payload_sha256="a" * 64, units=[CTX])
+    path = leaf(world) / ACCEPTED
+    document = json.loads(path.read_text())
+    document.update(change)
+    return path, document
+
+
+def _put(path, raw):
+    path.write_bytes(raw)
+    path.chmod(0o600)
+
+
+def _canonical(document):
+    return json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+
+
+def test_the_record_the_writer_produces_is_accepted_byte_for_byte(ctx_world):
+    path, document = _valid_record(ctx_world)
+    assert path.read_bytes() == _canonical(document)
+    assert read_accepted_grant(ctx_world.root)["approval_id"] == "approval-1"
+
+
+def test_a_duplicate_key_is_refused(ctx_world):
+    path, document = _valid_record(ctx_world)
+    raw = _canonical(document).decode()
+    _put(path, (raw[:-1] + ',"operator":"operator-b"}').encode())
+    with pytest.raises(RetireRefused):
+        read_accepted_grant(ctx_world.root)
+
+
+@pytest.mark.parametrize("spell", ["spaces", "newline", "reordered", "escaped", "number"])
+def test_bytes_other_than_the_writers_are_refused(ctx_world, spell):
+    path, document = _valid_record(ctx_world)
+    canonical = _canonical(document)
+    if spell == "spaces":
+        raw = json.dumps(document, sort_keys=True).encode()
+    elif spell == "newline":
+        raw = canonical + b"\n"
+    elif spell == "reordered":
+        raw = json.dumps(document, sort_keys=False, separators=(",", ":")).encode()
+        raw = json.dumps(dict(reversed(list(document.items()))),
+                         separators=(",", ":")).encode()
+    elif spell == "escaped":
+        raw = canonical.replace(b"approval-1", b"approval\\u002d1")
+    else:
+        raw = canonical.replace(b'"approval_seq":5', b'"approval_seq":5.0')
+    assert raw != canonical
+    _put(path, raw)
+    with pytest.raises(RetireRefused):
+        read_accepted_grant(ctx_world.root)
+
+
+@pytest.mark.parametrize("approval_id", ["APPROVAL", "-approval", "a" * 65, "approval 1",
+                                         "approval/1", "", "ａpproval"])
+def test_an_approval_id_the_v2_schema_forbids_is_refused(ctx_world, approval_id):
+    _state_dir(ctx_world)
+    with pytest.raises(RetireRefused):
+        write_accepted_grant(ctx_world.root, operator="operator-a", approval_seq=5,
+                             approval_id=approval_id, payload_sha256="a" * 64, units=[CTX])
+    path, document = _valid_record(ctx_world)
+    document["approval_id"] = approval_id
+    _put(path, _canonical(document))
+    with pytest.raises(RetireRefused):
+        read_accepted_grant(ctx_world.root)
+
+
+def test_the_approval_id_grammar_is_the_v2_one():
+    from azazel_nexus import activation_approval_v2 as v2
+    assert activation_retire._APPROVAL_ID is v2._APPROVAL_ID
+
+
+@pytest.mark.parametrize("seq", [True, 5.0, "5", None])
+def test_an_approval_sequence_that_is_not_an_exact_int_is_refused(ctx_world, seq):
+    path, document = _valid_record(ctx_world)
+    document["approval_seq"] = seq
+    _put(path, _canonical(document))
+    with pytest.raises(RetireRefused):
+        read_accepted_grant(ctx_world.root)
+    with pytest.raises(RetireRefused):
+        write_accepted_grant(ctx_world.root, operator="operator-a", approval_seq=seq,
+                             approval_id="approval-1", payload_sha256="a" * 64, units=[CTX])
+
+
+def _pending(world, **change):
+    path, document = _valid_record(world)
+    document.update(target_seq=6, skew_seconds=300)
+    document.update(change)
+    target = leaf(world) / PENDING
+    _put(target, _canonical(document))
+    return target
+
+
+@pytest.mark.parametrize("change", [
+    {"approval_seq": 0, "target_seq": True},  # True == 0 + 1
+    {"target_seq": 6.0}, {"target_seq": "6"}, {"target_seq": 2**63},
+    {"approval_seq": 2**63 - 1, "target_seq": 2**63},  # past the overflow bound
+    {"target_seq": 5}, {"skew_seconds": True}, {"skew_seconds": -1},
+])
+def test_a_pending_record_must_have_exact_integers_inside_the_bound(ctx_world, change):
+    _pending(ctx_world, **change)
+    kwargs = tools(ctx_world, None)
+    with pytest.raises(RetireRefused):
+        resume_pending_retirement(root=ctx_world.root, read_floor=kwargs["read_floor"],
+                                  raise_floor=kwargs["raise_floor"], now=NOW)
+
+
+def test_a_pending_record_with_a_duplicate_key_is_refused(ctx_world):
+    target = _pending(ctx_world)
+    raw = target.read_bytes().decode()
+    _put(target, (raw[:-1] + ',"target_seq":6}').encode())
+    kwargs = tools(ctx_world, None)
+    with pytest.raises(RetireRefused):
+        resume_pending_retirement(root=ctx_world.root, read_floor=kwargs["read_floor"],
+                                  raise_floor=kwargs["raise_floor"], now=NOW)
+
+
+def test_the_valid_pending_record_resumes(ctx_world):
+    _pending(ctx_world)
+    kwargs = tools(ctx_world, None)
+    assert resume_pending_retirement(
+        root=ctx_world.root, read_floor=kwargs["read_floor"],
+        raise_floor=kwargs["raise_floor"], now=NOW) == "resumed"
+    assert ctx_world.high_water.approval_seq == 6
+
+
+# -- the recovery procedure is documented in order -----------------------------------------------------
+
+
+@pytest.mark.parametrize("document", ["docs/knowledge-context-consumer.md",
+                                      "docs/activation-observe-baseline.md"])
+def test_the_recovery_order_is_documented(document):
+    text = open(document, encoding="utf-8").read()
+    first = text.index("`systemctl start azazel-activated.service`")
+    second = text.index("Confirm that the pass granted it", first)
+    third = text.index("`systemctl start azazel-knowledge-contextd.service`", second)
+    assert first < second < third
+    assert "is refused" in text and "masked" in text and "pulls in no pass" in text

@@ -419,7 +419,7 @@ def test_the_entry_point_wires_the_session_the_authority_and_the_producers(monke
             return None
 
     session = Session()
-    monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(lambda: session))
+    monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(lambda *_a: session))
     seen = {}
 
     def fake_run(**kwargs):
@@ -443,7 +443,7 @@ def test_an_unexpected_failure_is_a_class_name_only(monkeypatch, capsys):
     monkeypatch.setattr(Path, "is_dir",
                         lambda p: True if p == Path("/run/systemd/system") else original(p))
 
-    def connect():
+    def connect(*_a):
         raise RuntimeError("/run/secret said hello")
 
     monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(connect))

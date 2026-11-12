@@ -82,10 +82,17 @@ def contextd_is_quiet(authority: ContextdStopAuthority) -> bool:
 
 
 def contextd_is_running(authority: ContextdStopAuthority) -> bool:
-    """Whether a process of the broker may exist. Unreadable counts as not running here
-    (the caller's own mask makes the unit readable and its checks refuse otherwise)."""
+    """Anything but exactly `inactive`: a process may exist, or the unit is `failed`.
+
+    `failed` is deliberately not quiet here. It counts as quiet only in
+    `contextd_is_quiet`, to confirm a withdrawal that was already done (a unit
+    left `failed` by a kill has no process, but nothing else may treat it as
+    inactive: a preflight or a recheck still withdraws it). Unreadable counts
+    as not running (the caller's own mask makes the unit readable and its
+    checks refuse otherwise).
+    """
     try:
-        return authority.active_state(CONTEXTD_UNIT) not in QUIET_STATES
+        return authority.active_state(CONTEXTD_UNIT) != "inactive"
     except Exception:  # noqa: BLE001
         return False
 
@@ -116,45 +123,63 @@ def _record(ledger: AuditLedger, event: dict) -> None:
 
 
 def _contain(*, manager: UnitManager, authority: ContextdStopAuthority, root: Path,
-             stop_sent: bool) -> dict:
+             stop_sent: bool, give_up: Optional[float] = None,
+             clock: Callable[[], float] = time.monotonic) -> dict:
     """Contextd-only finalizer: reach the masked, quiet state as far as possible.
 
-    Marker removed, masked, reloaded, and one stop if the broker is not
-    quiet and none was sent. Every step is tried whatever the others did; the
-    result states what was reached, read back from the manager.
+    Marker removed (local, not a bus call), masked, reloaded, and one stop if
+    the broker is not quiet and none was sent. Every step is tried whatever
+    the others did, but none is started after `give_up` (the bus calls are
+    also refused by their session then); the result states what was reached,
+    read back from the manager.
     """
-    for step in (lambda: remove_contextd_marker(root),
-                 lambda: manager.mask(CONTEXTD_UNIT),
-                 manager.reload):
+    def late() -> bool:
+        return give_up is not None and clock() >= give_up
+
+    try:
+        remove_contextd_marker(root)
+    except Exception:  # noqa: BLE001
+        pass
+    for step in (lambda: manager.mask(CONTEXTD_UNIT), manager.reload):
+        if late():
+            break
         try:
             step()
         except Exception:  # noqa: BLE001 - every step is tried
             pass
     try:
-        if not stop_sent and not contextd_is_quiet(authority):
+        if not late() and not stop_sent and not contextd_is_quiet(authority):
             authority.stop(CONTEXTD_UNIT)
     except Exception:  # noqa: BLE001
         pass
-    try:
-        masked = authority.file_state(CONTEXTD_UNIT) == "masked"
-    except Exception:  # noqa: BLE001
-        masked = False
-    return {"final_masked": masked, "final_quiet": contextd_is_quiet(authority)}
+    masked = quiet = False
+    if not late():
+        try:
+            masked = authority.file_state(CONTEXTD_UNIT) == "masked"
+        except Exception:  # noqa: BLE001
+            masked = False
+        quiet = contextd_is_quiet(authority)
+    return {"final_masked": masked, "final_quiet": quiet}
 
 
 def withdraw_contextd(
     *, reason: str, manager: UnitManager, authority: ContextdStopAuthority,
     root: Path, ledger: AuditLedger, now: str, actor: str, invocation_id: str,
     deadline: Optional[float] = None,
+    final_deadline: Optional[float] = None,
+    bind_deadline: Optional[Callable[[float], None]] = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict:
     """Withdraw the broker; returns the recorded timings, or raises.
 
-    `deadline` is a monotonic instant the whole withdrawal must end by (the
-    main pass's budget, or the recheck's); the stop wait is also capped at
-    20 s. A step started after the deadline is not started: the finalizer
-    runs instead.
+    `deadline` is the monotonic instant the withdrawal's steps must end by
+    (the caller's budget less its reserve); the stop wait is also capped at
+    20 s. A step started after it is not started: the finalizer runs instead,
+    inside the reserve, up to `final_deadline`. `bind_deadline(d)` is called
+    with the deadline that bounds the bus calls from then on (first
+    `deadline`, then `final_deadline` for the finalizer), so no call outlasts
+    the time that is left.
     """
     started = clock()
     timings: dict = {"t_marker_ms": None, "t_reload_ms": None,
@@ -167,8 +192,10 @@ def withdraw_contextd(
             raise TimeoutError("the budget for the withdrawal is used")
 
     def unconfirmed(why: str) -> WithdrawalUnconfirmed:
+        if bind_deadline is not None and final_deadline is not None:
+            bind_deadline(final_deadline)
         reached = _contain(manager=manager, authority=authority, root=root,
-                           stop_sent=stop_sent)
+                           stop_sent=stop_sent, give_up=final_deadline, clock=clock)
         _record(ledger, {
             "event_type": "activation.withdrawal_unconfirmed",
             "unit": CONTEXTD_UNIT, "reason": reason, "stage": stage, "why": why,
@@ -180,6 +207,8 @@ def withdraw_contextd(
 
     needs_stop = False
     quiet_state = "inactive"
+    if bind_deadline is not None and deadline is not None:
+        bind_deadline(deadline)
     try:
         remove_contextd_marker(root)
         timings["t_marker_ms"] = _ms(started, clock)

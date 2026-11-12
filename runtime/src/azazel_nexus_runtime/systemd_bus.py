@@ -443,10 +443,26 @@ class SystemdBusSession:
         self._message_factory = message_factory
         self._admitted_owner = getattr(bus, "_azazel_systemd_owner", None)
         self.calls = SystemdUnitCalls(self._exchange)
+        self._remaining: Optional[Callable[[], float]] = None
+
+    def set_remaining(self, remaining: Optional[Callable[[], float]]) -> None:
+        """Seconds left of the caller's budget; each call is limited to it."""
+        self._remaining = remaining
 
     @classmethod
-    def connect(cls) -> "SystemdBusSession":
-        """Connect only to the system bus; fail if the pinned client is absent."""
+    def connect(cls, remaining: Optional[Callable[[], float]] = None) -> "SystemdBusSession":
+        """Connect only to the system bus; fail if the pinned client is absent.
+
+        `remaining` (seconds left of the caller's budget) bounds each step of
+        the connection, so that connecting counts against the budget.
+        """
+
+        def step() -> float:
+            left = _BUS_TIMEOUT_SECONDS if remaining is None else min(
+                _BUS_TIMEOUT_SECONDS, remaining())
+            if left <= 0:
+                raise UnitOperationFailed("the time budget ended before the bus connected")
+            return left
 
         try:
             from dbus_next import Message, MessageType
@@ -478,14 +494,13 @@ class SystemdBusSession:
                 pass
 
             bus = FixedBus(bus_address=_SYSTEM_BUS_ADDRESS)
-            loop.run_until_complete(
-                asyncio.wait_for(bus.connect(), _BUS_TIMEOUT_SECONDS)
-            )
+            limit = step()
+            loop.run_until_complete(asyncio.wait_for(bus.connect(), limit))
             from .bootstrap_manager_identity import inspect_bootstrap_manager_identity
 
             identity = loop.run_until_complete(inspect_bootstrap_manager_identity(
                 bus=bus, message_factory=Message, message_type=MessageType,
-                timeout_seconds=_BUS_TIMEOUT_SECONDS,
+                timeout_seconds=step(),
             ))
             bus._azazel_systemd_owner = identity.owner
         except BaseException as exc:
@@ -586,11 +601,18 @@ class SystemdBusSession:
             signature=signature,
             body=list(body),
         )
+        timeout = _BUS_TIMEOUT_SECONDS
+        if self._remaining is not None:
+            timeout = min(timeout, self._remaining())
+            if timeout <= 0:
+                raise UnitOperationFailed(
+                    f"the time budget ended before systemd D-Bus call {member}")
         try:
             reply = self._loop.run_until_complete(
-                asyncio.wait_for(self._bus.call(message), _BUS_TIMEOUT_SECONDS)
+                asyncio.wait_for(self._bus.call(message), timeout)
             )
         except Exception as exc:  # noqa: BLE001 - translated at the trust boundary
+            self._drain()
             raise UnitOperationFailed(
                 f"systemd D-Bus call {member} did not complete"
             ) from exc
@@ -610,6 +632,24 @@ class SystemdBusSession:
         if self._admitted_owner is not None and getattr(reply, "sender", None) != self._admitted_owner:
             raise UnitOperationFailed("systemd D-Bus reply owner refused")
         return _Reply(reply.signature, reply.body)
+
+    def _drain(self) -> None:
+        """A call did not complete: cancel what is still pending and let it finish.
+
+        `wait_for` has already cancelled the call it timed out; this cancels
+        anything else left on the loop and runs it to completion (bounded to a
+        second) before the loop is used again. A reply that arrives later for
+        the cancelled call is ignored by the client (its future is done), so
+        the session stays usable for the narrowing that may still be needed.
+        """
+        try:
+            pending = asyncio.all_tasks(self._loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                self._loop.run_until_complete(asyncio.wait(pending, timeout=1.0))
+        except Exception:  # noqa: BLE001 - best effort; the failure is already raised
+            pass
 
     def __call__(self, method: str, unit: str) -> object:
         return self.calls(method, unit)

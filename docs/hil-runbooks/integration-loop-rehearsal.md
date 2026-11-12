@@ -315,7 +315,10 @@ by hand also starts the controller again in the same boot. That second pass
 (#251 M-5) re-masks every governed unit, removes every grant marker and ends
 with `RollbackFailed`; units already running keep running but are no longer
 granted. This includes the one-shot `azazel-edge-probed.service`. To start a
-granted unit again, reboot and let the next pass decide.
+granted unit again, reboot and let the next pass decide. The Knowledge Context broker, once withdrawn (masked), is brought back by
+the order in `docs/knowledge-context-consumer.md` (start the controller, confirm
+the grant, then start the broker); a plain start of it is refused because the
+unit is masked and pulls in no pass.
 
 **auditd is outside the loop policy.** `azazel-auditd.service` is not in the
 activation policy's allowlist (`ACTIVATION_UNIT_ALLOWLIST`; a policy cannot

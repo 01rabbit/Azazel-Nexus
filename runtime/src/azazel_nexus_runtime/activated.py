@@ -83,7 +83,7 @@ from .mio_remoted import TRANSPORT
 from .model_fetch import ENDPOINT_FOR
 from .node_config import load_declared_node
 from .activation_markers import GRANTABLE_UNITS, reset_grant_markers, write_grant_markers
-from .activation_budget import PassBudgetExpired, alarm_budget, check_budget
+from .activation_budget import PassBudgetExpired, bind_remaining, check_budget
 from .activation_retire import (
     RetireRefused, read_accepted_grant, retirement_pending, write_accepted_grant,
 )
@@ -585,17 +585,19 @@ _ALL_PRODUCERS = (
     "activation_approval_loader", "node_health",
 )
 
-#: One monotonic budget for a whole main pass, from before the lock wait to
-#: the end of the pass. `azazel-activated.service` allows `TimeoutStartSec=60s`
-#: (hardening.py), leaving 15 s for READY and its barrier. The wait for the
-#: broker to stop is capped by what remains, and by 20 s in any case.
+#: One monotonic budget for a whole main pass, counted from before the bus
+#: connects to the end of the narrowing a failed pass needs. The phases of the
+#: pass end `MAIN_PASS_RESERVE_SECONDS` before it; the reserve is held back for
+#: the narrowing itself (markers, masks, reload) and its record.
+#: `azazel-activated.service` has `TimeoutStartSec=60s`: 37 s of phases + 8 s
+#: reserve = 45 s budget, and 15 s of margin for READY, its barrier and the
+#: exit.
 MAIN_PASS_BUDGET_SECONDS = 45.0
-#: How long the main pass waits for the pass lock before it narrows. The
-#: recheck holds the lock for at most `activation_recheck.RECHECK_BUDGET_SECONDS`
-#: (35 s), which is longer: a pass that arrives during a long withdrawal can
-#: still run out of wait, and then narrows and fails (documented in
-#: activation-observe-baseline.md 8.3). It is inside the 45 s budget, so a pass
-#: that gets the lock late has the rest of it.
+MAIN_PASS_RESERVE_SECONDS = 8.0
+#: How long the main pass waits for the pass lock before it narrows (inside the
+#: phase budget). It is longer than any recheck holds the lock
+#: (`activation_recheck.RECHECK_BUDGET_SECONDS`, 20 s), so a pass that arrives
+#: during a recheck gets the lock.
 PASS_LOCK_WAIT_SECONDS = 25.0
 
 
@@ -657,10 +659,18 @@ def _run_once(
     preflight is withdrawn (marker, mask, reload, StopUnit) before the masks
     are confirmed, and a start job queued for a broker that is not granted is
     replaced. Without it a running broker is a containment failure, as
-    before. ``deadline`` is the pass's monotonic end (``MAIN_PASS_BUDGET_SECONDS``).
+    before. ``deadline`` is the monotonic end of the pass's phases (the budget less
+    ``MAIN_PASS_RESERVE_SECONDS``).
     """
     if deadline is None:
-        deadline = clock() + MAIN_PASS_BUDGET_SECONDS
+        deadline = clock() + MAIN_PASS_BUDGET_SECONDS - MAIN_PASS_RESERVE_SECONDS
+
+    def _narrow_now(narrowing_manager, narrowing_root, message):
+        # Narrowing may spend the reserve held back from the phases: the bus
+        # calls it makes are bounded by the end of the whole budget, not by
+        # the end of the phases.
+        bind_remaining(narrowing_manager, deadline + MAIN_PASS_RESERVE_SECONDS, clock)
+        _emergency_narrow(narrowing_manager, narrowing_root, message)
 
     daemon = ActivationDaemon(
         generations=GenerationStore(root / "var/lib/azazel/generations"),
@@ -686,9 +696,12 @@ def _run_once(
                     reason="preflight", manager=manager, authority=stop_authority,
                     root=root, ledger=daemon.ledger, now=now, actor=actor,
                     invocation_id=invocation_id, deadline=deadline,
+                    final_deadline=deadline + MAIN_PASS_RESERVE_SECONDS,
+                    bind_deadline=lambda d: bind_remaining(manager, d, clock),
                     clock=clock, sleep=sleep)
             except WithdrawalUnconfirmed:
-                _emergency_narrow(
+                bind_remaining(manager, deadline + MAIN_PASS_RESERVE_SECONDS, clock)
+                _narrow_now(
                     manager, root,
                     "the Knowledge Context broker could not be withdrawn at preflight")
     failures = daemon._remask_all(now=now, actor=actor,
@@ -759,7 +772,7 @@ def _run_once(
                     or not granted <= lease.units or not granted <= GRANTABLE_UNITS):
         # A grant without verified lease and health, or outside the lease's
         # scope, means a change silently supplied authority.
-        _emergency_narrow(
+        _narrow_now(
             manager, root,
             "production activation granted a unit outside a verified lease and "
             "health or outside the lease scope",
@@ -768,7 +781,7 @@ def _run_once(
             inputs is None or inputs.edge_evidence != "launchable"
             or inputs.edge_package_binding != "bound"):
         # Edge-core without launchable evidence bound to the signed package.
-        _emergency_narrow(
+        _narrow_now(
             manager, root,
             "production activation granted edge-core without launchable Edge "
             "evidence bound to the signed package",
@@ -777,7 +790,7 @@ def _run_once(
         # #196 P1: this build has no isolation evidence, so a Deception Lite
         # exposure unit is never granted; one that was means a change
         # supplied authority the design does not have.
-        _emergency_narrow(
+        _narrow_now(
             manager, root,
             "production activation granted a Deception Lite exposure unit "
             "without isolation evidence",
@@ -798,7 +811,7 @@ def _run_once(
                 })
             except Exception:  # noqa: BLE001 - narrowing below is unconditional
                 pass
-            _emergency_narrow(
+            _narrow_now(
                 manager, root,
                 "granted units were not verified as loaded after the manager reload",
             )
@@ -819,7 +832,7 @@ def _run_once(
                 })
             except Exception:  # noqa: BLE001 - narrowing below is unconditional
                 pass
-            _emergency_narrow(manager, root, "the accepted approval could not be recorded")
+            _narrow_now(manager, root, "the accepted approval could not be recorded")
     if stop_authority is not None and CONTEXTD_UNIT not in granted:
         # A broker the pass does not grant must not start: a start job the
         # manager queued for it before this pass is replaced, not left to be
@@ -830,7 +843,7 @@ def _run_once(
                 reason="withheld", invocation_id=invocation_id, deadline=deadline,
                 clock=clock, sleep=sleep)
         except WithdrawalUnconfirmed:
-            _emergency_narrow(
+            _narrow_now(
                 manager, root,
                 "a start job queued for the Knowledge Context broker could not be replaced")
     rolled_back = any(_is_failure(verdict) for verdict in outcome.verdicts)
@@ -864,7 +877,7 @@ def _run_once(
                 })
             except Exception:  # noqa: BLE001 - narrowing below is unconditional
                 pass
-            _emergency_narrow(manager, root, "activation high water could not be raised")
+            _narrow_now(manager, root, "activation high water could not be raised")
     markers: tuple[str, ...] = ()
     recorded = False
     # From the first marker to the final record, any failure (writing a
@@ -928,11 +941,11 @@ def _run_once(
         })
         recorded = True
     except _MarkersUnwritten:
-        _emergency_narrow(manager, root, "activation grant markers could not be written")
+        _narrow_now(manager, root, "activation grant markers could not be written")
     except Exception:  # noqa: BLE001 - an unrecorded pass leaves no grant behind
         # The record is what makes this a completed pass: the markers it
         # wrote and the units it enabled are withdrawn first.
-        _emergency_narrow(manager, root, "activation pass record could not be appended")
+        _narrow_now(manager, root, "activation pass record could not be appended")
     if recorded and markers and EDGE_CORE_UNIT in granted and inputs is not None:
         _raise_edge_floor(daemon, inputs, now=now, actor=actor)
     return outcome
@@ -1412,6 +1425,8 @@ def _locked_pass(
     stop_authority: Optional[ContextdStopAuthority], invocation_id: str,
     clock=time.monotonic, sleep=time.sleep, producers=None,
     budget_seconds: float = MAIN_PASS_BUDGET_SECONDS,
+    reserve_seconds: float = MAIN_PASS_RESERVE_SECONDS,
+    started: Optional[float] = None,
 ) -> ActivationOutcome:
     """The main pass under the pass lock, from the lock to READY's barrier.
 
@@ -1420,33 +1435,38 @@ def _locked_pass(
     recheck holds the same lock while it evaluates, so the two never change
     markers and unit state at once.
 
-    One budget covers everything from before the lock wait to the end of
-    READY's barrier. It is checked between the phases of the pass with
-    `clock` and also armed as a real-time alarm, so a slow producer, a slow
-    bus call or a slow barrier is abandoned too. Past the budget the pass
-    narrows (before systemd's 60 s timeout kills it with no narrowing) and
-    fails.
+    One budget covers everything from `started` (taken by `main` before the
+    bus connects) to the end of any narrowing. It is kept cooperatively: the
+    phases end `reserve_seconds` before it and are checked between each other,
+    and every bus call is limited to the time that remains (`bind_remaining`).
+    Nothing is interrupted asynchronously, so a ledger append or a high-water
+    commit always completes. A bus call that times out is cancelled and
+    drained before the session is used again. Past the budget the pass records
+    the expiry, removes every marker, masks every governed unit, reloads and
+    fails, spending the reserve.
     """
-    deadline = clock() + budget_seconds
+    begin = clock() if started is None else started
+    final = begin + budget_seconds
+    work = final - reserve_seconds
+    bind_remaining(manager, work, clock)
     try:
-        with alarm_budget(budget_seconds):
-            try:
-                lock = acquire_pass_lock(root, wait_seconds=PASS_LOCK_WAIT_SECONDS,
-                                         clock=clock, sleep=sleep)
-            except (PassLockBusy, PassLockRefused):
-                _emergency_narrow(manager, root, "the activation pass lock could not be taken")
-            with lock:
-                outcome = _run_once(
-                    manager=manager, root=root, now=now, actor=actor, producers=producers,
-                    stop_authority=stop_authority, deadline=deadline, clock=clock,
-                    sleep=sleep, invocation_id=invocation_id)
-                check_budget(deadline, clock)
-                # Type=notify: without READY the controller's start fails and
-                # every unit with Requires=/After= on it fails as a dependency.
-                # READY is sent only after the pass, its markers and its
-                # record are complete, and the lock is kept until its barrier
-                # has returned.
-                _notify_ready_or_withdraw(manager, root, now=now, actor=actor)
+        wait = max(0.0, min(PASS_LOCK_WAIT_SECONDS, work - clock()))
+        try:
+            lock = acquire_pass_lock(root, wait_seconds=wait, clock=clock, sleep=sleep)
+        except (PassLockBusy, PassLockRefused):
+            _emergency_narrow(manager, root, "the activation pass lock could not be taken")
+        with lock:
+            outcome = _run_once(
+                manager=manager, root=root, now=now, actor=actor, producers=producers,
+                stop_authority=stop_authority, deadline=work, clock=clock,
+                sleep=sleep, invocation_id=invocation_id)
+            check_budget(work, clock)
+            # Type=notify: without READY the controller's start fails and
+            # every unit with Requires=/After= on it fails as a dependency.
+            # READY is sent only after the pass, its markers and its record
+            # are complete, and the lock is kept until its barrier has
+            # returned.
+            _notify_ready_or_withdraw(manager, root, now=now, actor=actor)
     except PassBudgetExpired:
         try:
             _activation_ledger(root).append({
@@ -1455,6 +1475,7 @@ def _locked_pass(
             })
         except Exception:  # noqa: BLE001 - narrowing below is unconditional
             pass
+        bind_remaining(manager, final, clock)  # the reserve is for this
         _emergency_narrow(manager, root, "the activation pass used its whole time budget")
     return outcome
 
@@ -1515,7 +1536,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 return 0
             print("az-activated supporting bootstrap stopped after confirmed containment")
             return 0
-        with SystemdBusSession.connect() as session:
+        # The budget starts here, so that connecting to the bus counts.
+        started = time.monotonic()
+
+        def work_left(begin=started) -> float:
+            return begin + MAIN_PASS_BUDGET_SECONDS - MAIN_PASS_RESERVE_SECONDS - time.monotonic()
+
+        with SystemdBusSession.connect(work_left) as session:
             manager = DbusUnitManager(call=session)
             # READY is sent only after the pass, its markers and its record
             # are complete. The process exits right after READY, so it waits
@@ -1527,6 +1554,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 actor="azazel-activated",
                 stop_authority=ContextdStopAuthority.from_session(session),
                 invocation_id=invocation_id,
+                started=started,
             )
     except Exception as exc:  # noqa: BLE001 - the service boundary fails closed
         from .bootstrap_entrypoint import EMERGENCY_UNCONFIRMED

@@ -661,7 +661,7 @@ ends (the unit dropped from the policy, a lease that does not list it, an
 expired approval, a revoked operator, failed health or commissioning
 evidence), the next pass, or the periodic recheck (every 30 s as configured,
 not a bound), removes the marker, masks the unit, reloads the manager and
-sends `StopUnit`, then confirms the unit quiet (inactive, or `failed` after a kill, with no job). The broker also
+sends `StopUnit`, then confirms the unit quiet (inactive, or, for this confirmation only, `failed` after a kill, with no job). The broker also
 reads its marker when it accepts a request and again before it adopts the
 peer's answer: after the marker is gone it accepts nothing and adopts no
 answer (`reason_code` `withdrawn`). An answer adopted earlier may still reach
@@ -670,7 +670,30 @@ required, and stopping alone is still not durable: while the policy and
 approval still grant the unit, a later pass grants it again. When the
 operator that signed the approval is explicitly revoked, the approval is
 retired and the same approval is refused afterwards. The pass never issues
-StartUnit, so the broker runs again only at the next boot or an operator start.
+StartUnit, so the broker runs again only at the next boot or an operator start
+as below.
+
+Recovery after a withdrawal. A withdrawn broker is masked, with its marker
+removed. A plain `systemctl start azazel-knowledge-contextd.service` is
+refused (`Unit ... is masked`) and pulls in no pass, so it changes nothing.
+To bring the broker back, in this order:
+
+1. `systemctl start azazel-activated.service`, which runs a pass. It grants
+   the broker again only if the approval, the policy, health and evidence
+   still allow it (an approval retired after an explicit revocation does not,
+   and a new approval with a higher sequence is needed).
+2. Confirm that the pass granted it: the newest `activation.inputs_incomplete`
+   record in `/var/lib/azazel/state/activation.jsonl` lists the broker in
+   `grant_markers`, and `/run/azazel-activation/granted/azazel-knowledge-contextd.service`
+   exists. If the pass failed or did not grant it, do not go on.
+3. `systemctl start azazel-knowledge-contextd.service`.
+
+Caveat (not verified for this unit): the loop units carry
+`Requires=azazel-activated.service`, and `docs/hil-runbooks/integration-loop-rehearsal.md`
+records that starting a granted unit by hand started the controller again in
+the same boot, whose second pass re-masked every governed unit. If step 3
+does that, the broker is masked again; reboot and let the boot pass start it.
+Check this on a node before relying on the order above.
 Introduce in this order: new release,
 then a policy naming contextd. Withdraw in this order: remove contextd from
 the policy and re-sign, confirm on the next pass that it is closed, then

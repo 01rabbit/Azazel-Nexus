@@ -1102,10 +1102,12 @@ caller.
    budget. `failed` with no job also counts as quiet, for this confirmation
    only: after a SIGKILL final kill systemd keeps the unit loaded as `failed`
    and `StopUnit` does not return it to `inactive`, although the process is
-   gone. The record carries `quiet_state`. The generic inactivity check of the
-   masks does not accept `failed`, so a broker left `failed` in the same boot
-   still makes the next main pass report a containment failure until it is
-   reset;
+   gone. The record carries `quiet_state`. Nowhere else is `failed` taken as inactive:
+   the main pass's preflight and the recheck's trigger test for exactly
+   `inactive`, so a broker left `failed` is a trigger and is withdrawn again
+   (no `StopUnit` is needed for it), and the generic inactivity check of the
+   masks does not accept it, so the next main pass in the same boot reports a
+   containment failure until the unit is reset;
 5. record `activation.grant_withdrawn` with the reason, the timings in
    milliseconds since detection and the invocation id.
 
@@ -1124,15 +1126,19 @@ recheck notices it. `t_marker`, `t_reload`, `t_stop` and `t_inactive` follow as
 above. The recheck runs 30 s after boot and 30 s after each start
 (`OnBootSec=30s`, `OnUnitActiveSec=30s`, `AccuracySec=1s`); that is a
 configured value, not a bound: a run that finds the lock held changes nothing,
-and a run can be late. The recheck has its own budget of 35 s inside its
-`TimeoutStartSec=40s` (retirement and input collection take at most 15 s of
-it, by alarm; collection that does not finish is a withhold), so its record is
-written before systemd would kill it, and it holds the pass lock for at most
-that long. A main pass that arrives while a recheck withdraws waits up to 25 s
-for the lock; a withdrawal that really takes the full 35 s can therefore still
-make that pass narrow and fail, which is fail-closed and is not retried. The withdrawal itself is bounded at 20 s after
-`t_stop`; each bus call has its own 10 s timeout. `t_loss` to `t_detect` has
-no bound.
+and a run can be late. The recheck has one budget of 20 s, counted from before
+it connects to the bus: 14 s for retirement, collection and the withdrawal's
+steps, and a reserve of 6 s for the finalizer and the record. Every bus call is
+refused once the budget has passed and is otherwise limited to the time that
+is left (at most its usual 10 s), the finalizer's included, so the recheck
+holds the pass lock for at most 20 s, strictly less than the 25 s a main pass
+waits for it, and `TimeoutStartSec=40s` leaves 20 s of margin. A budget that
+ends mid-withdrawal gives `activation.withdrawal_unconfirmed`, recorded before
+the exit; the marker is already removed (a local step) and the finalizer masks
+the broker where it still can. Retirement and input collection end by 8 s
+after the start; collection that does not finish is a withhold. The stop wait
+is at most 20 s and never more than the time that is left. `t_loss` to
+`t_detect` has no bound.
 
 **Adoption contract (weakened).** The broker reads its marker when it accepts a
 request and again before it adopts the peer's answer
@@ -1143,20 +1149,52 @@ and written again inside one kernel timestamp tick could keep the identity
 `(st_dev, st_ino, st_ctime_ns)`; a real re-grant is a later pass, far longer
 than a tick (推測です, not measured on a node).
 
+**Recovery after a withdrawal.** A withdrawn broker is masked, with its marker
+removed. A plain `systemctl start azazel-knowledge-contextd.service` is
+refused (`Unit ... is masked`) and pulls in no pass, so it changes nothing.
+To bring the broker back, in this order:
+
+
+1. `systemctl start azazel-activated.service`, which runs a pass. It grants
+   the broker again only if the approval, the policy, health and evidence
+   still allow it (an approval retired after an explicit revocation does not,
+   and a new approval with a higher sequence is needed).
+2. Confirm that the pass granted it: the newest `activation.inputs_incomplete`
+   record in `/var/lib/azazel/state/activation.jsonl` lists the broker in
+   `grant_markers`, and `/run/azazel-activation/granted/azazel-knowledge-contextd.service`
+   exists. If the pass failed or did not grant it, do not go on.
+3. `systemctl start azazel-knowledge-contextd.service`.
+
+Caveat (not verified for this unit): the loop units carry
+`Requires=azazel-activated.service`, and `docs/hil-runbooks/integration-loop-rehearsal.md`
+records that starting a granted unit by hand started the controller again in
+the same boot, whose second pass re-masked every governed unit. If step 3
+does that, the broker is masked again; reboot and let the boot pass start it.
+Check this on a node before relying on the order above.
+
 **Main pass.** The pass takes `/run/azazel-activation/pass.lock` (root `0600`,
 no-follow, `flock`), waiting at most 25 s, and holds it until READY's barrier;
 without the lock it narrows and exits non-zero. One budget of 45 s covers the
-whole pass, from before the lock wait to the end of READY's barrier, and
-`azazel-activated.service` has `TimeoutStartSec=60s` (was 30 s). The budget is
-enforced in two ways: it is checked between the phases of the pass (before
-input collection, after it, after the decision, before READY), and it is armed
-as a real-time alarm (`SIGALRM`), so a producer, a D-Bus call or the barrier
-that does not return is abandoned too. When it ends the pass writes
+whole pass, counted from before the bus connects (connecting counts, each of
+its steps limited to the time that is left). The phases of the pass end 8 s
+before it (at 37 s); the 8 s reserve is kept for the narrowing a failed pass
+needs and its record. `azazel-activated.service` has `TimeoutStartSec=60s`
+(was 30 s): 37 s of phases + 8 s of reserve = 45 s, plus 15 s of margin for
+READY, its barrier and the exit.
+
+The budget is kept by the code, not by interrupting it. The pass checks it
+between its phases (before input collection, after it, after the decision,
+before READY), and every D-Bus call is refused once the phase deadline has
+passed and is otherwise limited to the time that is left. A call that times out
+is cancelled and drained before the session is used again; a late reply to it
+is ignored. Nothing is raised asynchronously, so a ledger append or a
+high-water commit always completes. When the budget ends the pass writes
 `activation.pass_budget_expired`, removes every marker, masks every governed
-unit, reloads and exits non-zero. The narrowing itself needs time and the
-alarm cannot interrupt a call that is stuck in the kernel; the 15 s between
-the budget and the unit's timeout is what it has. Before this fix the budget
-only capped the broker's stop wait. At preflight a broker that is running is withdrawn before the masks
+unit, reloads, spending the reserve, and exits non-zero. What this cannot bound
+is work that is neither a bus call nor between two checks, for example a file
+read that blocks in the kernel, or the READY barrier's own wait. An earlier
+version armed a `SIGALRM`; it was removed because it could stop a ledger write
+or a high-water rename half way. At preflight a broker that is running is withdrawn before the masks
 are confirmed; an inactive broker with a queued start job is not stopped (its
 marker is gone and it is masked, so the job is skipped). If the pass does not
 grant the broker and a start job is queued for it, the job is replaced with

@@ -27,6 +27,8 @@ from pathlib import Path
 
 import re
 
+from azazel_nexus import activation_approval_v2 as approval_v2
+
 from . import activation_markers
 from .activation_markers import GRANTABLE_UNITS
 
@@ -47,6 +49,8 @@ _LEAF = "activation"
 _DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _LIMIT = 8192
 _FIELDS = {"schema", "operator", "approval_seq", "approval_id", "payload_sha256", "units"}
+#: The approval-ID grammar of the v2 approval schema (one source).
+_APPROVAL_ID = approval_v2._APPROVAL_ID
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _OPERATOR = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 _MAX_SKEW = 86400
@@ -89,6 +93,19 @@ def _leaf(root: Path, *, create: bool) -> int | None:
             os.close(fd)
 
 
+def _unique_object(pairs):
+    document = {}
+    for key, value in pairs:
+        if key in document:
+            raise ValueError("duplicate key")
+        document[key] = value
+    return document
+
+
+def _canonical(document) -> bytes:
+    return json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
 def _read(leaf: int, name: str) -> dict | None:
     try:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=leaf)
@@ -104,8 +121,12 @@ def _read(leaf: int, name: str) -> dict | None:
     finally:
         os.close(fd)
     try:
-        document = json.loads(raw.decode("utf-8"))
-    except ValueError:
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
+        # Exactly the bytes the writer produces: no whitespace, no reordering,
+        # no alternate number or string spelling, no trailing data.
+        if raw != _canonical(document):
+            raise ValueError
+    except (ValueError, TypeError):
         raise RetireRefused("accepted-grant file malformed") from None
     return document
 
@@ -122,7 +143,7 @@ def _check(document, *, pending: bool) -> dict:
             or type(document["operator"]) is not str
             or _OPERATOR.fullmatch(document["operator"]) is None
             or type(document["approval_id"]) is not str
-            or not 0 < len(document["approval_id"]) <= 128
+            or _APPROVAL_ID.fullmatch(document["approval_id"]) is None
             or type(document["payload_sha256"]) is not str
             or _SHA256.fullmatch(document["payload_sha256"]) is None
             or type(document["units"]) is not list
@@ -135,14 +156,16 @@ def _check(document, *, pending: bool) -> dict:
         raise RetireRefused("accepted-grant record inconsistent")
     if pending:
         skew = document["skew_seconds"]
-        if (document["target_seq"] != document["approval_seq"] + 1
+        target = document["target_seq"]
+        if (type(target) is not int or not 0 < target < 2**63
+                or target != document["approval_seq"] + 1
                 or type(skew) is not int or not 0 <= skew <= _MAX_SKEW):
             raise RetireRefused("retirement target inconsistent")
     return document
 
 
 def _write(leaf: int, name: str, document: dict) -> None:
-    raw = json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    raw = _canonical(document)
     partial = "." + name + ".partial"
     try:
         os.unlink(partial, dir_fd=leaf)

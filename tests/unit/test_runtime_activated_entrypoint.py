@@ -274,7 +274,7 @@ def test_entrypoint_passes_the_system_bus_manager_to_one_fail_closed_pass(
             return None
 
     session = ReadOnlySession()
-    monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(lambda: session))
+    monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(lambda *_a: session))
     taken: list = []
     _pass_lock_held(monkeypatch, taken)
     observed: dict[str, object] = {}
@@ -326,7 +326,7 @@ def test_entrypoint_does_not_report_a_bus_failure_as_a_safe_pass(
     monkeypatch.setattr(
         SystemdBusSession,
         "connect",
-        staticmethod(lambda: (_ for _ in ()).throw(ConnectionError("private detail"))),
+        staticmethod(lambda *_a: (_ for _ in ()).throw(ConnectionError("private detail"))),
     )
 
     assert activated.main([]) == 1
@@ -452,7 +452,7 @@ def _arrange_bus_failure(monkeypatch, failure) -> None:
     )
     monkeypatch.setattr(
         SystemdBusSession, "connect",
-        staticmethod(lambda: (_ for _ in ()).throw(failure)),
+        staticmethod(lambda *_a: (_ for _ in ()).throw(failure)),
     )
 
 
@@ -586,7 +586,7 @@ def _ordinary_context(monkeypatch):
         def __exit__(self, *_exc_info):
             return None
 
-    monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(lambda: Session()))
+    monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(lambda *_a: Session()))
     _pass_lock_held(monkeypatch)
 
 

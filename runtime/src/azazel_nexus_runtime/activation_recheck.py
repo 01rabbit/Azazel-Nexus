@@ -41,7 +41,7 @@ from azazel_nexus.activation import (
 from azazel_nexus.audit import AuditLedger
 from azazel_nexus.generation import GenerationStore
 
-from .activation_budget import PassBudgetExpired, alarm_budget
+from .activation_budget import PassBudgetExpired, bind_remaining, check_budget
 from .activation_lock import (
     PassLockBusy, PassLockDirectoryMissing, PassLockRefused, acquire_pass_lock,
 )
@@ -50,7 +50,7 @@ from .activation_pass import PassInputs, collect_pass_inputs
 from .activation_retire import (
     RetireRefused, resume_pending_retirement, retire_if_revoked, retirement_pending,
 )
-from .activation_withdraw import NO_JOB, QUIET_STATES, WithdrawalUnconfirmed, withdraw_contextd
+from .activation_withdraw import NO_JOB, WithdrawalUnconfirmed, withdraw_contextd
 from .units import (
     CONTEXTD_UNIT,
     ContextdStopAuthority,
@@ -61,16 +61,20 @@ from .units import (
 __all__ = ["ContextdVerdict", "contextd_triggers", "contextd_verdict", "main", "run_recheck"]
 
 ACTOR = "azazel-activation-recheck"
-#: One monotonic budget for a recheck. `azazel-activation-recheck.service` has
-#: `TimeoutStartSec=40s`; 35 s leaves 5 s for the record and the exit. It also
-#: bounds how long the pass lock is held (the main pass waits
-#: `activated.PASS_LOCK_WAIT_SECONDS` for it).
-RECHECK_BUDGET_SECONDS = 35.0
-#: Of which at most this long for retirement and collecting the inputs.
-RECHECK_COLLECT_SECONDS = 15.0
+#: One monotonic budget for a whole recheck, from before the bus connects.
+#: It is also the longest the recheck holds the pass lock, so it is strictly
+#: less than `activated.PASS_LOCK_WAIT_SECONDS` (25 s): a main pass that
+#: arrives during a recheck gets the lock. `azazel-activation-recheck.service`
+#: has `TimeoutStartSec=40s`: 20 s budget plus margin.
+RECHECK_BUDGET_SECONDS = 20.0
+#: Held back from the budget for the finalizer of an unconfirmed withdrawal
+#: (and its record); the withdrawal's own steps end 6 s earlier.
+RECHECK_RESERVE_SECONDS = 6.0
+#: Retirement and input collection end this long after the start; collection
+#: that has not finished is a withhold.
+RECHECK_COLLECT_SECONDS = 8.0
 #: The wiring set is read only to answer "is this capability built in".
 _CONTEXTD_DEFINITION = next(d for d in CORE_UNITS if d.name == CONTEXTD_UNIT)
-
 
 @dataclass(frozen=True)
 class ContextdVerdict:
@@ -144,7 +148,9 @@ def contextd_triggers(manager: UnitManager, authority: ContextdStopAuthority,
     except Exception:  # noqa: BLE001
         found.append("state_unreadable")
     try:
-        if authority.active_state(CONTEXTD_UNIT) not in QUIET_STATES:
+        # Exactly `inactive`: a unit left `failed` is a trigger too (it is
+        # withdrawn, and a withdrawal accepts `failed` as quiet).
+        if authority.active_state(CONTEXTD_UNIT) != "inactive":
             found.append("not_inactive")
         elif authority.job(CONTEXTD_UNIT) != NO_JOB:
             found.append("job")
@@ -158,18 +164,27 @@ def run_recheck(
     producers, invocation_id: str, retirement=None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    started: Optional[float] = None,
     budget_seconds: float = RECHECK_BUDGET_SECONDS,
+    reserve_seconds: float = RECHECK_RESERVE_SECONDS,
     collect_seconds: float = RECHECK_COLLECT_SECONDS,
 ) -> int:
     """One recheck under the pass lock; the process exit status.
 
-    The whole recheck has one monotonic budget (`RECHECK_BUDGET_SECONDS`,
-    inside the unit's `TimeoutStartSec=40s`), so the withdrawal's record is
-    written before systemd would kill the process. Collecting inputs is
-    limited by an alarm (`RECHECK_COLLECT_SECONDS`); collection that does not
-    finish is a withhold, and the withdrawal gets what is left.
+    One budget (`RECHECK_BUDGET_SECONDS`, counted from `started`, which the
+    entry point takes before it connects to the bus) bounds the lock hold, so
+    the main pass's lock wait is longer than any recheck. It is kept
+    cooperatively: checked between phases, and every bus call is refused or
+    shortened to the time that is left (`bind_remaining`), the finalizer's
+    included. Retirement and collection end by `collect_seconds`; collection
+    that did not finish is a withhold. The withdrawal's steps end
+    `reserve_seconds` before the budget; what remains is for the finalizer and
+    the record, so an unconfirmed withdrawal is recorded before the exit.
     """
-    deadline = clock() + budget_seconds
+    start = clock() if started is None else started
+    final = start + budget_seconds
+    work = final - reserve_seconds
+    collect = min(work, start + collect_seconds)
     try:
         lock = acquire_pass_lock(root, wait_seconds=0.0, clock=clock, sleep=sleep)
     except PassLockBusy:
@@ -191,39 +206,42 @@ def run_recheck(
         status = 0
         retirement_blocked = False
         inputs = None
+        ledger = AuditLedger(root / "var/lib/azazel/state/activation.jsonl")
         try:
-            with alarm_budget(collect_seconds):
-                if retirement is not None:
-                    # Independent of whether the broker needs withdrawing: an
-                    # approval whose operator was explicitly revoked is
-                    # retired either way.
-                    try:
-                        outcome = retirement(root=root, now=now)
-                    except RetireRefused:
-                        print("az-activation-recheck: approval retirement did not "
-                              "complete", file=sys.stderr)
-                        status, retirement_blocked = 1, True
-                    else:
-                        if outcome != "none":
-                            _retired_record(root, outcome, now, invocation_id)
-                triggers = contextd_triggers(manager, authority, root)
-                if not triggers:
-                    return status
-                ledger = AuditLedger(root / "var/lib/azazel/state/activation.jsonl")
+            bind_remaining(manager, collect, clock)
+            if retirement is not None:
+                # Independent of whether the broker needs withdrawing: an
+                # approval whose operator was explicitly revoked is retired
+                # either way.
                 try:
-                    inputs = collect_pass_inputs(
-                        producers=producers,
-                        generations=GenerationStore(root / "var/lib/azazel/generations"),
-                        ledger=ledger, now=now)
-                except Exception:  # noqa: BLE001 - a collection that failed is a withhold
-                    inputs = None
+                    outcome = retirement(root=root, now=now)
+                except RetireRefused:
+                    print("az-activation-recheck: approval retirement did not "
+                          "complete", file=sys.stderr)
+                    status, retirement_blocked = 1, True
+                else:
+                    if outcome != "none":
+                        _retired_record(root, outcome, now, invocation_id)
+            check_budget(collect, clock)
+            triggers = contextd_triggers(manager, authority, root)
+            if not triggers:
+                return status
+            check_budget(collect, clock)
+            try:
+                inputs = collect_pass_inputs(
+                    producers=producers,
+                    generations=GenerationStore(root / "var/lib/azazel/generations"),
+                    ledger=ledger, now=now)
+            except Exception:  # noqa: BLE001 - a collection that failed is a withhold
+                inputs = None
+            check_budget(collect, clock)
         except PassBudgetExpired:
-            # Retirement or collection did not finish: withhold and withdraw.
+            # Retirement or collection did not finish in time: withhold and
+            # withdraw (and never call a retirement that failed "done").
             print("az-activation-recheck: collection did not finish in time",
                   file=sys.stderr)
             status, retirement_blocked = 1, retirement_blocked or retirement is not None
             inputs = None
-            ledger = AuditLedger(root / "var/lib/azazel/state/activation.jsonl")
         if not retirement_blocked:
             try:
                 retirement_blocked = retirement_pending(root)
@@ -236,7 +254,9 @@ def run_recheck(
             withdraw_contextd(
                 reason=f"recheck:{verdict.label}", manager=manager, authority=authority,
                 root=root, ledger=ledger, now=now, actor=ACTOR,
-                invocation_id=invocation_id, deadline=deadline, clock=clock, sleep=sleep)
+                invocation_id=invocation_id, deadline=work, final_deadline=final,
+                bind_deadline=lambda d: bind_remaining(manager, d, clock),
+                clock=clock, sleep=sleep)
         except WithdrawalUnconfirmed:
             # Already recorded and left masked as far as it could be. Other
             # units are not narrowed from here: this process decides for the
@@ -302,12 +322,15 @@ def main(argv=None) -> int:
     from .systemd_bus import SystemdBusSession
 
     now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    started = time.monotonic()  # before the connect: connecting counts
     try:
-        with SystemdBusSession.connect() as session:
+        with SystemdBusSession.connect(
+                lambda: started + RECHECK_BUDGET_SECONDS - RECHECK_RESERVE_SECONDS
+                - time.monotonic()) as session:
             return run_recheck(
                 manager=DbusUnitManager(call=session),
                 authority=ContextdStopAuthority.from_session(session),
-                root=Path("/"), now=now, invocation_id=invocation_id,
+                root=Path("/"), now=now, invocation_id=invocation_id, started=started,
                 retirement=production_retirement(),
                 producers=production_producers(
                     commissioning_evidence=load_commissioning_evidence, systemd=session))
