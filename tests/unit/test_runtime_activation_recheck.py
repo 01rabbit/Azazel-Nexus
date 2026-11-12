@@ -528,6 +528,9 @@ def test_the_recheck_has_a_console_script():
 def test_the_recheck_module_calls_no_pass_marker_or_floor_function():
     source = inspect.getsource(activation_recheck)
     code = re.sub(r'""".*?"""', "", source, flags=re.S)
+    # The approval retirement is the one separate write (its own module and
+    # test file); its production wiring is the only place the floor appears.
+    code = re.sub(r"def production_retirement.*?    return retire\n", "", code, flags=re.S)
     for name in ("_run_once", "ActivationDaemon", "write_grant_markers",
                  "reset_grant_markers", "_emergency_narrow", "raise_high_water",
                  "_remask_all", "unmask_and_enable"):

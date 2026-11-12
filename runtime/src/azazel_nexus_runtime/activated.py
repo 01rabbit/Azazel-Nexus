@@ -83,6 +83,7 @@ from .mio_remoted import TRANSPORT
 from .model_fetch import ENDPOINT_FOR
 from .node_config import load_declared_node
 from .activation_markers import GRANTABLE_UNITS, reset_grant_markers, write_grant_markers
+from .activation_retire import RetireRefused, retirement_pending, write_accepted_grant
 from .activation_lock import PassLockBusy, PassLockRefused, acquire_pass_lock
 from .activation_withdraw import (
     WithdrawalUnconfirmed,
@@ -716,6 +717,10 @@ def _run_once(
     healthy = inputs is not None and lease is not None and inputs.healthy is True
     if not healthy:
         lease = None
+    if lease is not None and retirement_pending(root):
+        # An approval retirement (operator revoked) is unfinished: nothing is
+        # granted until the recheck has raised the floor and cleared it.
+        lease, healthy = None, False
     # The pass's own Edge evidence (P5), never the daemon's host read: a
     # lease-bearing pass without it hands the library nothing launchable.
     edge = inputs.edge if inputs is not None else None
@@ -780,6 +785,24 @@ def _run_once(
                 manager, root,
                 "granted units were not verified as loaded after the manager reload",
             )
+    if granted:
+        # The approval this grant is made under, durably, before any marker
+        # or READY: a later explicit revocation of its operator retires it.
+        approval = inputs.approval
+        try:
+            write_accepted_grant(
+                root, operator=lease.granted_by, approval_seq=approval.approval_seq,
+                approval_id=approval.approval_id,
+                payload_sha256=approval.payload_sha256, units=sorted(granted))
+        except RetireRefused:
+            try:
+                daemon._record({
+                    "event_type": "activation.accepted_grant_unwritten",
+                    "occurred_at": now, "actor": actor,
+                })
+            except Exception:  # noqa: BLE001 - narrowing below is unconditional
+                pass
+            _emergency_narrow(manager, root, "the accepted approval could not be recorded")
     if stop_authority is not None and CONTEXTD_UNIT not in granted:
         # A broker the pass does not grant must not start: a start job the
         # manager queued for it before this pass is replaced, not left to be

@@ -45,6 +45,7 @@ from azazel_nexus.generation import GenerationStore
 from .activation_lock import PassLockBusy, PassLockRefused, acquire_pass_lock
 from .activation_markers import contextd_marker_present
 from .activation_pass import PassInputs, collect_pass_inputs
+from .activation_retire import RetireRefused, retire_if_revoked
 from .activation_withdraw import NO_JOB, WithdrawalUnconfirmed, withdraw_contextd
 from .units import (
     CONTEXTD_UNIT,
@@ -133,7 +134,8 @@ def contextd_triggers(manager: UnitManager, authority: ContextdStopAuthority,
 
 def run_recheck(
     *, manager: UnitManager, authority: ContextdStopAuthority, root: Path, now: str,
-    producers, invocation_id: str, clock: Callable[[], float] = time.monotonic,
+    producers, invocation_id: str, retirement=None,
+    clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> int:
     """One recheck under the pass lock; the process exit status."""
@@ -147,9 +149,22 @@ def run_recheck(
               file=sys.stderr)
         return 1
     with lock:
+        status = 0
+        if retirement is not None:
+            # Independent of whether the broker needs withdrawing: an approval
+            # whose operator was explicitly revoked is retired either way.
+            try:
+                outcome = retirement(root=root, now=now)
+            except RetireRefused:
+                print("az-activation-recheck: approval retirement did not complete",
+                      file=sys.stderr)
+                status = 1
+            else:
+                if outcome != "none":
+                    _retired_record(root, outcome, now, invocation_id)
         triggers = contextd_triggers(manager, authority, root)
         if not triggers:
-            return 0
+            return status
         ledger = AuditLedger(root / "var/lib/azazel/state/activation.jsonl")
         try:
             inputs = collect_pass_inputs(
@@ -160,7 +175,7 @@ def run_recheck(
             inputs = None
         verdict = contextd_verdict(inputs, now)
         if verdict.granted:
-            return 0
+            return status
         try:
             withdraw_contextd(
                 reason=f"recheck:{verdict.label}", manager=manager, authority=authority,
@@ -172,7 +187,36 @@ def run_recheck(
             print("az-activation-recheck: withdrawal of the Knowledge Context broker "
                   "is unconfirmed", file=sys.stderr)
             return 1
-    return 0
+    return status
+
+
+def _retired_record(root: Path, outcome: str, now: str, invocation_id: str) -> None:
+    try:
+        AuditLedger(root / "var/lib/azazel/state/activation.jsonl").append({
+            "event_type": "activation.approval_retired", "outcome": outcome,
+            "invocation_id": invocation_id, "occurred_at": now, "actor": ACTOR})
+    except Exception:  # noqa: BLE001 - the retirement does not depend on its record
+        print("az-activation-recheck could not append a retirement record",
+              file=sys.stderr)
+
+
+def production_retirement(root: Path = Path("/")):
+    """`retire_if_revoked` over the host's trust store, floor and policy."""
+    from azazel_nexus.activation_policy import load_activation_policy
+    from azazel_nexus.operator_store import load_operator_trust
+
+    from .activation_high_water import raise_high_water, read_high_water
+
+    def retire(*, root: Path, now: str) -> str:
+        try:
+            trust = load_operator_trust()
+            skew = load_activation_policy().max_clock_skew_seconds
+        except Exception:  # noqa: BLE001 - nothing proves a revocation
+            return "none"
+        return retire_if_revoked(root=root, trust=trust, read_floor=read_high_water,
+                                 raise_floor=raise_high_water, now=now, skew_seconds=skew)
+
+    return retire
 
 
 def main(argv=None) -> int:
@@ -201,6 +245,7 @@ def main(argv=None) -> int:
                 manager=DbusUnitManager(call=session),
                 authority=ContextdStopAuthority.from_session(session),
                 root=Path("/"), now=now, invocation_id=invocation_id,
+                retirement=production_retirement(),
                 producers=production_producers(
                     commissioning_evidence=load_commissioning_evidence, systemd=session))
     except Exception as exc:  # noqa: BLE001 - the service boundary reports a class only

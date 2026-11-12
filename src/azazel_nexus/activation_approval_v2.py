@@ -18,6 +18,7 @@ service manager.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Iterable
@@ -141,6 +142,9 @@ class ObserveBaselineApproval:
     approval_id: str
     approval_seq: int
     security_epoch: int
+    #: SHA-256 (hex) of the verified payload bytes; recorded with an accepted
+    #: grant so a later retirement names exactly the approval that was used.
+    payload_sha256: str = ""
 
 
 def observe_baseline_payload(
@@ -256,4 +260,5 @@ def verify_observe_baseline_approval(
         raise ApprovalRefused("activation approval document refused") from exc
     return ObserveBaselineApproval(lease=lease, approval_id=document["approval_id"],
                                    approval_seq=document["approval_seq"],
-                                   security_epoch=expected.security_epoch)
+                                   security_epoch=expected.security_epoch,
+                                   payload_sha256=hashlib.sha256(payload).hexdigest())
