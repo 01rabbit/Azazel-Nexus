@@ -650,7 +650,7 @@ NO_LOCK_NO_RECORD_MESSAGE = (
 
 
 def _contextd_aids(root: Path, *, now: str, actor: str, invocation_id: str,
-                   until: float, clock, sleep, record: bool, hold_state=None):
+                   until: float, clock, sleep, record: bool, hold_state=None, fresh=None):
     """`(withdrawn_for, clear_for, before_for)`: builders bound to a stop authority.
 
     `withdrawn_for(authority)` is the already-withdrawn test; `clear_for(authority)
@@ -702,7 +702,8 @@ def _contextd_aids(root: Path, *, now: str, actor: str, invocation_id: str,
                 ledger=_activation_ledger(root), now=now, actor=actor,
                 invocation_id=invocation_id, deadline=until, final_deadline=until,
                 bind_deadline=lambda d: bind_remaining(target, d, clock),
-                sink=None if record else (lambda event: None), clock=clock, sleep=sleep)
+                sink=None if record else (lambda event: None), fresh=fresh,
+                clock=clock, sleep=sleep)
 
         return clear_job
 
@@ -1666,7 +1667,8 @@ def _locked_pass(
         # Only ever called while pass.lock is held: the holder owns the state.
         aids = _contextd_aids(
             root, now=now, actor=actor, invocation_id=invocation_id,
-            until=final, clock=clock, sleep=sleep, record=True, hold_state=hold_state)
+            until=final, clock=clock, sleep=sleep, record=True, hold_state=hold_state,
+            fresh=fresh_manager)
         _narrow_final(manager, root, message, until=final, clock=clock,
                       fresh_manager=fresh_manager, authority=stop_authority, aids=aids)
 
@@ -1887,7 +1889,8 @@ def _notify_ready_or_withdraw(manager: UnitManager, root: Path, *, now: str,
         if until is not None:
             aids = _contextd_aids(
                 root, now=now, actor=actor, invocation_id=invocation_id,
-                until=until, clock=clock, sleep=sleep, record=True, hold_state=hold_state)
+                until=until, clock=clock, sleep=sleep, record=True, hold_state=hold_state,
+                fresh=fresh_manager)
             _narrow_final(manager, root, "activation readiness notification unavailable",
                           until=until, clock=clock, fresh_manager=fresh_manager,
                           authority=stop_authority, aids=aids)

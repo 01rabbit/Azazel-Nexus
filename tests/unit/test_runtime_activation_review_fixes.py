@@ -2522,3 +2522,43 @@ def test_each_step_may_use_its_own_fresh_session(poisoned):
         manager=p.manager, authority=authority(p.model), root=p.world.root, stop_sent=True,
         give_up=p.clock() + 10.0, clock=p.clock, settle=None, fresh=fresh)
     assert len(used) == 2 and result["final_masked"] is True
+
+
+# -- Codex 22: the narrowing's withdrawal uses the same fresh-session policy ------------------------------------------
+
+def test_a_narrowing_that_begins_broken_and_poisons_its_first_fresh_session_masks_on_a_second(
+        poisoned):
+    """The narrowing starts on a finished session, runs on a first fresh one, whose queued-job
+    settlement finishes it too: the masking completes on a second fresh session and the
+    replaced job is recorded exactly once."""
+    p = poisoned
+    p.manager.call.broken = True
+    first = TransportManager(p.model, enabled=[d.name for d in CORE_UNITS])
+    second = TransportManager(p.model, enabled=[d.name for d in CORE_UNITS])
+    queue = [(first, _transport_authority(first, p.model, p.clock, poison_on="job")),
+             (second, authority(p.model))]
+    used = []
+
+    @contextlib.contextmanager
+    def fresh():
+        used.append(1)
+        yield queue[len(used) - 1]
+
+    state = activation_withdraw.QueuedJobState()
+    state.held = True
+    final = p.clock() + 30.0
+    aids = activated._contextd_aids(
+        p.world.root, now=NOW, actor="t", invocation_id="d" * 32, until=final,
+        clock=p.clock, sleep=p.clock.sleep, record=True, hold_state=state, fresh=fresh)
+    with pytest.raises(RuntimeError):
+        activated._narrow_final(p.manager, p.world.root, "x", until=final, clock=p.clock,
+                                fresh_manager=fresh, authority=authority(p.model), aids=aids)
+    assert len(used) == 2 and first.call.broken is True
+    assert p.model.file_state == "masked"
+    assert second.state(CTX) is UnitState.MASKED
+    events = p.world.events()
+    # the held job's fate is recorded once (its replacement ran out of its allowance),
+    # never replaced a second time; the last record says the broker ended masked
+    assert [e["reason"] for e in events if e.get("reason") == "before_mask"] == ["before_mask"]
+    assert not [e for e in events if e["event_type"] == "activation.queued_job_replaced"]
+    assert events[-1]["final_masked"] is True
