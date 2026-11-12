@@ -91,7 +91,7 @@ class BootBus:
         return None
 
     def set_remaining(self, remaining):
-        pass
+        self.world.bound.append((len(self.world.calls), remaining))
 
     def _live(self):
         if self.broken:
@@ -141,7 +141,7 @@ class BootBus:
 
 def _boot_world(monkeypatch, *, running, first_breaks_on=None, other_units_stuck=False):
     from azazel_nexus_runtime import activation_withdraw
-    world = SimpleNamespace(calls=[], masked=set(), running=running, sessions=[])
+    world = SimpleNamespace(calls=[], masked=set(), running=running, sessions=[], bound=[])
     made = []
 
     def connect(*_args):
@@ -195,10 +195,8 @@ def test_bootstrap_broad_narrowing_removes_grant_markers_first(monkeypatch, caps
                                                             reset_fails):
     """#251 L-7: like _emergency_narrow, markers first; a refusal still remasks."""
     world = _boot_world(monkeypatch, running=False)
-    order = []
-
     def reset(root):
-        order.append("reset")
+        world.calls.append(("reset", ""))
         if reset_fails:
             raise RuntimeError("grant markers")
 
@@ -208,9 +206,12 @@ def test_bootstrap_broad_narrowing_removes_grant_markers_first(monkeypatch, caps
             activated._narrow_bootstrap_core_units()
     else:
         activated._narrow_bootstrap_core_units()
-    assert order == ["reset"] and not world.calls[:0]
-    assert "could not remove grant markers during bootstrap narrowing\n" in capsys.readouterr().err \
-        if reset_fails else True
+    assert world.calls[0] == ("reset", "")  # before the first bus call (mask)
+    assert [m for m, _ in world.calls].index("reset") < [m for m, _ in world.calls].index(
+        "MaskUnitFiles")
+    if reset_fails:
+        assert "could not remove grant markers during bootstrap narrowing\n" in (
+            capsys.readouterr().err)
     assert world.masked == {d.name for d in activated.CORE_UNITS}
 
 
@@ -776,3 +777,90 @@ def test_no_ready_from_the_ordinary_code_on_the_bootstrap_path(monkeypatch, caps
     monkeypatch.setattr(systemd_notify, "notify_barrier", lambda: pytest.fail("ordinary barrier"))
     assert activated.main([]) == 0
 
+
+
+def test_a_connect_that_fails_says_so_at_once_and_fails_closed(monkeypatch, capsys):
+    _boot_world(monkeypatch, running=True)
+
+    def refuse(*_args):
+        raise activated.UnitOperationFailed("no bus")
+
+    monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(refuse))
+    with pytest.raises(activated.UnitOperationFailed):
+        activated._narrow_bootstrap_core_units()
+    err = capsys.readouterr().err
+    assert err.count("could not confirm the withdrawal") == 1
+
+
+def test_the_emergency_retry_shares_the_first_narrowings_absolute_end(monkeypatch, capsys):
+    """One end for the process: once it has passed, a further narrowing says so at once and
+    makes no bus call."""
+    world = _boot_world(monkeypatch, running=True)
+    activated._narrow_bootstrap_core_units()
+    end = activated._bootstrap_shared_end
+    assert end is not None  # set by the first call
+    monkeypatch.setattr(activated, "_bootstrap_shared_end", activated.time.monotonic() - 1.0)
+    capsys.readouterr()
+    before = len(world.calls)
+    with pytest.raises(activated.UnitOperationFailed):
+        activated._narrow_bootstrap_core_units()
+    assert len(world.calls) == before
+    assert capsys.readouterr().err.count("could not confirm the withdrawal") == 1
+
+
+def test_the_shared_end_fits_inside_the_unit_timeout():
+    assert activated._BOOTSTRAP_PROCESS_SECONDS + 10 <= 60  # TimeoutStartSec=60s
+    assert activated._BOOTSTRAP_NARROWING_SECONDS <= activated._BOOTSTRAP_PROCESS_SECONDS
+
+
+def test_queued_job_records_are_not_a_terminal_message(monkeypatch, capsys):
+    """Exactly one terminal message per invocation, and a job record alone is none."""
+    world = _boot_world(monkeypatch, running=True)
+    real = activated.withdraw_contextd
+
+    def with_job_records(**kwargs):
+        kwargs["sink"]({"event_type": "activation.queued_job_replaced"})
+        kwargs["sink"]({"event_type": "activation.queued_job_ended"})
+        return real(**kwargs)
+
+    monkeypatch.setattr(activated, "withdraw_contextd", with_job_records)
+    activated._narrow_bootstrap_core_units()
+    err = capsys.readouterr().err
+    assert err.count("az-activated bootstrap narrowing") == 1
+    assert "withdrew the Knowledge Context broker" in err
+
+
+def test_the_session_is_bound_to_the_final_deadline_before_the_other_units(monkeypatch):
+    """After the withdrawal (bound to its own, shorter deadline) the other masks run under
+    the final deadline: the reserve is not lost."""
+    world = _boot_world(monkeypatch, running=True)
+    activated._narrow_bootstrap_core_units()
+    first_other = next(i for i, (m, u) in enumerate(world.calls)
+                       if m == "MaskUnitFiles" and u != activated.CONTEXTD_UNIT)
+    bound = [(at, r) for at, r in world.bound if at <= first_other]
+    last = bound[-1][1]
+    withdrawal_limit = min(r() for _, r in bound)  # the tightest binding seen
+    assert last() > withdrawal_limit  # the final deadline was set after the shorter one
+    assert last() > activated._BOOTSTRAP_NARROWING_SECONDS - 5.0
+
+
+def test_a_session_that_finishes_among_the_other_units_is_replaced(monkeypatch):
+    world = _boot_world(monkeypatch, running=False)
+    real_call = BootBus.__call__
+    state = {"n": 0}
+
+    def call(self, method, unit):
+        if method == "MaskUnitFiles" and unit != activated.CONTEXTD_UNIT:
+            state["n"] += 1
+            if state["n"] == 3 and not self.broken:
+                self.broken = True
+                raise activated.UnitOperationFailed("systemd D-Bus call did not complete")
+        return real_call(self, method, unit)
+
+    monkeypatch.setattr(BootBus, "__call__", call)
+    try:
+        activated._narrow_bootstrap_core_units()
+    except activated.UnitOperationFailed:
+        pass  # the unit that was in flight is reported
+    assert len(world.sessions) >= 2
+    assert len(world.masked) == len(activated.CORE_UNITS) - 1  # only the one in flight

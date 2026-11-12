@@ -1131,6 +1131,14 @@ authority and a fresh session per step, before it masks the other governed units
 (on a new session if the first one finished). It is recorded in the journal only,
 by fixed messages ("withdrew the Knowledge Context broker" or "could not confirm
 the withdrawal"), and an unconfirmed withdrawal makes the narrowing fail closed.
+The bootstrap narrowings of one process (the first and the emergency retry)
+share one absolute end, 50 s after the first one began, and each is limited to
+25 s: with `TimeoutStartSec=60s` that leaves at least 10 s for the interpreter
+start, imports and selection before the first call and for the exit. A bus
+connection that fails, or time that is already gone, is reported at once with the
+fixed "could not confirm" message, one terminal message per narrowing, so a line
+exists before any kill. After the broker, the session is bound to the final
+deadline again and is replaced unit by unit if it finishes.
 No activation-ledger record is appended there: that stage holds no `pass.lock`
 and has no documented ledger writer, and appending without the lock could race
 the head of the pass or the recheck that owns it.
