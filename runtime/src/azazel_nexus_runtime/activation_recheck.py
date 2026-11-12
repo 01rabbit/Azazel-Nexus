@@ -175,15 +175,20 @@ def run_recheck(
     """One recheck under the pass lock; the process exit status.
 
     One budget (`RECHECK_BUDGET_SECONDS`, counted from `started`, which the
-    entry point takes before it connects to the bus) bounds the lock hold, so
-    the main pass's lock wait is longer than any recheck. It is kept
-    cooperatively: checked between phases, and every bus call is refused or
-    shortened to the time that is left (`bind_remaining`), the finalizer's
-    included. Retirement and collection end by `collect_seconds`; collection
-    that did not finish is a withhold. The withdrawal's steps end
-    `finalizer_seconds` before the finalizer's end, which is
-    `record_seconds` before the budget; the last seconds are for the record,
-    so an unconfirmed withdrawal is recorded before the exit.
+    entry point takes before it connects to the bus) bounds the recheck's
+    **bus work and its containment finalizer**: they are kept cooperatively,
+    checked between phases, every bus call refused or shortened to the time
+    that is left (`bind_remaining`), the finalizer's included, so they end by
+    16 s and the hold they cause is at most 20 s, below the main pass's 25 s
+    lock wait. That is all that is time-bounded. The local filesystem I/O done
+    under the lock is not: the records appended to the ledger, the retirement's
+    state files and high-water commit, the marker and input reads. A stall in
+    it is not interrupted; it is fail-closed, because the main pass's lock wait
+    expires, and it narrows and grants nothing. Retirement and collection end
+    by `collect_seconds` only as far as they are cooperative. The withdrawal's
+    steps end `finalizer_seconds` before the finalizer's end, which is
+    `record_seconds` before the budget; the last seconds are left for the
+    records, which are written under the lock.
     """
     start = clock() if started is None else started
     final = start + budget_seconds - record_seconds  # the finalizer ends here

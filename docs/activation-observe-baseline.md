@@ -1135,17 +1135,21 @@ its usual 10 s), the finalizer's included, and the poll sleeps never run past a
 deadline. Bus work and finalizer therefore end by 16 s of the 18 s budget, and
 the 2 s that remain are for the records.
 
-**What the lock hold is, honestly.** The recheck writes its records inside
-`pass.lock`, in the order the transitions happen: the withdrawal, or its
-unconfirmed outcome, and the approval retirement. `AuditLedger.append` reads
-the head and then writes with no lock of its own
+**What the lock hold is, honestly.** Two parts. The recheck's bus work and its
+containment finalizer are time-bounded and enforced: at most 20 s, below the
+25 s a main pass waits for the lock. Everything else done under the lock is
+local filesystem I/O and is not time-bounded: the ledger appends, the
+retirement's state files and high-water commit (reads, writes, renames and
+fsyncs), the marker reads and the input reads; collection and retirement end by
+their cooperative deadline only as far as they check it. The recheck writes
+its records inside `pass.lock`, in the order the transitions happen (the
+withdrawal or its unconfirmed outcome, and the approval retirement):
+`AuditLedger.append` reads the head and then writes with no lock of its own
 (`src/azazel_nexus/audit.py`, `append`), so only `pass.lock` stops a recheck and
 a main pass from extending the same head and writing duplicate sequence links.
-So the hold is the bus work and the finalizer (at most 20 s, enforced, which is
-below the 25 s a main pass waits for the lock) plus the ledger append, which is
-a local write and fsync and is not time-bounded. If filesystem I/O stalls, the
-main pass's 25 s lock wait expires and it narrows: every marker removed, every
-governed unit masked, nothing granted (fail-closed; see
+If filesystem I/O stalls, nothing interrupts it; the main pass's 25 s lock wait
+expires and the main pass narrows: every marker removed, every governed unit
+masked, nothing granted (fail-closed; see
 `test_a_pass_that_cannot_take_the_lock_narrows_and_fails` and
 `test_the_lock_failure_narrows_after_second_37`). A record that cannot be
 appended is not swallowed: the recheck's exit status is non-zero, although the
@@ -1157,10 +1161,21 @@ running process (`_withdraw`, `audit.py:346-363`), while `head()`
 refuses (`AuditChainBroken`, shown by
 `test_a_torn_tail_makes_the_next_append_refuse_and_nothing_repairs_it`) until an
 operator repairs the ledger. That is fail-closed for the controller (a pass
-that cannot record narrows) and costs availability. A budget that ends
-mid-withdrawal gives `activation.withdrawal_unconfirmed`; the marker is already
-removed (a local step) and the finalizer masks the broker where it still can.
-Collection that does not finish is a withhold. The stop wait is at most 20 s and
+that cannot record narrows) and costs availability.
+
+**One rule for the ledger.** Every ledger append by the main pass and by the
+recheck is made while `pass.lock` is held. The main pass's budget-expired
+record (`activation.pass_budget_expired`) is appended inside the lock, and so is
+the narrowing that follows it. A main pass that never obtained the lock (its
+wait expired) appends nothing: it prints
+`az-activated: the activation pass lock was not held; nothing was written to the
+ledger; narrowing and failing` to the journal, narrows, and exits non-zero. That
+failure is therefore visible in the journal and in the unit's exit status, not
+in the ledger.
+
+A budget that ends mid-withdrawal gives `activation.withdrawal_unconfirmed`; the
+marker is already removed (a local step) and the finalizer masks the broker
+where it still can. Collection that does not finish is a withhold. The stop wait is at most 20 s and
 never more than the time that is left. `t_loss` to `t_detect` has no bound.
 
 **Adoption contract (weakened).** The broker reads its marker when it accepts a

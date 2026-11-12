@@ -596,10 +596,20 @@ _ALL_PRODUCERS = (
 MAIN_PASS_BUDGET_SECONDS = 45.0
 MAIN_PASS_RESERVE_SECONDS = 8.0
 #: How long the main pass waits for the pass lock before it narrows (inside the
-#: phase budget). It is longer than any recheck holds the lock
-#: (`activation_recheck.RECHECK_BUDGET_SECONDS`, 20 s), so a pass that arrives
-#: during a recheck gets the lock.
+#: phase budget). It is longer than the part of a recheck that is time-bounded
+#: (its bus work and containment finalizer, at most 20 s), so a pass that
+#: arrives during a recheck normally gets the lock. The recheck's local
+#: filesystem I/O under the lock (ledger appends, retirement state, marker and
+#: input reads) is not time-bounded; if it stalls this wait expires and the
+#: pass narrows and grants nothing (fail-closed).
 PASS_LOCK_WAIT_SECONDS = 25.0
+
+
+#: The journal line for a pass that could not take `pass.lock`. Stable text;
+#: no ledger record is written on that path.
+NO_LOCK_NO_RECORD_MESSAGE = (
+    "az-activated: the activation pass lock was not held; nothing was written to "
+    "the ledger; narrowing and failing")
 
 
 def _narrow_final(manager: UnitManager, root: Path, message: str, *, until: float,
@@ -1490,29 +1500,46 @@ def _locked_pass(
         try:
             lock = acquire_pass_lock(root, wait_seconds=wait, clock=clock, sleep=sleep)
         except (PassLockBusy, PassLockRefused):
+            # The lock was never held, so nothing is appended to the ledger
+            # (an append without the lock could extend a head another holder
+            # is extending). The journal line and the non-zero exit report it.
+            print(NO_LOCK_NO_RECORD_MESSAGE, file=sys.stderr)
             narrow("the activation pass lock could not be taken")
+        expired = False
         with lock:
-            outcome = _run_once(
-                manager=manager, root=root, now=now, actor=actor, producers=producers,
-                stop_authority=stop_authority, deadline=work, clock=clock,
-                sleep=sleep, invocation_id=invocation_id, fresh_manager=fresh_manager)
-            check_budget(work, clock)
-            # Type=notify: without READY the controller's start fails and
-            # every unit with Requires=/After= on it fails as a dependency.
-            # READY is sent only after the pass, its markers and its record
-            # are complete, and the lock is kept until its barrier has
-            # returned.
-            _notify_ready_or_withdraw(manager, root, now=now, actor=actor,
-                                      until=final, clock=clock,
-                                      fresh_manager=fresh_manager)
+            try:
+                outcome = _run_once(
+                    manager=manager, root=root, now=now, actor=actor, producers=producers,
+                    stop_authority=stop_authority, deadline=work, clock=clock,
+                    sleep=sleep, invocation_id=invocation_id,
+                    fresh_manager=fresh_manager)
+                check_budget(work, clock)
+                # Type=notify: without READY the controller's start fails and
+                # every unit with Requires=/After= on it fails as a dependency.
+                # READY is sent only after the pass, its markers and its
+                # record are complete, and the lock is kept until its barrier
+                # has returned.
+                _notify_ready_or_withdraw(manager, root, now=now, actor=actor,
+                                          until=final, clock=clock,
+                                          fresh_manager=fresh_manager)
+            except PassBudgetExpired:
+                expired = True
+            if expired:
+                # Every ledger append of the pass happens while pass.lock is
+                # held, so a new holder cannot extend the same head.
+                try:
+                    _activation_ledger(root).append({
+                        "event_type": "activation.pass_budget_expired",
+                        "occurred_at": now, "actor": actor,
+                    })
+                except Exception:  # noqa: BLE001 - narrowing below is unconditional
+                    pass
+                narrow("the activation pass used its whole time budget")
     except PassBudgetExpired:
-        try:
-            _activation_ledger(root).append({
-                "event_type": "activation.pass_budget_expired",
-                "occurred_at": now, "actor": actor,
-            })
-        except Exception:  # noqa: BLE001 - narrowing below is unconditional
-            pass
+        # Only before the lock was held (nothing in that region checks the
+        # budget, so this is a safety net): no ledger record is written
+        # without the lock; the journal and the exit status carry the report.
+        print(NO_LOCK_NO_RECORD_MESSAGE, file=sys.stderr)
         narrow("the activation pass used its whole time budget")
     except Exception as error:
         # A pass that failed on a finished session (its own rollback was

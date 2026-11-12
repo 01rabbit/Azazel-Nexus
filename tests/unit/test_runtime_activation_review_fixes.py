@@ -596,9 +596,9 @@ def test_a_broker_the_manager_does_not_hold_is_inactive_and_garbage_is_refused()
 
 
 def test_the_budgets_fit_the_unit_timeouts_and_the_lock_wait():
-    # a recheck holds the lock for less than the main pass waits for it
+    # a recheck's bus work and finalizer hold the lock for less than the main pass waits
     assert activation_recheck.RECHECK_BUDGET_SECONDS < activated.PASS_LOCK_WAIT_SECONDS
-    # budget + the record's overshoot (bounded below at 2 s) < the main wait
+    # the time-bounded part (bus work and finalizer) plus the record's reserve < the main wait
     assert activation_recheck.RECHECK_BUDGET_SECONDS + 2 <= 20 < activated.PASS_LOCK_WAIT_SECONDS
     assert activation_recheck.RECHECK_BUDGET_SECONDS + 15 <= 40  # TimeoutStartSec=40s
     work = (activation_recheck.RECHECK_BUDGET_SECONDS
@@ -1156,26 +1156,30 @@ def test_the_connection_cleanup_is_charged_to_the_deadline():
 # -- Codex 3 (05): the recheck's lock hold is provably below the main wait ----------------------------------------
 
 
-@pytest.mark.parametrize("cost,ledger_cost", [(0.5, 0.0), (3.0, 1.5), (7.0, 1.9), (9.5, 1.9)])
-def test_the_recheck_holds_the_lock_at_most_twenty_seconds_with_slow_manager_and_ledger(
+@pytest.mark.parametrize("cost,ledger_cost", [(0.5, 0.0), (3.0, 1.5), (7.0, 1.9), (9.5, 30.0)])
+def test_the_recheck_bus_work_and_finalizer_end_within_twenty_seconds_whatever_the_ledger_does(
         granted, monkeypatch, cost, ledger_cost):
+    """What is time-bounded under the lock is the bus work and the containment
+    finalizer: they are over by the time the first record is appended. The append
+    itself (local file I/O) is not bounded, here a 30 s stall."""
     stage, guard = _slow(granted, cost)
     stage.world.healthy = False
     real_append = AuditLedger.append
+    started = stage.clock()
+    reached = []
 
     def slow_append(self, event, *args, **kwargs):
-        stage.clock.sleep(ledger_cost)  # a local fsync, bounded by the record reserve
+        reached.append(stage.clock() - started)  # bus work and finalizer are over here
+        stage.clock.sleep(ledger_cost)
         return real_append(self, event, *args, **kwargs)
 
     monkeypatch.setattr(AuditLedger, "append", slow_append)
-    started = stage.clock()
     activation_recheck.run_recheck(
         manager=stage.manager, authority=guard, root=stage.world.root, now=NOW,
         producers=stage.world.producers(), invocation_id="c" * 32,
         clock=stage.clock, sleep=stage.clock.sleep)
-    held = stage.clock() - started
-    assert held <= 20.0, held
-    assert held < activated.PASS_LOCK_WAIT_SECONDS
+    assert reached and all(at <= 20.0 for at in reached), reached
+    assert all(at < activated.PASS_LOCK_WAIT_SECONDS for at in reached)
 
 
 def test_the_poll_sleep_never_oversleeps_the_deadline(granted):
@@ -1354,3 +1358,94 @@ def test_the_ledger_append_has_no_lock_of_its_own():
     from azazel_nexus import audit
     source = inspect.getsource(audit.AuditLedger.append)
     assert "flock" not in source and "lockf" not in source  # only pass.lock serializes writers
+
+
+# -- Codex 08: every ledger append is made while pass.lock is held -------------------------------------------------
+
+
+def _watch_main_appends(monkeypatch, root):
+    seen = []
+    real = AuditLedger.append
+
+    def append(self, event, *args, **kwargs):
+        try:
+            free = acquire_pass_lock(root)
+        except Exception:
+            held = True
+        else:
+            free.release()
+            held = False
+        seen.append((event["event_type"], held))
+        return real(self, event, *args, **kwargs)
+
+    monkeypatch.setattr(AuditLedger, "append", append)
+    return seen
+
+
+def test_the_budget_expired_record_is_appended_while_the_lock_is_held(fresh, monkeypatch):
+    seen = _watch_main_appends(monkeypatch, fresh.world.root)
+
+    def slow():
+        fresh.clock.sleep(100)
+        return fresh.world.evidence
+
+    with pytest.raises(RuntimeError, match="used its whole time budget"):
+        locked(fresh, producers=fresh.world.producers(commissioning_evidence=slow))
+    expired = [held for kind, held in seen if kind == "activation.pass_budget_expired"]
+    assert expired == [True]
+    assert all(held for _, held in seen), seen  # every append of the pass was under the lock
+    assert all_masked_and_unmarked(fresh)
+
+
+def test_a_new_holder_cannot_race_the_budget_record(fresh, monkeypatch):
+    """The lock is still held while the narrowing that follows the record runs."""
+    held_during_narrow = []
+    real = activated._emergency_narrow
+
+    def watching(manager, root, message):
+        try:
+            other = acquire_pass_lock(root)
+        except Exception:
+            held_during_narrow.append(True)
+        else:
+            other.release()
+            held_during_narrow.append(False)
+        return real(manager, root, message)
+
+    monkeypatch.setattr(activated, "_emergency_narrow", watching)
+
+    def slow():
+        fresh.clock.sleep(100)
+        return fresh.world.evidence
+
+    with pytest.raises(RuntimeError):
+        locked(fresh, producers=fresh.world.producers(commissioning_evidence=slow))
+    assert held_during_narrow and all(held_during_narrow)
+
+
+def test_a_pass_that_never_held_the_lock_writes_no_ledger_record(fresh, capsys):
+    holder = acquire_pass_lock(fresh.world.root)
+    before = fresh.world.ledger_path.exists() and fresh.world.ledger_path.read_bytes()
+    with pytest.raises(RuntimeError, match="pass lock could not be taken"):
+        activated._locked_pass(
+            manager=fresh.manager, root=fresh.world.root, now=NOW, actor="test",
+            stop_authority=authority(fresh.model), invocation_id="b" * 32,
+            clock=fresh.clock, sleep=fresh.clock.sleep, producers=fresh.world.producers(),
+            started=fresh.clock() - 30.0)
+    holder.release()
+    after = fresh.world.ledger_path.exists() and fresh.world.ledger_path.read_bytes()
+    assert after == before  # nothing was appended without the lock
+    assert activated.NO_LOCK_NO_RECORD_MESSAGE in capsys.readouterr().err
+    assert all_masked_and_unmarked(fresh)
+
+
+def test_the_ledger_appends_of_the_controller_and_the_recheck_are_all_under_the_lock():
+    """Every call site (listed in IMPL-REPORT section 12) is inside the lock's region."""
+    import inspect
+    source = inspect.getsource(activated._locked_pass)
+    outer = source.index("\n    except PassBudgetExpired:")
+    locked_region = source[source.index("with lock:"):outer]
+    assert "pass_budget_expired" in locked_region  # the record is inside `with lock`
+    assert "pass_budget_expired" not in source[:source.index("with lock:")]
+    tail = source[outer:]
+    assert ".append(" not in tail  # outside the lock nothing is appended
