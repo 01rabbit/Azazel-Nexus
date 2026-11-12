@@ -682,7 +682,9 @@ To bring the broker back, in this order:
 1. `systemctl start azazel-activated.service`, which runs a pass. It grants
    the broker again only if the approval, the policy, health and evidence
    still allow it (an approval retired after an explicit revocation does not,
-   and a new approval with a higher sequence is needed).
+   and a new approval is needed: after retiring approval N it must be signed with
+   `--seq` N+2 or higher; see the retirement paragraph of `activation-observe-baseline.md`
+   section 8.3 for why N+1 is refused).
 2. Confirm that the pass granted it: the newest `activation.inputs_incomplete`
    record in `/var/lib/azazel/state/activation.jsonl` lists the broker in
    `grant_markers`, and `/run/azazel-activation/granted/azazel-knowledge-contextd.service`

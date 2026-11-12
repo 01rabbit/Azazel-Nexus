@@ -1209,7 +1209,9 @@ To bring the broker back, in this order:
 1. `systemctl start azazel-activated.service`, which runs a pass. It grants
    the broker again only if the approval, the policy, health and evidence
    still allow it (an approval retired after an explicit revocation does not,
-   and a new approval with a higher sequence is needed).
+   and a new approval is needed: after retiring approval N it must be signed with
+   `--seq` N+2 or higher; see the retirement paragraph of `activation-observe-baseline.md`
+   section 8.3 for why N+1 is refused).
 2. Confirm that the pass granted it: the newest `activation.inputs_incomplete`
    record in `/var/lib/azazel/state/activation.jsonl` lists the broker in
    `grant_markers`, and `/run/azazel-activation/granted/azazel-knowledge-contextd.service`
@@ -1304,7 +1306,12 @@ READY. When a freshly loaded operator trust lists that approval's operator in
 `revoked` (an explicit entry; a loader failure proves nothing), the recheck
 retires the approval: it writes `retirement-pending.json` (with the clock skew
 the floor raise needs), raises the approval sequence floor to
-`approval_seq + 1` (other fields kept), reads the floor back, and removes the
+`approval_seq + 1` (other fields kept) (the pass refuses a sequence below the floor, so N is refused; `az-activation
+install` treats a sequence at the floor as spent and needs one above it, so the
+first approval that can be installed after retiring N has `--seq` N+2, not N+1:
+one number cannot be both "first acceptable" for the pass and "last spent" for
+install, and lowering the install rule would admit a different approval at a
+spent sequence), reads the floor back, and removes the
 accepted record and the pending file. A pending file is resumed by the next
 recheck before any trust or policy is loaded, so a trust store that cannot be
 read does not stop it. While one is pending, or a retirement failed, the

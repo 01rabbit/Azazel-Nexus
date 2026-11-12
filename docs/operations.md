@@ -1366,7 +1366,9 @@ Nothing it does starts or enables a unit itself.
    the only exception is installing the byte-identical installed pair again.
    So neither re-signing the same `--seq` to extend the expiry nor
    re-installing the same approval after its files were removed works any
-   more: request a higher `--seq` and sign it anew.
+   more: request a higher `--seq` and sign it anew. After a retirement of approval N by the activation recheck the floor is N+1,
+   so the next installable `--seq` is N+2 (docs/activation-observe-baseline.md,
+   section 8.3).
 5. **Raising the declared security epoch** (#251) ends every approval for
    the current epoch at once, the installed one included. It only raises
    and cannot be undone. `az-activation epoch-request --operator LABEL
