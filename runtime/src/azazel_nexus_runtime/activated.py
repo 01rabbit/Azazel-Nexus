@@ -335,6 +335,22 @@ class ActivationDaemon:
                     f"units lack confirmed containment: {sorted(failures)}"
                 ) from exc
             raise
+        # The controller's masks, unmasks and enables are one batch of unit
+        # file changes. A manager that loaded a unit earlier keeps acting on
+        # the definition it has until it is reloaded (a granted unit would
+        # start as `masked`; a withheld one could still be queued), so the
+        # batch ends with exactly one Reload. If it fails, the grants cannot
+        # be confirmed and everything is narrowed.
+        reload_failure = self._reload()
+        if reload_failure is not None:
+            self._record({
+                "event_type": "activation.reload_failed",
+                "after": "grant_batch",
+                "error_type": reload_failure,
+                "occurred_at": now,
+                "actor": actor,
+            })
+            self._narrow_everything(now=now, actor=actor, after=[reload_failure])
         if controller.unmaskable:
             # The library could not narrow something. It recorded that and
             # kept withholding rather than letting the exception leave the
@@ -349,6 +365,14 @@ class ActivationDaemon:
             self._roll_back(units, now=now, actor=actor, outcome=outcome)
         return outcome
 
+    def _reload(self) -> Optional[str]:
+        """One Manager.Reload; a fixed failure label, or None when it succeeded."""
+        try:
+            self.manager.reload()
+        except Exception as exc:  # noqa: BLE001 - reported as a label, never raised
+            return f"manager reload: {type(exc).__name__}"
+        return None
+
     def _remask_all(
         self, *, now: str, actor: str, event_type: str, error_type: str
     ) -> list[str]:
@@ -360,6 +384,9 @@ class ActivationDaemon:
                 _mask_and_confirm_inactive(self.manager, definition.name)
             except Exception as exc:  # noqa: BLE001 - collect all failures
                 failures.append(f"{definition.name}: {type(exc).__name__}")
+        reload_failure = self._reload()  # the masks above are one batch
+        if reload_failure is not None:
+            failures.append(reload_failure)
         self._record(
             {
                 "event_type": event_type,
@@ -389,6 +416,9 @@ class ActivationDaemon:
                 taken_back.append(unit)
             except Exception as exc:  # noqa: BLE001 - recorded below, then escalated
                 failures.append(_unit_failure(unit, exc))
+        reload_failure = self._reload()  # the masks above are one batch
+        if reload_failure is not None:
+            failures.append(reload_failure)
 
         self._record(
             {
@@ -417,6 +447,9 @@ class ActivationDaemon:
                 _mask_and_confirm_inactive(self.manager, definition.name)
             except Exception as exc:  # noqa: BLE001
                 unreachable.append(_unit_failure(definition.name, exc))
+        reload_failure = self._reload()  # the masks above are one batch
+        if reload_failure is not None:
+            unreachable.append(reload_failure)
         self._record(
             {
                 "event_type": "activation.rollback_failed",
@@ -545,6 +578,10 @@ def _emergency_narrow(manager: UnitManager, root: Path, message: str) -> None:
             _mask_and_confirm_inactive(manager, definition.name)
         except Exception as exc:  # noqa: BLE001 - fail closed on invariant break
             failures.append(f"{definition.name}: {type(exc).__name__}")
+    try:
+        manager.reload()  # the masks above are one batch
+    except Exception as exc:  # noqa: BLE001 - recorded, then raised below
+        failures.append(f"manager reload: {type(exc).__name__}")
     raise RuntimeError(f"{message}; emergency remask failures: {sorted(failures)}")
 
 
@@ -665,6 +702,26 @@ def _run_once(
             "production activation granted a Deception Lite exposure unit "
             "without isolation evidence",
         )
+    if granted:
+        # The grant batch has been reloaded. What the manager now holds for
+        # the guarded units is what a start job will use, so it is checked
+        # again here, before any marker is written or READY is sent: a unit
+        # that is not loaded as declared after the Reload is not a grant.
+        from .activation_pass import UNIT_CHECK_SCOPE
+        try:
+            producers.loaded_units(sorted(UNIT_CHECK_SCOPE))
+        except Exception:  # noqa: BLE001 - an unverifiable grant is withdrawn
+            try:
+                daemon._record({
+                    "event_type": "activation.grant_unverified_after_reload",
+                    "occurred_at": now, "actor": actor,
+                })
+            except Exception:  # noqa: BLE001 - narrowing below is unconditional
+                pass
+            _emergency_narrow(
+                manager, root,
+                "granted units were not verified as loaded after the manager reload",
+            )
     rolled_back = any(_is_failure(verdict) for verdict in outcome.verdicts)
     high_water = "not_attempted"
     if lease is not None and inputs.approval is not None:
@@ -860,6 +917,8 @@ _STATIC_FAILURE_MESSAGES = frozenset({
     'protected bootstrap selection refused: selection or source changed during read',
     'protected bootstrap selection refused: required bootstrap input missing',
     'additional controller command refused',
+    'manager reload failed',
+    'the service manager adapter cannot reload',
     'admitted resource thresholds required',
     'audit binding admission unconfirmed',
     'audit chain evidence unavailable',

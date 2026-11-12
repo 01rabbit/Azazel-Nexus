@@ -387,6 +387,8 @@ def test_production_composition_records_a_real_fail_closed_decision(tmp_path):
         else:
             raise AssertionError(f"unexpected widening or start operation: {method}")
 
+    # The session's own argument-less verb: each batch of masks ends with one.
+    call.reload = lambda: calls.append(("Reload", ""))
     manager = DbusUnitManager(call=call)
     outcome = _run_once(
         manager=manager,
@@ -399,10 +401,14 @@ def test_production_composition_records_a_real_fail_closed_decision(tmp_path):
     # Preflight narrows before evidence collection; the refusing decision then
     # independently verifies every mask. Neither pass may unmask/start a unit.
     assert calls == [
-        (method, definition.name)
+        entry
         for _pass in range(2)
-        for definition in CORE_UNITS
-        for method in ("MaskUnitFiles", "GetUnitFileState", "GetInactiveState")
+        for entry in (
+            *((method, definition.name)
+              for definition in CORE_UNITS
+              for method in ("MaskUnitFiles", "GetUnitFileState", "GetInactiveState")),
+            ("Reload", ""),
+        )
     ]
     assert all(states[definition.name] == "masked" for definition in CORE_UNITS)
 

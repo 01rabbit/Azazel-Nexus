@@ -150,6 +150,15 @@ class UnitManager:
         """Positive inactivity evidence, never the negation of readiness."""
         raise NotImplementedError
 
+    def reload(self) -> None:
+        """Ask the manager to re-read unit files (Manager.Reload, no argument).
+
+        A mask, unmask or enable changes files on disk. A manager that loaded
+        a unit earlier keeps acting on the definition it loaded until it is
+        reloaded, so each batch of such changes ends with one reload.
+        """
+        raise NotImplementedError
+
 
 class RecordingUnitManager(UnitManager):
     """An in-memory service manager that keeps the call log.
@@ -165,11 +174,17 @@ class RecordingUnitManager(UnitManager):
         *,
         fail_on: Optional[str] = None,
         inactive: Iterable[str] = (),
+        fail_reload: bool = False,
     ) -> None:
         self._states = {name: UnitState.MASKED for name in units}
         self._fail_on = fail_on
         self._inactive = set(inactive)
+        self._fail_reload = fail_reload
         self.calls: list[tuple[str, str]] = []
+        #: Every operation in order, `reload` included. `calls` keeps its
+        #: earlier shape (unit operations only) so that existing assertions
+        #: on it stay exact; ordering questions are asked of `timeline`.
+        self.timeline: list[tuple[str, str]] = []
 
     def state(self, unit: str) -> UnitState:
         return self._states.get(unit, UnitState.MASKED)
@@ -177,6 +192,7 @@ class RecordingUnitManager(UnitManager):
     def mask(self, unit: str) -> None:
         self._states[unit] = UnitState.MASKED
         self.calls.append(("mask", unit))
+        self.timeline.append(("mask", unit))
 
     def unmask_and_enable(self, unit: str) -> None:
         if unit == self._fail_on:
@@ -184,9 +200,11 @@ class RecordingUnitManager(UnitManager):
             # failure that changed nothing would let a missing rollback pass.
             self._states[unit] = UnitState.ENABLED
             self.calls.append(("unmask_and_enable", unit))
+            self.timeline.append(("unmask_and_enable", unit))
             raise UnitOperationFailed(f"{unit} could not be enabled")
         self._states[unit] = UnitState.ENABLED
         self.calls.append(("unmask_and_enable", unit))
+        self.timeline.append(("unmask_and_enable", unit))
 
     def is_active(self, unit: str) -> bool:
         return unit not in self._inactive and self.state(unit) is UnitState.ENABLED
@@ -194,6 +212,11 @@ class RecordingUnitManager(UnitManager):
     def is_inactive(self, unit: str) -> bool:
         # This model is synthetic; production checks systemd independently.
         return not self.is_active(unit)
+
+    def reload(self) -> None:
+        self.timeline.append(("reload", ""))
+        if self._fail_reload:
+            raise UnitOperationFailed("manager reload failed")
 
 
 @dataclass
@@ -287,3 +310,15 @@ class DbusUnitManager(UnitManager):
         if type(answer) is not bool:
             raise UnitOperationFailed("systemd returned an invalid inactivity result")
         return answer
+
+    def reload(self) -> None:
+        """Manager.Reload through the session's own fixed verb.
+
+        `call` is the `(method, unit)` adapter and has no argument-less
+        form, so the reload is the session's separate, argument-less method.
+        An adapter without one cannot reload and the batch is unconfirmed.
+        """
+        reload = getattr(self.call, "reload", None)
+        if not callable(reload):
+            raise UnitOperationFailed("the service manager adapter cannot reload")
+        reload()

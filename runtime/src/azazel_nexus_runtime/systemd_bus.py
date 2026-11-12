@@ -225,6 +225,16 @@ class SystemdUnitCalls:
             raise UnitOperationFailed(f"systemd returned an invalid {method} reply")
         return reply.body
 
+    def reload(self) -> None:
+        """Manager.Reload: no argument, and the reply must be empty.
+
+        Fixed: there is no unit, path or option to pass. Reloading makes the
+        manager re-read the unit files that mask, unmask and enable changed.
+        """
+        reply = self._exchange(MANAGER_INTERFACE, "Reload", "", [])
+        if reply.signature != "" or list(reply.body) != []:
+            raise UnitOperationFailed("systemd returned an invalid Reload reply")
+
     def loaded_unit(self, unit: str) -> Optional[dict]:
         """The manager's loaded definition of one marker-guarded unit, or None.
 
@@ -449,8 +459,11 @@ class SystemdBusSession:
                 "MaskUnitFiles": "asbb",
                 "UnmaskUnitFiles": "asb",
                 "EnableUnitFiles": "asbb",
+                "Reload": "",
             }
             if allowed.get(member) != signature or path != MANAGER_PATH:
+                raise UnitOperationFailed("the systemd client refused a call shape")
+            if member == "Reload" and list(body) != []:
                 raise UnitOperationFailed("the systemd client refused a call shape")
         elif member == "GetAll":
             # The pass's loaded-definition read: the Unit interface of a
@@ -518,6 +531,10 @@ class SystemdBusSession:
     def loaded_unit(self, unit: str):
         """Read one grantable unit's loaded definition; performs no control operation."""
         return self.calls.loaded_unit(unit)
+
+    def reload(self) -> None:
+        """Manager.Reload (argument-less); see `SystemdUnitCalls.reload`."""
+        self.calls.reload()
 
     def close(self) -> None:
         try:

@@ -1236,7 +1236,8 @@ def test_a_unit_not_loaded_or_masked_in_the_manager_is_accepted(world, loaded):
 
 def test_the_loaded_check_reads_every_marker_guarded_unit_not_only_the_policy(world):
     world.run()
-    assert world.systemd.reads == sorted(activation_pass.UNIT_CHECK_SCOPE)
+    # Once while collecting inputs and once more after the grant's Reload.
+    assert world.systemd.reads == sorted(activation_pass.UNIT_CHECK_SCOPE) * 2
 
 
 def test_the_production_loaded_check_refuses_without_the_controller_session(monkeypatch):
@@ -1299,7 +1300,7 @@ def test_a_policy_narrower_than_the_grantable_set_grants_only_its_units(
     outcome = narrow.run()
     assert sorted(outcome.granted) == list(SCOPE[:2])
     assert narrow.markers() == list(SCOPE[:2])
-    assert narrow.systemd.reads == sorted(activation_pass.UNIT_CHECK_SCOPE)
+    assert narrow.systemd.reads == sorted(activation_pass.UNIT_CHECK_SCOPE) * 2
 
 
 @pytest.mark.parametrize("field", ["Requires", "After"])

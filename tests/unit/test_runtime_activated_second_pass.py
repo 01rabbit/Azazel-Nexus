@@ -57,9 +57,10 @@ RUNNING = sorted(DECEPTION_EXPOSURE_UNITS)
 #: What the first pass of this boot would have marked (SUPPORTING units).
 FIRST_PASS_MARKERS = ["azazel-edge-intaked.service", "azazel-edge-probed.service"]
 NOT_INACTIVE = "masked unit has no confirmed inactive state"
-#: The only members a pass may send: masking and reading. Anything else
-#: (StopUnit, StartUnit, UnmaskUnitFiles, EnableUnitFiles) fails the test.
-READ_AND_MASK = {"GetUnitFileState", "MaskUnitFiles", "GetUnit", "Get"}
+#: The only members a pass may send: masking, reading and the reload that
+#: ends a batch of masks. Anything else (StopUnit, StartUnit,
+#: UnmaskUnitFiles, EnableUnitFiles) fails the test.
+READ_AND_MASK = {"GetUnitFileState", "MaskUnitFiles", "GetUnit", "Get", "Reload"}
 
 
 OWNER = ":1.42"
@@ -103,6 +104,10 @@ class FakeSystemd:
         if member not in READ_AND_MASK:
             raise AssertionError(f"the pass asked for {member}")
         assert message.destination == OWNER
+        if member == "Reload":
+            assert message.interface == MANAGER_INTERFACE
+            assert message.signature == "" and body == []
+            return self._reply("", [])
         if member == "MaskUnitFiles":
             assert message.interface == MANAGER_INTERFACE and message.signature == "asbb"
             self.files[body[0][0]] = "masked"
@@ -284,6 +289,9 @@ class _FailingManager:
 
     def is_inactive(self, unit):
         raise self.error
+
+    def reload(self):
+        pass
 
 
 @pytest.mark.parametrize("error,reason", [

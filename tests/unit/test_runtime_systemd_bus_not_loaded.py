@@ -157,6 +157,8 @@ def test_activation_pass_with_masked_unloaded_units_is_safe_not_rollback_failed(
     masked = set(names)
 
     def exchange(interface, member, signature, body, **kwargs):
+        if member == "Reload":
+            return Reply("", [])
         unit = body[0] if member != "MaskUnitFiles" else body[0][0]
         assert unit in names
         if member == "GetUnit":
