@@ -91,10 +91,12 @@ from .activation_retire import (
 from .activation_lock import PassLockBusy, PassLockRefused, acquire_pass_lock
 from .activation_withdraw import (
     WithdrawalUnconfirmed,
+    QueuedJobState,
     clear_contextd_job,
     contextd_already_withdrawn,
     contextd_is_running,
     contextd_start_is_queued,
+    release_queued_job,
     withdraw_contextd,
 )
 from .units import (
@@ -206,7 +208,8 @@ class RollbackFailed(Exception):
     """The node could not be returned to the state it started the pass in."""
 
 
-def _mask_and_confirm_inactive(manager: UnitManager, unit: str, withdrawn=None) -> None:
+def _mask_and_confirm_inactive(manager: UnitManager, unit: str, withdrawn=None,
+                               before_mask=None) -> None:
     """Prevent future starts; refuse to equate that with stopping a process.
 
     This observation grants no StartUnit/StopUnit authority and is not a
@@ -215,6 +218,10 @@ def _mask_and_confirm_inactive(manager: UnitManager, unit: str, withdrawn=None) 
     already-withdrawn `failed` shape, which is accepted here instead of being a
     containment failure: nothing runs and nothing can start it.
     """
+    if unit == CONTEXTD_UNIT and before_mask is not None:
+        # A start job the pass is still holding for the broker is replaced
+        # first: the mask and the reload after it would make systemd fail it.
+        before_mask()
     manager.mask(unit)
     if manager.is_inactive(unit) is not True:
         if unit == CONTEXTD_UNIT and withdrawn is not None and withdrawn():
@@ -260,16 +267,17 @@ class ManagedUnitController(UnitController):
     to take back.
     """
 
-    def __init__(self, manager: UnitManager, withdrawn=None) -> None:
+    def __init__(self, manager: UnitManager, withdrawn=None, before_mask=None) -> None:
         self.manager = manager
         self.widened: list[str] = []
         self.withdrawn = withdrawn
+        self.before_mask = before_mask
 
     def state(self, unit: str) -> UnitState:
         return self.manager.state(unit)
 
     def _mask(self, unit: str) -> None:
-        _mask_and_confirm_inactive(self.manager, unit, self.withdrawn)
+        _mask_and_confirm_inactive(self.manager, unit, self.withdrawn, self.before_mask)
 
     def _unmask_and_enable(self, unit: str) -> None:
         # Recorded before the call, not after. A call that fails part way
@@ -290,6 +298,9 @@ class ActivationDaemon:
     #: Says the broker is in the already-withdrawn `failed` shape (see
     #: `_mask_and_confirm_inactive`); None where there is no stop authority.
     contextd_withdrawn: Optional[object] = None
+    #: Replaces a start job the pass is holding for the broker, before the
+    #: broker is masked (see `activation_withdraw.release_queued_job`).
+    contextd_before_mask: Optional[object] = None
 
     def activate(
         self,
@@ -309,7 +320,8 @@ class ActivationDaemon:
         Explicit Edge states remain an injection seam. With no lease, None
         stays unknown, as required by the production boot refusing pass.
         """
-        units = ManagedUnitController(self.manager, self.contextd_withdrawn)
+        units = ManagedUnitController(self.manager, self.contextd_withdrawn,
+                                      self.contextd_before_mask)
         controller = ActivationController(
             units=units,
             generations=self.generations,
@@ -421,7 +433,8 @@ class ActivationDaemon:
             if definition.name in skip:
                 continue
             try:
-                _mask_and_confirm_inactive(self.manager, definition.name, self.contextd_withdrawn)
+                _mask_and_confirm_inactive(self.manager, definition.name, self.contextd_withdrawn,
+                                           self.contextd_before_mask)
             except Exception as exc:  # noqa: BLE001 - collect all failures
                 failures.append(f"{definition.name}: {type(exc).__name__}")
         reload_failure = self._reload()  # the masks above are one batch
@@ -452,7 +465,8 @@ class ActivationDaemon:
         failures: list[str] = []
         for unit in units.widened:
             try:
-                _mask_and_confirm_inactive(self.manager, unit, self.contextd_withdrawn)
+                _mask_and_confirm_inactive(self.manager, unit, self.contextd_withdrawn,
+                                           self.contextd_before_mask)
                 taken_back.append(unit)
             except Exception as exc:  # noqa: BLE001 - recorded below, then escalated
                 failures.append(_unit_failure(unit, exc))
@@ -484,7 +498,8 @@ class ActivationDaemon:
         unreachable: list[str] = []
         for definition in self.definitions:
             try:
-                _mask_and_confirm_inactive(self.manager, definition.name, self.contextd_withdrawn)
+                _mask_and_confirm_inactive(self.manager, definition.name, self.contextd_withdrawn,
+                                           self.contextd_before_mask)
             except Exception as exc:  # noqa: BLE001
                 unreachable.append(_unit_failure(definition.name, exc))
         reload_failure = self._reload()  # the masks above are one batch
@@ -631,21 +646,37 @@ NO_LOCK_NO_RECORD_MESSAGE = (
 
 
 def _contextd_aids(root: Path, *, now: str, actor: str, invocation_id: str,
-                   until: float, clock, sleep, record: bool):
-    """`(withdrawn_for, clear_for)`: builders bound to a stop authority.
+                   until: float, clock, sleep, record: bool, hold_state=None):
+    """`(withdrawn_for, clear_for, before_for)`: builders bound to a stop authority.
 
-    `withdrawn_for(authority)` is the already-withdrawn test and
-    `clear_for(authority)(manager)` the full contextd withdrawal (marker, mask,
-    reload, stop, confirm quiet) run after a narrowing. They take the authority
-    as an argument because a narrowing on a fresh bus session must use the
-    authority of THAT session: the first one belongs to a session that is
-    finished and refuses every read and stop. With `record=False` the
+    `withdrawn_for(authority)` is the already-withdrawn test; `clear_for(authority)
+    (manager)` the full contextd withdrawal (marker, mask, reload, stop, confirm
+    quiet) run after a narrowing; `before_for(authority)()` replaces a start job the
+    pass is holding for the broker, once, BEFORE anything masks the broker. They
+    take the authority as an argument because a narrowing on a fresh bus session
+    must use the authority of THAT session: the first one belongs to a session that
+    is finished and refuses every read and stop. With `record=False` the
     withdrawal writes nothing to the ledger.
     """
+    state = hold_state if hold_state is not None else QueuedJobState()
+
     def withdrawn_for(authority):
         if authority is None:
             return None
         return lambda: contextd_already_withdrawn(authority, root)
+
+    def before_for(authority):
+        if authority is None:
+            return None
+
+        def before_mask() -> None:
+            release_queued_job(
+                state=state, authority=authority, ledger=_activation_ledger(root),
+                now=now, actor=actor, invocation_id=invocation_id, deadline=until,
+                reason="before_mask", clock=clock, sleep=sleep,
+                sink=None if record else (lambda event: None))
+
+        return before_mask
 
     def clear_for(authority):
         if authority is None:
@@ -664,7 +695,7 @@ def _contextd_aids(root: Path, *, now: str, actor: str, invocation_id: str,
 
         return clear_job
 
-    return withdrawn_for, clear_for
+    return withdrawn_for, clear_for, before_for
 
 
 def _narrow_final(manager: UnitManager, root: Path, message: str, *, until: float,
@@ -683,13 +714,17 @@ def _narrow_final(manager: UnitManager, root: Path, message: str, *, until: floa
     after the masks, best effort, before the narrowing raises. Always raises,
     like `_emergency_narrow`.
     """
-    withdrawn_for, clear_for = aids if aids is not None else (lambda a: None, lambda a: None)
+    withdrawn_for, clear_for, before_for = aids if aids is not None else (
+        lambda a: None, lambda a: None, lambda a: None)
 
     def narrow(target, target_authority) -> None:
         bind_remaining(target, until, clock)
         withdrawn = withdrawn_for(target_authority)
         clear_job = clear_for(target_authority)
         options = {} if withdrawn is None else {"withdrawn": withdrawn}
+        before = before_for(target_authority)
+        if before is not None:
+            options["before_mask"] = before
         try:
             _emergency_narrow(target, root, message, **options)
         except RuntimeError:
@@ -713,7 +748,7 @@ def _narrow_final(manager: UnitManager, root: Path, message: str, *, until: floa
 
 
 def _emergency_narrow(manager: UnitManager, root: Path, message: str, *,
-                      withdrawn=None) -> None:
+                      withdrawn=None, before_mask=None) -> None:
     """Remove every grant marker, mask every governed unit, then raise."""
     failures: list[str] = []
     try:
@@ -724,7 +759,7 @@ def _emergency_narrow(manager: UnitManager, root: Path, message: str, *,
               file=sys.stderr)
     for definition in CORE_UNITS:
         try:
-            _mask_and_confirm_inactive(manager, definition.name, withdrawn)
+            _mask_and_confirm_inactive(manager, definition.name, withdrawn, before_mask)
         except Exception as exc:  # noqa: BLE001 - fail closed on invariant break
             failures.append(f"{definition.name}: {type(exc).__name__}")
     try:
@@ -740,7 +775,7 @@ def _run_once(
     *, manager: UnitManager, root: Path, now: str, actor: str, producers=None,
     stop_authority: Optional[ContextdStopAuthority] = None,
     deadline: Optional[float] = None, clock=time.monotonic, sleep=time.sleep,
-    invocation_id: str = "", fresh_manager=None,
+    invocation_id: str = "", fresh_manager=None, hold_state=None,
 ) -> ActivationOutcome:
     """One observe-baseline pass (#206 §3.6): SUPPORTING (P4) and edge-core (P5).
 
@@ -787,16 +822,21 @@ def _run_once(
                       until=deadline + MAIN_PASS_RESERVE_SECONDS, clock=clock,
                       fresh_manager=fresh_manager, authority=stop_authority, aids=aids)
 
+    if hold_state is None:
+        hold_state = QueuedJobState()
     aids = _contextd_aids(
         root, now=now, actor=actor, invocation_id=invocation_id,
-        until=deadline + MAIN_PASS_RESERVE_SECONDS, clock=clock, sleep=sleep, record=True)
+        until=deadline + MAIN_PASS_RESERVE_SECONDS, clock=clock, sleep=sleep, record=True,
+        hold_state=hold_state)
     withdrawn = aids[0](stop_authority)
+    release_job = aids[2](stop_authority)
     daemon = ActivationDaemon(
         generations=GenerationStore(root / "var/lib/azazel/generations"),
         ledger=_activation_ledger(root),
         manager=manager,
         definitions=CORE_UNITS,
         contextd_withdrawn=withdrawn,
+        contextd_before_mask=release_job,
     )
     # Stale markers go first, before any decision: a marker left from an
     # earlier pass in this boot must never admit a queued start.
@@ -813,9 +853,13 @@ def _run_once(
         # reloading would make systemd fail that job, and the job cannot run
         # before READY (the broker is After= and Requires= the controller).
         # It is left as it is and decided at the verdict: granted, the job
-        # runs after READY; withheld, or on any narrowing, the broker is
-        # masked, the manager reloaded and the job replaced before the pass
-        # ends. Should the pass die, Requires= fails the job (fail-closed).
+        # runs after READY. Withheld, or on any narrowing, the job is replaced
+        # FIRST (StopUnit replace, no job left, `queued_job_replaced`
+        # recorded: `release_queued_job`, called before whatever masks the
+        # broker), and only then is the broker masked and the manager
+        # reloaded; the other order lets systemd fail the job ("Failed to
+        # start") with no replacement and no record. Should the pass die,
+        # Requires= fails the job (fail-closed).
         if contextd_is_running(stop_authority, root):
             try:
                 withdraw_contextd(
@@ -832,6 +876,7 @@ def _run_once(
                     "the Knowledge Context broker could not be withdrawn at preflight")
         elif contextd_start_is_queued(stop_authority):
             hold = frozenset({CONTEXTD_UNIT})
+            hold_state.held = True
     failures = daemon._remask_all(now=now, actor=actor,
         event_type="activation.evidence_preflight_masked", error_type="preflight",
         skip=hold)
@@ -966,6 +1011,7 @@ def _run_once(
         # A broker the pass does not grant must not start: a start job the
         # manager queued for it before this pass is replaced, not left to be
         # skipped by a condition.
+        release_job()  # a no-op once the job was replaced before the verdict's mask
         try:
             clear_contextd_job(
                 authority=stop_authority, ledger=daemon.ledger, now=now, actor=actor,
@@ -1582,11 +1628,13 @@ def _locked_pass(
     final = begin + budget_seconds
     work = final - reserve_seconds
 
+    hold_state = QueuedJobState()
+
     def narrow(message: str) -> None:
         # Only ever called while pass.lock is held: the holder owns the state.
         aids = _contextd_aids(
             root, now=now, actor=actor, invocation_id=invocation_id,
-            until=final, clock=clock, sleep=sleep, record=True)
+            until=final, clock=clock, sleep=sleep, record=True, hold_state=hold_state)
         _narrow_final(manager, root, message, until=final, clock=clock,
                       fresh_manager=fresh_manager, authority=stop_authority, aids=aids)
 
@@ -1617,7 +1665,7 @@ def _locked_pass(
                     manager=manager, root=root, now=now, actor=actor, producers=producers,
                     stop_authority=stop_authority, deadline=work, clock=clock,
                     sleep=sleep, invocation_id=invocation_id,
-                    fresh_manager=fresh_manager)
+                    fresh_manager=fresh_manager, hold_state=hold_state)
                 check_budget(work, clock)
                 # Type=notify: without READY the controller's start fails and
                 # every unit with Requires=/After= on it fails as a dependency.
@@ -1628,7 +1676,8 @@ def _locked_pass(
                                           until=final, clock=clock,
                                           fresh_manager=fresh_manager,
                                           stop_authority=stop_authority,
-                                          invocation_id=invocation_id, sleep=sleep)
+                                          invocation_id=invocation_id, sleep=sleep,
+                                          hold_state=hold_state)
             except PassBudgetExpired:
                 expired = True
             except Exception as error:
@@ -1764,7 +1813,7 @@ def _notify_ready_or_withdraw(manager: UnitManager, root: Path, *, now: str,
                               actor: str, until: Optional[float] = None,
                               clock=time.monotonic, fresh_manager=None,
                               stop_authority=None, invocation_id: str = "",
-                              sleep=time.sleep) -> None:
+                              sleep=time.sleep, hold_state=None) -> None:
     """Send READY and wait for its barrier; on any failure withdraw, then raise.
 
     A refused READY, or a barrier that fails or times out, leaves it unknown
@@ -1802,7 +1851,7 @@ def _notify_ready_or_withdraw(manager: UnitManager, root: Path, *, now: str,
         if until is not None:
             aids = _contextd_aids(
                 root, now=now, actor=actor, invocation_id=invocation_id,
-                until=until, clock=clock, sleep=sleep, record=True)
+                until=until, clock=clock, sleep=sleep, record=True, hold_state=hold_state)
             _narrow_final(manager, root, "activation readiness notification unavailable",
                           until=until, clock=clock, fresh_manager=fresh_manager,
                           authority=stop_authority, aids=aids)

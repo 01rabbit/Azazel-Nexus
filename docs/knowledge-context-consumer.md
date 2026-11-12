@@ -704,9 +704,16 @@ designed to keep the broker's queued start job and to re-grant it:
   written) the queued job runs once READY is sent and finds its marker; if it is
   withheld (the approval, the policy, health or evidence no longer allow it, or a
   retirement is pending, which makes the pass withhold every unit), or the pass
-  narrows for any reason or runs out of budget, the broker is masked, the manager
-  is reloaded and the queued job is replaced with `StopUnit` before the pass ends.
-  Every narrowing of the pass runs the full broker withdrawal afterwards, because
+  narrows for any reason or runs out of budget, the queued job is replaced with
+  `StopUnit` (mode `replace`) FIRST, the replacement is recorded as
+  `activation.queued_job_replaced`, and only then is the broker masked and the
+  manager reloaded: masking and reloading first makes systemd fail the job
+  ("Failed to start"), with no replacement and no record. If the job has already
+  ended when the pass gets to it, its fate is recorded as
+  `activation.queued_job_ended` with the broker's `ActiveState` and unit-file state
+  as far as they can be read. This holds for the verdict's own mask, a rollback,
+  an emergency narrowing, a budget expiry and a failed READY or barrier.
+  Every narrowing of the pass also runs the full broker withdrawal afterwards, because
   when READY or its barrier failed, READY may already have released the held job
   and started the broker;
 - if the pass dies, `Requires=` fails the job, which is the fail-closed side.

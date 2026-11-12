@@ -48,6 +48,8 @@ __all__ = [
     "WithdrawalUnconfirmed",
     "clear_contextd_job",
     "QUIET_STATES",
+    "QueuedJobState",
+    "release_queued_job",
     "contextd_already_withdrawn",
     "contextd_is_quiet",
     "contextd_is_running",
@@ -204,6 +206,64 @@ def _contain(*, manager: UnitManager, authority: ContextdStopAuthority, root: Pa
     return {"final_masked": masked, "final_quiet": quiet}
 
 
+class QueuedJobState:
+    """Whether the pass left the broker's start job queued, and whether it was dealt with.
+
+    `held` is set by the preflight when it finds the broker inactive, unmasked
+    and with a start job queued; `done` once the job has been replaced (or its
+    fate recorded). Shared by everything that can mask the broker afterwards.
+    """
+
+    def __init__(self) -> None:
+        self.held = False
+        self.done = False
+
+
+def release_queued_job(*, state: QueuedJobState, authority: ContextdStopAuthority,
+                       ledger: AuditLedger, now: str, actor: str, invocation_id: str,
+                       deadline: Optional[float], reason: str,
+                       clock: Callable[[], float] = time.monotonic,
+                       sleep: Callable[[float], None] = time.sleep,
+                       sink: Optional[Callable[[dict], None]] = None) -> None:
+    """Replace the held start job BEFORE the broker is masked, once.
+
+    Masking and reloading make systemd fail a pending start job ("Failed to
+    start"), which is neither a replacement nor a record. So whatever is about
+    to mask the broker (the verdict's mask, a rollback, an emergency narrowing)
+    calls this first: `StopUnit(replace)`, wait until no job is left, record
+    `activation.queued_job_replaced`. If the job is already gone, its fate is
+    recorded as `activation.queued_job_ended` with what can still be read.
+    A replacement that fails is recorded by `clear_contextd_job` and does not
+    stop the mask that follows (the reload then fails the job: fail-closed).
+    """
+    if not state.held or state.done:
+        return
+    state.done = True
+    emit = sink if sink is not None else (lambda event: _record(ledger, event))
+    try:
+        replaced = clear_contextd_job(
+            authority=authority, ledger=ledger, now=now, actor=actor, reason=reason,
+            invocation_id=invocation_id, deadline=deadline, sink=sink, clock=clock,
+            sleep=sleep)
+    except Exception:  # noqa: BLE001 - recorded by clear_contextd_job; the mask goes on
+        return
+    if replaced:
+        return
+    observed: dict = {}
+    for key, read in (("active_state", authority.active_state),
+                      ("unit_file_state", authority.file_state)):
+        try:
+            observed[key] = read(CONTEXTD_UNIT)
+        except Exception:  # noqa: BLE001 - what cannot be read is not recorded
+            observed[key] = None
+    emit({
+        "event_type": "activation.queued_job_ended", "unit": CONTEXTD_UNIT,
+        "reason": reason, "observed_active_state": observed["active_state"],
+        "observed_unit_file_state": observed["unit_file_state"],
+        "invocation_id": invocation_id, "occurred_at": now, "actor": actor,
+    })
+
+
 def withdraw_contextd(
     *, reason: str, manager: UnitManager, authority: ContextdStopAuthority,
     root: Path, ledger: AuditLedger, now: str, actor: str, invocation_id: str,
@@ -261,6 +321,20 @@ def withdraw_contextd(
     try:
         remove_contextd_marker(root)
         timings["t_marker_ms"] = _ms(started, clock)
+        stage = "job"
+        over()
+        if _job_twice(authority) != NO_JOB:
+            # A pending job is replaced BEFORE the mask: masking and reloading
+            # would make systemd fail it instead.
+            authority.stop(CONTEXTD_UNIT)
+            stop_sent = True
+            timings["t_stop_ms"] = _ms(started, clock)
+            give_up = clock() + STOP_WAIT_SECONDS
+            if deadline is not None:
+                give_up = min(give_up, deadline)
+            if not _wait_until(lambda: authority.job(CONTEXTD_UNIT) == NO_JOB,
+                               give_up=give_up, clock=clock, sleep=sleep):
+                raise TimeoutError("the pending job did not clear in time")
         stage = "mask"
         over()
         manager.mask(CONTEXTD_UNIT)

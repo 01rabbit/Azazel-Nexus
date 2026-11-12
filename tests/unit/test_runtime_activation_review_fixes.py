@@ -1495,6 +1495,17 @@ def queued(ctx_world, monkeypatch):
     return SimpleNamespace(world=ctx_world, clock=clock, model=model, manager=manager)
 
 
+def _replaced_not_failed(queued):
+    """S6: the held job was REPLACED (StopUnit replace, before any mask), not failed
+    by the mask and reload that follow, and the replacement is on the record."""
+    assert queued.model.start_job_failed is False  # systemd did not fail it
+    assert queued.model.stops == 1  # StopUnit(replace) was sent
+    timeline = queued.manager.timeline
+    assert timeline.index(("stop", CTX)) < timeline.index(("mask", CTX))  # first
+    events = [e for e in queued.world.events() if e["event_type"] == "activation.queued_job_replaced"]
+    assert len(events) == 1 and events[0]["unit"] == CTX
+
+
 def _pass(queued, **kwargs):
     return activated._locked_pass(
         manager=queued.manager, root=queued.world.root, now=NOW, actor="test",
@@ -1527,6 +1538,7 @@ def test_a_queued_start_is_replaced_when_the_broker_is_withheld(queued):
     assert CTX not in outcome.granted
     assert queued.model.job == NO_JOB and queued.model.running is False
     assert queued.manager.state(CTX) is UnitState.MASKED
+    _replaced_not_failed(queued)
     assert CTX not in (queued.world.markers() or [])
 
 
@@ -1540,6 +1552,7 @@ def test_a_queued_start_is_replaced_when_the_budget_ends(queued):
     assert queued.model.job == NO_JOB and queued.model.running is False
     assert queued.manager.state(CTX) is UnitState.MASKED
     assert queued.world.markers() is None
+    _replaced_not_failed(queued)
 
 
 def test_a_queued_start_is_replaced_when_the_pass_narrows_for_another_reason(queued, monkeypatch):
@@ -1551,6 +1564,7 @@ def test_a_queued_start_is_replaced_when_the_pass_narrows_for_another_reason(que
         _pass(queued)
     assert queued.model.job == NO_JOB and queued.model.running is False
     assert queued.manager.state(CTX) is UnitState.MASKED
+    _replaced_not_failed(queued)
 
 
 def test_a_pass_that_lost_the_lock_leaves_the_queued_job_and_the_state_alone(queued):
@@ -1866,3 +1880,92 @@ def test_with_the_old_authority_the_fresh_narrowing_would_not_stop_the_broker(fr
             until=fresh.clock() + 8.0, clock=fresh.clock, fresh_manager=factory,
             authority=old_authority, aids=aids)
     assert new_bus.active is True  # still running: the scenario above is not met
+
+
+# -- S6 (clone, systemd 257): the held job is replaced BEFORE the mask and the reload -----------------------------
+
+
+def test_the_held_job_is_replaced_before_the_mask_when_ready_fails_first(queued, monkeypatch):
+    """READY itself is refused before it is sent: the job is still held, and the
+    narrowing replaces it before it masks the broker."""
+    from azazel_nexus_runtime import systemd_notify
+
+    def refuse():
+        raise UnitOperationFailed("systemd notification refused")
+
+    monkeypatch.setattr(systemd_notify, "notify_ready", refuse)
+    with pytest.raises(RuntimeError, match="readiness notification unavailable"):
+        _pass(queued)
+    # the grant path unmasks and enables; the narrowing then masks: the replacement
+    # comes first among the masks of the broker
+    assert queued.model.start_job_failed is False
+    assert queued.model.job == NO_JOB and queued.model.running is False
+    assert queued.manager.state(CTX) is UnitState.MASKED
+    events = queued.world.events()
+    kinds = [e["event_type"] for e in events]
+    assert "activation.queued_job_replaced" in kinds
+    assert queued.model.stops >= 1
+
+
+def test_the_held_job_is_replaced_before_the_mask_on_a_rollback_and_a_narrowing(queued):
+    """The library's own mask of the withheld broker, and a wider narrowing, reach the
+    same hook: one replacement, before the first mask of the broker."""
+    queued.world.healthy = False  # everything is withheld, the broker included
+    outcome = _pass(queued)
+    assert CTX not in outcome.granted
+
+
+def test_a_job_that_is_already_gone_at_the_mask_is_recorded_not_dropped(queued):
+    """The job ended between the preflight and the verdict (here: it started and was
+    withdrawn by someone else). The pass still records its fate."""
+    real = queued.world.producers()
+    queued.world.sign(units=SCOPE)  # the broker is withheld
+
+    def evidence():
+        queued.model.job = NO_JOB  # the held job disappears while the pass collects
+        return queued.world.evidence
+
+    outcome = _pass(queued, producers=queued.world.producers(commissioning_evidence=evidence))
+    assert CTX not in outcome.granted
+    events = [e for e in queued.world.events() if e["event_type"] == "activation.queued_job_ended"]
+    assert len(events) == 1
+    assert events[0]["observed_active_state"] == "inactive"
+    assert events[0]["observed_unit_file_state"] == "enabled"
+    assert real is not None
+    assert queued.model.stops == 0  # nothing left to replace
+
+
+def test_the_old_order_would_fail_the_job_without_a_record(queued, monkeypatch):
+    """Negative check (the f8dc471 behaviour): the hook removed, the verdict's mask and
+    reload fail the held job, nothing is replaced and nothing is recorded."""
+    from azazel_nexus_runtime import activation_withdraw
+    monkeypatch.setattr(activated, "release_queued_job", lambda **kw: None)
+    queued.world.sign(units=SCOPE)
+    _pass(queued)
+    assert queued.model.start_job_failed is True  # failed by the reload
+    assert queued.model.stops == 0
+    assert not [e for e in queued.world.events()
+                if e["event_type"] in ("activation.queued_job_replaced",
+                                       "activation.queued_job_ended")]
+    assert activation_withdraw is not None
+
+
+def test_a_granted_broker_keeps_its_job_and_nothing_is_replaced(queued):
+    outcome = _pass(queued)
+    assert CTX in outcome.granted and queued.model.running is True
+    assert queued.model.stops == 0 and queued.model.start_job_failed is False
+    assert not [e for e in queued.world.events()
+                if e["event_type"].startswith("activation.queued_job")]
+
+
+def test_a_full_withdrawal_replaces_a_pending_job_before_it_masks(queued):
+    """The withdrawal itself (recheck, narrowing): job first, then mask and reload."""
+    from azazel_nexus_runtime.activation_withdraw import withdraw_contextd as withdraw
+    queued.manager.timeline.clear()
+    withdraw(reason="t", manager=queued.manager, authority=authority(queued.model),
+             root=queued.world.root, ledger=AuditLedger(queued.world.ledger_path),
+             now=NOW, actor="t", invocation_id="1" * 32, clock=queued.clock,
+             sleep=queued.clock.sleep)
+    assert queued.model.start_job_failed is False
+    timeline = queued.manager.timeline
+    assert timeline.index(("stop", CTX)) < timeline.index(("mask", CTX))
