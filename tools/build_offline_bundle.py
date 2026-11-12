@@ -17,6 +17,7 @@ Two outputs, both deterministic for the same inputs and both unsigned:
 from __future__ import annotations
 
 import argparse
+import glob
 import gzip
 import hashlib
 import io
@@ -83,6 +84,15 @@ _PACKAGE_DATA_SOURCES = (
 )
 
 
+def _refuse_symlinks_below(root: Path, path: Path) -> None:
+    """No component of `path` below `root` (the repository) may be a symlink."""
+    current = root
+    for part in path.relative_to(root).parts:
+        current = current / part
+        if stat.S_ISLNK(current.lstat().st_mode):
+            raise ValueError(f"symlink is not allowed in bundle inputs: {current}")
+
+
 def package_data_files(root: Path) -> list[Path]:
     """Exactly the files the pyprojects declare as package data, nothing wider.
 
@@ -91,8 +101,16 @@ def package_data_files(root: Path) -> list[Path]:
     the wheel built from it. The selection is derived from the declaration
     itself (`[tool.setuptools.package-data]`: package name to glob patterns
     relative to the package directory), never from a list kept here, so the two
-    cannot diverge; a pattern that matches nothing is an error, and so is a
-    symlink or a non-regular match.
+    cannot diverge.
+
+    Matching follows setuptools: `glob.glob(..., recursive=True)` under the
+    package directory, regular files only, and hidden names (a leading dot) are
+    not matched by a wildcard, which `pathlib.Path.glob` would match. Nothing is
+    skipped silently when it is unsafe: a pattern that matches nothing, an
+    absolute or parent-relative pattern, a symlink at ANY component from the
+    repository root to the match (the package directory and intermediate
+    directories included), a match that resolves outside the package directory,
+    and a non-regular match are all errors. The result is sorted.
     """
     found: list[Path] = []
     for pyproject, source in _PACKAGE_DATA_SOURCES:
@@ -101,19 +119,28 @@ def package_data_files(root: Path) -> list[Path]:
             "tool", {}).get("setuptools", {}).get("package-data", {})
         for package, patterns in sorted(declared.items()):
             package_dir = root.joinpath(*source, *package.split("."))
+            _refuse_symlinks_below(root, package_dir)
+            resolved_package = package_dir.resolve(strict=True)
             for pattern in patterns:
                 relative = PurePosixPath(pattern)
                 if relative.is_absolute() or ".." in relative.parts:
                     raise ValueError(f"package-data pattern is not a relative path: {pattern}")
-                matches = sorted(package_dir.glob(pattern), key=lambda item: item.as_posix())
+                raw = sorted(Path(item) for item in glob.glob(
+                    os.path.join(glob.escape(str(package_dir)), pattern), recursive=True))
+                for item in raw:  # a dangling link is a symlink too: refuse, do not skip
+                    _refuse_symlinks_below(root, item)
+                matches = [item for item in raw if item.is_file()]
                 if not matches:
                     raise ValueError(f"package-data pattern matches no file: {package} {pattern}")
                 for match in matches:
                     if _excluded(match.relative_to(root)):
                         continue
+                    _refuse_symlinks_below(root, match)
                     _regular_file(match)
+                    if not match.resolve(strict=True).is_relative_to(resolved_package):
+                        raise ValueError(f"package-data file leaves its package: {match}")
                     found.append(match)
-    return found
+    return sorted(dict.fromkeys(found), key=lambda item: item.as_posix())
 
 
 def _inputs(root: Path) -> list[tuple[Path, str]]:
@@ -186,6 +213,11 @@ def _inputs(root: Path) -> list[tuple[Path, str]]:
             candidates.append((source, name))
             taken.add(name)
 
+    for source, _ in candidates:
+        # No component between the repository and any input may be a symlink,
+        # so nothing outside the repository can enter the bundle through a
+        # linked ancestor directory.
+        _refuse_symlinks_below(root, source)
     candidates.sort(key=lambda item: item[1])
     names = [name for _, name in candidates]
     if len(names) != len(set(names)):
