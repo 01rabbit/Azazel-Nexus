@@ -129,8 +129,7 @@ def test_a_slow_manager_call_ends_the_phases_and_the_pass_narrows(fresh):
 def test_the_phases_end_a_reserve_before_the_budget(fresh):
     """A pass that finishes its phases after budget - reserve is narrowed."""
     def at_the_edge():
-        fresh.clock.sleep(activated.MAIN_PASS_BUDGET_SECONDS
-                          - activated.MAIN_PASS_RESERVE_SECONDS + 1)
+        fresh.clock.sleep(activated.MAIN_PASS_BUDGET_SECONDS - activated._AFTER_PHASES + 1)
         return fresh.world.evidence
 
     with pytest.raises(RuntimeError, match="used its whole time budget"):
@@ -146,7 +145,8 @@ def test_the_narrowing_is_bound_to_the_end_of_the_whole_budget(fresh):
             commissioning_evidence=lambda: (fresh.clock.sleep(100), fresh.world.evidence)[1]))
     # first bound to the end of the phases, last to the end of the whole budget
     first, last = given[0], given[-1]
-    assert last() - first() == pytest.approx(activated.MAIN_PASS_RESERVE_SECONDS)
+    assert last() - first() == pytest.approx(
+        activated.MAIN_PASS_READY_SECONDS + activated.MAIN_PASS_RESERVE_SECONDS)
 
 
 def test_a_pass_whose_budget_ended_before_ready_does_not_send_it(fresh, monkeypatch):
@@ -608,8 +608,8 @@ def test_the_budgets_fit_the_unit_timeouts_and_the_lock_wait():
     assert 0 < activation_recheck.RECHECK_COLLECT_SECONDS < work
     # the main pass: phases + reserve = budget, and budget + margin <= TimeoutStartSec=60s
     assert activated.PASS_LOCK_WAIT_SECONDS < (
-        activated.MAIN_PASS_BUDGET_SECONDS - activated.MAIN_PASS_RESERVE_SECONDS)
-    assert activated.MAIN_PASS_BUDGET_SECONDS + 15 <= 60
+        activated.MAIN_PASS_BUDGET_SECONDS - activated._AFTER_PHASES)
+    assert activated.MAIN_PASS_BUDGET_SECONDS + 7 <= 60
     for name, seconds in (("azazel-activation-recheck.service", 40),
                           ("azazel-activated.service", 60)):
         path = "packaging/systemd/" + name
@@ -1006,7 +1006,8 @@ def _locked_bound(bound, *, started=None, producers=None, fresh_manager=None):
 
 def _narrowed_after_the_phases(bound):
     elapsed = bound.clock() - bound.begin
-    work = activated.MAIN_PASS_BUDGET_SECONDS - activated.MAIN_PASS_RESERVE_SECONDS
+    work = (activated.MAIN_PASS_BUDGET_SECONDS - activated.MAIN_PASS_READY_SECONDS
+            - activated.MAIN_PASS_RESERVE_SECONDS)
     assert elapsed >= work, elapsed  # the narrowing happened after second 37
     assert bound.manager.refused == 0, "a narrowing call was refused for lack of time"
     assert bound.world.markers() is None
@@ -2204,8 +2205,7 @@ def test_a_mask_refused_at_the_edge_is_narrowed_with_the_reserve(edge, monkeypat
     """The phases' time is gone when the mask is refused: the pass narrows under the
     reserve instead of leaving the broker stopped but unmasked."""
     def refused_at_the_edge(**kwargs):
-        edge.clock.sleep(activated.MAIN_PASS_BUDGET_SECONDS
-                         - activated.MAIN_PASS_RESERVE_SECONDS + 1.0)
+        edge.clock.sleep(activated.MAIN_PASS_BUDGET_SECONDS - activated._AFTER_PHASES + 1.0)
         raise activated.RollbackFailed("synthetic: the mask was refused at the edge")
 
     monkeypatch.setattr(activated, "_run_once", refused_at_the_edge)
@@ -2213,3 +2213,232 @@ def test_a_mask_refused_at_the_edge_is_narrowed_with_the_reserve(edge, monkeypat
         _locked_edge(edge)
     assert edge.manager.state(CTX) is UnitState.MASKED
     assert edge.manager.refused == 0
+
+
+# -- Codex 18: job operations have their own transport allowance; the reserve is real --------------------------------
+
+
+class TransportManager(QueuedManager):
+    """A modelled manager over a session that refuses calls once its time is gone or it
+    is finished (`call.broken`), as `SystemdBusSession` does."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._left = None
+        self.call = SimpleNamespace(set_remaining=self._set, broken=False)
+        self.refused = 0
+        self.bound_to: list[float] = []
+
+    def _set(self, remaining):
+        self._left = remaining
+        self.bound_to.append(remaining())
+
+    def _check(self):
+        if self.call.broken or (self._left is not None and self._left() <= 0):
+            self.refused += 1
+            raise UnitOperationFailed("the bus session refuses: finished or out of time")
+
+    def mask(self, unit):
+        self._check()
+        super().mask(unit)
+
+    def reload(self):
+        self._check()
+        super().reload()
+
+    def is_inactive(self, unit):
+        self._check()
+        return super().is_inactive(unit)
+
+
+def _transport_authority(manager, model, clock, *, poison_on):
+    """The stop authority over `manager`'s session. A `poison_on` verb ('job' or
+    'stop') uses its WHOLE transport allowance and then finishes the session, as a
+    call that times out does."""
+    guard = authority(model)
+
+    def verb(name, real):
+        def call(*args):
+            manager._check()
+            if poison_on == name and manager.call.broken is False:
+                clock.sleep(max(0.0, manager._left()))
+                manager.call.broken = True
+                raise UnitOperationFailed("systemd D-Bus call did not complete")
+            return real(*args)
+        return call
+
+    return ContextdStopAuthority(
+        stop=verb("stop", model.stop), job=verb("job", model.current_job),
+        state=model.active_state, file_state=model.file_state_of)
+
+
+@pytest.fixture
+def poisoned(ctx_world):
+    clock = FakeClock()
+    model = ContextdModel(clock, job=JOB)
+    model.start_job_failed = False
+    manager = TransportManager(model, enabled=[d.name for d in CORE_UNITS])
+    ctx_world.manager = manager
+    model.job = JOB
+    fresh_model_manager = TransportManager(model, enabled=[d.name for d in CORE_UNITS])
+    fresh_model_manager.timeline = manager.timeline
+    return SimpleNamespace(world=ctx_world, clock=clock, model=model, manager=manager,
+                           fresh=fresh_model_manager)
+
+
+@pytest.mark.parametrize("verb", ["job", "stop"])
+def test_a_job_operation_that_uses_its_whole_allowance_leaves_the_mask_a_fresh_session(
+        poisoned, verb):
+    """The recheck's Job read (or StopUnit) runs to the end of ITS allowance, times out and
+    finishes the session. The reserved mask, reload and exact-masked confirmation then run
+    on a new session: the broker is persistently masked, not merely unreplaced."""
+    p = poisoned
+    guard = _transport_authority(p.manager, p.model, p.clock, poison_on=verb)
+    fresh_guard = authority(p.model)
+    used = []
+
+    @contextlib.contextmanager
+    def fresh_session():
+        used.append(1)
+        yield p.fresh, fresh_guard
+
+    p.world.healthy = False
+    start = p.clock()
+    code = activation_recheck.run_recheck(
+        manager=p.manager, authority=guard, root=p.world.root, now=NOW,
+        producers=p.world.producers(), invocation_id="c" * 32, clock=p.clock,
+        sleep=p.clock.sleep, fresh_session=fresh_session)
+    assert code == 1  # unconfirmed, on record
+    assert used == [1] and p.manager.call.broken is True
+    assert p.fresh.state(CTX) is UnitState.MASKED and p.model.file_state == "masked"
+    assert CTX not in (p.world.markers() or [])
+    # the job operation ended inside ITS allowance, before the reserve for the mask
+    allowance = min(activation_withdraw.JOB_WAIT_SECONDS, 11.0 - 3.0)
+    assert p.clock() - start <= 11.0 + 5.0  # and nothing ran past the finalizer's end
+    assert min(p.manager.bound_to) <= allowance + 1e-9  # the session was bound to the job limit
+    final = [e for e in p.world.events() if e["event_type"] == "activation.withdrawal_unconfirmed"]
+    assert final and final[-1]["final_masked"] is True
+
+
+def test_without_the_fresh_session_the_poisoned_recheck_leaves_the_broker_unmasked(poisoned):
+    """Negative check (the 4a3b663 behaviour): the finalizer reuses the finished session."""
+    p = poisoned
+    guard = _transport_authority(p.manager, p.model, p.clock, poison_on="job")
+    p.world.healthy = False
+    activation_recheck.run_recheck(
+        manager=p.manager, authority=guard, root=p.world.root, now=NOW,
+        producers=p.world.producers(), invocation_id="c" * 32, clock=p.clock,
+        sleep=p.clock.sleep, fresh_session=None)
+    assert p.manager.state(CTX) is not UnitState.MASKED  # persistently unmasked
+    assert p.model.file_state != "masked"
+
+
+def test_polling_does_not_start_a_call_once_the_allowance_is_gone():
+    clock = FakeClock()
+    calls = []
+
+    def done():
+        calls.append(clock())
+        return False
+
+    assert activation_withdraw._wait_until(done, give_up=clock() - 1.0, clock=clock,
+                                           sleep=clock.sleep) is False
+    assert calls == []  # `done()` (a bus call) is not even started
+
+
+def test_the_job_operations_are_bound_to_their_own_limit_then_released(poisoned):
+    p = poisoned
+    guard = authority(p.model)
+    deadline = p.clock() + 20.0
+    activation_withdraw.clear_contextd_job(
+        authority=guard, ledger=AuditLedger(p.world.ledger_path), now=NOW, actor="t",
+        reason="t", invocation_id="1" * 32, deadline=activation_withdraw.job_wait_limit(
+            deadline, p.clock), clock=p.clock, sleep=p.clock.sleep,
+        transport=lambda d: bind_remaining(p.manager, d, p.clock), outer=deadline)
+    first, last = p.manager.bound_to[0], p.manager.bound_to[-1]
+    assert first <= activation_withdraw.JOB_WAIT_SECONDS + 1e-9  # the job allowance
+    assert last == pytest.approx(20.0)  # the outer deadline again
+
+
+# main pass: READY and the barrier do not eat the reserve; a session that breaks while narrowing
+
+def test_the_ready_window_and_the_reserve_are_separate_parts_of_the_budget():
+    from azazel_nexus_runtime import systemd_notify
+    window = (systemd_notify._TIMEOUT + systemd_notify._TIMEOUT + systemd_notify._BARRIER_TIMEOUT)
+    assert window <= activated.MAIN_PASS_READY_SECONDS  # READY, then the barrier, worst case
+    phases = (activated.MAIN_PASS_BUDGET_SECONDS - activated.MAIN_PASS_READY_SECONDS
+              - activated.MAIN_PASS_RESERVE_SECONDS)
+    assert phases == 37.0
+    assert activated.MAIN_PASS_BUDGET_SECONDS + 7 <= 60  # TimeoutStartSec=60s
+
+
+def test_a_barrier_that_times_out_leaves_the_full_reserve_for_the_narrowing(edge, monkeypatch):
+    """The barrier really takes 5 s (and READY and the send 1 s each): the narrowing still
+    starts with the whole reserve left, and every call is accepted."""
+    from azazel_nexus_runtime import systemd_notify
+    begin = edge.clock()
+    first_mask = []
+    real_mask = edge.manager.mask
+
+    def mask(unit):
+        first_mask.append(edge.clock())
+        real_mask(unit)
+
+    def late_ready():
+        edge.manager.release_after_ready(edge.world.root)
+
+    def barrier():
+        edge.clock.sleep(1.0 + 1.0 + systemd_notify._BARRIER_TIMEOUT)  # the real worst case
+        raise UnitOperationFailed("systemd notification barrier timed out")
+
+    # the phases run to their last second first
+    def slow():
+        edge.clock.sleep(activated.MAIN_PASS_BUDGET_SECONDS - activated._AFTER_PHASES - 1.0)
+        return edge.world.evidence
+
+    monkeypatch.setattr(systemd_notify, "notify_ready", late_ready)
+    monkeypatch.setattr(systemd_notify, "notify_barrier", barrier)
+    edge.manager.mask = mask
+    with pytest.raises(RuntimeError, match="readiness notification unavailable"):
+        _locked_edge(edge, producers=edge.world.producers(commissioning_evidence=slow))
+    final = begin + activated.MAIN_PASS_BUDGET_SECONDS
+    assert first_mask and final - min(first_mask) >= activated.MAIN_PASS_RESERVE_SECONDS
+    assert edge.manager.refused == 0
+    assert edge.manager.state(CTX) is UnitState.MASKED
+
+
+def test_a_session_that_breaks_while_narrowing_hands_the_rest_to_a_fresh_one(edge, monkeypatch):
+    """A mask call times out in the middle of the all-unit narrowing: the units not yet
+    masked are masked on a new session, within the reserve."""
+    from azazel_nexus_runtime import systemd_notify
+    order = [d.name for d in CORE_UNITS]
+    victim = order[3]
+    real_mask = edge.manager.mask
+
+    def mask(unit):
+        if unit == victim and not edge.manager.call.broken:
+            edge.manager.call.broken = True
+            raise UnitOperationFailed("systemd D-Bus call did not complete")
+        if edge.manager.call.broken:
+            raise UnitOperationFailed("the bus session is finished")
+        real_mask(unit)
+
+    other_model = ContextdModel(edge.clock)
+    other = BoundQueuedManager(other_model, enabled=order)
+    used = []
+
+    @contextlib.contextmanager
+    def factory():
+        used.append(1)
+        yield other, authority(other_model)
+
+    def refuse():
+        raise UnitOperationFailed("systemd notification refused")
+
+    monkeypatch.setattr(systemd_notify, "notify_ready", refuse)
+    edge.manager.mask = mask
+    with pytest.raises(RuntimeError):
+        _locked_edge(edge, fresh_manager=factory)
+    assert used == [1]
+    assert all(other.state(name) is UnitState.MASKED for name in order)
+    assert other.refused == 0

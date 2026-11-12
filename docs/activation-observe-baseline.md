@@ -1128,7 +1128,10 @@ broker that is unmasked, has a job or has a marker is not that shape;
 The mask is confirmed by the exact unit-file state: `masked`, not
 `masked-runtime`, which does not survive a reboot. A step that cannot be
 confirmed first runs a finalizer for this one unit (marker removed, mask,
-reload, one stop if it is not quiet), then records
+reload and exact-masked confirmation on a fresh session if the old one is
+finished, then one stop if it is not quiet). Job reads, StopUnit and polling
+have their own transport limit, min(5 s, deadline - 3 s), so they cannot use
+the 3 s kept for the mask, then records
 `activation.withdrawal_unconfirmed` with what the finalizer reached
 (`final_masked`, `final_quiet`; the record failing changes nothing); the exit
 is non-zero. The recheck does not narrow other units in that case. A step is
@@ -1267,13 +1270,14 @@ before the broker's start job is evaluated.
 
 **Main pass.** The pass takes `/run/azazel-activation/pass.lock` (root `0600`,
 no-follow, `flock`), waiting at most 25 s, and holds it until READY's barrier;
-without the lock it changes nothing and exits non-zero. One budget of 45 s covers the
+without the lock it changes nothing and exits non-zero. One budget of 53 s covers the
 whole pass, counted from before the bus connects (connecting counts, each of
-its steps limited to the time that is left). The phases of the pass end 8 s
-before it (at 37 s); the 8 s reserve is kept for the narrowing a failed pass
-needs and its record. `azazel-activated.service` has `TimeoutStartSec=60s`
-(was 30 s): 37 s of phases + 8 s of reserve = 45 s, plus 15 s of margin for
-READY, its barrier and the exit.
+its steps limited to the time that is left). The phases of the pass end 16 s
+before it (at 37 s); then come an 8 s window for READY and its barrier and an 8 s
+reserve that nothing else uses, kept for the narrowing a failed pass needs and
+its record. `azazel-activated.service` has `TimeoutStartSec=60s`
+(was 30 s): 37 s of phases + 8 s of READY window + 8 s of reserve = 53 s, plus 7 s of
+margin for the exit.
 
 The budget is kept by the code, not by interrupting it. The pass checks it
 between its phases (before input collection, after it, after the decision,
@@ -1285,7 +1289,7 @@ Narrowing then opens a new session, connecting inside the same deadline (the
 cleanup after a failed connection is charged to it too), and uses that
 session's manager and its stop authority together; the old authority is bound
 to the finished session and refuses every read and stop. Every way out that
-narrows does so under the lock and under the end of the whole 45 s: the budget
+narrows does so under the lock and under the end of the whole 53 s: the budget
 ending, READY or its barrier failing, an emergency narrowing in the pass, and
 a finished session. (A pass that never held the lock does not narrow.) Nothing is raised asynchronously, so a ledger append or a
 high-water commit always completes. When the budget ends the pass writes

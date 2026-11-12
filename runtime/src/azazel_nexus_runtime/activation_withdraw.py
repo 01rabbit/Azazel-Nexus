@@ -8,7 +8,9 @@ the periodic recheck:
 
 1. unlink the broker's grant marker (no-follow) and confirm it is gone
    (`t_marker`); no other marker is touched;
-2. mask the broker and reload the manager (`t_reload`);
+2. mask the broker and reload the manager (`t_reload`); job reads, StopUnit
+   and polling have their own transport limit that ends before the time kept
+   for this step, and a finished session is replaced by a fresh one;
 3. if the broker is not inactive, or has a job, send StopUnit in mode
    `replace` (`t_stop`);
 4. wait, within the remaining budget (at most 20 s), until it is quiet: its
@@ -32,6 +34,7 @@ raises `WithdrawalUnconfirmed`. The caller exits non-zero.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 import time
 from pathlib import Path
@@ -39,6 +42,7 @@ from typing import Callable, Optional
 
 from azazel_nexus.audit import AuditLedger
 
+from .activation_budget import bind_remaining
 from .activation_markers import contextd_marker_present, remove_contextd_marker
 from .units import CONTEXTD_UNIT, ContextdStopAuthority, UnitManager, UnitOperationFailed
 
@@ -169,11 +173,11 @@ def _job_twice(authority: ContextdStopAuthority) -> tuple:
 def _wait_until(done: Callable[[], bool], *, give_up: float,
                 clock: Callable[[], float], sleep: Callable[[float], None]) -> bool:
     while True:
-        if done():
-            return True
         left = give_up - clock()
         if left <= 0:
-            return False
+            return False  # no call is started once the allowance is gone
+        if done():
+            return True
         sleep(min(_POLL_SECONDS, left))  # never oversleeps the deadline
 
 
@@ -186,7 +190,8 @@ def _record(ledger: AuditLedger, event: dict) -> None:
 
 def _contain(*, manager: UnitManager, authority: ContextdStopAuthority, root: Path,
              stop_sent: bool, give_up: Optional[float] = None,
-             clock: Callable[[], float] = time.monotonic, settle=None) -> dict:
+             clock: Callable[[], float] = time.monotonic, settle=None,
+             fresh=None) -> dict:
     """Contextd-only finalizer: reach the masked, quiet state as far as possible.
 
     Marker removed (local, not a bus call), masked, reloaded, and one stop if
@@ -198,6 +203,21 @@ def _contain(*, manager: UnitManager, authority: ContextdStopAuthority, root: Pa
     def late() -> bool:
         return give_up is not None and clock() >= give_up
 
+    if fresh is not None and getattr(getattr(manager, "call", None), "broken", False):
+        # The session finished (a job operation ran out of its transport allowance):
+        # the reserved mask, reload and exact-masked confirmation run on a new one.
+        stack = contextlib.ExitStack()
+        try:
+            manager, authority = stack.enter_context(fresh())
+        except Exception:  # noqa: BLE001 - go on with the old session
+            stack.close()
+        else:
+            with stack:
+                if give_up is not None:
+                    bind_remaining(manager, give_up, clock)
+                return _contain(manager=manager, authority=authority, root=root,
+                                stop_sent=stop_sent, give_up=give_up, clock=clock,
+                                settle=None, fresh=None)
     try:
         remove_contextd_marker(root)
     except Exception:  # noqa: BLE001
@@ -207,7 +227,7 @@ def _contain(*, manager: UnitManager, authority: ContextdStopAuthority, root: Pa
         # before its job stage) is replaced and recorded BEFORE the mask and the
         # reload, which would make systemd fail it. Once: `settle` knows.
         try:
-            settle()
+            settle(True)
         except Exception:  # noqa: BLE001 - the mask goes on
             pass
     for step in (lambda: manager.mask(CONTEXTD_UNIT), manager.reload):
@@ -250,7 +270,8 @@ def release_queued_job(*, state: QueuedJobState, authority: ContextdStopAuthorit
                        deadline: Optional[float], reason: str,
                        clock: Callable[[], float] = time.monotonic,
                        sleep: Callable[[float], None] = time.sleep,
-                       sink: Optional[Callable[[dict], None]] = None) -> None:
+                       sink: Optional[Callable[[dict], None]] = None,
+                       transport: Optional[Callable[[float], None]] = None) -> None:
     """Replace the held start job BEFORE the broker is masked, once.
 
     Masking and reloading make systemd fail a pending start job ("Failed to
@@ -270,7 +291,7 @@ def release_queued_job(*, state: QueuedJobState, authority: ContextdStopAuthorit
         replaced = clear_contextd_job(
             authority=authority, ledger=ledger, now=now, actor=actor, reason=reason,
             invocation_id=invocation_id, deadline=job_wait_limit(deadline, clock),
-            sink=sink, clock=clock, sleep=sleep)
+            sink=sink, clock=clock, sleep=sleep, transport=transport, outer=deadline)
     except Exception:  # noqa: BLE001 - recorded by clear_contextd_job; the mask goes on
         return
     if replaced:
@@ -297,6 +318,7 @@ def withdraw_contextd(
     final_deadline: Optional[float] = None,
     bind_deadline: Optional[Callable[[float], None]] = None,
     sink: Optional[Callable[[dict], None]] = None,
+    fresh=None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict:
@@ -331,7 +353,7 @@ def withdraw_contextd(
             bind_deadline(final_deadline)
         reached = _contain(manager=manager, authority=authority, root=root,
                            stop_sent=stop_sent, give_up=final_deadline, clock=clock,
-                           settle=settle_job)
+                           settle=settle_job, fresh=fresh)
         emit({
             "event_type": "activation.withdrawal_unconfirmed",
             "unit": CONTEXTD_UNIT, "reason": reason, "stage": stage, "why": why,
@@ -345,7 +367,7 @@ def withdraw_contextd(
     quiet_state = "inactive"
     job_attempted = False
 
-    def settle_job() -> bool:
+    def settle_job(in_finalizer: bool = False) -> bool:
         """Replace a pending start job, once, with the queued-job record.
 
         The one place that does it, for the job stage and for the finalizer: a
@@ -357,12 +379,17 @@ def withdraw_contextd(
         if job_attempted:
             return False
         job_attempted = True
+        # The finalizer works against the final deadline (the steps' own deadline
+        # has passed by then); the job stage against the steps' deadline.
+        base = (final_deadline if (in_finalizer and final_deadline is not None)
+                else (deadline if deadline is not None else final_deadline))
         try:
             replaced = clear_contextd_job(
                 authority=authority, ledger=ledger, now=now, actor=actor,
                 reason=reason, invocation_id=invocation_id,
-                deadline=job_wait_limit(deadline, clock),
-                sink=emit, clock=clock, sleep=sleep)
+                deadline=job_wait_limit(base, clock),
+                sink=emit, clock=clock, sleep=sleep,
+                transport=bind_deadline, outer=base)
         except WithdrawalUnconfirmed:
             return False  # recorded by clear_contextd_job; masking follows
         if replaced:
@@ -426,12 +453,32 @@ def clear_contextd_job(
     sink: Optional[Callable[[dict], None]] = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
+    transport: Optional[Callable[[float], None]] = None,
+    outer: Optional[float] = None,
 ) -> bool:
     """Replace a start job the manager has queued for a broker that is not granted.
 
     Returns True when a job was found and replaced. A job that cannot be
     read or replaced within the budget raises `WithdrawalUnconfirmed`.
+
+    `deadline` bounds the job operations themselves, not only the sleeps between
+    polls: when `transport` is given it is called with `deadline` before the first
+    Job read and with `outer` afterwards, so that the session's own per-call limit
+    (the Job reads, StopUnit and the polling) ends before the time reserved for
+    the mask that follows.
     """
+    if transport is not None and deadline is not None:
+        transport(deadline)
+    try:
+        return _clear_job(authority, ledger, now, actor, reason, invocation_id,
+                          deadline, sink, clock, sleep)
+    finally:
+        if transport is not None and outer is not None:
+            transport(outer)
+
+
+def _clear_job(authority, ledger, now, actor, reason, invocation_id, deadline, sink,
+               clock, sleep) -> bool:
     started = clock()
     emit = sink if sink is not None else (lambda event: _record(ledger, event))
     try:

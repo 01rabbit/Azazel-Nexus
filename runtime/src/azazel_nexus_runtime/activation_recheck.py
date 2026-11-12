@@ -24,6 +24,7 @@ It never widens and never decides for any other unit:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sys
@@ -176,6 +177,7 @@ def run_recheck(
     record_seconds: float = RECHECK_RECORD_SECONDS,
     finalizer_seconds: float = RECHECK_FINALIZER_SECONDS,
     collect_seconds: float = RECHECK_COLLECT_SECONDS,
+    fresh_session=None,
 ) -> int:
     """One recheck under the pass lock; the process exit status.
 
@@ -288,7 +290,7 @@ def run_recheck(
                 root=root, ledger=ledger, now=now, actor=ACTOR,
                 invocation_id=invocation_id, deadline=work, final_deadline=final,
                 bind_deadline=lambda d: bind_remaining(manager, d, clock),
-                sink=record, clock=clock, sleep=sleep)
+                sink=record, fresh=fresh_session, clock=clock, sleep=sleep)
         except WithdrawalUnconfirmed:
             # Already recorded and left masked as far as it could be. Other
             # units are not narrowed from here: this process decides for the
@@ -351,6 +353,17 @@ def main(argv=None) -> int:
 
     now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     started = time.monotonic()  # before the connect: connecting counts
+
+    @contextlib.contextmanager
+    def fresh_session():
+        # A new session when a job operation ran out of its transport allowance:
+        # the mask, the reload and the exact-masked confirmation run on it. Its
+        # connect is bounded by what is left before the records.
+        with SystemdBusSession.connect(
+                lambda: started + RECHECK_BUDGET_SECONDS - RECHECK_RECORD_SECONDS
+                - time.monotonic()) as other:
+            yield DbusUnitManager(call=other), ContextdStopAuthority.from_session(other)
+
     try:
         with SystemdBusSession.connect(
                 lambda: started + RECHECK_BUDGET_SECONDS - RECHECK_RECORD_SECONDS
@@ -359,7 +372,7 @@ def main(argv=None) -> int:
                 manager=DbusUnitManager(call=session),
                 authority=ContextdStopAuthority.from_session(session),
                 root=Path("/"), now=now, invocation_id=invocation_id, started=started,
-                retirement=production_retirement(),
+                fresh_session=fresh_session, retirement=production_retirement(),
                 producers=production_producers(
                     commissioning_evidence=load_commissioning_evidence, systemd=session))
     except Exception as exc:  # noqa: BLE001 - the service boundary reports a class only

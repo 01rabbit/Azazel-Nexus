@@ -620,14 +620,18 @@ _ALL_PRODUCERS = (
 )
 
 #: One monotonic budget for a whole main pass, counted from before the bus
-#: connects to the end of the narrowing a failed pass needs. The phases of the
-#: pass end `MAIN_PASS_RESERVE_SECONDS` before it; the reserve is held back for
-#: the narrowing itself (markers, masks, reload) and its record.
-#: `azazel-activated.service` has `TimeoutStartSec=60s`: 37 s of phases + 8 s
-#: reserve = 45 s budget, and 15 s of margin for READY, its barrier and the
-#: exit.
-MAIN_PASS_BUDGET_SECONDS = 45.0
+#: connects to the end of the narrowing a failed pass needs, in three parts:
+#: the phases (37 s, `budget - ready - reserve`), then the READY window
+#: (`MAIN_PASS_READY_SECONDS`: sending READY, then the barrier, at worst 1 s +
+#: 1 s + the barrier's 5 s wait, so 8 s), then the reserve
+#: (`MAIN_PASS_RESERVE_SECONDS`: the narrowing a failed READY or barrier needs,
+#: and its record). READY and the barrier therefore cannot eat the reserve.
+#: `azazel-activated.service` has `TimeoutStartSec=60s`: 37 + 8 + 8 = 53 s,
+#: and 7 s of margin for the exit.
+MAIN_PASS_BUDGET_SECONDS = 53.0
+MAIN_PASS_READY_SECONDS = 8.0
 MAIN_PASS_RESERVE_SECONDS = 8.0
+_AFTER_PHASES = MAIN_PASS_READY_SECONDS + MAIN_PASS_RESERVE_SECONDS
 #: How long the main pass waits for the pass lock before it narrows (inside the
 #: phase budget). It is longer than the part of a recheck that is time-bounded
 #: (its bus work and containment finalizer, at most 20 s), so a pass that
@@ -665,15 +669,22 @@ def _contextd_aids(root: Path, *, now: str, actor: str, invocation_id: str,
             return None
         return lambda: contextd_already_withdrawn(authority, root)
 
-    def before_for(authority):
+    def before_for(authority, target=None):
         if authority is None:
             return None
+
+        def transport(limit: float) -> None:
+            # The job operations (Job reads, StopUnit, polling) get their own
+            # transport deadline, so none of them can run into the time the mask,
+            # the reload and the exact-masked confirmation are reserved.
+            if target is not None:
+                bind_remaining(target, limit, clock)
 
         def before_mask() -> None:
             release_queued_job(
                 state=state, authority=authority, ledger=_activation_ledger(root),
                 now=now, actor=actor, invocation_id=invocation_id, deadline=until,
-                reason="before_mask", clock=clock, sleep=sleep,
+                reason="before_mask", clock=clock, sleep=sleep, transport=transport,
                 sink=None if record else (lambda event: None))
 
         return before_mask
@@ -722,7 +733,7 @@ def _narrow_final(manager: UnitManager, root: Path, message: str, *, until: floa
         withdrawn = withdrawn_for(target_authority)
         clear_job = clear_for(target_authority)
         options = {} if withdrawn is None else {"withdrawn": withdrawn}
-        before = before_for(target_authority)
+        before = before_for(target_authority, target)
         if before is not None:
             options["before_mask"] = before
         try:
@@ -735,16 +746,29 @@ def _narrow_final(manager: UnitManager, root: Path, message: str, *, until: floa
                     pass
             raise
 
-    if fresh_manager is not None and getattr(getattr(manager, "call", None), "broken", False):
+    def broken(target) -> bool:
+        return bool(getattr(getattr(target, "call", None), "broken", False))
+
+    def on_fresh() -> None:
         stack = contextlib.ExitStack()
         try:
             other, other_authority = stack.enter_context(fresh_manager())
         except Exception:  # noqa: BLE001 - narrow on what there is
             stack.close()
-        else:
-            with stack:
-                narrow(other, other_authority)
-    narrow(manager, authority)
+            return
+        with stack:
+            narrow(other, other_authority)
+
+    if fresh_manager is not None and broken(manager):
+        on_fresh()
+    try:
+        narrow(manager, authority)
+    except RuntimeError:
+        # The session finished DURING this narrowing (a call timed out): what is
+        # left of the reserve goes to a new session, not to a refusing one.
+        if fresh_manager is not None and broken(manager):
+            on_fresh()
+        raise
 
 
 def _emergency_narrow(manager: UnitManager, root: Path, message: str, *,
@@ -812,21 +836,21 @@ def _run_once(
     ``MAIN_PASS_RESERVE_SECONDS``).
     """
     if deadline is None:
-        deadline = clock() + MAIN_PASS_BUDGET_SECONDS - MAIN_PASS_RESERVE_SECONDS
+        deadline = clock() + MAIN_PASS_BUDGET_SECONDS - _AFTER_PHASES
 
     def _narrow_now(narrowing_manager, narrowing_root, message):
         # Narrowing may spend the reserve held back from the phases: the bus
         # calls it makes are bounded by the end of the whole budget, not by
         # the end of the phases.
         _narrow_final(narrowing_manager, narrowing_root, message,
-                      until=deadline + MAIN_PASS_RESERVE_SECONDS, clock=clock,
+                      until=deadline + _AFTER_PHASES, clock=clock,
                       fresh_manager=fresh_manager, authority=stop_authority, aids=aids)
 
     if hold_state is None:
         hold_state = QueuedJobState()
     aids = _contextd_aids(
         root, now=now, actor=actor, invocation_id=invocation_id,
-        until=deadline + MAIN_PASS_RESERVE_SECONDS, clock=clock, sleep=sleep, record=True,
+        until=deadline + _AFTER_PHASES, clock=clock, sleep=sleep, record=True,
         hold_state=hold_state)
     withdrawn = aids[0](stop_authority)
     # The hook the verdict's own mask, a rollback and a wider narrowing reach runs
@@ -836,7 +860,7 @@ def _run_once(
     phase_aids = _contextd_aids(
         root, now=now, actor=actor, invocation_id=invocation_id, until=deadline,
         clock=clock, sleep=sleep, record=True, hold_state=hold_state)
-    release_job = phase_aids[2](stop_authority)
+    release_job = phase_aids[2](stop_authority, manager)
     daemon = ActivationDaemon(
         generations=GenerationStore(root / "var/lib/azazel/generations"),
         ledger=_activation_ledger(root),
@@ -873,11 +897,11 @@ def _run_once(
                     reason="preflight", manager=manager, authority=stop_authority,
                     root=root, ledger=daemon.ledger, now=now, actor=actor,
                     invocation_id=invocation_id, deadline=deadline,
-                    final_deadline=deadline + MAIN_PASS_RESERVE_SECONDS,
+                    final_deadline=deadline + _AFTER_PHASES,
                     bind_deadline=lambda d: bind_remaining(manager, d, clock),
-                    clock=clock, sleep=sleep)
+                    fresh=fresh_manager, clock=clock, sleep=sleep)
             except WithdrawalUnconfirmed:
-                bind_remaining(manager, deadline + MAIN_PASS_RESERVE_SECONDS, clock)
+                bind_remaining(manager, deadline + _AFTER_PHASES, clock)
                 _narrow_now(
                     manager, root,
                     "the Knowledge Context broker could not be withdrawn at preflight")
@@ -1608,6 +1632,7 @@ def _locked_pass(
     clock=time.monotonic, sleep=time.sleep, producers=None,
     budget_seconds: float = MAIN_PASS_BUDGET_SECONDS,
     reserve_seconds: float = MAIN_PASS_RESERVE_SECONDS,
+    ready_seconds: float = MAIN_PASS_READY_SECONDS,
     started: Optional[float] = None, fresh_manager=None,
 ) -> ActivationOutcome:
     """The main pass under the pass lock, from the lock to READY's barrier.
@@ -1633,7 +1658,7 @@ def _locked_pass(
     """
     begin = clock() if started is None else started
     final = begin + budget_seconds
-    work = final - reserve_seconds
+    work = final - reserve_seconds - ready_seconds
 
     hold_state = QueuedJobState()
 
@@ -1776,12 +1801,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         started = time.monotonic()
 
         def work_left(begin=started) -> float:
-            return begin + MAIN_PASS_BUDGET_SECONDS - MAIN_PASS_RESERVE_SECONDS - time.monotonic()
+            return begin + MAIN_PASS_BUDGET_SECONDS - _AFTER_PHASES - time.monotonic()
 
         @contextlib.contextmanager
         def fresh_manager():
             # A new session for a narrowing after a call timed out. Its connect
-            # is bounded by what is left of the whole 45 s.
+            # is bounded by what is left of the whole budget.
             with SystemdBusSession.connect(
                     lambda: started + MAIN_PASS_BUDGET_SECONDS - time.monotonic()) as other:
                 yield DbusUnitManager(call=other), ContextdStopAuthority.from_session(other)

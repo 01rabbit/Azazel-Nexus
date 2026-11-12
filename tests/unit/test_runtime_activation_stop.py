@@ -714,7 +714,7 @@ def test_the_budget_is_below_the_start_timeout_of_the_unit():
     assert timeout == "60"
     # the lock wait is inside the budget; READY and its barrier get the rest
     assert activated.PASS_LOCK_WAIT_SECONDS < activated.MAIN_PASS_BUDGET_SECONDS
-    assert activated.MAIN_PASS_BUDGET_SECONDS + 15 <= int(timeout)
+    assert activated.MAIN_PASS_BUDGET_SECONDS + 7 <= int(timeout)
     assert STOP_WAIT_SECONDS < activated.MAIN_PASS_BUDGET_SECONDS
 
 
@@ -726,7 +726,7 @@ def test_the_pass_budget_caps_the_broker_stop(main_pass):
     with pytest.raises(RuntimeError, match="could not be withdrawn at preflight"):
         main_pass.run(deadline=started + 2.0)
     # the phases ended at 2 s; the narrowing's own withdrawal may spend the reserve
-    assert main_pass.clock() - started < 2.5 + activated.MAIN_PASS_RESERVE_SECONDS
+    assert main_pass.clock() - started < 2.5 + activated._AFTER_PHASES
 
 
 def test_the_main_pass_wiring_is_the_locked_pass():

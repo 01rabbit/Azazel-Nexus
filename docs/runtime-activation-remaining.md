@@ -6243,7 +6243,7 @@ The A1 grant of `azazel-knowledge-contextd.service` gained a stop contract
 - A fixed stop authority for that one unit (`StopUnit`, `replace`, constant
   body) and a read of its `Job` property; `StartUnit` stays absent.
 - `withdraw_contextd`: marker, mask, reload, stop, confirm inactive with no job,
-  record the timings; 20 s wait bound; main pass budget 45 s and
+  record the timings; 20 s wait bound; main pass budget 53 s and
   `TimeoutStartSec=60s`.
 - A pass lock shared by the main pass and the new recheck
   (`azazel-activation-recheck.timer`, 30 s as configured, not a bound).
