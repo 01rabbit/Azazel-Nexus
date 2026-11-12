@@ -1185,7 +1185,7 @@ broker's cgroup right after the judgment; the cgroup reader cannot prevent that
 The recheck's protection against unexpected errors covers the retirement and the
 verdict (their calls, results and fields); other steps of the recheck keep their
 own handling. On a host where the reader is structurally `unknown` (a mountinfo
-over its size limit, cgroup v1, a container with the host cgroup namespace), the
+over the reader's 64 KiB limit or not plain ASCII, cgroup v1, a container with the host cgroup namespace), the
 recheck records `withdrawal_unconfirmed` every period and exits non-zero.
 `KeyboardInterrupt` and `SystemExit` are outside this containment: the narrowing
 catches `Exception` only. In the service's context SIGTERM is not turned into an

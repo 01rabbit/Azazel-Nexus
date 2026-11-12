@@ -539,7 +539,10 @@ def test_a_look_alike_retirement_result_is_a_withhold(granted, outcome):
 @pytest.mark.parametrize("verdict", [
     ContextdVerdict(True, "bogus"), ContextdVerdict(True, "granted:extra"),
     ContextdVerdict(True, 5), ContextdVerdict(False, 5), ContextdVerdict(False, "granted"),
-    ContextdVerdict(False, "made_up: x")])
+    ContextdVerdict(False, "made_up: x"),
+    # labels the helper can give in general but not on the recheck's path
+    ContextdVerdict(False, "health_not_established: x"), ContextdVerdict(False, "lease_absent: x"),
+    ContextdVerdict(False, "wiring_absent: x"), ContextdVerdict(False, "tier_not_supporting")])
 def test_a_verdict_that_does_not_match_what_a_grant_looks_like_is_a_withhold(
         granted, monkeypatch, verdict):
     monkeypatch.setattr(activation_recheck, "contextd_verdict", lambda *a, **k: verdict)
@@ -563,7 +566,9 @@ def test_a_duck_typed_granted_verdict_is_not_trusted(granted, monkeypatch):
 @pytest.mark.parametrize("reason,label", [
     ("retirement_pending", "retirement_pending"),
     ("lease_expired: the lease ran from a to b", "lease_expired"),
-    ("health_not_established: x", "health_not_established")])
+    ("lease_generation_mismatch: x", "lease_generation_mismatch"),
+    ("outside_lease_scope: x", "outside_lease_scope"),
+    ("inputs_incomplete", "inputs_incomplete")])
 def test_a_real_withhold_keeps_its_label_in_the_record(granted, monkeypatch, reason, label):
     monkeypatch.setattr(activation_recheck, "contextd_verdict",
                         lambda *a, **k: ContextdVerdict(False, reason))

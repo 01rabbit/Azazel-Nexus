@@ -86,12 +86,13 @@ _CONTEXTD_DEFINITION = next(d for d in CORE_UNITS if d.name == CONTEXTD_UNIT)
 _RETIREMENT_OUTCOMES = ("none", "retired", "resumed")
 
 
-#: The labels `contextd_verdict` gives a withhold (its own, and the library's
-#: `common_withholding_reason` / `lease_refusal` prefixes).
+#: The labels `contextd_verdict` can give a withhold on the recheck's path. A missing
+#: lease or an unhealthy node ends in `inputs_incomplete` before the shared helper is
+#: called, the broker has no `wiring`, and its tier is the constant SUPPORTING, so only
+#: the lease's expiry, generation and scope refusals come out of that helper.
 _WITHHOLD_LABELS = frozenset({
-    "retirement_pending", "inputs_unavailable", "inputs_incomplete", "tier_not_supporting",
-    "wiring_absent", "health_not_established", "lease_absent", "lease_expired",
-    "lease_generation_mismatch", "outside_lease_scope"})
+    "retirement_pending", "inputs_unavailable", "inputs_incomplete",
+    "lease_expired", "lease_generation_mismatch", "outside_lease_scope"})
 
 
 @dataclass(frozen=True)
