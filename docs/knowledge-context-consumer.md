@@ -198,6 +198,7 @@ unchanged. Success and unclassified failures carry none.
 | `transport` | `unavailable` | Failed while connecting, in TLS pinning, or in HTTP exchange; delivery is not guaranteed either way |
 | `verification` | `unavailable` | A response arrived but failed signature, binding, lifetime or schema checks, or the broker rejected it (not an object, over 48 KiB) |
 | `late` | `timeout` | A verified response arrived after the deadline |
+| `withdrawn` | `unavailable` | The grant marker was missing at admission, or missing or replaced before the answer was adopted; nothing from the peer was adopted |
 
 A missing `reason_code` on a record written before this field existed reads as
 "not recorded"; on a record written after, it reads as "unclassified". Neither
@@ -653,19 +654,24 @@ satisfied by this software:
    does not grant it, an absent bundle does not withhold it, and Knowledge
    Context is not added to `wired_capabilities()`.
 
-Stopping and recovery use mechanisms that already exist: the unit is preset
-disabled and starts only while its activation grant marker is present. The
-activation pass has no stop authority, so removing the grant (the unit
-dropped from the policy, a lease that does not list it, failed health or
-commissioning evidence) only prevents a new start: the marker is cleared and
-the unit re-masked on the next pass, and while the broker is still running
-that pass records a containment failure. The operator ends it with
-`systemctl stop azazel-knowledge-contextd.service` or a reboot; the next pass
-then confirms it inactive. Emergency stop: remove the unit from the policy
-and re-sign, then `systemctl stop`. Stopping alone is not durable: while the
-policy still names the unit, a later pass grants it again (marker written,
-unit unmasked and enabled). The pass never issues StartUnit, so the broker
-runs again only at the next boot or an operator start. Introduce in this order: new release,
+Stopping and recovery: the unit is preset disabled and starts only while its
+activation grant marker is present. The controller can stop this unit, and
+only this one (`docs/activation-observe-baseline.md` §8.3). When the grant
+ends (the unit dropped from the policy, a lease that does not list it, an
+expired approval, a revoked operator, failed health or commissioning
+evidence), the next pass, or the periodic recheck (every 30 s as configured,
+not a bound), removes the marker, masks the unit, reloads the manager and
+sends `StopUnit`, then confirms the unit inactive with no job. The broker also
+reads its marker when it accepts a request and again before it adopts the
+peer's answer: after the marker is gone it accepts nothing and adopts no
+answer (`reason_code` `withdrawn`). An answer adopted earlier may still reach
+the caller until the unit is inactive. Stopping by hand is no longer
+required, and stopping alone is still not durable: while the policy and
+approval still grant the unit, a later pass grants it again. When the
+operator that signed the approval is explicitly revoked, the approval is
+retired and the same approval is refused afterwards. The pass never issues
+StartUnit, so the broker runs again only at the next boot or an operator start.
+Introduce in this order: new release,
 then a policy naming contextd. Withdraw in this order: remove contextd from
 the policy and re-sign, confirm on the next pass that it is closed, then
 return to an older release (an older release refuses a policy that names

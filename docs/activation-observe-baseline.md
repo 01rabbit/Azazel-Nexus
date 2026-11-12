@@ -504,13 +504,14 @@ fetchd stay excluded and a policy naming them is still refused as a whole.
   no commissioned bundle (or a defective one) the broker starts and stays
   closed (`knowledge-context-consumer.md`). The unit stays masked, preset
   disabled and without an address allowance until a policy names it.
-- *Closing.* The pass has no StopUnit authority. Removing the unit from the
-  policy (re-signed), a lease that does not list it, or failed health or
-  commissioning evidence clears the marker and re-masks the unit on the next
-  pass, which only prevents a new start. A running broker is reported as a
-  containment failure (`RollbackFailed`) until the operator runs
-  `systemctl stop azazel-knowledge-contextd.service` or the node reboots; the
-  next pass then confirms it inactive.
+- *Closing.* The controller can stop this one unit and no other (§8.3).
+  Removing the unit from the policy (re-signed), a lease that does not list
+  it, an expired approval, a revoked operator, or failed health or
+  commissioning evidence ends the grant: the next pass, or the periodic
+  recheck within about 30 s, removes the marker, masks the unit, reloads the
+  manager and stops it. A broker that cannot be confirmed stopped is
+  reported (`activation.withdrawal_unconfirmed`, non-zero exit) and stays
+  masked.
 - *Order.* Introduce: install the release that carries this change first,
   then sign a policy that names contextd. Withdraw: remove contextd from the
   policy and re-sign, check on the next pass that it is closed, and only then
@@ -695,8 +696,8 @@ controller loads no reader (`tests/unit/test_activation_p4_wiring.py`).
    withdrawal is **best effort, not a guarantee**: if systemd had already
    processed READY, the dependents' `ConditionPathExists=` can be evaluated
    concurrently with it. A start job evaluated after its marker is gone is
-   skipped; a unit that started inside that window is not stopped (there is
-   no `StopUnit`), and its remask fails with `masked unit has no confirmed
+   skipped; a unit that started inside that window is not stopped (the stop
+   authority covers the Knowledge Context broker alone), and its remask fails with `masked unit has no confirmed
    inactive state`, which also exits 1. `completed safely` is printed only
    after READY and the barrier succeeded. From the first marker to the final
    `activation.inputs_incomplete` record, any failure -- a marker that cannot
@@ -1066,6 +1067,103 @@ Tests:
 - `tests/unit/test_runtime_systemd_bus.py`: the single `GetAll`, refused
   outside the grantable units or the `Unit` interface.
 
+### 8.3 Stopping a granted Knowledge Context broker
+
+This section describes the stop contract for `azazel-knowledge-contextd.service`.
+It is the only unit the controller can stop.
+
+**Reload (F2, F1).** `MaskUnitFiles`, `UnmaskUnitFiles` and `EnableUnitFiles`
+change files; a manager that loaded a unit earlier keeps its loaded
+definition until it is reloaded, so a granted unit could still start as
+`masked`. Each batch of such changes now ends with one argument-less
+`Manager.Reload`: after the preflight masks, after the controller's grant
+batch, after a rollback or wider narrowing, and after an emergency narrowing
+and a recheck's mask. A failed reload is fail-closed (grant unconfirmed,
+everything masked, non-zero exit). After the grant batch's reload, and before
+the floors are raised, any marker is written or READY is sent, the loaded
+definitions of the guarded units are verified again (§8.2: loaded, vendor
+`FragmentPath`, no drop-in); a unit that does not verify is withdrawn.
+
+**Authority.** `ContextdStopAuthority` is a separate type, not a method of the
+unit manager adapter. It sends `StopUnit` with the constant body
+`azazel-knowledge-contextd.service`, `replace`, and reads that unit's `Job`
+property. Both layers refuse any other unit before a D-Bus exchange. `StartUnit`
+is still never sent; there is no shell and no unit name or command from a
+caller.
+
+**Withdrawal.** `withdraw_contextd(reason)` runs with the pass lock held:
+1. unlink the broker's marker (no-follow) and confirm it is gone (`t_marker`);
+   other markers are not touched;
+2. mask the broker and reload the manager (`t_reload`);
+3. if its `ActiveState` is not `inactive` or it has a job, send `StopUnit`
+   (`replace`) (`t_stop`);
+4. wait until `ActiveState` is `inactive` and the job is `(0, "/")`
+   (`t_inactive`), at most 20 s and within the remaining pass budget;
+5. record `activation.grant_withdrawn` with the reason, the timings in
+   milliseconds since detection and the invocation id.
+
+A step that cannot be confirmed leaves the broker masked and records
+`activation.withdrawal_unconfirmed` (the record failing changes nothing); the
+exit is non-zero. The recheck does not narrow other units in that case.
+
+**Timeline.** `t_loss` is when the condition is lost (an expiry instant, a
+revocation, a health change); it is not observed. `t_detect` is when a pass or
+recheck notices it. `t_marker`, `t_reload`, `t_stop` and `t_inactive` follow as
+above. The recheck runs 30 s after boot and 30 s after each start
+(`OnBootSec=30s`, `OnUnitActiveSec=30s`, `AccuracySec=1s`); that is a
+configured value, not a bound: a run that finds the lock held changes nothing,
+and a run can be late. The withdrawal itself is bounded at 20 s after
+`t_stop`; each bus call has its own 10 s timeout. `t_loss` to `t_detect` has
+no bound.
+
+**Adoption contract (weakened).** The broker reads its marker when it accepts a
+request and again before it adopts the peer's answer
+(`knowledge-context-consumer.md`). No answer is adopted after `t_marker`. An
+answer adopted earlier may still be on its way to the caller until the broker
+is inactive (`t_inactive`), because delivery is not undone. A marker removed
+and written again inside one kernel timestamp tick could keep the identity
+`(st_dev, st_ino, st_ctime_ns)`; a real re-grant is a later pass, far longer
+than a tick (推測です, not measured on a node).
+
+**Main pass.** The pass takes `/run/azazel-activation/pass.lock` (root `0600`,
+no-follow, `flock`), waiting at most 5 s, and holds it until READY's barrier;
+without the lock it narrows and exits non-zero. One monotonic budget of 45 s
+covers the pass, and `azazel-activated.service` has `TimeoutStartSec=60s`
+(was 30 s). At preflight a broker that is running is withdrawn before the masks
+are confirmed; an inactive broker with a queued start job is not stopped (its
+marker is gone and it is masked, so the job is skipped). If the pass does not
+grant the broker and a start job is queued for it, the job is replaced with
+`StopUnit` (`replace`) and `Job` is confirmed `(0, "/")`. Any other governed
+unit that is running is still a containment failure, and re-granting the
+broker still needs every other governed unit to be inactive.
+
+**Recheck.** `azazel-activation-recheck.service` (root, the controller's
+sandbox without its writes to `/etc/systemd/system` and
+`/run/systemd/system.control`, `TimeoutStartSec=40s`, no `[Install]`) is run by
+its timer, which the installer and the preset enable. It takes the pass lock
+without waiting; if the lock is held it changes nothing, writes no ledger
+record and exits 0. It acts only if the broker has a marker, is not masked, or
+is not inactive or has a job. It collects the pass inputs (read-only), and the
+pure function `contextd_verdict` says whether the pass would grant the broker
+(the library's wiring, health, lease, validity, generation and scope
+conditions); a failed collection withholds. If the verdict is withhold, the
+recheck withdraws the broker. It never grants, never masks another unit and
+never calls the controller's pass. A grant that never started (marker present,
+unmasked, inactive) is withdrawn with marker removal, mask and reload and no
+`StopUnit`.
+
+**Approval retirement.** A grant records the approval it was made under in
+`state/activation/accepted-grant.json` (root `0600`) before any marker or
+READY. When a freshly loaded operator trust lists that approval's operator in
+`revoked` (an explicit entry; a loader failure proves nothing), the recheck
+retires the approval: it writes `retirement-pending.json`, raises the approval
+sequence floor to `approval_seq + 1` (other fields kept), reads the floor back,
+and removes the accepted record and the pending file. A pending file is
+resumed by the next recheck and blocks grants in the main pass. The same
+approval is then refused for every unit it names. Expiry, health and evidence
+loss retire nothing: when the condition returns, the same approval can grant
+again.
+
 ## 9. Review #251: low findings L-1–L-4, L-6
 
 The cross-cutting review of the activation path
@@ -1088,7 +1186,8 @@ success.
   unknown. The safe side is the failed-pass state. It is best effort, not a
   guarantee: when READY had been processed, a dependent's marker condition
   may be evaluated concurrently with the withdrawal, and a unit that started
-  inside that window keeps running (no `StopUnit`); its remask then fails
+  inside that window keeps running (no `StopUnit` except for the Knowledge
+  Context broker, §8.3); its remask then fails
   with `masked unit has no confirmed inactive state` and the exit is 1. The
   cost is availability: the units granted by that pass are masked again, so
   they start only after a later boot's pass grants them anew.
@@ -1164,7 +1263,7 @@ addition, M-1's opt-in policy field (§10.1), can only add a refusal.
   after the controller. An administrator who enables a wait-sync service
   makes the controller (and every unit ordered after it, the selected
   bootstrap path included) wait until the clock is synchronized. Nothing
-  bounds that wait: the controller's `TimeoutStartSec=30s` counts from the
+  bounds that wait: the controller's `TimeoutStartSec=60s` (§8.3) counts from the
   start of its `ExecStart=`, not while its start job waits on an ordering
   dependency, and the controller sets no `JobTimeoutSec=`. On an offline
   node with such a service enabled, the controller may therefore wait
@@ -1304,17 +1403,19 @@ units, and neither file is one of them.
   - shorter approvals (`max_lease_seconds`) narrow the window; an RTC with a
     battery narrows it further;
   - accept it as local trust, like the high water itself (§3.5).
-- **M-2: a grant lasts for the boot.** Expiry and revocation are checked
-  only by a pass. Once a pass has granted, the unit's marker stays under
-  `/run/azazel-activation/granted/` until the boot ends, the controller has
-  no `StopUnit`, and nothing re-reads the approval, the operator trust or the
-  policy during the boot. An approval that expires, an operator key that is
-  revoked or a policy that is narrowed after the pass therefore stops nothing
-  that is running and does not withhold a restart of a granted unit in the
-  same boot (its own `Restart=` or an operator's `systemctl start`, which
-  still finds its marker). It takes effect at the next boot's pass, which
-  refuses and remasks. Stopping a unit at once is an operator action
-  (`systemctl stop` and `mask`), outside activation.
+- **M-2: a grant lasts for the boot, except the Knowledge Context broker's.**
+  Expiry and revocation are checked by a pass. Once a pass has granted, a
+  unit's marker stays under `/run/azazel-activation/granted/` until the boot
+  ends, the controller has no `StopUnit` for it, and nothing re-reads the
+  approval, the operator trust or the policy during the boot. An approval
+  that expires, an operator key that is revoked or a policy that is narrowed
+  after the pass therefore stops nothing that is running and does not
+  withhold a restart of a granted unit in the same boot (its own `Restart=`
+  or an operator's `systemctl start`, which still finds its marker). It takes
+  effect at the next boot's pass, which refuses and remasks. Stopping a unit
+  at once is an operator action (`systemctl stop` and `mask`), outside
+  activation. The Knowledge Context broker is the exception: the recheck of
+  §8.3 withdraws and stops it.
 - **M-4: what a generation does not bind.** The observe-baseline tree
   (§3.2, §8.1) binds the vendor unit files of the policy's units and, when
   edge-core is in scope, the Edge package and its extracted binary and
@@ -1341,7 +1442,8 @@ units, and neither file is one of them.
   started again after its first pass exited (an operator's
   `systemctl start`). The second pass removes every marker and remasks every
   governed unit first. A unit the first pass granted and that is now running
-  stays running (no `StopUnit`), so its remask fails with `masked unit has no
+  stays running (no `StopUnit`; the Knowledge Context broker is stopped at
+  preflight, §8.3), so its remask fails with `masked unit has no
   confirmed inactive state`, and the pass is expected to end in the
   emergency narrowing or `RollbackFailed` and exit 1 rather than grant. That
   is fail-closed (nothing new starts; a granted unit that stops cannot

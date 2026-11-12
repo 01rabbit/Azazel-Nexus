@@ -6230,3 +6230,31 @@ Issue closure occurred. [Composition status](evidence/bootstrap-composition-stat
 and [installer staging](evidence/bootstrap-installer-staging-2026-10-15.json)
 evidence record the classification, gates, owner-input procedure, commands and
 hashes.
+
+## 2026-11-12: stopping the Knowledge Context broker (work unit 45)
+
+The A1 grant of `azazel-knowledge-contextd.service` gained a stop contract
+(`docs/activation-observe-baseline.md` §8.3). What changed:
+
+- F2: each batch of mask, unmask and enable ends with `Manager.Reload`, and the
+  guarded units' loaded definitions are verified again after the grant batch's
+  reload, before markers and READY. Without the reload a granted unit could
+  start as `masked` in the same boot.
+- A fixed stop authority for that one unit (`StopUnit`, `replace`, constant
+  body) and a read of its `Job` property; `StartUnit` stays absent.
+- `withdraw_contextd`: marker, mask, reload, stop, confirm inactive with no job,
+  record the timings; 20 s wait bound; main pass budget 45 s and
+  `TimeoutStartSec=60s`.
+- A pass lock shared by the main pass and the new recheck
+  (`azazel-activation-recheck.timer`, 30 s as configured, not a bound).
+- The broker refuses requests and does not adopt answers once its marker is
+  gone; an answer adopted earlier can still reach the caller until it is
+  inactive.
+- Approval retirement on an explicit operator revocation. Expiry, health and
+  evidence loss retire nothing.
+
+Still open: the real-node timings (`t_marker` to `t_inactive`) and the next
+boot behaviour are not measured here; they need the clone run on the Debian
+VM. Operator visibility of the recheck unit in the units snapshot is not
+added. This session's tests ran in a Linux container; no node, unit, push or
+Issue change occurred.
