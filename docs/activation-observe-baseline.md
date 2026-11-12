@@ -1094,8 +1094,18 @@ caller.
 **Withdrawal.** `withdraw_contextd(reason)` runs with the pass lock held:
 1. unlink the broker's marker (no-follow) and confirm it is gone (`t_marker`);
    other markers are not touched;
-2. mask the broker and reload the manager (`t_reload`);
-3. if its `ActiveState` is not `inactive` or it has a job, send `StopUnit`
+2. if a start job is pending for the broker, replace it FIRST: `StopUnit`
+   (`replace`), wait until no job is left, record `activation.queued_job_replaced`
+   (one record, whichever code path got here). The wait is at most 5 s and always
+   ends 3 s before the deadline the bus session is bound to, so a slow job can
+   never use the time the next step needs; a wait that times out is recorded
+   (`activation.withdrawal_unconfirmed`, stage `job`) and the withdrawal goes on.
+   The order matters: masking and reloading with the job pending makes systemd
+   fail it ("Failed to start") with no replacement and no record. The
+   finalizer of an unconfirmed withdrawal does the same before its own mask;
+3. mask the broker and reload the manager (`t_reload`), and confirm the exact
+   unit-file state `masked`;
+   if its `ActiveState` is not `inactive` or it still has a job, send `StopUnit`
    (`replace`) (`t_stop`);
 4. wait until the broker is quiet, that is `ActiveState` is `inactive` and the
    job is `(0, "/")` (`t_inactive`), at most 20 s and within the remaining

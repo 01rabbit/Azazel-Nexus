@@ -629,6 +629,7 @@ class SlowSession:
         self.remaining = remaining
 
     def spend(self):
+        self.last = self.clock()  # when the latest bus call started
         left = self.remaining() if self.remaining else 10.0
         if left <= 0:
             raise UnitOperationFailed("the time budget ended before a call")
@@ -660,6 +661,7 @@ def _slow(granted, cost):
     guard = ContextdStopAuthority(
         stop=slow(stage.model.stop), job=slow(stage.model.current_job),
         state=slow(stage.model.active_state), file_state=slow(stage.model.file_state_of))
+    stage.session = session
     return stage, guard
 
 
@@ -1165,16 +1167,14 @@ def test_the_connection_cleanup_is_charged_to_the_deadline():
 def test_the_recheck_bus_work_and_finalizer_end_within_twenty_seconds_whatever_the_ledger_does(
         granted, monkeypatch, cost, ledger_cost):
     """What is time-bounded under the lock is the bus work and the containment
-    finalizer: they are over by the time the first record is appended. The append
-    itself (local file I/O) is not bounded, here a 30 s stall."""
+    finalizer: the last bus call starts within 20 s. The ledger appends (local file
+    I/O, here a stall of up to 30 s each) are not bounded and come on top."""
     stage, guard = _slow(granted, cost)
     stage.world.healthy = False
     real_append = AuditLedger.append
     started = stage.clock()
-    reached = []
 
     def slow_append(self, event, *args, **kwargs):
-        reached.append(stage.clock() - started)  # bus work and finalizer are over here
         stage.clock.sleep(ledger_cost)
         return real_append(self, event, *args, **kwargs)
 
@@ -1183,8 +1183,12 @@ def test_the_recheck_bus_work_and_finalizer_end_within_twenty_seconds_whatever_t
         manager=stage.manager, authority=guard, root=stage.world.root, now=NOW,
         producers=stage.world.producers(), invocation_id="c" * 32,
         clock=stage.clock, sleep=stage.clock.sleep)
-    assert reached and all(at <= 20.0 for at in reached), reached
-    assert all(at < activated.PASS_LOCK_WAIT_SECONDS for at in reached)
+    # the appends sleep on the same fake clock, so each stall pushes later bus calls
+    # out: allow for the (at most three) records made while the bus work ran
+    allowance = ledger_cost * 3
+    assert stage.session.last - started <= 20.0 + allowance, stage.session.last - started
+    if ledger_cost == 0.0:
+        assert stage.session.last - started <= 20.0
 
 
 def test_the_poll_sleep_never_oversleeps_the_deadline(granted):
@@ -1901,6 +1905,9 @@ def test_the_held_job_is_replaced_before_the_mask_when_ready_fails_first(queued,
     assert queued.model.start_job_failed is False
     assert queued.model.job == NO_JOB and queued.model.running is False
     assert queued.manager.state(CTX) is UnitState.MASKED
+    timeline = queued.manager.timeline
+    assert timeline.index(("stop", CTX)) < max(
+        i for i, entry in enumerate(timeline) if entry == ("mask", CTX))  # stop < mask
     events = queued.world.events()
     kinds = [e["event_type"] for e in events]
     assert "activation.queued_job_replaced" in kinds
@@ -1969,3 +1976,240 @@ def test_a_full_withdrawal_replaces_a_pending_job_before_it_masks(queued):
     assert queued.model.start_job_failed is False
     timeline = queued.manager.timeline
     assert timeline.index(("stop", CTX)) < timeline.index(("mask", CTX))
+
+
+# -- Codex 17: one helper for the held job, in every path and at the deadline edge ------------------------------
+
+
+class BoundQueuedManager(QueuedManager):
+    """`QueuedManager` whose calls are refused once the session's remaining time is gone."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._left = None
+        self.call = SimpleNamespace(set_remaining=self._set, broken=False)
+        self.refused = 0
+
+    def _set(self, remaining):
+        self._left = remaining
+
+    def _check(self):
+        if self._left is not None and self._left() <= 0:
+            self.refused += 1
+            raise UnitOperationFailed("the time budget ended before a call")
+
+    def mask(self, unit):
+        self._check()
+        super().mask(unit)
+
+    def reload(self):
+        self._check()
+        super().reload()
+
+    def is_inactive(self, unit):
+        self._check()
+        return super().is_inactive(unit)
+
+
+@pytest.fixture
+def edge(ctx_world, monkeypatch):
+    from azazel_nexus_runtime import systemd_notify
+    clock = FakeClock()
+    model = ContextdModel(clock, job=JOB)
+    model.start_job_failed = False
+    manager = BoundQueuedManager(model, enabled=[d.name for d in CORE_UNITS])
+    ctx_world.manager = manager
+    model.job = JOB
+    monkeypatch.setattr(systemd_notify, "notify_ready",
+                        lambda: manager.release_after_ready(ctx_world.root))
+    monkeypatch.setattr(systemd_notify, "notify_barrier", lambda: None)
+    return SimpleNamespace(world=ctx_world, clock=clock, model=model, manager=manager)
+
+
+def _one_replacement_before_the_mask(stage):
+    _replaced_not_failed(stage)
+    records = [e for e in stage.world.events()
+               if e["event_type"] in ("activation.queued_job_replaced",
+                                      "activation.queued_job_ended")]
+    assert len(records) == 1, records  # the terminal queued-job record, exactly once
+    mask_at = [i for i, entry in enumerate(stage.manager.timeline) if entry == ("mask", CTX)]
+    stop_at = stage.manager.timeline.index(("stop", CTX))
+    assert mask_at and stop_at < mask_at[0]
+
+
+def _locked_edge(stage, **kwargs):
+    return activated._locked_pass(
+        manager=stage.manager, root=stage.world.root, now=NOW, actor="test",
+        stop_authority=authority(stage.model), invocation_id="b" * 32,
+        clock=stage.clock, sleep=stage.clock.sleep,
+        producers=kwargs.pop("producers", None) or stage.world.producers(), **kwargs)
+
+
+def test_the_finalizer_replaces_the_job_when_the_withdrawal_fails_before_its_job_stage(
+        queued, monkeypatch):
+    """Marker removal fails, so the withdrawal enters the finalizer with the job still
+    queued: the finalizer must replace and record it before it masks and reloads."""
+    from azazel_nexus_runtime import activation_withdraw
+    queued.world.sign(units=SCOPE)
+
+    def fail(root):
+        raise OSError("synthetic")
+
+    monkeypatch.setattr(activation_withdraw, "remove_contextd_marker", fail)
+    with pytest.raises(WithdrawalUnconfirmed):
+        withdraw_contextd(
+            reason="t", manager=queued.manager, authority=authority(queued.model),
+            root=queued.world.root, ledger=AuditLedger(queued.world.ledger_path), now=NOW,
+            actor="t", invocation_id="1" * 32, clock=queued.clock, sleep=queued.clock.sleep)
+    _one_replacement_before_the_mask(queued)
+    assert queued.manager.state(CTX) is UnitState.MASKED
+
+
+def test_the_finalizer_replaces_the_job_when_the_deadline_stops_the_job_stage(queued):
+    """The deadline is already gone at the job stage: the finalizer (which has the
+    final deadline) still replaces the job first."""
+    start = queued.clock()
+    with pytest.raises(WithdrawalUnconfirmed):
+        withdraw_contextd(
+            reason="t", manager=queued.manager, authority=authority(queued.model),
+            root=queued.world.root, ledger=AuditLedger(queued.world.ledger_path), now=NOW,
+            actor="t", invocation_id="1" * 32, deadline=start - 1.0,
+            final_deadline=start + 8.0, clock=queued.clock, sleep=queued.clock.sleep)
+    _one_replacement_before_the_mask(queued)
+
+
+def test_the_recheck_withdrawal_of_an_inactive_queued_job_records_it_once(queued):
+    """Production path: the recheck triggers on an inactive broker with a queued job."""
+    queued.manager.timeline.clear()
+    queued.world.healthy = False
+    code = activation_recheck.run_recheck(
+        manager=queued.manager, authority=authority(queued.model), root=queued.world.root,
+        now=NOW, producers=queued.world.producers(), invocation_id="c" * 32,
+        clock=queued.clock, sleep=queued.clock.sleep)
+    assert code == 0
+    _one_replacement_before_the_mask(queued)
+    assert [e["event_type"] for e in queued.world.events()].count("activation.grant_withdrawn") == 1
+
+
+def test_a_rollback_replaces_the_held_job_once_and_before_the_mask(queued):
+    """A unit that fails to enable after the broker was granted rolls the pass back; the
+    rollback masks the broker."""
+    order = [d.name for d in CORE_UNITS]
+    later = max((u for u in CTX_SCOPE if u != CTX), key=order.index)
+    assert order.index(later) > order.index(CTX)
+    queued.manager._fail_on = later
+    outcome = _pass(queued)  # the library records the failure and the daemon rolls back
+    assert outcome is not None
+    assert any(e["event_type"] == "activation.rolled_back" for e in queued.world.events())
+    assert queued.manager.state(CTX) is UnitState.MASKED
+    _one_replacement_before_the_mask(queued)
+
+
+def test_a_wider_narrowing_replaces_the_held_job_once_and_before_the_mask(queued):
+    """The rollback cannot mask one unit, so the pass narrows everything: still one
+    replacement, still before the broker's first mask."""
+    order = [d.name for d in CORE_UNITS]
+    later = max((u for u in CTX_SCOPE if u != CTX), key=order.index)
+    queued.manager._fail_on = later
+    real = queued.manager.mask
+
+    def mask(unit):
+        if unit == later and ("unmask_and_enable", later) in queued.manager.timeline:
+            raise UnitOperationFailed("the rollback cannot mask this unit")
+        real(unit)
+
+    queued.manager.mask = mask
+    with pytest.raises(activated.RollbackFailed):
+        _pass(queued)
+    _one_replacement_before_the_mask(queued)
+
+
+def test_a_fresh_session_recovers_the_held_job_with_its_own_authority(queued, monkeypatch):
+    """The first session finished after the preflight held the job: the narrowing runs on
+    a new session, whose authority replaces the job before its mask."""
+    queued.manager.call = SimpleNamespace(broken=False, set_remaining=lambda f: None)
+    other = QueuedManager(queued.model, enabled=[d.name for d in CORE_UNITS])
+    other.timeline = queued.manager.timeline  # the same unit, the same order of events
+    used = []
+
+    @contextlib.contextmanager
+    def factory():
+        used.append(1)
+        yield other, authority(queued.model)
+
+    real = activated.ActivationDaemon.activate
+
+    def finished(self, **kwargs):
+        queued.manager.call.broken = True
+        raise activated.RollbackFailed("synthetic: refused on a finished session")
+
+    monkeypatch.setattr(activated.ActivationDaemon, "activate", finished)
+    with pytest.raises(RuntimeError, match="finished or the time ended"):
+        _pass(queued, fresh_manager=factory)
+    assert used == [1] and real is not None
+    assert other.state(CTX) is UnitState.MASKED
+    _one_replacement_before_the_mask(queued)
+
+
+def test_a_failed_ready_replaces_the_held_job_before_the_mask(queued, monkeypatch):
+    from azazel_nexus_runtime import systemd_notify
+
+    def refuse():
+        raise UnitOperationFailed("systemd notification refused")
+
+    monkeypatch.setattr(systemd_notify, "notify_ready", refuse)
+    with pytest.raises(RuntimeError, match="readiness notification unavailable"):
+        _pass(queued)
+    timeline = queued.manager.timeline
+    stop_at = timeline.index(("stop", CTX))
+    last_mask = max(i for i, entry in enumerate(timeline) if entry == ("mask", CTX))
+    assert stop_at < last_mask
+    assert queued.model.start_job_failed is False
+    records = [e for e in queued.world.events()
+               if e["event_type"] == "activation.queued_job_replaced"]
+    assert len(records) == 1
+
+
+# deadline edge
+
+def test_a_slow_job_never_uses_the_time_the_mask_needs(edge):
+    """The replaced job takes far longer than the wait allows. The wait ends with the mask's
+    reserve intact, the timeout is recorded, and the broker is still masked."""
+    edge.world.sign(units=SCOPE)
+    edge.model.stop_works = False  # the replaced job never disappears
+    started = edge.clock()
+    outcome = _locked_edge(edge)
+    assert CTX not in outcome.granted
+    assert edge.manager.state(CTX) is UnitState.MASKED  # masked, not merely stopped
+    assert edge.manager.refused == 0
+    assert edge.clock() - started < activated.MAIN_PASS_BUDGET_SECONDS
+    kinds = [e["event_type"] for e in edge.world.events()]
+    assert "activation.withdrawal_unconfirmed" in kinds  # the job wait timed out, on record
+    stage_events = [e for e in edge.world.events()
+                    if e["event_type"] == "activation.withdrawal_unconfirmed"]
+    assert stage_events[0]["stage"] == "job"
+
+
+def test_the_job_wait_is_capped_below_the_deadline_by_the_mask_reserve():
+    clock = FakeClock()
+    limit = activation_withdraw.job_wait_limit(clock() + 6.0, clock)
+    assert limit == clock() + 6.0 - activation_withdraw.MASK_RESERVE_SECONDS
+    assert activation_withdraw.job_wait_limit(clock() + 600.0, clock) == (
+        clock() + activation_withdraw.JOB_WAIT_SECONDS)
+    assert activation_withdraw.job_wait_limit(None, clock) == (
+        clock() + activation_withdraw.JOB_WAIT_SECONDS)
+
+
+def test_a_mask_refused_at_the_edge_is_narrowed_with_the_reserve(edge, monkeypatch):
+    """The phases' time is gone when the mask is refused: the pass narrows under the
+    reserve instead of leaving the broker stopped but unmasked."""
+    def refused_at_the_edge(**kwargs):
+        edge.clock.sleep(activated.MAIN_PASS_BUDGET_SECONDS
+                         - activated.MAIN_PASS_RESERVE_SECONDS + 1.0)
+        raise activated.RollbackFailed("synthetic: the mask was refused at the edge")
+
+    monkeypatch.setattr(activated, "_run_once", refused_at_the_edge)
+    with pytest.raises(RuntimeError, match="finished or the time ended"):
+        _locked_edge(edge)
+    assert edge.manager.state(CTX) is UnitState.MASKED
+    assert edge.manager.refused == 0

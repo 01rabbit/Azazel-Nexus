@@ -43,7 +43,10 @@ from .activation_markers import contextd_marker_present, remove_contextd_marker
 from .units import CONTEXTD_UNIT, ContextdStopAuthority, UnitManager, UnitOperationFailed
 
 __all__ = [
+    "JOB_WAIT_SECONDS",
+    "MASK_RESERVE_SECONDS",
     "NO_JOB",
+    "job_wait_limit",
     "STOP_WAIT_SECONDS",
     "WithdrawalUnconfirmed",
     "clear_contextd_job",
@@ -62,6 +65,21 @@ STOP_WAIT_SECONDS = 20.0
 _POLL_SECONDS = 0.1
 #: systemd's `Job` property when the unit has no job.
 NO_JOB = (0, "/")
+#: How long to wait for a replaced start job to disappear. A job normally goes
+#: in milliseconds; this is a ceiling, not an expectation.
+JOB_WAIT_SECONDS = 5.0
+#: Time that always remains for the mask, the reload and the exact-masked
+#: confirmation after the job wait: the wait ends this long before the deadline
+#: the bus session is bound to, so a slow job can never use the time the mask needs.
+MASK_RESERVE_SECONDS = 3.0
+
+
+def job_wait_limit(deadline: Optional[float], clock: Callable[[], float]) -> float:
+    """The monotonic instant a wait for a replaced job must end by."""
+    limit = clock() + JOB_WAIT_SECONDS
+    if deadline is not None:
+        limit = min(limit, deadline - MASK_RESERVE_SECONDS)
+    return limit
 
 
 class WithdrawalUnconfirmed(Exception):
@@ -168,7 +186,7 @@ def _record(ledger: AuditLedger, event: dict) -> None:
 
 def _contain(*, manager: UnitManager, authority: ContextdStopAuthority, root: Path,
              stop_sent: bool, give_up: Optional[float] = None,
-             clock: Callable[[], float] = time.monotonic) -> dict:
+             clock: Callable[[], float] = time.monotonic, settle=None) -> dict:
     """Contextd-only finalizer: reach the masked, quiet state as far as possible.
 
     Marker removed (local, not a bus call), masked, reloaded, and one stop if
@@ -184,6 +202,14 @@ def _contain(*, manager: UnitManager, authority: ContextdStopAuthority, root: Pa
         remove_contextd_marker(root)
     except Exception:  # noqa: BLE001
         pass
+    if settle is not None and not late():
+        # A job still pending (or never looked at, when the withdrawal failed
+        # before its job stage) is replaced and recorded BEFORE the mask and the
+        # reload, which would make systemd fail it. Once: `settle` knows.
+        try:
+            settle()
+        except Exception:  # noqa: BLE001 - the mask goes on
+            pass
     for step in (lambda: manager.mask(CONTEXTD_UNIT), manager.reload):
         if late():
             break
@@ -243,8 +269,8 @@ def release_queued_job(*, state: QueuedJobState, authority: ContextdStopAuthorit
     try:
         replaced = clear_contextd_job(
             authority=authority, ledger=ledger, now=now, actor=actor, reason=reason,
-            invocation_id=invocation_id, deadline=deadline, sink=sink, clock=clock,
-            sleep=sleep)
+            invocation_id=invocation_id, deadline=job_wait_limit(deadline, clock),
+            sink=sink, clock=clock, sleep=sleep)
     except Exception:  # noqa: BLE001 - recorded by clear_contextd_job; the mask goes on
         return
     if replaced:
@@ -304,7 +330,8 @@ def withdraw_contextd(
         if bind_deadline is not None and final_deadline is not None:
             bind_deadline(final_deadline)
         reached = _contain(manager=manager, authority=authority, root=root,
-                           stop_sent=stop_sent, give_up=final_deadline, clock=clock)
+                           stop_sent=stop_sent, give_up=final_deadline, clock=clock,
+                           settle=settle_job)
         emit({
             "event_type": "activation.withdrawal_unconfirmed",
             "unit": CONTEXTD_UNIT, "reason": reason, "stage": stage, "why": why,
@@ -316,6 +343,33 @@ def withdraw_contextd(
 
     needs_stop = False
     quiet_state = "inactive"
+    job_attempted = False
+
+    def settle_job() -> bool:
+        """Replace a pending start job, once, with the queued-job record.
+
+        The one place that does it, for the job stage and for the finalizer: a
+        job found is replaced (`StopUnit replace`, wait bounded so that the mask
+        keeps its reserve) and recorded as `activation.queued_job_replaced`
+        exactly once; a wait that times out is recorded and the mask goes on.
+        """
+        nonlocal job_attempted, stop_sent
+        if job_attempted:
+            return False
+        job_attempted = True
+        try:
+            replaced = clear_contextd_job(
+                authority=authority, ledger=ledger, now=now, actor=actor,
+                reason=reason, invocation_id=invocation_id,
+                deadline=job_wait_limit(deadline, clock),
+                sink=emit, clock=clock, sleep=sleep)
+        except WithdrawalUnconfirmed:
+            return False  # recorded by clear_contextd_job; masking follows
+        if replaced:
+            stop_sent = True
+            timings["t_stop_ms"] = _ms(started, clock)
+        return replaced
+
     if bind_deadline is not None and deadline is not None:
         bind_deadline(deadline)
     try:
@@ -323,18 +377,7 @@ def withdraw_contextd(
         timings["t_marker_ms"] = _ms(started, clock)
         stage = "job"
         over()
-        if _job_twice(authority) != NO_JOB:
-            # A pending job is replaced BEFORE the mask: masking and reloading
-            # would make systemd fail it instead.
-            authority.stop(CONTEXTD_UNIT)
-            stop_sent = True
-            timings["t_stop_ms"] = _ms(started, clock)
-            give_up = clock() + STOP_WAIT_SECONDS
-            if deadline is not None:
-                give_up = min(give_up, deadline)
-            if not _wait_until(lambda: authority.job(CONTEXTD_UNIT) == NO_JOB,
-                               give_up=give_up, clock=clock, sleep=sleep):
-                raise TimeoutError("the pending job did not clear in time")
+        settle_job()
         stage = "mask"
         over()
         manager.mask(CONTEXTD_UNIT)
@@ -392,7 +435,7 @@ def clear_contextd_job(
     started = clock()
     emit = sink if sink is not None else (lambda event: _record(ledger, event))
     try:
-        if authority.job(CONTEXTD_UNIT) == NO_JOB:
+        if _job_twice(authority) == NO_JOB:
             return False
         authority.stop(CONTEXTD_UNIT)
         give_up = clock() + STOP_WAIT_SECONDS

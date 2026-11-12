@@ -829,7 +829,14 @@ def _run_once(
         until=deadline + MAIN_PASS_RESERVE_SECONDS, clock=clock, sleep=sleep, record=True,
         hold_state=hold_state)
     withdrawn = aids[0](stop_authority)
-    release_job = aids[2](stop_authority)
+    # The hook the verdict's own mask, a rollback and a wider narrowing reach runs
+    # while the bus session is still bound to the end of the PHASES, so its job
+    # wait is bounded by that deadline (and always leaves the mask its reserve);
+    # a narrowing that rebinds to the end of the whole budget builds its own.
+    phase_aids = _contextd_aids(
+        root, now=now, actor=actor, invocation_id=invocation_id, until=deadline,
+        clock=clock, sleep=sleep, record=True, hold_state=hold_state)
+    release_job = phase_aids[2](stop_authority)
     daemon = ActivationDaemon(
         generations=GenerationStore(root / "var/lib/azazel/generations"),
         ledger=_activation_ledger(root),
@@ -1684,9 +1691,13 @@ def _locked_pass(
                 # A pass that failed on a finished session (its own rollback was
                 # refused) is narrowed on a new one, still under the lock. An
                 # error that already came out of a narrowing is not narrowed again.
-                if (fresh_manager is not None and not getattr(error, "narrowed", False)
-                        and getattr(getattr(manager, "call", None), "broken", False)):
-                    narrow("the bus session finished during the activation pass")
+                if (not getattr(error, "narrowed", False)
+                        and (clock() >= work or (
+                            fresh_manager is not None
+                            and getattr(getattr(manager, "call", None), "broken", False)))):
+                    # The session is finished, or the phases' time is gone (a mask
+                    # or a poll refused at the edge): the reserve is for this.
+                    narrow("the bus session finished or the time ended during the activation pass")
                 raise
             if expired:
                 # Every ledger append of the pass happens while pass.lock is

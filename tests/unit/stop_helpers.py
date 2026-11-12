@@ -88,6 +88,10 @@ class ContextdModel:
         self.stops += 1
         self.timeline.append(("stop", CTX))
         self.stopped_at = self.clock()
+        if not self.running and self.job != NO_JOB and self.stop_works:
+            # StopUnit(replace) replaces a queued start job at once; the unit has
+            # nothing to stop, so no stop job is left either.
+            self.job = NO_JOB
         return "/org/freedesktop/systemd1/job/9"
 
 
