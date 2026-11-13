@@ -130,6 +130,7 @@ def test_socket_client_raises_with_the_stage(monkeypatch):
         with conn:
             size = struct.unpack(">I", conn.recv(4, socket.MSG_WAITALL))[0]
             conn.recv(size, socket.MSG_WAITALL)
+            conn.recv(1)  # the client's shutdown: answer only after it, as the broker does
             body = json.dumps({"ok": True, "result": result}).encode()
             conn.sendall(struct.pack(">I", len(body)) + body)
 
