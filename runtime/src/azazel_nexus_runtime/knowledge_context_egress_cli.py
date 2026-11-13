@@ -60,7 +60,7 @@ def _session():
     from .units import ContextdStopAuthority
 
     with SystemdBusSession.connect() as session:
-        yield ContextdStopAuthority.from_session(session), session.reload
+        yield ContextdStopAuthority.from_session(session, cgroup_caller="operator"), session.reload
 
 
 def _unit_dir() -> Path:
