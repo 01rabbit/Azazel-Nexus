@@ -590,3 +590,21 @@ def test_with_the_real_core(tmp_path):
     r = Rig(tmp_path, observed=observed)
     r.step(tx())
     assert r.current()["technique_knowledge"] == record
+
+
+def test_a_technique_reply_is_never_adopted_wholesale_even_when_it_would_compare_equal(tmp_path):
+    """Without the bypass the Fabric adopt would succeed here and take M.I.O.'s dependency word."""
+    record = _technique_record()
+
+    def observed(frame):
+        fast = base_fast()
+        fast.update(full_node_context_status="unavailable", technique_knowledge=record)
+        fast["dependency_outcome"] = {"knowledge": "unavailable", "deception": "absent"}
+        return fast
+
+    assert adopt_full_node_reply(base_fast(), observed(None)) is not None
+    r = Rig(tmp_path, observed=observed)
+    r.step(tx())
+    fast = records(r.e)[0]["mio"]["fast_assistance"]
+    assert fast["technique_knowledge"] == record
+    assert fast["dependency_outcome"]["knowledge"] == "not_queried"
