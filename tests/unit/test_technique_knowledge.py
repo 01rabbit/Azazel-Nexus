@@ -306,7 +306,7 @@ def test_real_names_pass_the_grammar_and_the_validator(name):
     assert ok(mutated(make_response(IDS), _set(["facts", 1, "value"], name)))["techniques"][0]["name"] == name
 
 
-GRAMMAR_REFUSED = ["", " Brute", "Brute ", "Brute  Force", "Brute\tForce", "Brute\nForce", "<b>x</b>", "a{b}", "a\\b",
+GRAMMAR_REFUSED = ["a<b", "a>b", "a{b", "a}b", "a|b", "a\"b", "a=b", "a%b", "a@b", "a$b", "a*b", "a!b", "a?b", "", " Brute", "Brute ", "Brute  Force", "Brute\tForce", "Brute\nForce", "<b>x</b>", "a{b}", "a\\b",
                    "a`b`", "A &amp; B", "A &#38; B", "see://x", "WWW.example", "visit www.x", "10.0.0.1",
                    "host 192.168.1.10 here", "::1", "2001:db8::1", "fe80::1", "evil.example", "go to evil.example/x",
                    "a;b", "a#b", "A" * (tk.NAME_MAX + 1), "x\u202ey", None, 5]
