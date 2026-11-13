@@ -1346,9 +1346,11 @@ The start side stays fail-closed: no pass sends READY, so a start job that
 `Requires=` the pass fails. A broker that is already running keeps running
 until an operator stops it.
 
-Detection: a Refused lock shows as rc 1 on every recheck timer tick, so
+Detection: an unusable lock file shows as rc 1 on every recheck timer tick, so
 `azazel-activation-recheck.service` stays in the failed state, and as a
-non-zero main pass with the journal lines above. Busy does not do this: the
+non-zero main pass with the journal lines above. A missing activation directory
+shows the same way only while a contextd trigger is present; with no trigger the
+recheck exits 0 and only the main pass fails. Busy does not do this: the
 recheck exits 0.
 
 Operator response: treat Refused as an incident. As root, stop the broker by
