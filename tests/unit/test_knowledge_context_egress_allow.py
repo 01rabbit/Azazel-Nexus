@@ -622,3 +622,154 @@ def test_cli_checks_preconditions_before_deriving(host, root, monkeypatch):
     monkeypatch.setattr(cli, "derived_egress_allowance",
                         lambda: pytest.fail("derived before the preconditions"))
     assert cli.run_apply(out=_Out(), publish=lambda: 0) == 1
+
+
+# -- D1: a root reader derives under the standard placement ------------------
+
+def test_root_reader_derives_without_reading_secret_files(root, monkeypatch):
+    """Secrets are root:<service group> 0640; egid 0 is neither, so the daemon's
+    rule refuses them for a root caller. The derivation reads none."""
+    build(root)
+    bundle = root / "etc/azazel/knowledge-context/commissioning"
+    for name in ("client.key", "alias.key"):
+        (bundle / name).chmod(0o640)
+    monkeypatch.setattr(cfg.os, "getegid", lambda: 4242)  # a caller outside the file's group
+    assert cfg.load_commissioning(now=NOW).reason_code == "perm_unsafe"  # daemon rule unchanged
+    derived = egress.derive_allowance(now=NOW)
+    assert derived is not None and derived.line == "IPAddressAllow=192.0.2.10/32"
+
+
+def test_derivation_still_applies_the_owner_and_mode_rules(root, monkeypatch):
+    build(root)
+    bundle = root / "etc/azazel/knowledge-context/commissioning"
+    (bundle / "registry.signed").chmod(0o666)  # group/other writable public file
+    assert egress.derive_allowance(now=NOW) is None
+    (bundle / "registry.signed").chmod(0o644)
+    monkeypatch.setattr(cfg, "_OWNER", os.getuid() + 1)
+    assert egress.derive_allowance(now=NOW) is None
+
+
+def test_derivation_applies_the_signature_expiry_and_identity_checks(root):
+    import shutil
+    for defect in ("expired_registry", "bad_signature", "wrong_identity", "enabled_false"):
+        build(root, defect=defect)
+        assert egress.derive_allowance(now=NOW) is None, defect
+        shutil.rmtree(root / "etc")
+
+
+# -- D2: the CLI's cgroup reader mode ----------------------------------------
+
+def _cg_root(tmp_path, own, **kw):
+    from test_runtime_contextd_cgroup import make_root
+    r = make_root(tmp_path, self_cgroup=own, **kw)
+    base = r / "sys/fs/cgroup"
+    for part in [p for p in own[4:].strip().split("/") if p] if own and own.startswith("0::/") else []:
+        base = base / part
+        base.mkdir(exist_ok=True)
+    return r
+
+
+LOGIN = "0::/user.slice/user-0.slice/session-1.scope\n"
+
+
+@pytest.mark.parametrize("own", [LOGIN, "0::/init.scope\n", "0::/\n",
+                                 "0::/system.slice/run-abc.service\n"])
+def test_operator_mode_reads_from_a_login_shell(tmp_path, own):
+    from azazel_nexus_runtime.contextd_cgroup import read_contextd_cgroup
+    r = _cg_root(tmp_path, own, events="populated 0\n")
+    assert read_contextd_cgroup("inactive", root=r, caller="operator") == "empty"
+    r = _cg_root(tmp_path / "p", own, events="populated 1\n")
+    assert read_contextd_cgroup("active", root=r, caller="operator") == "populated"
+
+
+def test_service_mode_is_unchanged_and_refuses_a_login_shell(tmp_path):
+    from azazel_nexus_runtime.contextd_cgroup import read_contextd_cgroup
+    r = _cg_root(tmp_path, LOGIN, events="populated 0\n")
+    assert read_contextd_cgroup("inactive", root=r) == "unknown"
+    assert read_contextd_cgroup("inactive", root=r, caller="bogus") == "unknown"
+
+
+@pytest.mark.parametrize("kwargs", [
+    dict(own="0::/docker/abc/user.slice/x.scope\n"),
+    dict(own="0::/user.slice/../x\n"),
+    dict(own="0::/user.slice/a\n0::/b\n"),
+    dict(own="1:cpu:/user.slice/a\n"),
+    dict(own="0::/user.slice/a"),
+    dict(own=None),
+    dict(own=LOGIN, mountinfo=None),
+    dict(own=LOGIN, mountinfo="30 25 0:27 / /sys/fs/cgroup rw - cgroup cgroup rw\n"),
+    dict(own=LOGIN, mountinfo="30 25 0:99999 / /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n"),
+])
+def test_operator_mode_keeps_the_mount_binding_and_unknown_is_not_empty(tmp_path, kwargs):
+    from azazel_nexus_runtime.contextd_cgroup import read_contextd_cgroup
+    own = kwargs.pop("own")
+    r = _cg_root(tmp_path, own, events="populated 0\n", **kwargs)
+    assert read_contextd_cgroup("inactive", root=r, caller="operator") == "unknown"
+
+
+def test_operator_mode_requires_the_own_cgroup_to_exist_under_the_mount(tmp_path):
+    from test_runtime_contextd_cgroup import make_root
+    from azazel_nexus_runtime.contextd_cgroup import read_contextd_cgroup
+    r = make_root(tmp_path, self_cgroup=LOGIN, events="populated 0\n")  # dirs not created
+    assert read_contextd_cgroup("inactive", root=r, caller="operator") == "unknown"
+
+
+def test_cli_session_asks_for_operator_mode():
+    import inspect
+    assert 'cgroup_caller="operator"' in inspect.getsource(cli._session)
+
+
+# -- D3: the slice chain is read whatever the broker's state -----------------
+
+class _Reader:
+    def __init__(self, chain, loaded=None):
+        self.chain, self.loaded = chain, loaded
+
+    def bootstrap_profile(self): return "reviewed"
+    def loaded_unit(self, unit): return self.loaded
+    def slice_chain_allow(self):
+        if isinstance(self.chain, Exception):
+            raise self.chain
+        return self.chain
+
+
+OK_CHAIN = {"system.slice": [], "-.slice": []}
+
+
+def test_pass_accepts_an_empty_chain_with_the_broker_not_loaded(monkeypatch):
+    loaded_units.verify_loaded_units(_Reader(OK_CHAIN), (CONTEXTD,))
+
+
+@pytest.mark.parametrize("chain", [
+    {"system.slice": [(2, bytes(4), 0)], "-.slice": []},
+    {"system.slice": [], "-.slice": [(10, bytes(16), 0)]},
+    {"system.slice": []}, {}, None, RuntimeError("x"),
+])
+@pytest.mark.parametrize("loaded", [None, {"Id": CONTEXTD, "LoadState": "masked"}])
+def test_pass_refuses_a_wide_slice_even_when_the_broker_is_not_loaded_or_masked(chain, loaded):
+    with pytest.raises(loaded_units.LoadedUnitRefused):
+        loaded_units.verify_loaded_units(_Reader(chain, loaded), (CONTEXTD,))
+
+
+def test_pass_refuses_a_reader_without_the_slice_read():
+    class NoSlice:
+        def bootstrap_profile(self): return "reviewed"
+        def loaded_unit(self, unit): return None
+    with pytest.raises(loaded_units.LoadedUnitRefused):
+        loaded_units.verify_loaded_units(NoSlice(), (CONTEXTD,))
+
+
+def test_bus_slice_chain_read_needs_no_broker():
+    wide = [[2, bytes(4), 0]]
+    calls = _chain_calls({"system.slice": ([], "-.slice"), "-.slice": (wide, "")})
+    assert calls.slice_chain_allow() == {"system.slice": [], "-.slice": [(2, bytes(4), 0)]}
+
+
+@pytest.mark.parametrize("change", [dict(fstype="cgroup"), dict(mount_root="/x"),
+                                    dict(point="/sys/fs/cgroup/unified")])
+def test_operator_mode_refuses_a_mount_that_is_not_the_cgroup2_root(tmp_path, change):
+    from test_runtime_contextd_cgroup import mountinfo_for
+    from azazel_nexus_runtime.contextd_cgroup import read_contextd_cgroup
+    r = _cg_root(tmp_path, LOGIN, events="populated 0\n")
+    (r / "proc/self/mountinfo").write_text(mountinfo_for(r / "sys/fs/cgroup", **change))
+    assert read_contextd_cgroup("inactive", root=r, caller="operator") == "unknown"

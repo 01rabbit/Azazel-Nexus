@@ -127,6 +127,12 @@ class FakeManagerReader:
         self.reads.append(unit)
         return self.loaded.get(unit, loaded_as_declared(unit))
 
+    #: U49: the parent slices' Allow, read whether or not the broker is loaded.
+    slice_chain = {"system.slice": [], "-.slice": []}
+
+    def slice_chain_allow(self):
+        return self.slice_chain
+
 
 def make_policy(units=SCOPE, operators=("operator-a",), skew=300, require_sync=None):
     extra = {} if require_sync is None else {"require_clock_synchronized": require_sync}

@@ -647,9 +647,20 @@ The only writer is `az-knowledge-context-egress` (root):
 - Removal: withdraw and stop, `remove`, publish, sign, install. Disabling the
   bundle alone makes the pass refuse the Allow-bearing unit.
 
+The derivation (`show`, `check`, `apply`, and the pass) reads only the manifest
+and the signed registry, under the same owner and mode rules as the daemon, and
+never the secret files. Those are `root:azknowledgeegress 0640`, readable only
+by the daemon's own group, so a root caller (egid 0) must not need them; the
+daemon's own reads are unchanged. A bundle the daemon would refuse for a short
+`alias.key` still derives an allowance; the daemon stays closed. `apply` and
+`remove` check the broker's cgroup in operator mode: the same cgroup2 mount
+binding as the pass, but the caller may be a login shell (own cgroup `/` or
+under `init.scope`, `user.slice`, `system.slice`, present under the mount);
+anything unestablished is `unknown`, which is not empty.
+
 The pass compares the unit's `IPAddress*` lines (absent or exactly the derived
 line, `IPAddressDeny=any` once) and the manager's loaded `IPAddressAllow` /
-`IPAddressDeny` (D-Bus `a(iayu)`; loaded Allow must equal the unit file's, every slice in the broker's Slice chain must have an empty Allow, a wider one refuses). The loaded representation of `IPAddressDeny=any` (two zero-prefix entries) is unverified until the real-systemd run. A drop-in is
+`IPAddressDeny` (D-Bus `a(iayu)`; loaded Allow must equal the unit file's, `system.slice` and `-.slice` must have an empty Allow whether or not the broker is loaded (a withdrawn, masked broker has no loaded read, so they are read on their own), a wider one refuses). The loaded representation of `IPAddressDeny=any` (two zero-prefix entries) is unverified until the real-systemd run. A drop-in is
 still refused. Limits, stated so they are not read as more than they are:
 
 - The filter is per address, not per port: every port and protocol at the
