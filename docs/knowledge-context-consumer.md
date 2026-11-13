@@ -649,7 +649,7 @@ The only writer is `az-knowledge-context-egress` (root):
 
 The pass compares the unit's `IPAddress*` lines (absent or exactly the derived
 line, `IPAddressDeny=any` once) and the manager's loaded `IPAddressAllow` /
-`IPAddressDeny` (D-Bus `a(iayu)`; a wider loaded Allow refuses). A drop-in is
+`IPAddressDeny` (D-Bus `a(iayu)`; loaded Allow must equal the unit file's, every slice in the broker's Slice chain must have an empty Allow, a wider one refuses). The loaded representation of `IPAddressDeny=any` (two zero-prefix entries) is unverified until the real-systemd run. A drop-in is
 still refused. Limits, stated so they are not read as more than they are:
 
 - The filter is per address, not per port: every port and protocol at the

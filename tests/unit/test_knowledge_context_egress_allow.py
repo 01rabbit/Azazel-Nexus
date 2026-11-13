@@ -246,50 +246,74 @@ def _loaded(allow, deny=DENY):
             "FragmentPath": f"/usr/lib/systemd/system/{CONTEXTD}", "DropInPaths": [],
             "Conditions": [], "Asserts": [], "Requires": ["azazel-activated.service"],
             "After": ["azazel-activated.service"],
-            "IPAddressAllow": allow, "IPAddressDeny": deny}
+            "IPAddressAllow": allow, "IPAddressDeny": deny,
+            "SliceChainAllow": {"system.slice": [], "-.slice": []}}
 
 
-def _check(loaded, monkeypatch, a):
-    monkeypatch.setattr(loaded_units, "derived_egress_allowance", lambda: a)
+def _check(loaded, monkeypatch, file_value):
+    """`file_value`: the IPAddressAllow entries of the measured unit file."""
+    monkeypatch.setattr(loaded_units, "file_allow", lambda unit: file_value)
     monkeypatch.setattr(loaded_units, "expected_loaded_guards", lambda unit: ([], []))
     loaded_units._check_loaded(CONTEXTD, loaded)
 
 
-def test_loaded_accepts_empty_and_exact(root, monkeypatch):
-    a = allowance(root)
-    ip = ipaddress.ip_address(a.address)
-    _check(_loaded([]), monkeypatch, a)
-    _check(_loaded([(2, ip.packed, 32)]), monkeypatch, a)
-    _check(_loaded([]), monkeypatch, None)
+IP = (2, bytes([192, 0, 2, 10]), 32)
 
 
-@pytest.mark.parametrize("allow", [
-    [(2, bytes([192, 0, 2, 10]), 24)], [(2, bytes([192, 0, 2, 11]), 32)],
-    [(2, bytes(4), 0)], [(10, bytes(16), 0)],
-    [(2, bytes([192, 0, 2, 10]), 32), (2, bytes([192, 0, 2, 11]), 32)],
+def test_loaded_must_equal_the_file_exactly(monkeypatch):
+    _check(_loaded([]), monkeypatch, [])
+    _check(_loaded([IP]), monkeypatch, [IP])
+
+
+@pytest.mark.parametrize("allow,file_value", [
+    ([IP], []),            # file has no Allow: loaded must be empty
+    ([], [IP]),            # file has the Allow: loaded must carry it
+    ([(2, bytes([192, 0, 2, 10]), 24)], [IP]), ([(2, bytes([192, 0, 2, 11]), 32)], [IP]),
+    ([(2, bytes(4), 0)], [IP]), ([(10, bytes(16), 0)], []),
+    ([IP, (2, bytes([192, 0, 2, 11]), 32)], [IP]),
 ])
-def test_loaded_wider_allow_refuses(root, monkeypatch, allow):
-    a = allowance(root)
+def test_loaded_differing_from_file_refuses(monkeypatch, allow, file_value):
     with pytest.raises(loaded_units.LoadedUnitRefused):
-        _check(_loaded(allow), monkeypatch, a)
+        _check(_loaded(allow), monkeypatch, file_value)
 
 
-def test_loaded_allow_without_derivation_refuses(monkeypatch):
+@pytest.mark.parametrize("chain", [
+    {"system.slice": [(2, bytes(4), 0)], "-.slice": []},
+    {"system.slice": [], "-.slice": [(10, bytes(16), 0)]},
+    {"system.slice": [IP], "-.slice": []}, {}, None,
+])
+def test_loaded_parent_slice_allow_refuses(monkeypatch, chain):
+    loaded = _loaded([])
+    loaded["SliceChainAllow"] = chain
     with pytest.raises(loaded_units.LoadedUnitRefused):
-        _check(_loaded([(2, bytes([192, 0, 2, 10]), 32)]), monkeypatch, None)
+        _check(loaded, monkeypatch, [])
 
 
 @pytest.mark.parametrize("deny", [[], [(2, bytes(4), 0)], [(2, bytes(4), 8), (10, bytes(16), 0)]])
 def test_loaded_weaker_deny_refuses(monkeypatch, deny):
     with pytest.raises(loaded_units.LoadedUnitRefused):
-        _check(_loaded([], deny), monkeypatch, None)
+        _check(_loaded([], deny), monkeypatch, [])
 
 
 def test_loaded_missing_filter_refuses(monkeypatch):
     loaded = _loaded([])
     del loaded["IPAddressAllow"]
     with pytest.raises(loaded_units.LoadedUnitRefused):
-        _check(loaded, monkeypatch, None)
+        _check(loaded, monkeypatch, [])
+
+
+def test_file_allow_reads_the_measured_bytes(root, monkeypatch):
+    unit_dir = root / "usr/lib/systemd/system"
+    unit_dir.mkdir(parents=True)
+    for p in (root, root / "usr", root / "usr/lib", root / "usr/lib/systemd", unit_dir):
+        p.chmod(0o755)
+    monkeypatch.setattr(unit_files, "_ROOT", root)
+    monkeypatch.setattr(unit_files, "_OWNER", os.getuid())
+    a = allowance(root)
+    (unit_dir / CONTEXTD).write_text(unit_files.rendered_unit(CONTEXTD))
+    assert loaded_units.file_allow(CONTEXTD) == []
+    (unit_dir / CONTEXTD).write_text(unit_files.rendered_unit(CONTEXTD, allowance=a))
+    assert loaded_units.file_allow(CONTEXTD) == [IP]
 
 
 @pytest.mark.parametrize("value,ok", [
@@ -371,7 +395,7 @@ def _published():
 def test_cli_apply_writes_exactly_the_rendered_unit_and_publishes(host, root):
     a = allowance(root)
     out, (calls, publish) = _Out(), _published()
-    assert cli.run_apply(out=out, publish=publish) == 0
+    assert cli.run_apply(out=out, publish=publish) == 0, out.text
     assert host["unit"].read_text() == unit_files.rendered_unit(CONTEXTD, allowance=a)
     assert host["reloads"] == 1 and calls == [1]
     assert oct(host["unit"].stat().st_mode & 0o777) == "0o644"
@@ -485,3 +509,116 @@ def test_service_interface_getall_is_allowed_for_the_broker_alone():
         session._exchange(PROPERTIES_INTERFACE, "GetAll", "s",
                           [SERVICE_INTERFACE, "x"], path=_unit_object_path(CONTEXTD))
     assert len(bus.messages) == 1
+
+
+def _bus_session(reply_for):
+    from types import SimpleNamespace
+    import asyncio
+
+    class Bus:
+        def __init__(self): self.messages = []
+        async def call(self, message):
+            self.messages.append(message)
+            return reply_for(message)
+
+    class Loop:
+        def run_until_complete(self, coro):
+            return asyncio.new_event_loop().run_until_complete(coro)
+
+    bus = Bus()
+    return bus, systemd_bus.SystemdBusSession(
+        bus=bus, loop=Loop(), previous_loop=None,
+        message_type=SimpleNamespace(ERROR=3, METHOD_RETURN=1),
+        message_factory=lambda **kw: SimpleNamespace(**kw))
+
+
+def test_slice_getall_is_object_scoped():
+    from types import SimpleNamespace
+    bus, session = _bus_session(
+        lambda m: SimpleNamespace(message_type=1, signature="a{sv}", body=[{}]))
+    for name in ("system.slice", "-.slice"):
+        session._exchange(systemd_bus.PROPERTIES_INTERFACE, "GetAll", "s",
+                          [systemd_bus.SLICE_INTERFACE],
+                          path=systemd_bus._unit_object_path(name))
+    for name in ("user.slice", CONTEXTD, "sshd.service"):
+        with pytest.raises(systemd_bus.UnitOperationFailed):
+            session._exchange(systemd_bus.PROPERTIES_INTERFACE, "GetAll", "s",
+                              [systemd_bus.SLICE_INTERFACE],
+                              path=systemd_bus._unit_object_path(name))
+    with pytest.raises(systemd_bus.UnitOperationFailed):  # Unit iface on a slice
+        session._exchange(systemd_bus.PROPERTIES_INTERFACE, "GetAll", "s",
+                          [systemd_bus.UNIT_INTERFACE],
+                          path=systemd_bus._unit_object_path("system.slice"))
+    assert len(bus.messages) == 2
+
+
+def _chain_calls(slices):
+    """SystemdUnitCalls exchange fake: slice name -> (allow, parent)."""
+    from types import SimpleNamespace as NS
+    path = systemd_bus._unit_object_path
+    by_path = {path(n): v for n, v in slices.items()}
+
+    def exchange(interface, member, signature, body, **kw):
+        if member == "GetUnit":
+            if body[0] in slices:
+                return systemd_bus._Reply("o", [path(body[0])])
+            return systemd_bus._Reply("", [], no_such_unit=True)
+        if body == [systemd_bus.SLICE_INTERFACE]:
+            allow, parent = by_path[kw["path"]]
+            return systemd_bus._Reply("a{sv}", [{
+                "IPAddressAllow": NS(signature="a(iayu)", value=allow),
+                "Slice": NS(signature="s", value=parent)}])
+        raise AssertionError(body)
+    return systemd_bus.SystemdUnitCalls(exchange)
+
+
+def _chain(slices, first="system.slice"):
+    from types import SimpleNamespace as NS
+    return _chain_calls(slices)._slice_chain_allow({"Slice": NS(signature="s", value=first)})
+
+
+def test_slice_chain_is_followed_and_reports_allow():
+    wide = [[2, bytes(4), 0]]
+    assert _chain({"system.slice": ([], "-.slice"), "-.slice": ([], "")}) == {
+        "system.slice": [], "-.slice": []}
+    assert _chain({"system.slice": ([], "-.slice"), "-.slice": (wide, "")})["-.slice"] == [
+        (2, bytes(4), 0)]
+
+
+@pytest.mark.parametrize("slices,first", [
+    ({"system.slice": ([], "user.slice")}, "system.slice"),   # outside the fixed chain
+    ({"system.slice": ([], "system.slice")}, "system.slice"),  # loop
+    ({}, "system.slice"),                                      # slice object missing
+    ({"user.slice": ([], "")}, "user.slice"),
+])
+def test_slice_chain_refusals(slices, first):
+    with pytest.raises(systemd_bus.UnitOperationFailed):
+        _chain(slices, first)
+
+
+def test_cli_write_loops_over_short_writes(host, root, monkeypatch):
+    a = allowance(root)
+    real = os.write
+
+    def short(fd, data):
+        return real(fd, bytes(data[:7]))
+    monkeypatch.setattr(cli.os, "write", short)
+    assert cli.run_apply(out=_Out(), publish=lambda: 0) == 0
+    assert host["unit"].read_text() == unit_files.rendered_unit(CONTEXTD, allowance=a)
+
+
+def test_cli_failed_write_leaves_the_old_unit_and_no_temp(host, root, monkeypatch):
+    allowance(root)
+    before = host["unit"].read_text()
+    monkeypatch.setattr(cli.os, "write", lambda fd, data: 0)
+    calls, publish = _published()
+    assert cli.run_apply(out=_Out(), publish=publish) == 1
+    assert host["unit"].read_text() == before and calls == []
+    assert [p.name for p in host["unit"].parent.iterdir()] == [CONTEXTD]
+
+
+def test_cli_checks_preconditions_before_deriving(host, root, monkeypatch):
+    host["marker"] = True
+    monkeypatch.setattr(cli, "derived_egress_allowance",
+                        lambda: pytest.fail("derived before the preconditions"))
+    assert cli.run_apply(out=_Out(), publish=lambda: 0) == 1

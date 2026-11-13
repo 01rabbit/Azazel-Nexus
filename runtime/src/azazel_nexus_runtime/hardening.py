@@ -1486,7 +1486,8 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "the M.I.O. local runtime, remote inference, and artifact fetcher. "
             "It may use network address families only after commissioning; "
             "IPAddressDeny=any remains in force and this package supplies no "
-            "IPAddressAllow entry. The local socket is restricted to M.I.O. "
+            "IPAddressAllow entry; a deployment may add exactly one, derived "
+            "from the signed registry peer by az-knowledge-context-egress. The local socket is restricted to M.I.O. "
             "locald by its dedicated group. It has no model, enforcement, or "
             "Knowledge store write access."
         ),
