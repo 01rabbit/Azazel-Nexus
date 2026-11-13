@@ -1069,7 +1069,8 @@ def adopt_full_node_reply(advise, observed):
     """
     own = {"trace", "trace_id", "frame_id", "full_node_context_origin"}
     full = {"fabric_knowledge_context_advisory", "full_node_context_status",
-            "full_node_context_received_at", "handoff", "reasoning_trace"}
+            "full_node_context_received_at", "handoff", "reasoning_trace",
+            "technique_knowledge"}
 
     def comparable(value):
         out = {k: v for k, v in value.items() if k not in own | full}
@@ -1224,8 +1225,14 @@ def full_node_reference_state(trace, technique_ids, now):
     return "in_window"
 
 
-def _full_node_projection(advisory, status, knowledge_outcome, query_origin=None):
-    """Project only closed metadata; never copy source prose or subjects."""
+def _full_node_projection(advisory, status, knowledge_outcome, query_origin=None,
+                          technique_knowledge=None):
+    """Project only closed metadata; never copy source prose or subjects.
+
+    `technique_knowledge` is the closed record of a technique answer
+    (`technique_knowledge.read_projection`). It is copied as it is and into no
+    other field of the explanation.
+    """
     result = {"full_node_context_status": status, "outcome": "not_queried",
               "source_kind": None, "claim_status": None, "trust": None,
               "snapshot_state": None, "generated_at": None, "expires_at": None,
@@ -1248,12 +1255,22 @@ def _full_node_projection(advisory, status, knowledge_outcome, query_origin=None
         result["outcome"] = knowledge_outcome if knowledge_outcome in {"expired", "rejected"} else "unavailable"
     elif status == "unknown":
         result["outcome"] = "unknown"
+    if technique_knowledge is not None:
+        from .technique_knowledge import read_projection
+        result["technique_knowledge"] = read_projection(technique_knowledge)
     return result
 
 
 def _read_full_node_projection(value):
     _shape(value, ("full_node_context_status", "outcome", "source_kind", "claim_status", "trust",
-                   "snapshot_state", "generated_at", "expires_at", "limitations"), ("query_origin",))
+                   "snapshot_state", "generated_at", "expires_at", "limitations"),
+           ("query_origin", "technique_knowledge"))
+    if "technique_knowledge" in value:
+        from .technique_knowledge import read_projection
+        try:
+            read_projection(value["technique_knowledge"])
+        except ValueError:
+            raise ValueError("recent_refused") from None
     if "query_origin" in value and (type(value["query_origin"]) is not str
                                     or value["query_origin"] not in FULL_NODE_ORIGINS):
         raise ValueError("recent_refused")
@@ -1346,7 +1363,8 @@ def explanation_summary(record):
         if "full_node_context_status" in fast or advisory is not None:
             summary["fast_assistance"]["full_node_context"] = _full_node_projection(
                 advisory, fast.get("full_node_context_status", "unknown"),
-                fast["dependency_outcome"]["knowledge"], fast.get("full_node_context_origin"))
+                fast["dependency_outcome"]["knowledge"], fast.get("full_node_context_origin"),
+                fast.get("technique_knowledge"))
     if GUIDANCE_FIELD in r:
         summary[GUIDANCE_FIELD] = public_guidance(r[GUIDANCE_FIELD])
     if omitted:

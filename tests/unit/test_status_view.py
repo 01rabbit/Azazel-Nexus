@@ -1617,3 +1617,72 @@ def test_recent_row_without_full_node_projection_says_unknown(tmp_path):
 
 def test_recent_row_without_fast_assistance_has_no_key(tmp_path):
     assert "fast_assistance" not in _recent_fast(None)
+
+
+# -- technique_knowledge in the view model (the path app.js reads) ---------------------
+
+def _tk_fast(record):
+    from azazel_nexus.incident_explain import _full_node_projection
+    fast = _fast("unavailable", "unavailable")
+    fast["full_node_context"] = _full_node_projection(None, "unavailable", "unavailable",
+                                                      technique_knowledge=record)
+    return fast
+
+
+def _tk_record(coverage=None):
+    from _technique_fixture import make_response
+    from azazel_nexus.technique_knowledge import project_technique_response
+    ids = ["T1110", "T1595.002"]
+    return project_technique_response(make_response(ids, coverage), ids)
+
+
+def test_view_model_carries_the_closed_technique_record():
+    record = _tk_record({"T1110": "found", "T1595.002": "no_match"})
+    ex = _recent_fast(_tk_fast(record))
+    assert set(ex["fast_assistance"]) == {"full_node_context_status", "knowledge_dependency", "technique_knowledge"}
+    assert ex["fast_assistance"]["full_node_context_status"] == "unavailable"
+    assert ex["fast_assistance"]["technique_knowledge"] == record
+    # every other word of the view is as before, and a row without a record has no new key
+    assert "technique_knowledge" not in _recent_fast(_fast("unavailable", "timeout"))["fast_assistance"]
+
+
+def test_view_model_refuses_a_tampered_record():
+    import json
+    from azazel_nexus.incident_explain import build_recent_incident, build_recent_incidents
+    from azazel_nexus.status_view import _Refused, _recent_extra
+    from test_incident_explain import transition
+
+    row = build_recent_incident(transition(edge_would="notify", incident_id="inc-00000000000000d4",
+                                           first_seen=NOW - 300, last_seen=NOW - 20))
+    row["explanation"] = {**row["explanation"], "fast_assistance": _tk_fast(_tk_record())}
+    good = build_recent_incidents([row], NOW)
+    _recent_extra(json.loads(json.dumps(good)), {}, NOW)
+    for name, mutate in [
+        ("name_html", lambda r: r["techniques"][0].update(name="<b>x</b>")),
+        ("extra_key", lambda r: r.update(summary="x")),
+        ("useful", lambda r: r["techniques"][0].update(useful_content=False)),
+        ("state", lambda r: r.update(snapshot_state="partial")),
+        ("trust", lambda r: r.update(trust="verified")),
+        ("expiry", lambda r: r.update(expires_at="2000-01-01T00:00:00Z")),
+    ]:
+        bad = json.loads(json.dumps(good))
+        mutate(bad["incidents"][0]["explanation"]["fast_assistance"]["full_node_context"]["technique_knowledge"])
+        with pytest.raises(Exception):
+            _recent_extra(bad, {}, NOW)
+
+
+def test_the_ui_reads_exactly_the_keys_the_view_model_carries():
+    import re
+    from pathlib import Path
+    js = (Path(__file__).resolve().parents[2] / "runtime/src/azazel_nexus_runtime/ui_static/app.js").read_text()
+    record = _tk_record({"T1110": "found", "T1595.002": "no_match"})
+    carried = _recent_fast(_tk_fast(record))["fast_assistance"]["technique_knowledge"]
+    block = js[js.index("function techniqueBlock("):js.index("// -- handoff card")]
+    top = set(re.findall(r"\btk\.([a-z_]+)", block))
+    rows = set(re.findall(r"\brow\.([a-z_]+)", block))
+    assert top <= set(carried) and rows <= set(carried["techniques"][0])
+    # the view-model renderer passes the view's own key to the shared block
+    assert "fast.technique_knowledge" in js and "techniqueBlock(fast.technique_knowledge)" in js
+    assert "techniqueBlock(full.technique_knowledge)" in js
+    for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "href"):
+        assert sink not in block

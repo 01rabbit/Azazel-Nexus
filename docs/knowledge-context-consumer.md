@@ -280,6 +280,62 @@ broker answered. The projection
 (same three words), which explaind copies from the record. Old rows have neither
 and read unchanged.
 
+### ATT&CK technique query (observation origin)
+
+The observation-triggered query no longer sends a `question`. The broker frame
+is `{"privacy_class": "P0-public", "techniques": [ids]}` (1 to 8 ids, sorted,
+unique, `T[0-9]{4}(\.[0-9]{3})?`), and `make_request` turns it into one typed
+entity `attack-technique/v1` per id. This is a separate, closed entry of
+`make_request`: it accepts exactly the key `techniques`, never widens another
+entry, and is admitted only when the commissioned sanitizer policy admits the
+fixed observation question for the same ids. The broker applies the observation
+rule gate to every technique frame. Other request paths are unchanged.
+
+The signed answer does not go to M.I.O. The path is: signature and Fabric
+correlation (existing), then `technique_knowledge.validate_technique_response`
+in the client (a failure is stage `technique_verification`), then the same
+validator and `project_technique_response` in locald, then storage, UI and
+handoff. Locald runs the core as for an unavailable Full lookup
+(`full_node_context_status: unavailable`, no response argument) and puts the
+closed record beside the result as `technique_knowledge`; the reader requires
+that no Fabric advisory comes with it.
+
+The validator refuses the whole response on any violation: only the four
+predicates `coverage`, `technique_name`, `tactics`, `attack_version`; exactly one
+leading `coverage` per requested technique, in request order; `found` carries
+three more facts, every other word none; `stale` and `unavailable` are uniform;
+fixed fact ids `tq-<i>-<n>`; provenance `knowledge:attack-coverage` for coverage
+and `knowledge:attack-stix` for content; no inferences; the fixed
+`NO_MATCH_UNKNOWN` exactly when a technique is `no_match`; the two fixed
+`LIMITATIONS`; `snapshot.state` consistent with the coverages; `snapshot.ref`
+`attack-stix@<version>` equal to the one `attack_version` of the found items
+(`attack-stix@none` when nothing is found); tactics from the ATT&CK tactic list,
+ascending. The name is checked by one structural grammar, `technique_knowledge.name_grammar_ok`, which
+the Knowledge side must mirror exactly: 1 to 120 characters; letters and digits of any script, `_`, space and
+`: , ( ) ' & + - / .`; no control character, no leading, trailing or doubled space; no `< > { } \\` or
+backtick (nor `;` or `#`, so no HTML entity); no `://` or `www.`; no IPv4 or IPv6 literal; no token that looks
+like a domain. A violation fails the whole response; the validator never judges words. The projector alone
+applies a word screen as a heuristic deterrent: a name that reads as an instruction or a causal claim is
+withheld (`name: null`, `name_withheld: true`, coverage stays `found`), never truncated. The screen can miss
+phrasings and is not a security boundary; the boundary is that the label is display-only. The grammar is tested
+against a list of real names recalled from memory (`REAL_NAMES` in the tests), not against the whole corpus.
+The stored record also carries `as_of`, `expires_at`, `provenance` (the two fixed values), `authority`
+(`advisory_only`) and `trust` (`unverified`); the reader re-validates them and the UI shows them as text.
+The Knowledge side must emit exactly these constants.
+
+Axes of the record (`technique-knowledge/1`): `transport` (`received`,
+`unavailable`, `refused`), `verification` (`ok`, `failed`, `not_run`; HTTP 422
+counts as `failed`), per technique `coverage` (`found`, `no_match`, `stale`,
+`unavailable`) and `useful_content` (true exactly for `found`). The pairs in use
+are received/ok, received/failed (validator refusal), refused/failed (signature,
+Fabric, 422), refused/not_run (refused before send), unavailable/not_run. A
+record that is not received/ok carries no techniques. `name` and `tactics` are
+display labels: they are not copied into observations, hypotheses, next checks,
+actions, the reasoning trace or unknowns. The UI shows them with `textContent`
+under 「未検証の ATT&CK ラベル（参考）」; the handoff copies fixed keys only.
+The row trace (`last_attempt`) still reflects the Fabric Full path only, so it
+reads `unavailable` for a technique query.
+
 ### Recorded Full-node reference: row trace and reader
 
 The explainer's recent rows may carry an optional row-level key

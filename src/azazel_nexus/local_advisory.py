@@ -805,9 +805,22 @@ def read_fast_assistance(value):
         'dependency_outcome', 'observations', 'hypotheses', 'unknowns', 'next_checks',
         'knowledge', 'handoff', 'reasoning_trace'}
     optional_keys = {'fabric_knowledge_context_advisory', 'full_node_context_status',
-                     'full_node_context_received_at', 'full_node_context_origin'}
+                     'full_node_context_received_at', 'full_node_context_origin',
+                     'technique_knowledge'}
     require(type(value) is dict and required_keys <= set(value)
             and set(value) <= required_keys | optional_keys)
+    if 'technique_knowledge' in value:
+        # A technique answer never reaches M.I.O.: it rides beside a result whose
+        # Full Node Context was not given any response, and the closed record
+        # is the only form it takes.
+        from .technique_knowledge import read_projection
+        require(value.get('full_node_context_status') == 'unavailable'
+                and value.get('fabric_knowledge_context_advisory') is None
+                and 'full_node_context_received_at' not in value)
+        try:
+            read_projection(value['technique_knowledge'])
+        except ValueError:
+            require(False)
     if 'full_node_context_status' in value:
         require(type(value['full_node_context_status']) is str
                 and value['full_node_context_status'] in {'not_queried', 'received', 'unavailable'})
