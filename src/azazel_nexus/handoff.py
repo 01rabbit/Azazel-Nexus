@@ -1308,9 +1308,12 @@ def _full_node_context(row, snaps, now) -> dict:
         out["technique_knowledge"] = {
             "version": tk["version"], "transport": tk["transport"],
             "verification": tk["verification"], "snapshot_state": tk["snapshot_state"],
+            "as_of": tk["as_of"], "expires_at": tk["expires_at"],
+            "provenance": None if tk["provenance"] is None else dict(tk["provenance"]),
+            "authority": tk["authority"], "trust": tk["trust"],
             "techniques": [{k: (list(row[k]) if k == "tactics" else row[k]) for k in (
-                "technique_id", "coverage", "useful_content", "name", "tactics",
-                "attack_version")} for row in tk["techniques"]]}
+                "technique_id", "coverage", "useful_content", "name", "name_withheld",
+                "tactics", "attack_version")} for row in tk["techniques"]]}
     if trace is not None:
         out["transition_query"] = word(trace["transition_query"], _FN_QUERY)
         attempt, receipt = trace["last_attempt"], trace["last_receipt"]
@@ -1923,9 +1926,13 @@ def render_markdown(p: dict) -> str:
             add("未検証の ATT&CK ラベル（参考）")
             add(f"- 通信: `{tk['transport']}`、検証: `{tk['verification']}`、"
                 f"snapshot: `{tk['snapshot_state']}`（署名応答の受信は内容ありを意味しません）")
+            if tk["as_of"] is not None:
+                add(f"- 基準時刻 {_md(tk['as_of'])}、期限 {_md(tk['expires_at'])}、"
+                    f"権限 `{tk['authority']}`、信頼 `{tk['trust']}`")
             for row in tk["techniques"]:
                 add(f"- {_md(row['technique_id'])}: 対応 `{row['coverage']}`、内容あり `{row['useful_content']}`"
                     + (f"、名称 {_md(row['name'])}" if row["name"] else "")
+                    + ("、名称は表示を控えました" if row["name_withheld"] else "")
                     + (f"、戦術 {_md(', '.join(row['tactics']))}" if row["tactics"] else "")
                     + (f"、版 {_md(row['attack_version'])}" if row["attack_version"] else ""))
             add("")

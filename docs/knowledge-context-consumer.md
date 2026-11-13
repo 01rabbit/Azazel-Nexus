@@ -310,10 +310,18 @@ and `knowledge:attack-stix` for content; no inferences; the fixed
 `LIMITATIONS`; `snapshot.state` consistent with the coverages; `snapshot.ref`
 `attack-stix@<version>` equal to the one `attack_version` of the found items
 (`attack-stix@none` when nothing is found); tactics from the ATT&CK tactic list,
-ascending; name 1 to 120 characters of letters, digits, space and `:,()'&+-`
-(a slash only between letters; no dot, so no address or host). A name that
-passes but reads as an instruction or a causal claim is omitted from the record,
-never truncated. The Knowledge side must emit exactly these constants.
+ascending. The name is checked by one structural grammar, `technique_knowledge.name_grammar_ok`, which
+the Knowledge side must mirror exactly: 1 to 120 characters; letters and digits of any script, `_`, space and
+`: , ( ) ' & + - / .`; no control character, no leading, trailing or doubled space; no `< > { } \\` or
+backtick (nor `;` or `#`, so no HTML entity); no `://` or `www.`; no IPv4 or IPv6 literal; no token that looks
+like a domain. A violation fails the whole response; the validator never judges words. The projector alone
+applies a word screen as a heuristic deterrent: a name that reads as an instruction or a causal claim is
+withheld (`name: null`, `name_withheld: true`, coverage stays `found`), never truncated. The screen can miss
+phrasings and is not a security boundary; the boundary is that the label is display-only. The grammar is tested
+against a list of real names recalled from memory (`REAL_NAMES` in the tests), not against the whole corpus.
+The stored record also carries `as_of`, `expires_at`, `provenance` (the two fixed values), `authority`
+(`advisory_only`) and `trust` (`unverified`); the reader re-validates them and the UI shows them as text.
+The Knowledge side must emit exactly these constants.
 
 Axes of the record (`technique-knowledge/1`): `transport` (`received`,
 `unavailable`, `refused`), `verification` (`ok`, `failed`, `not_run`; HTTP 422

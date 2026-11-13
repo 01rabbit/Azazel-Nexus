@@ -128,7 +128,7 @@ REJECT = {
     "name_html": _set(["facts", 1, "value"], "<script>alert(1)</script>"),
     "name_ip": _set(["facts", 1, "value"], "Brute Force 192.0.2.1"),
     "name_url": _set(["facts", 1, "value"], "Brute Force http://evil.example/x"),
-    "name_scheme_separator": _set(["facts", 1, "value"], "see//evil"),
+    "name_scheme_separator": _set(["facts", 1, "value"], "see://evil"),
     "name_control": _set(["facts", 1, "value"], "Brute\nForce"),
     "name_edge_space": _set(["facts", 1, "value"], " Brute Force"),
     "name_semicolon": _set(["facts", 1, "value"], "Brute Force; rm -rf"),
@@ -183,9 +183,11 @@ def test_projection_axes_on_success():
     assert (p["version"], p["transport"], p["verification"], p["snapshot_state"]) == (
         tk.PROJECTION_VERSION, "received", "ok", "partial")
     assert all(row["useful_content"] is (row["coverage"] == "found") for row in p["techniques"])
-    assert set(p) == {"version", "transport", "verification", "snapshot_state", "techniques"}
+    assert set(p) == {"version", "transport", "verification", "snapshot_state", "as_of", "expires_at",
+                      "provenance", "authority", "trust", "techniques"}
     for row in p["techniques"]:
-        assert set(row) == {"technique_id", "coverage", "useful_content", "name", "tactics", "attack_version"}
+        assert set(row) == {"technique_id", "coverage", "useful_content", "name", "name_withheld",
+                            "tactics", "attack_version"}
     assert tk.read_projection(p) == p
 
 
@@ -272,16 +274,84 @@ def test_hostile_names_refuse_the_answer(value):
 def test_instruction_or_causal_names_are_omitted_not_shown_or_truncated(value):
     r = mutated(make_response(IDS), _set(["facts", 1, "value"], value))
     p = tk.project_technique_response(r, IDS)
-    assert p["techniques"][0]["name"] is None
+    assert p["techniques"][0]["name"] is None and p["techniques"][0]["name_withheld"] is True
     assert p["techniques"][0]["coverage"] == "found" and p["techniques"][0]["useful_content"] is True
     assert value not in json.dumps(p) and value.split()[0] not in json.dumps(p).replace("Brute", "")
 
 
 def test_real_attack_names_pass():
     for name in ("Brute Force", "Command and Scripting Interpreter", "System Shutdown/Reboot",
-                 "Phishing: Spearphishing Attachment", "Disable or Modify Tools" if False else "Impair Defenses",
+                 "Phishing: Spearphishing Attachment", "Impair Defenses",
                  "Exfiltration Over C2 Channel", "Process Doppelgänging"):
         assert tk.name_is_displayable(name), name
+
+
+# Real names recalled from memory; this is NOT a check against the whole corpus.
+REAL_NAMES = [
+    "Registry Run Keys / Startup Folder", ".bash_profile and .bashrc", "Elevated Execution with Prompt",
+    "Command and Scripting Interpreter", "PowerShell", "Windows Command Shell", "Brute Force", "Phishing",
+    "Spearphishing Attachment", "Exploit Public-Facing Application", "OS Credential Dumping",
+    "Boot or Logon Autostart Execution", "Hijack Execution Flow: DLL Search Order Hijacking",
+    "System Shutdown/Reboot", "Process Doppelgänging", "Event Triggered Execution: .NET Framework Profiling",
+    "Abuse Elevation Control Mechanism: Setuid and Setgid", "Obfuscated Files or Information",
+    "Create or Modify System Process: Windows Service", "Application Layer Protocol: Web Protocols",
+    "Data from Information Repositories", "Active Scanning: Vulnerability Scanning",
+    "Valid Accounts: Cloud Accounts", "Disable or Modify Tools", "Inhibit System Recovery",
+]
+
+
+@pytest.mark.parametrize("name", REAL_NAMES)
+def test_real_names_pass_the_grammar_and_the_validator(name):
+    assert tk.name_grammar_ok(name)
+    assert ok(mutated(make_response(IDS), _set(["facts", 1, "value"], name)))["techniques"][0]["name"] == name
+
+
+GRAMMAR_REFUSED = ["", " Brute", "Brute ", "Brute  Force", "Brute\tForce", "Brute\nForce", "<b>x</b>", "a{b}", "a\\b",
+                   "a`b`", "A &amp; B", "A &#38; B", "see://x", "WWW.example", "visit www.x", "10.0.0.1",
+                   "host 192.168.1.10 here", "::1", "2001:db8::1", "fe80::1", "evil.example", "go to evil.example/x",
+                   "a;b", "a#b", "A" * (tk.NAME_MAX + 1), "x\u202ey", None, 5]
+
+
+@pytest.mark.parametrize("name", GRAMMAR_REFUSED)
+def test_grammar_refuses(name):
+    assert not tk.name_grammar_ok(name)
+
+
+def test_the_validator_does_not_judge_words():
+    """Wording is a display deterrent only: the answer stays verified and found."""
+    r = mutated(make_response(IDS), _set(["facts", 1, "value"], "Block now"))
+    assert ok(r)["techniques"][0]["name"] == "Block now"
+    row = tk.project_technique_response(r, IDS)["techniques"][0]
+    assert (row["name"], row["name_withheld"], row["coverage"], row["useful_content"]) == (None, True, "found", True)
+
+
+def test_projection_carries_expiry_provenance_and_trust():
+    p = tk.project_technique_response(make_response(IDS), IDS)
+    assert (p["as_of"], p["expires_at"]) == ("2026-11-12T00:00:00Z", "2026-11-13T00:01:10Z")
+    assert p["provenance"] == {"coverage": "knowledge:attack-coverage", "content": "knowledge:attack-stix"}
+    assert (p["authority"], p["trust"]) == ("advisory_only", "unverified")
+    for name, fn in [
+        ("trust", lambda q: q.update(trust="verified")),
+        ("authority", lambda q: q.update(authority="authoritative")),
+        ("provenance", lambda q: q["provenance"].update(content="feed:x")),
+        ("provenance_none", lambda q: q.update(provenance=None)),
+        ("as_of_format", lambda q: q.update(as_of="yesterday")),
+        ("expiry_before_as_of", lambda q: q.update(expires_at="2026-11-01T00:00:00Z")),
+        ("expiry_missing", lambda q: q.update(expires_at=None)),
+        ("withheld_lies", lambda q: q["techniques"][0].update(name_withheld=True)),
+        ("name_missing_unflagged", lambda q: q["techniques"][0].update(name=None)),
+        ("withheld_on_no_match", None)]:
+        if fn is None:
+            continue
+        q = json.loads(json.dumps(p))
+        fn(q)
+        with pytest.raises(ValueError):
+            tk.read_projection(q)
+    for pair in (("received", "failed"), ("refused", "not_run")):
+        q = tk.not_run_projection(*pair)
+        assert q["as_of"] is None and q["trust"] is None
+        with pytest.raises(ValueError):
+            tk.read_projection(dict(q, trust="unverified"))
 
 
 def _record(fast):
@@ -402,7 +472,7 @@ def test_handoff_copies_fixed_keys_and_refuses_a_bad_record():
     snaps = {"recent_incidents_snapshot": (None, None)}
     out = handoff._full_node_context(row, snaps, 1.7e9)
     assert out["technique_knowledge"] == p and out["technique_knowledge"] is not p
-    assert set(out["technique_knowledge"]) == {"version", "transport", "verification", "snapshot_state", "techniques"}
+    assert set(out["technique_knowledge"]) == set(p)
     forged = json.loads(json.dumps(p))
     forged["techniques"][0]["name"] = "<img src=x>"
     row["explanation"]["fast_assistance"]["full_node_context"]["technique_knowledge"] = forged

@@ -24,6 +24,7 @@ a causal claim is omitted (never truncated). Nothing here performs I/O.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from datetime import datetime
 
@@ -31,7 +32,7 @@ __all__ = [
     "COVERAGE_WORDS", "ENTITY_TYPE", "LIMITATIONS", "NAME_MAX", "NO_MATCH_UNKNOWN",
     "PROJECTION_VERSION", "SNAPSHOT_REF_PREFIX", "TACTICS", "TECHNIQUE_ID",
     "TRANSPORT_WORDS", "VERIFICATION_WORDS", "TechniqueVerificationFailed",
-    "name_is_displayable", "not_run_projection", "project_technique_response",
+    "name_grammar_ok", "name_is_displayable", "not_run_projection", "project_technique_response",
     "read_projection", "request_ids", "validate_technique_response",
 ]
 
@@ -54,6 +55,10 @@ TACTICS = ("collection", "command-and-control", "credential-access", "defense-ev
 _VERSION = re.compile(r"[0-9]{1,3}\.[0-9]{1,3}", re.ASCII)
 SNAPSHOT_REF_PREFIX = "attack-stix@"
 _REF = re.compile(r"attack-stix@(?:[0-9]{1,3}\.[0-9]{1,3}|none)", re.ASCII)
+PROVENANCE = {"coverage": "knowledge:attack-coverage", "content": "knowledge:attack-stix"}
+AUTHORITY = "advisory_only"
+TRUST = "unverified"
+_STAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z", re.ASCII)
 COVERAGE_PROVENANCE = ("knowledge:attack-coverage",)
 CONTENT_PROVENANCE = ("knowledge:attack-stix",)
 _PREDICATES = ("coverage", "technique_name", "tactics", "attack_version")
@@ -63,11 +68,39 @@ LIMITATIONS = (
 )
 NO_MATCH_UNKNOWN = "At least one requested technique has no entry in the ATT&CK corpus."
 _FACT_ID = re.compile(r"tq-([0-9]+)-([0-3])", re.ASCII)
-# Letters and digits of any script, spaces and a few punctuation marks of real
-# ATT&CK names. No dot, so an address or a host name cannot be written; no
-# angle bracket, quote-less markup, backslash or scheme separator. A slash only
-# between two letters ("Shutdown/Reboot"); two in a row would be a scheme.
-_NAME_CHARS = re.compile(r"(?:[^\W_]|[ :,()'&+-]|(?<=[^\W_])/(?=[^\W_]))+")
+#: The one structural grammar of an ATT&CK technique name, shared with the
+#: Knowledge side (mirror it exactly). Allowed: letters and digits of any
+#: script, `_`, space and `: , ( ) ' & + - / .`. Refused: control characters;
+#: leading, trailing or doubled space; anything else (`< > { } \\`, backtick,
+#: `;` and `#`, so no HTML entity); `://`, `www.`; IPv4 and IPv6 literals;
+#: tokens that look like a domain; more than NAME_MAX characters.
+_NAME_ALLOWED = re.compile(r"[^\W]|[ :,()'&+/.-]")
+_NAME_DOMAIN = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9-]*[A-Za-z0-9]\.[A-Za-z]{2,}")
+_NAME_ADDRESS = re.compile(r"[0-9A-Fa-f:.]{2,}")
+
+
+def name_grammar_ok(value) -> bool:
+    """Structural grammar of a technique name (no word lists)."""
+    if type(value) is not str or not 1 <= len(value) <= NAME_MAX or value != value.strip():
+        return False
+    if "  " in value or not all(c.isprintable() for c in value):
+        return False
+    if not all(_NAME_ALLOWED.fullmatch(c) for c in value):
+        return False
+    low = value.lower()
+    if "://" in value or "www." in low:
+        return False
+    for token in _NAME_ADDRESS.findall(value):
+        try:
+            ipaddress.ip_address(token.strip(":.") if token.count(":") < 2 else token)
+        except ValueError:
+            continue
+        return False
+    if re.search(r"(?<![0-9])[0-9]{1,3}(?:\.[0-9]{1,3}){3}(?![0-9])", value):
+        return False
+    return _NAME_DOMAIN.search(value) is None
+
+
 #: Words an ATT&CK technique name has no use for: instructions and causal
 #: claims. A name containing one is omitted from the projection.
 _NAME_DENY = frozenset({
@@ -105,14 +138,16 @@ def request_ids(ids) -> list[str]:
 
 
 def _name_syntax(value) -> bool:
-    return (type(value) is str and 1 <= len(value) <= NAME_MAX and value == value.strip()
-            and "  " not in value and all(c.isprintable() for c in value)
-            and _NAME_CHARS.fullmatch(value) is not None)
+    return name_grammar_ok(value)
 
 
 def name_is_displayable(value) -> bool:
-    """Grammar plus the instruction and causal-claim screen (display only)."""
-    if not _name_syntax(value):
+    """Grammar plus a heuristic deterrent against instruction and causal wording.
+
+    The word screen is display suppression only (the projector's); it is not a
+    verification rule, and the validator never looks at words.
+    """
+    if not name_grammar_ok(value):
         return False
     words = re.findall(r"[^\W_]+", value.lower())
     return not any(w in _NAME_DENY for w in words)
@@ -199,7 +234,8 @@ def validate_technique_response(response, technique_ids) -> dict:
     unknowns, limitations = response.get("unknowns"), response.get("limitations")
     _require(unknowns == ([NO_MATCH_UNKNOWN] if "no_match" in coverages else []))
     _require(limitations == list(LIMITATIONS))
-    return {"snapshot_state": state, "techniques": techniques}
+    return {"snapshot_state": state, "techniques": techniques,
+            "as_of": snapshot["as_of"], "expires_at": response["expires_at"]}
 
 
 def _fact(fact, index, i, n, tid):
@@ -223,17 +259,22 @@ def project_technique_response(response, technique_ids) -> dict:
     rows = []
     for item in checked["techniques"]:
         row = dict(item)
+        row["name_withheld"] = False
         if row["name"] is not None and not name_is_displayable(row["name"]):
-            row["name"] = None
+            # Heuristic deterrent: the label is withheld, coverage stays found.
+            row["name"], row["name_withheld"] = None, True
         rows.append(row)
     return {"version": PROJECTION_VERSION, "transport": "received", "verification": "ok",
-            "snapshot_state": checked["snapshot_state"], "techniques": rows}
+            "snapshot_state": checked["snapshot_state"], "as_of": checked["as_of"],
+            "expires_at": checked["expires_at"], "provenance": dict(PROVENANCE),
+            "authority": AUTHORITY, "trust": TRUST, "techniques": rows}
 
 
 def not_run_projection(transport: str, verification: str) -> dict:
     """The record of an attempt that produced no accepted answer."""
     value = {"version": PROJECTION_VERSION, "transport": transport, "verification": verification,
-             "snapshot_state": None, "techniques": []}
+             "snapshot_state": None, "as_of": None, "expires_at": None, "provenance": None,
+             "authority": None, "trust": None, "techniques": []}
     return read_projection(value)
 
 
@@ -243,7 +284,8 @@ def read_projection(value) -> dict:
         raise ValueError("technique_knowledge_refused")
 
     if (type(value) is not dict
-            or set(value) != {"version", "transport", "verification", "snapshot_state", "techniques"}
+            or set(value) != {"version", "transport", "verification", "snapshot_state", "as_of",
+                              "expires_at", "provenance", "authority", "trust", "techniques"}
             or value["version"] != PROJECTION_VERSION
             or type(value["transport"]) is not str or type(value["verification"]) is not str
             or (value["transport"], value["verification"]) not in _PAIRS):
@@ -252,9 +294,24 @@ def read_projection(value) -> dict:
     if type(rows) is not list or len(rows) > MAX_TECHNIQUES:
         bad()
     if value["verification"] != "ok":
-        if rows or value["snapshot_state"] is not None:
+        if rows or any(value[k] is not None for k in (
+                "snapshot_state", "as_of", "expires_at", "provenance", "authority", "trust")):
             bad()
         return value
+    if (value["provenance"] != PROVENANCE or value["authority"] != AUTHORITY
+            or value["trust"] != TRUST):
+        bad()
+    for key in ("as_of", "expires_at"):
+        stamp = value[key]
+        if type(stamp) is not str or not _STAMP.fullmatch(stamp):
+            bad()
+        try:
+            datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        except ValueError:
+            bad()
+    if datetime.fromisoformat(value["as_of"].replace("Z", "+00:00")) >= datetime.fromisoformat(
+            value["expires_at"].replace("Z", "+00:00")):
+        bad()
     if (not rows or type(value["snapshot_state"]) is not str
             or value["snapshot_state"] not in SNAPSHOT_STATES):
         bad()
@@ -262,7 +319,7 @@ def read_projection(value) -> dict:
     for row in rows:
         if (type(row) is not dict
                 or set(row) != {"technique_id", "coverage", "useful_content", "name", "tactics",
-                                "attack_version"}):
+                                "attack_version", "name_withheld"}):
             bad()
         tid, coverage = row["technique_id"], row["coverage"]
         if (type(tid) is not str or not TECHNIQUE_ID.fullmatch(tid)
@@ -274,13 +331,16 @@ def read_projection(value) -> dict:
             tactics = row["tactics"]
             if (row["name"] is not None and not name_is_displayable(row["name"])):
                 bad()
+            if type(row["name_withheld"]) is not bool or (row["name"] is None) != row["name_withheld"]:
+                bad()
             if (type(tactics) is not list or not tactics
                     or any(type(t) is not str or t not in TACTICS for t in tactics)
                     or tactics != sorted(set(tactics))
                     or type(row["attack_version"]) is not str
                     or not _VERSION.fullmatch(row["attack_version"])):
                 bad()
-        elif row["name"] is not None or row["tactics"] != [] or row["attack_version"] is not None:
+        elif (row["name"] is not None or row["tactics"] != [] or row["attack_version"] is not None
+              or row["name_withheld"] is not False):
             bad()
     if seen != sorted(set(seen)):
         bad()
