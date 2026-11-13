@@ -426,3 +426,54 @@ def test_ui_uses_the_fixed_labels_and_text_content_only():
         assert sink not in block
     # values go through el(...) / kv(...) (textContent), as the neighbouring blocks do
     assert "textContent" in js[js.index("function el("):js.index("function add(")]
+
+
+# -- review fixes: snapshot.ref without found content; reader global semantics -----
+
+@pytest.mark.parametrize("word", ["no_match", "stale", "unavailable"])
+def test_ref_must_be_none_without_found_content(word):
+    r = make_response(IDS, {t: word for t in IDS})
+    assert r["snapshot"]["ref"] == "attack-stix@none"
+    ok(r)
+    for ref in ("attack-stix@14.0", "attack-stix@15.1", "attack-stix@"):
+        refused(mutated(r, _set(["snapshot", "ref"], ref)))
+
+
+def test_ref_none_is_refused_with_found_and_must_match_exactly():
+    refused(mutated(make_response(IDS), _set(["snapshot", "ref"], "attack-stix@none")))
+    refused(mutated(make_response(IDS, {"T1110": "found", "T1595.002": "no_match"}),
+                    _set(["snapshot", "ref"], "attack-stix@14.0")))
+
+
+def _tampered(fn):
+    p = json.loads(json.dumps(tk.project_technique_response(make_response(IDS), IDS)))
+    fn(p)
+    with pytest.raises(ValueError):
+        tk.read_projection(p)
+
+
+def test_reader_rechecks_global_semantics():
+    _tampered(lambda p: p.update(snapshot_state="partial"))
+    _tampered(lambda p: p.update(snapshot_state="stale"))
+    _tampered(lambda p: p["techniques"][1].update(attack_version="14.0"))
+    # uniformity and state against coverage
+    def stale_mix(p):
+        p["techniques"][1].update(coverage="stale", useful_content=False, name=None, tactics=[], attack_version=None)
+        p["snapshot_state"] = "stale"
+    _tampered(stale_mix)
+    def no_match_complete(p):
+        p["techniques"][1].update(coverage="no_match", useful_content=False, name=None, tactics=[], attack_version=None)
+    _tampered(no_match_complete)
+    def all_stale_partial(p):
+        for row in p["techniques"]:
+            row.update(coverage="stale", useful_content=False, name=None, tactics=[], attack_version=None)
+        p["snapshot_state"] = "partial"
+    _tampered(all_stale_partial)
+    def unavailable_mix(p):
+        p["techniques"][0].update(coverage="unavailable", useful_content=False, name=None, tactics=[], attack_version=None)
+        p["techniques"][1].update(coverage="no_match", useful_content=False, name=None, tactics=[], attack_version=None)
+        p["snapshot_state"] = "stale"
+    _tampered(unavailable_mix)
+    # a consistent partial record is still read
+    p = tk.project_technique_response(make_response(IDS, {"T1110": "found", "T1595.002": "no_match"}), IDS)
+    assert tk.read_projection(p) == p

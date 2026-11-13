@@ -194,6 +194,8 @@ def validate_technique_response(response, technique_ids) -> dict:
     if found_versions:
         _require(len(found_versions) == 1
                  and snapshot["ref"] == SNAPSHOT_REF_PREFIX + next(iter(found_versions)))
+    else:
+        _require(snapshot["ref"] == SNAPSHOT_REF_PREFIX + "none")
     unknowns, limitations = response.get("unknowns"), response.get("limitations")
     _require(unknowns == ([NO_MATCH_UNKNOWN] if "no_match" in coverages else []))
     _require(limitations == list(LIMITATIONS))
@@ -281,5 +283,20 @@ def read_projection(value) -> dict:
         elif row["name"] is not None or row["tactics"] != [] or row["attack_version"] is not None:
             bad()
     if seen != sorted(set(seen)):
+        bad()
+    # Global semantics, as the validator holds them.
+    words = [row["coverage"] for row in rows]
+    for uniform in ("stale", "unavailable"):
+        if uniform in words and any(w != uniform for w in words):
+            bad()
+    if all(w == "found" for w in words):
+        expected = "complete"
+    elif "stale" in words or "unavailable" in words:
+        expected = "stale"
+    else:
+        expected = "partial"
+    if value["snapshot_state"] != expected:
+        bad()
+    if len({row["attack_version"] for row in rows if row["coverage"] == "found"}) > 1:
         bad()
     return value
