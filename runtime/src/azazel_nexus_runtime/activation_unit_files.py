@@ -61,6 +61,7 @@ __all__ = [
     "drop_in_directory_names",
     "measure_exposure_unit_files",
     "measure_scoped_unit_files",
+    "derived_egress_allowance",
     "rendered_unit",
     "require_governed_unit_content",
     "require_grantable_unit_files",
@@ -153,13 +154,40 @@ def _decode(data: bytes) -> str:
     return text
 
 
-def rendered_unit(unit: str) -> str:
-    """`hardening.render_unit` for one governed unit: the expected file."""
+_CONTEXTD = "azazel-knowledge-contextd.service"
+
+
+def derived_egress_allowance():
+    """The broker's allowance from the verified commissioning bundle, or None.
+
+    None (no bundle, refused, expired, unusable address) means the unit may
+    carry no `IPAddressAllow=`. Any failure to derive is None: the safe side
+    for what the pass accepts is "no Allow".
+    """
+    from .knowledge_context_egress import derive_allowance
+
+    try:
+        return derive_allowance()
+    except Exception:  # noqa: BLE001 - nothing derived, nothing allowed
+        return None
+
+
+def rendered_unit(unit: str, *, allowance=None) -> str:
+    """`hardening.render_unit` for one governed unit: the expected file.
+
+    `allowance` (an `EgressAllowance`) applies to the Knowledge Context broker
+    only; any other unit with one is refused.
+    """
     from .hardening import PROFILES, render_unit
 
     for profile in PROFILES:
         if profile.unit == unit:
-            return render_unit(profile)
+            if allowance is None:
+                return render_unit(profile)
+            if unit != _CONTEXTD:
+                raise UnitContentRefused("unit takes no egress allowance")
+            return render_unit(profile, egress_allow=allowance.address,
+                               egress_digest=allowance.digest)
     raise UnitContentRefused("unit has no rendered declaration")
 
 
@@ -206,6 +234,40 @@ def require_governed_unit_content(unit: str, data: bytes) -> None:
     # `AssertSecurity=apparmor` is a start guard, compared above.
     if _lsm(directives) != _lsm(expected):
         raise UnitContentRefused("unit file LSM profile differs from the declaration")
+    _require_egress(unit, directives, expected, data)
+
+
+def _ip_lines(directives) -> list[tuple[str, str, str]]:
+    return [(section, key, value) for section, key, value, _ in directives
+            if key.startswith("IPAddress")]
+
+
+def _require_egress(unit, directives, expected, data: bytes) -> None:
+    """`IPAddress*=` is exactly the declaration's; the broker's Allow is derived.
+
+    Every unit: its `IPAddressAllow=`/`IPAddressDeny=` assignments equal the
+    rendered unit's (so none is added, reset or doubled). The broker may in
+    addition carry either no `IPAddressAllow=` (default deny) or exactly the
+    one derived from the verified registry peer, with the allowance digest
+    comment the renderer writes; no digest comment without that line.
+    """
+    from .hardening import EGRESS_ALLOW_KEY
+
+    text = _decode(data)
+    comments = [line for line in text.split("\n") if line.startswith("# Egress allowance")]
+    found = _ip_lines(directives)
+    base = _ip_lines(expected)
+    if unit != _CONTEXTD:
+        if found != base or comments:
+            raise UnitContentRefused("unit file egress settings differ from the declaration")
+        return
+    if [entry for entry in found if entry[1] != EGRESS_ALLOW_KEY] != base:
+        raise UnitContentRefused("unit file egress settings differ from the declaration")
+    if len(found) == len(base) and not comments:
+        return  # default deny: no Allow, no digest
+    allowance = derived_egress_allowance()
+    if allowance is None or text != rendered_unit(unit, allowance=allowance):
+        raise UnitContentRefused("unit file egress allowance differs from commissioning")
 
 
 def _scope(units, allowed=MARKER_GUARDED_UNITS) -> tuple[str, ...]:

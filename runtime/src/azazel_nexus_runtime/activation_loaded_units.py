@@ -37,6 +37,7 @@ from .activation_unit_files import (
     rendered_unit,
     require_grantable_unit_files,
 )
+from .units import CONTEXTD_UNIT
 
 __all__ = [
     "LoadedUnitRefused",
@@ -99,10 +100,85 @@ def _check_loaded(unit: str, loaded) -> None:
     if (_observed(loaded["Conditions"]) != conditions
             or _observed(loaded["Asserts"]) != asserts):
         raise LoadedUnitRefused("loaded unit start guards differ from the declaration")
+    if unit == CONTEXTD_UNIT:
+        _check_loaded_egress(unit, loaded)
     # Implicit dependencies (slices, targets) are added by systemd, so the
     # lists are not compared whole: the controller must be among them.
     if CONTROLLER_UNIT not in loaded["Requires"] or CONTROLLER_UNIT not in loaded["After"]:
         raise LoadedUnitRefused("loaded unit does not wait for the controller")
+
+
+#: systemd reports `IPAddressDeny=any` as both all-zero prefixes.
+_DENY_ANY = [(2, bytes(4), 0), (10, bytes(16), 0)]
+
+
+def file_allow(unit: str) -> list:
+    """The `IPAddressAllow` entries of the measured unit file, as the manager reports them.
+
+    Read from the bytes the pass measures (and the generation hashes), not from
+    the derivation: loaded must equal the file exactly.
+    """
+    import ipaddress
+
+    from .activation_unit_files import UNIT_DIRECTORY, _directives, _read, _open
+
+    fd = _open(UNIT_DIRECTORY, required=True)
+    try:
+        data = _read(fd, unit)
+    finally:
+        import os
+        os.close(fd)
+    result = []
+    for section, key, value, _ in _directives(data.decode("ascii")):
+        if key == "IPAddressAllow" and section == "Service":
+            net = ipaddress.ip_network(value, strict=True)
+            result.append((2 if net.version == 4 else 10, net.network_address.packed,
+                           net.prefixlen))
+    return sorted(result)
+
+
+def _check_loaded_egress(unit: str, loaded) -> None:
+    """The broker's loaded cgroup IP filter equals its measured file.
+
+    Deny is any; Allow equals the file's `IPAddressAllow` exactly (empty when
+    the file has none). Every slice in the broker's chain must have an empty
+    Allow, because the manager merges a parent slice's Allow and evaluates
+    Allow before Deny. Missing or malformed values are refused. (The loaded
+    representation of Deny is unverified until the real-systemd run.)
+    """
+    allow, deny = loaded.get("IPAddressAllow"), loaded.get("IPAddressDeny")
+    chain = loaded.get("SliceChainAllow")
+    if type(allow) is not list or type(deny) is not list or type(chain) is not dict:
+        raise LoadedUnitRefused("loaded unit egress filter unreadable")
+    if deny != _DENY_ANY:
+        raise LoadedUnitRefused("loaded unit does not deny all addresses")
+    if not chain or any(entries != [] for entries in chain.values()):
+        raise LoadedUnitRefused("loaded slice chain allows addresses")
+    try:
+        expected = file_allow(unit)
+    except Exception:  # noqa: BLE001 - an unreadable file is not "no Allow"
+        raise LoadedUnitRefused("unit file egress allowance unreadable") from None
+    if allow != expected:
+        raise LoadedUnitRefused("loaded unit egress allowance differs from its file")
+
+
+def _check_slice_chain(reader) -> None:
+    """Parent slices carry no Allow, whether or not the broker is loaded.
+
+    systemd merges a slice's `IPAddressAllow` into its members and evaluates
+    Allow before Deny. The pass withdraws and masks the broker, after which its
+    loaded read is None; this read does not depend on that.
+    """
+    read = getattr(reader, "slice_chain_allow", None)
+    if not callable(read):
+        raise LoadedUnitRefused("slice chain reader required")
+    try:
+        chain = read()
+    except Exception:  # noqa: BLE001 - unreadable is refused
+        raise LoadedUnitRefused("slice chain unreadable") from None
+    if (type(chain) is not dict or set(chain) != {"system.slice", "-.slice"}
+            or any(entries != [] for entries in chain.values())):
+        raise LoadedUnitRefused("loaded slice chain allows addresses")
 
 
 def verify_loaded_units(reader, units) -> None:
@@ -122,6 +198,8 @@ def verify_loaded_units(reader, units) -> None:
         before = profile()
     except Exception:  # noqa: BLE001 - redacted: an unreviewed manager is refused
         raise LoadedUnitRefused("systemd manager profile refused") from None
+    if CONTEXTD_UNIT in names:
+        _check_slice_chain(reader)
     for unit in names:
         try:
             loaded = loaded_unit(unit)

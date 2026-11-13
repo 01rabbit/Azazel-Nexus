@@ -68,6 +68,39 @@ def _read_file(root: Path, *parts: str) -> str:
         os.close(fd)
 
 
+#: Where an operator's login shell or a service may sit; anything else (for
+#: example `/docker/<id>/...` under a shared host cgroup namespace) may mean the
+#: constant path names another hierarchy.
+_OPERATOR_TOP = ("init.scope", "user.slice", "system.slice")
+
+
+def _own_cgroup_confirms_root_operator(root: Path, cgroup_fd: int) -> bool:
+    """CLI mode: the reader's own cgroup is `/` or below a systemd top-level
+    slice/scope, and that directory exists under the opened mount."""
+    text = _read_file(root, "proc", "self", "cgroup")
+    if not text.endswith("\n"):
+        return False
+    lines = text[:-1].split("\n")
+    if len(lines) != 1 or not lines[0].startswith("0::/"):
+        return False
+    parts = [part for part in lines[0][4:].split("/") if part]
+    if any(part in (".", "..") for part in parts):
+        return False
+    if parts and parts[0] not in _OPERATOR_TOP:
+        return False
+    fd = os.dup(cgroup_fd)
+    try:
+        for part in parts:
+            child = os.open(part, _DIR, dir_fd=fd)
+            os.close(fd)
+            fd = child
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    return True
+
+
 def _own_cgroup_confirms_root(root: Path) -> bool:
     """The reader sits at `/system.slice/<name>.service`: systemd's root is ours."""
     text = _read_file(root, "proc", "self", "cgroup")
@@ -87,7 +120,7 @@ def _mount_id(fd: int):
     return None
 
 
-def _trust(root: Path, cgroup_fd: int):
+def _trust(root: Path, cgroup_fd: int, caller: str = "service"):
     """The identity of the trusted cgroup root, or None if it is not trusted.
 
     The mount that holds the opened `/sys/fs/cgroup` directory (its `mnt_id`, from
@@ -112,25 +145,40 @@ def _trust(root: Path, cgroup_fd: int):
     if (fstype != "cgroup2" or fields[3] != "/" or fields[4] != _CGROUP_MOUNT
             or fields[2] != f"{os.major(device)}:{os.minor(device)}"):
         return None
-    if not _own_cgroup_confirms_root(root):
+    if caller == "operator":
+        if not _own_cgroup_confirms_root_operator(root, cgroup_fd):
+            return None
+    elif not _own_cgroup_confirms_root(root):
         return None
     return (device, mount_id, tuple(fields), _read_file(root, "proc", "self", "cgroup"))
 
 
-def read_contextd_cgroup(active_state: str, *, root: Path = Path("/")) -> str:
+def read_contextd_cgroup(active_state: str, *, root: Path = Path("/"),
+                         caller: str = "service") -> str:
     """`empty`, `populated` or `unknown` for the broker's cgroup; never raises.
 
     `active_state` is the broker's `ActiveState` read from systemd just before.
-    `root` is `/` in production and a stand-in tree in tests.
+    `root` is `/` in production and a stand-in tree in tests. `caller` is
+    `service` (the pass, the recheck: own cgroup must be a system.slice
+    service) or `operator` (the egress CLI run by root from a login shell: own
+    cgroup `/` or under init.scope, user.slice or system.slice, existing under
+    the verified cgroup2 mount). Every other value is `unknown`; the mount
+    binding is identical in both modes.
     """
+    if caller not in ("service", "operator"):
+        return CGROUP_UNKNOWN
     opened: list[int] = []
+
+    def trust(fd: int):
+        return _trust(root, fd) if caller == "service" else _trust(root, fd, caller)
+
     try:
         fd = os.open(root, _DIR)
         opened.append(fd)
         for part in _TO_CGROUP:
             fd = os.open(part, _DIR, dir_fd=fd)
             opened.append(fd)
-        trusted = _trust(root, fd)
+        trusted = trust(fd)
         if trusted is None:
             return CGROUP_UNKNOWN
         for index, part in enumerate(_BROKER_CGROUP):
@@ -141,7 +189,7 @@ def read_contextd_cgroup(active_state: str, *, root: Path = Path("/")) -> str:
                 if not (last and active_state in _STOPPED):
                     return CGROUP_UNKNOWN
                 # Absence is believed only if nothing under it changed meanwhile.
-                again = _trust(root, opened[3])
+                again = trust(opened[3])
                 return CGROUP_EMPTY if again == trusted else CGROUP_UNKNOWN
             opened.append(fd)
         events = os.open("cgroup.events", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
@@ -152,7 +200,7 @@ def read_contextd_cgroup(active_state: str, *, root: Path = Path("/")) -> str:
         if len(values) != 1 or len(values[0]) != 2:
             return CGROUP_UNKNOWN
         answer = {"0": CGROUP_EMPTY, "1": CGROUP_POPULATED}.get(values[0][1], CGROUP_UNKNOWN)
-        if answer == CGROUP_EMPTY and _trust(root, opened[3]) != trusted:
+        if answer == CGROUP_EMPTY and trust(opened[3]) != trusted:
             return CGROUP_UNKNOWN  # the mount or the reader's cgroup changed while reading
         return answer
     except (OSError, UnicodeDecodeError):

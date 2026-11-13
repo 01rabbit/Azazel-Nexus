@@ -1067,6 +1067,21 @@ Tests:
 - `tests/unit/test_runtime_systemd_bus.py`: the single `GetAll`, refused
   outside the grantable units or the `Unit` interface.
 
+#### 8.2.1 The broker's egress allowance (U49)
+
+`require_governed_unit_content` compares every unit's `IPAddress*` lines with
+the rendered declaration. For the broker alone, the unit may add exactly the
+`IPAddressAllow=` (and the allowance-digest header comment) that
+`knowledge_context_egress.derive_allowance()` derives from the verified
+commissioning bundle; the bytes must equal `render_unit(..., egress_allow=)`.
+No bundle, a refused or expired bundle, or an unusable address derives nothing,
+and then any Allow refuses. The loaded check also reads the broker's
+`IPAddressAllow` and `IPAddressDeny` (`Service` interface, `a(iayu)`, bounded
+and canonical) and refuses a Deny other than any, or an Allow that is neither
+empty nor the derived entry. The digest rides in the unit bytes, so the
+generation already binds it. Procedure and limits: `knowledge-context-consumer.md`
+*Egress allowance*.
+
 ### 8.3 Stopping a granted Knowledge Context broker
 
 This section describes the stop contract for `azazel-knowledge-contextd.service`.

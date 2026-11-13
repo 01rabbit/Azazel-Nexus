@@ -102,6 +102,16 @@ _LOADED_UNIT_PROPERTIES = (
     ("After", "as"),
 )
 _CONDITION_TYPES = (str, bool, bool, str, int)
+#: The cgroup IP filter of a service, read from the `Service` interface (not
+#: `Unit`) and only for the Knowledge Context broker (U49): name, signature.
+SERVICE_INTERFACE = "org.freedesktop.systemd1.Service"
+_IP_FILTER_PROPERTIES = (("IPAddressAllow", "a(iayu)"), ("IPAddressDeny", "a(iayu)"))
+SLICE_INTERFACE = "org.freedesktop.systemd1.Slice"
+#: The only slices the broker's chain may consist of; each is read on its own
+#: fixed object (U49: systemd merges a parent slice's IPAddressAllow).
+_CHAIN_SLICES = ("system.slice", "-.slice")
+_IP_FILTER_LIMIT = 64
+_IP_FAMILY_BYTES = {2: 4, 10: 16}
 _PROPERTY_LIMIT = 256
 #: Bound on the `GetAll` reply of the Unit interface (the bootstrap's bound).
 _ALL_PROPERTIES_LIMIT = 2048
@@ -356,7 +366,69 @@ class SystemdUnitCalls:
             loaded[name] = _loaded_value(
                 getattr(variant, "signature", None), getattr(variant, "value", None), signature
             )
+        if unit == CONTEXTD_UNIT:
+            service = self._exchange(
+                PROPERTIES_INTERFACE, "GetAll", "s", [SERVICE_INTERFACE], path=expected_path
+            )
+            service_properties = self._one(service, "a{sv}", "Service.GetAll")
+            if (type(service_properties) is not dict
+                    or len(service_properties) > _ALL_PROPERTIES_LIMIT
+                    or any(type(name) is not str for name in service_properties)):
+                raise UnitOperationFailed("systemd loaded unit properties refused")
+            for name, signature in _IP_FILTER_PROPERTIES:
+                if name not in service_properties:
+                    raise UnitOperationFailed("systemd loaded unit property missing")
+                variant = service_properties[name]
+                loaded[name] = _loaded_value(
+                    getattr(variant, "signature", None), getattr(variant, "value", None),
+                    signature)
+            loaded["SliceChainAllow"] = self._slice_chain_allow(service_properties)
         return loaded
+
+    def slice_chain_allow(self) -> dict:
+        """`{slice: IPAddressAllow}` for system.slice and -.slice, whatever the broker's state.
+
+        Those objects always exist; the read does not depend on the broker
+        being loaded (the pass masks a withdrawn broker, whose loaded read is
+        None).
+        """
+        return self._chain_from("system.slice")
+
+    def _slice_chain_allow(self, service_properties) -> dict:
+        """`{slice: IPAddressAllow}` for the broker's Slice chain, each read once.
+
+        The chain is followed through each slice's own `Slice` property and may
+        only consist of `_CHAIN_SLICES`; anything else, a loop or a missing
+        object is refused.
+        """
+        variant = service_properties.get("Slice")
+        return self._chain_from(_loaded_value(getattr(variant, "signature", None),
+                                              getattr(variant, "value", None), "s"))
+
+    def _chain_from(self, name: str) -> dict:
+        chain: dict = {}
+        while name:
+            if name not in _CHAIN_SLICES or name in chain:
+                raise UnitOperationFailed("systemd slice chain refused")
+            path = _unit_object_path(name)
+            found = self._exchange(
+                MANAGER_INTERFACE, "GetUnit", "s", [name], allow_no_such_unit=True)
+            if (getattr(found, "no_such_unit", False) is True
+                    or self._one(found, "o", "GetUnit") != path):
+                raise UnitOperationFailed("systemd slice chain refused")
+            reply = self._exchange(
+                PROPERTIES_INTERFACE, "GetAll", "s", [SLICE_INTERFACE], path=path)
+            properties = self._one(reply, "a{sv}", "Slice.GetAll")
+            if (type(properties) is not dict or len(properties) > _ALL_PROPERTIES_LIMIT
+                    or "IPAddressAllow" not in properties or "Slice" not in properties):
+                raise UnitOperationFailed("systemd slice properties refused")
+            allow = properties["IPAddressAllow"]
+            chain[name] = _loaded_value(getattr(allow, "signature", None),
+                                        getattr(allow, "value", None), "a(iayu)")
+            parent = properties["Slice"]
+            name = _loaded_value(getattr(parent, "signature", None),
+                                 getattr(parent, "value", None), "s")
+        return chain
 
     def bootstrap_profile(self):
         """Observe fixed Manager properties and classify the reviewed profile.
@@ -402,6 +474,8 @@ def _loaded_value(signature, value, expected: str):
         if any(type(item) is not str or len(item) > _TEXT_LIMIT for item in value):
             raise UnitOperationFailed("systemd loaded unit property refused")
         return list(value)
+    if expected == "a(iayu)":
+        return _ip_filter(value)
     copied = []
     for item in value:
         if (type(item) not in (list, tuple) or len(item) != len(_CONDITION_TYPES)
@@ -410,6 +484,31 @@ def _loaded_value(signature, value, expected: str):
             raise UnitOperationFailed("systemd loaded unit condition refused")
         copied.append(tuple(item))
     return copied
+
+
+def _ip_filter(value: list) -> list:
+    """`a(iayu)` as sorted `(family, packed address, prefix length)` triples.
+
+    Bounded in count, in address width per family and in prefix length; the
+    result is canonical (sorted, bytes), so equal filters compare equal.
+    """
+    if len(value) > _IP_FILTER_LIMIT:
+        raise UnitOperationFailed("systemd loaded unit property refused")
+    copied = []
+    for item in value:
+        if type(item) not in (list, tuple) or len(item) != 3:
+            raise UnitOperationFailed("systemd loaded unit IP filter refused")
+        family, address, prefix = item
+        if type(address) is list and all(type(b) is int and 0 <= b < 256 for b in address):
+            address = bytes(address)
+        elif type(address) is bytearray:
+            address = bytes(address)
+        width = _IP_FAMILY_BYTES.get(family) if type(family) is int else None
+        if (width is None or type(address) is not bytes or len(address) != width
+                or type(prefix) is not int or not 0 <= prefix <= 8 * width):
+            raise UnitOperationFailed("systemd loaded unit IP filter refused")
+        copied.append((family, address, prefix))
+    return sorted(copied)
 
 
 def _unit_object_path(unit: str) -> str:
@@ -582,8 +681,16 @@ class SystemdBusSession:
             # The pass's loaded-definition read: the Unit interface of a
             # marker-guarded unit's object, and nothing else. This read-only
             # scope does not widen Mask/Unmask/Enable authority.
-            if (signature != "s" or list(body) != [UNIT_INTERFACE]
-                    or path not in {_unit_object_path(unit) for unit in MARKER_GUARDED_UNITS}):
+            # U49: the broker's cgroup IP filter lives on the Service interface;
+            # that read is allowed on the broker's object alone.
+            service_read = (list(body) == [SERVICE_INTERFACE]
+                            and path == _unit_object_path(CONTEXTD_UNIT))
+            slice_read = (list(body) == [SLICE_INTERFACE]
+                          and path in {_unit_object_path(name) for name in _CHAIN_SLICES})
+            if (signature != "s"
+                    or (list(body) != [UNIT_INTERFACE] and not service_read and not slice_read)
+                    or (not slice_read and path not in {
+                        _unit_object_path(unit) for unit in MARKER_GUARDED_UNITS})):
                 raise UnitOperationFailed("the systemd client refused a property call")
         elif member != "Get" or signature != "ss":
             raise UnitOperationFailed("the systemd client refused a property call")
@@ -680,6 +787,10 @@ class SystemdBusSession:
     def loaded_unit(self, unit: str):
         """Read one grantable unit's loaded definition; performs no control operation."""
         return self.calls.loaded_unit(unit)
+
+    def slice_chain_allow(self) -> dict:
+        """The Allow of system.slice and -.slice; see `SystemdUnitCalls`."""
+        return self.calls.slice_chain_allow()
 
     def reload(self) -> None:
         """Manager.Reload (argument-less); see `SystemdUnitCalls.reload`."""

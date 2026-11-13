@@ -1267,7 +1267,7 @@ EXPECTED_SCRIPTS = (
 OPERATOR_TOOLS = (
     "az-core-reserve-probe", "az-nexus-commission", "az-nexus-bootstrap",
     "az-hil-readiness", "az-hil-capture", "az-nexus-model-admission",
-    "az-activation", "az-nexus-noc",
+    "az-activation", "az-nexus-noc", "az-knowledge-context-egress",
 )
 
 #: Console scripts backed by an **ungoverned observer unit** (U2): a oneshot
