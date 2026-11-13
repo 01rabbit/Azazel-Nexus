@@ -660,7 +660,7 @@ anything unestablished is `unknown`, which is not empty.
 
 The pass compares the unit's `IPAddress*` lines (absent or exactly the derived
 line, `IPAddressDeny=any` once) and the manager's loaded `IPAddressAllow` /
-`IPAddressDeny` (D-Bus `a(iayu)`; loaded Allow must equal the unit file's, `system.slice` and `-.slice` must have an empty Allow whether or not the broker is loaded (a withdrawn, masked broker has no loaded read, so they are read on their own), a wider one refuses). The loaded representation of `IPAddressDeny=any` (two zero-prefix entries) is unverified until the real-systemd run. A drop-in is
+`IPAddressDeny` (D-Bus `a(iayu)`; loaded Allow must equal the unit file's, `system.slice` and `-.slice` must have an empty Allow whether or not the broker is loaded (a withdrawn, masked broker has no loaded read, so they are read on their own), a wider one refuses). The loaded representation of `IPAddressDeny=any` (two zero-prefix entries) was confirmed on systemd 257 in an isolated container (lab evidence, not a deployment). A drop-in is
 still refused. Limits, stated so they are not read as more than they are:
 
 - The filter is per address, not per port: every port and protocol at the
