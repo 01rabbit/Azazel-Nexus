@@ -85,9 +85,9 @@ def allowance_from_result(result) -> EgressAllowance | None:
 
 def derive_allowance(*, now: str | None = None) -> EgressAllowance | None:
     """Verify the installed bundle and derive the allowance; None means no Allow."""
-    from .knowledge_context_config import load_commissioning
+    from .knowledge_context_config import load_egress_peer
 
-    return allowance_from_result(load_commissioning(now=now))
+    return allowance_from_result(load_egress_peer(now=now))
 
 
 def expected_loaded_allow(allowance: EgressAllowance | None) -> list[tuple[int, bytes, int]]:
