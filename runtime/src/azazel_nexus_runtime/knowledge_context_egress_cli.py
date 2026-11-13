@@ -164,14 +164,30 @@ def _write_atomically(data: bytes) -> None:
             raise Refused("the broker's unit file is not installed") from None
         if not stat.S_ISREG(current.st_mode):
             raise Refused("the broker's unit file is not a regular file")
-        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+        fd = os.open(temp, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
                      0o644, dir_fd=dirfd)
         try:
             os.fchmod(fd, 0o644)
             if os.geteuid() == 0:
                 os.fchown(fd, 0, 0)
-            os.write(fd, data)
+            view, written = memoryview(data), 0
+            while written < len(data):
+                count = os.write(fd, view[written:])
+                if count <= 0:
+                    raise Refused("short write")
+                written += count
             os.fsync(fd)
+            if os.fstat(fd).st_size != len(data):
+                raise Refused("written length differs")
+            os.lseek(fd, 0, os.SEEK_SET)
+            back = b""
+            while len(back) <= len(data):
+                chunk = os.read(fd, len(data) + 1 - len(back))
+                if not chunk:
+                    break
+                back += chunk
+            if back != data:
+                raise Refused("written content differs")
         finally:
             os.close(fd)
         os.rename(temp, CONTEXTD_UNIT, src_dir_fd=dirfd, dst_dir_fd=dirfd)
@@ -188,12 +204,12 @@ def _change(*, want_allow: bool, out, publish) -> int:
     try:
         if not _is_root():
             raise Refused("requires root")
-        allowance = derived_egress_allowance()
-        if want_allow and allowance is None:
-            raise Refused("no verified registry peer to derive an allowance from")
-        text = rendered_unit(CONTEXTD_UNIT, allowance=allowance if want_allow else None)
         with _session() as (authority, reload):
             _preconditions(authority, _ROOT)
+            allowance = derived_egress_allowance()
+            if want_allow and allowance is None:
+                raise Refused("no verified registry peer to derive an allowance from")
+            text = rendered_unit(CONTEXTD_UNIT, allowance=allowance if want_allow else None)
             _write_atomically(text.encode("ascii"))
             reload()
     except Refused as error:
