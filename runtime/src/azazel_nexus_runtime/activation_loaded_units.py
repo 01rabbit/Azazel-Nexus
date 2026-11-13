@@ -32,13 +32,11 @@ from __future__ import annotations
 
 from .activation_unit_files import (
     CONTROLLER_UNIT,
-    derived_egress_allowance,
     UNIT_DIRECTORY,
     _directives,
     rendered_unit,
     require_grantable_unit_files,
 )
-from .knowledge_context_egress import expected_loaded_allow
 from .units import CONTEXTD_UNIT
 
 __all__ = [
@@ -103,7 +101,7 @@ def _check_loaded(unit: str, loaded) -> None:
             or _observed(loaded["Asserts"]) != asserts):
         raise LoadedUnitRefused("loaded unit start guards differ from the declaration")
     if unit == CONTEXTD_UNIT:
-        _check_loaded_egress(loaded)
+        _check_loaded_egress(unit, loaded)
     # Implicit dependencies (slices, targets) are added by systemd, so the
     # lists are not compared whole: the controller must be among them.
     if CONTROLLER_UNIT not in loaded["Requires"] or CONTROLLER_UNIT not in loaded["After"]:
@@ -114,22 +112,54 @@ def _check_loaded(unit: str, loaded) -> None:
 _DENY_ANY = [(2, bytes(4), 0), (10, bytes(16), 0)]
 
 
-def _check_loaded_egress(loaded) -> None:
-    """The broker's loaded cgroup IP filter: deny any, Allow none or the derived one.
+def file_allow(unit: str) -> list:
+    """The `IPAddressAllow` entries of the measured unit file, as the manager reports them.
 
-    `IPAddressAllow`/`IPAddressDeny` are read from the manager (a(iayu),
-    canonical). A loaded Allow wider than the derivation -- another address,
-    a prefix, or a second entry, e.g. from a manager that loaded an older
-    unit -- is refused. Missing or malformed values are refused.
+    Read from the bytes the pass measures (and the generation hashes), not from
+    the derivation: loaded must equal the file exactly.
+    """
+    import ipaddress
+
+    from .activation_unit_files import UNIT_DIRECTORY, _directives, _read, _open
+
+    fd = _open(UNIT_DIRECTORY, required=True)
+    try:
+        data = _read(fd, unit)
+    finally:
+        import os
+        os.close(fd)
+    result = []
+    for section, key, value, _ in _directives(data.decode("ascii")):
+        if key == "IPAddressAllow" and section == "Service":
+            net = ipaddress.ip_network(value, strict=True)
+            result.append((2 if net.version == 4 else 10, net.network_address.packed,
+                           net.prefixlen))
+    return sorted(result)
+
+
+def _check_loaded_egress(unit: str, loaded) -> None:
+    """The broker's loaded cgroup IP filter equals its measured file.
+
+    Deny is any; Allow equals the file's `IPAddressAllow` exactly (empty when
+    the file has none). Every slice in the broker's chain must have an empty
+    Allow, because the manager merges a parent slice's Allow and evaluates
+    Allow before Deny. Missing or malformed values are refused. (The loaded
+    representation of Deny is unverified until the real-systemd run.)
     """
     allow, deny = loaded.get("IPAddressAllow"), loaded.get("IPAddressDeny")
-    if type(allow) is not list or type(deny) is not list:
+    chain = loaded.get("SliceChainAllow")
+    if type(allow) is not list or type(deny) is not list or type(chain) is not dict:
         raise LoadedUnitRefused("loaded unit egress filter unreadable")
     if deny != _DENY_ANY:
         raise LoadedUnitRefused("loaded unit does not deny all addresses")
-    derived = expected_loaded_allow(derived_egress_allowance())
-    if allow != [] and allow != derived:
-        raise LoadedUnitRefused("loaded unit egress allowance differs from commissioning")
+    if not chain or any(entries != [] for entries in chain.values()):
+        raise LoadedUnitRefused("loaded slice chain allows addresses")
+    try:
+        expected = file_allow(unit)
+    except Exception:  # noqa: BLE001 - an unreadable file is not "no Allow"
+        raise LoadedUnitRefused("unit file egress allowance unreadable") from None
+    if allow != expected:
+        raise LoadedUnitRefused("loaded unit egress allowance differs from its file")
 
 
 def verify_loaded_units(reader, units) -> None:

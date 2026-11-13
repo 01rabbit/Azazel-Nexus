@@ -101,6 +101,7 @@ def loaded_as_declared(unit):
         # U49: the cgroup IP filter, deny any and no Allow (the packaged unit).
         loaded["IPAddressAllow"] = []
         loaded["IPAddressDeny"] = [(2, bytes(4), 0), (10, bytes(16), 0)]
+        loaded["SliceChainAllow"] = {"system.slice": [], "-.slice": []}
     return loaded
 
 
@@ -285,6 +286,10 @@ class World:
 
 def _owned_by_the_test(monkeypatch):
     """The real readers, trusting the test's uid as the probe writer and boot id owner."""
+    from azazel_nexus_runtime import activation_loaded_units
+    # U49: the broker's loaded Allow is compared with its measured file; these
+    # tests have no installed unit files, and the packaged file has no Allow.
+    monkeypatch.setattr(activation_loaded_units, "file_allow", lambda unit: [])
     read_probe, read_boot = edge_package.load_probe_result, edge_package.read_current_boot_id
     monkeypatch.setattr(edge_package, "load_probe_result",
                         lambda path: read_probe(path, owner_uid=os.geteuid()))
