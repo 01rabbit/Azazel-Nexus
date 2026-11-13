@@ -487,8 +487,8 @@ def test_handoff_copies_fixed_keys_and_refuses_a_bad_record():
 
 def test_ui_uses_the_fixed_labels_and_text_content_only():
     js = (ROOT / "runtime/src/azazel_nexus_runtime/ui_static/app.js").read_text()
-    start = js.index('var tk = full && full.technique_knowledge;')
-    end = js.index("(fast.knowledge || []).forEach", start)
+    start = js.index("function techniqueBlock(")
+    end = js.index("// -- handoff card", start)
     block = js[start:end]
     for label in ("未検証の ATT&CK ラベル（参考）", "ATT&CK corpus 利用不可", "署名応答受信（内容ありを意味しない）"):
         assert label in block
