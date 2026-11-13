@@ -1417,6 +1417,7 @@ class Explainer:
                 adopted = {**advise, "full_node_context_status": "unavailable"}
                 adopted.pop("fabric_knowledge_context_advisory", None)
                 adopted.pop("full_node_context_received_at", None)
+                adopted.pop("technique_knowledge", None)
             else:
                 result["adopted"] = True
             advise = adopted
@@ -1818,7 +1819,8 @@ def checkpoint_for_release_before_full_node_trace(path):
     full-node trace (74a6189; DESIGN-M5 2.9). Separate from the #392 conversion.
 
     Drops, from every recent row, the row-level `full_node_trace` and the
-    nested `explanation.fast_assistance.full_node_context.query_origin`; pending
+    nested `explanation.fast_assistance.full_node_context.query_origin` and
+    `technique_knowledge`; pending
     entries are not changed. The release before this change refuses either
     (`cursor_refused`, no READY). The checkpoint is validated first and nothing
     is written if it is refused. The original is kept as `cursor.json.pre-rollback`
@@ -1837,6 +1839,9 @@ def checkpoint_for_release_before_full_node_trace(path):
         node = fast.get("full_node_context") if type(fast) is dict else None
         if type(node) is dict and "query_origin" in node:
             del node["query_origin"]
+            hit = True
+        if type(node) is dict and "technique_knowledge" in node:
+            del node["technique_knowledge"]
             hit = True
         changed += hit
     decode_checkpoint(canonical(value))

@@ -1040,6 +1040,23 @@
         if ((full.limitations || []).length) { add(fullNode, el("p", "small", "制限："), list(full.limitations)); }
         add(fastNode, fullNode);
       }
+      var tk = full && full.technique_knowledge;
+      if (tk) {
+        var tkNode = block("未検証の ATT&CK ラベル（参考）");
+        var transportLabel = { received: "署名応答受信（内容ありを意味しない）", unavailable: "ATT&CK 照会は通信できませんでした", refused: "ATT&CK 照会は拒否されました" };
+        var verificationLabel = { ok: "検証済み", failed: "検証失敗（応答は採用しません）", not_run: "検証は実行されていません" };
+        var coverageLabel = { found: "対応あり", no_match: "該当なし", stale: "期限切れ", unavailable: "ATT&CK corpus 利用不可" };
+        add(tkNode, kv([["通信", transportLabel[tk.transport] || "不明"], ["検証", verificationLabel[tk.verification] || "不明"]]));
+        (tk.techniques || []).forEach(function (row) {
+          add(tkNode, el("p", "small", text(row.technique_id) + "：" + (coverageLabel[row.coverage] || "不明")
+            + "（内容あり：" + text(row.useful_content) + "）"));
+          if (row.useful_content) {
+            add(tkNode, kv([["名称（表示用ラベル）", row.name], ["戦術（表示用ラベル）", row.tactics], ["ATT&CK 版", row.attack_version]]));
+          }
+        });
+        add(tkNode, el("p", "small", "これらは参考ラベルであり、発生の根拠でも対処の指示でもありません。"));
+        add(fastNode, tkNode);
+      }
       (fast.knowledge || []).forEach(function (item) {
         add(fastNode, el("p", "small", "Knowledge Lite・報告済み未検証の参照: " + text(item.technique_id) + " — " + text(item.name)));
         if (item.summary) { add(fastNode, el("p", "small", text(item.summary))); }

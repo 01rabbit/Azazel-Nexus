@@ -46,6 +46,9 @@ from azazel_nexus.model_runtime import (
 )
 from azazel_nexus.reasoning_playbook import Library, technique_ids
 from azazel_nexus.sanitizer import PrivacyClass
+from azazel_nexus.technique_knowledge import (
+    TechniqueVerificationFailed, not_run_projection, project_technique_response, request_ids,
+)
 
 from .knowledge_client import KnowledgeUnavailable, lookup_context
 from .knowledge_context_socket import (
@@ -149,6 +152,17 @@ REGISTRY = VerbRegistry([ACTIVATE_VERB, ADMISSION_VERB, INFER_VERB, FAST_ASSESS_
 CONTEXT_OBSERVE_QUESTION_PREFIX = "ATT&CK technique context: "
 
 
+def _refusal_projection(stage) -> dict:
+    """The record of a refused or failed technique query, from the broker's stage word."""
+    transport, verification = {
+        "refused_before_send": ("refused", "not_run"),
+        "transport": ("unavailable", "not_run"),
+        "verification": ("refused", "failed"),
+        "technique_verification": ("received", "failed"),
+    }.get(stage, ("unavailable", "not_run"))
+    return not_run_projection(transport, verification)
+
+
 def observation_context_question(ids) -> str:
     codes = sorted(set(ids))
     if not 1 <= len(codes) <= 8 or any(
@@ -158,6 +172,14 @@ def observation_context_question(ids) -> str:
 
 
 _TECHNIQUE_CODE = re.compile(r"T[0-9]{4}(?:\.[0-9]{3})?", re.ASCII)
+
+
+def observation_technique_ids(ids) -> list[str]:
+    """The sorted, unique ids of the observation-origin technique query (1 to 8)."""
+    try:
+        return request_ids(sorted(set(ids)))
+    except (TypeError, ValueError):
+        raise ValueError("invalid_technique_set") from None
 
 
 def _read_assessment_payload(payload: Any) -> dict:
@@ -260,7 +282,10 @@ class LocalRuntimeService:
 
         Nothing is written to the ledger and no generation is submitted. The
         only thing sent to the broker is a P0 frame of `{privacy_class,
-        question}` whose question is the fixed sentence plus technique codes.
+        techniques}` whose techniques are 1 to 8 technique codes (typed
+        `attack-technique/v1` entities on the wire). The answer never reaches
+        M.I.O.: it is validated and projected into `technique_knowledge`, and
+        the core runs as it does when Full Node Context is unavailable.
         `timing` has fixed keys (ints in ms, no incident data) so the
         success, delay and refusal cases can be measured.
         """
@@ -277,24 +302,30 @@ class LocalRuntimeService:
             if (transition is None
                     or frame["privacy_class"] != PrivacyClass.P3_RESTRICTED.value):
                 raise ValueError("fast_transition_refused")
+            technique_ids_asked = observation_technique_ids(transition["technique_ids"])
             query = {"privacy_class": PrivacyClass.P0_PUBLIC.value,
-                     "question": observation_context_question(transition["technique_ids"])}
+                     "techniques": technique_ids_asked}
         except (FrameRefused, ValueError):
             return {"outcome": "failed", "refusal": "malformed_frame"}
-        context_status = FullNodeContextStatus.UNAVAILABLE
-        response = None
+        technique_knowledge = not_run_projection("unavailable", "not_run")
         broker_started = time.monotonic()
         try:
             budget = deadline - broker_started - DELIVERY_RESERVE_S - FAST_CORE_RESERVE_S
             if budget > 0:
-                response = request_context(query, deadline_s=min(KNOWLEDGE_MAX_S, budget))
-                context_status = FullNodeContextStatus.RECEIVED
-        except KnowledgeContextUnavailable:
-            pass
+                try:
+                    technique_knowledge = project_technique_response(
+                        request_context(query, deadline_s=min(KNOWLEDGE_MAX_S, budget)),
+                        technique_ids_asked)
+                except TechniqueVerificationFailed:
+                    technique_knowledge = not_run_projection("received", "failed")
+        except KnowledgeContextUnavailable as exc:
+            technique_knowledge = _refusal_projection(getattr(exc, "stage", None))
         except Exception:  # noqa: BLE001 - any failure is an unavailable Full lookup
-            response = None
+            technique_knowledge = not_run_projection("unavailable", "not_run")
+        # The technique answer is never handed to M.I.O.: the core is run as for
+        # an unavailable Full lookup, and the record rides next to its result.
+        context_status = FullNodeContextStatus.UNAVAILABLE
         broker_ms = int((time.monotonic() - broker_started) * 1000)
-        received_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         try:
             from .mio_fast_assistance import _frame, fast_assistance
             situation, _ = _frame(frame, with_selection=True)
@@ -302,15 +333,13 @@ class LocalRuntimeService:
                 frame, deadline_s=max(0.0, deadline - time.monotonic() - DELIVERY_RESERVE_S),
                 knowledge_lookup=None, knowledge_max_s=KNOWLEDGE_MAX_S,
                 core_reserve_s=FAST_CORE_RESERVE_S, situation_frame=situation,
-                fabric_knowledge_context_response=response,
+                fabric_knowledge_context_response=None,
                 full_node_context_status=context_status)
-            if (context_status is FullNodeContextStatus.RECEIVED
-                    and result.get("full_node_context_status") == "received"):
-                result["full_node_context_received_at"] = received_at
+            result["technique_knowledge"] = technique_knowledge
         except Exception:  # noqa: BLE001
             result = fast_assessment_degraded("unavailable")
         return {"outcome": "context_observed", "fast_assistance": result,
-                "timing": {"context": context_status.value, "broker_ms": broker_ms,
+                "timing": {"context": technique_knowledge["transport"], "broker_ms": broker_ms,
                            "total_ms": int((time.monotonic() - started) * 1000)}}
 
     def set_playbooks(self, library: Library | None) -> None:
