@@ -56,7 +56,13 @@ def _staged(exc: Exception, stage: str) -> Exception:
 
 
 def egress_address(peer) -> str:
-    """The one address the client connects to; the renderer's allowance uses it too."""
+    """The one address the client connects to; the renderer's allowance uses it too.
+
+    The registry loader accepts exactly one address; a peer that does not carry
+    exactly one is refused here as well, never reduced to its first element.
+    """
+    if len(peer.addresses) != 1:
+        raise ValueError("peer must carry exactly one address")
     return peer.addresses[0]
 
 

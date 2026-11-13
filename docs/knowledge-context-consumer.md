@@ -624,8 +624,10 @@ the contract and no grace period was added; they are commissioning decisions.
 ## Egress allowance
 
 The broker's unit may carry exactly one `IPAddressAllow=<ip>/32` (or `/128`),
-the registry peer's `addresses[0]`, the address the client connects to (no DNS
-lookup, `knowledge_egress.egress_address`). Nothing else is configurable. The
+the registry peer's one address, the address the client connects to (no DNS
+lookup, `knowledge_egress.egress_address`). The registry loader refuses a peer
+whose `addresses` does not hold exactly one entry, so neither the connection nor
+the Allow ever depends on list order. Nothing else is configurable. The
 allowance digest (peer id, host, port, SPKI pin, address, registry version,
 registry commissioning digest) is written into the unit as a header comment, so
 it is part of the generation-hashed bytes: a different host, pin or version at
@@ -640,7 +642,7 @@ The only writer is `az-knowledge-context-egress` (root):
   write it atomically, reload the manager and run `az-activation
   generation-publish`. Then `az-activation request` and `install` as usual.
   Nothing is admitted until the operator signs.
-- IP change: new signed registry (new `addresses[0]`, higher version), replace
+- IP change: new signed registry (new single `addresses` entry, higher version), replace
   the bundle, withdraw and stop, `apply`, publish, sign, install. Until then the
   pass refuses (the unit's Allow and digest differ from the derivation); there
   is no wider fallback.

@@ -62,7 +62,7 @@ def allowance(root, **kw):
 
 # -- derivation --------------------------------------------------------------
 
-def test_derivation_uses_addresses_zero_as_slash_32(root):
+def test_derivation_uses_the_single_address_as_slash_32(root):
     a = allowance(root)
     assert a.line == "IPAddressAllow=192.0.2.10/32"
     assert a.address == knowledge_egress.egress_address(
@@ -79,6 +79,27 @@ def test_digest_covers_address_pin_host_and_version(root):
     base = allowance(root)
     assert allowance(root, address="192.0.2.11").digest != base.digest
     assert allowance(root, host="other.azazel.test").digest != base.digest
+
+
+@pytest.mark.parametrize("addresses", [
+    [], ["192.0.2.10", "192.0.2.11"], ["192.0.2.10", "192.0.2.10"],
+    ["192.0.2.10", "2001:db8::10"],
+])
+def test_registry_without_exactly_one_address_derives_nothing(root, addresses):
+    build(root, address=addresses)
+    assert egress.derive_allowance(now=NOW) is None
+
+
+def test_egress_address_refuses_a_peer_without_exactly_one_address():
+    class P:
+        addresses = ("192.0.2.10", "192.0.2.11")
+    with pytest.raises(ValueError):
+        knowledge_egress.egress_address(P)
+    P.addresses = ()
+    with pytest.raises(ValueError):
+        knowledge_egress.egress_address(P)
+    P.addresses = ("192.0.2.10",)
+    assert knowledge_egress.egress_address(P) == "192.0.2.10"
 
 
 @pytest.mark.parametrize("address", [

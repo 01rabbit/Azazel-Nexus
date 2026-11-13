@@ -46,7 +46,7 @@ def registry_document(*, peer_id, peer_address, peer_public_key_hex, peer_host,
                 "max_request_bytes": 4096, "max_response_bytes": 65536,
                 "deadline_seconds": 5, "allowed_privacy_classes": ["P0-public"],
             },
-            "addresses": [peer_address], "public_key": peer_public_key_hex,
+            "addresses": ([peer_address] if isinstance(peer_address, str) else list(peer_address)), "public_key": peer_public_key_hex,
             "max_inflight": 1,
         }],
     }

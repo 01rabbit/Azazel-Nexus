@@ -2,7 +2,8 @@
 
 `IPAddressDeny=any` stays in the broker's unit. This module derives the single
 `IPAddressAllow=` the unit may carry, from the same verified registry peer the
-client connects to (`knowledge_egress.egress_address`: `addresses[0]`, no DNS):
+client connects to (`knowledge_egress.egress_address`: the peer's one address, no DNS; the
+registry loader refuses any peer whose `addresses` does not hold exactly one):
 
 * `derive_allowance()` loads the commissioning bundle (signature, freshness,
   peer, identity and privacy class are checked by `knowledge_context_config`)
