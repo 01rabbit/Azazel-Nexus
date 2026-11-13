@@ -1304,8 +1304,8 @@ that cannot record narrows) and costs availability.
 **One rule for the ledger.** Every ledger append by the main pass and by the
 recheck is made while `pass.lock` is held. The main pass's budget-expired
 record (`activation.pass_budget_expired`) is appended inside the lock, and so is
-the narrowing that follows it. A main pass that never obtained the lock (its
-wait expired) does not own the state, so it changes nothing at all: no marker is
+the narrowing that follows it. A main pass that never obtained the lock because
+another holder kept it past the wait (`PassLockBusy`) does not own the state, so it changes nothing at all: no marker is
 removed, no unit is masked, reloaded or stopped, no ledger record is written and
 no READY is sent. It prints `az-activated: the activation pass lock was not held;
 nothing was changed or written; failing` to the journal and exits non-zero. The
@@ -1317,6 +1317,45 @@ running broker is the holder's or the recheck's responsibility. The failure is
 visible in the journal and in the unit's exit status, not in the ledger. Nothing
 before the acquisition mutates: the preflight (marker removal, masks, reload,
 the broker's withdrawal) starts after it.
+
+**Two ways not to take the lock.** The lock can be missing for two different
+reasons, and they do not have the same consequence.
+
+- Busy (`PassLockBusy`): another pass holds the lock. This is normal
+  contention, and the holder owns the state. The main pass changes nothing as
+  described above. The recheck prints `az-activation-recheck: the activation
+  pass lock is held; nothing changed` and exits 0; the next timer tick tries
+  again.
+- Refused (`PassLockRefused`, and its subclass `PassLockDirectoryMissing`): the
+  lock file itself cannot be used. `activation_lock.py` requires a regular file
+  owned by root (uid 0), mode `0600`, with one link, opened without following a
+  symlink; a symlink, a file of another owner or mode, a file that is not
+  regular, or a missing activation directory is refused. Nobody holds the
+  lock in this case, so waiting does not help. The main pass handles it exactly
+  like Busy: it prints the `the activation pass lock was not held` line above,
+  changes and writes nothing, sends no READY and exits non-zero. The recheck
+  also changes nothing: with an unusable file it prints
+  `az-activation-recheck: the activation pass lock is unusable` to stderr and
+  exits 1; with a missing directory it exits 0 when no contextd trigger is
+  present and otherwise prints `az-activation-recheck: the activation directory
+  is missing` and exits 1.
+
+While the lock stays Refused there is no stop guarantee. The recheck does not
+withdraw a running contextd, and no main pass can run to grant or to narrow.
+The start side stays fail-closed: no pass sends READY, so a start job that
+`Requires=` the pass fails. A broker that is already running keeps running
+until an operator stops it.
+
+Detection: a Refused lock shows as rc 1 on every recheck timer tick, so
+`azazel-activation-recheck.service` stays in the failed state, and as a
+non-zero main pass with the journal lines above. Busy does not do this: the
+recheck exits 0.
+
+Operator response: treat Refused as an incident. As root, stop the broker by
+hand (`systemctl stop azazel-knowledge-contextd`, and `systemctl mask` it if it
+must not return), inspect `pass.lock` and the activation directory, repair them
+to the protection above (root-owned, `0600`, regular file, one link, no
+symlink; the directory present), and then run a main pass.
 
 A budget that ends mid-withdrawal gives `activation.withdrawal_unconfirmed`; the
 marker is already removed (a local step) and the finalizer masks the broker
