@@ -516,3 +516,77 @@ def test_an_invalid_observe_reply_is_unavailable_and_keeps_the_advise_result(tmp
     assert r.current()["full_node_context_status"] == "unavailable"
     assert r.row["explanation"]["state"] != "unavailable" or r.row["explanation"]["failure_codes"] != ["mio_reply_refused"]
     assert "mio_reply_refused" not in r.row["explanation"]["failure_codes"]
+
+
+# ---- technique answer recorded without M.I.O.'s reply or the Fabric comparison ----
+
+def _technique_record(ids=("T1059", "T1059.001")):
+    from _technique_fixture import make_response
+    from azazel_nexus.technique_knowledge import project_technique_response
+    ids = list(ids)
+    return project_technique_response(make_response(ids), ids)
+
+
+def _real_mio_like(record):
+    """What real M.I.O. returns for a Full lookup that was not given a response."""
+    fast = base_fast()
+    fast.update(full_node_context_status="unavailable", technique_knowledge=record,
+                trace_id="mio-aaaaaaaaaaaaaaaa-3", frame_id="mio-aaaaaaaaaaaaaaaa-3:frame")
+    fast["dependency_outcome"] = {"knowledge": "unavailable", "deception": "absent"}
+    fast["unknowns"] = fast["unknowns"] + ["KNOWLEDGE_UNAVAILABLE"]       # added by M.I.O.
+    fast["next_checks"] = ["Compare the observed timing with an approved change record."]
+    return fast
+
+
+def test_the_fabric_comparison_is_not_loosened_for_this_divergence():
+    record = _technique_record()
+    observed = _real_mio_like(record)
+    observed.pop("technique_knowledge")
+    assert adopt_full_node_reply(base_fast(), observed) is None
+
+
+def test_a_technique_record_survives_the_divergence_m_i_o_introduces(tmp_path):
+    record = _technique_record()
+    r = Rig(tmp_path, observed=lambda frame: _real_mio_like(record))
+    r.step(tx())
+    fast = records(r.e)[0]["mio"]["fast_assistance"]
+    assert fast["technique_knowledge"] == record
+    assert fast["trace_id"] == "mio-0123456789abcdef-1"                      # the advise side is kept
+    assert fast["full_node_context_status"] == "unavailable"
+    assert "KNOWLEDGE_UNAVAILABLE" not in fast["unknowns"]                    # M.I.O.'s reply was not adopted
+    assert r.current()["technique_knowledge"] == record
+    assert r.trace["last_attempt"]["result"] == "unavailable"                # the Fabric trace is as before
+
+
+def test_a_failed_attempt_record_is_kept_too(tmp_path):
+    from azazel_nexus.technique_knowledge import not_run_projection
+    record = not_run_projection("received", "failed")
+    r = Rig(tmp_path, observed=lambda frame: _real_mio_like(record))
+    r.step(tx())
+    assert r.current()["technique_knowledge"] == record
+
+
+@pytest.mark.parametrize("ids", [("T1059",), ("T1059", "T1059.001", "T1110")])
+def test_a_record_for_other_techniques_is_not_recorded(tmp_path, ids):
+    r = Rig(tmp_path, observed=lambda frame: _real_mio_like(_technique_record(ids)))
+    r.step(tx())
+    assert "technique_knowledge" not in r.current()
+    assert r.current()["full_node_context_status"] == "unavailable"
+
+
+def test_with_the_real_core(tmp_path):
+    pytest.importorskip("azazel_mio")
+    from azazel_nexus_runtime.mio_fast_assistance import fast_assistance, _frame
+    from azazel_nexus_runtime.knowledge_context_socket import FullNodeContextStatus
+    record = _technique_record()
+
+    def observed(frame):
+        situation, _ = _frame(frame, with_selection=True)
+        out = fast_assistance(frame, deadline_s=2, situation_frame=situation, knowledge_lookup=None,
+                              full_node_context_status=FullNodeContextStatus.UNAVAILABLE)
+        out["technique_knowledge"] = record
+        return out
+
+    r = Rig(tmp_path, observed=observed)
+    r.step(tx())
+    assert r.current()["technique_knowledge"] == record
