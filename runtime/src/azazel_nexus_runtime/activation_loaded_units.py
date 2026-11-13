@@ -32,11 +32,14 @@ from __future__ import annotations
 
 from .activation_unit_files import (
     CONTROLLER_UNIT,
+    derived_egress_allowance,
     UNIT_DIRECTORY,
     _directives,
     rendered_unit,
     require_grantable_unit_files,
 )
+from .knowledge_context_egress import expected_loaded_allow
+from .units import CONTEXTD_UNIT
 
 __all__ = [
     "LoadedUnitRefused",
@@ -99,10 +102,34 @@ def _check_loaded(unit: str, loaded) -> None:
     if (_observed(loaded["Conditions"]) != conditions
             or _observed(loaded["Asserts"]) != asserts):
         raise LoadedUnitRefused("loaded unit start guards differ from the declaration")
+    if unit == CONTEXTD_UNIT:
+        _check_loaded_egress(loaded)
     # Implicit dependencies (slices, targets) are added by systemd, so the
     # lists are not compared whole: the controller must be among them.
     if CONTROLLER_UNIT not in loaded["Requires"] or CONTROLLER_UNIT not in loaded["After"]:
         raise LoadedUnitRefused("loaded unit does not wait for the controller")
+
+
+#: systemd reports `IPAddressDeny=any` as both all-zero prefixes.
+_DENY_ANY = [(2, bytes(4), 0), (10, bytes(16), 0)]
+
+
+def _check_loaded_egress(loaded) -> None:
+    """The broker's loaded cgroup IP filter: deny any, Allow none or the derived one.
+
+    `IPAddressAllow`/`IPAddressDeny` are read from the manager (a(iayu),
+    canonical). A loaded Allow wider than the derivation -- another address,
+    a prefix, or a second entry, e.g. from a manager that loaded an older
+    unit -- is refused. Missing or malformed values are refused.
+    """
+    allow, deny = loaded.get("IPAddressAllow"), loaded.get("IPAddressDeny")
+    if type(allow) is not list or type(deny) is not list:
+        raise LoadedUnitRefused("loaded unit egress filter unreadable")
+    if deny != _DENY_ANY:
+        raise LoadedUnitRefused("loaded unit does not deny all addresses")
+    derived = expected_loaded_allow(derived_egress_allowance())
+    if allow != [] and allow != derived:
+        raise LoadedUnitRefused("loaded unit egress allowance differs from commissioning")
 
 
 def verify_loaded_units(reader, units) -> None:

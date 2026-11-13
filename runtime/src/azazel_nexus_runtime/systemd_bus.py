@@ -102,6 +102,12 @@ _LOADED_UNIT_PROPERTIES = (
     ("After", "as"),
 )
 _CONDITION_TYPES = (str, bool, bool, str, int)
+#: The cgroup IP filter of a service, read from the `Service` interface (not
+#: `Unit`) and only for the Knowledge Context broker (U49): name, signature.
+SERVICE_INTERFACE = "org.freedesktop.systemd1.Service"
+_IP_FILTER_PROPERTIES = (("IPAddressAllow", "a(iayu)"), ("IPAddressDeny", "a(iayu)"))
+_IP_FILTER_LIMIT = 64
+_IP_FAMILY_BYTES = {2: 4, 10: 16}
 _PROPERTY_LIMIT = 256
 #: Bound on the `GetAll` reply of the Unit interface (the bootstrap's bound).
 _ALL_PROPERTIES_LIMIT = 2048
@@ -356,6 +362,22 @@ class SystemdUnitCalls:
             loaded[name] = _loaded_value(
                 getattr(variant, "signature", None), getattr(variant, "value", None), signature
             )
+        if unit == CONTEXTD_UNIT:
+            service = self._exchange(
+                PROPERTIES_INTERFACE, "GetAll", "s", [SERVICE_INTERFACE], path=expected_path
+            )
+            service_properties = self._one(service, "a{sv}", "Service.GetAll")
+            if (type(service_properties) is not dict
+                    or len(service_properties) > _ALL_PROPERTIES_LIMIT
+                    or any(type(name) is not str for name in service_properties)):
+                raise UnitOperationFailed("systemd loaded unit properties refused")
+            for name, signature in _IP_FILTER_PROPERTIES:
+                if name not in service_properties:
+                    raise UnitOperationFailed("systemd loaded unit property missing")
+                variant = service_properties[name]
+                loaded[name] = _loaded_value(
+                    getattr(variant, "signature", None), getattr(variant, "value", None),
+                    signature)
         return loaded
 
     def bootstrap_profile(self):
@@ -402,6 +424,8 @@ def _loaded_value(signature, value, expected: str):
         if any(type(item) is not str or len(item) > _TEXT_LIMIT for item in value):
             raise UnitOperationFailed("systemd loaded unit property refused")
         return list(value)
+    if expected == "a(iayu)":
+        return _ip_filter(value)
     copied = []
     for item in value:
         if (type(item) not in (list, tuple) or len(item) != len(_CONDITION_TYPES)
@@ -410,6 +434,31 @@ def _loaded_value(signature, value, expected: str):
             raise UnitOperationFailed("systemd loaded unit condition refused")
         copied.append(tuple(item))
     return copied
+
+
+def _ip_filter(value: list) -> list:
+    """`a(iayu)` as sorted `(family, packed address, prefix length)` triples.
+
+    Bounded in count, in address width per family and in prefix length; the
+    result is canonical (sorted, bytes), so equal filters compare equal.
+    """
+    if len(value) > _IP_FILTER_LIMIT:
+        raise UnitOperationFailed("systemd loaded unit property refused")
+    copied = []
+    for item in value:
+        if type(item) not in (list, tuple) or len(item) != 3:
+            raise UnitOperationFailed("systemd loaded unit IP filter refused")
+        family, address, prefix = item
+        if type(address) is list and all(type(b) is int and 0 <= b < 256 for b in address):
+            address = bytes(address)
+        elif type(address) is bytearray:
+            address = bytes(address)
+        width = _IP_FAMILY_BYTES.get(family) if type(family) is int else None
+        if (width is None or type(address) is not bytes or len(address) != width
+                or type(prefix) is not int or not 0 <= prefix <= 8 * width):
+            raise UnitOperationFailed("systemd loaded unit IP filter refused")
+        copied.append((family, address, prefix))
+    return sorted(copied)
 
 
 def _unit_object_path(unit: str) -> str:

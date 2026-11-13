@@ -48,6 +48,7 @@ actually blocks a socket, whether an unprivileged account is refused
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from dataclasses import dataclass, field, replace
 from typing import Mapping, Sequence
@@ -196,6 +197,8 @@ _RESERVED_EXTRA_KEYS = frozenset({key for key, _ in SHARED_HARDENING}) | {
     "CapabilityBoundingSet", "AmbientCapabilities", "SystemCallFilter",
     "RestrictAddressFamilies", "ReadWritePaths",
     "InaccessiblePaths", "BindPaths", "BindReadOnlyPaths",
+    # The contextd allowance has one source (`render_unit(egress_allow=)`).
+    "IPAddressAllow",
     # A second program in a unit is a declaration too (#196 body): only the
     # helper names an `ExecStop=`, and only the namespace unit more
     # `ExecStart=` lines and its `ExecStopPost=` lines (G4 follow-up), each
@@ -521,7 +524,7 @@ class ServiceProfile:
             reserved = _RESERVED_EXTRA_KEYS
             if self.unit == DECOY_UNIT:
                 # The decoy's one reserved key, checked whole below (#276 F10).
-                reserved = reserved - {"InaccessiblePaths"}
+                reserved = reserved - {"InaccessiblePaths", "IPAddressAllow"}
             restated = sorted({key for key, _ in self.extra} & reserved)
             if restated:
                 raise ValueError(
@@ -2536,13 +2539,62 @@ def packaged_unit_files() -> tuple[tuple[str, str], ...]:
         + UI_UNIT_FILES)
 
 
-def render_unit(profile: ServiceProfile) -> str:
+#: The one place a contextd egress allowance is validated (U49). The line is
+#: a fixed format, `IPAddressAllow=<canonical ip>/<32|128>`: no CIDR input, no
+#: free text, no second line.
+EGRESS_ALLOW_KEY = "IPAddressAllow"
+EGRESS_DIGEST_COMMENT = "# Egress allowance digest: "
+_EGRESS_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+
+
+def contextd_egress_line(address: str) -> str:
+    """`IPAddressAllow=<ip>/<32|128>` for one registry address, or `ValueError`.
+
+    The address must already be canonical (what the signed registry loader
+    and the client use). Refused: unspecified, loopback, multicast,
+    link-local, reserved and IPv4-mapped IPv6 addresses, any CIDR, any
+    non-canonical spelling. Private and documentation ranges are allowed.
+    """
+    if type(address) is not str or not address or len(address) > 45:
+        raise ValueError("egress address refused")
+    if "/" in address or any(c.isspace() or c == "=" for c in address):
+        raise ValueError("egress address refused")
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        raise ValueError("egress address refused") from None
+    if str(ip) != address:
+        raise ValueError("egress address refused")
+    if (ip.is_unspecified or ip.is_loopback or ip.is_multicast or ip.is_link_local
+            or ip.is_reserved or (ip.version == 6 and ip.ipv4_mapped is not None)):
+        raise ValueError("egress address refused")
+    return f"{EGRESS_ALLOW_KEY}={address}/{32 if ip.version == 4 else 128}"
+
+
+def render_unit(profile: ServiceProfile, *, egress_allow: str | None = None,
+                egress_digest: str | None = None) -> str:
     """The unit file for one profile, byte for byte.
 
     Deterministic: every sequence is ordered by the declaration rather than by
     a set, so two runs produce the same file and the committed one can be
     compared against it.
+
+    `egress_allow` (an address, never a directive) and `egress_digest` are
+    accepted for the Knowledge Context broker only, and only together: the
+    rendering then adds one `IPAddressAllow=` line after `IPAddressDeny=any`
+    and a header comment carrying the allowance digest, so that the digest is
+    part of the generation-hashed bytes.
     """
+
+    if (egress_allow is None) != (egress_digest is None):
+        raise ValueError("an egress allowance needs its address and digest together")
+    allow_line = None
+    if egress_allow is not None:
+        if not profile.is_knowledge_context_transport:
+            raise ValueError("only the Knowledge Context broker takes an egress allowance")
+        allow_line = contextd_egress_line(egress_allow)
+        if type(egress_digest) is not str or not _EGRESS_DIGEST.fullmatch(egress_digest):
+            raise ValueError("egress allowance digest refused")
 
     lines = [
         "# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:",
@@ -2553,6 +2605,8 @@ def render_unit(profile: ServiceProfile) -> str:
     for line in profile.rationale.split(". "):
         if line.strip():
             lines.append("# " + line.strip().rstrip(".") + ".")
+    if allow_line is not None:
+        lines += ["#", EGRESS_DIGEST_COMMENT + egress_digest]
     lines += [
         "",
         "[Unit]",
@@ -2623,6 +2677,8 @@ def render_unit(profile: ServiceProfile) -> str:
         if key == "CapabilityBoundingSet" and profile.capability_bounding_set:
             value = " ".join(profile.capability_bounding_set)
         lines.append(f"{key}={value}")
+        if key == "IPAddressDeny" and allow_line is not None:
+            lines.append(allow_line)
     if profile.wanted_by:
         lines += ["", "[Install]", *(f"WantedBy={unit}" for unit in profile.wanted_by)]
     lines.append("")

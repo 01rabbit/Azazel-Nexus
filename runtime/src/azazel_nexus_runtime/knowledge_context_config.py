@@ -64,6 +64,10 @@ class CommissioningResult:
     mission: str | None = None
     alias_key: bytes | None = field(default=None)
     registry_version: int | None = None
+    #: The verified registry peer (no secret: host, pin, port, addresses) and
+    #: the registry's commissioning digest; the egress allowance derives from them.
+    peer: Any = None
+    commissioning_digest: str | None = None
 
     def __repr__(self) -> str:
         return f"CommissioningResult(status={self.status!r}, reason_code={self.reason_code!r})"
@@ -270,7 +274,8 @@ def _load(now: str, directory=None) -> CommissioningResult:
         return CommissioningResult(
             "commissioned", client=guarded, policy=policy,
             mission=manifest["mission"], alias_key=alias_key,
-            registry_version=registry.version)
+            registry_version=registry.version, peer=peer,
+            commissioning_digest=registry.commissioning_digest)
     finally:
         os.close(dirfd)
 
