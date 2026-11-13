@@ -385,6 +385,15 @@ class SystemdUnitCalls:
             loaded["SliceChainAllow"] = self._slice_chain_allow(service_properties)
         return loaded
 
+    def slice_chain_allow(self) -> dict:
+        """`{slice: IPAddressAllow}` for system.slice and -.slice, whatever the broker's state.
+
+        Those objects always exist; the read does not depend on the broker
+        being loaded (the pass masks a withdrawn broker, whose loaded read is
+        None).
+        """
+        return self._chain_from("system.slice")
+
     def _slice_chain_allow(self, service_properties) -> dict:
         """`{slice: IPAddressAllow}` for the broker's Slice chain, each read once.
 
@@ -393,8 +402,10 @@ class SystemdUnitCalls:
         object is refused.
         """
         variant = service_properties.get("Slice")
-        name = _loaded_value(getattr(variant, "signature", None),
-                             getattr(variant, "value", None), "s")
+        return self._chain_from(_loaded_value(getattr(variant, "signature", None),
+                                              getattr(variant, "value", None), "s"))
+
+    def _chain_from(self, name: str) -> dict:
         chain: dict = {}
         while name:
             if name not in _CHAIN_SLICES or name in chain:
@@ -776,6 +787,10 @@ class SystemdBusSession:
     def loaded_unit(self, unit: str):
         """Read one grantable unit's loaded definition; performs no control operation."""
         return self.calls.loaded_unit(unit)
+
+    def slice_chain_allow(self) -> dict:
+        """The Allow of system.slice and -.slice; see `SystemdUnitCalls`."""
+        return self.calls.slice_chain_allow()
 
     def reload(self) -> None:
         """Manager.Reload (argument-less); see `SystemdUnitCalls.reload`."""

@@ -162,6 +162,25 @@ def _check_loaded_egress(unit: str, loaded) -> None:
         raise LoadedUnitRefused("loaded unit egress allowance differs from its file")
 
 
+def _check_slice_chain(reader) -> None:
+    """Parent slices carry no Allow, whether or not the broker is loaded.
+
+    systemd merges a slice's `IPAddressAllow` into its members and evaluates
+    Allow before Deny. The pass withdraws and masks the broker, after which its
+    loaded read is None; this read does not depend on that.
+    """
+    read = getattr(reader, "slice_chain_allow", None)
+    if not callable(read):
+        raise LoadedUnitRefused("slice chain reader required")
+    try:
+        chain = read()
+    except Exception:  # noqa: BLE001 - unreadable is refused
+        raise LoadedUnitRefused("slice chain unreadable") from None
+    if (type(chain) is not dict or set(chain) != {"system.slice", "-.slice"}
+            or any(entries != [] for entries in chain.values())):
+        raise LoadedUnitRefused("loaded slice chain allows addresses")
+
+
 def verify_loaded_units(reader, units) -> None:
     """Refuse unless the manager is reviewed and each unit is loaded as declared.
 
@@ -179,6 +198,8 @@ def verify_loaded_units(reader, units) -> None:
         before = profile()
     except Exception:  # noqa: BLE001 - redacted: an unreviewed manager is refused
         raise LoadedUnitRefused("systemd manager profile refused") from None
+    if CONTEXTD_UNIT in names:
+        _check_slice_chain(reader)
     for unit in names:
         try:
             loaded = loaded_unit(unit)
