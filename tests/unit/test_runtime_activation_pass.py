@@ -86,7 +86,7 @@ EDGE_UNIT_FILE = (b"[Unit]\nDescription=azazel-edge-core.service\n[Service]\n"
 
 def loaded_as_declared(unit):
     """What a manager reports for a unit loaded from its rendered vendor file."""
-    return {
+    loaded = {
         "Id": unit, "LoadState": "loaded",
         "FragmentPath": f"/usr/lib/systemd/system/{unit}", "DropInPaths": [],
         "Conditions": [("ConditionPathExists", False, False,
@@ -97,6 +97,11 @@ def loaded_as_declared(unit):
         "Requires": ["azazel-activated.service", "system.slice", "sysinit.target"],
         "After": ["azazel-activated.service", "basic.target", "system.slice"],
     }
+    if unit == "azazel-knowledge-contextd.service":
+        # U49: the cgroup IP filter, deny any and no Allow (the packaged unit).
+        loaded["IPAddressAllow"] = []
+        loaded["IPAddressDeny"] = [(2, bytes(4), 0), (10, bytes(16), 0)]
+    return loaded
 
 
 class FakeManagerReader:

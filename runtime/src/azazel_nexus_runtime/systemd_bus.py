@@ -631,7 +631,12 @@ class SystemdBusSession:
             # The pass's loaded-definition read: the Unit interface of a
             # marker-guarded unit's object, and nothing else. This read-only
             # scope does not widen Mask/Unmask/Enable authority.
-            if (signature != "s" or list(body) != [UNIT_INTERFACE]
+            # U49: the broker's cgroup IP filter lives on the Service interface;
+            # that read is allowed on the broker's object alone.
+            service_read = (list(body) == [SERVICE_INTERFACE]
+                            and path == _unit_object_path(CONTEXTD_UNIT))
+            if (signature != "s"
+                    or (list(body) != [UNIT_INTERFACE] and not service_read)
                     or path not in {_unit_object_path(unit) for unit in MARKER_GUARDED_UNITS}):
                 raise UnitOperationFailed("the systemd client refused a property call")
         elif member != "Get" or signature != "ss":

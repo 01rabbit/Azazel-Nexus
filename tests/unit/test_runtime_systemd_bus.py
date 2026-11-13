@@ -669,13 +669,25 @@ def test_loaded_unit_reads_the_marker_guarded_grantable_context_broker():
         ]]),
     }
     calls = []
+    values.update({
+        "IPAddressAllow": ("a(iayu)", [[2, b"\xc0\x00\x02\x0a", 32]]),
+        "IPAddressDeny": ("a(iayu)", [[10, b"\x00" * 16, 0], [2, b"\x00" * 4, 0]]),
+    })
     loaded = SystemdUnitCalls(_loaded_exchange(calls, values)).loaded_unit(context)
     assert loaded["Id"] == context
     assert loaded["Conditions"] == [tuple(values["Conditions"][1][0])]
+    # U49: the cgroup IP filter, canonical, read from the Service interface.
+    assert loaded["IPAddressAllow"] == [(2, b"\xc0\x00\x02\x0a", 32)]
+    assert loaded["IPAddressDeny"] == [(2, b"\x00" * 4, 0), (10, b"\x00" * 16, 0)]
     assert calls[-1] == (
-        PROPERTIES_INTERFACE, "GetAll", "s", [UNIT_INTERFACE],
+        PROPERTIES_INTERFACE, "GetAll", "s", ["org.freedesktop.systemd1.Service"],
         {"path": _unit_object_path(context)},
     )
+    assert calls[-2][3] == [UNIT_INTERFACE]
+    # No other unit's loaded read touches the Service interface.
+    other = []
+    SystemdUnitCalls(_loaded_exchange(other)).loaded_unit(_INTAKE)
+    assert all(call[3] != ["org.freedesktop.systemd1.Service"] for call in other)
 
 
 def test_loaded_unit_reports_a_unit_the_manager_does_not_hold_as_none():
