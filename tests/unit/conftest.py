@@ -110,3 +110,15 @@ def audit_owner_is_this_account():
     """
     if os.geteuid() == 0:
         pytest.skip("running as root: the stand-in azaudit uid would be 0, which is refused by design")
+
+
+@pytest.fixture(autouse=True)
+def _bootstrap_narrowing_has_its_own_clock_per_test(monkeypatch):
+    """The bootstrap narrowing's shared deadline belongs to one process; each test is one."""
+    try:
+        from azazel_nexus_runtime import activated
+    except Exception:  # noqa: BLE001 - tests that cannot import it do not need this
+        yield
+        return
+    monkeypatch.setattr(activated, "_bootstrap_shared_end", None, raising=False)
+    yield

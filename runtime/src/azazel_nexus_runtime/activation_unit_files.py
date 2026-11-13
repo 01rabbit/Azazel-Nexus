@@ -470,14 +470,14 @@ def require_watch_unit_files() -> dict[str, bytes]:
 
 
 def require_grantable_unit_files(units) -> None:
-    """Check grantable and explicitly non-grantable marker-guarded units.
+    """Check every marker-guarded unit (grantable, plus any non-grantable one).
 
     A unit outside this pass's policy is never granted, but if it is enabled
     with a start job queued, READY would release it unless it waits for its
     marker. Every unit in the marker-guarded check scope's vendor file must
-    pass `require_governed_unit_content` and have no override or drop-in; the
-    non-grantable Knowledge broker is checked here but cannot receive a
-    marker from the pass. A
+    pass `require_governed_unit_content` and have no override or drop-in; a
+    unit in NON_GRANTABLE_MARKER_UNITS (none today) is checked here but could
+    not receive a marker from the pass. A
     vendor file that does not exist is accepted for a unit outside the
     policy scope: systemd has no definition to start (the scope itself is
     measured by `measure_scoped_unit_files`, where a missing file refuses).

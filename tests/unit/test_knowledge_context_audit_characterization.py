@@ -7,11 +7,12 @@ import socket
 from azazel_nexus.knowledge_context_adapter import KnowledgeContextRefused
 
 from test_knowledge_contextd import _policy, _request
+from stop_helpers import granted_marker
 from azazel_nexus_runtime.knowledge_contextd import KnowledgeContextBroker
 
 
 def _broker(client, events, **kwargs):
-    return KnowledgeContextBroker(
+    return KnowledgeContextBroker(grant_marker=granted_marker, 
         client=client, policy=_policy(), mission="lab", alias_key=b"x" * 32,
         enabled=True, audit=events.append, **kwargs)
 
@@ -79,7 +80,7 @@ def test_real_egress_wraps_transport_timeout_and_broker_reports_unavailable(
 
     monkeypatch.setattr(peer, "_post_path", fail)
     events = []
-    broker = KnowledgeContextBroker(
+    broker = KnowledgeContextBroker(grant_marker=granted_marker, 
         client=peer, policy=_policy(), mission="lab",
         alias_key=b"x" * 32, enabled=True, audit=events.append)
     request = _request(payload={"frame": {

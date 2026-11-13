@@ -16,6 +16,11 @@
 # runs the fixed read-only probe as azprobe before the controller, and can
 # only narrow what the controller grants (#206 P5).
 #
+# The activation recheck's timer is the third, also exact: it periodically
+# evaluates whether the Knowledge Context broker's grant still holds and can
+# only withdraw it (stop contract). A stop that waits for an operator to
+# enable a timer is not a stop, so the preset enables it.
+#
 # The read-only operator UI (U5) is not governed and is disabled: an operator
 # enables azazel-ui.socket explicitly. Listed so preset-all never enables it.
 disable azazel-commissiond.service
@@ -40,3 +45,4 @@ disable azazel-ui.socket
 disable azazel-ui.service
 enable azazel-activated.service
 enable azazel-edge-probe-preflight.service
+enable azazel-activation-recheck.timer

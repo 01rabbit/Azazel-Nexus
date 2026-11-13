@@ -39,16 +39,20 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import stat
-from typing import Iterable
+from typing import Iterable, NamedTuple
 
 __all__ = [
+    "MarkerIdentity",
+    "inspect_grant_marker",
     "EXPOSURE_UNITS",
     "GRANTABLE_UNITS",
     "NON_GRANTABLE_MARKER_UNITS",
     "MARKER_GUARDED_UNITS",
     "GRANT_MARKER_DIRECTORY",
     "GrantMarkerRefused",
+    "contextd_marker_present",
     "grant_marker_path",
+    "remove_contextd_marker",
     "reset_grant_markers",
     "write_grant_markers",
 ]
@@ -76,20 +80,17 @@ GRANTABLE_UNITS = frozenset({
     "azazel-edge-intaked.service",
     "azazel-edge-probed.service",
     "azazel-incident-explaind.service",
+    "azazel-knowledge-contextd.service",
     "azazel-knowledge-lited.service",
     "azazel-mio-entryd.service",
     "azazel-mio-referenced.service",
 })
 
-#: Unit files in this set remain guarded by per-boot grant markers so that a
-#: queued/manual systemd start cannot bypass the activation controller. They
-#: are deliberately outside GRANTABLE_UNITS and the activation policy until
-#: the dedicated Knowledge commissioning loader and policy review exist.
-NON_GRANTABLE_MARKER_UNITS = frozenset({
-    # The unit needs the start guard but no pass may mint this marker until
-    # the dedicated commissioning loader and policy review exist.
-    "azazel-knowledge-contextd.service",
-})
+#: Unit files guarded by per-boot grant markers that no pass may ever mint.
+#: Empty since `azazel-knowledge-contextd.service` became grantable (#395
+#: preparation); the set and its branches stay so that a future unit can be
+#: guarded without being grantable.
+NON_GRANTABLE_MARKER_UNITS = frozenset()
 
 #: Units whose files and loaded systemd definitions must be checked for the
 #: per-boot marker guard. This includes units the pass can never grant.
@@ -107,6 +108,11 @@ EXPOSURE_UNITS = frozenset({
     "azazel-decoy-nsd.service",
     "azazel-decoyd.service",
 })
+
+#: The Knowledge Context broker's unit: the one marker a withdrawal removes
+#: on its own (restated from `units.CONTEXTD_UNIT`; this module imports
+#: nothing, and a test compares the two).
+CONTEXTD_MARKER_UNIT = "azazel-knowledge-contextd.service"
 
 #: The fixed marker directory; `hardening.py` renders the same path into
 #: each governed loop unit's `ConditionPathExists=`.
@@ -193,6 +199,111 @@ def reset_grant_markers(root: Path = Path("/")) -> None:
         finally:
             os.close(leaf)
         os.rmdir(_LEAF, dir_fd=parent)
+    finally:
+        os.close(parent)
+
+
+class MarkerIdentity(NamedTuple):
+    """Which file a marker was when it was inspected."""
+
+    device: int
+    inode: int
+    ctime_ns: int
+
+
+def inspect_grant_marker(unit: str, root: Path = Path("/")) -> MarkerIdentity | None:
+    """The identity of a unit's grant marker if it is exactly what a pass writes.
+
+    A regular file owned by root, mode ``0644``, one link, in a ``granted/``
+    directory that is root-owned ``0755``, below the protected parent, with no
+    symbolic link at any step. Anything else, including an entry that is
+    missing or unreadable, is `None`: no grant. Read-only.
+
+    The Knowledge Context broker calls this when it accepts a request and
+    again before it adopts the peer's answer. A different identity the second
+    time (the marker was removed, or removed and written again by a later
+    pass) means the grant it was admitted under is gone.
+    """
+    name = _check_unit(unit)
+    try:
+        parent = _open_parent(root)
+        if parent is None:
+            return None
+        try:
+            leaf = os.open(_LEAF, _DIR_FLAGS, dir_fd=parent)
+            try:
+                directory = os.fstat(leaf)
+                if (not stat.S_ISDIR(directory.st_mode) or directory.st_uid != _OWNER
+                        or stat.S_IMODE(directory.st_mode) != 0o755):
+                    return None
+                info = os.stat(name, dir_fd=leaf, follow_symlinks=False)
+            finally:
+                os.close(leaf)
+        finally:
+            os.close(parent)
+    except (OSError, GrantMarkerRefused):
+        return None
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != _OWNER
+            or stat.S_IMODE(info.st_mode) != 0o644 or info.st_nlink != 1):
+        return None
+    return MarkerIdentity(info.st_dev, info.st_ino, info.st_ctime_ns)
+
+
+def contextd_marker_present(root: Path = Path("/")) -> bool:
+    """Whether anything named like the broker's marker is in `granted/`.
+
+    Read-only, no-follow at every directory. An entry of any type counts as
+    present (the recheck then evaluates); a foreign directory raises.
+    """
+    name = _check_unit(CONTEXTD_MARKER_UNIT)
+    parent = _open_parent(root)
+    if parent is None:
+        return False
+    try:
+        try:
+            leaf = os.open(_LEAF, _DIR_FLAGS, dir_fd=parent)
+        except FileNotFoundError:
+            return False
+        try:
+            os.stat(name, dir_fd=leaf, follow_symlinks=False)
+            return True
+        except FileNotFoundError:
+            return False
+        finally:
+            os.close(leaf)
+    finally:
+        os.close(parent)
+
+
+def remove_contextd_marker(root: Path = Path("/")) -> None:
+    """Unlink the Knowledge Context broker's marker alone, then confirm it is gone.
+
+    The fixed unit name, no-follow at every directory, and nothing else in
+    `granted/` is touched. Absent already is success. An entry that is not a
+    file we can unlink (a directory) or that is still there afterwards
+    refuses; the caller treats a refusal as an unconfirmed withdrawal.
+    """
+    name = _check_unit(CONTEXTD_MARKER_UNIT)
+    parent = _open_parent(root)
+    if parent is None:
+        return
+    try:
+        try:
+            leaf = os.open(_LEAF, _DIR_FLAGS, dir_fd=parent)
+        except FileNotFoundError:
+            return
+        try:
+            try:
+                os.unlink(name, dir_fd=leaf)
+            except FileNotFoundError:
+                pass
+            try:
+                os.stat(name, dir_fd=leaf, follow_symlinks=False)
+            except FileNotFoundError:
+                return
+            raise GrantMarkerRefused("the Knowledge Context marker is still present")
+        finally:
+            os.close(leaf)
     finally:
         os.close(parent)
 

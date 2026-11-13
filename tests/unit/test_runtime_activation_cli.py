@@ -1291,3 +1291,35 @@ def test_publish_refuses_a_unit_file_without_its_grant_marker_condition(node):
     code, out = node.publish()
     assert code == 1 and "grant-marker lines" in out and "Nothing published" in out
     assert node.store.numbers() == ()
+
+
+def test_after_a_retirement_of_n_the_next_install_needs_n_plus_two(published):
+    """The clone observation (unit 45): retiring approval N raises the floor to N+1.
+
+    The pass refuses a sequence below the floor, so N is refused and N+1 would
+    verify. `install` treats a sequence at the floor as spent, because the floor
+    after an ordinary grant is the last sequence consumed, and needs one above
+    it. One integer cannot be both "first acceptable" for the pass and "last
+    spent" for install, so a retirement at N leaves N+2 as the first sequence
+    that can be installed. Lowering that would let a different approval at an
+    already-spent sequence be installed (what L-3 refuses).
+    """
+    from azazel_nexus_runtime.activation_high_water import (
+        HighWater, raise_high_water, read_high_water,
+    )
+    payload, signature = published.approved(seq=5)
+    assert published.install(payload, signature)[0] == 0
+    current = read_high_water()
+    assert current.approval_seq == 5
+    # what `retire_if_revoked` does to the floor: approval_seq + 1, other fields kept
+    raise_high_water(HighWater(current.security_epoch, 6, current.generation,
+                               current.time_floor), now=published.now, skew_seconds=300)
+    assert read_high_water().approval_seq == 6
+    published.now = "2027-01-10T00:10:00Z"
+    retired_plus_one, sig_one = published.approved(seq=6, approval_id="approval-6")
+    code, out = published.install(retired_plus_one, sig_one, "REPLACE", replace=True)
+    assert code == 1 and "not above the high-water floor" in out  # N+1 is refused
+    retired_plus_two, sig_two = published.approved(seq=7, approval_id="approval-7")
+    code, out = published.install(retired_plus_two, sig_two, "REPLACE", replace=True)
+    assert code == 0, out  # N+2 is accepted
+    assert _high_water(published)["approval_seq"] == 7

@@ -131,6 +131,11 @@ def test_install_plan_uses_absolute_destinations_and_existing_declarations():
         "packaging/systemd/azazel-decoy-verify.timer",
         "packaging/systemd/azazel-decoy-trip.target",
     } | {
+        # The activation recheck: installed with the controller; its timer is
+        # the one enabled unit among them.
+        "packaging/systemd/azazel-activation-recheck.service",
+        "packaging/systemd/azazel-activation-recheck.timer",
+    } | {
         # The operator observers (U2): installed, never masked or enabled.
         "packaging/systemd/azazel-units-observe.service",
         "packaging/systemd/azazel-units-observe.timer",
@@ -148,6 +153,7 @@ def test_install_plan_uses_absolute_destinations_and_existing_declarations():
     assert "azazel-ui.service" not in plan.service_manager.mask_units
     assert plan.service_manager.enable_units == (
         "azazel-activated.service", "azazel-edge-probe-preflight.service",
+        "azazel-activation-recheck.timer",
     )
     assert "azazel-edge-probe-preflight.service" not in plan.service_manager.mask_units
     assert plan.service_manager.start_units == ()
@@ -240,7 +246,8 @@ def test_installer_field_resolver_emits_plan_derived_current_paths(tmp_path):
     ) == "/usr/libexec/azazel"
     assert resolve_profile_field(
         field="enable_units", os_release_path=os_release
-    ) == "azazel-activated.service\nazazel-edge-probe-preflight.service"
+    ) == ("azazel-activated.service\nazazel-edge-probe-preflight.service\n"
+          "azazel-activation-recheck.timer")
     assert "systemctl" in resolve_profile_field(
         field="required_tools", os_release_path=os_release
     ).splitlines()

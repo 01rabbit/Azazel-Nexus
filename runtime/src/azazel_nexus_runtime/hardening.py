@@ -117,7 +117,13 @@ __all__ = [
     "OBSERVER_PROFILES",
     "OBSERVER_SERVICE_UNITS",
     "OBSERVER_UNIT_FILES",
+    "RECHECK_PERIOD",
+    "RECHECK_PROFILES",
+    "RECHECK_TIMER",
+    "RECHECK_UNIT",
+    "RECHECK_UNIT_FILES",
     "render_observer_timer",
+    "render_recheck_timer",
 ]
 
 #: The operator observers (U2): oneshot units that only read and write one
@@ -129,6 +135,15 @@ UNITS_OBSERVE_TIMER = "azazel-units-observe.timer"
 NOC_OBSERVE_UNIT = "azazel-noc-observe.service"
 NOC_OBSERVE_TIMER = "azazel-noc-observe.timer"
 OBSERVER_SERVICE_UNITS = (UNITS_OBSERVE_UNIT, NOC_OBSERVE_UNIT)
+
+#: The periodic recheck of the Knowledge Context broker's grant (stop
+#: contract): a oneshot run by its own timer. It is not governed (outside
+#: `CORE_UNITS`, `GRANTABLE_UNITS` and every approval scope), is required by
+#: nothing, and requires neither the controller nor the broker. The one
+#: thing it can do is withdraw and stop that one broker.
+RECHECK_UNIT = "azazel-activation-recheck.service"
+RECHECK_TIMER = "azazel-activation-recheck.timer"
+RECHECK_PERIOD = "30s"
 
 #: Applied to every unit, with no per-daemon exceptions.
 #:
@@ -360,13 +375,13 @@ class ServiceProfile:
         # to (an operator enables the socket, never the service): none of
         # them has an [Install] section; nothing else may lack one.
         no_install = (is_verify or self.unit in OBSERVER_SERVICE_UNITS
-                      or self.unit == UI_UNIT)
+                      or self.unit in (UI_UNIT, RECHECK_UNIT))
         if (self.on_failure != ((DECOY_TRIP_UNIT,) if is_verify else ())
                 or self.wanted_by != (() if no_install else ("multi-user.target",))):
             raise ValueError(
                 f"{self.unit}: only {DECOY_VERIFY_UNIT} has "
-                f"OnFailure={DECOY_TRIP_UNIT}, and only it, the operator observers "
-                f"and {UI_UNIT} have no [Install] section")
+                f"OnFailure={DECOY_TRIP_UNIT}, and only it, the operator observers, "
+                f"{RECHECK_UNIT} and {UI_UNIT} have no [Install] section")
         if not self.address_families:
             raise ValueError(
                 f"{self.unit} declares no address family. `AF_UNIX` at least "
@@ -640,8 +655,10 @@ class ServiceProfile:
             raise ValueError("bootstrap overlay is writable only by the activation controller")
         if (("/run/azazel-activation" in self.read_write_paths
                 or "/run/azazel-activation" in self.optional_read_write_paths)
-                and self.unit != ACTIVATION_CONTROLLER_UNIT):
-            raise ValueError("grant markers are writable only by the activation controller")
+                and self.unit not in (ACTIVATION_CONTROLLER_UNIT, RECHECK_UNIT)):
+            raise ValueError(
+                "grant markers are writable only by the activation controller "
+                "and its recheck")
         outside = sorted((set(self.read_write_paths)
                           | set(self.optional_read_write_paths)) - declared)
         if outside:
@@ -946,11 +963,13 @@ DECOY_TRIP_CONFLICTS = (DECOY_NAMESPACE_UNIT, DECOY_NETWORK_HELPER_UNIT, DECOY_U
 DECOY_WATCH_PERIOD = "10s"
 
 
-#: The units that run as root: the activation controller, and the three
-#: one-shot Deception Lite units whose bounding-set capabilities reach only
-#: uid 0 without an ambient grant (#196 P1, #196 (a), #196 G2).
+#: The units that run as root: the activation controller, its periodic
+#: recheck (the same executable family and account, with a narrower sandbox),
+#: and the three one-shot Deception Lite units whose bounding-set
+#: capabilities reach only uid 0 without an ambient grant (#196 P1, #196 (a),
+#: #196 G2).
 ROOT_UNITS = (ACTIVATION_CONTROLLER_UNIT, DECOY_NAMESPACE_UNIT,
-              DECOY_NETWORK_HELPER_UNIT, DECOY_VERIFY_UNIT)
+              DECOY_NETWORK_HELPER_UNIT, DECOY_VERIFY_UNIT, RECHECK_UNIT)
 
 
 #: Where named network namespaces live (iproute2's convention; `ip netns
@@ -1267,7 +1286,10 @@ PROFILES: tuple[ServiceProfile, ...] = (
         extra=(("Restart", "no"), ("KillMode", "control-group"),
                ("NotifyAccess", "main"), ("WatchdogSec", "30s"),
                ("WatchdogSignal", "SIGKILL"),
-               ("TimeoutStartSec", "30s"), ("TimeoutStopSec", "10s"),
+               # 60 s: the main pass has one 45 s monotonic budget (a wait of
+               # up to 5 s for the pass lock, up to 20 s for the Knowledge Context
+               # broker to stop), leaving 15 s for READY and its barrier.
+               ("TimeoutStartSec", "60s"), ("TimeoutStopSec", "10s"),
                ("TimeoutStartFailureMode", "kill"),
                ("TimeoutStopFailureMode", "kill"),
                ("KillSignal", "SIGTERM"), ("FinalKillSignal", "SIGKILL"),
@@ -1442,7 +1464,18 @@ PROFILES: tuple[ServiceProfile, ...] = (
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         conditions=_grant_condition("azazel-knowledge-contextd.service"),
         is_knowledge_context_transport=True,
-        extra=(("LogRateLimitIntervalSec", "30"),
+        # The stop profile: when the controller withdraws the grant it sends
+        # StopUnit, and the broker must be gone soon after. SIGTERM to the
+        # whole control group, ten seconds, then SIGKILL (also for a stop
+        # that times out). The broker also refuses a request or an answer
+        # once its grant marker is gone (knowledge_contextd), so the
+        # seconds between the withdrawal and the exit adopt nothing new.
+        extra=(("KillMode", "control-group"),
+               ("TimeoutStopSec", "10s"),
+               ("KillSignal", "SIGTERM"),
+               ("FinalKillSignal", "SIGKILL"),
+               ("SendSIGKILL", "yes"),
+               ("LogRateLimitIntervalSec", "30"),
                ("LogRateLimitBurst", "30"),
                ("LogExtraFields", "AZ_SERVICE=knowledge-context")),
         rationale=(
@@ -2191,6 +2224,53 @@ OBSERVER_PROFILES: tuple[ServiceProfile, ...] = (
     ),
 )
 
+#: The periodic recheck of the Knowledge Context broker's grant. Root like the
+#: controller, with the controller's sandbox minus its two writable paths
+#: under /etc and /run/systemd (it never publishes a unit file; mask and
+#: reload are manager calls), and with the writes narrowed to the state
+#: directory and the markers' directory.
+RECHECK_PROFILES: tuple[ServiceProfile, ...] = (
+    ServiceProfile(
+        unit=RECHECK_UNIT,
+        executable="/usr/libexec/azazel/az-activation-recheck",
+        account="root",
+        description="Azazel-Nexus activation recheck",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/activation-observe-baseline.md",
+        address_families=("AF_UNIX", "AF_NETLINK"),
+        read_write_paths=("/var/lib/azazel/state",),
+        optional_read_write_paths=("/run/azazel-activation",),
+        # Ordering only: it does not wait for, require or pull in the
+        # controller or the broker. It also takes the controller's pass lock
+        # and does nothing when the controller holds it.
+        after=(ACTIVATION_CONTROLLER_UNIT,),
+        unit_type="oneshot",
+        supplementary_groups=("azazel-operator",),
+        capability_bounding_set=("CAP_DAC_READ_SEARCH",),
+        extra=(("TimeoutStartSec", "40s"), ("TimeoutStopSec", "10s"),
+               ("KillMode", "control-group"),
+               ("KillSignal", "SIGTERM"), ("FinalKillSignal", "SIGKILL"),
+               ("SendSIGKILL", "yes"),
+               ("SetLoginEnvironment", "no"),
+               ("MemoryPressureWatch", "off"),
+               ("UnsetEnvironment", " ".join(BOOTSTRAP_UNSET_ENVIRONMENT))),
+        wanted_by=(),
+        rationale=(
+            "Runs once per period of azazel-activation-recheck.timer and "
+            "withdraws the Knowledge Context broker's grant when the pass "
+            "would no longer grant it: an expired or revoked approval, lost "
+            "health or evidence. It evaluates the same inputs as the "
+            "controller without deciding for any other unit, and only "
+            "narrows: it removes the broker's marker, masks it, reloads the "
+            "manager and stops that one unit. It is root with the "
+            "controller's single capability and group, writes only the "
+            "state directory and the markers' directory, and does not "
+            "publish unit files. It is not governed, has no [Install] "
+            "section, and requires neither the controller nor the broker"
+        ),
+    ),
+)
+
+
 #: The read-only operator UI (U5). Not governed: no grant marker, never masked
 #: or unmasked by a pass, in no lease, and no other unit requires it, so
 #: stopping it stops nothing else. `disable` in the preset: an operator who
@@ -2276,7 +2356,7 @@ def render_observer_timer(timer: str, service: str, period: str, description: st
 #: Every packaged service, governed or not, for the renderer and the installer.
 ALL_PROFILES: tuple[ServiceProfile, ...] = (
     PROFILES + UNGOVERNED_PROFILES + DECOY_WATCH_PROFILES + OBSERVER_PROFILES
-    + UI_PROFILES)
+    + RECHECK_PROFILES + UI_PROFILES)
 
 _GENERATED_HEADER = (
     "# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:",
@@ -2287,6 +2367,39 @@ _GENERATED_HEADER = (
 
 _GRANT_DOCUMENTATION = (
     "https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/deception-exposure-grant.md")
+
+
+def render_recheck_timer() -> str:
+    """`azazel-activation-recheck.timer`, byte for byte.
+
+    Runs the recheck `RECHECK_PERIOD` after boot and then every period after
+    it last started. Unlike the observers' timers this one is enabled by the
+    installer (and by the preset): a stop that depends on an operator
+    remembering to enable the timer is not a stop. `AccuracySec=1s` keeps the
+    period from stretching to systemd's default minute. The period is a
+    configured value, not a bound on how soon a loss is acted on.
+    """
+
+    return "\n".join((
+        *_GENERATED_HEADER,
+        f"# Runs {RECHECK_UNIT} every {RECHECK_PERIOD}. The recheck withdraws the Knowledge",
+        "# Context broker's grant when the activation pass would no longer grant it.",
+        "# Enabled by the installer and the preset; nothing requires or binds to it.",
+        "",
+        "[Unit]",
+        "Description=Azazel-Nexus activation recheck period",
+        "Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/activation-observe-baseline.md",
+        "",
+        "[Timer]",
+        f"OnBootSec={RECHECK_PERIOD}",
+        f"OnUnitActiveSec={RECHECK_PERIOD}",
+        "AccuracySec=1s",
+        f"Unit={RECHECK_UNIT}",
+        "",
+        "[Install]",
+        "WantedBy=timers.target",
+        "",
+    ))
 
 
 def render_verify_timer() -> str:
@@ -2358,6 +2471,12 @@ DECOY_WATCH_UNIT_FILES: tuple[tuple[str, str], ...] = (
 )
 
 
+#: The recheck's timer, with its rendering.
+RECHECK_UNIT_FILES: tuple[tuple[str, str], ...] = (
+    (RECHECK_TIMER, render_recheck_timer()),
+)
+
+
 #: The observers' timers (U2), with their rendering.
 OBSERVER_UNIT_FILES: tuple[tuple[str, str], ...] = (
     (UNITS_OBSERVE_TIMER, render_observer_timer(
@@ -2413,7 +2532,8 @@ def packaged_unit_files() -> tuple[tuple[str, str], ...]:
     """`(name, text)` of every file in `packaging/systemd/`, in order."""
 
     return tuple((profile.unit, render_unit(profile)) for profile in ALL_PROFILES) + (
-        DECOY_WATCH_UNIT_FILES + OBSERVER_UNIT_FILES + UI_UNIT_FILES)
+        DECOY_WATCH_UNIT_FILES + OBSERVER_UNIT_FILES + RECHECK_UNIT_FILES
+        + UI_UNIT_FILES)
 
 
 def render_unit(profile: ServiceProfile) -> str:

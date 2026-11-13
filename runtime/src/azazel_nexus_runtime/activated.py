@@ -13,6 +13,9 @@ failure re-masks everything this pass widened -- including the units that
 succeeded -- and requires a positive inactive-state observation. Masking does
 not stop an already running service. Without reviewed stop authority, such a
 service produces an explicit containment failure, not a successful rollback.
+The one exception is the Knowledge Context broker: the controller holds a
+separate, fixed authority to stop that unit alone (`units.ContextdStopAuthority`,
+`activation_withdraw.withdraw_contextd`), used when its grant is withdrawn.
 An inactive observation is not proof of continuing inactivity or an empty
 cgroup; supervision and job/lifetime guarantees remain separate gates.
 
@@ -41,9 +44,11 @@ start gates remain refusing pending their separate admission obligations.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timezone
 from pathlib import Path
@@ -79,7 +84,28 @@ from .mio_remoted import TRANSPORT
 from .model_fetch import ENDPOINT_FOR
 from .node_config import load_declared_node
 from .activation_markers import GRANTABLE_UNITS, reset_grant_markers, write_grant_markers
-from .units import DbusUnitManager, UnitManager, UnitOperationFailed
+from .activation_budget import PassBudgetExpired, bind_remaining, check_budget
+from .activation_retire import (
+    RetireRefused, read_accepted_grant, retirement_pending, write_accepted_grant,
+)
+from .activation_lock import PassLockBusy, PassLockRefused, acquire_pass_lock
+from .activation_withdraw import (
+    WithdrawalUnconfirmed,
+    QueuedJobState,
+    clear_contextd_job,
+    contextd_already_withdrawn,
+    contextd_is_running,
+    contextd_start_is_queued,
+    release_queued_job,
+    withdraw_contextd,
+)
+from .units import (
+    CONTEXTD_UNIT,
+    ContextdStopAuthority,
+    DbusUnitManager,
+    UnitManager,
+    UnitOperationFailed,
+)
 
 __all__ = [
     "ActivationDaemon",
@@ -182,14 +208,24 @@ class RollbackFailed(Exception):
     """The node could not be returned to the state it started the pass in."""
 
 
-def _mask_and_confirm_inactive(manager: UnitManager, unit: str) -> None:
+def _mask_and_confirm_inactive(manager: UnitManager, unit: str, withdrawn=None,
+                               before_mask=None) -> None:
     """Prevent future starts; refuse to equate that with stopping a process.
 
     This observation grants no StartUnit/StopUnit authority and is not a
     lifetime guarantee. Unknown or transitional activity is not containment.
+    `withdrawn` (the Knowledge Context broker only) says the unit is the one
+    already-withdrawn `failed` shape, which is accepted here instead of being a
+    containment failure: nothing runs and nothing can start it.
     """
+    if unit == CONTEXTD_UNIT and before_mask is not None:
+        # A start job the pass is still holding for the broker is replaced
+        # first: the mask and the reload after it would make systemd fail it.
+        before_mask()
     manager.mask(unit)
     if manager.is_inactive(unit) is not True:
+        if unit == CONTEXTD_UNIT and withdrawn is not None and withdrawn():
+            return
         raise UnitOperationFailed("masked unit has no confirmed inactive state")
 
 
@@ -231,15 +267,17 @@ class ManagedUnitController(UnitController):
     to take back.
     """
 
-    def __init__(self, manager: UnitManager) -> None:
+    def __init__(self, manager: UnitManager, withdrawn=None, before_mask=None) -> None:
         self.manager = manager
         self.widened: list[str] = []
+        self.withdrawn = withdrawn
+        self.before_mask = before_mask
 
     def state(self, unit: str) -> UnitState:
         return self.manager.state(unit)
 
     def _mask(self, unit: str) -> None:
-        _mask_and_confirm_inactive(self.manager, unit)
+        _mask_and_confirm_inactive(self.manager, unit, self.withdrawn, self.before_mask)
 
     def _unmask_and_enable(self, unit: str) -> None:
         # Recorded before the call, not after. A call that fails part way
@@ -257,6 +295,12 @@ class ActivationDaemon:
     ledger: AuditLedger
     manager: UnitManager
     definitions: Sequence[UnitDefinition] = CORE_UNITS
+    #: Says the broker is in the already-withdrawn `failed` shape (see
+    #: `_mask_and_confirm_inactive`); None where there is no stop authority.
+    contextd_withdrawn: Optional[object] = None
+    #: Replaces a start job the pass is holding for the broker, before the
+    #: broker is masked (see `activation_withdraw.release_queued_job`).
+    contextd_before_mask: Optional[object] = None
 
     def activate(
         self,
@@ -276,7 +320,8 @@ class ActivationDaemon:
         Explicit Edge states remain an injection seam. With no lease, None
         stays unknown, as required by the production boot refusing pass.
         """
-        units = ManagedUnitController(self.manager)
+        units = ManagedUnitController(self.manager, self.contextd_withdrawn,
+                                      self.contextd_before_mask)
         controller = ActivationController(
             units=units,
             generations=self.generations,
@@ -335,6 +380,22 @@ class ActivationDaemon:
                     f"units lack confirmed containment: {sorted(failures)}"
                 ) from exc
             raise
+        # The controller's masks, unmasks and enables are one batch of unit
+        # file changes. A manager that loaded a unit earlier keeps acting on
+        # the definition it has until it is reloaded (a granted unit would
+        # start as `masked`; a withheld one could still be queued), so the
+        # batch ends with exactly one Reload. If it fails, the grants cannot
+        # be confirmed and everything is narrowed.
+        reload_failure = self._reload()
+        if reload_failure is not None:
+            self._record({
+                "event_type": "activation.reload_failed",
+                "after": "grant_batch",
+                "error_type": reload_failure,
+                "occurred_at": now,
+                "actor": actor,
+            })
+            self._narrow_everything(now=now, actor=actor, after=[reload_failure])
         if controller.unmaskable:
             # The library could not narrow something. It recorded that and
             # kept withholding rather than letting the exception leave the
@@ -349,17 +410,36 @@ class ActivationDaemon:
             self._roll_back(units, now=now, actor=actor, outcome=outcome)
         return outcome
 
+    def _reload(self) -> Optional[str]:
+        """One Manager.Reload; a fixed failure label, or None when it succeeded."""
+        try:
+            self.manager.reload()
+        except Exception as exc:  # noqa: BLE001 - reported as a label, never raised
+            return f"manager reload: {type(exc).__name__}"
+        return None
+
     def _remask_all(
-        self, *, now: str, actor: str, event_type: str, error_type: str
+        self, *, now: str, actor: str, event_type: str, error_type: str,
+        skip: frozenset = frozenset(),
     ) -> list[str]:
-        """Retry narrowing of every governed unit and record the attempt."""
+        """Retry narrowing of every governed unit and record the attempt.
+
+        `skip` names units left as they are: only the Knowledge Context
+        broker's queued start job at preflight (see `_run_once`).
+        """
 
         failures: list[str] = []
         for definition in self.definitions:
+            if definition.name in skip:
+                continue
             try:
-                _mask_and_confirm_inactive(self.manager, definition.name)
+                _mask_and_confirm_inactive(self.manager, definition.name, self.contextd_withdrawn,
+                                           self.contextd_before_mask)
             except Exception as exc:  # noqa: BLE001 - collect all failures
                 failures.append(f"{definition.name}: {type(exc).__name__}")
+        reload_failure = self._reload()  # the masks above are one batch
+        if reload_failure is not None:
+            failures.append(reload_failure)
         self._record(
             {
                 "event_type": event_type,
@@ -385,10 +465,14 @@ class ActivationDaemon:
         failures: list[str] = []
         for unit in units.widened:
             try:
-                _mask_and_confirm_inactive(self.manager, unit)
+                _mask_and_confirm_inactive(self.manager, unit, self.contextd_withdrawn,
+                                           self.contextd_before_mask)
                 taken_back.append(unit)
             except Exception as exc:  # noqa: BLE001 - recorded below, then escalated
                 failures.append(_unit_failure(unit, exc))
+        reload_failure = self._reload()  # the masks above are one batch
+        if reload_failure is not None:
+            failures.append(reload_failure)
 
         self._record(
             {
@@ -414,9 +498,13 @@ class ActivationDaemon:
         unreachable: list[str] = []
         for definition in self.definitions:
             try:
-                _mask_and_confirm_inactive(self.manager, definition.name)
+                _mask_and_confirm_inactive(self.manager, definition.name, self.contextd_withdrawn,
+                                           self.contextd_before_mask)
             except Exception as exc:  # noqa: BLE001
                 unreachable.append(_unit_failure(definition.name, exc))
+        reload_failure = self._reload()  # the masks above are one batch
+        if reload_failure is not None:
+            unreachable.append(reload_failure)
         self._record(
             {
                 "event_type": "activation.rollback_failed",
@@ -531,7 +619,161 @@ _ALL_PRODUCERS = (
     "activation_approval_loader", "node_health",
 )
 
-def _emergency_narrow(manager: UnitManager, root: Path, message: str) -> None:
+#: One monotonic budget for a whole main pass, counted from before the bus
+#: connects to the end of the narrowing a failed pass needs, in three parts:
+#: the phases (37 s, `budget - ready - reserve`), then the READY window
+#: (`MAIN_PASS_READY_SECONDS`: sending READY, then the barrier, at worst 1 s +
+#: 1 s + the barrier's 5 s wait, so 8 s), then the reserve
+#: (`MAIN_PASS_RESERVE_SECONDS`: the narrowing a failed READY or barrier needs,
+#: and its record). READY and the barrier therefore cannot eat the reserve.
+#: `azazel-activated.service` has `TimeoutStartSec=60s`: 37 + 8 + 8 = 53 s,
+#: and 7 s of margin for the exit.
+MAIN_PASS_BUDGET_SECONDS = 53.0
+MAIN_PASS_READY_SECONDS = 8.0
+MAIN_PASS_RESERVE_SECONDS = 8.0
+_AFTER_PHASES = MAIN_PASS_READY_SECONDS + MAIN_PASS_RESERVE_SECONDS
+#: How long the main pass waits for the pass lock before it narrows (inside the
+#: phase budget). It is longer than the part of a recheck that is time-bounded
+#: (its bus work and containment finalizer, at most 20 s), so a pass that
+#: arrives during a recheck normally gets the lock. The recheck's local
+#: filesystem I/O under the lock (ledger appends, retirement state, marker and
+#: input reads) is not time-bounded; if it stalls this wait expires and the
+#: pass changes nothing, grants nothing and fails (fail-closed).
+PASS_LOCK_WAIT_SECONDS = 25.0
+
+
+#: The journal line for a pass that could not take `pass.lock`. Stable text;
+#: nothing is changed and no ledger record is written on that path.
+NO_LOCK_NO_RECORD_MESSAGE = (
+    "az-activated: the activation pass lock was not held; nothing was changed or "
+    "written; failing")
+
+
+def _contextd_aids(root: Path, *, now: str, actor: str, invocation_id: str,
+                   until: float, clock, sleep, record: bool, hold_state=None, fresh):
+    """`(withdrawn_for, clear_for, before_for)`: builders bound to a stop authority.
+
+    `withdrawn_for(authority)` is the already-withdrawn test; `clear_for(authority)
+    (manager)` the full contextd withdrawal (marker, mask, reload, stop, confirm
+    quiet) run after a narrowing; `before_for(authority)()` replaces a start job the
+    pass is holding for the broker, once, BEFORE anything masks the broker. They
+    take the authority as an argument because a narrowing on a fresh bus session
+    must use the authority of THAT session: the first one belongs to a session that
+    is finished and refuses every read and stop. With `record=False` the
+    withdrawal writes nothing to the ledger.
+    """
+    state = hold_state if hold_state is not None else QueuedJobState()
+
+    def withdrawn_for(authority):
+        if authority is None:
+            return None
+        return lambda: contextd_already_withdrawn(authority, root)
+
+    def before_for(authority, target=None):
+        if authority is None:
+            return None
+
+        def transport(limit: float) -> None:
+            # The job operations (Job reads, StopUnit, polling) get their own
+            # transport deadline, so none of them can run into the time the mask,
+            # the reload and the exact-masked confirmation are reserved.
+            if target is not None:
+                bind_remaining(target, limit, clock)
+
+        def before_mask() -> None:
+            release_queued_job(
+                state=state, authority=authority, ledger=_activation_ledger(root),
+                now=now, actor=actor, invocation_id=invocation_id, deadline=until,
+                reason="before_mask", clock=clock, sleep=sleep, transport=transport,
+                sink=None if record else (lambda event: None))
+
+        return before_mask
+
+    def clear_for(authority):
+        if authority is None:
+            return None
+
+        def clear_job(target) -> None:
+            # The FULL withdrawal, not just a job clear: on a path where READY
+            # may already have been sent, the held start job may have run and
+            # the broker may be active.
+            withdraw_contextd(
+                reason="narrowed", manager=target, authority=authority, root=root,
+                ledger=_activation_ledger(root), now=now, actor=actor,
+                invocation_id=invocation_id, deadline=until, final_deadline=until,
+                bind_deadline=lambda d: bind_remaining(target, d, clock),
+                sink=None if record else (lambda event: None), fresh=fresh,
+                clock=clock, sleep=sleep)
+
+        return clear_job
+
+    return withdrawn_for, clear_for, before_for
+
+
+def _narrow_final(manager: UnitManager, root: Path, message: str, *, until: float,
+                  clock=time.monotonic, fresh_manager=None, authority=None,
+                  aids=None) -> None:
+    """Narrow under the end of the whole budget, on a new session if this one is finished.
+
+    `until` is the monotonic end of the full budget (phases plus reserve), so
+    the narrowing may spend the reserve; every bus call it makes is limited to
+    what is left. A session whose call timed out or was cancelled is finished
+    (`SystemdBusSession.broken`): when `fresh_manager` (a context manager that
+    yields `(manager, stop_authority)` on a NEW session, connecting inside the
+    same deadline) is available the narrowing runs there with that session's
+    manager AND authority together; the old authority would refuse everything.
+    `aids` are the `_contextd_aids` builders; the full broker withdrawal runs
+    after the masks, best effort, before the narrowing raises. Always raises,
+    like `_emergency_narrow`.
+    """
+    withdrawn_for, clear_for, before_for = aids if aids is not None else (
+        lambda a: None, lambda a: None, lambda a: None)
+
+    def narrow(target, target_authority) -> None:
+        bind_remaining(target, until, clock)
+        withdrawn = withdrawn_for(target_authority)
+        clear_job = clear_for(target_authority)
+        options = {} if withdrawn is None else {"withdrawn": withdrawn}
+        before = before_for(target_authority, target)
+        if before is not None:
+            options["before_mask"] = before
+        try:
+            _emergency_narrow(target, root, message, **options)
+        except RuntimeError:
+            if clear_job is not None:
+                try:
+                    clear_job(target)
+                except Exception:  # noqa: BLE001 - best effort; the narrowing already raised
+                    pass
+            raise
+
+    def broken(target) -> bool:
+        return bool(getattr(getattr(target, "call", None), "broken", False))
+
+    def on_fresh() -> None:
+        stack = contextlib.ExitStack()
+        try:
+            other, other_authority = stack.enter_context(fresh_manager())
+        except Exception:  # noqa: BLE001 - narrow on what there is
+            stack.close()
+            return
+        with stack:
+            narrow(other, other_authority)
+
+    if fresh_manager is not None and broken(manager):
+        on_fresh()
+    try:
+        narrow(manager, authority)
+    except RuntimeError:
+        # The session finished DURING this narrowing (a call timed out): what is
+        # left of the reserve goes to a new session, not to a refusing one.
+        if fresh_manager is not None and broken(manager):
+            on_fresh()
+        raise
+
+
+def _emergency_narrow(manager: UnitManager, root: Path, message: str, *,
+                      withdrawn=None, before_mask=None) -> None:
     """Remove every grant marker, mask every governed unit, then raise."""
     failures: list[str] = []
     try:
@@ -542,14 +784,23 @@ def _emergency_narrow(manager: UnitManager, root: Path, message: str) -> None:
               file=sys.stderr)
     for definition in CORE_UNITS:
         try:
-            _mask_and_confirm_inactive(manager, definition.name)
+            _mask_and_confirm_inactive(manager, definition.name, withdrawn, before_mask)
         except Exception as exc:  # noqa: BLE001 - fail closed on invariant break
             failures.append(f"{definition.name}: {type(exc).__name__}")
-    raise RuntimeError(f"{message}; emergency remask failures: {sorted(failures)}")
+    try:
+        manager.reload()  # the masks above are one batch
+    except Exception as exc:  # noqa: BLE001 - recorded, then raised below
+        failures.append(f"manager reload: {type(exc).__name__}")
+    error = RuntimeError(f"{message}; emergency remask failures: {sorted(failures)}")
+    error.narrowed = True  # a narrowing was attempted: callers do not repeat it
+    raise error
 
 
 def _run_once(
     *, manager: UnitManager, root: Path, now: str, actor: str, producers=None,
+    stop_authority: Optional[ContextdStopAuthority] = None,
+    deadline: Optional[float] = None, clock=time.monotonic, sleep=time.sleep,
+    invocation_id: str = "", fresh_manager=None, hold_state=None,
 ) -> ActivationOutcome:
     """One observe-baseline pass (#206 §3.6): SUPPORTING (P4) and edge-core (P5).
 
@@ -575,13 +826,50 @@ def _run_once(
     high-water floors are raised and the per-boot grant markers written for
     exactly the granted units. ``producers`` is a test seam; ``main`` never
     passes it, and a relocated root reads no host producer.
-    """
 
+    The caller holds the pass lock (``_locked_pass``). ``stop_authority`` is
+    the authority to stop the Knowledge Context broker alone, built by
+    ``main`` from the controller's session: a broker still running at
+    preflight is withdrawn (marker, mask, reload, StopUnit) before the masks
+    are confirmed, and a start job queued for a broker that is not granted is
+    replaced. Without it a running broker is a containment failure, as
+    before. ``deadline`` is the monotonic end of the pass's phases (the budget less
+    ``MAIN_PASS_RESERVE_SECONDS``).
+    """
+    if deadline is None:
+        deadline = clock() + MAIN_PASS_BUDGET_SECONDS - _AFTER_PHASES
+
+    def _narrow_now(narrowing_manager, narrowing_root, message):
+        # Narrowing may spend the reserve held back from the phases: the bus
+        # calls it makes are bounded by the end of the whole budget, not by
+        # the end of the phases.
+        _narrow_final(narrowing_manager, narrowing_root, message,
+                      until=deadline + _AFTER_PHASES, clock=clock,
+                      fresh_manager=fresh_manager, authority=stop_authority, aids=aids)
+
+    if hold_state is None:
+        hold_state = QueuedJobState()
+    aids = _contextd_aids(
+        root, now=now, actor=actor, invocation_id=invocation_id,
+        until=deadline + _AFTER_PHASES, clock=clock, sleep=sleep, record=True,
+        hold_state=hold_state, fresh=fresh_manager)
+    withdrawn = aids[0](stop_authority)
+    # The hook the verdict's own mask, a rollback and a wider narrowing reach runs
+    # while the bus session is still bound to the end of the PHASES, so its job
+    # wait is bounded by that deadline (and always leaves the mask its reserve);
+    # a narrowing that rebinds to the end of the whole budget builds its own.
+    phase_aids = _contextd_aids(
+        root, now=now, actor=actor, invocation_id=invocation_id, until=deadline,
+        clock=clock, sleep=sleep, record=True, hold_state=hold_state,
+        fresh=fresh_manager)
+    release_job = phase_aids[2](stop_authority, manager)
     daemon = ActivationDaemon(
         generations=GenerationStore(root / "var/lib/azazel/generations"),
         ledger=_activation_ledger(root),
         manager=manager,
         definitions=CORE_UNITS,
+        contextd_withdrawn=withdrawn,
+        contextd_before_mask=release_job,
     )
     # Stale markers go first, before any decision: a marker left from an
     # earlier pass in this boot must never admit a queued start.
@@ -590,8 +878,41 @@ def _run_once(
         reset_grant_markers(root)
     except Exception as exc:  # noqa: BLE001 - refuses below, after narrowing
         marker_failure = type(exc).__name__
+    hold: frozenset = frozenset()
+    if stop_authority is not None:
+        # A broker that is running is stopped here, with its marker gone and
+        # a mask in place, before the masks below are confirmed. A broker that
+        # is inactive with a start job queued is NOT masked here: masking and
+        # reloading would make systemd fail that job, and the job cannot run
+        # before READY (the broker is After= and Requires= the controller).
+        # It is left as it is and decided at the verdict: granted, the job
+        # runs after READY. Withheld, or on any narrowing, the job is replaced
+        # FIRST (StopUnit replace, no job left, `queued_job_replaced`
+        # recorded: `release_queued_job`, called before whatever masks the
+        # broker), and only then is the broker masked and the manager
+        # reloaded; the other order lets systemd fail the job ("Failed to
+        # start") with no replacement and no record. Should the pass die,
+        # Requires= fails the job (fail-closed).
+        if contextd_is_running(stop_authority, root):
+            try:
+                withdraw_contextd(
+                    reason="preflight", manager=manager, authority=stop_authority,
+                    root=root, ledger=daemon.ledger, now=now, actor=actor,
+                    invocation_id=invocation_id, deadline=deadline,
+                    final_deadline=deadline + _AFTER_PHASES,
+                    bind_deadline=lambda d: bind_remaining(manager, d, clock),
+                    fresh=fresh_manager, clock=clock, sleep=sleep)
+            except WithdrawalUnconfirmed:
+                bind_remaining(manager, deadline + _AFTER_PHASES, clock)
+                _narrow_now(
+                    manager, root,
+                    "the Knowledge Context broker could not be withdrawn at preflight")
+        elif contextd_start_is_queued(stop_authority):
+            hold = frozenset({CONTEXTD_UNIT})
+            hold_state.held = True
     failures = daemon._remask_all(now=now, actor=actor,
-        event_type="activation.evidence_preflight_masked", error_type="preflight")
+        event_type="activation.evidence_preflight_masked", error_type="preflight",
+        skip=hold)
     if failures:
         daemon._narrow_everything(now=now, actor=actor, after=failures)
     if marker_failure is not None:
@@ -601,6 +922,7 @@ def _run_once(
         })
         raise RuntimeError("stale activation grant markers could not be removed")
 
+    check_budget(deadline, clock)
     inputs = None
     try:
         from .activation_pass import (
@@ -617,10 +939,24 @@ def _run_once(
                                          ledger=daemon.ledger, now=now)
     except Exception:  # noqa: BLE001 - collection failure is absent evidence
         inputs = None
+    check_budget(deadline, clock)
     lease = inputs.lease if inputs is not None else None
     healthy = inputs is not None and lease is not None and inputs.healthy is True
     if not healthy:
         lease = None
+    if lease is not None:
+        # An approval retirement (operator revoked) that is unfinished, or an
+        # accepted-grant record that is not exactly what a grant writes,
+        # withholds everything: nothing is granted until the recheck has
+        # finished the retirement, or the record has been looked at. The
+        # record is never overwritten here.
+        try:
+            blocked = retirement_pending(root)
+            read_accepted_grant(root)
+        except RetireRefused:
+            blocked = True
+        if blocked:
+            lease, healthy = None, False
     # The pass's own Edge evidence (P5), never the daemon's host read: a
     # lease-bearing pass without it hands the library nothing launchable.
     edge = inputs.edge if inputs is not None else None
@@ -637,12 +973,13 @@ def _run_once(
         commissioning_evidence=inputs.evidence if inputs is not None else None,
         require_commissioning_evidence=True,
     )
+    check_budget(deadline, clock)
     granted = set(outcome.granted)
     if granted and (lease is None or not healthy or lease.units is None
                     or not granted <= lease.units or not granted <= GRANTABLE_UNITS):
         # A grant without verified lease and health, or outside the lease's
         # scope, means a change silently supplied authority.
-        _emergency_narrow(
+        _narrow_now(
             manager, root,
             "production activation granted a unit outside a verified lease and "
             "health or outside the lease scope",
@@ -651,7 +988,7 @@ def _run_once(
             inputs is None or inputs.edge_evidence != "launchable"
             or inputs.edge_package_binding != "bound"):
         # Edge-core without launchable evidence bound to the signed package.
-        _emergency_narrow(
+        _narrow_now(
             manager, root,
             "production activation granted edge-core without launchable Edge "
             "evidence bound to the signed package",
@@ -660,11 +997,63 @@ def _run_once(
         # #196 P1: this build has no isolation evidence, so a Deception Lite
         # exposure unit is never granted; one that was means a change
         # supplied authority the design does not have.
-        _emergency_narrow(
+        _narrow_now(
             manager, root,
             "production activation granted a Deception Lite exposure unit "
             "without isolation evidence",
         )
+    if granted:
+        # The grant batch has been reloaded. What the manager now holds for
+        # the guarded units is what a start job will use, so it is checked
+        # again here, before any marker is written or READY is sent: a unit
+        # that is not loaded as declared after the Reload is not a grant.
+        from .activation_pass import UNIT_CHECK_SCOPE
+        try:
+            producers.loaded_units(sorted(UNIT_CHECK_SCOPE))
+        except Exception:  # noqa: BLE001 - an unverifiable grant is withdrawn
+            try:
+                daemon._record({
+                    "event_type": "activation.grant_unverified_after_reload",
+                    "occurred_at": now, "actor": actor,
+                })
+            except Exception:  # noqa: BLE001 - narrowing below is unconditional
+                pass
+            _narrow_now(
+                manager, root,
+                "granted units were not verified as loaded after the manager reload",
+            )
+    if granted:
+        # The approval this grant is made under, durably, before any marker
+        # or READY: a later explicit revocation of its operator retires it.
+        approval = inputs.approval
+        try:
+            write_accepted_grant(
+                root, operator=lease.granted_by, approval_seq=approval.approval_seq,
+                approval_id=approval.approval_id,
+                payload_sha256=approval.payload_sha256, units=sorted(granted))
+        except RetireRefused:
+            try:
+                daemon._record({
+                    "event_type": "activation.accepted_grant_unwritten",
+                    "occurred_at": now, "actor": actor,
+                })
+            except Exception:  # noqa: BLE001 - narrowing below is unconditional
+                pass
+            _narrow_now(manager, root, "the accepted approval could not be recorded")
+    if stop_authority is not None and CONTEXTD_UNIT not in granted:
+        # A broker the pass does not grant must not start: a start job the
+        # manager queued for it before this pass is replaced, not left to be
+        # skipped by a condition.
+        release_job()  # a no-op once the job was replaced before the verdict's mask
+        try:
+            clear_contextd_job(
+                authority=stop_authority, ledger=daemon.ledger, now=now, actor=actor,
+                reason="withheld", invocation_id=invocation_id, deadline=deadline,
+                clock=clock, sleep=sleep)
+        except WithdrawalUnconfirmed:
+            _narrow_now(
+                manager, root,
+                "a start job queued for the Knowledge Context broker could not be replaced")
     rolled_back = any(_is_failure(verdict) for verdict in outcome.verdicts)
     high_water = "not_attempted"
     if lease is not None and inputs.approval is not None:
@@ -696,7 +1085,7 @@ def _run_once(
                 })
             except Exception:  # noqa: BLE001 - narrowing below is unconditional
                 pass
-            _emergency_narrow(manager, root, "activation high water could not be raised")
+            _narrow_now(manager, root, "activation high water could not be raised")
     markers: tuple[str, ...] = ()
     recorded = False
     # From the first marker to the final record, any failure (writing a
@@ -760,11 +1149,11 @@ def _run_once(
         })
         recorded = True
     except _MarkersUnwritten:
-        _emergency_narrow(manager, root, "activation grant markers could not be written")
+        _narrow_now(manager, root, "activation grant markers could not be written")
     except Exception:  # noqa: BLE001 - an unrecorded pass leaves no grant behind
         # The record is what makes this a completed pass: the markers it
         # wrote and the units it enabled are withdrawn first.
-        _emergency_narrow(manager, root, "activation pass record could not be appended")
+        _narrow_now(manager, root, "activation pass record could not be appended")
     if recorded and markers and EDGE_CORE_UNIT in granted and inputs is not None:
         _raise_edge_floor(daemon, inputs, now=now, actor=actor)
     return outcome
@@ -835,15 +1224,109 @@ def _narrow_bootstrap_core_units():
         failures.append("grant_markers")
         print("az-activated could not remove grant markers during bootstrap narrowing",
               file=sys.stderr)
-    with SystemdBusSession.connect() as session:
+    global _bootstrap_shared_end
+    began = time.monotonic()
+    if _bootstrap_shared_end is None:
+        # Called without `main` (a direct caller): count from this call.
+        _bootstrap_shared_end = began + _BOOTSTRAP_PROCESS_SECONDS
+    shared_end = _bootstrap_shared_end
+    end = min(shared_end, began + _BOOTSTRAP_NARROWING_SECONDS)
+
+    def left() -> float:
+        return end - time.monotonic()
+
+    terminal = []
+
+    def say(withdrew: bool) -> None:
+        # Journal only (option b): this stage holds no pass.lock and documents no
+        # ledger writer, so no activation-ledger record is appended here. The two
+        # strings are fixed, one terminal message per invocation, and nothing from
+        # an event is interpolated.
+        if terminal:
+            return
+        terminal.append(withdrew)
+        print("az-activated bootstrap narrowing withdrew the Knowledge Context broker"
+              if withdrew else
+              "az-activated bootstrap narrowing could not confirm the withdrawal of "
+              "the Knowledge Context broker", file=sys.stderr)
+
+    def journal(event: dict) -> None:
+        # Only the outcome is kept here; the terminal message is printed once, when the
+        # withdrawal ends (a job-stage "unconfirmed" followed by a withdrawn broker is
+        # a withdrawn broker). The queued-job records are not outcomes.
+        pass
+
+    @contextlib.contextmanager
+    def fresh_session():
+        with SystemdBusSession.connect(left) as other:
+            replacement = DbusUnitManager(call=other)
+            # Bound to the governing end at once (never a fresh allowance per exchange).
+            bind_remaining(replacement, end, time.monotonic)
+            yield replacement, ContextdStopAuthority.from_session(other)
+
+    if left() <= 0:
+        say(False)  # the shared time is gone: a message exists before anything is killed
+        raise UnitOperationFailed("bootstrap initial/emergency narrowing unconfirmed")
+    try:
+        connection = SystemdBusSession.connect(left)
+        session_context = connection.__enter__()
+    except Exception:  # noqa: BLE001 - setup failed: say so at once, then fail closed
+        say(False)
+        raise UnitOperationFailed("bootstrap initial/emergency narrowing unconfirmed") from None
+    with contextlib.ExitStack() as stack:
+        session = stack.enter_context(contextlib.nullcontext(session_context))
+        stack.callback(connection.__exit__, None, None, None)
         manager = DbusUnitManager(call=session)
+        # The broker first, through the one withdrawal (marker, held-job settlement,
+        # mask, reload, stop, exact masked-and-quiet confirmation, a fresh session per
+        # step when one finishes), with the contextd-only stop authority.
+        try:
+            withdraw_contextd(
+                reason="bootstrap_narrowing", manager=manager,
+                authority=ContextdStopAuthority.from_session(session), root=Path("/"),
+                ledger=_activation_ledger(Path("/")),
+                now=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                actor="azazel-activated", invocation_id="",
+                deadline=max(began, end - 10.0), final_deadline=end,
+                bind_deadline=lambda d: bind_remaining(manager, d, time.monotonic),
+                sink=journal, fresh=fresh_session)
+        except Exception:  # noqa: BLE001 - the other units are still narrowed
+            failures.append(CONTEXTD_UNIT)
+            say(False)
+        else:
+            say(True)
+        # The other units: the session is bound to the final deadline again (the
+        # withdrawal may have left it on its own, shorter one), and a session that
+        # finished is replaced, unit by unit, inside the same deadline.
+        current = {"manager": manager, "session": session}
+        sub = contextlib.ExitStack()
+        stack.callback(sub.close)
+        bind_remaining(manager, end, time.monotonic)
         for definition in CORE_UNITS:
+            if definition.name == CONTEXTD_UNIT:
+                continue
+            if getattr(current["session"], "broken", False) and left() > 0:
+                try:
+                    other_manager, _authority = sub.enter_context(fresh_session())
+                    current["manager"], current["session"] = other_manager, other_manager.call
+                except Exception:  # noqa: BLE001
+                    pass
             try:
-                _mask_and_confirm_inactive(manager, definition.name)
-            except Exception:
+                _mask_and_confirm_inactive(current["manager"], definition.name)
+            except Exception:  # noqa: BLE001
                 failures.append(definition.name)
     if failures:
         raise UnitOperationFailed("bootstrap initial/emergency narrowing unconfirmed")
+
+
+#: Time one bootstrap-stage narrowing may use (bus connection included).
+_BOOTSTRAP_NARROWING_SECONDS = 25.0
+#: The shared absolute end, counted from the entry of `main` (before the selection, the
+#: transaction, the marker reset and the claim), for every bootstrap narrowing of the
+#: process together (60 s TimeoutStartSec - 10 s; the start before `main` and the exit
+#: after the end are the margin, to be measured on the clone).
+_BOOTSTRAP_PROCESS_SECONDS = 50.0
+_bootstrap_shared_end = None
 
 
 # Reviewed static messages of the bootstrap path, including the library's
@@ -860,6 +1343,13 @@ _STATIC_FAILURE_MESSAGES = frozenset({
     'protected bootstrap selection refused: selection or source changed during read',
     'protected bootstrap selection refused: required bootstrap input missing',
     'additional controller command refused',
+    'a stop authority needs its four verbs',
+    'systemd returned an invalid unit-file state result',
+    'manager reload failed',
+    'systemd returned an invalid job result',
+    'systemd returned an invalid stop result',
+    'the service manager adapter cannot reload',
+    'the stop authority was asked about a unit outside its scope',
     'admitted resource thresholds required',
     'audit binding admission unconfirmed',
     'audit chain evidence unavailable',
@@ -1232,6 +1722,141 @@ def _failure_label(exc: BaseException) -> str:
     return f"{name}: " + " <- ".join(reasons)
 
 
+def _locked_pass(
+    *, manager: UnitManager, root: Path, now: str, actor: str,
+    stop_authority: Optional[ContextdStopAuthority], invocation_id: str,
+    clock=time.monotonic, sleep=time.sleep, producers=None,
+    budget_seconds: float = MAIN_PASS_BUDGET_SECONDS,
+    reserve_seconds: float = MAIN_PASS_RESERVE_SECONDS,
+    ready_seconds: float = MAIN_PASS_READY_SECONDS,
+    started: Optional[float] = None, fresh_manager=None,
+) -> ActivationOutcome:
+    """The main pass under the pass lock, from the lock to READY's barrier.
+
+    The lock is taken with a bounded wait; if it cannot be, the pass changes
+    nothing (no marker, mask, reload, stop, ledger record or READY), prints a
+    stable journal line and fails: the holder owns the state. Nothing before
+    the acquisition mutates. The recheck holds the same lock while it
+    evaluates, so the two never change markers and unit state at once.
+
+    One budget covers everything from `started` (taken by `main` before the
+    bus connects) to the end of any narrowing. It is kept cooperatively: the
+    phases end `reserve_seconds` before it and are checked between each other,
+    and every bus call is limited to the time that remains (`bind_remaining`).
+    Nothing is interrupted asynchronously, so a ledger append or a high-water
+    commit always completes. Every way out that narrows (an expired budget, a
+    failed READY or barrier, an emergency narrowing in the pass, a finished
+    bus session) does so under the lock and under the end of the whole budget, so the
+    reserve is really available to it. A bus session whose call timed out is
+    finished and never reused: the narrowing runs on `fresh_manager()` (a new
+    session, connected inside the same deadline) with that session's manager
+    and stop authority.
+    """
+    begin = clock() if started is None else started
+    final = begin + budget_seconds
+    work = final - reserve_seconds - ready_seconds
+
+    hold_state = QueuedJobState()
+
+    def narrow(message: str) -> None:
+        # Only ever called while pass.lock is held: the holder owns the state.
+        aids = _contextd_aids(
+            root, now=now, actor=actor, invocation_id=invocation_id,
+            until=final, clock=clock, sleep=sleep, record=True, hold_state=hold_state,
+            fresh=fresh_manager)
+        _narrow_final(manager, root, message, until=final, clock=clock,
+                      fresh_manager=fresh_manager, authority=stop_authority, aids=aids)
+
+    def not_the_holder(why: str) -> None:
+        # A pass that does not own pass.lock changes NOTHING: no marker removal,
+        # no mask, reload or stop, no ledger record, no READY. The holder (the
+        # recheck, or another pass) owns the state and the ledger head, and
+        # touching either could race its transaction. The journal line and the
+        # non-zero exit are the whole report. This pass never sent READY, so a
+        # start job that pulled it in fails through Requires= (fail-closed); a
+        # running broker is the holder's or the recheck's to handle.
+        print(NO_LOCK_NO_RECORD_MESSAGE, file=sys.stderr)
+        error = RuntimeError(f"{why}; nothing was changed")
+        error.narrowed = True  # nothing to narrow again
+        raise error
+
+    bind_remaining(manager, work, clock)
+    try:
+        wait = max(0.0, min(PASS_LOCK_WAIT_SECONDS, work - clock()))
+        try:
+            lock = acquire_pass_lock(root, wait_seconds=wait, clock=clock, sleep=sleep)
+        except (PassLockBusy, PassLockRefused):
+            not_the_holder("the activation pass lock could not be taken")
+        expired = False
+        with lock:
+            try:
+                outcome = _run_once(
+                    manager=manager, root=root, now=now, actor=actor, producers=producers,
+                    stop_authority=stop_authority, deadline=work, clock=clock,
+                    sleep=sleep, invocation_id=invocation_id,
+                    fresh_manager=fresh_manager, hold_state=hold_state)
+                check_budget(work, clock)
+                # Type=notify: without READY the controller's start fails and
+                # every unit with Requires=/After= on it fails as a dependency.
+                # READY is sent only after the pass, its markers and its
+                # record are complete, and the lock is kept until its barrier
+                # has returned.
+                _notify_ready_or_withdraw(manager, root, now=now, actor=actor,
+                                          until=final, clock=clock,
+                                          fresh_manager=fresh_manager,
+                                          stop_authority=stop_authority,
+                                          invocation_id=invocation_id, sleep=sleep,
+                                          hold_state=hold_state)
+            except PassBudgetExpired:
+                expired = True
+            except Exception as error:
+                # Any error that did not already come out of a narrowing is narrowed
+                # here, still under the lock, whatever it is (a ledger that is
+                # unavailable or whose chain is broken, a state file, a finished
+                # bus session, a spent time budget) and whether or not a start job
+                # is being held: the held job is replaced before the broker is
+                # masked, then the units are masked, the manager reloaded and the
+                # broker withdrawn. The original error is then raised again; a
+                # failure of the narrowing is chained to it, never replacing it.
+                # (SIGTERM ends the process by Python's default and raises
+                # nothing, so no exception is involved there.)
+                if not getattr(error, "narrowed", False):
+                    # One reason, one call. A finished session or spent time is named
+                    # as such; anything else is "unexpected".
+                    reason = (
+                        "the bus session finished or the time ended during the activation pass"
+                        if (clock() >= work or (
+                            fresh_manager is not None
+                            and getattr(getattr(manager, "call", None), "broken", False)))
+                        else "the activation pass failed unexpectedly")
+                    try:
+                        narrow(reason)
+                    except Exception as narrowing:  # noqa: BLE001 - chained, then the original
+                        # `narrow` raises its own error (it always does); the original
+                        # object is the one that comes out, with the narrowing chained
+                        # to it, marked narrowed so no outer layer contains it again.
+                        error.narrowed = True
+                        print("az-activated the narrowing after an unexpected error failed "
+                              f"({type(narrowing).__name__})", file=sys.stderr)
+                        raise error from narrowing
+                raise
+            if expired:
+                # Every ledger append of the pass happens while pass.lock is
+                # held, so a new holder cannot extend the same head.
+                try:
+                    _activation_ledger(root).append({
+                        "event_type": "activation.pass_budget_expired",
+                        "occurred_at": now, "actor": actor,
+                    })
+                except Exception:  # noqa: BLE001 - narrowing below is unconditional
+                    pass
+                narrow("the activation pass used its whole time budget")
+    except PassBudgetExpired:
+        # Before the lock was held (nothing there checks the budget; a safety net).
+        not_the_holder("the activation pass budget ended before the lock was held")
+    return outcome
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Run one fail-closed activation pass against systemd's system bus.
 
@@ -1242,6 +1867,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     marker, and never starts it.
     """
 
+    entered = time.monotonic()  # the anchor of the bootstrap path's absolute end
     if argv is None:
         argv = sys.argv[1:]
     if argv:
@@ -1265,6 +1891,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     from .systemd_bus import SystemdBusSession
 
+    global _bootstrap_shared_end
+    # ONE absolute end for every bootstrap narrowing of this process, counted from
+    # the entry of main (not from the first narrowing: the selection, the
+    # transaction, the marker reset and the claim come first).
+    _bootstrap_shared_end = entered + _BOOTSTRAP_PROCESS_SECONDS
     now = (
         datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     )
@@ -1288,20 +1919,35 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 return 0
             print("az-activated supporting bootstrap stopped after confirmed containment")
             return 0
-        with SystemdBusSession.connect() as session:
+        # The budget starts here, so that connecting to the bus counts.
+        started = time.monotonic()
+
+        def work_left(begin=started) -> float:
+            return begin + MAIN_PASS_BUDGET_SECONDS - _AFTER_PHASES - time.monotonic()
+
+        @contextlib.contextmanager
+        def fresh_manager():
+            # A new session for a narrowing after a call timed out. Its connect
+            # is bounded by what is left of the whole budget.
+            with SystemdBusSession.connect(
+                    lambda: started + MAIN_PASS_BUDGET_SECONDS - time.monotonic()) as other:
+                yield DbusUnitManager(call=other), ContextdStopAuthority.from_session(other)
+
+        with SystemdBusSession.connect(work_left) as session:
             manager = DbusUnitManager(call=session)
-            outcome = _run_once(
+            # READY is sent only after the pass, its markers and its record
+            # are complete. The process exits right after READY, so it waits
+            # (bounded) for systemd to process it first (BARRIER=1).
+            outcome = _locked_pass(
                 manager=manager,
                 root=Path("/"),
                 now=now,
                 actor="azazel-activated",
+                stop_authority=ContextdStopAuthority.from_session(session),
+                invocation_id=invocation_id,
+                started=started,
+                fresh_manager=fresh_manager,
             )
-            # Type=notify: without READY the controller's start fails and
-            # every unit with Requires=/After= on it fails as a dependency.
-            # READY is sent only after the pass, its markers and its record
-            # are complete. The process exits right after READY, so it waits
-            # (bounded) for systemd to process it first (BARRIER=1).
-            _notify_ready_or_withdraw(manager, Path("/"), now=now, actor="azazel-activated")
     except Exception as exc:  # noqa: BLE001 - the service boundary fails closed
         from .bootstrap_entrypoint import EMERGENCY_UNCONFIRMED
         if EMERGENCY_UNCONFIRMED in getattr(exc, "__notes__", ()):
@@ -1322,7 +1968,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 def _notify_ready_or_withdraw(manager: UnitManager, root: Path, *, now: str,
-                              actor: str) -> None:
+                              actor: str, until: Optional[float] = None,
+                              clock=time.monotonic, fresh_manager=None,
+                              stop_authority=None, invocation_id: str = "",
+                              sleep=time.sleep, hold_state=None) -> None:
     """Send READY and wait for its barrier; on any failure withdraw, then raise.
 
     A refused READY, or a barrier that fails or times out, leaves it unknown
@@ -1333,9 +1982,10 @@ def _notify_ready_or_withdraw(manager: UnitManager, root: Path, *, now: str,
     Best effort, not a guarantee: if systemd had already processed READY, the
     dependents' ``ConditionPathExists=`` may be evaluated concurrently with
     this withdrawal. A start job evaluated after the marker is gone is
-    skipped; a unit that started inside that window is not stopped (there is
-    no StopUnit authority), and its remask fails with "masked unit has no
-    confirmed inactive state", which still exits non-zero.
+    skipped; a unit that started inside that window is not stopped (the stop
+    authority covers the Knowledge Context broker alone), and its remask fails
+    with "masked unit has no confirmed inactive state", which still exits
+    non-zero.
 
     The failure is recorded as ``activation.readiness_unconfirmed`` when the
     ledger can be written; a record that fails never stands between this
@@ -1356,6 +2006,14 @@ def _notify_ready_or_withdraw(manager: UnitManager, root: Path, *, now: str,
             })
         except Exception:  # noqa: BLE001 - narrowing below is unconditional
             pass
+        if until is not None:
+            aids = _contextd_aids(
+                root, now=now, actor=actor, invocation_id=invocation_id,
+                until=until, clock=clock, sleep=sleep, record=True, hold_state=hold_state,
+                fresh=fresh_manager)
+            _narrow_final(manager, root, "activation readiness notification unavailable",
+                          until=until, clock=clock, fresh_manager=fresh_manager,
+                          authority=stop_authority, aids=aids)
         _emergency_narrow(manager, root, "activation readiness notification unavailable")
 
 

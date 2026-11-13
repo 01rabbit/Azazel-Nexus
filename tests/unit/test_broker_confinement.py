@@ -186,7 +186,10 @@ def test_baseline_matches_every_committed_unit_except_declared_controller_capabi
     for path in units:
         lines = path.read_text().splitlines()
         for key, value in SHARED_HARDENING:
-            if path.name == "azazel-activated.service" and key == "CapabilityBoundingSet":
+            if (path.name in ("azazel-activated.service", "azazel-activation-recheck.service")
+                    and key == "CapabilityBoundingSet"):
+                # The controller and its periodic recheck, which runs the same
+                # evaluation with the same single capability.
                 assert "CapabilityBoundingSet=CAP_DAC_READ_SEARCH" in lines
             elif (path.name in ("azazel-decoy-netd.service", "azazel-decoy-verify.service")
                     and key == "CapabilityBoundingSet"):

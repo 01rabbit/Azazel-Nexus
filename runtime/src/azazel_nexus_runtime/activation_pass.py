@@ -156,7 +156,7 @@ class PassProducers:
     #: measured now and refused on any override or drop-in.
     unit_files: Callable[[list], dict]
     #: `activation_loaded_units.verify_grantable_units` over every marker-
-    #: guarded unit (including the non-grantable Knowledge broker) and the
+    #: guarded unit (grantable or not; contextd is grantable since A1) and the
     #: controller's D-Bus session; raises on any unit or manager drift.
     loaded_units: Callable[[list], None]
     #: `load_observe_baseline_approval` (keyword arguments).
@@ -198,6 +198,8 @@ class PassInputs:
     approval: Optional[ObserveBaselineApproval] = None
     high_water: Optional[HighWater] = None
     generation: Optional[int] = None
+    #: The verified current generation's digest (set with `generation`).
+    generation_digest: Optional[str] = None
     skew_seconds: Optional[int] = None
     #: The Edge state handed to the library (None: no lease was formed).
     edge: Optional[EdgeBaselineState] = None
@@ -404,6 +406,7 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
         generation = attempt(("operational_generation_publisher",), current_generation)
     if generation is not None:
         result.generation = generation.number
+        result.generation_digest = generation.digest
         if floors is not None and generation.number < floors.generation:
             fail("epoch_high_water")
 

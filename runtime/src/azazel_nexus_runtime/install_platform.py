@@ -30,6 +30,7 @@ from .hardening import (
     DECOY_NAMESPACE_IP,
     EDGE_PROBE_PREFLIGHT_UNIT,
     PROFILES,
+    RECHECK_TIMER,
     SYSTEM_ACCOUNTS,
     UI_SOCKET,
     UI_UNIT,
@@ -60,7 +61,7 @@ _KEY = re.compile(r"[A-Z_][A-Z0-9_]*\Z")
 _UNQUOTED = re.compile(r"[A-Za-z0-9._+:/-]+\Z")
 _UNIT = re.compile(r"[A-Za-z0-9_.@-]+\.service\Z")
 #: A preset line may also name the read-only UI's socket unit (U5).
-_PRESET_UNIT = re.compile(r"[A-Za-z0-9_.@-]+\.(?:service|socket)\Z")
+_PRESET_UNIT = re.compile(r"[A-Za-z0-9_.@-]+\.(?:service|socket|timer)\Z")
 #: Disabled in the preset and **not masked** by the installer: the read-only
 #: UI (U5) is not governed, so no pass would ever unmask it, and an operator
 #: enables its socket explicitly. Every other `disable` is a mask.
@@ -182,7 +183,8 @@ class ServiceManagerIntent:
         ):
             raise ValueError("unit intents must be immutable tuple data")
         units = (*self.mask_units, *self.enable_units, *self.start_units)
-        if any(not _UNIT.fullmatch(unit) for unit in units):
+        # A service, or the recheck's timer (the one enabled timer).
+        if any(not (_UNIT.fullmatch(unit) or unit == RECHECK_TIMER) for unit in units):
             raise ValueError("service-manager intent contains an invalid unit name")
         if len(set(units)) != len(units):
             raise ValueError("service-manager intent contains duplicate units")
@@ -409,7 +411,8 @@ def build_install_plan(
     if type(with_accounts) is not bool or type(with_service_manager) is not bool:
         raise ValueError("install modes must be explicit booleans")
 
-    declared_units = {service.unit for service in ALL_PROFILES} | {UI_SOCKET}
+    declared_units = ({service.unit for service in ALL_PROFILES}
+                      | {UI_SOCKET, RECHECK_TIMER})
     declarations = tuple(preset_declarations)
     if not declarations or any(
         action not in {"enable", "disable"} or unit not in declared_units
@@ -424,12 +427,15 @@ def build_install_plan(
                      if action == "disable" and unit not in DISABLED_NOT_MASKED)
     if any(action != "disable" for action, unit in declarations if unit in DISABLED_NOT_MASKED):
         raise ValueError("the read-only UI's units are disabled in the preset, never enabled")
-    # The controller, and the ungoverned read-only Edge probe preflight that
-    # runs before it (#206 P5). Nothing governed is ever enabled here.
-    if enabled != ("azazel-activated.service", EDGE_PROBE_PREFLIGHT_UNIT):
+    # The controller, the ungoverned read-only Edge probe preflight that runs
+    # before it (#206 P5), and the timer of the activation recheck, which can
+    # only withdraw the Knowledge Context broker's grant. Nothing governed is
+    # ever enabled here.
+    if enabled != ("azazel-activated.service", EDGE_PROBE_PREFLIGHT_UNIT,
+                   RECHECK_TIMER):
         raise ValueError(
-            "install plan must enable only the activation controller and the "
-            "Edge probe preflight"
+            "install plan must enable only the activation controller, the "
+            "Edge probe preflight and the activation recheck timer"
         )
 
     # Nexus stages Python wrappers; the separately verified Edge package owns its binary,

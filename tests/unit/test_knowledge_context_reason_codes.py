@@ -7,6 +7,7 @@ import pytest
 
 from azazel_nexus.knowledge_context_adapter import KnowledgeContextRefused
 from azazel_nexus.knowledge_peer import KnowledgeRefused
+from stop_helpers import granted_marker
 from azazel_nexus_runtime.knowledge_contextd import KnowledgeContextBroker
 from test_knowledge_contextd import _policy, _request
 from test_knowledge_context_transport import (
@@ -30,7 +31,7 @@ QUESTION = "QUESTION-TEXT-7c1 public question"
 
 
 def _broker(client, events, **kw):
-    return KnowledgeContextBroker(client=client, policy=_policy(), mission="lab",
+    return KnowledgeContextBroker(grant_marker=granted_marker, client=client, policy=_policy(), mission="lab",
                                   alias_key=b"x" * 32, enabled=True,
                                   audit=events.append, **kw)
 
@@ -44,7 +45,7 @@ def _real(monkeypatch, post, *, enabled=True, response=None):
     if post is not None:
         monkeypatch.setattr(peer, "_post_path", post)
     events = []
-    broker = KnowledgeContextBroker(client=peer, policy=_policy(), mission="lab",
+    broker = KnowledgeContextBroker(grant_marker=granted_marker, client=peer, policy=_policy(), mission="lab",
                                     alias_key=b"x" * 32, enabled=True,
                                     audit=events.append)
     req = _request(payload={"frame": {"privacy_class": "P0-public",
@@ -77,7 +78,7 @@ def test_frame_shape_refusal_is_refused_before_send():
 
 def test_uncommissioned_broker_is_refused_before_send():
     events = []
-    broker = KnowledgeContextBroker(audit=events.append)
+    broker = KnowledgeContextBroker(grant_marker=granted_marker, audit=events.append)
     assert broker.handle(_request()) == {"refusal": "unavailable"}
     _check(events, "refused_before_send", "unavailable")
 
@@ -96,7 +97,7 @@ def test_requested_audit_write_failure_is_refused_before_send():
             raise OSError(SECRET)
         events.append(event)
 
-    broker = KnowledgeContextBroker(client=Client(), policy=_policy(), mission="lab",
+    broker = KnowledgeContextBroker(grant_marker=granted_marker, client=Client(), policy=_policy(), mission="lab",
                                     alias_key=b"x" * 32, enabled=True, audit=audit)
     assert broker.handle(_request()) == {"refusal": "unavailable"}
     assert not calls
@@ -237,6 +238,6 @@ def test_already_expired_and_completed_audit_failure_stay_unchanged():
     def audit(event):
         if event["event_type"].endswith("completed"):
             raise OSError
-    broker = KnowledgeContextBroker(client=Client(), policy=_policy(), mission="lab",
+    broker = KnowledgeContextBroker(grant_marker=granted_marker, client=Client(), policy=_policy(), mission="lab",
                                     alias_key=b"x" * 32, enabled=True, audit=audit)
     assert broker.handle(_request()) == {"refusal": "unavailable"}

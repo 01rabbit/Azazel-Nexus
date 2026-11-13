@@ -19,6 +19,16 @@ from test_runtime_bootstrap import (
 )
 
 
+@pytest.fixture
+def host_cgroup(monkeypatch):
+    """Fake bus sessions on a host that is not a cgroup-v2 systemd node: the reader of
+    the host's cgroup (tested in test_runtime_contextd_cgroup.py) answers as a stopped
+    unit's cgroup would."""
+    from azazel_nexus_runtime import contextd_cgroup
+    monkeypatch.setattr(
+        contextd_cgroup, "read_contextd_cgroup",
+        lambda active, root=None: "empty" if active in ("inactive", "failed") else "populated")
+
 def _evidence():
     return harness_evidence.__wrapped__(None)
 
@@ -675,6 +685,7 @@ def test_marker_reset_failure_refuses_without_claim_and_still_narrows(monkeypatc
         "az-activated could not remove grant markers before the bootstrap claim\n")
 
 
+@pytest.mark.usefixtures("host_cgroup")
 def test_marker_refusal_through_the_real_bootstrap_narrowing(tmp_path, monkeypatch, capsys):
     """#251 L-7 end to end: the real marker reset refuses (a directory among
     the markers), no claim is written, the real broad narrowing still masks
@@ -711,19 +722,40 @@ def test_marker_refusal_through_the_real_bootstrap_narrowing(tmp_path, monkeypat
                 return True
             pytest.fail("unexpected widening operation")
 
-    monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(Session))
+        def set_remaining(self, remaining):
+            pass
+
+        def reload(self):
+            pass
+
+        def stop_contextd(self):
+            return "/org/freedesktop/systemd1/job/1"
+
+        def unit_job(self, unit):
+            return (0, "/")
+
+        def contextd_active_state(self, unit):
+            return "inactive"
+
+        def contextd_file_state(self, unit):
+            return "masked"
+
+    from azazel_nexus_runtime import activation_withdraw
+    monkeypatch.setattr(activation_withdraw, "remove_contextd_marker", lambda _root: None)
+    monkeypatch.setattr(SystemdBusSession, "connect", staticmethod(lambda *_a: Session()))
     monkeypatch.setattr(entrypoint, "BootstrapSupervisor",
                         lambda **_: pytest.fail("supervisor after a marker refusal"))
     with pytest.raises(activation_markers.GrantMarkerRefused) as refused:
         entrypoint.run_selected_bootstrap(
             "retained", narrow=activated._narrow_bootstrap_core_units)
     assert "controller-claimed" not in events
-    assert masked == [definition.name for definition in activated.CORE_UNITS]
+    assert sorted(masked) == sorted(definition.name for definition in activated.CORE_UNITS)
     assert entrypoint.EMERGENCY_UNCONFIRMED in refused.value.__notes__
     assert (tmp_path / "run/azazel-activation/granted/unexpected").is_dir()
     assert capsys.readouterr().err == (
         "az-activated could not remove grant markers before the bootstrap claim\n"
-        "az-activated could not remove grant markers during bootstrap narrowing\n")
+        "az-activated could not remove grant markers during bootstrap narrowing\n"
+        "az-activated bootstrap narrowing withdrew the Knowledge Context broker\n")
 
 
 def test_public_manager_widening_methods_still_refuse_without_bus_access():

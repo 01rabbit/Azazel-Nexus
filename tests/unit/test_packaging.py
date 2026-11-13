@@ -41,6 +41,13 @@ GOVERNED = tuple(d.name for d in CORE_UNITS)
 #: Installed and enabled beside the controller, and governed by nothing:
 #: the read-only Edge probe preflight (#206 P5).
 PROBE_PREFLIGHT = "azazel-edge-probe-preflight.service"
+#: The periodic recheck of the Knowledge Context broker's grant: a oneshot and
+#: its timer, installed with the controller. The timer is enabled (by the
+#: preset and the installer); the service is started only by the timer. Neither
+#: is governed, and neither is in any approval scope.
+RECHECK_SERVICE = "azazel-activation-recheck.service"
+RECHECK_TIMER = "azazel-activation-recheck.timer"
+RECHECK_FILES = (RECHECK_SERVICE, RECHECK_TIMER)
 #: The Deception Lite watch (#196 G2): not governed, never enabled.
 DECOY_VERIFY = "azazel-decoy-verify.service"
 DECOY_WATCH_FILES = (DECOY_VERIFY, "azazel-decoy-verify.timer", "azazel-decoy-trip.target")
@@ -105,10 +112,12 @@ def test_no_unit_file_exists_for_a_component_this_slice_does_not_install():
     """
 
     present = sorted(path.name for path in UNIT_DIR.iterdir())
-    assert present == sorted(ALL_UNITS + DECOY_WATCH_FILES + OBSERVER_FILES + UI_FILES), (
+    assert present == sorted(ALL_UNITS + DECOY_WATCH_FILES + OBSERVER_FILES + UI_FILES
+                             + RECHECK_FILES), (
         f"the packaged units are {present}; the controller governs "
         f"{sorted(GOVERNED)} plus {ACTIVATION_CONTROLLER_UNIT}, "
-        f"{PROBE_PREFLIGHT}, the Deception Lite watch {DECOY_WATCH_FILES} and the "
+        f"{PROBE_PREFLIGHT}, the recheck {RECHECK_FILES}, the Deception Lite watch "
+        f"{DECOY_WATCH_FILES} and the "
         f"operator observers {OBSERVER_FILES} and the read-only UI {UI_FILES}"
     )
 
@@ -198,10 +207,11 @@ def test_the_preset_disables_every_governed_unit():
         )
 
 
-def test_the_preset_enables_only_the_controller_and_the_probe_preflight():
+def test_the_preset_enables_only_the_controller_the_probe_preflight_and_the_recheck_timer():
     enabled = [unit for verb, unit in _preset_directives() if verb == "enable"]
-    assert enabled == [ACTIVATION_CONTROLLER_UNIT, PROBE_PREFLIGHT]
+    assert enabled == [ACTIVATION_CONTROLLER_UNIT, PROBE_PREFLIGHT, RECHECK_TIMER]
     assert PROBE_PREFLIGHT not in GOVERNED
+    assert not {RECHECK_SERVICE, RECHECK_TIMER} & set(GOVERNED)
 
 
 def test_the_preset_uses_no_glob():
@@ -245,8 +255,16 @@ def test_the_installer_masks_every_governed_unit():
     )
 
 
-def test_the_installer_enables_only_the_controller_and_the_probe_preflight():
-    assert _systemctl_calls("enable") == [ACTIVATION_CONTROLLER_UNIT, PROBE_PREFLIGHT]
+def test_the_installer_enables_only_the_controller_the_probe_preflight_and_the_recheck_timer():
+    assert _systemctl_calls("enable") == [ACTIVATION_CONTROLLER_UNIT, PROBE_PREFLIGHT,
+                                          RECHECK_TIMER]
+    # The recheck is installed, enabled through its timer, and never masked.
+    for name in RECHECK_FILES:
+        assert f'"$HERE"/systemd/{name} "$UNIT_DIR"' in _installer()
+        assert name not in _systemctl_calls("mask")
+        assert name not in _systemctl_calls("unmask")
+    # Its binary is among those the installer refuses to run without.
+    assert "az-activation-recheck" in _installer().split("for binary in", 1)[1].split(";", 1)[0]
 
 
 def test_the_installer_installs_and_never_masks_the_probe_preflight():

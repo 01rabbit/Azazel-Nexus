@@ -599,7 +599,8 @@ def test_only_the_controller_may_write_grant_markers_and_it_stays_optional():
     writers = [profile.unit for profile in ALL_PROFILES
                if any(path.removeprefix("-") == "/run/azazel-activation"
                       for path in _settings(profile.unit).get("ReadWritePaths", []))]
-    assert writers == [ACTIVATION_CONTROLLER_UNIT]
+    # The controller and its periodic recheck, which removes a marker.
+    assert writers == [ACTIVATION_CONTROLLER_UNIT, "azazel-activation-recheck.service"]
     # Optional so a node without the tmpfiles directory still narrows; then no
     # marker can be written and nothing granted can start.
     assert "-/run/azazel-activation" in _settings(ACTIVATION_CONTROLLER_UNIT)["ReadWritePaths"]
@@ -1095,8 +1096,13 @@ def test_the_only_ungoverned_unit_is_the_probe_preflight():
     from azazel_nexus_runtime.hardening import UI_PROFILES
 
     assert [p.unit for p in UI_PROFILES] == ["azazel-ui.service"]
+    # The activation recheck is root like the controller, not governed, and
+    # not enabled as a service: its timer is.
+    from azazel_nexus_runtime.hardening import RECHECK_PROFILES
+
+    assert [p.unit for p in RECHECK_PROFILES] == ["azazel-activation-recheck.service"]
     assert ALL_PROFILES == (PROFILES + UNGOVERNED_PROFILES + DECOY_WATCH_PROFILES
-                            + OBSERVER_PROFILES + UI_PROFILES)
+                            + OBSERVER_PROFILES + RECHECK_PROFILES + UI_PROFILES)
 
 
 def test_the_probe_preflight_is_not_governed_anywhere():

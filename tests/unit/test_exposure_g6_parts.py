@@ -294,8 +294,8 @@ def test_the_profile_directory_is_the_installers():
     assert APPARMOR_DIRECTORY == installed == "/etc/apparmor.d"
 
 
-def test_the_current_generation_allowlist_keeps_context_broker_ungrantable():
-    """The exposure section is absent and Knowledge Context stays ungrantable."""
+def test_the_current_generation_allowlist_includes_context_broker_and_no_exposure_unit():
+    """The exposure section is absent; Knowledge Context is grantable (#395 prep)."""
 
     assert OBSERVE_BASELINE_SCHEMA == "azazel-nexus/observe-baseline-generation/v1"
     assert not set(ACTIVATION_UNIT_ALLOWLIST) & (EXPOSURE_UNITS | set(WATCH))
@@ -304,6 +304,7 @@ def test_the_current_generation_allowlist_keeps_context_broker_ungrantable():
         "azazel-decoy-netd.service", "azazel-decoy-nsd.service", "azazel-decoyd.service",
         "azazel-edge-core.service", "azazel-edge-intaked.service",
         "azazel-edge-probed.service", "azazel-incident-explaind.service",
+        "azazel-knowledge-contextd.service",
         "azazel-knowledge-lited.service", "azazel-mio-entryd.service",
         "azazel-mio-referenced.service",
     })

@@ -57,9 +57,10 @@ RUNNING = sorted(DECEPTION_EXPOSURE_UNITS)
 #: What the first pass of this boot would have marked (SUPPORTING units).
 FIRST_PASS_MARKERS = ["azazel-edge-intaked.service", "azazel-edge-probed.service"]
 NOT_INACTIVE = "masked unit has no confirmed inactive state"
-#: The only members a pass may send: masking and reading. Anything else
-#: (StopUnit, StartUnit, UnmaskUnitFiles, EnableUnitFiles) fails the test.
-READ_AND_MASK = {"GetUnitFileState", "MaskUnitFiles", "GetUnit", "Get"}
+#: The only members a pass may send: masking, reading and the reload that
+#: ends a batch of masks. Anything else (StopUnit, StartUnit,
+#: UnmaskUnitFiles, EnableUnitFiles) fails the test.
+READ_AND_MASK = {"GetUnitFileState", "MaskUnitFiles", "GetUnit", "Get", "Reload"}
 
 
 OWNER = ":1.42"
@@ -103,6 +104,10 @@ class FakeSystemd:
         if member not in READ_AND_MASK:
             raise AssertionError(f"the pass asked for {member}")
         assert message.destination == OWNER
+        if member == "Reload":
+            assert message.interface == MANAGER_INTERFACE
+            assert message.signature == "" and body == []
+            return self._reply("", [])
         if member == "MaskUnitFiles":
             assert message.interface == MANAGER_INTERFACE and message.signature == "asbb"
             self.files[body[0][0]] = "masked"
@@ -217,11 +222,24 @@ def test_a_bus_failure_is_recorded_as_the_client_fixed_reason(first_pass_root, f
     events = _events(first_pass_root)
     assert [event["event_type"] for event in events] == [
         "activation.evidence_preflight_masked", "activation.rollback_failed"]
-    assert events[0]["remask_failures"] == [f"{unit}: UnitOperationFailed" for unit in RUNNING]
-    assert events[1]["still_unreachable"] == [f"{unit}: {reason}" for unit in RUNNING]
+    # A call that did not complete finishes its session: the reload that ends
+    # each round of masks is refused on it (and nothing more is sent).
+    finished = ["manager reload: UnitOperationFailed"] if fault == "incomplete" else []
+    assert events[0]["remask_failures"] == (
+        [f"{unit}: UnitOperationFailed" for unit in RUNNING] + finished)
+    if fault == "incomplete":
+        # The wider narrowing finds the session finished: nothing is sent on
+        # it, every unit is reported unreached (the real pass narrows on a new
+        # session in this case: see test_runtime_activation_review_fixes).
+        reason_finished = "the bus session is finished after a call did not complete"
+        assert events[1]["still_unreachable"] == sorted(
+            [f"{unit}: {reason_finished}" for unit in NAMES] + finished)
+    else:
+        assert events[1]["still_unreachable"] == [f"{unit}: {reason}" for unit in RUNNING]
     ledger = (first_pass_root / "var/lib/azazel/state/activation.jsonl").read_text()
     assert FREE_TEXT not in ledger and "secret" not in ledger
-    assert all(state == "masked" for state in systemd.files.values())
+    if fault != "incomplete":
+        assert all(state == "masked" for state in systemd.files.values())
     assert set(systemd.members) <= READ_AND_MASK
 
 
@@ -284,6 +302,9 @@ class _FailingManager:
 
     def is_inactive(self, unit):
         raise self.error
+
+    def reload(self):
+        pass
 
 
 @pytest.mark.parametrize("error,reason", [

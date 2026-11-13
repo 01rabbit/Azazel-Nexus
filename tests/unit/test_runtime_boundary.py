@@ -1304,8 +1304,9 @@ def _declared_scripts() -> dict[str, str]:
 #: package binary, and the system's iproute2 `ip`, which the decoy namespace
 #: unit runs from its unit file with no Python body (#196 G4 follow-up).
 #: Daemons with a unit that the activation controller does not govern (U5):
-#: the read-only UI. Neither an operator tool nor a governed daemon.
-UNGOVERNED_DAEMONS = ("az-ui",)
+#: the read-only UI, and the activation recheck (a oneshot its timer starts).
+#: Neither an operator tool nor a governed daemon.
+UNGOVERNED_DAEMONS = ("az-ui", "az-activation-recheck")
 
 NOT_STAGED_UNITS = frozenset({"azazel-edge-core.service", "azazel-decoy-nsd.service"})
 
@@ -1400,7 +1401,9 @@ def test_the_preset_names_every_governed_unit():
     }
     # Plus the ungoverned Edge probe preflight, which the preset enables, and
     # the read-only UI's socket and service (U5), which it disables.
+    # And the activation recheck's timer, which the preset enables.
     assert stated == _governed_units() | {"azazel-edge-probe-preflight.service",
+                                          "azazel-activation-recheck.timer",
                                           "azazel-ui.socket", "azazel-ui.service"}
     assert "disable azazel-ui.socket" in preset.splitlines()
     assert "disable azazel-ui.service" in preset.splitlines()

@@ -28,7 +28,7 @@ peer, client identity, CA and pin configured. The opt-in boolean is caller
 configuration; it is not a Context capability in the signed peer registry.
 The default-disabled broker composes that method behind the ordinary local path.
 It is enabled only by the root-owned commissioning bundle described below;
-live credentials are not supplied and activation remains withheld. Importing this module or installing the package
+live credentials are not supplied and no production policy names the unit. Importing this module or installing the package
 does not connect, load commissioned state, install a trust anchor, or alter
 service startup. The response is a bounded advisory object; it cannot grant
 authority or alter Edge's deterministic decision path.
@@ -83,9 +83,10 @@ Boundaries that this bundle does and does not settle:
   `refused` with a fixed `reason_code`, or `absent` when there is no bundle.
   Nothing falls back to another source.
 - Verification is not activation. A bundle that loads as commissioned makes the
-  broker able to send; it does not grant the unit. The grant for
-  `azazel-knowledge-contextd.service` comes only through the existing
-  activation path, and `wired_capabilities()` does not list Knowledge Context.
+  broker able to send; it does not grant the unit, and the bundle is not an
+  input to the grant. `azazel-knowledge-contextd.service` is grantable through
+  the existing activation path (a policy may name it, A1); the grant only
+  lets it start, and `wired_capabilities()` does not list Knowledge Context.
 
 ## Observation-origin query (technique-set/1)
 
@@ -197,6 +198,7 @@ unchanged. Success and unclassified failures carry none.
 | `transport` | `unavailable` | Failed while connecting, in TLS pinning, or in HTTP exchange; delivery is not guaranteed either way |
 | `verification` | `unavailable` | A response arrived but failed signature, binding, lifetime or schema checks, or the broker rejected it (not an object, over 48 KiB) |
 | `late` | `timeout` | A verified response arrived after the deadline |
+| `withdrawn` | `unavailable` | The grant marker was missing at admission, or missing or replaced before the answer was adopted; nothing from the peer was adopted |
 
 A missing `reason_code` on a record written before this field existed reads as
 "not recorded"; on a record written after, it reads as "unclassified". Neither
@@ -647,14 +649,97 @@ satisfied by this software:
    back can also return an `expired` reference to `in_window`; this change adds
    no floor, and the item stays unresolved.
 7. The activation grant for `azazel-knowledge-contextd.service` is issued by
-   the existing activation path, not by editing the unit. A bundle that loads
-   as commissioned does not grant it, and Knowledge Context is not added to
-   `wired_capabilities()`.
+   the existing activation path, not by editing the unit: a signed policy
+   names the unit and the lease lists it. A bundle that loads as commissioned
+   does not grant it, an absent bundle does not withhold it, and Knowledge
+   Context is not added to `wired_capabilities()`.
 
-Stopping and recovery use mechanisms that already exist: the unit is preset
-disabled and starts only while its activation grant marker is present, so
-removing the grant through the activation path or stopping the unit returns
-FAST_ASSESS to `unavailable` (the request fails closed) with Knowledge Lite and
+Stopping and recovery: the unit is preset disabled and starts only while its
+activation grant marker is present. The controller can stop this unit, and
+only this one (`docs/activation-observe-baseline.md` §8.3). When the grant
+ends (the unit dropped from the policy, a lease that does not list it, an
+expired approval, a revoked operator, failed health or commissioning
+evidence), the next pass, or the periodic recheck (every 30 s as configured,
+not a bound), removes the marker, replaces a start job that is pending for the unit
+(`StopUnit`, recorded as `queued_job_replaced`; before the mask, because the mask
+and the reload would make systemd fail it), masks the unit, reloads the manager,
+sends `StopUnit` if it is running, then confirms the unit quiet (inactive, or, for this confirmation only, `failed` after a kill, with no job, and in both cases its cgroup confirmed empty; `failed` alone does not show that no process remains, see "What a stop does and does not show" in activation-observe-baseline.md §8.3). The broker also
+reads its marker when it accepts a request and again before it adopts the
+peer's answer: after the marker is gone it accepts nothing and adopts no
+answer (`reason_code` `withdrawn`). An answer adopted earlier may still reach
+the caller until the unit is inactive. Stopping by hand is no longer
+required, and stopping alone is still not durable: while the policy and
+approval still grant the unit, a later pass grants it again. When the
+operator that signed the approval is explicitly revoked, the approval is
+retired and the same approval is refused afterwards. The pass never issues
+StartUnit, so the broker runs again only at the next boot or an operator start
+as below.
+
+Recovery after a withdrawal. A withdrawn broker is masked, with its marker
+removed. A plain `systemctl start azazel-knowledge-contextd.service` of that MASKED
+broker is refused (`Unit ... is masked`) and pulls in no pass, so it changes
+nothing. (Starting an UNMASKED, granted broker is different: see step 3.)
+To bring the broker back, in this order:
+
+1. `systemctl start azazel-activated.service`, which runs a pass. It grants
+   the broker again only if the approval, the policy, health and evidence
+   still allow it (an approval retired after an explicit revocation does not,
+   and a new approval is needed: after retiring approval N it must be signed with
+   `--seq` N+2 or higher; see the retirement paragraph of `activation-observe-baseline.md`
+   section 8.3 for why N+1 is refused).
+2. Confirm that the pass granted it: the newest `activation.inputs_incomplete`
+   record in `/var/lib/azazel/state/activation.jsonl` lists the broker in
+   `grant_markers`, and `/run/azazel-activation/granted/azazel-knowledge-contextd.service`
+   exists. If the pass failed or did not grant it, do not go on.
+3. `systemctl start azazel-knowledge-contextd.service`.
+
+What step 3 does. The broker has `Requires=azazel-activated.service`, and
+the controller has exited after step 1 (it has no `RemainAfterExit`), so
+starting the broker queues a second controller pass first. The second pass is
+designed to keep the broker's queued start job and to re-grant it:
+
+- its preflight removes the markers and masks and reloads every governed unit
+  except a broker that is inactive with a start job queued, which it leaves as
+  it is (masking and reloading would make systemd fail that job; the job cannot
+  run before READY, because the broker is ordered after the controller);
+- it decides: if the broker is granted again (unmask, enable, reload, marker
+  written) the queued job runs once READY is sent and finds its marker; if it is
+  withheld (the approval, the policy, health or evidence no longer allow it, or a
+  retirement is pending, which makes the pass withhold every unit), or the pass
+  narrows for any reason or runs out of budget, the queued job is replaced with
+  `StopUnit` (mode `replace`) FIRST, the replacement is recorded as
+  `activation.queued_job_replaced`, and only then is the broker masked and the
+  manager reloaded: masking and reloading first makes systemd fail the job
+  ("Failed to start"), with no replacement and no record. If the job has already
+  ended when the pass gets to it, its fate is recorded as
+  `activation.queued_job_ended` with the broker's `ActiveState` and unit-file state
+  as far as they can be read. This holds for the verdict's own mask, a rollback,
+  an emergency narrowing, a budget expiry and a failed READY or barrier.
+  Every narrowing of the pass also runs the full broker withdrawal afterwards, because
+  when READY or its barrier failed, READY may already have released the held job
+  and started the broker;
+- if the pass dies, `Requires=` fails the job, which is the fail-closed side.
+
+Other conditions can also make the second pass withhold or narrow, for example a
+governed unit that is running (a containment failure). This sequence is the
+design; it counts as confirmed only once the same-boot procedure has been run on
+a clone (unit 45 S1) and its result recorded there. If the queued job is
+instead cancelled or failed on a host, the supported recovery is a reboot after
+the grant of step 1: the broker is enabled, and the boot pass writes its marker
+before the broker's start job is evaluated.
+Introduce in this order: new release,
+then a policy naming contextd. Withdraw in this order: remove contextd from
+the policy and re-sign, confirm on the next pass that it is closed, then
+return to an older release (an older release refuses a policy that names
+contextd as a whole). A policy whose `units` changed no longer matches the
+published generation, so that pass grants nothing at all, the other
+SUPPORTING units included (they lose their grant and cannot be started
+again). To withdraw only contextd, republish a generation built for the
+reduced unit list and sign a new approval for it as well as the policy.
+Markers are removed and rewritten by every pass, so a stale contextd marker
+does not survive; a unit the pass withholds stays masked, and only granted
+units are unmasked. Either way, FAST_ASSESS returns to
+`unavailable` (the request fails closed) with Knowledge Lite and
 local assessment unchanged. The broker keeps no response cache, so there is nothing
 stale to clear after a restart. How a revoked or expired peer key is replaced
 is one of the open items above and is not defined here.

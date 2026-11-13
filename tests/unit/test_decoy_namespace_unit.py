@@ -307,8 +307,9 @@ def test_only_the_controller_and_the_two_one_shot_decoy_units_may_run_as_root(un
                 address_families=("AF_UNIX",))
     roots = [p.unit for p in ALL_PROFILES if p.account == "root"]
     # The fourth is the verify unit (#196 G2), the helper's executable.
+    # The fifth is the controller's periodic recheck (not governed).
     assert roots == [ACTIVATION_CONTROLLER_UNIT, NSD, DECOY_NETWORK_HELPER_UNIT,
-                     "azazel-decoy-verify.service"]
+                     "azazel-decoy-verify.service", "azazel-activation-recheck.service"]
 
 
 # -- the chain and the marker lines -------------------------------------------

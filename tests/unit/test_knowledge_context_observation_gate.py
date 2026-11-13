@@ -7,6 +7,7 @@ import pytest
 from azazel_nexus_runtime import knowledge_context_config as cfg
 from azazel_nexus_runtime import knowledge_contextd as kc
 from azazel_nexus_runtime import runtime_paths
+from stop_helpers import granted_marker
 from azazel_nexus_runtime.knowledge_contextd import KnowledgeContextBroker
 from test_knowledge_contextd import _policy, _request
 
@@ -49,7 +50,7 @@ def write_rule(root, limit=6):
 def make(rule=None, clock=None):
     events, peer = [], Peer()
     kw = {"monotonic": clock} if clock else {}
-    broker = KnowledgeContextBroker(client=peer, policy=_policy(), mission="lab",
+    broker = KnowledgeContextBroker(grant_marker=granted_marker, client=peer, policy=_policy(), mission="lab",
                                     alias_key=b"x" * 32, enabled=True,
                                     audit=events.append, observation_rule=rule, **kw)
     return broker, peer, events

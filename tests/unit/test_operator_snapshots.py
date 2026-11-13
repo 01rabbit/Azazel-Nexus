@@ -188,9 +188,12 @@ def test_units_snapshot_reports_unknown_with_a_fixed_reason():
 
 
 def test_the_observed_units_are_exactly_the_packaged_services():
-    from azazel_nexus_runtime.hardening import ALL_PROFILES
+    from azazel_nexus_runtime.hardening import ALL_PROFILES, RECHECK_UNIT
 
-    assert snap.OBSERVED_UNITS == tuple(sorted(p.unit for p in ALL_PROFILES))
+    # Except the periodic recheck: a oneshot its timer starts, not a daemon
+    # whose state an operator reads; its result is in the journal.
+    assert snap.OBSERVED_UNITS == tuple(
+        sorted(p.unit for p in ALL_PROFILES if p.unit != RECHECK_UNIT))
 
 
 def test_the_core_vocabulary_matches_the_bus_reader():

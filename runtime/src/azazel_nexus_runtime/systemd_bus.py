@@ -3,7 +3,8 @@
 This module does not accept D-Bus destinations, interfaces, object paths,
 signatures, or unit names from callers. It maps the runtime's narrow semantic
 verbs onto the systemd system-bus API and validates every reply. In
-particular, it never exposes ``StartUnit``.
+particular, it never exposes ``StartUnit``. The one ``StopUnit`` it can send
+has the Knowledge Context broker and mode ``replace`` as constants.
 
 ``EdgeUnitStateReader`` is the narrower, read-only view handed to
 ``az-edge-probed``: one verb, one unit, three properties, and no route to the
@@ -27,7 +28,7 @@ from .activation_markers import (
 )
 from .bootstrap_systemd_profile import observe_bootstrap_systemd_profile
 from .systemd_socket import FixedSystemBusSocket, SYSTEM_BUS_ADDRESS, require_supported_dbus_next
-from .units import UNIT_NAMES, UnitOperationFailed
+from .units import CONTEXTD_UNIT, UNIT_NAMES, UnitOperationFailed
 
 __all__ = ["EdgeUnitStateReader", "SystemdBusSession", "SystemdUnitCalls", "UnitStatesReader"]
 
@@ -117,6 +118,11 @@ class _Reply:
 
 _NO_SUCH_UNIT = "org.freedesktop.systemd1.NoSuchUnit"
 
+#: The one body StopUnit is ever sent with. A constant, not an argument: the
+#: stop authority is for the Knowledge Context broker and for nothing else.
+_STOP_CONTEXTD_BODY = (CONTEXTD_UNIT, "replace")
+_JOB_PATH = re.compile(r"/org/freedesktop/systemd1/job/([1-9][0-9]{0,18})")
+
 
 class SystemdUnitCalls:
     """Translate the adapter's fixed method/unit pair to typed D-Bus calls."""
@@ -133,10 +139,9 @@ class SystemdUnitCalls:
                 "the systemd client refused a unit outside the fixed allowlist"
             )
 
-        # The activation reader needs the non-grantable Knowledge broker in
-        # its verification scope. That does not give the controller authority
-        # to enable it: narrowing may mask a core unit, while the newly added
-        # non-grantable marker-guarded units cannot be unmasked or enabled.
+        # NON_GRANTABLE_MARKER_UNITS is empty at present (contextd is
+        # grantable since A1). The branch stays for a future unit that is
+        # marker-guarded but must never be unmasked or enabled by the pass.
         if method == "MaskUnitFiles" and unit not in _CORE_UNIT_NAMES:
             raise UnitOperationFailed("the systemd client refused a non-core mask")
         if (method in {"UnmaskUnitFiles", "EnableUnitFiles"}
@@ -225,6 +230,94 @@ class SystemdUnitCalls:
         elif len(reply.body) != 1 or not isinstance(reply.body[0], list):
             raise UnitOperationFailed(f"systemd returned an invalid {method} reply")
         return reply.body
+
+    def reload(self) -> None:
+        """Manager.Reload: no argument, and the reply must be empty.
+
+        Fixed: there is no unit, path or option to pass. Reloading makes the
+        manager re-read the unit files that mask, unmask and enable changed.
+        """
+        reply = self._exchange(MANAGER_INTERFACE, "Reload", "", [])
+        if reply.signature != "" or list(reply.body) != []:
+            raise UnitOperationFailed("systemd returned an invalid Reload reply")
+
+    def stop_contextd(self) -> str:
+        """Manager.StopUnit for the Knowledge Context broker, mode `replace`.
+
+        No argument: the unit and the mode are the constants above. The reply
+        is a job object path of the form `/org/freedesktop/systemd1/job/<n>`
+        (not a unit path); anything else is refused. `replace` also replaces
+        a start job the manager has queued for the broker.
+        """
+        reply = self._exchange(
+            MANAGER_INTERFACE, "StopUnit", "ss", list(_STOP_CONTEXTD_BODY))
+        path = self._one(reply, "o", "StopUnit")
+        if type(path) is not str or _JOB_PATH.fullmatch(path) is None:
+            raise UnitOperationFailed("systemd returned an invalid stop job")
+        return path
+
+    def contextd_active_state(self, unit: str) -> str:
+        """The broker's exact `ActiveState`; `inactive` when systemd holds no object."""
+        if unit != CONTEXTD_UNIT:
+            raise UnitOperationFailed(
+                "the systemd client refused a state read outside the stop scope")
+        unit_reply = self._exchange(
+            MANAGER_INTERFACE, "GetUnit", "s", [unit], allow_no_such_unit=True)
+        if getattr(unit_reply, "no_such_unit", False) is True:
+            return "inactive"
+        expected_path = _unit_object_path(unit)
+        if self._one(unit_reply, "o", "GetUnit") != expected_path:
+            raise UnitOperationFailed("systemd returned an invalid unit object")
+        reply = self._exchange(
+            PROPERTIES_INTERFACE, "Get", "ss", [UNIT_INTERFACE, "ActiveState"],
+            path=expected_path)
+        value = getattr(self._one(reply, "v", "Properties.Get"), "value", None)
+        if not isinstance(value, str) or value not in _ACTIVE_STATES:
+            raise UnitOperationFailed("systemd returned an invalid active state")
+        return value
+
+    def contextd_file_state(self, unit: str) -> str:
+        """The broker's exact `UnitFileState`, as systemd spells it."""
+        if unit != CONTEXTD_UNIT:
+            raise UnitOperationFailed(
+                "the systemd client refused a state read outside the stop scope")
+        return self("GetUnitFileState", unit)
+
+    def unit_job(self, unit: str) -> tuple:
+        """The broker's `Job` property as `(id, path)`; `(0, "/")` is no job.
+
+        Read-only and for the Knowledge Context broker alone. A unit systemd
+        holds no object for has no job.
+        """
+        if unit != CONTEXTD_UNIT:
+            raise UnitOperationFailed(
+                "the systemd client refused a job read outside the stop scope")
+        unit_reply = self._exchange(
+            MANAGER_INTERFACE, "GetUnit", "s", [unit], allow_no_such_unit=True)
+        if getattr(unit_reply, "no_such_unit", False) is True:
+            return (0, "/")
+        expected_path = _unit_object_path(unit)
+        if self._one(unit_reply, "o", "GetUnit") != expected_path:
+            raise UnitOperationFailed("systemd returned an invalid unit object")
+        reply = self._exchange(
+            PROPERTIES_INTERFACE, "Get", "ss", [UNIT_INTERFACE, "Job"],
+            path=expected_path)
+        variant = self._one(reply, "v", "Properties.Get")
+        value = getattr(variant, "value", None)
+        if (getattr(variant, "signature", None) != "(uo)"
+                or type(value) not in (list, tuple) or len(value) != 2):
+            raise UnitOperationFailed("systemd returned an invalid job property")
+        number, path = value
+        if type(number) is not int or type(path) is not str or number < 0:
+            raise UnitOperationFailed("systemd returned an invalid job property")
+        if number == 0:
+            if path != "/":
+                raise UnitOperationFailed("systemd returned an invalid job property")
+            return (0, "/")
+        match = _JOB_PATH.fullmatch(path)
+        if match is None or int(match.group(1)) != number:
+            raise UnitOperationFailed("systemd returned an invalid job property")
+        return (number, path)
 
     def loaded_unit(self, unit: str) -> Optional[dict]:
         """The manager's loaded definition of one marker-guarded unit, or None.
@@ -350,10 +443,29 @@ class SystemdBusSession:
         self._message_factory = message_factory
         self._admitted_owner = getattr(bus, "_azazel_systemd_owner", None)
         self.calls = SystemdUnitCalls(self._exchange)
+        self._remaining: Optional[Callable[[], float]] = None
+        #: True after a call timed out or was cancelled: the session sends
+        #: nothing more and must be replaced.
+        self.broken = False
+
+    def set_remaining(self, remaining: Optional[Callable[[], float]]) -> None:
+        """Seconds left of the caller's budget; each call is limited to it."""
+        self._remaining = remaining
 
     @classmethod
-    def connect(cls) -> "SystemdBusSession":
-        """Connect only to the system bus; fail if the pinned client is absent."""
+    def connect(cls, remaining: Optional[Callable[[], float]] = None) -> "SystemdBusSession":
+        """Connect only to the system bus; fail if the pinned client is absent.
+
+        `remaining` (seconds left of the caller's budget) bounds each step of
+        the connection, so that connecting counts against the budget.
+        """
+
+        def step() -> float:
+            left = _BUS_TIMEOUT_SECONDS if remaining is None else min(
+                _BUS_TIMEOUT_SECONDS, remaining())
+            if left <= 0:
+                raise UnitOperationFailed("the time budget ended before the bus connected")
+            return left
 
         try:
             from dbus_next import Message, MessageType
@@ -385,14 +497,13 @@ class SystemdBusSession:
                 pass
 
             bus = FixedBus(bus_address=_SYSTEM_BUS_ADDRESS)
-            loop.run_until_complete(
-                asyncio.wait_for(bus.connect(), _BUS_TIMEOUT_SECONDS)
-            )
+            limit = step()
+            loop.run_until_complete(asyncio.wait_for(bus.connect(), limit))
             from .bootstrap_manager_identity import inspect_bootstrap_manager_identity
 
             identity = loop.run_until_complete(inspect_bootstrap_manager_identity(
                 bus=bus, message_factory=Message, message_type=MessageType,
-                timeout_seconds=_BUS_TIMEOUT_SECONDS,
+                timeout_seconds=step(),
             ))
             bus._azazel_systemd_owner = identity.owner
         except BaseException as exc:
@@ -407,8 +518,12 @@ class SystemdBusSession:
                     pending = asyncio.all_tasks(loop)
                     for task in pending:
                         task.cancel()
-                    if pending:
-                        loop.run_until_complete(asyncio.wait(pending, timeout=_BUS_TIMEOUT_SECONDS))
+                    # The cleanup is charged to the caller's budget too: no
+                    # fixed ten seconds that nobody counted.
+                    left = (_BUS_TIMEOUT_SECONDS if remaining is None
+                            else max(0.0, min(_BUS_TIMEOUT_SECONDS, remaining())))
+                    if pending and left > 0:
+                        loop.run_until_complete(asyncio.wait(pending, timeout=left))
                 finally:
                     try:
                         loop.close()
@@ -423,13 +538,17 @@ class SystemdBusSession:
             raise UnitOperationFailed(
                 "could not connect to the system D-Bus service manager"
             ) from exc
-        return cls(
+        session = cls(
             bus=bus,
             loop=loop,
             previous_loop=previous_loop,
             message_type=MessageType,
             message_factory=Message,
         )
+        # A session connected under a deadline is bound to it from the start: a
+        # replacement session never gets a fresh, unbounded allowance per exchange.
+        session.set_remaining(remaining)
+        return session
 
     def _exchange(
         self,
@@ -450,8 +569,14 @@ class SystemdBusSession:
                 "MaskUnitFiles": "asbb",
                 "UnmaskUnitFiles": "asb",
                 "EnableUnitFiles": "asbb",
+                "Reload": "",
+                "StopUnit": "ss",
             }
             if allowed.get(member) != signature or path != MANAGER_PATH:
+                raise UnitOperationFailed("the systemd client refused a call shape")
+            if member == "Reload" and list(body) != []:
+                raise UnitOperationFailed("the systemd client refused a call shape")
+            if member == "StopUnit" and tuple(body) != _STOP_CONTEXTD_BODY:
                 raise UnitOperationFailed("the systemd client refused a call shape")
         elif member == "GetAll":
             # The pass's loaded-definition read: the Unit interface of a
@@ -472,6 +597,9 @@ class SystemdBusSession:
                 and body[0] == UNIT_INTERFACE and type(body[1]) is str
                 and body[1] in _EDGE_UNIT_PROPERTIES):
             pass  # The three state reads, on a fixed unit's object only.
+        elif (path == _unit_object_path(CONTEXTD_UNIT)
+                and list(body) == [UNIT_INTERFACE, "Job"]):
+            pass  # The broker's pending job, for the stop authority.
         elif (path not in {_unit_object_path(unit) for unit in _UNITS}
                 or list(body) != [UNIT_INTERFACE, "ActiveState"]):
             raise UnitOperationFailed("the systemd client refused a property path")
@@ -484,11 +612,21 @@ class SystemdBusSession:
             signature=signature,
             body=list(body),
         )
+        if self.broken:
+            raise UnitOperationFailed(
+                "the bus session is finished after a call did not complete")
+        timeout = _BUS_TIMEOUT_SECONDS
+        if self._remaining is not None:
+            timeout = min(timeout, self._remaining())
+            if timeout <= 0:
+                raise UnitOperationFailed(
+                    f"the time budget ended before systemd D-Bus call {member}")
         try:
             reply = self._loop.run_until_complete(
-                asyncio.wait_for(self._bus.call(message), _BUS_TIMEOUT_SECONDS)
+                asyncio.wait_for(self._bus.call(message), timeout)
             )
         except Exception as exc:  # noqa: BLE001 - translated at the trust boundary
+            self._poison()
             raise UnitOperationFailed(
                 f"systemd D-Bus call {member} did not complete"
             ) from exc
@@ -509,6 +647,29 @@ class SystemdBusSession:
             raise UnitOperationFailed("systemd D-Bus reply owner refused")
         return _Reply(reply.signature, reply.body)
 
+    def _poison(self) -> None:
+        """A call did not complete: this session is finished.
+
+        Pending work is cancelled and given a bounded moment to unwind (never
+        more than the time that is left), the bus is disconnected, and from
+        here on no call is sent on this session. A session is never reused
+        after a timeout or a cancellation: the caller narrows on a new one.
+        """
+        self.broken = True
+        limit = 1.0 if self._remaining is None else max(0.0, min(1.0, self._remaining()))
+        try:
+            pending = asyncio.all_tasks(self._loop)
+            for task in pending:
+                task.cancel()
+            if pending and limit > 0:
+                self._loop.run_until_complete(asyncio.wait(pending, timeout=limit))
+        except Exception:  # noqa: BLE001 - the session is finished whatever this does
+            pass
+        try:
+            self._bus.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+
     def __call__(self, method: str, unit: str) -> object:
         return self.calls(method, unit)
 
@@ -519,6 +680,26 @@ class SystemdBusSession:
     def loaded_unit(self, unit: str):
         """Read one grantable unit's loaded definition; performs no control operation."""
         return self.calls.loaded_unit(unit)
+
+    def reload(self) -> None:
+        """Manager.Reload (argument-less); see `SystemdUnitCalls.reload`."""
+        self.calls.reload()
+
+    def stop_contextd(self) -> str:
+        """Stop the Knowledge Context broker; see `SystemdUnitCalls.stop_contextd`."""
+        return self.calls.stop_contextd()
+
+    def unit_job(self, unit: str) -> tuple:
+        """The broker's pending job; see `SystemdUnitCalls.unit_job`."""
+        return self.calls.unit_job(unit)
+
+    def contextd_active_state(self, unit: str) -> str:
+        """The broker's exact ActiveState; see `SystemdUnitCalls`."""
+        return self.calls.contextd_active_state(unit)
+
+    def contextd_file_state(self, unit: str) -> str:
+        """The broker's exact UnitFileState; see `SystemdUnitCalls`."""
+        return self.calls.contextd_file_state(unit)
 
     def close(self) -> None:
         try:

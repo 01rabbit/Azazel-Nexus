@@ -353,7 +353,8 @@ def test_the_noc_unit_is_passive_unprivileged_and_required_by_nothing():
     # Netlink holders: the five that held it before U3, and this observer.
     netlink = sorted(p.unit for p in ALL_PROFILES if "AF_NETLINK" in p.address_families)
     assert netlink == sorted([
-        "azazel-activated.service", "azazel-commissiond.service", "azazel-decoy-nsd.service",
+        "azazel-activated.service", "azazel-activation-recheck.service",
+        "azazel-commissiond.service", "azazel-decoy-nsd.service",
         "azazel-decoy-netd.service", "azazel-decoy-verify.service",
         "azazel-noc-observe.service"])
 

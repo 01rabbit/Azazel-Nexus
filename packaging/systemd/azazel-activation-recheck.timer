@@ -1,0 +1,20 @@
+# Generated from azazel_nexus_runtime.hardening. Do not edit by hand:
+# tests/unit/test_runtime_hardening.py compares this file against what
+# the declaration renders, and a hand edit is a difference.
+#
+# Runs azazel-activation-recheck.service every 30s. The recheck withdraws the Knowledge
+# Context broker's grant when the activation pass would no longer grant it.
+# Enabled by the installer and the preset; nothing requires or binds to it.
+
+[Unit]
+Description=Azazel-Nexus activation recheck period
+Documentation=https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/activation-observe-baseline.md
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=1s
+Unit=azazel-activation-recheck.service
+
+[Install]
+WantedBy=timers.target

@@ -159,7 +159,7 @@ class World:
         self.high_water = HighWater(security_epoch=2, approval_seq=5, generation=1,
                                     time_floor="2026-10-20T00:00:00Z")
         self.unit_files = {unit: f"[Unit]\nDescription={unit}\n".encode()
-                           for unit in SCOPE + (AUDIT_LOOP,)}
+                           for unit in SCOPE + (AUDIT_LOOP, "azazel-knowledge-contextd.service")}
         self.unit_files[EDGE] = EDGE_UNIT_FILE
         self.healthy = True
         self.systemd = FakeManagerReader()
@@ -623,7 +623,8 @@ def test_the_pass_refuses_a_v3_result_even_from_its_approval_producer(world):
         verified = approval(**kwargs)
         return ObserveBaselineApproval(
             lease=verified.lease, approval_id=verified.approval_id,
-            approval_seq=verified.approval_seq, security_epoch=verified.security_epoch)
+            approval_seq=verified.approval_seq, security_epoch=verified.security_epoch,
+            payload_sha256=hashlib.sha256(world.payload).hexdigest())
 
     _assert_granted(world, world.run(approval=as_v2))
 
@@ -870,8 +871,9 @@ def test_the_pass_scope_and_tripwire_share_one_unit_set():
     assert activation_pass.UNIT_CHECK_SCOPE is MARKER_GUARDED_UNITS
     assert activation_pass.UNIT_CHECK_SCOPE == GRANTABLE_UNITS | NON_GRANTABLE_MARKER_UNITS
     assert GRANTABLE_UNITS == frozenset(EDGE_SCOPE + DECOY_UNITS) | {
-        "azazel-mio-referenced.service", "azazel-auditd-loop.service"}
-    assert "azazel-knowledge-contextd.service" not in GRANTABLE_UNITS
+        "azazel-mio-referenced.service", "azazel-auditd-loop.service",
+        "azazel-knowledge-contextd.service"}
+    assert NON_GRANTABLE_MARKER_UNITS == frozenset()
     assert not hasattr(activation_pass, "P4_UNIT_SCOPE")
     import ast
     source = Path(activated.__file__).read_text()
@@ -883,8 +885,7 @@ def test_markers_are_never_written_for_a_unit_this_phase_cannot_grant(tmp_path, 
     monkeypatch.setattr(activation_markers, "_OWNER", os.getuid())
     (tmp_path / "run/azazel-activation").mkdir(parents=True, mode=0o755)
     for unit in ("azazel-watchdog.service", "azazel-mio-locald.service",
-                 "azazel-auditd.service", "azazel-model-fetchd.service",
-                 "azazel-knowledge-contextd.service"):
+                 "azazel-auditd.service", "azazel-model-fetchd.service"):
         with pytest.raises(activation_markers.GrantMarkerRefused):
             activation_markers.write_grant_markers([unit], tmp_path)
     assert not (tmp_path / "run/azazel-activation/granted").exists()
@@ -1236,7 +1237,8 @@ def test_a_unit_not_loaded_or_masked_in_the_manager_is_accepted(world, loaded):
 
 def test_the_loaded_check_reads_every_marker_guarded_unit_not_only_the_policy(world):
     world.run()
-    assert world.systemd.reads == sorted(activation_pass.UNIT_CHECK_SCOPE)
+    # Once while collecting inputs and once more after the grant's Reload.
+    assert world.systemd.reads == sorted(activation_pass.UNIT_CHECK_SCOPE) * 2
 
 
 def test_the_production_loaded_check_refuses_without_the_controller_session(monkeypatch):
@@ -1282,9 +1284,9 @@ def test_a_grantable_unit_outside_the_policy_loaded_not_as_declared_refuses(worl
     _assert_refused(world, world.run(), ["systemd_loaded_units"])
 
 
-def test_non_grantable_context_broker_still_requires_its_loaded_start_guard(world):
+def test_context_broker_still_requires_its_loaded_start_guard(world):
     context = "azazel-knowledge-contextd.service"
-    assert context not in activation_pass.UNIT_SCOPE
+    assert context in activation_pass.UNIT_SCOPE
     assert context in activation_pass.UNIT_CHECK_SCOPE
     world.systemd.loaded[context] = _loaded(context, Conditions=[])
     _assert_refused(world, world.run(), ["systemd_loaded_units"])
@@ -1299,7 +1301,7 @@ def test_a_policy_narrower_than_the_grantable_set_grants_only_its_units(
     outcome = narrow.run()
     assert sorted(outcome.granted) == list(SCOPE[:2])
     assert narrow.markers() == list(SCOPE[:2])
-    assert narrow.systemd.reads == sorted(activation_pass.UNIT_CHECK_SCOPE)
+    assert narrow.systemd.reads == sorted(activation_pass.UNIT_CHECK_SCOPE) * 2
 
 
 @pytest.mark.parametrize("field", ["Requires", "After"])

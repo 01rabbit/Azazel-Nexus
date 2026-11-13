@@ -491,6 +491,43 @@ Knowledge Lite operating entry to be completed.
   the head as it is then, and if the writer stops it is back only at the next
   boot (a same-boot `systemctl start` re-runs the pass, §10.2 M-5).
 
+**Change to decision 2, 2026-11-12 (A1, #395 preparation).** Adds
+`azazel-knowledge-contextd.service`, the optional Knowledge Context egress
+broker, to `ACTIVATION_UNIT_ALLOWLIST` and `activation_markers.GRANTABLE_UNITS`
+(`NON_GRANTABLE_MARKER_UNITS` stays, empty). It is SUPPORTING, loses its
+`knowledge_context_transport` wiring requirement, and is granted by the same
+lease, health, policy and commissioning-evidence checks as the other
+SUPPORTING units; `wired_capabilities()` is unchanged. Locald, remoted and
+fetchd stay excluded and a policy naming them is still refused as a whole.
+
+- *The bundle is not a grant input.* A grant only lets the unit start. With
+  no commissioned bundle (or a defective one) the broker starts and stays
+  closed (`knowledge-context-consumer.md`). The unit stays masked, preset
+  disabled and without an address allowance until a policy names it.
+- *Closing.* The controller can stop this one unit and no other (§8.3).
+  Removing the unit from the policy (re-signed), a lease that does not list
+  it, an expired approval, a revoked operator, or failed health or
+  commissioning evidence ends the grant: the next pass, or the periodic
+  recheck within about 30 s, removes the marker, masks the unit, reloads the
+  manager and stops it. A broker that cannot be confirmed stopped is
+  reported (`activation.withdrawal_unconfirmed`, non-zero exit) and stays
+  masked.
+- *Order.* Introduce: install the release that carries this change first,
+  then sign a policy that names contextd. Withdraw: remove contextd from the
+  policy and re-sign, check on the next pass that it is closed, and only then
+  go back to an older release. An older release given a policy that names
+  contextd refuses that policy as a whole (allowlist), which makes the other
+  SUPPORTING units lose their grant too (they are not stopped; they cannot
+  be started again).
+- *Dropping only contextd.* Changing the policy's `units` alone no longer
+  matches the published generation, so that pass grants nothing, the other
+  SUPPORTING units included. To keep them, republish a generation built for
+  the reduced unit list and sign a new approval for it (higher sequence).
+- *After a rollback.* Markers are removed and rewritten by every pass (they
+  live under `/run`), so a stale contextd marker does not survive a pass.
+  Masks are different: a unit the pass withholds stays masked, which is the
+  safe state; only granted units are unmasked and enabled.
+
 ## 7. P2 readers (inert)
 
 Phase P2 adds the readers of §3 without wiring them; `az-activated` imports
@@ -503,7 +540,8 @@ none of them (P4 then wired them, §8; `tests/unit/test_activation_p4_wiring.py`
   canonical bytes themselves (sorted keys, no whitespace, **no trailing
   newline**); anything else is refused rather than normalized. `units` must be a subset
   of the code-fixed `ACTIVATION_UNIT_ALLOWLIST` (the five SUPPORTING loop
-  units and edge-core); `max_lease_seconds` ≤ 72 h and
+  units, edge-core, the reference service, the loop audit writer and, since
+  A1, the Knowledge Context broker); `max_lease_seconds` ≤ 72 h and
   `max_clock_skew_seconds` ≤ 300 are capped in code. `state_floors` and
   `resource_floors` use the field names of the bootstrap capacity and resource
   checks. Reusing them means the capacity floors measure
@@ -658,8 +696,8 @@ controller loads no reader (`tests/unit/test_activation_p4_wiring.py`).
    withdrawal is **best effort, not a guarantee**: if systemd had already
    processed READY, the dependents' `ConditionPathExists=` can be evaluated
    concurrently with it. A start job evaluated after its marker is gone is
-   skipped; a unit that started inside that window is not stopped (there is
-   no `StopUnit`), and its remask fails with `masked unit has no confirmed
+   skipped; a unit that started inside that window is not stopped (the stop
+   authority covers the Knowledge Context broker alone), and its remask fails with `masked unit has no confirmed
    inactive state`, which also exits 1. `completed safely` is printed only
    after READY and the barrier succeeded. From the first marker to the final
    `activation.inputs_incomplete` record, any failure -- a marker that cannot
@@ -741,8 +779,8 @@ masked and not started.
 
 ### 8.1 P5: edge-core in the pass
 
-`activation_markers.GRANTABLE_UNITS` now holds the five SUPPORTING loop units
-and `azazel-edge-core.service`; it is still the one set behind the pass's
+`activation_markers.GRANTABLE_UNITS` now holds the five SUPPORTING loop units,
+`azazel-edge-core.service` and (A1) `azazel-knowledge-contextd.service`; it is still the one set behind the pass's
 policy check (`activation_pass.UNIT_SCOPE` is the same object), the tripwire
 and the marker writer, and it equals the policy's `ACTIVATION_UNIT_ALLOWLIST`.
 (Since #196 P1 it also holds the Deception Lite exposure units, tier
@@ -1029,6 +1067,450 @@ Tests:
 - `tests/unit/test_runtime_systemd_bus.py`: the single `GetAll`, refused
   outside the grantable units or the `Unit` interface.
 
+### 8.3 Stopping a granted Knowledge Context broker
+
+This section describes the stop contract for `azazel-knowledge-contextd.service`.
+It is the only unit the controller can stop.
+
+**Reload (F2, F1).** `MaskUnitFiles`, `UnmaskUnitFiles` and `EnableUnitFiles`
+change files; a manager that loaded a unit earlier keeps its loaded
+definition until it is reloaded, so a granted unit could still start as
+`masked`. Each batch of such changes now ends with one argument-less
+`Manager.Reload`: after the preflight masks, after the controller's grant
+batch, after a rollback or wider narrowing, and after an emergency narrowing
+and a recheck's mask. A failed reload is fail-closed (grant unconfirmed,
+everything masked, non-zero exit). After the grant batch's reload, and before
+the floors are raised, any marker is written or READY is sent, the loaded
+definitions of the guarded units are verified again (§8.2: loaded, vendor
+`FragmentPath`, no drop-in); a unit that does not verify is withdrawn.
+
+**Authority.** `ContextdStopAuthority` is a separate type, not a method of the
+unit manager adapter. It sends `StopUnit` with the constant body
+`azazel-knowledge-contextd.service`, `replace`, and reads that unit's `Job`
+property. Both layers refuse any other unit before a D-Bus exchange. `StartUnit`
+is still never sent; there is no shell and no unit name or command from a
+caller.
+
+**Withdrawal.** `withdraw_contextd(reason)` runs with the pass lock held:
+1. unlink the broker's marker (no-follow) and confirm it is gone (`t_marker`);
+   other markers are not touched;
+2. if a start job is pending for the broker, replace it FIRST: `StopUnit`
+   (`replace`), wait until no job is left, record `activation.queued_job_replaced`
+   (one record, whichever code path got here). The wait is at most 5 s and always
+   ends 3 s before the deadline the bus session is bound to, so a slow job can
+   never use the time the next step needs; a wait that times out is recorded
+   (`activation.withdrawal_unconfirmed`, stage `job`) and the withdrawal goes on.
+   The order matters: masking and reloading with the job pending makes systemd
+   fail it ("Failed to start") with no replacement and no record. The
+   finalizer of an unconfirmed withdrawal does the same before its own mask;
+3. mask the broker and reload the manager (`t_reload`), and confirm the exact
+   unit-file state `masked`;
+   if its `ActiveState` is not `inactive`/`failed`, it still has a job, or its
+   cgroup is `populated` or `unknown` (also when it is `inactive` or `failed`),
+   send `StopUnit` (`replace`) (`t_stop`);
+4. wait until the broker is quiet, that is `ActiveState` is `inactive`, the
+   job is `(0, "/")` and its cgroup is confirmed empty (`t_inactive`), at most
+   20 s and within the remaining budget. `failed` with no job also counts as
+   quiet, for this confirmation only and only with an empty cgroup: after a
+   SIGKILL final kill systemd keeps the unit loaded as `failed` and `StopUnit`
+   does not return it to `inactive`. `failed` alone is not proof that the
+   process is gone: systemd can leave a unit `failed` while a process (for
+   example one in uninterruptible sleep) is still in its cgroup. The record
+   carries `quiet_state` and `cgroup`. Elsewhere `inactive` with an empty
+   cgroup is the rule, with one exception. A broker left `failed` is a trigger for
+   the recheck and is withdrawn (no `StopUnit` is needed for it), and the main
+   pass's preflight withdraws it too, unless it is already withdrawn: `failed`,
+   no job, the unit-file state exactly `masked`, no marker and an empty cgroup.
+   That shape is left alone: the recheck does not trigger on it (no new record
+   every period) and the preflight's mask check accepts it instead of
+   reporting a containment failure. A `failed` broker that is unmasked, has a
+   job, has a marker or whose cgroup is not empty is not that shape;
+5. record `activation.grant_withdrawn` with the reason, the cgroup state
+   (always `empty` here), the timings in
+   milliseconds since the withdrawal started (`t_marker_ms` and the others are
+   offsets from the start of the withdrawal, not from detection) and the
+   invocation id.
+
+**What a stop does and does not show.** Four things are kept apart, and a
+record or a status line never stands for more than the one it states.
+
+- The stop request succeeded: `StopUnit` was accepted and a job was created.
+  Nothing follows about the processes.
+- The unit is not running: systemd's `ActiveState` is `inactive` (or `failed`).
+  That is systemd's belief about its own state.
+- The cgroup is empty: `cgroup.events` of the broker's cgroup says `populated 0`,
+  or systemd removed the cgroup of a stopped unit. This is the only evidence
+  that no process of the broker remains, and it is the condition for `quiet`,
+  for "already withdrawn" and for `activation.grant_withdrawn`. It is read from
+  one fixed file (cgroup v2, `/sys/fs/cgroup/system.slice/azazel-knowledge-contextd.service/cgroup.events`),
+  walked from `/` one component at a time (`openat`, `O_NOFOLLOW`,
+  `O_DIRECTORY`). It is trusted only when the `mnt_id` of the opened `/sys/fs/cgroup` directory
+  (from `/proc/self/fdinfo`) names a `/proc/self/mountinfo` line that is `cgroup2`,
+  has mount root `/` and mount point `/sys/fs/cgroup`, and carries the device of
+  that directory (position in the file plays no part), and the reader's own
+  `/proc/self/cgroup` is the single line `0::/system.slice/<name>.service`
+  (systemd's cgroup root is then this namespace's root). `system.slice` must
+  exist; only the broker's own directory may be absent, and then the answer is
+  `empty` only if the unit is `inactive` or `failed`. Both that case and a
+  `populated 0` are checked again after the read: the mount ID, its mountinfo line,
+  the device and the reader's own cgroup must be unchanged.
+  Anything else is `unknown`, which is neither empty nor quiet. No D-Bus
+  property is added for it.
+- Traffic is closed: the broker's `IPAddress*` settings are enforced by a BPF
+  program attached to its cgroup, so they apply as long as the cgroup exists,
+  also while a leftover process is in it. This is an inference from how systemd
+  implements them (a guess, not verified on a host here); the controller does
+  not check it, and it is not a substitute for an empty cgroup.
+
+A `failed` broker with a `populated` or `unknown` cgroup is therefore never
+"withdrawn": the withdrawal is `withdrawal_unconfirmed` (with `cgroup`) and exits
+non-zero, the recheck reports it again every period, and the main pass's
+preflight narrows everything and fails. The controller does not kill the
+leftover process directly and does not touch any other unit's cgroup (its only
+action on the broker is the contextd-only `StopUnit`); the rest is for the operator. Find the
+leftover process (`systemd-cgls -u azazel-knowledge-contextd.service`, the
+cgroup's `cgroup.procs`), establish why it does not exit (typically a
+process blocked in the kernel on storage or a network file system), and
+remove the cause; if it cannot be cleared, reboot. The broker stays masked
+with no marker meanwhile, so it cannot be started again; only after the cgroup
+is empty is the next recheck or pass able to confirm the withdrawal.
+Two limits remain: a drop-in or `Slice=` written after the grant (by root) moves
+the broker's cgroup away from the fixed path (the loaded-unit check at grant time
+rejects them, and later edits by root are outside this control), and a host whose
+cgroup root is not the namespace root (a container with the host cgroup namespace,
+cgroup v1) reads `unknown` and so cannot confirm any withdrawal.
+A root-level process that runs on its own can start a task or move one into the
+broker's cgroup right after the judgment; the cgroup reader cannot prevent that
+(root is inside the trust boundary of this control).
+The recheck's protection against unexpected errors covers the retirement and the
+verdict (their calls, results and fields); other steps of the recheck keep their
+own handling. On a host where the reader is structurally `unknown` (a mountinfo
+over the reader's 64 KiB limit or not plain ASCII, cgroup v1, a container with the host cgroup namespace), the
+recheck records `withdrawal_unconfirmed` every period and exits non-zero.
+`KeyboardInterrupt` and `SystemExit` are outside this containment: the narrowing
+catches `Exception` only. In the service's context SIGTERM is not turned into an
+exception; Python's default ends the process at once. What that leaves depends on
+where the process is.
+
+- Before READY (the whole pass, up to the READY notification): fail-closed. READY
+  is not sent, so `Requires=` fails the start job of every dependent (including a
+  held start job of the broker). The units' `ConditionPathExists=` refuses them
+  once this boot's grant markers are removed, which the pass does first
+  (`reset_grant_markers`); a SIGTERM or `BaseException` before that point can leave
+  the markers of the previous pass in place, and then only the missing READY (and
+  the next pass) protects. A broker that is already running is not withdrawn by
+  this; the next pass or the recheck does that.
+- After READY has been sent, before or during its barrier: READY goes out before
+  the barrier, and the grant markers of the decision are already written. If a
+  SIGTERM, `SystemExit` or `KeyboardInterrupt` ends the process there, nothing is
+  contained by the controller: no marker is removed and nothing is masked. The grant
+  at that moment is a regular one, a complete decision that was recorded and whose
+  markers were written; it is not a half-finished state. What is not guaranteed is
+  that an exception after READY causes a withdrawal. The grant then ends the way
+  any grant does: the next pass, or the recheck (every 30 s as configured, not a
+  bound), withdraws it when the decision no longer holds. An `Exception` in the
+  barrier, in contrast, is contained (`_notify_ready_or_withdraw`).
+
+**Unexpected errors.** An error the main pass did not expect (the ledger's chain
+broken, a state file unreadable, anything outside the named refusals) narrows
+under the lock, with or without a held start job: the job is replaced first,
+then the units are masked, the manager reloaded and the broker withdrawn, and the
+original error is raised again with any failure of the narrowing chained to it.
+In the recheck, an unexpected error from the retirement (or a result that is not
+`none`, `retired` or `resumed`) or from the verdict is a withhold: the broker is
+withdrawn all the same, with reason `retirement_pending` or `verdict_error`, and
+the exit status is 1.
+
+The bootstrap-stage narrowing (a selected-bootstrap restart or an invalid
+selection) runs the same withdrawal for the broker, with the contextd-only stop
+authority and a fresh session per step, before it masks the other governed units
+(on a new session if the first one finished). It is recorded in the journal only,
+by fixed messages ("withdrew the Knowledge Context broker" or "could not confirm
+the withdrawal"), and an unconfirmed withdrawal makes the narrowing fail closed.
+The bootstrap narrowings of one process (the first and the emergency retry)
+share one absolute end, 50 s after the entry of `main` (so the selection, the
+bootstrap transaction, the marker reset and the claim that come first are
+counted), and each is limited to 25 s. With `TimeoutStartSec=60s` the 10 s that
+remain must absorb the interpreter start and imports before the entry and the
+shutdown after the end; that is a documented residual limit to be measured on the
+clone. Local filesystem I/O (the marker reset) is not time-bounded, like the
+lock-held file I/O elsewhere in this document. A bus connection that fails, or
+time that is already gone, is reported at once with the fixed "could not
+confirm" message; otherwise the one terminal message per narrowing states how the
+withdrawal ended (a job-stage failure followed by a withdrawn broker is
+"withdrew"). Every session, the first and each replacement, is bound to the
+governing end as soon as it is connected (`SystemdBusSession.connect(remaining)`
+binds it), and a session that finishes is replaced unit by unit.
+No activation-ledger record is appended there: that stage holds no `pass.lock`
+and has no documented ledger writer, and appending without the lock could race
+the head of the pass or the recheck that owns it.
+
+The mask is confirmed by the exact unit-file state: `masked`, not
+`masked-runtime`, which does not survive a reboot. A step that cannot be
+confirmed first runs a finalizer for this one unit (marker removed, mask,
+reload and exact-masked confirmation on a fresh session if the old one is
+finished, then one stop if it is not quiet). Job reads, StopUnit and polling
+have their own transport limit, min(5 s, deadline - 3 s), so they cannot use
+the 3 s kept for the mask, then records
+`activation.withdrawal_unconfirmed` with what the finalizer reached
+(`final_masked`, `final_quiet`; the record failing changes nothing); the exit
+is non-zero. The recheck does not narrow other units in that case. A step is
+not started after its budget has ended.
+
+**Timeline.** `t_loss` is when the condition is lost (an expiry instant, a
+revocation, a health change); it is not observed. `t_detect` is when a pass or
+recheck notices it, and the withdrawal starts right after. `t_marker`,
+`t_reload`, `t_stop` and `t_inactive` follow as above; the recorded `t_*_ms`
+fields are offsets from the start of the withdrawal, so `t_detect` to the start
+of the withdrawal is not in them. The recheck runs 30 s after boot and 30 s after each start
+(`OnBootSec=30s`, `OnUnitActiveSec=30s`, `AccuracySec=1s`); that is a
+configured value, not a bound: a run that finds the lock held changes nothing,
+and a run can be late. The recheck has one budget of 18 s for its bus work,
+counted from before it connects to the bus. Retirement and input collection
+end by 6 s; the withdrawal's steps end at 11 s; the finalizer of an
+unconfirmed withdrawal runs until 16 s. Every bus call is refused once its
+deadline has passed and is otherwise limited to the time that is left (at most
+its usual 10 s), the finalizer's included, and the poll sleeps never run past a
+deadline. Bus work and finalizer therefore end by 16 s of the 18 s budget, and
+the 2 s that remain are for the records.
+
+**What the lock hold is, honestly.** Two parts. The recheck's bus work and its
+containment finalizer are time-bounded and enforced: at most 20 s, below the
+25 s a main pass waits for the lock. Everything else done under the lock is
+local filesystem I/O and is not time-bounded: the ledger appends, the
+retirement's state files and high-water commit (reads, writes, renames and
+fsyncs), the marker reads and the input reads; collection and retirement end by
+their cooperative deadline only as far as they check it. The recheck writes
+its records inside `pass.lock`, in the order the transitions happen (the
+withdrawal or its unconfirmed outcome, and the approval retirement):
+`AuditLedger.append` reads the head and then writes with no lock of its own
+(`src/azazel_nexus/audit.py`, `append`), so only `pass.lock` stops a recheck and
+a main pass from extending the same head and writing duplicate sequence links.
+If filesystem I/O stalls, nothing interrupts it; the main pass's 25 s lock wait
+expires and the main pass changes nothing, grants nothing and exits non-zero
+(see the next paragraph and
+`test_a_pass_that_cannot_take_the_lock_changes_nothing_and_fails`). A record that cannot be
+appended is not swallowed: the recheck's exit status is non-zero, although the
+state change it describes has been made. A recheck killed by
+`TimeoutStartSec=40s` in the middle of an append can leave a torn last line.
+Nothing repairs that: the ledger repairs only a write that failed inside a
+running process (`_withdraw`, `audit.py:346-363`), while `head()`
+(`audit.py:138-190`) cannot parse a torn last line, so every later append
+refuses (`AuditChainBroken`, shown by
+`test_a_torn_tail_makes_the_next_append_refuse_and_nothing_repairs_it`) until an
+operator repairs the ledger. That is fail-closed for the controller (a pass
+that cannot record narrows) and costs availability.
+
+**One rule for the ledger.** Every ledger append by the main pass and by the
+recheck is made while `pass.lock` is held. The main pass's budget-expired
+record (`activation.pass_budget_expired`) is appended inside the lock, and so is
+the narrowing that follows it. A main pass that never obtained the lock because
+another holder kept it past the wait (`PassLockBusy`) does not own the state, so it changes nothing at all: no marker is
+removed, no unit is masked, reloaded or stopped, no ledger record is written and
+no READY is sent. It prints `az-activated: the activation pass lock was not held;
+nothing was changed or written; failing` to the journal and exits non-zero. The
+reason is that the holder owns the markers, the units and the ledger head: a
+loser removing a marker, for example, could do so between the holder's marker
+publication and its record. This pass never sent READY, so a start job that
+pulled it in (the broker's, through `Requires=`) fails: the fail-closed side. A
+running broker is the holder's or the recheck's responsibility. The failure is
+visible in the journal and in the unit's exit status, not in the ledger. Nothing
+before the acquisition mutates: the preflight (marker removal, masks, reload,
+the broker's withdrawal) starts after it.
+
+**Two ways not to take the lock.** The lock can be missing for two different
+reasons, and they do not have the same consequence.
+
+- Busy (`PassLockBusy`): another pass holds the lock. This is normal
+  contention, and the holder owns the state. The main pass changes nothing as
+  described above. The recheck prints `az-activation-recheck: the activation
+  pass lock is held; nothing changed` and exits 0; the next timer tick tries
+  again.
+- Refused (`PassLockRefused`, and its subclass `PassLockDirectoryMissing`): the
+  lock file itself cannot be used. `activation_lock.py` requires a regular file
+  owned by root (uid 0), mode `0600`, with one link, opened without following a
+  symlink; a symlink, a file of another owner or mode, a file that is not
+  regular, or a missing activation directory is refused. Nobody holds the
+  lock in this case, so waiting does not help. The main pass handles it exactly
+  like Busy: it prints the `the activation pass lock was not held` line above,
+  changes and writes nothing, sends no READY and exits non-zero. The recheck
+  also changes nothing: with an unusable file it prints
+  `az-activation-recheck: the activation pass lock is unusable` to stderr and
+  exits 1; with a missing directory it exits 0 when no contextd trigger is
+  present and otherwise prints `az-activation-recheck: the activation directory
+  is missing` and exits 1.
+
+While the lock stays Refused there is no stop guarantee. The recheck does not
+withdraw a running contextd, and no main pass can run to grant or to narrow.
+The start side stays fail-closed: no pass sends READY, so a start job that
+`Requires=` the pass fails. A broker that is already running keeps running
+until an operator stops it.
+
+Detection: an unusable lock file shows as rc 1 on every recheck timer tick, so
+`azazel-activation-recheck.service` stays in the failed state, and as a
+non-zero main pass with the journal lines above. A missing activation directory
+shows the same way only while a contextd trigger is present; with no trigger the
+recheck exits 0 and only the main pass fails. Busy does not do this: the
+recheck exits 0.
+
+Operator response: treat Refused as an incident. As root, stop the broker by
+hand (`systemctl stop azazel-knowledge-contextd`, and `systemctl mask` it if it
+must not return), inspect `pass.lock` and the activation directory, repair them
+to the protection above (root-owned, `0600`, regular file, one link, no
+symlink; the directory present), and then run a main pass.
+
+A budget that ends mid-withdrawal gives `activation.withdrawal_unconfirmed`; the
+marker is already removed (a local step) and the finalizer masks the broker
+where it still can. Collection that does not finish is a withhold. The stop wait is at most 20 s and
+never more than the time that is left. `t_loss` to `t_detect` has no bound.
+
+**Adoption contract (weakened).** The broker reads its marker when it accepts a
+request and again before it adopts the peer's answer
+(`knowledge-context-consumer.md`). No answer is adopted after `t_marker`. An
+answer adopted earlier may still be on its way to the caller until the broker
+is inactive (`t_inactive`), because delivery is not undone. A marker removed
+and written again inside one kernel timestamp tick could keep the identity
+`(st_dev, st_ino, st_ctime_ns)`; a real re-grant is a later pass, far longer
+than a tick (推測です, not measured on a node).
+
+**Recovery after a withdrawal.** A withdrawn broker is masked, with its marker
+removed. A plain `systemctl start azazel-knowledge-contextd.service` of that MASKED
+broker is refused (`Unit ... is masked`) and pulls in no pass, so it changes
+nothing. (Starting an UNMASKED, granted broker is different: see step 3.)
+To bring the broker back, in this order:
+
+
+1. `systemctl start azazel-activated.service`, which runs a pass. It grants
+   the broker again only if the approval, the policy, health and evidence
+   still allow it (an approval retired after an explicit revocation does not,
+   and a new approval is needed: after retiring approval N it must be signed with
+   `--seq` N+2 or higher; see the retirement paragraph of `activation-observe-baseline.md`
+   section 8.3 for why N+1 is refused).
+2. Confirm that the pass granted it: the newest `activation.inputs_incomplete`
+   record in `/var/lib/azazel/state/activation.jsonl` lists the broker in
+   `grant_markers`, and `/run/azazel-activation/granted/azazel-knowledge-contextd.service`
+   exists. If the pass failed or did not grant it, do not go on.
+3. `systemctl start azazel-knowledge-contextd.service`.
+
+What step 3 does. The broker has `Requires=azazel-activated.service`, and
+the controller has exited after step 1 (it has no `RemainAfterExit`), so
+starting the broker queues a second controller pass first. The second pass is
+designed to keep the broker's queued start job and to re-grant it:
+
+- its preflight removes the markers and masks and reloads every governed unit
+  except a broker that is inactive with a start job queued, which it leaves as
+  it is (masking and reloading would make systemd fail that job; the job cannot
+  run before READY, because the broker is ordered after the controller);
+- it decides: if the broker is granted again (unmask, enable, reload, marker
+  written) the queued job runs once READY is sent and finds its marker; if it is
+  withheld (the approval, the policy, health or evidence no longer allow it, or a
+  retirement is pending, which makes the pass withhold every unit), or the pass
+  narrows for any reason or runs out of budget, the queued job is replaced with
+  `StopUnit` (mode `replace`) FIRST, the replacement is recorded as
+  `activation.queued_job_replaced`, and only then is the broker masked and the
+  manager reloaded: masking and reloading first makes systemd fail the job
+  ("Failed to start"), with no replacement and no record. If the job has already
+  ended when the pass gets to it, its fate is recorded as
+  `activation.queued_job_ended` with the broker's `ActiveState` and unit-file state
+  as far as they can be read. This holds for the verdict's own mask, a rollback,
+  an emergency narrowing, a budget expiry and a failed READY or barrier.
+  Every narrowing of the pass also runs the full broker withdrawal afterwards (marker,
+  mask, reload, `StopUnit` if it is not quiet or a job is present, confirm quiet),
+  not only a job clear: when READY or its barrier failed, READY may already have
+  released the held job and started the broker, and `Requires=` does not bind its
+  lifetime afterwards;
+- if the pass dies, `Requires=` fails the job, which is the fail-closed side.
+
+Other conditions can also make the second pass withhold or narrow, for example a
+governed unit that is running (a containment failure). This sequence is the
+design; it counts as confirmed only once the same-boot procedure has been run on
+a clone (unit 45 S1) and its result recorded there. If the queued job is
+instead cancelled or failed on a host, the supported recovery is a reboot after
+the grant of step 1: the broker is enabled, and the boot pass writes its marker
+before the broker's start job is evaluated.
+
+**Main pass.** The pass takes `/run/azazel-activation/pass.lock` (root `0600`,
+no-follow, `flock`), waiting at most 25 s, and holds it until READY's barrier;
+without the lock it changes nothing and exits non-zero. One budget of 53 s covers the
+whole pass, counted from the start of the pass (after interpreter start, imports and bootstrap selection) and before the bus connects (connecting counts, each of
+its steps limited to the time that is left). The phases of the pass end 16 s
+before it (at 37 s); then come an 8 s window for READY and its barrier and an 8 s
+reserve that nothing else uses, kept for the narrowing a failed pass needs and
+its record. `azazel-activated.service` has `TimeoutStartSec=60s`
+(was 30 s): 37 s of phases + 8 s of READY window + 8 s of reserve = 53 s, plus 7 s of
+margin for the exit.
+
+The 7 s margin of `TimeoutStartSec=60s` must also absorb the startup that
+happens before the pass clock starts (interpreter start, imports, bootstrap
+selection). That is a documented residual limit: the time from unit start to
+pass start is to be measured on the clone from the journal.
+
+The budget is kept by the code, not by interrupting it. The pass checks it
+between its phases (before input collection, after it, after the decision,
+before READY), and every D-Bus call is refused once the phase deadline has
+passed and is otherwise limited to the time that is left. A call that times out
+has finished its session: pending work is cancelled with a bounded moment to
+unwind, the bus is disconnected, and no further call is sent on it, ever.
+Narrowing then opens a new session, connecting inside the same deadline (the
+cleanup after a failed connection is charged to it too), and uses that
+session's manager and its stop authority together; the old authority is bound
+to the finished session and refuses every read and stop. Every way out that
+narrows does so under the lock and under the end of the whole 53 s: the budget
+ending, READY or its barrier failing, an emergency narrowing in the pass, and
+a finished session. (A pass that never held the lock does not narrow.) Nothing is raised asynchronously, so a ledger append or a
+high-water commit always completes. When the budget ends the pass writes
+`activation.pass_budget_expired`, removes every marker, masks every governed
+unit, reloads, spending the reserve, and exits non-zero. What this cannot bound
+is work that is neither a bus call nor between two checks, for example a file
+read that blocks in the kernel, or the READY barrier's own wait. An earlier
+version armed a `SIGALRM`; it was removed because it could stop a ledger write
+or a high-water rename half way. At preflight a broker that is running is withdrawn before the masks
+are confirmed; an inactive broker with a queued start job is neither stopped
+nor masked there (see the recovery text above): it is decided at the verdict. If the pass does not
+grant the broker and a start job is queued for it, the job is replaced with
+`StopUnit` (`replace`) and `Job` is confirmed `(0, "/")`. Any other governed
+unit that is running is still a containment failure, and re-granting the
+broker still needs every other governed unit to be inactive.
+
+**Recheck.** `azazel-activation-recheck.service` (root, the controller's
+sandbox without its writes to `/etc/systemd/system` and
+`/run/systemd/system.control`, `TimeoutStartSec=40s`, no `[Install]`) is run by
+its timer, which the installer and the preset enable. It takes the pass lock
+without waiting; if the lock is held it changes nothing, writes no ledger
+record and exits 0. It acts only if the broker has a marker, is not masked, or
+is not inactive or has a job. It collects the pass inputs (read-only), and the
+pure function `contextd_verdict` says whether the pass would grant the broker
+(the library's wiring, health, lease, validity, generation and scope
+conditions); a failed collection withholds. If the verdict is withhold, the
+recheck withdraws the broker. It never grants, never masks another unit and
+never calls the controller's pass. A grant that never started (marker present,
+unmasked, inactive) is withdrawn with marker removal, mask and reload and no
+`StopUnit`.
+
+**Approval retirement.** A grant records the approval it was made under in
+`state/activation/accepted-grant.json` (root `0600`) before any marker or
+READY. When a freshly loaded operator trust lists that approval's operator in
+`revoked` (an explicit entry; a loader failure proves nothing), the recheck
+retires the approval: it writes `retirement-pending.json` (with the clock skew
+the floor raise needs), raises the approval sequence floor to
+`approval_seq + 1` (other fields kept) (the pass refuses a sequence below the floor, so N is refused; `az-activation
+install` treats a sequence at the floor as spent and needs one above it, so the
+first approval that can be installed after retiring N has `--seq` N+2, not N+1:
+one number cannot be both "first acceptable" for the pass and "last spent" for
+install, and lowering the install rule would admit a different approval at a
+spent sequence), reads the floor back, and removes the
+accepted record and the pending file. A pending file is resumed by the next
+recheck before any trust or policy is loaded, so a trust store that cannot be
+read does not stop it. While one is pending, or a retirement failed, the
+recheck's verdict is withhold and the main pass grants nothing. The main pass
+also reads an existing accepted-grant record before admission and withholds if
+it is not exactly what a grant writes (canonical SHA-256, a sorted unique
+subset of the grantable units, a sequence that can be advanced); it never
+overwrites such a record, so the operator has to look at it. The same
+approval is then refused for every unit it names. Expiry, health and evidence
+loss retire nothing: when the condition returns, the same approval can grant
+again.
+
 ## 9. Review #251: low findings L-1–L-4, L-6
 
 The cross-cutting review of the activation path
@@ -1051,7 +1533,8 @@ success.
   unknown. The safe side is the failed-pass state. It is best effort, not a
   guarantee: when READY had been processed, a dependent's marker condition
   may be evaluated concurrently with the withdrawal, and a unit that started
-  inside that window keeps running (no `StopUnit`); its remask then fails
+  inside that window keeps running (no `StopUnit` except for the Knowledge
+  Context broker, §8.3); its remask then fails
   with `masked unit has no confirmed inactive state` and the exit is 1. The
   cost is availability: the units granted by that pass are masked again, so
   they start only after a later boot's pass grants them anew.
@@ -1127,7 +1610,7 @@ addition, M-1's opt-in policy field (§10.1), can only add a refusal.
   after the controller. An administrator who enables a wait-sync service
   makes the controller (and every unit ordered after it, the selected
   bootstrap path included) wait until the clock is synchronized. Nothing
-  bounds that wait: the controller's `TimeoutStartSec=30s` counts from the
+  bounds that wait: the controller's `TimeoutStartSec=60s` (§8.3) counts from the
   start of its `ExecStart=`, not while its start job waits on an ordering
   dependency, and the controller sets no `JobTimeoutSec=`. On an offline
   node with such a service enabled, the controller may therefore wait
@@ -1267,17 +1750,19 @@ units, and neither file is one of them.
   - shorter approvals (`max_lease_seconds`) narrow the window; an RTC with a
     battery narrows it further;
   - accept it as local trust, like the high water itself (§3.5).
-- **M-2: a grant lasts for the boot.** Expiry and revocation are checked
-  only by a pass. Once a pass has granted, the unit's marker stays under
-  `/run/azazel-activation/granted/` until the boot ends, the controller has
-  no `StopUnit`, and nothing re-reads the approval, the operator trust or the
-  policy during the boot. An approval that expires, an operator key that is
-  revoked or a policy that is narrowed after the pass therefore stops nothing
-  that is running and does not withhold a restart of a granted unit in the
-  same boot (its own `Restart=` or an operator's `systemctl start`, which
-  still finds its marker). It takes effect at the next boot's pass, which
-  refuses and remasks. Stopping a unit at once is an operator action
-  (`systemctl stop` and `mask`), outside activation.
+- **M-2: a grant lasts for the boot, except the Knowledge Context broker's.**
+  Expiry and revocation are checked by a pass. Once a pass has granted, a
+  unit's marker stays under `/run/azazel-activation/granted/` until the boot
+  ends, the controller has no `StopUnit` for it, and nothing re-reads the
+  approval, the operator trust or the policy during the boot. An approval
+  that expires, an operator key that is revoked or a policy that is narrowed
+  after the pass therefore stops nothing that is running and does not
+  withhold a restart of a granted unit in the same boot (its own `Restart=`
+  or an operator's `systemctl start`, which still finds its marker). It takes
+  effect at the next boot's pass, which refuses and remasks. Stopping a unit
+  at once is an operator action (`systemctl stop` and `mask`), outside
+  activation. The Knowledge Context broker is the exception: the recheck of
+  §8.3 withdraws and stops it.
 - **M-4: what a generation does not bind.** The observe-baseline tree
   (§3.2, §8.1) binds the vendor unit files of the policy's units and, when
   edge-core is in scope, the Edge package and its extracted binary and
@@ -1304,7 +1789,8 @@ units, and neither file is one of them.
   started again after its first pass exited (an operator's
   `systemctl start`). The second pass removes every marker and remasks every
   governed unit first. A unit the first pass granted and that is now running
-  stays running (no `StopUnit`), so its remask fails with `masked unit has no
+  stays running (no `StopUnit`; the Knowledge Context broker is stopped at
+  preflight, §8.3), so its remask fails with `masked unit has no
   confirmed inactive state`, and the pass is expected to end in the
   emergency narrowing or `RollbackFailed` and exit 1 rather than grant. That
   is fail-closed (nothing new starts; a granted unit that stops cannot

@@ -6,8 +6,9 @@ boot (an enabled unit with a queued start job, before any daemon-reload)
 runs **its loaded definition**, not the file measured now, and the
 preflight mask does not reload it. READY would release such a job for any
 marker-guarded unit, whether or not this pass's policy names it. So, before
-any grant, the pass checks every grantable unit and the non-grantable
-Knowledge Context broker's start guard, refusing unless:
+any grant, the pass checks every marker-guarded unit's start guard
+(the grantable units, which include the Knowledge Context broker since A1),
+refusing unless:
 
 * each one's vendor file, if present, passes the content check and has no
   override or drop-in (`require_grantable_unit_files`);
@@ -143,8 +144,8 @@ def verify_grantable_units(reader, units) -> None:
 
     The files first (content, overrides; an absent vendor file outside the
     policy is accepted), then the manager's profile and loaded definitions.
-    The scope may include non-grantable marker-guarded services for
-    verification; this does not widen the set the pass may grant.
+    The scope may include marker-guarded services that are not grantable
+    (none today); this does not widen the set the pass may grant.
     """
     try:
         require_grantable_unit_files(units)
