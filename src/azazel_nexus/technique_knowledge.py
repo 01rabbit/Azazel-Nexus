@@ -48,10 +48,13 @@ COVERAGE_WORDS = ("found", "no_match", "stale", "unavailable")
 _PAIRS = frozenset({("received", "ok"), ("received", "failed"), ("refused", "failed"),
                     ("refused", "not_run"), ("unavailable", "not_run")})
 SNAPSHOT_STATES = ("complete", "partial", "stale")
+# ATT&CK v19 split `defense-evasion` into `stealth` and `defense-impairment`; the
+# enterprise corpus 20.1 uses only the new two (208 of 706 techniques). The old
+# name stays accepted for corpora older than v19. Identical to Knowledge's TACTICS.
 TACTICS = ("collection", "command-and-control", "credential-access", "defense-evasion",
-           "discovery", "execution", "exfiltration", "impact", "initial-access",
-           "lateral-movement", "persistence", "privilege-escalation", "reconnaissance",
-           "resource-development")
+           "defense-impairment", "discovery", "execution", "exfiltration", "impact",
+           "initial-access", "lateral-movement", "persistence", "privilege-escalation",
+           "reconnaissance", "resource-development", "stealth")
 _VERSION = re.compile(r"[0-9]{1,3}\.[0-9]{1,3}", re.ASCII)
 SNAPSHOT_REF_PREFIX = "attack-stix@"
 _REF = re.compile(r"attack-stix@(?:[0-9]{1,3}\.[0-9]{1,3}|none)", re.ASCII)
