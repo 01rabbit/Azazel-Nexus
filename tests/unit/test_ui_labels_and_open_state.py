@@ -184,4 +184,5 @@ def test_technique_axis_is_labelled_apart_from_the_fabric_advisory():
     assert "fullnode_fabric_axis" in js and "techniqueSeen" in js
     assert "ATT&CK technique 照会の成否ではありません" in labels["fullnode_fabric_axis"]["unavailable"]
     assert "期限切れ・端末時計で判定" in js
+    assert "isNaN(tkExp)" in js and "期限を判定できません" in js  # an unparsable expiry is never shown as valid
     assert "活用" not in labels["fullnode_fabric_axis"]["unavailable"]

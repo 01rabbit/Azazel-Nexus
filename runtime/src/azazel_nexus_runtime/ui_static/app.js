@@ -731,8 +731,9 @@
     var coverageLabel = { found: "対応あり", no_match: "該当なし", stale: "期限切れ", unavailable: "ATT&CK corpus 利用不可" };
     add(tkNode, kv([["通信", transportLabel[tk.transport] || "不明"], ["検証", verificationLabel[tk.verification] || "不明"]]));
     if (tk.as_of) {
-      var tkExpired = tk.expires_at && Date.parse(tk.expires_at) <= Date.now();
-      add(tkNode, kv([["基準時刻", tk.as_of], ["期限", tkExpired ? text(tk.expires_at) + "（期限切れ・端末時計で判定）" : tk.expires_at], ["権限", tk.authority], ["信頼", tk.trust === "unverified" ? "未検証" : tk.trust]]));
+      var tkExp = tk.expires_at ? Date.parse(tk.expires_at) : null;
+      var tkNote = tkExp === null ? "" : isNaN(tkExp) ? "（期限を判定できません）" : tkExp <= Date.now() ? "（期限切れ・端末時計で判定）" : "";
+      add(tkNode, kv([["基準時刻", tk.as_of], ["期限", tk.expires_at ? text(tk.expires_at) + tkNote : tk.expires_at], ["権限", tk.authority], ["信頼", tk.trust === "unverified" ? "未検証" : tk.trust]]));
     }
     (tk.techniques || []).forEach(function (row) {
       add(tkNode, el("p", "small", text(row.technique_id) + "：" + (coverageLabel[row.coverage] || "不明")

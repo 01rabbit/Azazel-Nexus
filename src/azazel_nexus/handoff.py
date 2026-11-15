@@ -52,6 +52,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -1927,10 +1928,21 @@ def render_markdown(p: dict) -> str:
             add(f"- 通信: `{tk['transport']}`、検証: `{tk['verification']}`、"
                 f"snapshot: `{tk['snapshot_state']}`（署名応答の受信は内容ありを意味しません）")
             if tk["as_of"] is not None:
-                judged = fn["basis"]["judged_at"]
-                lapsed = (tk["expires_at"] is not None and type(judged) is str and judged >= tk["expires_at"])
+                # judged_at is whole seconds (truncated), so the expiry is floored too: an
+                # answer is never shown as still valid after it lapsed; an unparsable time
+                # is said to be unjudgeable rather than treated as valid.
+                judged = _epoch(fn["basis"]["judged_at"])
+                expires = _epoch(tk["expires_at"]) if tk["expires_at"] is not None else None
+                if tk["expires_at"] is None:
+                    lapse_note = ""
+                elif judged is None or expires is None:
+                    lapse_note = "（期限を判定できません）"
+                elif judged >= math.floor(expires):
+                    lapse_note = "（この資料の生成時点で期限切れ）"
+                else:
+                    lapse_note = ""
                 add(f"- 基準時刻 {_md(tk['as_of'])}、期限 {_md(tk['expires_at'])}"
-                    + ("（この資料の生成時点で期限切れ）" if lapsed else "") + "、"
+                    + lapse_note + "、"
                     f"権限 `{tk['authority']}`、信頼 `{tk['trust']}`")
             for row in tk["techniques"]:
                 add(f"- {_md(row['technique_id'])}: 対応 `{row['coverage']}`、内容あり `{row['useful_content']}`"

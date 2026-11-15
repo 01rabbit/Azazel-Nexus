@@ -225,3 +225,29 @@ def test_an_old_row_without_a_technique_record_reads_as_before(tmp_path, monkeyp
     md = handoff.encode_files(pkg)["handoff.ja.md"].decode()
     assert "technique_knowledge" not in fn and "未検証の ATT&CK ラベル" not in md
     assert fn["last_attempt"]["result"] == "unavailable" and fn["last_receipt"] is None
+
+
+def _lapse_line(md):
+    return [l for l in md.split("未検証の ATT&CK ラベル")[1].splitlines() if l.startswith("- 基準時刻")][0]
+
+
+def test_technique_expiry_boundary_is_never_shown_valid_after_it_lapsed(tmp_path, monkeypatch):
+    expires = handoff._epoch(_tk_record()["expires_at"])
+    for i, (now, lapsed) in enumerate([(expires - 1, False), (expires, True), (expires + 0.9, True)]):
+        _, md = _tk_md(tmp_path, monkeypatch, f"tkb{i}", now, None)
+        assert ("（この資料の生成時点で期限切れ）" in _lapse_line(md)) is lapsed, (now, lapsed)
+
+
+def test_fractional_expiry_is_compared_as_time_not_text(tmp_path, monkeypatch):
+    # judged_at is whole seconds; "...:00Z" >= "...:00.5Z" is False as text. Compared as
+    # time with the expiry floored, an answer lapsing within the judged second is shown lapsed.
+    root = _with_trace(tmp_path, "tkf", None, fast=_tk_fast(_tk_record()))
+    monkeypatch.setenv("AZAZEL_ROOT", str(root))
+    expires = handoff._epoch(_tk_record()["expires_at"])
+    pkg = handoff.build_package(example.INCIDENT, now=expires - 5, principal="ui", root=None)
+    tk = pkg["knowledge"]["full_node_context"]["technique_knowledge"]
+    judged = pkg["knowledge"]["full_node_context"]["basis"]["judged_at"]
+    tk["expires_at"] = judged[:-1] + ".5Z"
+    assert "（この資料の生成時点で期限切れ）" in _lapse_line(handoff.encode_files(pkg)["handoff.ja.md"].decode())
+    tk["expires_at"] = "not-a-time"
+    assert "（期限を判定できません）" in _lapse_line(handoff.encode_files(pkg)["handoff.ja.md"].decode())
