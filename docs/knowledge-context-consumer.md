@@ -334,7 +334,11 @@ display labels: they are not copied into observations, hypotheses, next checks,
 actions, the reasoning trace or unknowns. The UI shows them with `textContent`
 under 「未検証の ATT&CK ラベル（参考）」; the handoff copies fixed keys only.
 The row trace (`last_attempt`) still reflects the Fabric Full path only, so it
-reads `unavailable` for a technique query.
+reads `unavailable` for a technique query. That value means "no Fabric advisory was
+adopted"; it is not the outcome of the ATT&CK query. The UI and the handoff
+Markdown label the Fabric axis as such and show the ATT&CK query's own transport,
+verification and expiry in the technique block. A stored row written before this
+labelling reads the same way (no field changed).
 
 ### Recorded Full-node reference: row trace and reader
 

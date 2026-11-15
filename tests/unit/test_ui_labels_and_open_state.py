@@ -175,3 +175,13 @@ def test_fullnode_ref_vocabulary_never_reads_as_valid():
     assert "今回の照会結果ではありません" in ref["in_window"] and "未検証" in ref["in_window"]
     for word in ("not_recorded", "unknown", "expired", "set_changed"):
         assert "有効" not in ref[word].replace("有効という意味ではありません", "")
+
+
+def test_technique_axis_is_labelled_apart_from_the_fabric_advisory():
+    import json
+    js, labels = _t("app.js"), json.loads(_t("labels.json"))
+    assert {"not_queried", "unavailable"} <= set(labels["fullnode_fabric_axis"])
+    assert "fullnode_fabric_axis" in js and "techniqueSeen" in js
+    assert "ATT&CK technique 照会の成否ではありません" in labels["fullnode_fabric_axis"]["unavailable"]
+    assert "期限切れ・端末時計で判定" in js
+    assert "活用" not in labels["fullnode_fabric_axis"]["unavailable"]

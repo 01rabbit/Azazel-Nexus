@@ -715,7 +715,10 @@
       add(p, el("span", null, head + "：" + ja + " "), el("span", "en", text(value)));
       return p;
     }
-    add(node, line("フルノード照会", "fullnode", code), refLine(), line("Knowledge 依存", "kdep", dep));
+    /* An ATT&CK technique answer is a separate axis: it never turns "no Fabric advisory" into "the Full node did not answer". */
+    var techniqueSeen = !!fast.technique_knowledge && (code === "unavailable" || code === "not_queried");
+    add(node, line(techniqueSeen ? "フルノード助言（Fabric 経路）" : "フルノード照会", techniqueSeen ? "fullnode_fabric_axis" : "fullnode", code),
+      refLine(), line("Knowledge 依存", "kdep", dep));
     if (fast.technique_knowledge) { add(node, techniqueBlock(fast.technique_knowledge)); }
     return node;
   }
@@ -728,7 +731,8 @@
     var coverageLabel = { found: "対応あり", no_match: "該当なし", stale: "期限切れ", unavailable: "ATT&CK corpus 利用不可" };
     add(tkNode, kv([["通信", transportLabel[tk.transport] || "不明"], ["検証", verificationLabel[tk.verification] || "不明"]]));
     if (tk.as_of) {
-      add(tkNode, kv([["基準時刻", tk.as_of], ["期限", tk.expires_at], ["権限", tk.authority], ["信頼", tk.trust === "unverified" ? "未検証" : tk.trust]]));
+      var tkExpired = tk.expires_at && Date.parse(tk.expires_at) <= Date.now();
+      add(tkNode, kv([["基準時刻", tk.as_of], ["期限", tkExpired ? text(tk.expires_at) + "（期限切れ・端末時計で判定）" : tk.expires_at], ["権限", tk.authority], ["信頼", tk.trust === "unverified" ? "未検証" : tk.trust]]));
     }
     (tk.techniques || []).forEach(function (row) {
       add(tkNode, el("p", "small", text(row.technique_id) + "：" + (coverageLabel[row.coverage] || "不明")
@@ -1055,7 +1059,7 @@
         var fullOutcome = full.outcome;
         if (full.expires_at && Date.parse(full.expires_at) <= Date.now()) { fullOutcome = "expired"; }
         add(fullNode, el("p", "small", "期限表示は端末時計に依存し、画面更新時に再評価します。"));
-        add(fullNode, kv([["照会状態", full.full_node_context_status], ["出典状態", fullOutcome],
+        add(fullNode, kv([["Fabric 助言の照会状態（ATT&CK 照会とは別）", full.full_node_context_status], ["出典状態", fullOutcome],
           ["出典種別", full.source_kind], ["主張", full.claim_status], ["信頼区分", full.trust],
           ["snapshot状態", full.snapshot_state], ["生成時刻", full.generated_at], ["期限", full.expires_at]]));
         if (fullOutcome === "expired") { add(fullNode, el("p", "small", "この助言は期限切れです。")); }

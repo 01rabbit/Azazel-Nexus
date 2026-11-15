@@ -1900,10 +1900,10 @@ def render_markdown(p: dict) -> str:
         add("### Full Node Context（ui のみ・未検証の助言）")
         add("")
         add("今回の遷移")
-        add(f"- 照会状態: `{fn['full_node_context_status']}`、評価結果: `{fn['outcome']}`、"
+        add(f"- Fabric 助言の照会状態（ATT&CK 照会とは別）: `{fn['full_node_context_status']}`、評価結果: `{fn['outcome']}`、"
             f"照会の由来: `{fn['query_origin']}`、この遷移の照会: `{fn['transition_query']}`")
         add("")
-        add("最後の照会")
+        add("最後の照会（Fabric 助言の経路のみ。ATT&CK technique 照会の成否は、下の ATT&CK 参考欄の通信・検証）")
         la = fn["last_attempt"]
         add("- 記録なし" if la is None else
             f"- 結果 `{la['result']}`、確定時刻 {_md(la['attempted_at'])}、"
@@ -1927,7 +1927,10 @@ def render_markdown(p: dict) -> str:
             add(f"- 通信: `{tk['transport']}`、検証: `{tk['verification']}`、"
                 f"snapshot: `{tk['snapshot_state']}`（署名応答の受信は内容ありを意味しません）")
             if tk["as_of"] is not None:
-                add(f"- 基準時刻 {_md(tk['as_of'])}、期限 {_md(tk['expires_at'])}、"
+                judged = fn["basis"]["judged_at"]
+                lapsed = (tk["expires_at"] is not None and type(judged) is str and judged >= tk["expires_at"])
+                add(f"- 基準時刻 {_md(tk['as_of'])}、期限 {_md(tk['expires_at'])}"
+                    + ("（この資料の生成時点で期限切れ）" if lapsed else "") + "、"
                     f"権限 `{tk['authority']}`、信頼 `{tk['trust']}`")
             for row in tk["techniques"]:
                 add(f"- {_md(row['technique_id'])}: 対応 `{row['coverage']}`、内容あり `{row['useful_content']}`"

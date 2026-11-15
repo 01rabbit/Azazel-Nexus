@@ -168,3 +168,60 @@ def test_trace_does_not_change_root_or_operator_bytes(tmp_path, principal):
         _receipt(ids))), principal)
     assert with_trace == base
     assert {k: hashlib.sha256(v).hexdigest() for k, v in with_trace.items()} == GOLDEN_FULL_ROW[principal]
+
+
+# ---- U51 B: the technique answer is its own axis in the handoff and the UI ----
+# These build the row through the product reader (`read_recent_incidents` runs on the
+# stored file) and the product `handoff.build_package`; the technique record comes from
+# the real projector. Nothing here bypasses a reader; the stored row is a fixed file.
+
+def _tk_record():
+    from _technique_fixture import make_response
+    from azazel_nexus.technique_knowledge import project_technique_response
+    return project_technique_response(make_response(["T1110"]), ["T1110"])
+
+
+def _tk_fast(record):
+    from azazel_nexus.incident_explain import _full_node_projection
+    return {**BASE, "full_node_context": _full_node_projection(
+        None, "unavailable", "unavailable", technique_knowledge=record)}
+
+
+def _tk_md(tmp_path, monkeypatch, name, now, trace):
+    root = _with_trace(tmp_path, name, trace, fast=_tk_fast(_tk_record()))
+    monkeypatch.setenv("AZAZEL_ROOT", str(root))
+    pkg = handoff.build_package(example.INCIDENT, now=now, principal="ui", root=None)
+    return pkg["knowledge"]["full_node_context"], handoff.encode_files(pkg)["handoff.ja.md"].decode()
+
+
+def test_fabric_unavailable_is_not_read_as_a_failed_technique_query(tmp_path, monkeypatch):
+    # The stored trace says "unavailable" (Fabric path only) while the ATT&CK query succeeded.
+    attempt = lambda ids: _trace("queried", {"attempted_at": "2026-10-29T03:15:31Z",
+                                             "result": "unavailable", "technique_ids": ids})
+    fn, md = _tk_md(tmp_path, monkeypatch, "tk", NOW, attempt)
+    assert fn["last_attempt"]["result"] == "unavailable"                 # stored value is untouched
+    assert fn["technique_knowledge"]["transport"] == "received"
+    assert fn["technique_knowledge"]["verification"] == "ok"
+    assert "Fabric 助言の照会状態（ATT&CK 照会とは別）: `unavailable`" in md
+    assert "最後の照会（Fabric 助言の経路のみ" in md
+    assert "通信: `received`、検証: `ok`" in md
+    assert "MIO が活用" not in md and "M.I.O. が活用" not in md
+    assert "期限切れ" not in md.split("未検証の ATT&CK ラベル")[1].split("対応")[0]
+
+
+def test_technique_expiry_is_judged_at_generation_time(tmp_path, monkeypatch):
+    record = _tk_record()
+    later = handoff._epoch(record["expires_at"]) + 60 if hasattr(handoff, "_epoch") else None
+    if later is None:
+        from datetime import datetime
+        later = datetime.fromisoformat(record["expires_at"].replace("Z", "+00:00")).timestamp() + 60
+    _, md = _tk_md(tmp_path, monkeypatch, "tk2", later, None)
+    assert "（この資料の生成時点で期限切れ）" in md
+
+
+def test_an_old_row_without_a_technique_record_reads_as_before(tmp_path, monkeypatch):
+    fn, pkg = _fn(tmp_path, monkeypatch, "old", lambda ids: _trace(
+        "queried", {"attempted_at": "2026-10-29T03:15:31Z", "result": "unavailable", "technique_ids": ids}))
+    md = handoff.encode_files(pkg)["handoff.ja.md"].decode()
+    assert "technique_knowledge" not in fn and "未検証の ATT&CK ラベル" not in md
+    assert fn["last_attempt"]["result"] == "unavailable" and fn["last_receipt"] is None
