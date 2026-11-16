@@ -64,6 +64,10 @@ class CommissioningResult:
     mission: str | None = None
     alias_key: bytes | None = field(default=None)
     registry_version: int | None = None
+    #: The verified registry peer (no secret: host, pin, port, addresses) and
+    #: the registry's commissioning digest; the egress allowance derives from them.
+    peer: Any = None
+    commissioning_digest: str | None = None
 
     def __repr__(self) -> str:
         return f"CommissioningResult(status={self.status!r}, reason_code={self.reason_code!r})"
@@ -178,7 +182,7 @@ def _json(raw, code):
         raise _Refused(code) from None
 
 
-def _load(now: str, directory=None) -> CommissioningResult:
+def _load(now: str, directory=None, *, peer_only: bool = False) -> CommissioningResult:
     # directory=None is the shipped path; only load_commissioning_from sets it.
     bundle = knowledge_context_commission_dir() if directory is None else directory
     dirfd = _open_dir(bundle)
@@ -246,6 +250,11 @@ def _load(now: str, directory=None) -> CommissioningResult:
             policy = SanitizerPolicy.from_mapping(manifest["sanitizer_policy"])
         except Exception:
             raise _Refused("policy_invalid") from None
+        if peer_only:
+            # U49 egress derivation: the verified peer without any secret file.
+            return CommissioningResult(
+                "commissioned", policy=policy, registry_version=registry.version,
+                peer=peer, commissioning_digest=registry.commissioning_digest)
         for name in ("ca.pem", "client.pem", "client.key"):
             _read(dirfd, name)
         alias_key = _read(dirfd, "alias.key")[0]
@@ -270,7 +279,8 @@ def _load(now: str, directory=None) -> CommissioningResult:
         return CommissioningResult(
             "commissioned", client=guarded, policy=policy,
             mission=manifest["mission"], alias_key=alias_key,
-            registry_version=registry.version)
+            registry_version=registry.version, peer=peer,
+            commissioning_digest=registry.commissioning_digest)
     finally:
         os.close(dirfd)
 
@@ -295,6 +305,25 @@ def load_commissioning(*, now: str | None = None) -> CommissioningResult:
     stamp = now if now is not None else datetime.now(UTC).isoformat()
     try:
         return _load(stamp)
+    except _Refused as exc:
+        return CommissioningResult("refused", exc.code)
+    except Exception:
+        return CommissioningResult("refused", "path_unsafe")
+
+
+def load_egress_peer(*, now: str | None = None) -> CommissioningResult:
+    """The verified registry peer for the egress allowance; reads no secret file.
+
+    Same directory, owner and mode rules, the same signature, freshness, peer,
+    identity, privacy-class and policy checks as `load_commissioning`, but it
+    stops before `ca.pem`, `client.pem`, `client.key` and `alias.key`. Those
+    secret files are `root:<service group> 0640`, which only the daemon's own
+    group may read (`_check`); a root caller (egid 0) is not that group and
+    must not need them. The daemon's own reads are unchanged. Never raises.
+    """
+    stamp = now if now is not None else datetime.now(UTC).isoformat()
+    try:
+        return _load(stamp, peer_only=True)
     except _Refused as exc:
         return CommissioningResult("refused", exc.code)
     except Exception:

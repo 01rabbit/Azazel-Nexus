@@ -244,6 +244,9 @@ def test_sanitizer_and_request_budget_deny_before_connection(monkeypatch):
         "shared-key",
         "deadline",
         "duplicate",
+        "no-address",
+        "two-addresses",
+        "same-address-twice",
     ],
 )
 def test_registry_failures(mutation):
@@ -258,6 +261,12 @@ def test_registry_failures(mutation):
         doc["version"] = True
     elif mutation == "address":
         entry["addresses"] = ["arbitrary.example"]
+    elif mutation == "no-address":
+        entry["addresses"] = []
+    elif mutation == "two-addresses":
+        entry["addresses"] = ["127.0.0.1", "127.0.0.2"]
+    elif mutation == "same-address-twice":
+        entry["addresses"] = ["127.0.0.1", "127.0.0.1"]
     elif mutation == "pin":
         endpoint["certificate_pin"] = ""
     elif mutation == "path":

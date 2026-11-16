@@ -358,7 +358,8 @@ class ContextdStopAuthority:
         self._cgroup = cgroup if callable(cgroup) else None
 
     @classmethod
-    def from_session(cls, session, *, cgroup_root: Path = Path("/")) -> "ContextdStopAuthority":
+    def from_session(cls, session, *, cgroup_root: Path = Path("/"),
+                     cgroup_caller: str = "service") -> "ContextdStopAuthority":
         """Built from the controller's own D-Bus session.
 
         The cgroup is read from files under `cgroup_root` (`/` in production),
@@ -369,7 +370,10 @@ class ContextdStopAuthority:
                    job=getattr(session, "unit_job", None),
                    state=getattr(session, "contextd_active_state", None),
                    file_state=getattr(session, "contextd_file_state", None),
-                   cgroup=lambda active: read_contextd_cgroup(active, root=cgroup_root))
+                   cgroup=(lambda active: read_contextd_cgroup(active, root=cgroup_root))
+                   if cgroup_caller == "service" else
+                   (lambda active: read_contextd_cgroup(
+                       active, root=cgroup_root, caller=cgroup_caller)))
 
     @staticmethod
     def _check(unit: str) -> str:

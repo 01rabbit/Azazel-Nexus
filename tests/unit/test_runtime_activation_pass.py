@@ -86,7 +86,7 @@ EDGE_UNIT_FILE = (b"[Unit]\nDescription=azazel-edge-core.service\n[Service]\n"
 
 def loaded_as_declared(unit):
     """What a manager reports for a unit loaded from its rendered vendor file."""
-    return {
+    loaded = {
         "Id": unit, "LoadState": "loaded",
         "FragmentPath": f"/usr/lib/systemd/system/{unit}", "DropInPaths": [],
         "Conditions": [("ConditionPathExists", False, False,
@@ -97,6 +97,12 @@ def loaded_as_declared(unit):
         "Requires": ["azazel-activated.service", "system.slice", "sysinit.target"],
         "After": ["azazel-activated.service", "basic.target", "system.slice"],
     }
+    if unit == "azazel-knowledge-contextd.service":
+        # U49: the cgroup IP filter, deny any and no Allow (the packaged unit).
+        loaded["IPAddressAllow"] = []
+        loaded["IPAddressDeny"] = [(2, bytes(4), 0), (10, bytes(16), 0)]
+        loaded["SliceChainAllow"] = {"system.slice": [], "-.slice": []}
+    return loaded
 
 
 class FakeManagerReader:
@@ -120,6 +126,12 @@ class FakeManagerReader:
     def loaded_unit(self, unit):
         self.reads.append(unit)
         return self.loaded.get(unit, loaded_as_declared(unit))
+
+    #: U49: the parent slices' Allow, read whether or not the broker is loaded.
+    slice_chain = {"system.slice": [], "-.slice": []}
+
+    def slice_chain_allow(self):
+        return self.slice_chain
 
 
 def make_policy(units=SCOPE, operators=("operator-a",), skew=300, require_sync=None):
@@ -280,6 +292,10 @@ class World:
 
 def _owned_by_the_test(monkeypatch):
     """The real readers, trusting the test's uid as the probe writer and boot id owner."""
+    from azazel_nexus_runtime import activation_loaded_units
+    # U49: the broker's loaded Allow is compared with its measured file; these
+    # tests have no installed unit files, and the packaged file has no Allow.
+    monkeypatch.setattr(activation_loaded_units, "file_allow", lambda unit: [])
     read_probe, read_boot = edge_package.load_probe_result, edge_package.read_current_boot_id
     monkeypatch.setattr(edge_package, "load_probe_result",
                         lambda path: read_probe(path, owner_uid=os.geteuid()))

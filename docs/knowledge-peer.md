@@ -43,8 +43,10 @@ The document has exactly `schema`, `commissioning_digest`, `issued_at`,
   `model_id` must be `knowledge-v1`, and `path_template` must be `/knowledge/v1`.
   Hostname, port, SPKI pin, client identity name, privacy classes and all
   request limits are signed commissioning data.
-- `addresses`: a nonempty list of numeric IPv4/IPv6 addresses. The client uses
-  the first address, with no DNS lookup or alternate destination retry.
+- `addresses`: a list of exactly one numeric IPv4/IPv6 address; zero or several
+  entries refuse the whole registry (an explicit choice among several needs a
+  later registry schema). The client uses that address, with no DNS lookup or
+  alternate destination retry.
   Hostname verification still checks the signed hostname. This avoids an
   unbounded resolver call and makes the destination allowlist exact.
 - `public_key`: the peer's Ed25519 public key as 64 hexadecimal characters.

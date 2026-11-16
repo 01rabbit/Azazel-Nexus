@@ -167,10 +167,13 @@ def load_registry(
             addresses = entry["addresses"]
             if (
                 not isinstance(addresses, list)
-                or not addresses
+                or len(addresses) != 1
                 or any(not isinstance(a, str) for a in addresses)
             ):
                 raise ValueError
+            # Exactly one address: the client connection and the unit's
+            # IPAddressAllow derive from it, so a list is never reduced to its
+            # first element. An explicit choice needs a later registry schema.
             addresses = tuple(str(ipaddress.ip_address(a)) for a in addresses)
             key = bytes.fromhex(entry["public_key"])
             if len(key) != 32 or key in keys.values():

@@ -101,6 +101,7 @@ from .activation_high_water import (
     raise_high_water,
     read_high_water,
 )
+from .units import CONTEXTD_UNIT
 from .activation_unit_files import (
     UnitContentRefused,
     UnitFilesRefused,
@@ -451,6 +452,11 @@ def run_generation_publish(*, source, out) -> int:
         print("Observe-baseline generation (azazel-nexus/observe-baseline-generation/v1)",
               file=out)
         print("Units: " + ",".join(measured.policy.units), file=out)
+        if CONTEXTD_UNIT in measured.policy.units:
+            from .knowledge_context_egress_cli import egress_summary_lines
+
+            for line in egress_summary_lines():
+                print(line, file=out)
         if measured.package_digest is not None:
             print("Edge package digest: " + measured.package_digest, file=out)
             for name, component in measured.package[1].items():

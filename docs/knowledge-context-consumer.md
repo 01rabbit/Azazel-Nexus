@@ -434,9 +434,10 @@ The service uses the separate `azknowledgeegress` account. The installed unit
 is preset disabled, requires its activation grant marker and is absent from
 `wired_capabilities()`; a commissioning loader exists and consumes a
 root-owned bundle, but activation remains a separate gate.
-Its unit retains `IPAddressDeny=any` and has no `IPAddressAllow` entry. Thus
-installation does not start it and this candidate cannot reach a Knowledge
-peer. The broker's default constructor is closed even if started manually; the
+Its unit retains `IPAddressDeny=any` and, as shipped, has no `IPAddressAllow`
+entry. Thus installation does not start it and the shipped unit cannot reach a
+Knowledge peer; the one way to give it a destination is *Egress allowance*
+below. The broker's default constructor is closed even if started manually; the
 service enables the broker only when the root-owned commissioning bundle loads
 as commissioned, and any absence or defect leaves it closed.
 The new per-request audit ledger has no retention or disk quota in this
@@ -620,6 +621,59 @@ the contract and no grace period was added; they are commissioning decisions.
 | D clocks | isolated acceptance passed for the single-host model; cross-host skew not tested; re-validity after a clock rollback is an open observation (see Open items) |
 | real credentials, trust anchor, endpoint, audit retention, activation grant | not done |
 
+## Egress allowance
+
+The broker's unit may carry exactly one `IPAddressAllow=<ip>/32` (or `/128`),
+the registry peer's one address, the address the client connects to (no DNS
+lookup, `knowledge_egress.egress_address`). The registry loader refuses a peer
+whose `addresses` does not hold exactly one entry, so neither the connection nor
+the Allow ever depends on list order. Nothing else is configurable. The
+allowance digest (peer id, host, port, SPKI pin, address, registry version,
+registry commissioning digest) is written into the unit as a header comment, so
+it is part of the generation-hashed bytes: a different host, pin or version at
+the same IP changes the unit and needs a new generation and approval.
+
+The only writer is `az-knowledge-context-egress` (root):
+
+- `show` the derived line and digest; `check` the installed unit against the
+  derivation (exit 0 when equal); both read-only.
+- `apply` / `remove` require the grant marker to be absent and the broker to be
+  stopped with an empty cgroup. They re-render the unit from the declaration,
+  write it atomically, reload the manager and run `az-activation
+  generation-publish`. Then `az-activation request` and `install` as usual.
+  Nothing is admitted until the operator signs.
+- IP change: new signed registry (new single `addresses` entry, higher version), replace
+  the bundle, withdraw and stop, `apply`, publish, sign, install. Until then the
+  pass refuses (the unit's Allow and digest differ from the derivation); there
+  is no wider fallback.
+- Removal: withdraw and stop, `remove`, publish, sign, install. Disabling the
+  bundle alone makes the pass refuse the Allow-bearing unit.
+
+The derivation (`show`, `check`, `apply`, and the pass) reads only the manifest
+and the signed registry, under the same owner and mode rules as the daemon, and
+never the secret files. Those are `root:azknowledgeegress 0640`, readable only
+by the daemon's own group, so a root caller (egid 0) must not need them; the
+daemon's own reads are unchanged. A bundle the daemon would refuse for a short
+`alias.key` still derives an allowance; the daemon stays closed. `apply` and
+`remove` check the broker's cgroup in operator mode: the same cgroup2 mount
+binding as the pass, but the caller may be a login shell (own cgroup `/` or
+under `init.scope`, `user.slice`, `system.slice`, present under the mount);
+anything unestablished is `unknown`, which is not empty.
+
+The pass compares the unit's `IPAddress*` lines (absent or exactly the derived
+line, `IPAddressDeny=any` once) and the manager's loaded `IPAddressAllow` /
+`IPAddressDeny` (D-Bus `a(iayu)`; loaded Allow must equal the unit file's, `system.slice` and `-.slice` must have an empty Allow whether or not the broker is loaded (a withdrawn, masked broker has no loaded read, so they are read on their own), a wider one refuses). The loaded representation of `IPAddressDeny=any` (two zero-prefix entries) was confirmed on systemd 257 in an isolated container (lab evidence, not a deployment). A drop-in is
+still refused. Limits, stated so they are not read as more than they are:
+
+- The filter is per address, not per port: every port and protocol at the
+  allowed address is reachable.
+- `AF_UNIX` is allowed to the broker, so a local forwarder it can reach could
+  delegate egress; the filter does not cover that.
+- It is a cgroup-BPF filter. Where the kernel or container manager lacks
+  support it has no effect; acceptance needs a real allowed/denied connection
+  test, not the loaded property alone.
+- Address reassignment, NAT or routing change after approval is not detected.
+
 ## Open items before any real connection
 
 Nothing in this repository authorizes a live connection. The items below are
@@ -634,8 +688,9 @@ satisfied by this software:
    loads as commissioned; activation remains a separate gate.
 3. Which trusted local inputs may set the P0 label and which question fields
    may be sent (stated above as required; not yet defined).
-4. An endpoint allowlist is approved before any `IPAddressAllow` is designed;
-   this package supplies none.
+4. The endpoint (one address) is approved with the signed registry; this
+   package ships no `IPAddressAllow`, and the deployment-time mechanism is
+   *Egress allowance* below.
 5. The per-request audit ledger gets an explicit retention and disk-quota
    policy.
 6. Unresolved observation: the Context path has no wall-clock floor, so a

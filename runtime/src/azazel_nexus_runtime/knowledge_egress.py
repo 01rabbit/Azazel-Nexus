@@ -55,6 +55,17 @@ def _staged(exc: Exception, stage: str) -> Exception:
     return exc
 
 
+def egress_address(peer) -> str:
+    """The one address the client connects to; the renderer's allowance uses it too.
+
+    The registry loader accepts exactly one address; a peer that does not carry
+    exactly one is refused here as well, never reduced to its first element.
+    """
+    if len(peer.addresses) != 1:
+        raise ValueError("peer must carry exactly one address")
+    return peer.addresses[0]
+
+
 class KnowledgeClient:
     """Constructed only from commissioned registry and identity material.
 
@@ -276,7 +287,7 @@ class KnowledgeClient:
             return value
 
         # One signed address and one attempt. No retry can multiply the budget.
-        address = peer.addresses[0]
+        address = egress_address(peer)
         family = socket.AF_INET6 if ":" in address else socket.AF_INET
         with socket.socket(family, socket.SOCK_STREAM) as raw:
             raw.settimeout(remaining())
