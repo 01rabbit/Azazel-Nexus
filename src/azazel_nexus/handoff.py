@@ -1954,6 +1954,8 @@ def render_markdown(p: dict) -> str:
                 add(f"- 基準時刻 {_md(tk['as_of'])}、期限 {_md(tk['expires_at'])}"
                     + lapse_note + "、"
                     f"権限 `{tk['authority']}`、信頼 `{tk['trust']}`")
+                if tk["provenance"] is not None:
+                    add("- 出典: " + "、".join(f"{k} `{tk['provenance'][k]}`" for k in sorted(tk["provenance"])))
             for row in tk["techniques"]:
                 add(f"- {_md(row['technique_id'])}: 対応 `{row['coverage']}`、内容あり `{row['useful_content']}`"
                     + (f"、名称 {_md(row['name'])}" if row["name"] else "")

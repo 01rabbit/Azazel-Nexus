@@ -283,6 +283,7 @@ def test_a_name_with_a_slash_is_shown_by_the_product_handoff(tmp_path, monkeypat
     assert "System Owner" not in md and "名称は表示を控えました" in md
     assert "「該当知識なし」ではありません" in md and "対応 `found`、内容あり `True`" in md
     assert "T1033" in md and "未検証" in md
+    assert "出典: " in md and "knowledge:attack-stix" in md
 
 
 def test_all_official_20_1_names_pass_through_the_handoff(tmp_path, monkeypatch):
