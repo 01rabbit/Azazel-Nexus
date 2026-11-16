@@ -868,6 +868,10 @@
     "received": "回答受領（フルノードから助言を受け取りました。未検証の助言です）",
     "unknown": "不明（照会状態を判定できません。正常という意味ではありません）"
   },
+  "fullnode_fabric_axis": {
+    "not_queried": "未照会（Fabric の助言は問い合わせていません。ATT&CK technique 照会の成否は下の欄で別に示します）",
+    "unavailable": "助言なし（Fabric の助言を採用していません。ATT&CK technique 照会の成否ではありません。下の欄を見てください）"
+  },
   "fullnode_ref": {
     "not_recorded": "記録なし（過去の参照を記録していない行です。参照が無いという意味ではありません）",
     "none": "なし（過去に受け取った参照はありません）",

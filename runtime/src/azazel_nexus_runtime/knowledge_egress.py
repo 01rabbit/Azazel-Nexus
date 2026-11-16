@@ -8,6 +8,7 @@ covers connect, both handshakes, negotiation and query; queue capacity is zero.
 from __future__ import annotations
 
 import math
+import re
 import secrets
 import socket
 import ssl
@@ -38,6 +39,7 @@ from azazel_nexus.fabric_boundary import (
 )
 from azazel_nexus.lite_service import KnowledgeReading, LiteReading, knowledge_context
 from azazel_nexus.sanitizer import PrivacyClass, SanitizerPolicy
+from azazel_nexus.technique_knowledge import validate_technique_response
 
 from .inference_egress import InferenceRefused, spki_pin, tls_context
 
@@ -45,11 +47,23 @@ _KNOWLEDGE_CONTEXT_PATH = "/v1/knowledge-context"
 _MAX_KNOWLEDGE_CONTEXT_REQUEST_BYTES = 64 * 1024
 
 
+class HttpStatusRefused(KnowledgeRefused):
+    """The peer answered with a status other than 200 (a closed code, no text)."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__("HTTP status refused")
+        self.status = status
+
+
+_STATUS_LINE = re.compile(rb"HTTP/1\.[01] ([0-9]{3})(?: .*)?", re.ASCII)
+
+
 def _staged(exc: Exception, stage: str) -> Exception:
     """Tag a refusal with the fixed request section it came from.
 
-    The tag is one of refused_before_send / transport / verification; the broker
-    reads it instead of parsing any message text.
+    The tag is one of refused_before_send / transport / verification, or
+    technique_verification (the technique validator refused a signed answer);
+    the broker reads it instead of parsing any message text.
     """
     exc.stage = stage
     return exc
@@ -215,6 +229,8 @@ class KnowledgeClient:
         if not self.slots.acquire(blocking=False):
             raise _staged(KnowledgeContextRefused("Knowledge peer queue is full"), "refused_before_send")
         stage = "refused_before_send"
+        technique_ids = (frame["techniques"]
+                         if isinstance(frame, Mapping) and set(frame) == {"techniques"} else None)
         try:
             peer = self.registry.resolve(self.peer_id, now=self.utc_now())
             if PrivacyClass.P0_PUBLIC not in peer.endpoint.allowed_privacy_classes:
@@ -246,7 +262,7 @@ class KnowledgeClient:
             stage = "verification"
             # Refuse a response if commissioning was revoked or expired in flight.
             self.registry.resolve(self.peer_id, now=self.utc_now())
-            return read_signed_response(
+            verified = read_signed_response(
                 raw,
                 request=request,
                 registry=self.registry,
@@ -254,6 +270,12 @@ class KnowledgeClient:
                 now=self.utc_now(),
                 max_ttl_seconds=max_ttl_seconds,
             )
+            if technique_ids is not None:
+                # Signature, TTL and Fabric correlation held; now the whole
+                # response must also be an acceptable technique answer.
+                stage = "technique_verification"
+                validate_technique_response(verified.model_dump(mode="json"), technique_ids)
+            return verified
         except (
             KnowledgeRefused,
             KnowledgeContextRefused,
@@ -263,6 +285,10 @@ class KnowledgeClient:
             OSError,
             ValueError,
         ) as exc:
+            if (stage == "transport" and isinstance(exc, HttpStatusRefused)
+                    and exc.status == 422):
+                # 422 carries no signed semantic envelope: a failed verification.
+                stage = "verification"
             raise _staged(KnowledgeContextRefused(
                 "Knowledge Context peer refused or unavailable"
             ), stage) from exc
@@ -324,6 +350,9 @@ class KnowledgeClient:
                 # Keep the accepted status exact while supporting that bounded
                 # producer response alongside ordinary HTTP/1.1 peers.
                 if lines[0] not in (b"HTTP/1.1 200 OK", b"HTTP/1.0 200 OK"):
+                    matched = _STATUS_LINE.fullmatch(lines[0])
+                    if matched is not None:
+                        raise HttpStatusRefused(int(matched.group(1)))
                     raise KnowledgeRefused("HTTP status refused")
                 headers = {}
                 for line in lines[1:]:

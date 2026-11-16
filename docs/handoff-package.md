@@ -254,7 +254,12 @@ scans of the CLI.
   state is already `expired`; the comparison itself uses the untruncated clock. A past reference is unverified advice,
   not an answer to the current query; the fixed `limitations` say so. Subjects,
   producer text, request and correlation identifiers, snapshot references,
-  raw envelopes and question text are never included. `basis` states where it
+  raw envelopes and question text are never included. When the row carries a
+  technique answer, `full_node_context.technique_knowledge` (`technique-knowledge/1`)
+  is added with fixed keys only (transport, verification, snapshot state and at most
+  eight technique entries: id, coverage, `useful_content`, display-only name and
+  tactics, ATT&CK version); a value outside the closed reader refuses the package.
+  `basis` states where it
   came from (the UI's recent snapshot row, that snapshot's freshness and the
   judging time). A row with no trace, or no explanation, is still reported (status and
   outcome `unknown`, `reference_state` `not_recorded`). The CLI (`root`,

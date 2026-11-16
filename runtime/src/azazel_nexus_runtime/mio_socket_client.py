@@ -192,7 +192,7 @@ class LocalSocketClient:
             timing = result.get("timing")
             if (type(timing) is not dict
                     or set(timing) != {"context", "broker_ms", "total_ms"}
-                    or timing["context"] not in {"received", "unavailable"}
+                    or timing["context"] not in {"received", "unavailable", "refused"}
                     or any(type(timing[key]) is not int or not 0 <= timing[key] <= 60_000
                            for key in ("broker_ms", "total_ms"))):
                 raise ValueError("invalid_context_observation")

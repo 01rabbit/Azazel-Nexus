@@ -220,8 +220,18 @@ def _fast_assistance_availability(fast) -> dict:
     status = node.get("full_node_context_status") if isinstance(node, dict) else None
     dependency = fast.get("dependency_outcome")
     knowledge = dependency.get("knowledge") if isinstance(dependency, dict) else None
-    return {"full_node_context_status": status if status in FULL_NODE_STATUS_WORDS else "unknown",
-            "knowledge_dependency": knowledge if knowledge in KNOWLEDGE_DEPENDENCY_WORDS else "unknown"}
+    out = {"full_node_context_status": status if status in FULL_NODE_STATUS_WORDS else "unknown",
+           "knowledge_dependency": knowledge if knowledge in KNOWLEDGE_DEPENDENCY_WORDS else "unknown"}
+    if isinstance(node, dict) and node.get("technique_knowledge") is not None:
+        # The closed, re-validated technique record (fixed keys only); a record that
+        # fails the reader refuses the row rather than being shown.
+        from .technique_knowledge import read_projection
+        try:
+            record = read_projection(node["technique_knowledge"])
+        except ValueError:
+            raise _Refused("refused") from None
+        out["technique_knowledge"] = _plain(record)
+    return out
 
 
 def _pick(value: dict, fields) -> dict:

@@ -31,6 +31,7 @@ from azazel_nexus.incident_explain import (
 )
 from azazel_nexus.lite_import import read_knowledge_refs
 from azazel_nexus.local_advisory import read_fast_assistance
+from azazel_nexus.technique_knowledge import read_projection as read_technique_projection
 from azazel_nexus.store_dirs import fsync_directory, store_directory
 
 from .edge_intaked import DailySegments, EvidenceStore, SegmentFull
@@ -1385,6 +1386,15 @@ class Explainer:
             if not self._consumed[oldest]:
                 del self._consumed[oldest]
 
+    @staticmethod
+    def _technique_bound(record, ids):
+        """The record is a valid closed record for exactly the techniques asked about."""
+        try:
+            read_technique_projection(record)
+        except ValueError:
+            return False
+        return record["verification"] != "ok" or [r["technique_id"] for r in record["techniques"]] == list(ids)
+
     def _observe_full_node(self, t, frame, sequence, mio):
         """Decide whether this explanation is a candidate and, if so, ask once.
 
@@ -1406,17 +1416,26 @@ class Explainer:
         elif has_projection:
             self._spend(t["incident_id"], ids)
             result.update(word="queried", origin="observation_rule_v1", queried=True)
+            technique = None
             try:
                 reply = self.context(frame)
                 # The same delivery check as the advise result (review: Opus M4).
                 observed = read_fast_assistance(reply["fast_assistance"])
-                adopted = adopt_full_node_reply(advise, observed)
+                technique = observed.get("technique_knowledge")
+                # A technique answer is recorded on its own: it does not depend on
+                # M.I.O.'s reply, so the Fabric comparison below is not asked.
+                adopted = (None if technique is not None
+                           else adopt_full_node_reply(advise, observed))
             except Exception:  # noqa: BLE001 - a failed question costs nothing else
                 adopted = None
+                technique = None
             if adopted is None:
                 adopted = {**advise, "full_node_context_status": "unavailable"}
                 adopted.pop("fabric_knowledge_context_advisory", None)
                 adopted.pop("full_node_context_received_at", None)
+                adopted.pop("technique_knowledge", None)
+                if technique is not None and self._technique_bound(technique, ids):
+                    adopted["technique_knowledge"] = technique
             else:
                 result["adopted"] = True
             advise = adopted
@@ -1818,7 +1837,8 @@ def checkpoint_for_release_before_full_node_trace(path):
     full-node trace (74a6189; DESIGN-M5 2.9). Separate from the #392 conversion.
 
     Drops, from every recent row, the row-level `full_node_trace` and the
-    nested `explanation.fast_assistance.full_node_context.query_origin`; pending
+    nested `explanation.fast_assistance.full_node_context.query_origin` and
+    `technique_knowledge`; pending
     entries are not changed. The release before this change refuses either
     (`cursor_refused`, no READY). The checkpoint is validated first and nothing
     is written if it is refused. The original is kept as `cursor.json.pre-rollback`
@@ -1837,6 +1857,9 @@ def checkpoint_for_release_before_full_node_trace(path):
         node = fast.get("full_node_context") if type(fast) is dict else None
         if type(node) is dict and "query_origin" in node:
             del node["query_origin"]
+            hit = True
+        if type(node) is dict and "technique_knowledge" in node:
+            del node["technique_knowledge"]
             hit = True
         changed += hit
     decode_checkpoint(canonical(value))

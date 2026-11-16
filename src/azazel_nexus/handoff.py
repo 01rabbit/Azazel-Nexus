@@ -52,6 +52,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -1256,6 +1257,15 @@ _FN_PAST_REFERENCE = ("The past reference is not an answer to the current query 
 FN_ISO = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z")
 
 
+def _withhold_unscannable_name(row):
+    """A name the leak scanner would refuse (for example `A/B`, read as a path or a
+    base64 value) is withheld the same way as `name_withheld`; the scan is not relaxed."""
+    name = row["name"]
+    if name is not None and (scan_package(name) or scan_markdown(_md(name))):
+        return {**row, "name": None, "name_withheld": True}
+    return row
+
+
 def _full_node_context(row, snaps, now) -> dict:
     """`knowledge.full_node_context` (principal ui only), built from a closed allow-list.
 
@@ -1297,6 +1307,24 @@ def _full_node_context(row, snaps, now) -> dict:
     out = {"full_node_context_status": status, "outcome": outcome, "query_origin": origin,
            "transition_query": "not_recorded", "last_attempt": None, "last_receipt": None,
            "reference_state": "not_recorded"}
+    if full and full.get("technique_knowledge") is not None:
+        # Fixed keys only, copied one by one after the closed reader; the name
+        # has the same limit as the stored record and is a display label.
+        from .technique_knowledge import read_projection
+        try:
+            tk = read_projection(full["technique_knowledge"])
+        except ValueError:
+            refuse()
+        out["technique_knowledge"] = {
+            "version": tk["version"], "transport": tk["transport"],
+            "verification": tk["verification"], "snapshot_state": tk["snapshot_state"],
+            "as_of": tk["as_of"], "expires_at": tk["expires_at"],
+            "provenance": None if tk["provenance"] is None else dict(tk["provenance"]),
+            "authority": tk["authority"], "trust": tk["trust"],
+            "techniques": [_withhold_unscannable_name(
+                {k: (list(row[k]) if k == "tactics" else row[k]) for k in (
+                    "technique_id", "coverage", "useful_content", "name", "name_withheld",
+                    "tactics", "attack_version")}) for row in tk["techniques"]]}
     if trace is not None:
         out["transition_query"] = word(trace["transition_query"], _FN_QUERY)
         attempt, receipt = trace["last_attempt"], trace["last_receipt"]
@@ -1883,10 +1911,10 @@ def render_markdown(p: dict) -> str:
         add("### Full Node Context（ui のみ・未検証の助言）")
         add("")
         add("今回の遷移")
-        add(f"- 照会状態: `{fn['full_node_context_status']}`、評価結果: `{fn['outcome']}`、"
+        add(f"- Fabric 助言の照会状態（ATT&CK 照会とは別）: `{fn['full_node_context_status']}`、評価結果: `{fn['outcome']}`、"
             f"照会の由来: `{fn['query_origin']}`、この遷移の照会: `{fn['transition_query']}`")
         add("")
-        add("最後の照会")
+        add("最後の照会（Fabric 助言の経路のみ。ATT&CK technique 照会の成否は、下の ATT&CK 参考欄の通信・検証）")
         la = fn["last_attempt"]
         add("- 記録なし" if la is None else
             f"- 結果 `{la['result']}`、確定時刻 {_md(la['attempted_at'])}、"
@@ -1904,6 +1932,38 @@ def render_markdown(p: dict) -> str:
         add(f"- 参照の判定語: `{fn['reference_state']}`（判定時刻 {_md(fn['basis']['judged_at'])}）。"
             "これは今回の照会の回答ではありません。")
         add("")
+        tk = fn.get("technique_knowledge")
+        if tk is not None:
+            add("未検証の ATT&CK ラベル（参考）")
+            add(f"- 通信: `{tk['transport']}`、検証: `{tk['verification']}`、"
+                f"snapshot: `{tk['snapshot_state']}`（署名応答の受信は内容ありを意味しません）")
+            if tk["as_of"] is not None:
+                # judged_at is whole seconds (truncated), so the expiry is floored too: an
+                # answer is never shown as still valid after it lapsed; an unparsable time
+                # is said to be unjudgeable rather than treated as valid.
+                judged = _epoch(fn["basis"]["judged_at"])
+                expires = _epoch(tk["expires_at"]) if tk["expires_at"] is not None else None
+                if tk["expires_at"] is None:
+                    lapse_note = ""
+                elif judged is None or expires is None:
+                    lapse_note = "（期限を判定できません）"
+                elif judged >= math.floor(expires):
+                    lapse_note = "（この資料の生成時点で期限切れ）"
+                else:
+                    lapse_note = ""
+                add(f"- 基準時刻 {_md(tk['as_of'])}、期限 {_md(tk['expires_at'])}"
+                    + lapse_note + "、"
+                    f"権限 `{tk['authority']}`、信頼 `{tk['trust']}`")
+                if tk["provenance"] is not None:
+                    add("- 出典: " + "、".join(f"{k} `{tk['provenance'][k]}`" for k in sorted(tk["provenance"])))
+            for row in tk["techniques"]:
+                add(f"- {_md(row['technique_id'])}: 対応 `{row['coverage']}`、内容あり `{row['useful_content']}`"
+                    + (f"、名称 {_md(row['name'])}" if row["name"] else "")
+                    + ("、名称は表示を控えました（引継ぎ資料の秘匿検査、または名称の語の判定に当たったため。"
+                       "ATT&CK の対応はあります。「該当知識なし」ではありません）" if row["name_withheld"] else "")
+                    + (f"、戦術 {_md(', '.join(row['tactics']))}" if row["tactics"] else "")
+                    + (f"、版 {_md(row['attack_version'])}" if row["attack_version"] else ""))
+            add("")
 
     op = p["operator_actions"]
     add("## 9. 担当者の操作（監査記録）")

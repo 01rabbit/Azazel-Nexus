@@ -23,6 +23,7 @@ from typing import Any
 
 from azazel_nexus.audit import AuditLedger, AuditUnavailable
 from azazel_nexus.sanitizer import PrivacyClass, SanitizerPolicy
+from azazel_nexus.technique_knowledge import request_ids
 
 from .activation_markers import inspect_grant_marker
 from .knowledge_context_socket import MAX_CONTEXT_FRAME_BYTES, read_context_frame
@@ -57,7 +58,8 @@ _OBSERVATION_QUESTION = re.compile(
     rf"ATT&CK technique context: {_TECHNIQUE}(?: {_TECHNIQUE}){{0,7}}")
 _RATE_WINDOW_S = 60.0
 # Fixed request sections a client may name on the refusal it raises.
-_CLIENT_STAGES = frozenset({"refused_before_send", "transport", "verification"})
+_CLIENT_STAGES = frozenset({"refused_before_send", "transport", "verification",
+                            "technique_verification"})
 #: The unit whose grant marker admits a request (the broker's own unit).
 _UNIT = "azazel-knowledge-contextd.service"
 
@@ -147,6 +149,7 @@ class KnowledgeContextBroker:
             return {"refusal": "timeout"}
         reason = None
         phase = "frame"
+        technique_query = False
         try:
             # The grant this request is accepted under. A broker whose grant
             # was withdrawn (marker removed) accepts nothing, even in the
@@ -165,14 +168,21 @@ class KnowledgeContextBroker:
             # trusted local inputs can make this assertion; the shipped
             # factory has no egress client and cannot use it for network IO.
             # Context arrays and all other fields stay local.
-            if (set(wire_frame) != {"privacy_class", "question"}
+            if (set(wire_frame) == {"privacy_class", "techniques"}
+                    and wire_frame["privacy_class"] == PrivacyClass.P0_PUBLIC.value):
+                # Observation-origin technique query: 1 to 8 sorted, unique ids.
+                # Always judged by the observation gate.
+                technique_query = True
+                frame = {"techniques": request_ids(wire_frame["techniques"])}
+            elif (set(wire_frame) != {"privacy_class", "question"}
                     or wire_frame["privacy_class"] != PrivacyClass.P0_PUBLIC.value
                     or type(wire_frame["question"]) is not str
                     or not wire_frame["question"]
                     or len(wire_frame["question"]) > 2048):
                 raise ValueError
-            frame = {"question": wire_frame["question"]}
-            if _OBSERVATION_QUESTION.fullmatch(frame["question"]):
+            else:
+                frame = {"question": wire_frame["question"]}
+            if technique_query or _OBSERVATION_QUESTION.fullmatch(frame["question"]):
                 # Judged before the `requested` event and before the slot.
                 phase = "gate"
                 reason = self._observation_gate(start)
@@ -249,6 +259,16 @@ class KnowledgeContextBroker:
             self._audit(event)
         except Exception:
             pass
+        if technique_query:
+            # How far a technique query got, as a fixed word, so the caller can
+            # keep transport and verification apart. Other queries are unchanged.
+            if phase == "client":
+                stage = reason if reason in _CLIENT_STAGES else None
+            else:
+                stage = {"late": "transport", "verification": "verification"}.get(
+                    reason, "refused_before_send")
+            if stage is not None:
+                return {"refusal": outcome, "stage": stage}
         return {"refusal": outcome}
 
 

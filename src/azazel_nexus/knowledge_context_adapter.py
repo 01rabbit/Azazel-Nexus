@@ -47,6 +47,56 @@ def _instant(value: str) -> datetime:
         raise KnowledgeContextRefused("invalid envelope timestamp") from exc
 
 
+def _request_document(requested_at: str, entities: list) -> dict:
+    return {
+        "schema_version": "knowledge-context-request/v1",
+        # Never forward an incident ID or caller-supplied correlation.
+        # These opaque request-local references are returned with the
+        # response so the caller can correlate without exporting identity.
+        "request_id": secrets.token_hex(16),
+        "correlation_id": secrets.token_hex(16),
+        "source_product": "azazel_nexus",
+        "source_ref": "nexus:full-node-context-query",
+        "requested_at": requested_at,
+        "entities": entities,
+    }
+
+
+def _make_technique_request(techniques, *, privacy_class, policy, mission, alias_key,
+                            requested_at):
+    """The one closed entry that repeats an entity type: `attack-technique/v1`.
+
+    Exactly `{"techniques": [ids]}` with 1 to 8 sorted, unique ids of the
+    ATT&CK grammar. The sanitizer decides by key name and cannot carry a
+    repeated type, so the sanitizer gate here is the policy's own verdict on the
+    fixed observation question for the same ids (the question path's field and
+    P0 rule): a policy that does not admit that question admits no technique
+    query. Only the validated ids are sent, never the sanitizer's output, and
+    nothing about the existing `make_request` entries is widened.
+    """
+    from .fabric_boundary import (
+        KnowledgeContextUnavailable,
+        validate_knowledge_context_request,
+    )
+    from .technique_knowledge import ENTITY_TYPE, request_ids
+
+    try:
+        ids = request_ids(techniques)
+    except ValueError as exc:
+        raise KnowledgeContextRefused("technique set refused") from exc
+    decision = sanitize(
+        {"question": "ATT&CK technique context: " + " ".join(ids)},
+        privacy_class=privacy_class, policy=policy, mission=mission, alias_key=alias_key)
+    if not decision.allowed or decision.frame is None:
+        raise KnowledgeContextRefused("sanitizer refused Knowledge Context query")
+    try:
+        return validate_knowledge_context_request(_request_document(
+            requested_at, [{"entity_type": ENTITY_TYPE, "value": tid} for tid in ids]))
+    except (ImportError, TypeError, ValueError, KeyError, RecursionError,
+            KnowledgeContextUnavailable) as exc:
+        raise KnowledgeContextRefused("technique query does not fit Fabric v1") from exc
+
+
 def make_request(
     frame: Mapping,
     *,
@@ -63,6 +113,10 @@ def make_request(
     """
     if privacy_class is not PrivacyClass.P0_PUBLIC:
         raise KnowledgeContextRefused("only P0-public context queries are admitted")
+    if isinstance(frame, Mapping) and set(frame) == {"techniques"}:
+        return _make_technique_request(
+            frame["techniques"], privacy_class=privacy_class, policy=policy, mission=mission,
+            alias_key=alias_key, requested_at=requested_at)
     decision = sanitize(
         frame, privacy_class=privacy_class, policy=policy, mission=mission,
         alias_key=alias_key,
@@ -92,21 +146,9 @@ def make_request(
         if any(not isinstance(k, str) or not isinstance(v, str)
                for k, v in safe.items()):
             raise ValueError
-        request = validate_knowledge_context_request({
-            "schema_version": "knowledge-context-request/v1",
-            # Never forward an incident ID or caller-supplied correlation.
-            # These opaque request-local references are returned with the
-            # response so the caller can correlate without exporting identity.
-            "request_id": secrets.token_hex(16),
-            "correlation_id": secrets.token_hex(16),
-            "source_product": "azazel_nexus",
-            "source_ref": "nexus:full-node-context-query",
-            "requested_at": requested_at,
-            "entities": [
-                {"entity_type": name, "value": value}
-                for name, value in sorted(safe.items())
-            ],
-        })
+        request = validate_knowledge_context_request(_request_document(
+            requested_at,
+            [{"entity_type": name, "value": value} for name, value in sorted(safe.items())]))
     except (ImportError, TypeError, ValueError, KeyError, RecursionError,
             KnowledgeContextUnavailable) as exc:
         raise KnowledgeContextRefused("sanitized query does not fit Fabric v1") from exc

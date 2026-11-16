@@ -26,7 +26,18 @@ MAX_CONTEXT_RESPONSE_BYTES = 48 * 1024
 
 
 class KnowledgeContextUnavailable(ValueError):
-    """The optional local broker did not provide verified context."""
+    """The optional local broker did not provide verified context.
+
+    `stage` is the broker's fixed word for how far a technique query got
+    (one of `STAGES`), or None when the broker said nothing about it.
+    """
+
+    stage: str | None = None
+
+
+#: How far a technique query got, as the broker reports it on a refusal.
+STAGES = frozenset({"refused_before_send", "transport", "verification",
+                    "technique_verification"})
 
 
 class FullNodeContextStatus(str, Enum):
@@ -99,6 +110,10 @@ def request_context(frame: dict, *, deadline_s: float) -> dict:
             or reply["ok"] is not True or type(reply["result"]) is not dict):
         raise KnowledgeContextUnavailable("broker refused")
     result = reply["result"]
+    if set(result) == {"refusal", "stage"} and result["stage"] in STAGES:
+        refused = KnowledgeContextUnavailable("broker refused")
+        refused.stage = result["stage"]
+        raise refused
     if set(result) != {"response"} or type(result["response"]) is not dict:
         raise KnowledgeContextUnavailable("broker response shape")
     return result["response"]

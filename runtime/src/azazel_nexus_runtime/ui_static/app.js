@@ -715,8 +715,35 @@
       add(p, el("span", null, head + "：" + ja + " "), el("span", "en", text(value)));
       return p;
     }
-    add(node, line("フルノード照会", "fullnode", code), refLine(), line("Knowledge 依存", "kdep", dep));
+    /* An ATT&CK technique answer is a separate axis: it never turns "no Fabric advisory" into "the Full node did not answer". */
+    var techniqueSeen = !!fast.technique_knowledge && (code === "unavailable" || code === "not_queried");
+    add(node, line(techniqueSeen ? "フルノード助言（Fabric 経路）" : "フルノード照会", techniqueSeen ? "fullnode_fabric_axis" : "fullnode", code),
+      refLine(), line("Knowledge 依存", "kdep", dep));
+    if (fast.technique_knowledge) { add(node, techniqueBlock(fast.technique_knowledge)); }
     return node;
+  }
+
+  // ATT&CK technique labels (reference only): every value goes through el()/kv() (textContent).
+  function techniqueBlock(tk) {
+    var tkNode = block("未検証の ATT&CK ラベル（参考）");
+    var transportLabel = { received: "署名応答受信（内容ありを意味しない）", unavailable: "ATT&CK 照会は通信できませんでした", refused: "ATT&CK 照会は拒否されました" };
+    var verificationLabel = { ok: "検証済み", failed: "検証失敗（応答は採用しません）", not_run: "検証は実行されていません" };
+    var coverageLabel = { found: "対応あり", no_match: "該当なし", stale: "期限切れ", unavailable: "ATT&CK corpus 利用不可" };
+    add(tkNode, kv([["通信", transportLabel[tk.transport] || "不明"], ["検証", verificationLabel[tk.verification] || "不明"]]));
+    if (tk.as_of) {
+      var tkExp = tk.expires_at ? Date.parse(tk.expires_at) : null;
+      var tkNote = tkExp === null ? "" : isNaN(tkExp) ? "（期限を判定できません）" : tkExp <= Date.now() ? "（期限切れ・端末時計で判定）" : "";
+      add(tkNode, kv([["基準時刻", tk.as_of], ["期限", tk.expires_at ? text(tk.expires_at) + tkNote : tk.expires_at], ["権限", tk.authority], ["信頼", tk.trust === "unverified" ? "未検証" : tk.trust]]));
+    }
+    (tk.techniques || []).forEach(function (row) {
+      add(tkNode, el("p", "small", text(row.technique_id) + "：" + (coverageLabel[row.coverage] || "不明")
+        + "（内容あり：" + text(row.useful_content) + "）"));
+      if (row.useful_content) {
+        add(tkNode, kv([["名称（表示用ラベル）", row.name_withheld ? "表示を控えました（名称の語の判定による。ATT&CK の対応はあり、「該当知識なし」ではありません）" : row.name], ["戦術（表示用ラベル）", row.tactics], ["ATT&CK 版", row.attack_version]]));
+      }
+    });
+    add(tkNode, el("p", "small", "これらは参考ラベルであり、発生の根拠でも対処の指示でもありません。"));
+    return tkNode;
   }
 
   // -- handoff card (GET /api/handoff/<id>, display and save only) ---------------
@@ -1033,13 +1060,14 @@
         var fullOutcome = full.outcome;
         if (full.expires_at && Date.parse(full.expires_at) <= Date.now()) { fullOutcome = "expired"; }
         add(fullNode, el("p", "small", "期限表示は端末時計に依存し、画面更新時に再評価します。"));
-        add(fullNode, kv([["照会状態", full.full_node_context_status], ["出典状態", fullOutcome],
+        add(fullNode, kv([["Fabric 助言の照会状態（ATT&CK 照会とは別）", full.full_node_context_status], ["出典状態", fullOutcome],
           ["出典種別", full.source_kind], ["主張", full.claim_status], ["信頼区分", full.trust],
           ["snapshot状態", full.snapshot_state], ["生成時刻", full.generated_at], ["期限", full.expires_at]]));
         if (fullOutcome === "expired") { add(fullNode, el("p", "small", "この助言は期限切れです。")); }
         if ((full.limitations || []).length) { add(fullNode, el("p", "small", "制限："), list(full.limitations)); }
         add(fastNode, fullNode);
       }
+      if (full && full.technique_knowledge) { add(fastNode, techniqueBlock(full.technique_knowledge)); }
       (fast.knowledge || []).forEach(function (item) {
         add(fastNode, el("p", "small", "Knowledge Lite・報告済み未検証の参照: " + text(item.technique_id) + " — " + text(item.name)));
         if (item.summary) { add(fastNode, el("p", "small", text(item.summary))); }

@@ -280,20 +280,19 @@ def test_locald_sends_only_the_fixed_sentence_p0_frame_and_never_observation_val
             reply = service_().handle(locald_request(frame))
             assert reply["outcome"] == "context_observed"
             (query, wait), = sent
-            assert set(query) == {"privacy_class", "question"}
+            assert set(query) == {"privacy_class", "techniques"}
             assert query["privacy_class"] == "P0-public"
-            assert query["question"] == "ATT&CK technique context: " + " ".join(sorted(set(ids)))
-            assert QUESTION_FORM.fullmatch(query["question"])
+            assert query["techniques"] == sorted(set(ids))
+            assert all(re.fullmatch(r"T[0-9]{4}(\.[0-9]{3})?", t) for t in query["techniques"])
             blob = json.dumps(query)
             for value in (read_fast_transition(frame)["incident_id"], "Nmap", "secret", "sig-",
                           "3389", "edge_would", "ignore previous"):
                 assert value not in blob
             assert 0 < wait <= locald.KNOWLEDGE_MAX_S
-    assert locald.observation_context_question(["T1059", "T1059", "T1003.001"]) == \
-        "ATT&CK technique context: T1003.001 T1059"
+    assert locald.observation_technique_ids(["T1059", "T1059", "T1003.001"]) == ["T1003.001", "T1059"]
     for bad in ([], ["T105"], ["t1059"], ["T1059; drop"], [f"T{1000 + n}" for n in range(9)]):
         with pytest.raises(ValueError):
-            locald.observation_context_question(bad)
+            locald.observation_technique_ids(bad)
 
 
 def test_locald_budget_is_min_of_cap_and_remaining_minus_reserves(core, monkeypatch):
@@ -310,16 +309,24 @@ def test_locald_budget_is_min_of_cap_and_remaining_minus_reserves(core, monkeypa
     assert reply["fast_assistance"]["full_node_context_status"] == "unavailable"
 
 
-def test_locald_rerun_uses_no_lite_lookup_and_stamps_received_only(core, monkeypatch):
-    monkeypatch.setattr(locald, "request_context", lambda frame, *, deadline_s: {"r": 1})
+def test_locald_technique_answer_is_projected_and_never_given_to_the_core(core, monkeypatch):
+    from _technique_fixture import make_response
+    monkeypatch.setattr(locald, "request_context", lambda frame, *, deadline_s: make_response(
+        ["T1059", "T1059.001"], {"T1059": "found", "T1059.001": "no_match"},
+        content={"T1059.001": ("PowerShell", "execution", "15.1")}))
     reply = service_().handle(locald_request(obs_frame()))
     call, = core.calls
     assert call["knowledge_lookup"] is None
-    assert call["status"] is locald.FullNodeContextStatus.RECEIVED and call["response"] == {"r": 1}
+    # the core is run as for an unavailable Full lookup: no response reaches it
+    assert call["status"] is locald.FullNodeContextStatus.UNAVAILABLE and call["response"] is None
     fast = reply["fast_assistance"]
-    assert fast["full_node_context_status"] == "received"
-    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{6})?Z", fast["full_node_context_received_at"])
-    # the value passes the delivery reader (D's optional key)
+    assert fast["full_node_context_status"] == "unavailable"
+    assert "full_node_context_received_at" not in fast
+    record = fast["technique_knowledge"]
+    assert (record["transport"], record["verification"]) == ("received", "ok")
+    assert [(r["technique_id"], r["coverage"], r["useful_content"]) for r in record["techniques"]] == [
+        ("T1059", "found", True), ("T1059.001", "no_match", False)]
+    # the value passes the delivery reader
     assert read_fast_assistance(fast) == fast
     assert set(reply["timing"]) == {"context", "broker_ms", "total_ms"}
     assert reply["timing"]["context"] == "received"
@@ -341,6 +348,8 @@ def test_locald_unavailable_has_the_same_shape_and_no_received_at(core, monkeypa
     assert "full_node_context_received_at" not in fast
     assert core.calls[-1]["knowledge_lookup"] is None and core.calls[-1]["response"] is None
     assert reply["timing"]["context"] == "unavailable"
+    assert fast["technique_knowledge"]["transport"] == "unavailable"
+    assert fast["technique_knowledge"]["verification"] == "not_run"
     read_fast_assistance(fast)
 
 
