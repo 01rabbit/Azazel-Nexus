@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -155,7 +156,7 @@ def check_address(text: str) -> str:
     return str(address)
 
 
-def verify_server_chain(ca: Path, server: Path, host: str, now: datetime) -> None:
+def verify_server_chain(ca, server, host: str, now: datetime) -> None:
     """Chain to the commissioned CA only, name for `host`, validity at `now`.
 
     `openssl verify` runs the same libssl verification the client context uses
@@ -182,7 +183,24 @@ class Plan:
     now: str
 
 
-def plan(inp: Inputs) -> Plan:
+@dataclass
+class Scratch:
+    """Private 0700 directory (beside the output) for the copies that get verified."""
+    fd: int
+    path: str
+
+    def write(self, name: str, data: bytes) -> str:
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     0o600, dir_fd=self.fd)
+        try:
+            if os.write(fd, data) != len(data):
+                raise OSError
+        finally:
+            os.close(fd)
+        return f"{self.path}/{name}"
+
+
+def plan(inp: Inputs, scratch: Scratch) -> Plan:
     now_text = inp.now or datetime.now(UTC).isoformat()
     now = _utc_instant(now_text, "now_invalid")
     issued = inp.issued_at or now_text
@@ -225,14 +243,13 @@ def plan(inp: Inputs) -> Plan:
     if len(alias) < 32:
         raise Refused("alias_short")
     # purposes must not share bytes: seed, client key, alias key, peer public key
-    seen = {}
-    for label, blob in (("seed", seed), ("client_key", client_key), ("alias", alias),
-                        ("peer_public", bytes.fromhex(peer_public))):
-        digest = hashlib.sha256(blob).digest()
-        if digest in seen:
-            raise Refused("key_reuse")
-        seen[digest] = label
-    if alias[:32] == seed:
+    # Direct constant-time comparison; secrets are never hashed, not even internally.
+    blobs = (seed, client_key, alias, bytes.fromhex(peer_public))
+    for i, left in enumerate(blobs):
+        for right in blobs[i + 1:]:
+            if hmac.compare_digest(left, right):
+                raise Refused("key_reuse")
+    if hmac.compare_digest(alias[:32], seed):
         raise Refused("key_reuse")
     policy_raw = read_input(inp.policy, "policy")
     try:
@@ -244,13 +261,22 @@ def plan(inp: Inputs) -> Plan:
         raise Refused("policy_invalid") from None
 
     # TLS: same context construction as the client (CA loads, client cert/key pair).
+    # Verified: copies of the very bytes read above (written from them, 0600, in the
+    # private directory). The source paths are never reopened, and the bytes that
+    # are published are these same bytes.
     try:
-        knowledge_egress.tls_context(ca_certificate=str(inp.ca),
-                                     client_certificate=str(inp.client_cert),
-                                     client_key=str(inp.client_key))
+        ca_copy = scratch.write("ca.pem", ca)
+        cert_copy = scratch.write("client.pem", client_cert)
+        key_copy = scratch.write("client.key", client_key)
+        server_copy = scratch.write("server.pem", server_cert)
+    except OSError:
+        raise Refused("publish_failed") from None
+    try:
+        knowledge_egress.tls_context(ca_certificate=ca_copy, client_certificate=cert_copy,
+                                     client_key=key_copy)
     except Exception:
         raise Refused("tls_credentials_invalid") from None
-    verify_server_chain(inp.ca, inp.server_cert, inp.peer_host, now)
+    verify_server_chain(ca_copy, server_copy, inp.peer_host, now)
     try:
         pin = spki.spki_pin(certificate_der(server_cert))
         client_expiry = not_after(certificate_der(client_cert))
@@ -352,35 +378,56 @@ def _remove_tree(pfd: int, name: str) -> bool:
     return True
 
 
-def _open_parent(out: Path) -> tuple[int, str]:
-    absolute = Path(os.path.abspath(out))
+def _open_parent(out: Path) -> tuple[int, str, str]:
+    """Walk from "/" one component at a time (O_NOFOLLOW), checking every level.
+
+    Every directory must be owned by root or the caller and not group/other
+    writable; a root-owned sticky directory (/tmp) is tolerated as an ancestor
+    only. The final parent must be the caller's own and strictly private from
+    others' writes. Returns (parent fd, output name, parent path string).
+    """
     name = Path(out).name  # before normalisation: '..' must not collapse away
     if not name or name in (".", "..") or not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", name):
         raise Refused("output_name_invalid")
-    parent = absolute.parent
-    if os.path.realpath(parent) != str(parent):
-        raise Refused("output_parent_symlink")
+    parts = Path(os.path.abspath(out)).parent.parts[1:]
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    euid = os.geteuid()
+    fd = os.open("/", flags)
     try:
-        pfd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    except OSError:
-        raise Refused("output_parent_unusable") from None
-    info = os.fstat(pfd)
-    if info.st_uid != os.geteuid() or info.st_mode & 0o022:
-        os.close(pfd)
-        raise Refused("output_parent_permission")
-    try:
-        os.stat(name, dir_fd=pfd, follow_symlinks=False)
-    except FileNotFoundError:
-        return pfd, name
-    except OSError:
-        os.close(pfd)
-        raise Refused("output_parent_unusable") from None
-    os.close(pfd)
-    raise Refused("output_exists")
+        for index in range(len(parts) + 1):
+            info = os.fstat(fd)
+            last = index == len(parts)
+            writable = bool(info.st_mode & 0o022)
+            sticky_root = info.st_uid == 0 and info.st_mode & 0o1000
+            if last:
+                if info.st_uid != euid or writable:
+                    raise Refused("output_parent_permission")
+            elif info.st_uid not in (0, euid) or (writable and not sticky_root):
+                raise Refused("output_parent_permission")
+            if last:
+                break
+            try:
+                child = os.open(parts[index], flags, dir_fd=fd)
+            except OSError as exc:
+                import errno
+                raise Refused("output_parent_symlink" if exc.errno in (errno.ELOOP, errno.ENOTDIR)
+                              else "output_parent_unusable") from None
+            os.close(fd)
+            fd = child
+        try:
+            os.stat(name, dir_fd=fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return fd, name, "/" + "/".join(parts)
+        except OSError:
+            raise Refused("output_parent_unusable") from None
+        raise Refused("output_exists")
+    except BaseException:
+        os.close(fd)
+        raise
 
 
-def publish(built: Plan, out: Path, *, verify_loader: bool) -> str:
-    pfd, name = _open_parent(out)
+def publish(built: Plan, out: Path, pfd: int, name: str, parent: str, *,
+            verify_loader: bool) -> str:
     tmp = f".{name}.tmp-{os.getpid()}-{_counter()}"
     created = False
     try:
@@ -405,7 +452,7 @@ def publish(built: Plan, out: Path, *, verify_loader: bool) -> str:
             os.close(dfd)
         state = "staging_only"
         if verify_loader:
-            candidate = Path(os.path.abspath(out)).parent / tmp
+            candidate = Path(parent) / tmp
             result = cfg.load_commissioning_from(candidate, now=built.now)
             if result.status != "commissioned":
                 raise Refused(f"loader_{result.reason_code or result.status}")
@@ -422,7 +469,6 @@ def publish(built: Plan, out: Path, *, verify_loader: bool) -> str:
     finally:
         if created and not _remove_tree(pfd, tmp):
             print("warning: staging_directory_not_removed", file=sys.stderr)
-        os.close(pfd)
 
 
 _n = [0]
@@ -443,8 +489,25 @@ def build(inp: Inputs) -> tuple[str, Plan]:
     verify = os.geteuid() == 0
     if not verify and not inp.allow_unverified_staging:
         raise Refused("loader_pass_needs_root")
-    built = plan(inp)
-    return publish(built, inp.out, verify_loader=verify), built
+    pfd, name, parent = _open_parent(inp.out)
+    scratch_name = f".{name}.vfy-{os.getpid()}-{_counter()}"
+    made = False
+    try:
+        os.mkdir(scratch_name, 0o700, dir_fd=pfd)
+        made = True
+        sfd = os.open(scratch_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                      dir_fd=pfd)
+        try:
+            built = plan(inp, Scratch(sfd, f"{parent}/{scratch_name}"))
+        finally:
+            os.close(sfd)
+        return publish(built, inp.out, pfd, name, parent, verify_loader=verify), built
+    except OSError:
+        raise Refused("publish_failed") from None
+    finally:
+        if made and not _remove_tree(pfd, scratch_name):
+            print("warning: staging_directory_not_removed", file=sys.stderr)
+        os.close(pfd)
 
 
 class _Parser(argparse.ArgumentParser):

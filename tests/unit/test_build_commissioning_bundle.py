@@ -423,6 +423,81 @@ def test_azazel_root_env_refused(work, monkeypatch):
     assert refused(inputs(work)) == "azazel_root_set"
 
 
+def test_input_swapped_after_read_changes_neither_verification_nor_output(work, monkeypatch):
+    """Verification runs on copies of the bytes already read; sources are not reopened."""
+    w, out = work
+    originals = {n: (w / n).read_bytes() for n in ("ca.pem", "client.pem", "server.pem", "client.key")}
+    sources = {str(w / n) for n in originals}
+    seen = []
+
+    def swap():
+        put(w / "server.pem", (TLS / "server-wrong-name.crt").read_bytes(), 0o644)
+        put(w / "ca.pem", (TLS / "untrusted-ca.crt").read_bytes(), 0o644)
+        put(w / "client.pem", (TLS / "client-untrusted.crt").read_bytes(), 0o644)
+        put(w / "client.key", (TLS / "client-untrusted.key").read_bytes(), 0o600)
+
+    real_ctx, real_run = tool.knowledge_egress.tls_context, tool.subprocess.run
+
+    def ctx(**kw):
+        seen.extend(kw.values())
+        swap()
+        return real_ctx(**kw)
+
+    def run(command, **kw):
+        seen.extend(command)
+        swap()
+        return real_run(command, **kw)
+    monkeypatch.setattr(tool.knowledge_egress, "tls_context", ctx)
+    monkeypatch.setattr(tool.subprocess, "run", run)
+    tool.build(inputs(work))
+    assert not sources & set(map(str, seen))
+    d = out / "bundle"
+    for name, final in (("ca.pem", "ca.pem"), ("client.pem", "client.pem"),
+                        ("server.pem", None), ("client.key", "client.key")):
+        if final:
+            assert (d / final).read_bytes() == originals[name]
+    assert not any(p.name.startswith(".") for p in out.iterdir())
+
+
+def test_secrets_are_never_hashed(work, monkeypatch):
+    import hashlib as h
+    secrets_ = [SEED, SEED.hex().encode(), bytes(range(100, 132)), (TLS / "client.key").read_bytes()]
+    fed = []
+    real = h.sha256
+
+    def spy(data=b"", *a, **k):
+        fed.append(bytes(data))
+        return real(data, *a, **k)
+    monkeypatch.setattr(h, "sha256", spy)
+    monkeypatch.setattr(h, "new", lambda *a, **k: pytest.fail("hashlib.new used"))
+    tool.build(inputs(work))
+    assert fed  # public digests are still computed
+    for blob in fed:
+        for secret in secrets_:
+            assert secret not in blob and blob not in secrets_
+
+
+def test_intermediate_symlink_and_writable_ancestor(work, tmp_path):
+    w, out = work
+    real = tmp_path / "real"
+    (real / "sub").mkdir(parents=True)
+    (real / "sub").chmod(0o755)
+    (tmp_path / "lnk").symlink_to(real)
+    assert refused(inputs(work, out=tmp_path / "lnk" / "sub" / "b")) == "output_parent_symlink"
+    # swapped in after a string check is moot: the walk never follows a link
+    anc = tmp_path / "anc"
+    (anc / "mid").mkdir(parents=True)
+    (anc / "mid").chmod(0o755)
+    anc.chmod(0o777)
+    assert refused(inputs(work, out=anc / "mid" / "b")) == "output_parent_permission"
+    anc.chmod(0o775)
+    assert refused(inputs(work, out=anc / "mid" / "b")) == "output_parent_permission"
+    anc.chmod(0o755)
+    if os.geteuid() != 0:  # as root the loader rule rejects /tmp-based parents
+        tool.build(inputs(work, out=anc / "mid" / "b"))
+        assert (anc / "mid" / "b" / "registry.signed").exists()
+
+
 # ------------------------------------------------------------ root: real loader, service account (B1-4)
 
 _seq = [0]
@@ -507,8 +582,8 @@ def test_root_loader_refusal_publishes_nothing(work, monkeypatch):
     out = _stage_dir("refuse")
     real_plan = tool.plan
 
-    def bad_plan(inp):
-        built = real_plan(inp)
+    def bad_plan(inp, scratch):
+        built = real_plan(inp, scratch)
         data, mode = built.files["manifest.json"]
         manifest = json.loads(data)
         manifest["enabled"] = False
