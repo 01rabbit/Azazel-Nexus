@@ -251,3 +251,46 @@ def test_fractional_expiry_is_compared_as_time_not_text(tmp_path, monkeypatch):
     assert "（この資料の生成時点で期限切れ）" in _lapse_line(handoff.encode_files(pkg)["handoff.ja.md"].decode())
     tk["expires_at"] = "not-a-time"
     assert "（期限を判定できません）" in _lapse_line(handoff.encode_files(pkg)["handoff.ja.md"].decode())
+
+
+# ---- every official ATT&CK 20.1 name goes through the product handoff ----
+
+def _official():
+    path = __import__("pathlib").Path(__file__).parents[1] / "fixtures/attack-enterprise-20.1-extract.json"
+    return json.loads(path.read_text())["techniques"]
+
+
+def _md_for(tmp_path, monkeypatch, tag, tid, name, tactic):
+    from _technique_fixture import make_response
+    from azazel_nexus.incident_explain import _full_node_projection
+    from azazel_nexus.technique_knowledge import project_technique_response
+    resp = make_response([tid], content={tid: (name, tactic, "20.1")}, version="20.1")
+    record = project_technique_response(resp, [tid])
+    fast = {**BASE, "full_node_context": _full_node_projection(
+        None, "unavailable", "unavailable", technique_knowledge=record)}
+    root = _with_trace(tmp_path, tag, None, fast=fast)
+    monkeypatch.setenv("AZAZEL_ROOT", str(root))
+    pkg = handoff.build_package(example.INCIDENT, now=NOW, principal="ui", root=None)
+    return record, pkg, handoff.encode_files(pkg)
+
+
+def test_a_name_with_a_slash_is_shown_by_the_product_handoff(tmp_path, monkeypatch):
+    record, pkg, files = _md_for(tmp_path, monkeypatch, "slash", "T1033", "System Owner/User Discovery", "discovery")
+    md = files["handoff.ja.md"].decode()
+    row = pkg["knowledge"]["full_node_context"]["technique_knowledge"]["techniques"][0]
+    # The scanner is not relaxed: a name it would refuse is withheld, never shown or rejected whole.
+    assert row["name"] is None and row["name_withheld"] is True and row["useful_content"] is True
+    assert "System Owner" not in md and "名称は表示を控えました" in md
+
+
+def test_all_official_20_1_names_pass_through_the_handoff(tmp_path, monkeypatch):
+    bad = []
+    for i, t in enumerate(_official()):
+        try:
+            _md_for(tmp_path, monkeypatch, f"o{i}", t["id"], t["name"], (t["tactics"] or ["discovery"])[0])
+        except Exception as exc:  # noqa: BLE001 - collect, then assert
+            bad.append((t["id"], t["name"], type(exc).__name__, str(exc)[:60]))
+    assert not bad, bad[:20]
+    # names that pass the scanner are still shown (only the refused ones are withheld)
+    _, pkg, files = _md_for(tmp_path, monkeypatch, "plain", "T1110", "Brute Force", "credential-access")
+    assert "Brute Force" in files["handoff.ja.md"].decode()

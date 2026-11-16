@@ -1257,6 +1257,15 @@ _FN_PAST_REFERENCE = ("The past reference is not an answer to the current query 
 FN_ISO = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z")
 
 
+def _withhold_unscannable_name(row):
+    """A name the leak scanner would refuse (for example `A/B`, read as a path or a
+    base64 value) is withheld the same way as `name_withheld`; the scan is not relaxed."""
+    name = row["name"]
+    if name is not None and (scan_package(name) or scan_markdown(_md(name))):
+        return {**row, "name": None, "name_withheld": True}
+    return row
+
+
 def _full_node_context(row, snaps, now) -> dict:
     """`knowledge.full_node_context` (principal ui only), built from a closed allow-list.
 
@@ -1312,9 +1321,10 @@ def _full_node_context(row, snaps, now) -> dict:
             "as_of": tk["as_of"], "expires_at": tk["expires_at"],
             "provenance": None if tk["provenance"] is None else dict(tk["provenance"]),
             "authority": tk["authority"], "trust": tk["trust"],
-            "techniques": [{k: (list(row[k]) if k == "tactics" else row[k]) for k in (
-                "technique_id", "coverage", "useful_content", "name", "name_withheld",
-                "tactics", "attack_version")} for row in tk["techniques"]]}
+            "techniques": [_withhold_unscannable_name(
+                {k: (list(row[k]) if k == "tactics" else row[k]) for k in (
+                    "technique_id", "coverage", "useful_content", "name", "name_withheld",
+                    "tactics", "attack_version")}) for row in tk["techniques"]]}
     if trace is not None:
         out["transition_query"] = word(trace["transition_query"], _FN_QUERY)
         attempt, receipt = trace["last_attempt"], trace["last_receipt"]
