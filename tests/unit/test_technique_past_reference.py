@@ -422,12 +422,13 @@ def test_json_api_and_markdown_correspond(tmp_path, monkeypatch):
     assert j == api                                                       # the same derived value, API and handoff JSON
     for needle in ("更新前の観測に対する過去参照", "現在の判断への採用: 不可", "この回答は現在より前の観測に対するものです",
                    "過去の参照を保持しています。今回の照会結果ではありません。", "期限内（取得時点の期限に基づく参考",
-                   "遷移 #7、技術 T1110", "照会時刻 " + j["binding"]["attempted_at"] + "（受領時刻ではありません）",
+                   "台帳の遷移番号 #7、技術 T1110", "判定時刻 ", "照会時刻 " + j["binding"]["attempted_at"] + "（受領時刻ではありません）",
                    "knowledge:attack-stix", "knowledge:attack-coverage", "このリファレンスでは取消の有無を確認していません",
                    "ATT&CK の知識があることは、その事象が起きたことや原因を示しません",
                    "直近 20 件の窓から外れた incident の過去参照は残りません", "T1110", "対応 `found`"):
         assert needle in md, needle
     assert "取消されていません" not in md
+    assert j["judged_at"] in md
 
 
 def test_expired_closed_and_unjudgeable_words_in_the_handoff(tmp_path, monkeypatch):
@@ -450,8 +451,10 @@ def test_stubs_in_the_handoff_say_only_that_nothing_is_kept(tmp_path, monkeypatc
     assert j == {"kind": "past_unavailable", "state": state, "retained": False, "adoption": "not_adoptable",
                  "adoption_reason": state, "freshness": None, "revocation": "not_checked"}
     section = md.split("ATT&CK ラベルの過去参照")[1].split("## 9.")[0]
-    assert sentence in section and "今回の照会結果ではありません" in section and "現在の判断には使用できません" in section
-    for forbidden in ("対応 `", "内容あり", "期限の状態", "基準時刻", "出典:", "遷移 #", "過去の参照を保持しています"):
+    bullets = [l for l in section.splitlines() if l.startswith("- ")]
+    assert bullets == ["- " + sentence + "今回の照会結果ではありません。現在の判断には使用できません。"]   # one line only
+    for forbidden in ("対応 `", "内容あり", "期限の状態", "基準時刻", "出典:", "遷移", "過去の参照を保持しています",
+                      "種別", "採用", "取消", "20 件"):
         assert forbidden not in section, forbidden
 
 
@@ -525,6 +528,7 @@ def test_the_screen_words():
                    "容量の上限のため、過去の参照は保持していません。", "name_withheld"):
         assert needle in block, needle
     assert "innerHTML" not in block and "pastReferenceBlock(row.technique_past_reference)" in js
+    assert "台帳の遷移番号" in block and "端末時計" in block
     assert "取消されていません" not in block
 
 
@@ -619,13 +623,253 @@ def test_a_checkpoint_without_the_new_key_converts_as_before(tmp_path):
     assert d2.checkpoint_for_release_before_full_node_trace(p2) == 1
 
 
-# ---- the current path never reads a past reference ------------------------------------
+# ---- the current decision path never receives a past reference (spies on the real path) ----
 
-def test_the_current_decision_path_does_not_look_at_the_past_reference():
-    import inspect
-    from azazel_nexus import incident_explain
-    for fn in (daemon.Explainer._observe_full_node, daemon.Explainer._technique_bound,
-               incident_explain.adopt_full_node_reply, incident_explain.explanation_summary,
-               incident_explain.without_current_full_node):
-        source = inspect.getsource(fn)
-        assert KEY not in source and "technique_past_reference" not in source and "past." not in source
+def _spied(tmp_path, monkeypatch):
+    rig = answering(tmp_path)
+    seen = {"observe": [], "adopt": []}
+    original_observe = rig.e._observe_full_node
+
+    def observe(t, frame, sequence, mio):
+        seen["observe"].append(json.dumps([t, frame, sequence, mio], sort_keys=True))
+        return original_observe(t, frame, sequence, mio)
+
+    original_adopt = daemon.adopt_full_node_reply
+
+    def adopt(advise, observed):
+        seen["adopt"].append(json.dumps([advise, observed], sort_keys=True))
+        return original_adopt(advise, observed)
+
+    rig.e._observe_full_node = observe                                   # delegating spies: the product runs
+    monkeypatch.setattr(daemon, "adopt_full_node_reply", adopt)
+    return rig, seen
+
+
+def test_a_past_reference_never_reaches_observation_adoption_or_the_retention_table(tmp_path, monkeypatch):
+    rig, seen = _spied(tmp_path, monkeypatch)
+    rig.step(tx(ids=A_IDS))
+    rig.step(tx("updated", 3, ids=A_IDS, count=2), minute=1)             # a repeat; a past reference now exists
+    assert KEY in rig.row
+    ident = rig.row["incident_id"]
+    consumed = [tuple(p) for p in rig.e._consumed[ident]]
+    queries = len(rig.calls)
+    rig.step(tx("updated", 3, ids=A_IDS, count=3), minute=2)             # another repeat with the reference held
+    assert len(rig.calls) == queries                                     # no new Full query
+    assert [tuple(p) for p in rig.e._consumed[ident]] == consumed        # capture does not touch the table
+    assert "technique_knowledge" not in rig.current()
+    rig.step(tx("updated", 1, ids=B_IDS, count=4), minute=3)             # a new pair is asked with the reference held
+    assert len(rig.calls) == queries + 1
+    assert [tuple(p) for p in rig.e._consumed[ident]] == consumed + [("T1059", "T1110")]
+    assert seen["observe"]
+    for payload in (*seen["observe"], *seen["adopt"], *(json.dumps(f, sort_keys=True) for f in rig.calls + rig.advised)):
+        assert KEY not in payload and "capture_digest" not in payload
+    assert rig.current()["technique_knowledge"]["techniques"][1]["technique_id"] == "T1110"   # B is a new answer
+
+
+def test_a_late_explanation_with_a_held_reference_does_not_read_it_either(tmp_path, monkeypatch):
+    rig, seen = _spied(tmp_path, monkeypatch)
+    rig.step(tx(ids=A_IDS))
+    append_all(rig, tx("updated", 1, ids=B_IDS, count=2))
+    assert KEY in rig.row
+    rig.e.monotonic = lambda: 61
+    rig.e.poll()
+    assert seen["observe"]
+    for payload in (*seen["observe"], *seen["adopt"], *(json.dumps(f, sort_keys=True) for f in rig.calls)):
+        assert KEY not in payload and "capture_digest" not in payload
+
+
+# ---- review findings: an answer the row still shows as current is captured before a late settle ----
+
+def test_a_late_settle_captures_the_answer_the_row_still_shows_as_current(rig):
+    from azazel_nexus.incident_explain import pending_entry
+    ordinary = ("T1110", "T1566")
+    rig.step(tx(ids=A_IDS))                                              # sequence 1: answer A
+    append_all(rig, tx("updated", 3, ids=ordinary, count=2))             # sequence 2: not explained yet
+    rig.step(tx("updated", 1, ids=B_IDS, count=3), minute=1)             # sequence 3 (escalation): answer B is current
+    assert rig.current()["technique_knowledge"]["techniques"][1]["technique_id"] == "T1110"
+    answer_b = copy.deepcopy(rig.current()["technique_knowledge"])
+    rig.e.explain(pending_entry(tx("updated", 3, ids=ordinary, count=2)), 2)      # sequence 2 is explained late
+    assert "technique_knowledge" not in rig.current()                    # the late explanation does not show it
+    ref = rig.row[KEY]
+    assert ref["binding"]["observed_sequence"] == 3 and ref["binding"]["technique_ids"] == list(B_IDS)
+    assert ref["record"] == answer_b                                     # B was not lost; the older answer did not win
+
+
+# ---- freshness is compared as each layer does ----
+
+def _held(expires):
+    record = copy.deepcopy(_technique_record(("T1110",)))
+    record["expires_at"] = expires
+    binding = {"incident_id": "inc-" + "a" * 16, "observed_sequence": 3, "technique_ids": ["T1110"],
+               "attempted_at": "2026-11-16T00:00:00Z"}
+    return {"version": past.VERSION, "state": "retained", "binding": binding, "record": record,
+            "capture_digest": past.digest(binding, record)}
+
+
+def test_status_keeps_the_fraction_and_the_handoff_floors():
+    value = _held("2026-11-16T00:00:00.900000Z")
+    value["record"]["as_of"] = "2026-11-15T00:00:00Z"
+    base = datetime_epoch("2026-11-16T00:00:00Z")
+    assert past.view(value, "open", base + 0.1)["freshness"] == "fresh"           # .100 against an expiry of .900
+    assert past.view(value, "open", base + 0.9)["freshness"] == "expired"
+    assert past.view(value, "open", base + 0.1, whole_seconds=True)["freshness"] == "expired"   # the handoff's rule
+    assert past.view(value, "open", base - 1, whole_seconds=True)["freshness"] == "fresh"
+    assert past.view(value, "open", base + 0.1)["judged_at"] == "2026-11-16T00:00:00Z"
+    assert "judged_at" not in past.view({"version": past.VERSION, "state": "size_dropped"}, "open", base)
+
+
+# ---- design section 11 items 2, 9, 16, 17 ----
+
+def test_an_expired_current_answer_creates_no_past_reference(rig):
+    rig.step(tx(ids=A_IDS))
+    expires = datetime_epoch(rig.current()["technique_knowledge"]["expires_at"])
+    assert KEY not in rig.row and KEY not in ui_row(rig.e.recent, expires + 600)
+
+
+def test_without_a_checkpoint_a_restart_starts_empty(rig, tmp_path):
+    rig.step(tx(ids=A_IDS))
+    rig.step(tx("updated", 3, ids=A_IDS, count=2), minute=1)
+    assert KEY in rig.row
+    (tmp_path / "state" / "cursor.json").unlink()
+    again = make(tmp_path, mio=lambda _: None, observation_rule=lambda: None)
+    assert all(KEY not in row for row in again.recent)                   # nothing is rebuilt from the ledger
+
+
+def test_an_incident_leaving_the_window_takes_its_reference_and_leaves_the_ledger(rig):
+    from test_incident_explaind import records
+    from test_incident_explain import transition
+    rig.step(tx(ids=A_IDS))
+    rig.step(tx("updated", 3, ids=A_IDS, count=2), minute=1)
+    ident = rig.row["incident_id"]
+    assert KEY in rig.row
+    kept = len(records(rig.e))
+    for n in range(20):
+        other = transition(3, "opened", incident_id=f"inc-{0xb00 + n:016x}", first_seen=2000 + n, last_seen=2000 + n)
+        rig.e.observe_transition(other, sequence=10 + n)
+    assert ident not in [r["incident_id"] for r in rig.e.recent] and len(rig.e.recent) == 20
+    assert len(records(rig.e)) == kept                                   # the ledger is not touched
+
+
+def test_revocation_words_of_other_axes_never_enter_the_past_reference(rig):
+    row = _stored(rig)
+    api = ui_row([row])[KEY]
+    assert set(api) == {"kind", "state", "retained", "adoption", "adoption_reason", "freshness", "judged_at",
+                        "revocation", "binding", "technique_knowledge"}
+    assert api["revocation"] == "not_checked" and "revocation_status" not in json.dumps(api)
+    row["explanation"]["fast_assistance"] = {
+        "state": "frame_ready", "unknowns": [], "next_checks": [],
+        "dependency_outcome": {"knowledge": "available", "deception": "absent"},
+        "knowledge": [{"technique_id": "T1110", "name": "Brute Force", "summary": "", "freshness": "current",
+                       "as_of": "2026-11-12T00:00:00Z", "citation": "", "revocation_status": "revoked",
+                       "claim_status": "reported_unverified"}]}
+    assert not _reads(row)                                               # a revoked word is refused, not shown beside it
+
+
+# ---- the screen, run: pastReferenceBlock on the product's own view ----
+
+def _run_block(views):
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    js = (Path(__file__).parents[2] / "runtime/src/azazel_nexus_runtime/ui_static/app.js").read_text()
+    body = js[js.index("function pastReferenceBlock("):js.index("// ATT&CK technique labels (reference only)")]
+    script = """
+function el(tag, cls, t) { return { text: t === undefined || t === null ? "" : String(t), kids: [] }; }
+function add(parent) { for (var i = 1; i < arguments.length; i++) { if (arguments[i]) { parent.kids.push(arguments[i]); } } return parent; }
+function text(v) { return v === null || v === undefined ? "" : String(v); }
+function kv(rows) { var n = el("dl"); rows.forEach(function (r) { n.kids.push(el("dt", null, r[0]), el("dd", null, Array.isArray(r[1]) ? r[1].join(", ") : r[1])); }); return n; }
+function block(title) { var n = el("section"); n.kids.push(el("h3", null, title)); return n; }
+""" + body + """
+function flat(n) { return [n.text].concat((n.kids || []).map(flat)).join("\\n"); }
+var views = JSON.parse(process.argv[1]);
+console.log(JSON.stringify(views.map(function (v) { return flat(pastReferenceBlock(v)); })));
+"""
+    out = subprocess.run([node, "-e", script, json.dumps(views)], capture_output=True, text=True, check=True).stdout
+    return json.loads(out)
+
+
+def test_the_screen_renders_the_product_views(rig):
+    row = _stored(rig)
+    retained = ui_row([row], NOW)[KEY]
+    stubs = []
+    for state in ("binding_missing", "size_dropped"):
+        row[KEY] = {"version": past.VERSION, "state": state}
+        stubs.append(ui_row([row])[KEY])
+    shown, *stub_texts = _run_block([retained, *stubs])
+    for needle in ("更新前の観測に対する過去参照", "現在の判断への採用", "台帳の遷移番号 #1", "技術 T1059, T1059.001",
+                   "期限切れ：現在の判断には使用できません", "端末時計", "照会時刻（受領時刻ではありません）",
+                   "knowledge:attack-stix", "このリファレンスでは取消の有無を確認していません", "直近 20 件の窓から外れた"):
+        assert needle in shown, needle
+    sentences = ("対応する観測との結び付きが記録されていないため、過去の参照は保持していません。",
+                 "容量の上限のため、過去の参照は保持していません。")
+    for rendered, sentence in zip(stub_texts, sentences):
+        assert sentence in rendered and "今回の照会結果ではありません" in rendered
+        for forbidden in ("対応あり", "期限", "基準時刻", "出典", "T1059", "取消", "20 件", "採用"):
+            assert forbidden not in rendered, forbidden
+
+
+# ---- a real older checkout reads the converted checkpoint (NEXUS_ROLLBACK_TARGET_SRC method) ----
+
+_OLD_SCRIPT = (
+    "import sys; sys.path[:0] = [sys.argv[2] + '/src', sys.argv[2] + '/runtime/src']\n"
+    "import pathlib\n"
+    "from azazel_nexus_runtime import incident_explaind as d\n"
+    "from azazel_nexus.incident_explain import read_recent_incidents\n"
+    "base = pathlib.Path(sys.argv[1])\n"
+    "print('FILE', d.__file__)\n"
+    "raw = (base / 'state' / 'cursor.json').read_bytes()\n"
+    "try:\n"
+    "    v = d.decode_checkpoint(raw); print('DECODED', read_recent_incidents(d.canonical(v['recent'])) is not None)\n"
+    "except Exception: print('REFUSED')\n"
+    "x = d.Explainer(incidents=base / 'incidents', state=base / 'state', status_path=base / 'status2.json',\n"
+    "                clock=lambda: 0, monotonic=lambda: 0, mio=lambda _: None, knowledge=lambda _: ())\n"
+    "try:\n"
+    "    x.prepare(); print('PREPARED')\n"
+    "except Exception as exc: print('PREPARE_FAILED', exc)\n")
+
+
+def _old_run(old, tmp_path):
+    import subprocess
+    import sys
+    return subprocess.run([sys.executable, "-I", "-c", _OLD_SCRIPT, str(tmp_path), str(old)],
+                          capture_output=True, text=True).stdout
+
+
+def _checkpointed_with_a_reference(tmp_path):
+    from test_incident_explaind import append
+    e = make(tmp_path)
+    append(e)
+    e.poll()
+    row = _row_with_past()
+    e.recent = [row]
+    e.checkpoint()
+    path = tmp_path / "state" / "cursor.json"
+    assert KEY.encode() in path.read_bytes()
+    return path
+
+
+@pytest.mark.skipif(not __import__("os").environ.get("NEXUS_ROLLBACK_TARGET_SRC_9FD28B9"),
+                    reason="NEXUS_ROLLBACK_TARGET_SRC_9FD28B9 (a 9fd28b9 checkout) not set")
+def test_conversion_a_is_read_by_a_real_9fd28b9(tmp_path):
+    old = Path(__import__("os").environ["NEXUS_ROLLBACK_TARGET_SRC_9FD28B9"])
+    path = _checkpointed_with_a_reference(tmp_path)
+    before = _old_run(old, tmp_path)
+    assert str(old) in before and "REFUSED" in before and "PREPARE_FAILED" in before     # the old release refuses the key
+    assert daemon.checkpoint_for_release_before_past_reference(path) == 1
+    after = _old_run(old, tmp_path)
+    assert "DECODED True" in after and "PREPARED" in after, after
+    assert b"full_node_trace" in path.read_bytes()                       # what 9fd28b9 reads is kept
+
+
+@pytest.mark.skipif(not __import__("os").environ.get("NEXUS_ROLLBACK_TARGET_SRC"),
+                    reason="NEXUS_ROLLBACK_TARGET_SRC (a 74a6189 checkout) not set")
+def test_conversion_b_with_a_past_reference_is_read_by_a_real_74a6189(tmp_path):
+    old = Path(__import__("os").environ["NEXUS_ROLLBACK_TARGET_SRC"])
+    path = _checkpointed_with_a_reference(tmp_path)
+    assert "REFUSED" in _old_run(old, tmp_path)
+    assert daemon.checkpoint_for_release_before_full_node_trace(path) >= 1
+    after = _old_run(old, tmp_path)
+    assert "DECODED True" in after and "PREPARED" in after, after
+    assert KEY.encode() not in path.read_bytes() and b"full_node_trace" not in path.read_bytes()

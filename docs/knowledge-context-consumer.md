@@ -380,14 +380,14 @@ Derived words (never stored; one function for the API, the screen and the handof
 `kind` (`past_before_update`, `past_closed`, `past_unavailable`), `adoption`
 (always `not_adoptable`), `adoption_reason` (`past_observation`, `closed_incident`,
 `binding_missing`, `size_dropped`), `freshness` (`fresh`, `expired`, `unjudgeable`,
-or null for a stub; `expires_at` is compared as whole seconds) and `revocation`
+or null for a stub; the status view compares `expires_at` with its `now` as it is, the handoff floors both to whole seconds as its `judged_at` is, and the screen judges on the device clock; a retained view carries `judged_at`) and `revocation`
 (always `not_checked`: `technique-knowledge/1` has no revocation field). A stub
 carries none of the record's keys. `observed_sequence` is shown here (unlike the
-trace, whose sequence stays internal) because it is the binding. Names are copied
+trace, whose sequence stays internal) because it is the binding; it is the audit ledger's transition number, not a per-incident count. Names are copied
 as stored; the handoff's leak-scanner withholding is applied to the copy it emits
 and is never written back. The window is the latest 20 rows: a past reference leaves
 with its incident, the audit ledger is untouched, and the screen and the handoff say so.
-Under size pressure past references are reduced first (closed rows oldest first, then
+Known limits: a newer answer whose binding could not be made leaves an older retained reference in place (its own transition number is shown), and a stub left by size pressure can later be replaced by an older retained candidate, since there is no sequence to compare. Under size pressure past references are reduced first (closed rows oldest first, then
 open rows oldest first, pending rows included) before slow analysis and explanations.
 
 ### Recorded Full-node reference: row trace and reader

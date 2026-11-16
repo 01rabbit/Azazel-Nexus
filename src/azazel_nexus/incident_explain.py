@@ -1025,6 +1025,9 @@ def build_recent_incident(transition, previous=None, record=None, sequence=None)
                     "summary": "", "knowledge_refs": [], "failure_codes": []})
     past = previous.get("technique_past_reference") if previous else None
     if record is not None:
+        # Note (DESIGN-D53): this branch replaces the previous explanation without capturing its
+        # technique answer. The daemon never passes `record` here; a caller that starts to must
+        # capture first, as the branch below does.
         r = read_record(record)
         if r["incident_id"] != t["incident_id"]:
             raise ValueError("recent_refused")

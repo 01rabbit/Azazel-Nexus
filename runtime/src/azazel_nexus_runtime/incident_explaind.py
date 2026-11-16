@@ -1478,13 +1478,18 @@ class Explainer:
         latest = self._is_latest(row, t["incident_id"], sequence, t)
         shown_before = row["explanation"].get("state")
         quiet = attempt is None or attempt["word"] == "rule_absent"
-        if not latest and not quiet:
-            # A late answer was never shown as current: offer it as a past reference, built
-            # from this call's arguments only (never from the row's current, past or trace).
+        if not latest:
+            # The row's explanation is about to be replaced by one of an earlier transition.
+            # Capture before remove: an answer the row still shows as current (an escalation
+            # explained before this older transition) becomes the past reference first.
             past = technique_past_reference.merge(
-                row.get("technique_past_reference"),
-                technique_past_reference.capture_late(summary, t, sequence, attempt,
-                                                      utc_seconds(explained_at)))
+                row.get("technique_past_reference"), technique_past_reference.capture_from_row(row))
+            if not quiet:
+                # The late answer itself was never shown as current: offer it too, built from
+                # this call's arguments only (never from the row's current, past or trace).
+                past = technique_past_reference.merge(
+                    past, technique_past_reference.capture_late(
+                        summary, t, sequence, attempt, utc_seconds(explained_at)))
             if past is not None:
                 row["technique_past_reference"] = past
         row["explanation"] = summary if latest or quiet else without_current_full_node(summary)

@@ -22,7 +22,7 @@ import hashlib
 import json
 import math
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .technique_knowledge import read_projection
 
@@ -189,11 +189,14 @@ def read(value, incident_id):
     return value
 
 
-def view(value, row_state, now):
+def view(value, row_state, now, *, whole_seconds=False):
     """The derived, closed view of a stored past reference (never stored).
 
     One function for the API, the UI and the handoff, so the words agree.
     A past reference is never adoptable; `freshness` is a separate axis.
+    `now` is compared as it is (the status view); `whole_seconds=True` floors both
+    instants, as the handoff does for its whole-second `judged_at`. The screen
+    judges again on the device clock.
     """
     base = {"adoption": "not_adoptable", "revocation": "not_checked", "retained": False}
     if not is_retained(value):
@@ -201,17 +204,20 @@ def view(value, row_state, now):
         return {**base, "kind": "past_unavailable", "state": state,
                 "adoption_reason": state, "freshness": None}
     record = value["record"]
-    freshness = "unjudgeable"
+    freshness, judged_at = "unjudgeable", None
     if type(now) in (int, float) and math.isfinite(now) and now >= 0:
+        judged_at = datetime.fromtimestamp(int(now), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
-            freshness = "expired" if math.floor(now) >= math.floor(_instant(record["expires_at"])) else "fresh"
+            expires = _instant(record["expires_at"])
+            lapsed = (math.floor(now) >= math.floor(expires)) if whole_seconds else now >= expires
+            freshness = "expired" if lapsed else "fresh"
         except ValueError:
             freshness = "unjudgeable"
     closed = row_state == "closed"
     return {**base, "retained": True, "state": "retained",
             "kind": "past_closed" if closed else "past_before_update",
             "adoption_reason": "closed_incident" if closed else "past_observation",
-            "freshness": freshness,
+            "freshness": freshness, "judged_at": judged_at,
             "binding": {"incident_id": value["binding"]["incident_id"],
                         "observed_sequence": value["binding"]["observed_sequence"],
                         "technique_ids": list(value["binding"]["technique_ids"]),

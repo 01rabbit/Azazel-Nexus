@@ -1281,27 +1281,29 @@ _PAST_STUB_JA = {"binding_missing": "対応する観測との結び付きが記�
 def _past_reference_md(pr, add):
     """The Markdown of `technique_past_reference` (same values as the JSON, same words as the UI)."""
     add("ATT&CK ラベルの過去参照（ui のみ・現在の観測に対する回答ではありません）")
+    if pr["kind"] == "past_unavailable":
+        # A stub is one line: nothing was kept, so nothing else is said about an answer.
+        add(f"- {_PAST_STUB_JA[pr['state']]}今回の照会結果ではありません。現在の判断には使用できません。")
+        add("")
+        return
     add(f"- 種別: {_PAST_KIND_JA[pr['kind']]}")
     add("- 現在の判断への採用: 不可")
-    if pr["kind"] == "past_unavailable":
-        add(f"- {_PAST_STUB_JA[pr['state']]}今回の照会結果ではありません。現在の判断には使用できません。")
-    else:
-        add(f"- 理由: {_PAST_REASON_JA[pr['adoption_reason']]}")
-        add("- 過去の参照を保持しています。今回の照会結果ではありません。")
-        add(f"- 期限の状態: {_PAST_FRESH_JA[pr['freshness']]}")
-        b, tk = pr["binding"], pr["technique_knowledge"]
-        add(f"- 対象の観測: 遷移 #{_md(b['observed_sequence'])}、技術 {_md(', '.join(b['technique_ids']))}、"
-            f"照会時刻 {_md(b['attempted_at'])}（受領時刻ではありません）")
-        add(f"- 基準時刻 {_md(tk['as_of'])}、期限 {_md(tk['expires_at'])}、"
-            f"権限 `{tk['authority']}`、信頼 `{tk['trust']}`")
-        add("- 出典: " + "、".join(f"{k} `{tk['provenance'][k]}`" for k in sorted(tk["provenance"])))
-        for row in tk["techniques"]:
-            add(f"- {_md(row['technique_id'])}: 対応 `{row['coverage']}`、内容あり `{row['useful_content']}`"
-                + (f"、名称 {_md(row['name'])}" if row["name"] else "")
-                + ("、名称は表示を控えました（引継ぎ資料の秘匿検査、または名称の語の判定に当たったため。"
-                   "ATT&CK の対応はあります。「該当知識なし」ではありません）" if row["name_withheld"] else "")
-                + (f"、戦術 {_md(', '.join(row['tactics']))}" if row["tactics"] else "")
-                + (f"、版 {_md(row['attack_version'])}" if row["attack_version"] else ""))
+    add(f"- 理由: {_PAST_REASON_JA[pr['adoption_reason']]}")
+    add("- 過去の参照を保持しています。今回の照会結果ではありません。")
+    add(f"- 期限の状態（判定時刻 {_md(pr['judged_at'])} 時点）: {_PAST_FRESH_JA[pr['freshness']]}")
+    b, tk = pr["binding"], pr["technique_knowledge"]
+    add(f"- 対象の観測: 台帳の遷移番号 #{_md(b['observed_sequence'])}、技術 {_md(', '.join(b['technique_ids']))}、"
+        f"照会時刻 {_md(b['attempted_at'])}（受領時刻ではありません）")
+    add(f"- 基準時刻 {_md(tk['as_of'])}、期限 {_md(tk['expires_at'])}、"
+        f"権限 `{tk['authority']}`、信頼 `{tk['trust']}`")
+    add("- 出典: " + "、".join(f"{k} `{tk['provenance'][k]}`" for k in sorted(tk["provenance"])))
+    for row in tk["techniques"]:
+        add(f"- {_md(row['technique_id'])}: 対応 `{row['coverage']}`、内容あり `{row['useful_content']}`"
+            + (f"、名称 {_md(row['name'])}" if row["name"] else "")
+            + ("、名称は表示を控えました（引継ぎ資料の秘匿検査、または名称の語の判定に当たったため。"
+               "ATT&CK の対応はあります。「該当知識なし」ではありません）" if row["name_withheld"] else "")
+            + (f"、戦術 {_md(', '.join(row['tactics']))}" if row["tactics"] else "")
+            + (f"、版 {_md(row['attack_version'])}" if row["attack_version"] else ""))
     add("- このリファレンスでは取消の有無を確認していません。")
     add("- 参考ラベルであり、発生の根拠でも対処の指示でもありません。ATT&CK の知識があることは、その事象が起きたことや原因を示しません。")
     add("- 直近 20 件の窓から外れた incident の過去参照は残りません（監査台帳の記録は残ります）。")
@@ -1381,7 +1383,7 @@ def _full_node_context(row, snaps, now) -> dict:
             _past.read(row["technique_past_reference"], row["incident_id"])
         except ValueError:
             refuse()
-        pv = _past.view(row["technique_past_reference"], row["state"], now)
+        pv = _past.view(row["technique_past_reference"], row["state"], now, whole_seconds=True)
         if "technique_knowledge" in pv:
             pv["technique_knowledge"] = _technique_copy(pv["technique_knowledge"])
         out["technique_past_reference"] = pv
