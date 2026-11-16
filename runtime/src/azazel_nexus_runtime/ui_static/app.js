@@ -739,7 +739,7 @@
       add(tkNode, el("p", "small", text(row.technique_id) + "：" + (coverageLabel[row.coverage] || "不明")
         + "（内容あり：" + text(row.useful_content) + "）"));
       if (row.useful_content) {
-        add(tkNode, kv([["名称（表示用ラベル）", row.name_withheld ? "表示を控えました" : row.name], ["戦術（表示用ラベル）", row.tactics], ["ATT&CK 版", row.attack_version]]));
+        add(tkNode, kv([["名称（表示用ラベル）", row.name_withheld ? "表示を控えました（名称の語の判定による。ATT&CK の対応はあり、「該当知識なし」ではありません）" : row.name], ["戦術（表示用ラベル）", row.tactics], ["ATT&CK 版", row.attack_version]]));
       }
     });
     add(tkNode, el("p", "small", "これらは参考ラベルであり、発生の根拠でも対処の指示でもありません。"));

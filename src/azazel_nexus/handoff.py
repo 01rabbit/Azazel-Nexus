@@ -1957,7 +1957,8 @@ def render_markdown(p: dict) -> str:
             for row in tk["techniques"]:
                 add(f"- {_md(row['technique_id'])}: 対応 `{row['coverage']}`、内容あり `{row['useful_content']}`"
                     + (f"、名称 {_md(row['name'])}" if row["name"] else "")
-                    + ("、名称は表示を控えました" if row["name_withheld"] else "")
+                    + ("、名称は表示を控えました（引継ぎ資料の秘匿検査、または名称の語の判定に当たったため。"
+                       "ATT&CK の対応はあります。「該当知識なし」ではありません）" if row["name_withheld"] else "")
                     + (f"、戦術 {_md(', '.join(row['tactics']))}" if row["tactics"] else "")
                     + (f"、版 {_md(row['attack_version'])}" if row["attack_version"] else ""))
             add("")

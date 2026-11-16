@@ -281,6 +281,8 @@ def test_a_name_with_a_slash_is_shown_by_the_product_handoff(tmp_path, monkeypat
     # The scanner is not relaxed: a name it would refuse is withheld, never shown or rejected whole.
     assert row["name"] is None and row["name_withheld"] is True and row["useful_content"] is True
     assert "System Owner" not in md and "名称は表示を控えました" in md
+    assert "「該当知識なし」ではありません" in md and "対応 `found`、内容あり `True`" in md
+    assert "T1033" in md and "未検証" in md
 
 
 def test_all_official_20_1_names_pass_through_the_handoff(tmp_path, monkeypatch):
@@ -294,3 +296,27 @@ def test_all_official_20_1_names_pass_through_the_handoff(tmp_path, monkeypatch)
     # names that pass the scanner are still shown (only the refused ones are withheld)
     _, pkg, files = _md_for(tmp_path, monkeypatch, "plain", "T1110", "Brute Force", "credential-access")
     assert "Brute Force" in files["handoff.ja.md"].decode()
+
+
+def test_a_withheld_name_does_not_take_a_safe_neighbour_with_it(tmp_path, monkeypatch):
+    # Same package: one name the scanner refuses, one it accepts; a private path elsewhere is still refused.
+    from _technique_fixture import make_response
+    from azazel_nexus.incident_explain import _full_node_projection
+    from azazel_nexus.technique_knowledge import project_technique_response
+    ids = ["T1033", "T1110"]
+    resp = make_response(ids, content={"T1033": ("System Owner/User Discovery", "discovery", "20.1"),
+                                       "T1110": ("Brute Force", "credential-access", "20.1")}, version="20.1")
+    record = project_technique_response(resp, ids)
+    fast = {**BASE, "full_node_context": _full_node_projection(None, "unavailable", "unavailable",
+                                                               technique_knowledge=record)}
+    root = _with_trace(tmp_path, "nb", None, fast=fast)
+    monkeypatch.setenv("AZAZEL_ROOT", str(root))
+    pkg = handoff.build_package(example.INCIDENT, now=NOW, principal="ui", root=None)
+    rows = {r["technique_id"]: r for r in pkg["knowledge"]["full_node_context"]["technique_knowledge"]["techniques"]}
+    assert rows["T1033"]["name"] is None and rows["T1110"]["name"] == "Brute Force"
+    md = handoff.encode_files(pkg)["handoff.ja.md"].decode()
+    assert "Brute Force" in md
+    # the exemption is for the technique name only: a private path in another field is still refused
+    pkg["knowledge"]["full_node_context"]["technique_knowledge"]["provenance"] = {"x": "/home/someone/secret"}
+    with pytest.raises(handoff.HandoffRefused):
+        handoff.encode_files(pkg)
