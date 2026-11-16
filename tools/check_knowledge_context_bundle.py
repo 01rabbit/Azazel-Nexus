@@ -7,8 +7,16 @@ loader's fixed reason code. Nothing is written, enabled, granted or sent: no
 socket is opened and the bundle is only read. It is not an activation step and
 a pass is not a grant.
 
-Beyond the loader it checks two things the loader does not look at:
+Beyond the loader it checks what the loader does not look at:
   * client.pem notAfter is later than --now;
+  * with --server-cert CERT, that the Knowledge server certificate chains to
+    the bundle's ca.pem only (no system store), carries the registry
+    endpoint host as a name, is valid at --now, and has the SPKI pin the
+    signed registry holds. The loader never sees the server certificate, so
+    without this option the CA-to-server chain is not checked here at all;
+    the TLS handshake still fails closed on a wrong CA, name or pin. ca.pem
+    is read by path here; the loader has already required it to be a
+    root-owned regular file that the service account cannot replace;
   * max_ttl_seconds against 30, the Knowledge-side ceiling. Nexus needs its
     value to be >= Knowledge's, so a value above 30 is only a warning that the
     two sides may disagree; the value is never changed.
@@ -33,6 +41,7 @@ import base64
 import hashlib
 import os
 import re
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -93,7 +102,51 @@ def print_pins(path: Path) -> int:
     return 0
 
 
-def check_bundle(directory: Path, now: datetime) -> int:
+def read_server_cert(path: Path) -> bytes:
+    """Read the certificate once, without following a final symlink."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            raw = handle.read(65537)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if not raw or len(raw) > 65536:
+        raise ValueError("size")
+    return raw
+
+
+def check_server_cert(directory: Path, raw: bytes, host: str, pin: str,
+                      now: datetime) -> str | None:
+    """Fixed refusal word, or None when chain, name, validity and pin hold.
+
+    The bytes that were read are what is verified: openssl reads the
+    certificate from stdin, and the pin is computed from the same bytes.
+    """
+    try:
+        der = certificate_der(raw)
+        actual = spki.spki_pin(der)
+    except (ValueError, IndexError, spki.CertificateRefused):
+        return "server_cert_unparsable"
+    pem = (b"-----BEGIN CERTIFICATE-----\n"
+           + base64.encodebytes(der) + b"-----END CERTIFICATE-----\n")
+    command = ["openssl", "verify", "-no-CApath", "-no-CAstore",
+               "-CAfile", str(directory / "ca.pem"), "-purpose", "sslserver",
+               "-verify_hostname", host, "-attime", str(int(now.timestamp()))]
+    try:
+        done = subprocess.run(command, input=pem, capture_output=True, timeout=30,
+                              check=False, env={"PATH": "/usr/bin:/bin"})
+    except (OSError, subprocess.SubprocessError):
+        return "server_cert_check_unavailable"
+    if done.returncode != 0:
+        return "server_cert_chain_or_name"
+    if actual != pin:
+        return "server_pin_mismatch"
+    return None
+
+
+def check_bundle(directory: Path, now: datetime, server_cert: Path | None = None) -> int:
     result = cfg.load_commissioning_from(directory, now=now.isoformat())
     if result.status != "commissioned":
         print(f"refused: {result.reason_code or result.status}")
@@ -110,6 +163,17 @@ def check_bundle(directory: Path, now: datetime) -> int:
     if expiry <= now:
         print("refused: client_cert_expired")
         return 1
+    if server_cert is not None:
+        try:
+            raw = read_server_cert(server_cert)
+        except (OSError, ValueError):
+            print("refused: server_cert_unreadable")
+            return 1
+        refusal = check_server_cert(directory, raw, peer.endpoint.host,
+                                    peer.endpoint.certificate_pin, now)
+        if refusal is not None:
+            print(f"refused: {refusal}")
+            return 1
     print("commissioned")
     print(f"registry_version: {result.registry_version}")
     print(f"peer_id: {_digest(inner.peer_id)}")
@@ -117,6 +181,9 @@ def check_bundle(directory: Path, now: datetime) -> int:
     print(f"server_pin: present ({_digest(peer.endpoint.certificate_pin)})")
     print(f"max_ttl_seconds: {ttl}")
     print(f"client_cert_not_after: {expiry.isoformat()}")
+    print("server_cert: " + ("verified (chain to ca.pem, endpoint host, validity, pin)"
+                             if server_cert is not None else
+                             "not_checked (pass --server-cert to check the CA chain)"))
     if ttl > KNOWLEDGE_TTL_CEILING:
         print(f"warning: ttl_above_knowledge_ceiling (max_ttl_seconds {ttl} > "
               f"{KNOWLEDGE_TTL_CEILING}, the Knowledge 41cad719 acceptance ceiling); "
@@ -129,7 +196,7 @@ class _FixedUsageParser(argparse.ArgumentParser):
 
     def error(self, message):  # noqa: ARG002 - message may contain arguments
         print("usage: check_knowledge_context_bundle.py [directory] [--now ISO8601] "
-              "| --pin CERT (arguments are not echoed)", file=sys.stderr)
+              "[--server-cert CERT] | --pin CERT (arguments are not echoed)", file=sys.stderr)
         raise SystemExit(2)
 
 
@@ -137,6 +204,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = _FixedUsageParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("directory", nargs="?", help="bundle directory (default: shipped path)")
     parser.add_argument("--now", help="ISO 8601 timestamp with offset (default: now)")
+    parser.add_argument("--server-cert", metavar="CERT",
+                        help="Knowledge server certificate to check against ca.pem and the pin")
     parser.add_argument("--pin", metavar="CERT", help="print both pin forms for a PEM/DER certificate")
     try:
         args = parser.parse_args(argv)
@@ -149,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
               "(sudo -u azknowledgeegress -g azknowledgeegress ...; not azknowledge-context-client)", file=sys.stderr)
         return 2
     if args.pin:
-        if args.directory or args.now:
+        if args.directory or args.now or args.server_cert:
             print("usage: --pin takes no directory or --now", file=sys.stderr)
             return 2
         return print_pins(Path(args.pin))
@@ -166,7 +235,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     directory = (Path(os.path.abspath(args.directory)) if args.directory
                  else runtime_paths.knowledge_context_commission_dir())
-    return check_bundle(directory, now)
+    server_cert = Path(os.path.abspath(args.server_cert)) if args.server_cert else None
+    return check_bundle(directory, now, server_cert)
 
 
 if __name__ == "__main__":

@@ -222,3 +222,91 @@ def test_commissioned_without_any_socket_or_tls_creation(root, capsys, monkeypat
     monkeypatch.setattr(ssl, "SSLSocket", forbid)
     code, out = run(d, capsys, "--now", NOW)
     assert code == 0 and out.startswith("commissioned"), out
+
+
+# ---- --server-cert: CA chain, endpoint host, validity and pin (B1-4, after U59) ----
+
+def build_for(root, *, host, pin, ca=TLS / "trusted-ca.crt"):
+    return build_bundle(
+        root / "etc/azazel/knowledge-context/commissioning", peer_id="az04-test",
+        peer_address="192.0.2.10", peer_host=host, peer_port=443,
+        certificate_pin=pin,
+        peer_signing_key=SigningKey(bytes(range(32, 64))),
+        registry_signing_key=SigningKey(bytes(range(32))),
+        ca=ca, client_cert=TLS / "client.crt", client_key=TLS / "client.key")
+
+
+def test_server_cert_verified(root, capsys):
+    d = build(root)
+    code, out = run(d, capsys, "--now", NOW, "--server-cert", str(TLS / "server-fetch.crt"))
+    assert code == 0 and out.startswith("commissioned")
+    assert "server_cert: verified" in out
+
+
+def test_without_server_cert_says_not_checked(root, capsys):
+    d = build(root)
+    code, out = run(d, capsys, "--now", NOW)
+    assert code == 0 and "server_cert: not_checked" in out
+
+
+@pytest.mark.parametrize("cert,pin_key,ca,word", [
+    # name: server.crt carries only DNS:localhost, the endpoint host is fetch.azazel.test.
+    ("server.crt", "server-fetch", "trusted-ca.crt", "server_cert_chain_or_name"),
+    ("server-wrong-name.crt", "server-fetch", "trusted-ca.crt", "server_cert_chain_or_name"),
+    # ca.pem replaced by another CA: the loader still commissions it, the chain check does not.
+    ("server-fetch.crt", "server-fetch", "untrusted-ca.crt", "server_cert_chain_or_name"),
+    # ca.pem replaced by a leaf certificate (the U59 B1-4 finding).
+    ("server-fetch.crt", "server-fetch", "client.crt", "server_cert_chain_or_name"),
+    # chain and name hold, the registry pins another key.
+    ("server-fetch.crt", "server", "trusted-ca.crt", "server_pin_mismatch"),
+])
+def test_server_cert_refusals(root, capsys, cert, pin_key, ca, word):
+    d = build_for(root, host="fetch.azazel.test", pin=PINS[pin_key], ca=TLS / ca)
+    assert run(d, capsys, "--now", NOW)[0] == 0  # the loader alone commissions every one of these
+    code, out = run(d, capsys, "--now", NOW, "--server-cert", str(TLS / cert))
+    assert code == 1 and out.strip() == f"refused: {word}"
+
+
+def test_server_cert_not_yet_valid_at_now_refused(root, capsys):
+    """--now before the server certificate's notBefore (2026-10-17) but after the client's."""
+    d = build(root)
+    early = "2026-10-01T00:00:00+00:00"
+    assert run(d, capsys, "--now", early)[0] == 0
+    code, out = run(d, capsys, "--now", early, "--server-cert", str(TLS / "server-fetch.crt"))
+    assert code == 1 and out.strip() == "refused: server_cert_chain_or_name"
+
+
+def test_server_cert_symlink_and_missing_refused(root, capsys, tmp_path):
+    d = build(root)
+    link = tmp_path / "server-link.crt"
+    link.symlink_to(TLS / "server-fetch.crt")
+    assert run(d, capsys, "--now", NOW, "--server-cert", str(link)) == (1, "refused: server_cert_unreadable\n")
+    assert run(d, capsys, "--now", NOW, "--server-cert", str(tmp_path / "absent.crt")) == (
+        1, "refused: server_cert_unreadable\n")
+
+
+def test_server_cert_garbage_refused(root, capsys, tmp_path):
+    d = build(root)
+    junk = tmp_path / "junk.crt"
+    junk.write_bytes(b"not a certificate")
+    code, out = run(d, capsys, "--now", NOW, "--server-cert", str(junk))
+    assert code == 1 and out.startswith("refused: server_cert_")
+
+
+def test_server_cert_bytes_verified_are_the_bytes_read(root, capsys, monkeypatch):
+    """openssl gets the certificate on stdin, from the single read; no path to the cert is passed."""
+    d = build(root)
+    seen = {}
+    real = tool.subprocess.run
+
+    def spy(command, **kw):
+        seen["argv"], seen["input"] = command, kw.get("input")
+        return real(command, **kw)
+    monkeypatch.setattr(tool.subprocess, "run", spy)
+    code, _ = run(d, capsys, "--now", NOW, "--server-cert", str(TLS / "server-fetch.crt"))
+    assert code == 0
+    assert str(TLS / "server-fetch.crt") not in seen["argv"] and seen["input"].startswith(b"-----BEGIN")
+
+
+def test_server_cert_with_pin_is_usage(capsys):
+    assert tool.main(["--pin", str(TLS / "server.crt"), "--server-cert", str(TLS / "server.crt")]) == 2
