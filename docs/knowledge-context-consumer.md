@@ -324,7 +324,10 @@ In the handoff package only, a name that the package's leak scanners (`unix_path
 would flag, for example one containing `/`, is also withheld (`name: null`, `name_withheld: true`), because
 the scanners fail the whole package closed; the scanners are not relaxed. `/api/view` and the screen are not
 scanned that way and still show such a name, so the same row may show a name on screen and
-`name_withheld: true` in the handoff; `name_withheld` there means either reason, never that coverage changed.
+`name_withheld: true` in the handoff; `name_withheld` there means either reason, never that coverage changed. The handoff Markdown says so in words (the name was withheld by the
+handoff secrecy check or by the name word screen; the ATT&CK mapping exists; it is not "no knowledge") and
+also prints the technique's provenance. The screen renders only `/api/view`, where a name can be withheld
+by the word screen alone, so the screen names only that reason.
 The stored record also carries `as_of`, `expires_at`, `provenance` (the two fixed values), `authority`
 (`advisory_only`) and `trust` (`unverified`); the reader re-validates them and the UI shows them as text.
 The Knowledge side must emit exactly these constants.
