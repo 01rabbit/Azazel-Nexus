@@ -41,6 +41,7 @@ import base64
 import hashlib
 import os
 import re
+import stat
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -104,8 +105,10 @@ def print_pins(path: Path) -> int:
 
 def read_server_cert(path: Path) -> bytes:
     """Read the certificate once, without following a final symlink."""
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("not a regular file")  # a FIFO or device would block or lie
         with os.fdopen(fd, "rb") as handle:
             fd = -1
             raw = handle.read(65537)

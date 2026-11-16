@@ -294,18 +294,34 @@ def test_server_cert_garbage_refused(root, capsys, tmp_path):
 
 
 def test_server_cert_bytes_verified_are_the_bytes_read(root, capsys, monkeypatch):
-    """openssl gets the certificate on stdin, from the single read; no path to the cert is passed."""
+    """openssl gets the certificate on stdin; the DER it verifies is the DER the pin is computed from."""
+    import base64 as b64
     d = build(root)
-    seen = {}
-    real = tool.subprocess.run
+    seen = {"pin_der": []}
+    real_run, real_pin = tool.subprocess.run, tool.spki.spki_pin
 
-    def spy(command, **kw):
+    def run_spy(command, **kw):
         seen["argv"], seen["input"] = command, kw.get("input")
-        return real(command, **kw)
-    monkeypatch.setattr(tool.subprocess, "run", spy)
+        return real_run(command, **kw)
+
+    def pin_spy(der):
+        seen["pin_der"].append(der)
+        return real_pin(der)
+    monkeypatch.setattr(tool.subprocess, "run", run_spy)
+    monkeypatch.setattr(tool.spki, "spki_pin", pin_spy)
     code, _ = run(d, capsys, "--now", NOW, "--server-cert", str(TLS / "server-fetch.crt"))
     assert code == 0
-    assert str(TLS / "server-fetch.crt") not in seen["argv"] and seen["input"].startswith(b"-----BEGIN")
+    assert str(TLS / "server-fetch.crt") not in seen["argv"]
+    body = b"".join(seen["input"].split(b"-----")[2].split())
+    assert seen["pin_der"] and b64.b64decode(body) == seen["pin_der"][-1]
+    assert seen["pin_der"][-1] == tool.certificate_der((TLS / "server-fetch.crt").read_bytes())
+
+
+def test_server_cert_fifo_refused_without_blocking(root, capsys, tmp_path):
+    d = build(root)
+    fifo = tmp_path / "server.fifo"
+    os.mkfifo(fifo)
+    assert run(d, capsys, "--now", NOW, "--server-cert", str(fifo)) == (1, "refused: server_cert_unreadable\n")
 
 
 def test_server_cert_with_pin_is_usage(capsys):
