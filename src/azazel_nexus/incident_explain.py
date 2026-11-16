@@ -1023,6 +1023,7 @@ def build_recent_incident(transition, previous=None, record=None, sequence=None)
     explanation = (previous["explanation"] if previous else
                    {"state": "pending", "route": "unavailable", "outcome": "unavailable",
                     "summary": "", "knowledge_refs": [], "failure_codes": []})
+    past = previous.get("technique_past_reference") if previous else None
     if record is not None:
         r = read_record(record)
         if r["incident_id"] != t["incident_id"]:
@@ -1030,6 +1031,9 @@ def build_recent_incident(transition, previous=None, record=None, sequence=None)
         explanation = explanation_summary(r)
     elif previous and t["event_type"] in {"edge.incident.updated", "edge.incident.closed"}:
         # A newly observed transition cannot inherit a previous full-node receipt.
+        # The technique answer is copied once to a past reference first (DESIGN-D53).
+        from . import technique_past_reference as _past
+        past = _past.merge(past, _past.capture_from_row(previous))
         explanation = without_current_full_node(explanation)
     if (record is None and previous and t["event_type"] == "edge.incident.updated"
             and t["most_severe"] < previous["most_severe"]):
@@ -1042,6 +1046,8 @@ def build_recent_incident(transition, previous=None, record=None, sequence=None)
     # Audit records do not carry this; the ledger, recent rows and status do.
     if "evidence_stored" in t or previous and "evidence_stored" in previous:
         row["evidence_stored"] = False
+    if past is not None:
+        row["technique_past_reference"] = json.loads(json.dumps(past))
     if previous and "full_node_trace" in previous:
         trace = json.loads(json.dumps(previous["full_node_trace"]))
         if record is None:
@@ -1856,7 +1862,10 @@ def read_recent_incidents(raw):
         for row in v["incidents"]:
             _shape(row, ("incident_id", "state", "first_seen", "last_seen", "count", "most_severe",
                          "edge_would", "policy_reason", "technique_ids", "explanation"),
-                   ("evidence_stored", "full_node_trace"))
+                   ("evidence_stored", "full_node_trace", "technique_past_reference"))
+            if "technique_past_reference" in row:
+                from .technique_past_reference import read as read_past_reference
+                read_past_reference(row["technique_past_reference"], row["incident_id"])
             if "full_node_trace" in row:
                 read_full_node_trace(row["full_node_trace"])
             if "evidence_stored" in row and row["evidence_stored"] is not False:

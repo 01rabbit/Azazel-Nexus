@@ -32,6 +32,7 @@ from azazel_nexus.incident_explain import (
 from azazel_nexus.lite_import import read_knowledge_refs
 from azazel_nexus.local_advisory import read_fast_assistance
 from azazel_nexus.technique_knowledge import read_projection as read_technique_projection
+from azazel_nexus import technique_past_reference
 from azazel_nexus.store_dirs import fsync_directory, store_directory
 
 from .edge_intaked import DailySegments, EvidenceStore, SegmentFull
@@ -572,6 +573,16 @@ class Explainer:
         targets = ([r for r in order if r["incident_id"] == own] if own_first else []) + [
             r for r in order if r["incident_id"] != own]
         changed = False
+        # DESIGN-D53 5: past references first (closed rows, then open rows, oldest first).
+        # The "pending rows are not reduced" rule below is about explanations only.
+        for state in ("closed", "open"):
+            for row in order:
+                if row["state"] == state and technique_past_reference.is_retained(
+                        row.get("technique_past_reference")):
+                    row["technique_past_reference"] = technique_past_reference.size_dropped_stub()
+                    changed = True
+                    if self._fits(rows, now):
+                        return True
         for row in targets:
             e = row["explanation"]
             if e["state"] == "pending":
@@ -1372,6 +1383,11 @@ class Explainer:
     def _close_full_node(self, row):
         """Edge reset: the row is closed; its current Full-node fields are not kept."""
         if self._rule_era(row):
+            # Capture before remove: the technique answer becomes a past reference first.
+            past = technique_past_reference.merge(
+                row.get("technique_past_reference"), technique_past_reference.capture_from_row(row))
+            if past is not None:
+                row["technique_past_reference"] = past
             row["explanation"] = without_current_full_node(row["explanation"])
         if "full_node_trace" in row:
             row["full_node_trace"]["transition_query"] = "closed"
@@ -1462,6 +1478,15 @@ class Explainer:
         latest = self._is_latest(row, t["incident_id"], sequence, t)
         shown_before = row["explanation"].get("state")
         quiet = attempt is None or attempt["word"] == "rule_absent"
+        if not latest and not quiet:
+            # A late answer was never shown as current: offer it as a past reference, built
+            # from this call's arguments only (never from the row's current, past or trace).
+            past = technique_past_reference.merge(
+                row.get("technique_past_reference"),
+                technique_past_reference.capture_late(summary, t, sequence, attempt,
+                                                      utc_seconds(explained_at)))
+            if past is not None:
+                row["technique_past_reference"] = past
         row["explanation"] = summary if latest or quiet else without_current_full_node(summary)
         if attempt is None:
             return
@@ -1832,11 +1857,45 @@ def _replace_keeping_backup(path, raw, value, *, resume=True):
     fsync_directory(path.parent)
 
 
+#: The row keys the release before `technique_past_reference` (9fd28b9) reads.
+_ROW_KEYS_9FD28B9 = frozenset({
+    "incident_id", "state", "first_seen", "last_seen", "count", "most_severe", "edge_would",
+    "policy_reason", "technique_ids", "explanation", "evidence_stored", "full_node_trace"})
+
+
+def checkpoint_for_release_before_past_reference(path):
+    """Rewrite a stopped explainer's checkpoint for the release before the
+    technique past reference (9fd28b9; DESIGN-D53 6, target A).
+
+    Drops only the row-level `technique_past_reference`; the trace, `query_origin`
+    and the current `technique_knowledge` are read by that release and stay.
+    One pass, one backup (`cursor.json.pre-rollback`, never replaced). The
+    converted checkpoint must hold only row keys that release reads. Returns
+    how many rows lost the key. To go further back (target B,
+    `checkpoint_for_release_before_full_node_trace`), run B alone on the
+    original: after this conversion the backup exists and B stops with
+    `rollback_backup_exists`; restore the backup, then run B.
+    """
+    path = Path(path)
+    raw = read_file(path, CHECKPOINT_BYTES)
+    value = decode_checkpoint(raw)
+    changed = 0
+    for row in value.get("recent", {"incidents": []})["incidents"]:
+        changed += row.pop("technique_past_reference", None) is not None
+    if any(set(row) - _ROW_KEYS_9FD28B9
+           for row in value.get("recent", {"incidents": []})["incidents"]):
+        raise ValueError("cursor_refused")
+    decode_checkpoint(canonical(value))
+    _replace_keeping_backup(path, raw, value)
+    return changed
+
+
 def checkpoint_for_release_before_full_node_trace(path):
     """Rewrite a stopped explainer's checkpoint for the release before the
     full-node trace (74a6189; DESIGN-M5 2.9). Separate from the #392 conversion.
 
-    Drops, from every recent row, the row-level `full_node_trace` and the
+    Drops, from every recent row, the row-level `technique_past_reference`
+    (DESIGN-D53), the row-level `full_node_trace` and the
     nested `explanation.fast_assistance.full_node_context.query_origin` and
     `technique_knowledge`; pending
     entries are not changed. The release before this change refuses either
@@ -1853,6 +1912,7 @@ def checkpoint_for_release_before_full_node_trace(path):
     changed = 0
     for row in value.get("recent", {"incidents": []})["incidents"]:
         hit = row.pop("full_node_trace", None) is not None
+        hit = (row.pop("technique_past_reference", None) is not None) or hit
         fast = row["explanation"].get("fast_assistance")
         node = fast.get("full_node_context") if type(fast) is dict else None
         if type(node) is dict and "query_origin" in node:

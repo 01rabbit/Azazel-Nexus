@@ -859,6 +859,22 @@ explanation. Instead, with the new release still installed:
    record and reports the ledger as `record_refused`; roll forward to read
    them again.
 
+**Rolling the explainer back past the technique past reference (to `9fd28b9`).**
+Recent rows and checkpoints may carry a row-level `technique_past_reference`
+(DESIGN-D53); `9fd28b9` refuses it at start (`cursor_refused`). With the new release
+installed, stop `azazel-incident-explaind.service`, then convert the stopped
+checkpoint (one pass, one backup `cursor.json.pre-rollback`, never replaced; an
+interrupted run resumes):
+
+```sh
+sudo /opt/azazel-nexus/venv/bin/python -I -c 'from azazel_nexus_runtime.incident_explaind import checkpoint_for_release_before_past_reference as c; print(c("/var/lib/azazel/incident-explain/cursor.json"))'
+```
+
+It prints how many rows lost the key and changes nothing else. To go further back to
+`74a6189`, do **not** run this first: the backup it leaves makes the next conversion stop
+with `rollback_backup_exists`. Restore the backup over the checkpoint and run the
+`74a6189` conversion below alone; it now drops `technique_past_reference` too.
+
 **Rolling the explainer back past the Full-node trace (to `74a6189`).** Once an
 observation rule is in place, checkpoints and recent rows carry a row-level
 `full_node_trace` and a nested `query_origin`; the release at `74a6189` (the one
