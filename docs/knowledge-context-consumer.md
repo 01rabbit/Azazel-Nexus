@@ -317,8 +317,14 @@ backtick (nor `;` or `#`, so no HTML entity); no `://` or `www.`; no IPv4 or IPv
 like a domain. A violation fails the whole response; the validator never judges words. The projector alone
 applies a word screen as a heuristic deterrent: a name that reads as an instruction or a causal claim is
 withheld (`name: null`, `name_withheld: true`, coverage stays `found`), never truncated. The screen can miss
-phrasings and is not a security boundary; the boundary is that the label is display-only. The grammar is tested
-against a list of real names recalled from memory (`REAL_NAMES` in the tests), not against the whole corpus.
+phrasings and is not a security boundary; the boundary is that the label is display-only. The grammar and the
+tactic list are tested against every in-scope technique of the official Enterprise ATT&CK 20.1 corpus (706
+names, `tests/fixtures/attack-enterprise-20.1-extract.json`, source commit and sha256 recorded in the file).
+In the handoff package only, a name that the package's leak scanners (`unix_path`, `base64_value`, ...)
+would flag, for example one containing `/`, is also withheld (`name: null`, `name_withheld: true`), because
+the scanners fail the whole package closed; the scanners are not relaxed. `/api/view` and the screen are not
+scanned that way and still show such a name, so the same row may show a name on screen and
+`name_withheld: true` in the handoff; `name_withheld` there means either reason, never that coverage changed.
 The stored record also carries `as_of`, `expires_at`, `provenance` (the two fixed values), `authority`
 (`advisory_only`) and `trust` (`unverified`); the reader re-validates them and the UI shows them as text.
 The Knowledge side must emit exactly these constants.
