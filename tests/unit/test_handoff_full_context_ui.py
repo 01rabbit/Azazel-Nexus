@@ -319,5 +319,5 @@ def test_a_withheld_name_does_not_take_a_safe_neighbour_with_it(tmp_path, monkey
     assert "Brute Force" in md
     # the exemption is for the technique name only: a private path in another field is still refused
     pkg["knowledge"]["full_node_context"]["technique_knowledge"]["provenance"] = {"x": "/home/someone/secret"}
-    with pytest.raises(handoff.HandoffRefused):
+    with pytest.raises(handoff.HandoffRefused, match="suppression_incomplete"):
         handoff.encode_files(pkg)
