@@ -1232,6 +1232,8 @@ EXPECTED_SCRIPTS = (
     "az-mio-entryd",
     # The model-free playbook reference for the deterministic handoff.
     "az-mio-referenced",
+    # The model-free observation-origin Knowledge Context query (#439).
+    "az-mio-contextobsd",
     "az-knowledge-lited",
     "az-knowledge-contextd",
     "az-mio-locald",

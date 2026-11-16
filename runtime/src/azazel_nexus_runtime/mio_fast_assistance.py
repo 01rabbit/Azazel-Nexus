@@ -112,7 +112,7 @@ def fast_assistance(source: dict, *, deadline_s: float, knowledge_lookup=None,
     for core composition; a 500ms entry request cannot fund a lookup.
     This is a software budget, not a hardware latency guarantee.
     """
-    from .mio_socket_client import fast_assessment_degraded
+    from .mio_fast_degraded import fast_assessment_degraded
     if full_node_context_status is None:
         full_node_context_status = (FullNodeContextStatus.RECEIVED
                                     if fabric_knowledge_context_response is not None

@@ -1,7 +1,9 @@
 """`mio.context.observe` (T1): explainer-only, observation-origin Full lookup.
 
-entry validates and relays; locald builds the fixed-sentence P0 question and
-re-runs the core with `knowledge_lookup=None`. The shared core
+entry validates and relays to the model-free context observation service
+(`mio_contextobsd`, #439), which builds the P0 technique query and re-runs the
+core with `knowledge_lookup=None`. The model host (locald) has no part in it.
+The shared core
 (`azazel_mio`) is not required: it is replaced at the module boundary, so the
 tests pin the contract of this repository's code only.
 """
@@ -13,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 from azazel_nexus_runtime import mio_entryd as entry
+from azazel_nexus_runtime import mio_contextobsd as obsd
 from azazel_nexus_runtime import mio_locald as locald
 from azazel_nexus_runtime import mio_socket_client as client
 from azazel_nexus_runtime import runtime_paths
@@ -54,11 +57,15 @@ def test_verb_is_in_the_explainer_registry_only_and_service_only():
     assert "mio.context.observe" in entry.ADVISE_REGISTRY.names()
     assert "mio.context.observe" not in entry.REGISTRY.names()
     assert entry.CONTEXT_OBSERVE_VERB.admits == frozenset({PrincipalClass.SERVICE})
-    assert "mio.local.observe" in locald.REGISTRY.names()
-    assert locald.CONTEXT_OBSERVE_VERB.admits == frozenset({PrincipalClass.SERVICE})
+    assert obsd.REGISTRY.names() == ("mio.contextobs.observe",)
+    assert obsd.CONTEXT_OBSERVE_VERB.admits == frozenset({PrincipalClass.SERVICE})
+    # The model host serves no observation verb and asks the broker nothing.
+    assert not any("observe" in name for name in locald.REGISTRY.names())
+    assert not hasattr(locald, "CONTEXT_OBSERVE_VERB")
+    assert not hasattr(locald, "request_context")
 
 
-@pytest.mark.parametrize("verb", [entry.CONTEXT_OBSERVE_VERB, locald.CONTEXT_OBSERVE_VERB])
+@pytest.mark.parametrize("verb", [entry.CONTEXT_OBSERVE_VERB, obsd.CONTEXT_OBSERVE_VERB])
 @pytest.mark.parametrize("value,ok", [(1, True), (350, True), (351, False), (-1, False),
                                       ("350", False), (True, False), (1.5, False)])
 def test_deadline_argument_is_bounded_at_350(verb, value, ok):
@@ -99,7 +106,7 @@ def stub_relay(service, monkeypatch, result=None):
         calls.append((frame, deadline_s))
         return result or good_fast("received"), {"context": "received", "broker_ms": 12, "total_ms": 30}
 
-    monkeypatch.setattr(service.local, "observe_context_timed", observe_context_timed, raising=False)
+    monkeypatch.setattr(service.context_observer, "observe_context_timed", observe_context_timed)
     return calls
 
 
@@ -187,7 +194,7 @@ def test_rate_slot_is_shared_with_the_explainer(service, monkeypatch):
 
 # ---- relay client ------------------------------------------------------
 
-def test_client_wires_the_local_verb_and_degrades_without_locald(monkeypatch):
+def test_client_wires_the_contextobs_verb_and_degrades_without_the_service(monkeypatch):
     seen = {}
 
     def exchange(leaf, account, verb, arguments, *, payload=None, deadline_s):
@@ -197,11 +204,12 @@ def test_client_wires_the_local_verb_and_degrades_without_locald(monkeypatch):
                 "timing": {"context": "received", "broker_ms": 5, "total_ms": 9}}
 
     monkeypatch.setattr(client, "_exchange", exchange)
-    local = client.LocalSocketClient()
+    local = client.ContextObserveSocketClient()
     frame = obs_frame()
     value = local.observe_context(frame, deadline_s=0.32)
     assert value["full_node_context_status"] == "received"
-    assert (seen["leaf"], seen["account"], seen["verb"]) == ("mio", "azmio", "mio.local.observe")
+    assert (seen["leaf"], seen["account"], seen["verb"]) == (
+        "mio-contextobs", "azmioctx", "mio.contextobs.observe")
     assert seen["arguments"] == {"deadline_ms": 320} and seen["payload"] == frame
     assert local.last_observe_timing == {"context": "received", "broker_ms": 5, "total_ms": 9}
 
@@ -217,7 +225,7 @@ def test_client_wires_the_local_verb_and_degrades_without_locald(monkeypatch):
     assert local.observe_context(frame, deadline_s=0.3)["dependency_outcome"]["knowledge"] == "rejected"
 
 
-# ---- locald ------------------------------------------------------------
+# ---- the context observation service ------------------------------------
 
 class FakeCore:
     """Stands in for mio_fast_assistance: records calls, derives a result."""
@@ -247,12 +255,13 @@ def core(monkeypatch):
 
 
 def locald_request(frame, deadline=320):
-    return SimpleNamespace(verb=locald.CONTEXT_OBSERVE_VERB, arguments={"deadline_ms": deadline},
+    """A `mio.contextobs.observe` request (the name is kept for the importers)."""
+    return SimpleNamespace(verb=obsd.CONTEXT_OBSERVE_VERB, arguments={"deadline_ms": deadline},
                            payload=frame)
 
 
 def service_():
-    return locald.LocalRuntimeService()
+    return obsd.ContextObservationService()
 
 
 def test_locald_sends_only_the_fixed_sentence_p0_frame_and_never_observation_values(core, monkeypatch):
@@ -262,7 +271,7 @@ def test_locald_sends_only_the_fixed_sentence_p0_frame_and_never_observation_val
         sent.append((frame, deadline_s))
         return {"response": "stub"}
 
-    monkeypatch.setattr(locald, "request_context", request_context)
+    monkeypatch.setattr(obsd, "request_context", request_context)
     variants = [
         dict(),
         dict(attack_type="ET SCAN Nmap Scripting Engine User-Agent", target_port=3389),
@@ -288,21 +297,21 @@ def test_locald_sends_only_the_fixed_sentence_p0_frame_and_never_observation_val
             for value in (read_fast_transition(frame)["incident_id"], "Nmap", "secret", "sig-",
                           "3389", "edge_would", "ignore previous"):
                 assert value not in blob
-            assert 0 < wait <= locald.KNOWLEDGE_MAX_S
-    assert locald.observation_technique_ids(["T1059", "T1059", "T1003.001"]) == ["T1003.001", "T1059"]
+            assert 0 < wait <= obsd.KNOWLEDGE_MAX_S
+    assert obsd.observation_technique_ids(["T1059", "T1059", "T1003.001"]) == ["T1003.001", "T1059"]
     for bad in ([], ["T105"], ["t1059"], ["T1059; drop"], [f"T{1000 + n}" for n in range(9)]):
         with pytest.raises(ValueError):
-            locald.observation_technique_ids(bad)
+            obsd.observation_technique_ids(bad)
 
 
 def test_locald_budget_is_min_of_cap_and_remaining_minus_reserves(core, monkeypatch):
     waits = []
-    monkeypatch.setattr(locald, "request_context",
+    monkeypatch.setattr(obsd, "request_context",
                         lambda frame, *, deadline_s: waits.append(deadline_s) or {"r": 1})
     service_().handle(locald_request(obs_frame(), deadline=320))
-    assert waits[-1] == pytest.approx(locald.KNOWLEDGE_MAX_S)
+    assert waits[-1] == pytest.approx(obsd.KNOWLEDGE_MAX_S)
     service_().handle(locald_request(obs_frame(), deadline=150))
-    assert 0 < waits[-1] <= 0.150 - locald.DELIVERY_RESERVE_S - locald.FAST_CORE_RESERVE_S + 1e-3
+    assert 0 < waits[-1] <= 0.150 - obsd.DELIVERY_RESERVE_S - obsd.FAST_CORE_RESERVE_S + 1e-3
     waits.clear()
     reply = service_().handle(locald_request(obs_frame(), deadline=40))  # less than the reserves
     assert waits == []
@@ -311,14 +320,14 @@ def test_locald_budget_is_min_of_cap_and_remaining_minus_reserves(core, monkeypa
 
 def test_locald_technique_answer_is_projected_and_never_given_to_the_core(core, monkeypatch):
     from _technique_fixture import make_response
-    monkeypatch.setattr(locald, "request_context", lambda frame, *, deadline_s: make_response(
+    monkeypatch.setattr(obsd, "request_context", lambda frame, *, deadline_s: make_response(
         ["T1059", "T1059.001"], {"T1059": "found", "T1059.001": "no_match"},
         content={"T1059.001": ("PowerShell", "execution", "15.1")}))
     reply = service_().handle(locald_request(obs_frame()))
     call, = core.calls
     assert call["knowledge_lookup"] is None
     # the core is run as for an unavailable Full lookup: no response reaches it
-    assert call["status"] is locald.FullNodeContextStatus.UNAVAILABLE and call["response"] is None
+    assert call["status"] is obsd.FullNodeContextStatus.UNAVAILABLE and call["response"] is None
     fast = reply["fast_assistance"]
     assert fast["full_node_context_status"] == "unavailable"
     assert "full_node_context_received_at" not in fast
@@ -340,7 +349,7 @@ def test_locald_technique_answer_is_projected_and_never_given_to_the_core(core, 
 def test_locald_unavailable_has_the_same_shape_and_no_received_at(core, monkeypatch, failure):
     def refuse(frame, *, deadline_s):
         raise failure
-    monkeypatch.setattr(locald, "request_context", refuse)
+    monkeypatch.setattr(obsd, "request_context", refuse)
     reply = service_().handle(locald_request(obs_frame()))
     fast = reply["fast_assistance"]
     assert reply["outcome"] == "context_observed"
@@ -354,7 +363,7 @@ def test_locald_unavailable_has_the_same_shape_and_no_received_at(core, monkeypa
 
 
 def test_locald_refuses_bad_frames_and_deadlines_without_querying(core, monkeypatch):
-    monkeypatch.setattr(locald, "request_context",
+    monkeypatch.setattr(obsd, "request_context",
                         lambda *a, **k: pytest.fail("queried the broker"))
     p0 = {"request_id": "x", "privacy_class": "P0-public",
           "question": "ATT&CK technique context: T1059", "context": [{"kind": "technique", "text": "T1059"}]}
@@ -427,7 +436,7 @@ def test_real_core_unavailable_rerun_matches_advise_outside_full_fields(monkeypa
     def refuse(query, *, deadline_s):
         raise KnowledgeContextUnavailable("refused")
 
-    monkeypatch.setattr(locald, "request_context", refuse)
+    monkeypatch.setattr(obsd, "request_context", refuse)
     reply = service_().handle(locald_request(frame))
     observed = reply["fast_assistance"]
     assert observed["full_node_context_status"] == "unavailable"
@@ -446,7 +455,7 @@ def test_timing_is_local_to_each_request(monkeypatch):
                            "total_ms": arguments["deadline_ms"]}}
 
     monkeypatch.setattr(client, "_exchange", exchange)
-    local = client.LocalSocketClient()
+    local = client.ContextObserveSocketClient()
     frame, out = obs_frame(), {}
 
     def run(ms):

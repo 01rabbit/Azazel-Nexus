@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 import threading
 import time
@@ -52,10 +51,6 @@ CONTEXT_VERB = Verb(
     payload_contract="bounded frame; broker constructs a P0-public request",
 )
 REGISTRY = VerbRegistry([CONTEXT_VERB])
-# An observation-origin question: 1 to 8 technique ids, nothing else.
-_TECHNIQUE = r"T[0-9]{4}(?:\.[0-9]{3})?"
-_OBSERVATION_QUESTION = re.compile(
-    rf"ATT&CK technique context: {_TECHNIQUE}(?: {_TECHNIQUE}){{0,7}}")
 _RATE_WINDOW_S = 60.0
 # Fixed request sections a client may name on the refusal it raises.
 _CLIENT_STAGES = frozenset({"refused_before_send", "transport", "verification",
@@ -168,27 +163,21 @@ class KnowledgeContextBroker:
             # trusted local inputs can make this assertion; the shipped
             # factory has no egress client and cannot use it for network IO.
             # Context arrays and all other fields stay local.
-            if (set(wire_frame) == {"privacy_class", "techniques"}
-                    and wire_frame["privacy_class"] == PrivacyClass.P0_PUBLIC.value):
-                # Observation-origin technique query: 1 to 8 sorted, unique ids.
-                # Always judged by the observation gate.
-                technique_query = True
-                frame = {"techniques": request_ids(wire_frame["techniques"])}
-            elif (set(wire_frame) != {"privacy_class", "question"}
-                    or wire_frame["privacy_class"] != PrivacyClass.P0_PUBLIC.value
-                    or type(wire_frame["question"]) is not str
-                    or not wire_frame["question"]
-                    or len(wire_frame["question"]) > 2048):
+            # Only the observation-origin technique query: 1 to 8 sorted,
+            # unique ids. A free-form `question` -- including one in the old
+            # observation sentence -- is refused here, before the gate, the
+            # slot, the `requested` event and any peer call (#439).
+            if (set(wire_frame) != {"privacy_class", "techniques"}
+                    or wire_frame["privacy_class"] != PrivacyClass.P0_PUBLIC.value):
                 raise ValueError
-            else:
-                frame = {"question": wire_frame["question"]}
-            if technique_query or _OBSERVATION_QUESTION.fullmatch(frame["question"]):
-                # Judged before the `requested` event and before the slot.
-                phase = "gate"
-                reason = self._observation_gate(start)
-                if reason is not None:
-                    raise ValueError
-                phase = "frame"
+            technique_query = True
+            frame = {"techniques": request_ids(wire_frame["techniques"])}
+            # Judged before the `requested` event and before the slot.
+            phase = "gate"
+            reason = self._observation_gate(start)
+            if reason is not None:
+                raise ValueError
+            phase = "frame"
             if not self._slot.acquire(blocking=False):
                 reason = "busy"
                 raise TimeoutError
@@ -313,7 +302,10 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
         path=socket_path(SOCKET_NAME), registry=REGISTRY,
         policy=PrincipalPolicy.resolve(
             operator_group="azknowledge-context-client",
-            service_accounts=("azmio",),
+            # The one SERVICE principal (#439, docs/adr/0010-context-observation-unit.md):
+            # the model-free context observation service. Never the model host
+            # (`azmio`) and never entry (`azmioentry`); root is no SERVICE.
+            service_accounts=("azmioctx",),
         ),
         audit=ledger.append, handler=broker.handle, stop=stop,
         ready=ready if ready is not None else runtime_ready_callback(),

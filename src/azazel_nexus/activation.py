@@ -416,6 +416,17 @@ CORE_UNITS = (
         "runs no model and decides nothing",
     ),
     UnitDefinition(
+        "azazel-mio-contextobsd.service",
+        # SUPPORTING with no wiring, like the reference service: it runs no
+        # model. It is the Knowledge Context broker's one SERVICE principal
+        # and asks it only for observed technique ids (ADR 0010). The model
+        # host stays outside the grantable set.
+        UnitTier.SUPPORTING,
+        "azmioctx",
+        "model-free observation-origin Knowledge Context query; "
+        "runs no model and decides nothing",
+    ),
+    UnitDefinition(
         "azazel-knowledge-lited.service",
         UnitTier.SUPPORTING,
         "azknowledge",

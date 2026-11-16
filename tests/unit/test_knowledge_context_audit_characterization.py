@@ -6,13 +6,13 @@ import socket
 
 from azazel_nexus.knowledge_context_adapter import KnowledgeContextRefused
 
-from test_knowledge_contextd import _policy, _request
+from test_knowledge_contextd import _policy, _request, OPEN_GATE
 from stop_helpers import granted_marker
 from azazel_nexus_runtime.knowledge_contextd import KnowledgeContextBroker
 
 
 def _broker(client, events, **kwargs):
-    return KnowledgeContextBroker(grant_marker=granted_marker, 
+    return KnowledgeContextBroker(**OPEN_GATE, grant_marker=granted_marker, 
         client=client, policy=_policy(), mission="lab", alias_key=b"x" * 32,
         enabled=True, audit=events.append, **kwargs)
 
@@ -45,7 +45,7 @@ def test_busy_slot_is_timeout_and_writes_no_requested_event():
     events = []
     broker = _broker(Forbidden(), events)
     assert broker._slot.acquire(blocking=False)
-    assert broker.handle(_request()) == {"refusal": "timeout"}
+    assert broker.handle(_request()) == {"refusal": "timeout", "stage": "refused_before_send"}
     assert [e["event_type"] for e in events] == ["knowledge.context.completed"]
     assert events[0]["outcome"] == "timeout"
     assert events[0]["reason_code"] == "busy"
@@ -80,12 +80,12 @@ def test_real_egress_wraps_transport_timeout_and_broker_reports_unavailable(
 
     monkeypatch.setattr(peer, "_post_path", fail)
     events = []
-    broker = KnowledgeContextBroker(grant_marker=granted_marker, 
+    broker = KnowledgeContextBroker(**OPEN_GATE, grant_marker=granted_marker, 
         client=peer, policy=_policy(), mission="lab",
         alias_key=b"x" * 32, enabled=True, audit=events.append)
     request = _request(payload={"frame": {
-        "privacy_class": "P0-public", "question": "public question"}})
-    assert broker.handle(request) == {"refusal": "unavailable"}
+        "privacy_class": "P0-public", "techniques": ["T1059"]}})
+    assert broker.handle(request) == {"refusal": "unavailable", "stage": "transport"}
     assert [e["event_type"] for e in events] == [
         "knowledge.context.requested", "knowledge.context.completed"]
     assert events[-1]["outcome"] == "unavailable"

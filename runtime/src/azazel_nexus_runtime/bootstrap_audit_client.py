@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from azazel_nexus.audit import GENESIS_HASH, AuditUnavailable
 
 from .auditd import EVENT_SCHEMAS
+from .socket_frames import _pairs, _read_exact, _remaining, _set_remaining_timeout  # noqa: F401
 from .transport import MAX_FRAME_BYTES, _HEADER
 
 _EVENTS = frozenset(name for name in EVENT_SCHEMAS if name.startswith("bootstrap."))
@@ -31,38 +32,6 @@ class AuditAppendReceipt:
                 or type(self.event_hash) is not str
                 or not _HASH.fullmatch(self.event_hash)):
             raise ValueError("invalid audit append receipt")
-
-
-def _pairs(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate response field")
-        result[key] = value
-    return result
-
-
-def _remaining(deadline):
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise TimeoutError("bootstrap audit exchange expired")
-    return remaining
-
-
-def _set_remaining_timeout(connection, deadline):
-    connection.settimeout(_remaining(deadline))
-
-
-def _read_exact(connection, size, deadline):
-    data = bytearray()
-    while len(data) < size:
-        _set_remaining_timeout(connection, deadline)
-        part = connection.recv(size - len(data))
-        _remaining(deadline)
-        if not part:
-            raise AuditUnavailable("bootstrap audit response truncated")
-        data.extend(part)
-    return bytes(data)
 
 
 class BootstrapAuditClient:

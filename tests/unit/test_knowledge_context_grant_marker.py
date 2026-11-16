@@ -26,7 +26,7 @@ from azazel_nexus_runtime.activation_markers import (
 )
 from azazel_nexus_runtime.knowledge_contextd import KnowledgeContextBroker
 
-from test_knowledge_contextd import _policy, _request
+from test_knowledge_contextd import _policy, _request, OPEN_GATE
 
 CTX = "azazel-knowledge-contextd.service"
 REPO = Path(__file__).resolve().parents[2]
@@ -67,8 +67,7 @@ class Peer:
 
 
 def broker_for(root, peer, events, **kw):
-    return KnowledgeContextBroker(
-        client=peer, policy=_policy(), mission="lab", alias_key=b"x" * 32,
+    return KnowledgeContextBroker(**OPEN_GATE, client=peer, policy=_policy(), mission="lab", alias_key=b"x" * 32,
         enabled=True, audit=events.append,
         grant_marker=lambda: inspect_grant_marker(CTX, root), **kw)
 
@@ -186,10 +185,14 @@ def _answers_with_marker_removed_meanwhile(root):
     return result, events, peer
 
 
+#: A technique query refused at the grant check (the broker reports the stage).
+WITHDRAWN = {"refusal": "unavailable", "stage": "refused_before_send"}
+
+
 def _blocked(result, events, peer) -> bool:
     """What a withdrawal during the exchange must produce."""
     done = completed(events)
-    return (result == {"refusal": "unavailable"}
+    return (result == WITHDRAWN
             and "response" not in result
             and peer.calls == 1
             and [e["outcome"] for e in done] == ["unavailable"]
@@ -227,7 +230,7 @@ def test_a_marker_replaced_by_a_loose_file_adopts_nothing(root):
 
 def test_an_answer_after_a_marker_removal_does_not_reach_the_audit_as_verified(root):
     result, events, _peer = _answers_with_marker_removed_meanwhile(root)
-    assert result == {"refusal": "unavailable"}
+    assert result == WITHDRAWN
     assert [e["event_type"] for e in events] == [
         "knowledge.context.requested", "knowledge.context.completed"]
 
@@ -249,8 +252,7 @@ def test_the_recheck_is_the_last_step_before_the_record(root):
         reads.append(len(order))
         return inspect_grant_marker(CTX, root)
 
-    broker = KnowledgeContextBroker(
-        client=peer, policy=_policy(), mission="lab", alias_key=b"x" * 32,
+    broker = KnowledgeContextBroker(**OPEN_GATE, client=peer, policy=_policy(), mission="lab", alias_key=b"x" * 32,
         enabled=True, audit=audit, grant_marker=grant_marker)
     assert broker.handle(_request()) == {"response": ANSWER}
     # read once before the `requested` record, once after it and before `completed`
@@ -277,7 +279,7 @@ def test_removing_the_recheck_before_adoption_is_caught(root):
     mutant = _mutant_broker_class("if self._grant_marker() != admitted:", "if False:")
     marker = write_marker(root)
     events, peer = [], Peer(during=marker.unlink)
-    broker = mutant(client=peer, policy=_policy(), mission="lab", alias_key=b"x" * 32,
+    broker = mutant(**OPEN_GATE, client=peer, policy=_policy(), mission="lab", alias_key=b"x" * 32,
                     enabled=True, audit=events.append,
                     grant_marker=lambda: inspect_grant_marker(CTX, root))
     result = broker.handle(_request())
@@ -294,7 +296,7 @@ def _answers_with_marker_removed_meanwhile_fresh(root):
 def test_removing_the_admission_check_is_caught(root):
     mutant = _mutant_broker_class("if admitted is None:", "if False:")
     events, peer = [], Peer()
-    broker = mutant(client=peer, policy=_policy(), mission="lab", alias_key=b"x" * 32,
+    broker = mutant(**OPEN_GATE, client=peer, policy=_policy(), mission="lab", alias_key=b"x" * 32,
                     enabled=True, audit=events.append,
                     grant_marker=lambda: inspect_grant_marker(CTX, root))
     # no marker at all: the mutant still asks the peer (admitted is None, then
@@ -302,6 +304,7 @@ def test_removing_the_admission_check_is_caught(root):
     result = broker.handle(_request())
     assert peer.calls == 1
     real = broker_for(root, Peer(), [])
+    # refused before the frame is read, so no technique stage is reported
     assert real.handle(_request()) == {"refusal": "unavailable"}
 
 

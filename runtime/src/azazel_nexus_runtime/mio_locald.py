@@ -8,7 +8,6 @@ caller supplied. Advisory bodies return to the caller, never to the ledger.
 from __future__ import annotations
 
 import json
-import re
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -45,15 +44,9 @@ from azazel_nexus.model_runtime import (
     resolve_runtime,
 )
 from azazel_nexus.reasoning_playbook import Library, technique_ids
-from azazel_nexus.sanitizer import PrivacyClass
-from azazel_nexus.technique_knowledge import (
-    TechniqueVerificationFailed, not_run_projection, project_technique_response, request_ids,
-)
 
 from .knowledge_client import KnowledgeUnavailable, lookup_context
-from .knowledge_context_socket import (
-    FullNodeContextStatus, KnowledgeContextUnavailable, request_context,
-)
+from .knowledge_context_socket import FullNodeContextStatus
 from .mio_playbooks import PlaybookSelectionHolder
 from .principal import PrincipalClass, PrincipalPolicy
 from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
@@ -133,60 +126,20 @@ ADMISSION_VERB = Verb(
 #: No reference verb: verified playbook references are served by the
 #: model-free `azazel-mio-referenced.service` (`mio_referenced`), which runs
 #: on a node with no admitted model. This host serves only model verbs.
-#: The explainer-only observation-origin request (relayed by entry). The
-#: ceiling is the T1 policy value (350 ms), and 0 is refused in the handler.
-CONTEXT_OBSERVE_DEADLINE_MAX_MS = 350
-CONTEXT_OBSERVE_VERB = Verb(
-    name="mio.local.observe",
-    arguments=(Argument("deadline_ms", ArgumentKind.ORDINAL,
-                        maximum=CONTEXT_OBSERVE_DEADLINE_MAX_MS),),
-    admits=frozenset({PrincipalClass.SERVICE}), accepts_payload=True,
-    payload_contract="azazel_nexus.local_advisory.read_frame",
-)
+#: No observation verb: the explainer's observation-origin Knowledge Context
+#: request is served by the model-free `azazel-mio-contextobsd.service`
+#: (`mio_contextobsd`), whose account is the Knowledge Context broker's only
+#: SERVICE principal. This host holds no client group of the broker and asks
+#: it nothing (#439, docs/adr/0010-context-observation-unit.md).
 REGISTRY = VerbRegistry([ACTIVATE_VERB, ADMISSION_VERB, INFER_VERB, FAST_ASSESS_VERB,
-                         GENERATION_RESULT_VERB, CONTEXT_OBSERVE_VERB])
-
-#: The fixed sentence of the `technique-set/1` question. Only technique codes
-#: (already validated by `read_fast_transition`) fill it; nothing else of the
-#: incident is placed in the P0 frame.
-CONTEXT_OBSERVE_QUESTION_PREFIX = "ATT&CK technique context: "
-
-
-def _refusal_projection(stage) -> dict:
-    """The record of a refused or failed technique query, from the broker's stage word."""
-    transport, verification = {
-        "refused_before_send": ("refused", "not_run"),
-        "transport": ("unavailable", "not_run"),
-        "verification": ("refused", "failed"),
-        "technique_verification": ("received", "failed"),
-    }.get(stage, ("unavailable", "not_run"))
-    return not_run_projection(transport, verification)
-
-
-def observation_context_question(ids) -> str:
-    codes = sorted(set(ids))
-    if not 1 <= len(codes) <= 8 or any(
-            type(code) is not str or not _TECHNIQUE_CODE.fullmatch(code) for code in codes):
-        raise ValueError("invalid_technique_set")
-    return CONTEXT_OBSERVE_QUESTION_PREFIX + " ".join(codes)
-
-
-_TECHNIQUE_CODE = re.compile(r"T[0-9]{4}(?:\.[0-9]{3})?", re.ASCII)
-
-
-def observation_technique_ids(ids) -> list[str]:
-    """The sorted, unique ids of the observation-origin technique query (1 to 8)."""
-    try:
-        return request_ids(sorted(set(ids)))
-    except (TypeError, ValueError):
-        raise ValueError("invalid_technique_set") from None
+                         GENERATION_RESULT_VERB])
 
 
 def _read_assessment_payload(payload: Any) -> dict:
     """Read only the caller's ordinary M.I.O. frame.
 
-    Verified Knowledge Context is fetched internally from the local broker;
-    a socket caller cannot supply an advisory and label it verified.
+    No Knowledge Context is fetched here (this host is not a broker client),
+    and a socket caller cannot supply an advisory and label it verified.
     """
     if type(payload) is dict and "frame" in payload:
         if set(payload) != {"frame"}:
@@ -216,17 +169,6 @@ class ActivationReply:
 class KnowledgeLookup(Protocol):
     def __call__(self, technique_ids: tuple[str, ...], *,
                  deadline_s: float) -> Sequence[KnowledgeRef]: ...
-
-
-def _knowledge_context_query(frame: Any) -> dict | None:
-    """Forward a caller-classified P0 question; do not infer its classification."""
-    if (type(frame) is not dict
-            or frame.get("privacy_class") != PrivacyClass.P0_PUBLIC.value):
-        return None
-    question = frame.get("question")
-    if type(question) is not str or not question or len(question) > 2048:
-        return None
-    return {"privacy_class": PrivacyClass.P0_PUBLIC.value, "question": question}
 
 
 class LocalRuntimeService:
@@ -277,71 +219,6 @@ class LocalRuntimeService:
         self._generation_lane = generation_lane if generation_lane is not None else GenerationLane()
         self._generation_id = generation_id
 
-    def _observe_context(self, request: Any) -> dict:
-        """Query Full Node Context for an observed technique set, then re-run the core.
-
-        Nothing is written to the ledger and no generation is submitted. The
-        only thing sent to the broker is a P0 frame of `{privacy_class,
-        techniques}` whose techniques are 1 to 8 technique codes (typed
-        `attack-technique/v1` entities on the wire). The answer never reaches
-        M.I.O.: it is validated and projected into `technique_knowledge`, and
-        the core runs as it does when Full Node Context is unavailable.
-        `timing` has fixed keys (ints in ms, no incident data) so the
-        success, delay and refusal cases can be measured.
-        """
-        from .mio_socket_client import fast_assessment_degraded
-        started = time.monotonic()
-        budget_ms = request.arguments["deadline_ms"]
-        if not 0 < budget_ms <= CONTEXT_OBSERVE_DEADLINE_MAX_MS:
-            return {"outcome": "failed", "refusal": "deadline"}
-        deadline = started + budget_ms / 1000
-        try:
-            from azazel_nexus.incident_explain import read_fast_transition
-            frame = read_frame(request.payload)
-            transition = read_fast_transition(frame)
-            if (transition is None
-                    or frame["privacy_class"] != PrivacyClass.P3_RESTRICTED.value):
-                raise ValueError("fast_transition_refused")
-            technique_ids_asked = observation_technique_ids(transition["technique_ids"])
-            query = {"privacy_class": PrivacyClass.P0_PUBLIC.value,
-                     "techniques": technique_ids_asked}
-        except (FrameRefused, ValueError):
-            return {"outcome": "failed", "refusal": "malformed_frame"}
-        technique_knowledge = not_run_projection("unavailable", "not_run")
-        broker_started = time.monotonic()
-        try:
-            budget = deadline - broker_started - DELIVERY_RESERVE_S - FAST_CORE_RESERVE_S
-            if budget > 0:
-                try:
-                    technique_knowledge = project_technique_response(
-                        request_context(query, deadline_s=min(KNOWLEDGE_MAX_S, budget)),
-                        technique_ids_asked)
-                except TechniqueVerificationFailed:
-                    technique_knowledge = not_run_projection("received", "failed")
-        except KnowledgeContextUnavailable as exc:
-            technique_knowledge = _refusal_projection(getattr(exc, "stage", None))
-        except Exception:  # noqa: BLE001 - any failure is an unavailable Full lookup
-            technique_knowledge = not_run_projection("unavailable", "not_run")
-        # The technique answer is never handed to M.I.O.: the core is run as for
-        # an unavailable Full lookup, and the record rides next to its result.
-        context_status = FullNodeContextStatus.UNAVAILABLE
-        broker_ms = int((time.monotonic() - broker_started) * 1000)
-        try:
-            from .mio_fast_assistance import _frame, fast_assistance
-            situation, _ = _frame(frame, with_selection=True)
-            result = fast_assistance(
-                frame, deadline_s=max(0.0, deadline - time.monotonic() - DELIVERY_RESERVE_S),
-                knowledge_lookup=None, knowledge_max_s=KNOWLEDGE_MAX_S,
-                core_reserve_s=FAST_CORE_RESERVE_S, situation_frame=situation,
-                fabric_knowledge_context_response=None,
-                full_node_context_status=context_status)
-            result["technique_knowledge"] = technique_knowledge
-        except Exception:  # noqa: BLE001
-            result = fast_assessment_degraded("unavailable")
-        return {"outcome": "context_observed", "fast_assistance": result,
-                "timing": {"context": technique_knowledge["transport"], "broker_ms": broker_ms,
-                           "total_ms": int((time.monotonic() - started) * 1000)}}
-
     def set_playbooks(self, library: Library | None) -> None:
         self._playbooks = library
 
@@ -382,24 +259,10 @@ class LocalRuntimeService:
                 situation, slow_selection = _frame(frame, with_selection=True)
                 assessment_deadline = (time.monotonic()
                                        + request.arguments["deadline_ms"] / 1000)
+                # Full Node Context is never queried from here: this host is
+                # not a client of the broker (#439). The status says so.
                 fabric_context_response = None
                 context_status = FullNodeContextStatus.NOT_QUERIED
-                context_query = _knowledge_context_query(frame)
-                if context_query is not None:
-                    context_budget = max(
-                        0.0,
-                        assessment_deadline - time.monotonic()
-                        - DELIVERY_RESERVE_S - FAST_CORE_RESERVE_S,
-                    )
-                    try:
-                        if context_budget > 0:
-                            fabric_context_response = request_context(
-                                context_query,
-                                deadline_s=min(KNOWLEDGE_MAX_S, context_budget),
-                            )
-                            context_status = FullNodeContextStatus.RECEIVED
-                    except KnowledgeContextUnavailable:
-                        context_status = FullNodeContextStatus.UNAVAILABLE
                 result = fast_assistance(
                     frame, deadline_s=max(
                         0.0, assessment_deadline - time.monotonic()
@@ -424,8 +287,6 @@ class LocalRuntimeService:
                 reply['generation_metadata'] = self._generation_lane.private_metadata(
                     slow.get('result_handle'), request.arguments['caller_epoch'])
             return reply
-        if name == CONTEXT_OBSERVE_VERB.name:
-            return self._observe_context(request)
         if name == ADMISSION_VERB.name:
             return self.admission()
         arguments = request.arguments

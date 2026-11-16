@@ -115,7 +115,7 @@ sudo systemd-analyze security --no-pager UNIT
 
 | Check | `azazel-mio-referenced.service` | `azazel-mio-entryd.service` |
 | --- | --- | --- |
-| account | `azmioref`, supplementary group `azmission-read` only | `azmioentry`, supplementary group `azazel-operator` only |
+| account | `azmioref`, supplementary group `azmission-read` only | `azmioentry`, supplementary groups `azazel-operator` and `azmio-contextobs` (the context observation socket's group, ADR-0010) only |
 | `Seccomp:` | `2` (filter; the unit declares `SystemCallFilter=@system-service`) | `2` |
 | `NoNewPrivs:` | `1` | `1` |
 | `CapEff:` and `CapBnd:` | all zero (`CapabilityBoundingSet=` empty) | all zero |

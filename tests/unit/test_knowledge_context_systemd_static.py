@@ -15,6 +15,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 BROKER = (REPO / "packaging/systemd/azazel-knowledge-contextd.service").read_text(encoding="utf-8")
 LOCALD = (REPO / "packaging/systemd/azazel-mio-locald.service").read_text(encoding="utf-8")
+CONTEXTOBS = (REPO / "packaging/systemd/azazel-mio-contextobsd.service").read_text(encoding="utf-8")
+ENTRYD = (REPO / "packaging/systemd/azazel-mio-entryd.service").read_text(encoding="utf-8")
 INSTALL = (REPO / "packaging/install.sh").read_text(encoding="utf-8")
 
 
@@ -66,9 +68,66 @@ def test_broker_state_and_socket_areas_match_the_installer_and_the_daemon():
     assert REQUIRED_SOCKET_MODE == 0o660
 
 
-def test_locald_unit_reaches_the_broker_group_and_has_no_network():
+def test_locald_unit_does_not_reach_the_broker_and_has_no_network():
+    """#439: the one unit that could start a model is no client of the broker."""
     d = _directives(LOCALD)
     assert d["User"] == ["azmio"]
-    assert any("azknowledge-context-client" in value.split() for value in d["SupplementaryGroups"])
+    assert not any("azknowledge-context-client" in value.split()
+                   for value in d.get("SupplementaryGroups", []))
     assert d["PrivateNetwork"] == ["yes"]
     assert d["RestrictAddressFamilies"] == ["AF_UNIX"]
+
+
+def test_contextobs_unit_is_the_broker_client_and_nothing_else():
+    d = _directives(CONTEXTOBS)
+    assert d["User"] == ["azmioctx"]
+    assert d["SupplementaryGroups"] == ["azknowledge-context-client"]
+    assert d["RestrictAddressFamilies"] == ["AF_UNIX"]
+    assert d["PrivateNetwork"] == ["yes"]
+    assert d["IPAddressDeny"] == ["any"] and "IPAddressAllow" not in d
+    assert d["CapabilityBoundingSet"] == [""] and d["AmbientCapabilities"] == [""]
+    assert sorted(d["ReadWritePaths"]) == [
+        "/var/lib/azazel/run/mio-contextobs", "/var/lib/azazel/state/mio-contextobs"]
+    # No model, admission, operator trust or Mission Pack path, read or write.
+    text = "\n".join(v for key, values in d.items() for v in values
+                     if key in {"ReadOnlyPaths", "ReadWritePaths", "LoadCredential", "BindReadOnlyPaths"})
+    for forbidden in ("model", "admission", "operator-trust", "mission", "/var/lib/azazel/mio"):
+        assert forbidden not in text, forbidden
+    assert "ExecStartPre" not in d
+    assert d["ConditionPathExists"] == [
+        "/run/azazel-activation/granted/azazel-mio-contextobsd.service"]
+    assert d["Requires"] == ["azazel-activated.service"]
+    assert d["After"] == ["azazel-activated.service"]
+
+
+def test_only_entry_carries_the_contextobs_group():
+    systemd = REPO / "packaging/systemd"
+    carriers = [path.name for path in sorted(systemd.glob("*.service"))
+                if any("azmio-contextobs" in value.split()
+                       for value in _directives(path.read_text(encoding="utf-8"))
+                       .get("SupplementaryGroups", []))]
+    assert carriers == ["azazel-mio-entryd.service"]
+    brokers_clients = [path.name for path in sorted(systemd.glob("*.service"))
+                       if any("azknowledge-context-client" in value.split()
+                              for value in _directives(path.read_text(encoding="utf-8"))
+                              .get("SupplementaryGroups", []))]
+    assert brokers_clients == ["azazel-mio-contextobsd.service"]
+
+
+def test_contextobs_areas_match_the_installer_and_the_daemon():
+    assert re.search(r"make_owned_dir 2710 azmioctx azmio-contextobs "
+                     r"/var/lib/azazel/run/mio-contextobs\n", INSTALL)
+    assert re.search(r"make_owned_dir 0700 azmioctx root "
+                     r"/var/lib/azazel/state/mio-contextobs\n", INSTALL)
+    assert "groupadd --system azmio-contextobs" in INSTALL
+    assert "systemctl mask azazel-mio-contextobsd.service" in INSTALL
+    assert re.search(r"for account in [^\n]* azmioctx ", INSTALL)
+    from azazel_nexus_runtime.runtime_paths import (
+        mio_contextobs_state_dir, socket_group, socket_path,
+    )
+    assert str(mio_contextobs_state_dir()) == "/var/lib/azazel/state/mio-contextobs"
+    assert str(socket_path("mio-contextobs")) == (
+        "/var/lib/azazel/run/mio-contextobs/mio-contextobs.sock")
+    assert socket_group("mio-contextobs") == "azmio-contextobs"
+    preset = (REPO / "packaging/azazel-nexus.preset").read_text(encoding="utf-8")
+    assert "disable azazel-mio-contextobsd.service" in preset.splitlines()

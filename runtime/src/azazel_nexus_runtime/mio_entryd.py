@@ -54,6 +54,7 @@ from .mio_route_ledger import (
 from .mio_router import HANDOFF_RESERVE_MS, MIN_AI_ATTEMPT_MS, MioRouter
 from .mio_socket_client import (
     PROBE_MAX_S,
+    ContextObserveSocketClient,
     LocalAdmissionReader,
     LocalSocketClient,
     ReferenceSocketClient,
@@ -248,6 +249,9 @@ class MioEntryService:
         #: no admitted model still reaches it, and it can reach no model verb.
         #: It reads the router's clock, the one the request's deadline is on.
         self.reference = ReferenceSocketClient(clock=lambda: self.router.monotonic())
+        # The observation-origin Knowledge Context relay goes to its own
+        # model-free unit, never to the model host (#439).
+        self.context_observer = ContextObserveSocketClient()
         self._profile_reader = profile_reader
         self._local_admitted = local_admitted
         self._predictions_reader = predictions_reader
@@ -762,11 +766,13 @@ class MioEntryService:
         if transition is None or not transition["technique_ids"]:
             raise RequestRefused(Refusal.MALFORMED_FRAME, "edge_transition_context")
         remaining = deadline_at - self.router.monotonic() - ENTRY_DELIVERY_RESERVE_MS / 1000
-        fast, timing = self.local.observe_context_timed(frame, deadline_s=remaining)
+        fast, timing = self.context_observer.observe_context_timed(frame, deadline_s=remaining)
         fast = read_fast_assistance(fast)
         reply = {"outcome": "context_observed", "fast_assistance": fast}
         # Fixed keys, integer milliseconds, no incident data: success, delay
         # and refusal can be measured by the caller without a ledger write.
+        # `locald` names the relayed hop's timing; the key is kept from when
+        # locald answered this verb, so callers read the same shape.
         reply["timing"] = {
             "locald": timing,
             "entry_ms": max(0, int((self.router.monotonic() - started) * 1000)),

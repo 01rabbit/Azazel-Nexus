@@ -312,7 +312,7 @@ LAYOUT = (
              "remote inference transport socket leaf; entryd reaches it through the operator group",
              owner="azremote", group="azazel-operator"),
     PathSpec("/var/lib/azazel/run/knowledge-context", 0o2710,
-             "full-node Knowledge broker socket; reachable only by the M.I.O. local client group",
+             "full-node Knowledge broker socket; reachable only by the context observation service's client group",
              owner="azknowledgeegress", group="azknowledge-context-client"),
     PathSpec("/var/lib/azazel/models/staging", 0o2750,
              "root-owned model staging; inherit the runtime read group", group="azmio"),
@@ -354,6 +354,10 @@ LAYOUT = (
         "M.I.O. playbook reference service ledger", owner="azmioref",
     ),
     PathSpec(
+        "/var/lib/azazel/state/mio-contextobs", 0o700,
+        "M.I.O. context observation service refusal ledger", owner="azmioctx",
+    ),
+    PathSpec(
         "/var/lib/azazel/state/knowledge", 0o700,
         "Knowledge Lite daemon refusal records", owner="azknowledge",
     ),
@@ -381,6 +385,11 @@ LAYOUT = (
         "/var/lib/azazel/run/mio-reference", 0o2710,
         "M.I.O. playbook reference socket; only the entry service is admitted",
         owner="azmioref", group="azazel-operator",
+    ),
+    PathSpec(
+        "/var/lib/azazel/run/mio-contextobs", 0o2710,
+        "M.I.O. context observation socket; only the entry service carries its group",
+        owner="azmioctx", group="azmio-contextobs",
     ),
     PathSpec(
         "/var/lib/azazel/run/knowledge", 0o2710,

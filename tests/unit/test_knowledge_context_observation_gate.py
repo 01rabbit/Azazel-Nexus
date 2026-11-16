@@ -1,4 +1,10 @@
-"""Observation-origin question gate in the broker (unit B2)."""
+"""Observation-origin gate in the broker (unit B2).
+
+Since #439 the broker accepts only the technique form (`{privacy_class,
+techniques}`), and every one of those is judged by this gate. A free-form
+`question` -- the old observation sentence included -- is refused before the
+gate, so it is neither counted nor able to latch anything.
+"""
 import json
 import os
 
@@ -26,6 +32,15 @@ class Peer:
 def frame(question):
     return _request(payload={"frame": {"privacy_class": "P0-public",
                                        "question": question}})
+
+
+def tech(ids=("T1059", "T1059.001")):
+    return _request(payload={"frame": {"privacy_class": "P0-public",
+                                       "techniques": list(ids)}})
+
+
+GATED = {"refusal": "unavailable", "stage": "refused_before_send"}
+BUSY = {"refusal": "timeout", "stage": "refused_before_send"}
 
 
 @pytest.fixture
@@ -60,33 +75,39 @@ def last(events):
     return events[-1]
 
 
-def test_without_a_rule_an_observation_question_is_refused_and_no_peer_call(env):
+def test_without_a_rule_a_technique_query_is_refused_and_no_peer_call(env):
     broker, peer, events = make(None)
-    assert broker.handle(frame(Q)) == {"refusal": "unavailable"}
+    assert broker.handle(tech()) == GATED
     assert peer.calls == 0
     assert [e["event_type"] for e in events] == ["knowledge.context.completed"]
     assert (last(events)["outcome"], last(events)["reason_code"]) == (
         "unavailable", "refused_before_send")
 
 
-def test_existing_and_non_matching_questions_are_unchanged_without_a_rule(env):
-    for q in ("public question", "synthetic public observation context"):
-        broker, peer, events = make(None)
-        assert broker.handle(frame(q)) == {"response": {"authority": "advisory_only"}}
-        assert peer.calls == 1
-        assert [e["event_type"] for e in events] == [
-            "knowledge.context.requested", "knowledge.context.completed"]
-        assert set(last(events)) == {"event_type", "outcome", "response_bytes", "elapsed_ms"}
+@pytest.mark.parametrize("rule", [False, True])
+def test_a_question_is_refused_before_sending_with_or_without_a_rule(env, rule):
+    if rule:
+        write_rule(env, 6)
+    for q in ("public question", "synthetic public observation context", Q):
+        broker, peer, events = make(cfg.load_observation_rule() if rule else None)
+        assert broker.handle(frame(q)) == {"refusal": "unavailable"}
+        assert peer.calls == 0
+        assert [e["event_type"] for e in events] == ["knowledge.context.completed"]
+        assert last(events)["reason_code"] == "refused_before_send"
 
 
-def test_non_matching_question_is_not_limited_or_latched(env):
+def test_a_question_is_not_counted_and_does_not_latch(env):
     path = write_rule(env, 1)
     broker, peer, events = make(cfg.load_observation_rule())
     for _ in range(5):
-        assert "response" in broker.handle(frame("public question"))
+        assert broker.handle(frame("public question")) == {"refusal": "unavailable"}
+    # the one-a-minute rule still has its one request
+    assert "response" in broker.handle(tech())
+    assert peer.calls == 1
     path.unlink()
-    assert "response" in broker.handle(frame("public question"))
-    assert peer.calls == 6
+    assert broker.handle(frame("public question")) == {"refusal": "unavailable"}
+    assert broker.handle(tech()) == GATED
+    assert peer.calls == 1
 
 
 def test_rate_limit_counts_to_the_cap_and_recovers_after_60s(env):
@@ -95,18 +116,18 @@ def test_rate_limit_counts_to_the_cap_and_recovers_after_60s(env):
     broker, peer, events = make(cfg.load_observation_rule(), lambda: now[0])
     for i in range(6):
         now[0] = 100.0 + i
-        assert "response" in broker.handle(frame(Q))
+        assert "response" in broker.handle(tech())
     now[0] = 106.0
     n = len(events)
-    assert broker.handle(frame(Q)) == {"refusal": "unavailable"}
+    assert broker.handle(tech()) == GATED
     assert peer.calls == 6
     assert [e["event_type"] for e in events[n:]] == ["knowledge.context.completed"]
     assert (last(events)["outcome"], last(events)["reason_code"]) == (
         "unavailable", "rate_limited")
     now[0] = 159.9   # first count (t=100) still inside the window
-    assert broker.handle(frame(Q)) == {"refusal": "unavailable"}
+    assert broker.handle(tech()) == GATED
     now[0] = 160.0   # t=100 has aged out
-    assert "response" in broker.handle(frame(Q))
+    assert "response" in broker.handle(tech())
     assert peer.calls == 7
 
 
@@ -115,10 +136,10 @@ def test_busy_request_is_still_counted(env):
     now = [10.0]
     broker, peer, events = make(cfg.load_observation_rule(), lambda: now[0])
     assert broker._slot.acquire(blocking=False)
-    assert broker.handle(frame(Q)) == {"refusal": "timeout"}
+    assert broker.handle(tech()) == BUSY
     assert last(events)["reason_code"] == "busy"
-    assert broker.handle(frame(Q)) == {"refusal": "timeout"}
-    assert broker.handle(frame(Q)) == {"refusal": "unavailable"}
+    assert broker.handle(tech()) == BUSY
+    assert broker.handle(tech()) == GATED
     assert last(events)["reason_code"] == "rate_limited"
 
 
@@ -126,7 +147,7 @@ def test_busy_request_is_still_counted(env):
 def test_rule_change_latches_closed_until_restart(env, mutate):
     path = write_rule(env, 6)
     broker, peer, events = make(cfg.load_observation_rule())
-    assert "response" in broker.handle(frame(Q))
+    assert "response" in broker.handle(tech())
     if mutate == "remove":
         path.unlink()
     elif mutate == "replace":
@@ -137,15 +158,15 @@ def test_rule_change_latches_closed_until_restart(env, mutate):
     else:
         path.write_text(path.read_text() + " ")
     for _ in range(2):
-        assert broker.handle(frame(Q)) == {"refusal": "unavailable"}
+        assert broker.handle(tech()) == GATED
         assert last(events)["reason_code"] == "refused_before_send"
     # restoring the original content does not reopen it
     write_rule(env, 6)
-    assert broker.handle(frame(Q)) == {"refusal": "unavailable"}
+    assert broker.handle(tech()) == GATED
     assert peer.calls == 1
     # a restart (new broker, fresh read) reopens it
     fresh, peer2, _ = make(cfg.load_observation_rule())
-    assert "response" in fresh.handle(frame(Q))
+    assert "response" in fresh.handle(tech())
 
 
 @pytest.mark.parametrize("question,observation", [
@@ -165,20 +186,20 @@ def test_rule_change_latches_closed_until_restart(env, mutate):
     ("ATT&CK technique context: T1059  T1060", False),
     (" ATT&CK technique context: T1059", False),
 ])
-def test_sentence_pattern_boundaries(env, question, observation):
-    broker, peer, events = make(None)   # no rule: observation => refused
-    result = broker.handle(frame(question))
-    if observation:
-        assert result == {"refusal": "unavailable"} and peer.calls == 0
-    else:
-        assert "response" in result and peer.calls == 1
+def test_the_old_sentence_is_no_longer_a_way_in(env, question, observation):
+    """Matching the old observation sentence or not, a question is refused (#439)."""
+    write_rule(env, 60)
+    broker, peer, events = make(cfg.load_observation_rule())
+    assert broker.handle(frame(question)) == {"refusal": "unavailable"}
+    assert peer.calls == 0
+    assert last(events)["reason_code"] == "refused_before_send"
 
 
 def test_gate_runs_before_the_requested_event(env):
     write_rule(env, 1)
     broker, peer, events = make(cfg.load_observation_rule())
-    broker.handle(frame(Q))
-    broker.handle(frame(Q))
+    broker.handle(tech())
+    broker.handle(tech())
     assert [e["event_type"] for e in events] == [
         "knowledge.context.requested", "knowledge.context.completed",
         "knowledge.context.completed"]
@@ -186,7 +207,7 @@ def test_gate_runs_before_the_requested_event(env):
 
 def test_audit_never_carries_question_text(env):
     broker, _, events = make(None)
-    broker.handle(frame(Q))
+    broker.handle(tech())
     assert "T1059" not in json.dumps(events)
 
 

@@ -82,6 +82,7 @@ GRANTABLE_UNITS = frozenset({
     "azazel-incident-explaind.service",
     "azazel-knowledge-contextd.service",
     "azazel-knowledge-lited.service",
+    "azazel-mio-contextobsd.service",
     "azazel-mio-entryd.service",
     "azazel-mio-referenced.service",
 })

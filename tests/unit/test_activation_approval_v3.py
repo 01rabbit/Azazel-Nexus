@@ -153,6 +153,8 @@ def test_the_v3_unit_set_is_pinned_and_excludes_enforcement():
         "azazel-watchdog.service", "azazel-mio-referenced.service",
         # The integrated loop's audit writer (ADR 0008, 2026-10-30).
         "azazel-auditd-loop.service",
+        # The broker's one SERVICE principal (ADR 0010, 2026-11-17).
+        "azazel-mio-contextobsd.service",
     }
     v2 = supporting | {"azazel-edge-core.service"}
     assert activation_approval_v2._V2_UNITS == v2
@@ -568,13 +570,17 @@ def test_no_scope_was_widened():
     reference = "azazel-mio-referenced.service"
     audit = "azazel-auditd-loop.service"
     context = "azazel-knowledge-contextd.service"
-    assert set(ACTIVATION_UNIT_ALLOWLIST) == set(LOOP) | {edge, reference, audit, context}
+    # The fourth, the broker's one SERVICE principal (ADR 0010, 2026-11-17).
+    observe = "azazel-mio-contextobsd.service"
+    assert set(ACTIVATION_UNIT_ALLOWLIST) == set(LOOP) | {edge, reference, audit, context, observe}
     assert context in ACTIVATION_UNIT_ALLOWLIST
-    assert POLICY_UNIT_SCOPE == frozenset(LOOP) | {edge, reference, audit, context}
+    assert POLICY_UNIT_SCOPE == frozenset(LOOP) | {edge, reference, audit, context, observe}
+    assert "azazel-mio-locald.service" not in POLICY_UNIT_SCOPE
     # The exposure units are grantable only so #253 checks their files; no
     # policy names them and the library withholds their tier (unchanged).
     assert activation_markers.GRANTABLE_UNITS == (
-        frozenset(LOOP + EXPOSURE) | {edge, reference, audit, context})
+        frozenset(LOOP + EXPOSURE) | {edge, reference, audit, context, observe})
+    assert "azazel-mio-locald.service" not in activation_markers.GRANTABLE_UNITS
     assert activation_markers.NON_GRANTABLE_MARKER_UNITS == frozenset()
     with pytest.raises(activation_markers.GrantMarkerRefused):
         activation_markers.write_grant_markers(["azazel-watchdog.service"])
