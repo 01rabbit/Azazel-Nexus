@@ -843,6 +843,15 @@ def _recent_extra(value, snapshot, now=None, reader="operator"):
         if reader == "ui":
             copy["full_node_reference"] = full_node_reference_state(
                 row.get("full_node_trace"), row["technique_ids"], now)
+            if "technique_past_reference" in row:
+                # DESIGN-D53: only the read-only UI's view; a derived, closed projection.
+                from . import technique_past_reference as _past
+                try:
+                    _past.read(row["technique_past_reference"], row["incident_id"])
+                except ValueError:
+                    raise _Refused("refused") from None
+                copy["technique_past_reference"] = _plain(
+                    _past.view(row["technique_past_reference"], row["state"], now))
         copy["explanation"] = _pick(explanation, EXPLANATION_FIELDS)
         if isinstance(explanation.get("fast_assistance"), dict):
             copy["explanation"]["fast_assistance"] = _fast_assistance_availability(

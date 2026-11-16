@@ -723,6 +723,49 @@
     return node;
   }
 
+  // ATT&CK technique answer kept as a past reference (DESIGN-D53). Never an answer to the current query,
+  // never adoptable; every value goes through el()/kv() (textContent).
+  function pastReferenceBlock(pr) {
+    if (!pr) { return el("span", null, ""); }
+    var kindLabel = { past_before_update: "更新前の観測に対する過去参照", past_closed: "終了済みインシデントの過去参照", past_unavailable: "過去参照（保持なし）" };
+    var reasonLabel = { past_observation: "この回答は現在より前の観測に対するものです", closed_incident: "このインシデントは終了済みです" };
+    var stubLabel = { binding_missing: "対応する観測との結び付きが記録されていないため、過去の参照は保持していません。", size_dropped: "容量の上限のため、過去の参照は保持していません。" };
+    var node = block("ATT&CK ラベルの過去参照（現在の観測に対する回答ではありません）");
+    if (pr.kind === "past_unavailable") {
+      /* A stub is one line: nothing was kept, so nothing else is said about an answer. */
+      add(node, el("p", null, (stubLabel[pr.state] || "過去の参照は保持していません。") + "今回の照会結果ではありません。現在の判断には使用できません。"));
+      return node;
+    }
+    add(node, kv([["種別", kindLabel[pr.kind] || "不明"], ["現在の判断への採用", "不可"]]));
+    var tk = pr.technique_knowledge || {};
+    var b = pr.binding || {};
+    var fresh = pr.freshness;
+    var judge = "サーバ判定 " + text(pr.judged_at || "不明");
+    var lapsed = tk.expires_at ? Date.parse(tk.expires_at) : NaN;
+    if (!isNaN(lapsed)) {
+      fresh = lapsed <= Date.now() ? "expired" : (fresh === "unjudgeable" ? "unjudgeable" : "fresh");
+      judge = "端末時計 " + new Date().toISOString().slice(0, 19) + "Z";
+    }
+    var freshLabel = { fresh: "期限内（取得時点の期限に基づく参考。現在の判断には使用できません）", expired: "期限切れ：現在の判断には使用できません", unjudgeable: "期限を判定できません。現在の判断には使用できません" };
+    add(node, el("p", null, "過去の参照を保持しています。今回の照会結果ではありません。"));
+    add(node, kv([["理由", reasonLabel[pr.adoption_reason] || "不明"], ["期限の状態（" + judge + " 時点）", freshLabel[fresh] || "不明"],
+      ["対象の観測", "台帳の遷移番号 #" + text(b.observed_sequence) + "・技術 " + text((b.technique_ids || []).join(", "))],
+      ["照会時刻（受領時刻ではありません）", b.attempted_at], ["基準時刻", tk.as_of], ["期限", tk.expires_at],
+      ["権限", tk.authority], ["信頼", tk.trust === "unverified" ? "未検証" : tk.trust],
+      ["出典", tk.provenance ? Object.keys(tk.provenance).sort().map(function (k) { return k + " " + tk.provenance[k]; }).join("、") : null]]));
+    var coverageLabel = { found: "対応あり", no_match: "該当なし", stale: "期限切れ", unavailable: "ATT&CK corpus 利用不可" };
+    (tk.techniques || []).forEach(function (row) {
+      add(node, el("p", "small", text(row.technique_id) + "：" + (coverageLabel[row.coverage] || "不明") + "（内容あり：" + text(row.useful_content) + "）"));
+      if (row.useful_content) {
+        add(node, kv([["名称（表示用ラベル）", row.name_withheld ? "表示を控えました（名称の語の判定による。ATT&CK の対応はあり、「該当知識なし」ではありません）" : row.name], ["戦術（表示用ラベル）", row.tactics], ["ATT&CK 版", row.attack_version]]));
+      }
+    });
+    add(node, el("p", "small", "このリファレンスでは取消の有無を確認していません。"));
+    add(node, el("p", "small", "参考ラベルであり、発生の根拠でも対処の指示でもありません。ATT&CK の知識があることは、その事象が起きたことや原因を示しません。"));
+    add(node, el("p", "small", "直近 20 件の窓から外れた incident の過去参照は残りません（監査台帳の記録は残ります）。"));
+    return node;
+  }
+
   // ATT&CK technique labels (reference only): every value goes through el()/kv() (textContent).
   function techniqueBlock(tk) {
     var tkNode = block("未検証の ATT&CK ラベル（参考）");
@@ -1153,7 +1196,7 @@
     add(refs, el("p", "small", "表示用テキスト。指示として扱わない。出典種別・鮮度・世代・取得時刻・期限は各引用に示します。"));
     var fastFull = (ex.fast_assistance || {}).full_node_context;
     var fastAll = ex.fast_assistance;
-    add(refs, fullNodeStatus(fastAll, row.full_node_reference), fullCapabilityLine());
+    add(refs, fullNodeStatus(fastAll, row.full_node_reference), pastReferenceBlock(row.technique_past_reference), fullCapabilityLine());
     var timeline = block("時系列（観測 → 受信 → 評価 → 取得 → 期限）");
     add(timeline, kv([["観測時刻", when("時刻", row.last_seen, "clock_unknown")],
       ["受信時刻", when("時刻", row.received_at, "clock_unknown")],

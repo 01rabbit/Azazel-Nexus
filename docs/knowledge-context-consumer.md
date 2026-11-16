@@ -349,6 +349,47 @@ Markdown label the Fabric axis as such and show the ATT&CK query's own transport
 verification and expiry in the technique block. A stored row written before this
 labelling reads the same way (no field changed).
 
+### Past reference of a technique answer (DESIGN-D53)
+
+The current technique answer lives in the row's current Full-node projection only
+while it answers the row's latest observation. When that projection is replaced
+(an update, a close, an Edge reset, or a late explanation of an earlier
+transition) the answer is copied once to the row key `technique_past_reference`
+and shown as a **past reference**: retained and viewable, never adoptable for a
+current decision, never an answer to a new query. At most one per incident; a
+newer observation (larger `observed_sequence`) replaces an older one, the same or
+an older one never does, and a failed or unavailable record is never kept. The
+copy is made before the current projection is removed (also on reset), and a late
+explanation is captured from its own arguments only. The ledger is not read and
+nothing signed or stored changes; the key is a derived copy in `recent.json`, the
+checkpoint, the ui status view and the ui handoff. Operator and root views carry
+none.
+
+Stored shape (`technique-past-reference/1`; `RECENT_SCHEMA`, `technique-knowledge/1`
+and the handoff schema are unchanged): either `retained` with `binding`
+(`incident_id`, `observed_sequence`, `technique_ids`, `attempted_at`, the four values
+that exist at capture time; no transition kind, no request id), the unchanged
+`technique-knowledge/1` `record`, and `capture_digest` (sha256 of the canonical
+`{binding, record}`), or a stub `{version, state}` with state `binding_missing`
+(the answer left the current projection but its binding could not be made) or
+`size_dropped` (reduced to fit `RECENT_BYTES`). The reader refuses the whole snapshot
+when the digest, the incident id or the record's technique ids do not match exactly.
+`attempted_at` is the time of the explanation that asked, not a receipt time.
+
+Derived words (never stored; one function for the API, the screen and the handoff):
+`kind` (`past_before_update`, `past_closed`, `past_unavailable`), `adoption`
+(always `not_adoptable`), `adoption_reason` (`past_observation`, `closed_incident`,
+`binding_missing`, `size_dropped`), `freshness` (`fresh`, `expired`, `unjudgeable`,
+or null for a stub; the status view compares `expires_at` with its `now` as it is, the handoff floors both to whole seconds as its `judged_at` is, and the screen judges on the device clock; a retained view carries `judged_at`) and `revocation`
+(always `not_checked`: `technique-knowledge/1` has no revocation field). A stub
+carries none of the record's keys. `observed_sequence` is shown here (unlike the
+trace, whose sequence stays internal) because it is the binding; it is the audit ledger's transition number, not a per-incident count. Names are copied
+as stored; the handoff's leak-scanner withholding is applied to the copy it emits
+and is never written back. The window is the latest 20 rows: a past reference leaves
+with its incident, the audit ledger is untouched, and the screen and the handoff say so.
+Known limits: a newer answer whose binding could not be made leaves an older retained reference in place (its own transition number is shown), and a stub left by size pressure can later be replaced by an older retained candidate, since there is no sequence to compare. Under size pressure past references are reduced first (closed rows oldest first, then
+open rows oldest first, pending rows included) before slow analysis and explanations.
+
 ### Recorded Full-node reference: row trace and reader
 
 The explainer's recent rows may carry an optional row-level key
