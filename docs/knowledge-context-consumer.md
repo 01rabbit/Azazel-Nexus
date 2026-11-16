@@ -100,11 +100,15 @@ checkpoints and records are byte-for-byte what they were before.
 
 ### Question shape and the rule file
 
-A question that is exactly `ATT&CK technique context: ` followed by one to eight
-technique ids (`T1234` or `T1234.567`, single spaces) is treated by the broker
-as observation-origin. The question is built by `azazel-mio-locald`, not by the
-explainer, from a sorted, validated set of ids. Other questions are handled as
-before.
+Since 2026-11-17 ([ADR-0010](adr/0010-context-observation-unit.md)) the broker
+accepts one frame only, the technique query `{"privacy_class": "P0-public",
+"techniques": [ids]}` (one to eight ids, `T1234` or `T1234.567`; see "ATT&CK
+technique query" below), and every such frame is observation-origin. It is
+built by `azazel-mio-contextobsd`, not by the explainer, from a sorted,
+validated set of ids. A free-form `question` is refused before sending
+(`reason_code: refused_before_send`), including one in the earlier observation
+sentence `ATT&CK technique context: T…`; it is not counted against the rule's
+limit and cannot latch the broker.
 
 The rule file is `/etc/azazel/knowledge-context/observation-query.json`. It sits
 in the parent of the commissioning directory, outside the bundle, so the bundle's
@@ -125,8 +129,8 @@ variable or command-line option can supply a rule.
 | Component | Role | When the file is read |
 | --- | --- | --- |
 | `azazel-incident-explaind` | candidate decision, retention table, the request, the replacement rule, the origin record | before every explanation, so adding, removing or replacing the file takes effect from the next one |
-| `azazel-mio-entryd`, `azazel-mio-locald` | relay the request; locald builds the question | not read. The rule is enforced by the broker |
-| `azazel-knowledge-contextd` (broker) | treats matching questions as observation-origin, counts them, refuses them without a rule | once at start. After that, on each observation-origin request, it checks that the file's identity (device, inode, mtime, ctime) is unchanged; a missing or changed file latches the broker closed to such questions until restart |
+| `azazel-mio-entryd`, `azazel-mio-contextobsd` | entryd relays the request; contextobsd builds the technique query | not read. The rule is enforced by the broker |
+| `azazel-knowledge-contextd` (broker) | treats every technique query as observation-origin, counts it, refuses it without a rule; refuses a free-form question before the gate | once at start. After that, on each observation-origin request, it checks that the file's identity (device, inode, mtime, ctime) is unchanged; a missing or changed file latches the broker closed to such requests until restart |
 | `azazel-ui` | `capabilities.full_context_from_observation`: true when it reads a valid rule at that moment, false when absent or defective, null for a fixture source | at every view build, so the `/api/view` cache (2 seconds) can delay it. It states only that the file was valid when the UI read it; it says nothing about the broker's latch, grants, the bundle or the peer |
 
 When the broker read a rule, `knowledge.context.commissioning` carries
@@ -205,31 +209,40 @@ A missing `reason_code` on a record written before this field existed reads as
 is inferred. Events never contain exception text, the question or any response
 fragment.
 
-### The explainer's request: `mio.context.observe` and `mio.local.observe`
+### The explainer's request: `mio.context.observe` and `mio.contextobs.observe`
 
 The explainer asks at most one observation-origin question per candidate
 explanation, after `mio.advise` and Knowledge Lite and before the record is
 composed. It uses `mio.context.observe` on `azazel-mio-entryd` (deadline 350 ms,
-plus a 250 ms caller margin), which relays to `mio.local.observe` on
-`azazel-mio-locald`.
+plus a 250 ms caller margin), which relays to `mio.contextobs.observe` on
+`azazel-mio-contextobsd`, the model-free unit whose account `azmioctx` is the
+broker's only SERVICE principal (ADR-0010). Until 2026-11-17 the relay went to
+`mio.local.observe` on `azazel-mio-locald`; that verb no longer exists.
 
 - `mio.context.observe` is allowed to the explainer only; any other principal
   is `PRINCIPAL_DENIED`. It requires a P3 frame with the structured projection
   and at least one technique. It draws on the same per-caller rate allowance as
   `mio.advise`, writes nothing to the entryd ledger, and does not change
   `mio.advise`'s 500 ms budget, FAST_ASSESS or the ordinary P0 path.
-  `mio.local.observe` is a SERVICE verb under the existing `azmioentry`-only policy.
+  `mio.contextobs.observe` is a SERVICE verb admitting `azmioentry` alone. Its
+  socket `/var/lib/azazel/run/mio-contextobs/` is `azmioctx:azmio-contextobs
+  2710`, and only the entry unit carries `azmio-contextobs`. entryd checks the
+  socket's owner (`azmioctx`) and group before connecting and the kernel peer
+  uid after; the service classifies the kernel peer credentials, so another
+  member of the group, the model host or root is `principal_denied`.
 - The 350 ms deadline is a candidate contract, not a measured one. The reply
   carries a fixed-key `timing` (`context`: received or unavailable, `broker_ms`,
-  `total_ms` from locald; `entry_ms` from entryd) so that success, delay and
+  `total_ms` from contextobsd, still under the key `locald` so that the reply
+  keeps its shape; `entry_ms` from entryd) so that success, delay and
   refusal can be measured. Nothing is logged or recorded from it yet, and no
   measurement has been taken.
 - The explainer does not adopt the reply as it arrives: it re-validates the
   returned `fast_assistance` with `read_fast_assistance` before the replacement
   rule runs, and a reply that fails is treated as `unavailable`.
 - A broker refusal, an unreachable broker, a timeout or an exhausted budget all
-  return `unavailable` in the same shape. Locald does not submit generation.
-- Locald stamps `full_node_context_received_at` (UTC, a wall-clock time and not a
+  return `unavailable` in the same shape. contextobsd submits no generation and
+  writes nothing to its ledger (which holds only the socket layer's refusals).
+- The service stamps `full_node_context_received_at` (UTC, a wall-clock time and not a
   trusted clock) into the fast assistance only when the broker returned a
   response. The reader accepts it as an optional key; a reader from before this
   change reads the unknown key as `invalid_fast_assistance` (see the deployment
@@ -274,7 +287,7 @@ environment); acceptance S2 must show it, else the replacement always fails.
 
 The record gets `full_node_context_origin` (`observation_rule_v1`,
 `observation_rule_v1_repeat`, `none`) only while a rule is usable. The optional
-`full_node_context_received_at` comes from locald and is present only when the
+`full_node_context_received_at` comes from contextobsd and is present only when the
 broker answered. The projection
 `explanation.fast_assistance.full_node_context` gains the optional `query_origin`
 (same three words), which explaind copies from the record. Old rows have neither
@@ -289,13 +302,13 @@ entity `attack-technique/v1` per id. This is a separate, closed entry of
 `make_request`: it accepts exactly the key `techniques`, never widens another
 entry, and is admitted only when the commissioned sanitizer policy admits the
 fixed observation question for the same ids. The broker applies the observation
-rule gate to every technique frame. Other request paths are unchanged.
+rule gate to every technique frame. Since ADR-0010 there is no other request path.
 
 The signed answer does not go to M.I.O. The path is: signature and Fabric
 correlation (existing), then `technique_knowledge.validate_technique_response`
 in the client (a failure is stage `technique_verification`), then the same
-validator and `project_technique_response` in locald, then storage, UI and
-handoff. Locald runs the core as for an unavailable Full lookup
+validator and `project_technique_response` in contextobsd, then storage, UI and
+handoff. contextobsd runs the core as for an unavailable Full lookup
 (`full_node_context_status: unavailable`, no response argument) and puts the
 closed record beside the result as `technique_knowledge`; the reader requires
 that no Fabric advisory comes with it.
@@ -495,16 +508,22 @@ the conversion leaves no record of itself.
 ## Process boundary
 
 Ordinary `mio.local.assess` requests still arrive at `azazel-mio-locald` over
-its existing AF_UNIX socket. The P0 label on an incoming question is a caller
-assertion, not proof that its content is public. The broker checks the label
-and applies the commissioned field allowlist and named redactions, but does
-not classify arbitrary free text. Production commissioning must restrict
-which trusted local inputs can set this label and which question fields can be
-sent; untrusted text must remain local. Locald submits the bounded frame to the dedicated
-`azazel-knowledge-contextd` broker over a second AF_UNIX socket. Only the
-`azmio` local runtime account is in the socket's client group. Locald keeps
-`PrivateNetwork=yes` and `IPAddressDeny=any`; `azremote` and its Provider
-Registry remain separate.
+its existing AF_UNIX socket, and since ADR-0010 locald does not query the
+broker: it holds no client group of the broker, and its fast assistance reports
+`full_node_context_status: not_queried`. Until 2026-11-17 locald forwarded a
+caller-classified free-form P0 question; the broker now refuses any free-form
+question before sending, so a P0 label asserted by a caller no longer reaches
+the peer at all.
+
+The only client of the dedicated `azazel-knowledge-contextd` broker is
+`azazel-mio-contextobsd` (`azmioctx`), the one account in the socket's client
+group `azknowledge-context-client` and the broker's only SERVICE principal
+(`azmio`, `azmioentry` and root are `principal_denied`). It sends only the
+technique query built from a validated fast-transition projection. It runs no
+model, holds no model, admission, operator-trust or Mission Pack path, has
+`PrivateNetwork=yes`, `IPAddressDeny=any` and AF_UNIX only, and answers the
+entry service alone. Locald keeps `PrivateNetwork=yes` and `IPAddressDeny=any`;
+`azremote` and its Provider Registry remain separate.
 
 The broker fixes privacy class to P0-public and calls `KnowledgeClient` with a
 commissioned sanitizer policy, mission alias and client identity. It returns
@@ -601,14 +620,18 @@ trust anchor or network allowance; those commissioning decisions remain open.
 
 ## Isolated acceptance matrix (software only)
 
-`tests/unit/test_knowledge_context_acceptance.py` drives the ordinary entry
-(`LocalRuntimeService` FAST_ASSESS) through a real `KnowledgeClient` and
-`KnowledgeContextBroker` against a synthetic producer on loopback mTLS, using
-test-only PKI and a test-only signing key. It needs the `fabric` and M.I.O.
-extras and skips without them. The AF_UNIX hop between locald and the broker
-is replaced by a direct call whose deadline arguments are built in the test,
-not by the real socket client; that hop stays covered by the isolated
-real-process runner. The matrix asserts:
+`tests/unit/test_knowledge_context_acceptance.py` keeps a real `KnowledgeClient`
+and `KnowledgeContextBroker` against a synthetic producer on loopback mTLS
+(test-only PKI and signing key; it needs the `fabric` and M.I.O. extras and
+skips without them). Since ADR-0010 it asserts refusals only: the ordinary entry
+(`LocalRuntimeService` FAST_ASSESS) asks the broker nothing (`not_queried`), and
+the commissioned broker refuses the same free-form question, the old
+observation sentence included, before sending, so the producer receives no
+request whatever it would have answered. The table below is the matrix as it
+stood before 2026-11-17, kept as the record of the removed free-form path; its
+positive cases no longer exist. The technique query is covered by
+`tests/unit/test_technique_knowledge_path.py` and the real-process runner. The
+matrix asserted:
 
 | Case | Expected result |
 | --- | --- |
@@ -631,7 +654,11 @@ existing isolated root container (`run-docker.sh`: `--network=none`, no new
 capabilities, read-only mounts, `--rm`), with a real Knowledge mTLS producer
 process, the real broker, locald and entryd processes, distinct container-only
 uids and real `SO_PEERCRED` / `SO_PEERGROUPS` on real AF_UNIX sockets. It
-changes no product code. Two harness seams exist, both test-only: the
+changes no product code. **The results below were recorded before ADR-0010
+(2026-11-17), when the broker's SERVICE principal was `azmio` and locald was its
+client.** Since then the served peer is `azmioctx` (`azazel-mio-contextobsd`),
+`azmio` is refused like `azmioentry`, and the runner has to be re-run against
+the new unit before these rows describe the current code (not yet done). Two harness seams exist, both test-only: the
 producer wrapper fixes the signing seed and port across restarts, and the
 broker harness can record the producer envelope and, while a control file
 exists, offer an earlier envelope at the network edge (`_post_path`). The
@@ -912,10 +939,12 @@ is one of the open items above and is not defined here.
 ## Verification scope
 
 Unit tests cover caller injection refusal, P0 binding, payload bounds and the
-disabled default. The isolated real-process test starts locald, the broker,
+disabled default. The isolated real-process test started locald, the broker,
 and Knowledge as separate processes with synthetic certificates and loopback
-transport, and asserts the verified advisory response reaches ordinary
-FAST_ASSESS. The current candidate has passed this software test. The fixed
+transport, and asserted the verified advisory response reached ordinary
+FAST_ASSESS; that path was removed by ADR-0010 (2026-11-17), and the
+real-process tests still describe it until they are reworked for
+`azazel-mio-contextobsd`. The candidate before that change passed this software test. The fixed
 head, repository identities, build artifacts and exact results are recorded
 in the #403 PR evidence. This does not establish production credential
 lifecycle, systemd egress, hardware, release or deployment.
