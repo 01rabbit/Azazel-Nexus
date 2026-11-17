@@ -144,7 +144,6 @@ class KnowledgeContextBroker:
             return {"refusal": "timeout"}
         reason = None
         phase = "frame"
-        technique_query = False
         try:
             # The grant this request is accepted under. A broker whose grant
             # was withdrawn (marker removed) accepts nothing, even in the
@@ -170,7 +169,6 @@ class KnowledgeContextBroker:
             if (set(wire_frame) != {"privacy_class", "techniques"}
                     or wire_frame["privacy_class"] != PrivacyClass.P0_PUBLIC.value):
                 raise ValueError
-            technique_query = True
             frame = {"techniques": request_ids(wire_frame["techniques"])}
             # Judged before the `requested` event and before the slot.
             phase = "gate"
@@ -248,16 +246,17 @@ class KnowledgeContextBroker:
             self._audit(event)
         except Exception:
             pass
-        if technique_query:
-            # How far a technique query got, as a fixed word, so the caller can
-            # keep transport and verification apart. Other queries are unchanged.
-            if phase == "client":
-                stage = reason if reason in _CLIENT_STAGES else None
-            else:
-                stage = {"late": "transport", "verification": "verification"}.get(
-                    reason, "refused_before_send")
-            if stage is not None:
-                return {"refusal": outcome, "stage": stage}
+        # Every accepted request is a technique query (#439), so every refusal
+        # carries how far it got, as a fixed word: the caller can keep transport
+        # and verification apart, and a refused question or malformed frame is
+        # `refused_before_send` on the caller's side too, not a shape error.
+        if phase == "client":
+            stage = reason if reason in _CLIENT_STAGES else None
+        else:
+            stage = {"late": "transport", "verification": "verification"}.get(
+                reason, "refused_before_send")
+        if stage is not None:
+            return {"refusal": outcome, "stage": stage}
         return {"refusal": outcome}
 
 

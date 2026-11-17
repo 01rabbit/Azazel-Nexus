@@ -90,7 +90,7 @@ def test_a_question_is_refused_before_sending_with_or_without_a_rule(env, rule):
         write_rule(env, 6)
     for q in ("public question", "synthetic public observation context", Q):
         broker, peer, events = make(cfg.load_observation_rule() if rule else None)
-        assert broker.handle(frame(q)) == {"refusal": "unavailable"}
+        assert broker.handle(frame(q)) == {"refusal": "unavailable", "stage": "refused_before_send"}
         assert peer.calls == 0
         assert [e["event_type"] for e in events] == ["knowledge.context.completed"]
         assert last(events)["reason_code"] == "refused_before_send"
@@ -100,12 +100,12 @@ def test_a_question_is_not_counted_and_does_not_latch(env):
     path = write_rule(env, 1)
     broker, peer, events = make(cfg.load_observation_rule())
     for _ in range(5):
-        assert broker.handle(frame("public question")) == {"refusal": "unavailable"}
+        assert broker.handle(frame("public question")) == {"refusal": "unavailable", "stage": "refused_before_send"}
     # the one-a-minute rule still has its one request
     assert "response" in broker.handle(tech())
     assert peer.calls == 1
     path.unlink()
-    assert broker.handle(frame("public question")) == {"refusal": "unavailable"}
+    assert broker.handle(frame("public question")) == {"refusal": "unavailable", "stage": "refused_before_send"}
     assert broker.handle(tech()) == GATED
     assert peer.calls == 1
 
@@ -190,7 +190,7 @@ def test_the_old_sentence_is_no_longer_a_way_in(env, question, observation):
     """Matching the old observation sentence or not, a question is refused (#439)."""
     write_rule(env, 60)
     broker, peer, events = make(cfg.load_observation_rule())
-    assert broker.handle(frame(question)) == {"refusal": "unavailable"}
+    assert broker.handle(frame(question)) == {"refusal": "unavailable", "stage": "refused_before_send"}
     assert peer.calls == 0
     assert last(events)["reason_code"] == "refused_before_send"
 

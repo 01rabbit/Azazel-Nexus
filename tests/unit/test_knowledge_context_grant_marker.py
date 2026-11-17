@@ -157,7 +157,7 @@ def test_with_the_marker_in_place_the_answer_is_adopted(root):
 def test_without_the_marker_nothing_is_accepted_and_the_peer_is_not_asked(root):
     events, peer = [], Peer()
     broker = broker_for(root, peer, events)
-    assert broker.handle(_request()) == {"refusal": "unavailable"}
+    assert broker.handle(_request()) == {"refusal": "unavailable", "stage": "refused_before_send"}
     assert peer.calls == 0
     [done] = completed(events)
     assert done["outcome"] == "unavailable" and done["reason_code"] == "withdrawn"
@@ -170,7 +170,7 @@ def test_a_marker_removed_by_the_controller_closes_the_next_request(root):
     broker = broker_for(root, peer, events)
     assert broker.handle(_request()) == {"response": ANSWER}
     remove_contextd_marker(root)
-    assert broker.handle(_request()) == {"refusal": "unavailable"}
+    assert broker.handle(_request()) == {"refusal": "unavailable", "stage": "refused_before_send"}
     assert peer.calls == 1
 
 
@@ -305,7 +305,7 @@ def test_removing_the_admission_check_is_caught(root):
     assert peer.calls == 1
     real = broker_for(root, Peer(), [])
     # refused before the frame is read, so no technique stage is reported
-    assert real.handle(_request()) == {"refusal": "unavailable"}
+    assert real.handle(_request()) == {"refusal": "unavailable", "stage": "refused_before_send"}
 
 
 # -- the unit's stop profile ---------------------------------------------------------------

@@ -71,7 +71,7 @@ def test_frame_shape_refusal_is_refused_before_send():
     events = []
     broker = _broker(object(), events)
     req = _request(payload={"frame": {"privacy_class": "P1", "question": "q"}})
-    assert broker.handle(req) == {"refusal": "unavailable"}
+    assert broker.handle(req) == {"refusal": "unavailable", "stage": "refused_before_send"}
     _check(events, "refused_before_send", "unavailable")
     assert [e["event_type"] for e in events] == ["knowledge.context.completed"]
 
@@ -79,7 +79,7 @@ def test_frame_shape_refusal_is_refused_before_send():
 def test_uncommissioned_broker_is_refused_before_send():
     events = []
     broker = KnowledgeContextBroker(**OPEN_GATE, grant_marker=granted_marker, audit=events.append)
-    assert broker.handle(_request()) == {"refusal": "unavailable"}
+    assert broker.handle(_request()) == {"refusal": "unavailable", "stage": "refused_before_send"}
     _check(events, "refused_before_send", "unavailable")
 
 

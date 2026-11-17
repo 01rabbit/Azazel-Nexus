@@ -70,7 +70,9 @@ refused (`principal_denied`). Locald loses `azknowledge-context-client`.
 only ever sends the technique form, the broker accepts only `{privacy_class:
 "P0-public", techniques: [...]}`. A `question` frame, including one that
 matches the old observation sentence, is refused with `refused_before_send`
-and never reaches the gate, the slot, the audit `requested` event or the
+(in the ledger and, since 2026-11-17, also to the caller: every refusal now
+carries `stage`, so `request_context` raises with `stage=refused_before_send`
+instead of reporting a response-shape error) and never reaches the gate, the slot, the audit `requested` event or the
 client. Locald's `mio.local.assess` no longer queries the broker: it reports
 `full_node_context_status: not_queried` and its `mio.local.observe` verb is
 removed.

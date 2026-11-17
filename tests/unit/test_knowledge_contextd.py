@@ -75,7 +75,7 @@ def test_uncommissioned_broker_refuses_and_does_not_call_a_peer():
     broker = KnowledgeContextBroker(**OPEN_GATE, grant_marker=granted_marker, client=Forbidden(), policy=_policy(),
                                     mission="lab", alias_key=b"x" * 32,
                                     audit=events.append)
-    assert broker.handle(_request()) == {"refusal": "unavailable"}
+    assert broker.handle(_request()) == {"refusal": "unavailable", "stage": "refused_before_send"}
     assert events[-1]["outcome"] == "unavailable"
 
 
@@ -362,7 +362,9 @@ def test_a_free_form_question_is_refused_before_sending(frame):
     broker = KnowledgeContextBroker(**OPEN_GATE, grant_marker=granted_marker, client=Client(),
                                     policy=_policy(), mission="lab", alias_key=b"x" * 32,
                                     enabled=True, audit=events.append)
-    assert broker.handle(_request({"frame": frame})) == {"refusal": "unavailable"}
+    # The caller sees the same fixed word the ledger records, not a shape error.
+    assert broker.handle(_request({"frame": frame})) == {"refusal": "unavailable",
+                                                       "stage": "refused_before_send"}
     assert calls == []
     # Refused before the gate, the slot and the `requested` record.
     assert [e["event_type"] for e in events] == ["knowledge.context.completed"]
@@ -454,3 +456,14 @@ def test_ordinary_fast_assess_does_not_upgrade_mission_data_to_p0(monkeypatch):
         verb=mio_locald.FAST_ASSESS_VERB, payload=frame,
         arguments={"deadline_ms": 1000}))
     assert reply["fast_assistance"] == {"model_free": True}
+
+
+def test_a_refused_question_reaches_the_caller_as_refused_before_send(monkeypatch):
+    """The product client reads the broker's refusal: stage refused_before_send, not 'broker response shape'."""
+    from azazel_nexus_runtime import knowledge_context_socket as kcs
+    broker = KnowledgeContextBroker(**OPEN_GATE, grant_marker=granted_marker,
+                                    client=None, policy=_policy(), mission="lab",
+                                    alias_key=b"x" * 32, enabled=True, audit=lambda e: None)
+    reply = {"ok": True, "result": broker.handle(_request({"frame": {
+        "privacy_class": "P0-public", "question": "public question"}}))}
+    assert set(reply["result"]) == {"refusal", "stage"} and reply["result"]["stage"] in kcs.STAGES

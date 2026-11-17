@@ -106,7 +106,8 @@ accepts one frame only, the technique query `{"privacy_class": "P0-public",
 technique query" below), and every such frame is observation-origin. It is
 built by `azazel-mio-contextobsd`, not by the explainer, from a sorted,
 validated set of ids. A free-form `question` is refused before sending
-(`reason_code: refused_before_send`), including one in the earlier observation
+(`reason_code: refused_before_send` in the ledger, and the same word as the
+refusal's `stage` to the caller), including one in the earlier observation
 sentence `ATT&CK technique context: T…`; it is not counted against the rule's
 limit and cannot latch the broker.
 
@@ -230,7 +231,9 @@ broker's only SERVICE principal (ADR-0010). Until 2026-11-17 the relay went to
   2710`, and only the entry unit carries `azmio-contextobs`. entryd checks the
   socket's owner (`azmioctx`) and group before connecting and the kernel peer
   uid after; the service classifies the kernel peer credentials, so another
-  member of the group, the model host or root is `principal_denied`.
+  member of the group or root is `principal_denied`. An account without the
+  group, such as the model host `azmio`, does not reach the socket at all
+  (`EACCES` from the 2710 directory); given the group, it is `principal_denied`.
 - The 350 ms deadline is a candidate contract, not a measured one. The reply
   carries a fixed-key `timing` (`context`: received, unavailable or refused,
   `broker_ms`, `total_ms` and `core` from contextobsd, still under the key

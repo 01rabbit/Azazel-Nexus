@@ -86,7 +86,7 @@ def test_broker_passes_the_typed_frame_to_the_client_and_refuses_a_question(env)
     broker.handle(technique_frame(["T1059", "T1110"]))
     # A free-form question is refused before sending (#439): never seen by the client.
     assert broker.handle(_request(payload={"frame": {
-        "privacy_class": "P0-public", "question": "public question"}})) == {"refusal": "unavailable"}
+        "privacy_class": "P0-public", "question": "public question"}})) == {"refusal": "unavailable", "stage": "refused_before_send"}
     assert seen == [{"techniques": ["T1059", "T1110"]}]
 
 
@@ -107,9 +107,9 @@ def test_broker_reports_how_far_a_technique_query_got(env, raised, stage):
     broker._client = Peer()
     reply = broker.handle(technique_frame())
     assert reply == ({"refusal": "unavailable", "stage": stage} if stage else {"refusal": "unavailable"})
-    # a question frame is refused before sending, with the one-word refusal
+    # a question frame is refused before sending, and says so to the caller
     assert broker.handle(_request(payload={"frame": {"privacy_class": "P0-public", "question": "q"}})) == {
-        "refusal": "unavailable"}
+        "refusal": "unavailable", "stage": "refused_before_send"}
 
 
 # -- the local socket reader -----------------------------------------------------
