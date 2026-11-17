@@ -8,10 +8,15 @@ inputs are the root-owned commissioning bundle (relocated with AZAZEL_ROOT) and
 a synthetic loopback mTLS peer (`_official_entry_peer.SyntheticPeer`) whose
 accept / handshake / request counters prove "no communication".
 
-Test-only seams, all outside product code: AZAZEL_ROOT relocation; the existing
-`_mio_locald_context_process.py` wrapper (locald with an 8 s Knowledge budget,
-as used by the U29 chain tests) for the MIO side; a synthetic peer. Not real
-here: systemd, IPAddressAllow/Deny, ProtectSystem.
+Since ADR-0010 (#439) the caller side is the shipped context observation unit
+(`mio_contextobsd.main()` as azmioctx) behind the shipped entryd, asked by the
+explainer's `mio.context.observe`; the broker serves only the technique query
+and refuses a free-form question before sending.
+
+Test-only seams, all outside product code: AZAZEL_ROOT relocation; the contextd
+grant marker and the observation rule, placed as the activation pass and the
+operator would; a synthetic peer. Not real here: systemd,
+IPAddressAllow/Deny, ProtectSystem.
 """
 
 from __future__ import annotations
@@ -33,14 +38,15 @@ import pytest
 from nacl.signing import SigningKey
 
 from test_knowledge_context_process_interop import (  # noqa: F401
-    ROOT, _normal_entry_advisory, _pki, _ready, pytestmark)
+    ROOT, _assert_technique_not_received, _assert_technique_received, _grant_contextd,
+    _observe_via_entry, _pki, _ready, pytestmark)
 from test_knowledge_context_linux_acceptance import (
-    Stack, _doc, _free_port, _refused, _start_chain, _assert_advisory_only)
+    Stack, _doc, _free_port, _refused, _start_chain)
 from azazel_nexus.spki import spki_pin
 from _knowledge_context_bundle_fixture import build_bundle
 from _official_entry_peer import PROVIDER_ID, SyntheticPeer
 
-QUESTION_TEXT = "synthetic public context"          # the P0 question sent by _doc()
+QUESTION_TEXT = "synthetic public context"          # a free-form question (refused)
 MISSION = "official-entry-mission-marker"
 ALIAS = b"U34-ALIAS-KEY-MARKER-0123456789abcdef"[:32] + b"!"  # >= 32 bytes
 ENTRY_QUESTION = "synthetic public observation context"
@@ -63,10 +69,11 @@ class Official(Stack):
         self.tmp = tmp
         self.pki = pki
         self.service_root = tmp / "service-root"
-        self.producer = self.broker = self.locald = self.entryd = None
+        self.producer = self.broker = self.contextobsd = self.entryd = None
         self.daemon: subprocess.Popen | None = None
         self.egress = pwd.getpwnam("azknowledgeegress")
         self.mio = pwd.getpwnam("azmio")
+        self.ctx = pwd.getpwnam("azmioctx")
         self.entry = pwd.getpwnam("azmioentry")
         self.operator = pwd.getpwnam("azoperator")
         import grp
@@ -152,7 +159,7 @@ class Official(Stack):
         d.stdout.close(); d.stderr.close()
 
     def shutdown(self) -> None:
-        for name in ("entryd", "locald"):
+        for name in ("entryd", "contextobsd"):
             process = getattr(self, name)
             if process is not None and process.poll() is None:
                 process.terminate(); process.wait(timeout=10)
@@ -206,6 +213,7 @@ def pki_dir():
 def official(pki_dir):
     base = Path(tempfile.mkdtemp(prefix="u34-", dir="/tmp"))
     base.chmod(0o755)
+    _grant_contextd()
     state = None
     try:
         state = Official(base, pki_dir)
@@ -225,19 +233,14 @@ def _refusal(reply):
 
 
 def _degraded(entry):
-    assert entry["full_node_context_status"] == "unavailable", entry
-    assert entry["advisory_authority"] is None, entry
-    assert entry["advisory_claim_status"] is None and entry["advisory_trust"] is None, entry
-    assert entry["lite_claim_count"] == 0 and entry["observation_count"] == 0, entry
-    assert entry["handoff_action"] is None, entry
-    assert entry["knowledge_status"] == "unavailable", entry
+    _assert_technique_not_received(entry)
 
 
 # ---------------------------------------------------------------------------
-# Group 1: valid bundle -> real main() -> real AF_UNIX -> ordinary mio.advise path
+# Group 1: valid bundle -> real main() -> real AF_UNIX -> contextobsd <- entryd
 # ---------------------------------------------------------------------------
 
-def test_g1_valid_bundle_reaches_mio_as_unverified_advisory(official: Official):
+def test_g1_valid_bundle_answers_the_observation_query(official: Official):
     official.start_peer("valid")
     official.make_bundle()
     official.start_daemon()
@@ -247,15 +250,24 @@ def test_g1_valid_bundle_reaches_mio_as_unverified_advisory(official: Official):
     assert f"Uid:\t{official.egress.pw_uid}" in status, status
     assert official.peer.counters()["accepted"] == 0, "loading the bundle must not communicate"
     official.start_chain()
-    _assert_advisory_only(_normal_entry_advisory(official.service_root))
+    _assert_technique_received(_observe_via_entry(official.service_root))
     counters = official.peer.counters()
     assert counters["requests"] == 1 and counters["handshakes"] >= 1, counters
     event = official.commissioning_event()
     assert event["outcome"] == "commissioned" and "reason_code" not in event, event
     assert official.events("knowledge.context.completed")[-1]["outcome"] == "verified_advisory"
-    # the peer saw only the sanitized P0 question
+    # the peer saw only the typed technique entities, no incident data
     body = json.loads(official.peer.request_bodies[0])
-    assert ENTRY_QUESTION in json.dumps(body)
+    assert [(e["entity_type"], e["value"]) for e in body["entities"]] == [
+        ("attack-technique/v1", "T1059"), ("attack-technique/v1", "T1059.001")]
+    assert ENTRY_QUESTION not in json.dumps(body) and QUESTION_TEXT not in json.dumps(body)
+    # A free-form question from the same account is refused before sending.
+    before = official.peer.counters()
+    for question in (QUESTION_TEXT, "ATT&CK technique context: T1059"):
+        assert _refusal(official.as_service(_doc(question))) == "unavailable"
+    assert official.peer.counters() == before, "a question reached the peer"
+    last = official.events("knowledge.context.completed")[-1]
+    assert last["outcome"] == "unavailable" and last["reason_code"] == "refused_before_send", last
     official.stop_daemon()
     official.assert_no_leak()
     print("U34-OBS g1 peer", json.dumps(counters))
@@ -272,7 +284,7 @@ def test_g2_absent_or_disabled_bundle_is_unavailable_with_zero_peer_traffic(offi
         official.make_bundle(defect="enabled_false")
     official.start_daemon()
     official.start_chain()
-    _degraded(_normal_entry_advisory(official.service_root))
+    _degraded(_observe_via_entry(official.service_root))
     assert _refusal(official.as_service()) == "unavailable"
     assert official.peer.counters() == {"accepted": 0, "handshakes": 0, "requests": 0}
     event = official.commissioning_event()
@@ -378,13 +390,19 @@ def test_g3_invalid_bundle_is_closed_with_fixed_reason_and_zero_peer_traffic(
         mutate(official)
     official.start_daemon()
     assert _refusal(official.as_service()) == "unavailable"
-    assert _refusal(official.as_service(_doc(question="second synthetic public question"))) == "unavailable"
+    assert _refusal(official.as_service(_doc(frame={"privacy_class": "P0-public",
+                                                    "techniques": ["T1110"]}))) == "unavailable"
     assert official.peer.counters() == {"accepted": 0, "handshakes": 0, "requests": 0}, name
     event = official.commissioning_event()
     assert event["outcome"] == "refused", event
     assert event["reason_code"] in REASON_CODES, event
     assert event["reason_code"] == reason, event
-    assert set(event) <= {"event_type", "outcome", "reason_code", "registry_version"}, event
+    # `observation_rule: loaded`: the rule file is in place (knowledge_contextd.main).
+    assert set(event) <= {"event_type", "outcome", "reason_code", "registry_version",
+                          "observation_rule"}, event
+    # A group-writable /etc also makes the rule file unusable (same ancestor check).
+    assert event.get("observation_rule") == (
+        None if name == "ancestor_group_writable" else "loaded"), event
     assert not official.events("knowledge.context.requested"), "closed broker must not attempt"
     official.stop_daemon()
     official.assert_no_leak()
@@ -411,7 +429,7 @@ def test_g3_removed_bundle_latches_closed_until_restart(official):
     official.make_bundle()
     official.start_daemon()
     official.start_chain()
-    _assert_advisory_only(_normal_entry_advisory(official.service_root))
+    _assert_technique_received(_observe_via_entry(official.service_root))
     assert official.peer.counters()["requests"] == 1
     manifest = official.bundle / "manifest.json"
     saved = manifest.read_bytes()
@@ -440,15 +458,15 @@ def test_g4_bad_or_unbound_response_is_unavailable_without_advisory(official, mo
     official.make_bundle()
     official.start_daemon()
     official.start_chain()
-    _assert_advisory_only(_normal_entry_advisory(official.service_root))      # control
+    _assert_technique_received(_observe_via_entry(official.service_root))      # control
     official.peer.mode = mode
     before = official.peer.counters()["requests"]
-    degraded = _normal_entry_advisory(official.service_root)
+    degraded = _observe_via_entry(official.service_root)
     assert official.peer.counters()["requests"] == before + 1, "the defect must have been offered"
     _degraded(degraded)
     assert _refusal(official.as_service()) == "unavailable"
     official.peer.mode = "valid"                                               # recovery
-    _assert_advisory_only(_normal_entry_advisory(official.service_root))
+    _assert_technique_received(_observe_via_entry(official.service_root))
     outcomes = [e["outcome"] for e in official.events("knowledge.context.completed")]
     assert outcomes.count("verified_advisory") == 2 and "unavailable" in outcomes, outcomes
     official.stop_daemon()
@@ -475,13 +493,13 @@ def test_g5_expired_response_is_unavailable(official, mode):
     official.make_bundle()
     official.start_daemon()
     official.start_chain()
-    _assert_advisory_only(_normal_entry_advisory(official.service_root))
+    _assert_technique_received(_observe_via_entry(official.service_root))
     before = official.peer.counters()["requests"]
     with official.peer.lock:
         sent_before = official.peer.answers_sent
     completed_before = len(official.events("knowledge.context.completed"))
     official.peer.mode = mode
-    _degraded(_normal_entry_advisory(official.service_root))
+    _degraded(_observe_via_entry(official.service_root))
     # the expired answer was really received: the peer read the request and wrote
     # a complete signed answer (no peer-thread failure, no connection drop)
     assert official.peer.counters()["requests"] == before + 1
@@ -497,7 +515,7 @@ def test_g5_expired_response_is_unavailable(official, mode):
     assert [e["outcome"] for e in done] == ["unavailable", "unavailable"], done
     assert all("response_bytes" not in e for e in done), done
     official.peer.mode = "valid"
-    _assert_advisory_only(_normal_entry_advisory(official.service_root))
+    _assert_technique_received(_observe_via_entry(official.service_root))
     official.stop_daemon()
     official.assert_no_leak()
 
@@ -529,15 +547,15 @@ def test_g5_late_response_is_not_adopted(official):
 
 
 def test_g5_delayed_peer_through_ordinary_path_degrades_then_recovers(official):
-    """Ordinary mio.advise path with a peer slower than the caller's 5.25 s budget."""
-    official.start_peer("delay", delay_s=7.0)
+    """The observation path with a peer slower than its 350 ms end-to-end budget."""
+    official.start_peer("delay", delay_s=3.0)
     official.make_bundle()
     official.start_daemon()
     official.start_chain()
-    degraded = _normal_entry_advisory(official.service_root)
+    degraded = _observe_via_entry(official.service_root)
     _degraded(degraded)
     official.peer.mode = "valid"
-    _assert_advisory_only(_normal_entry_advisory(official.service_root))
+    _assert_technique_received(_observe_via_entry(official.service_root))
     official.stop_daemon()
     official.assert_no_leak()
 
@@ -551,14 +569,16 @@ def test_g6_connection_refused_is_unavailable_and_local_evaluation_continues(off
     official.make_bundle()
     official.start_daemon()
     official.start_chain()
-    entry = _normal_entry_advisory(official.service_root)
+    entry = _observe_via_entry(official.service_root)
     _degraded(entry)
-    assert entry["state"] and entry["route"], entry      # local MIO evaluation still produced a result
+    assert entry["outcome"] == "context_observed", entry  # the core still produced a result
     assert _refusal(official.as_service()) == "unavailable"
     assert official.events("knowledge.context.commissioning")[0]["outcome"] == "commissioned"
     completed = official.events("knowledge.context.completed")
     assert completed and all(e["outcome"] == "unavailable" for e in completed), completed
-    assert set(completed[0]) <= {"event_type", "outcome", "elapsed_ms"}, completed[0]
+    # Fixed words only: the technique query records how far it got.
+    assert set(completed[0]) <= {"event_type", "outcome", "elapsed_ms", "reason_code"}, completed[0]
+    assert completed[0].get("reason_code", "transport") == "transport", completed[0]
     official.stop_daemon()
     official.assert_no_leak()
-    print("U34-OBS g6 entry", json.dumps({k: entry[k] for k in ("route", "state", "knowledge_status")}))
+    print("U34-OBS g6 entry", json.dumps({k: entry[k] for k in ("outcome", "transport", "verification")}))

@@ -2,6 +2,12 @@
 
 This runs only in the isolated container runner. Its CA, keys, database and
 Knowledge server process live under pytest's temporary directory.
+
+Since ADR-0010 (#439) the broker's one client is the model-free context
+observation unit (`azmioctx`), reached only by entryd (`azmioentry`), and the
+broker accepts only the technique query; a free-form question is refused
+before sending. The chain here runs those processes under their real uids on
+real sockets.
 """
 
 from __future__ import annotations
@@ -46,9 +52,11 @@ def _real_process_prerequisite_error() -> str | None:
     import pwd
 
     try:
-        for name in ("azknowledgeegress", "azmio", "azmioentry", "azoperator"):
+        for name in ("azknowledgeegress", "azmio", "azmioentry", "azmioctx", "azoperator",
+                     "azexplain"):
             pwd.getpwnam(name)
-        for name in ("azknowledge-context-client", "azazel-operator", "azmio-advise"):
+        for name in ("azknowledge-context-client", "azazel-operator", "azmio-advise",
+                     "azmio-contextobs"):
             grp.getgrnam(name)
     except KeyError as exc:
         return f"isolated runner identity is missing: {exc}"
@@ -122,58 +130,6 @@ def _ready(process: subprocess.Popen[str], timeout: float = 30) -> dict:
     raise AssertionError("Knowledge process readiness timeout")
 
 
-def _normal_entry_advisory(root: Path) -> dict:
-    """Send one P0 request through the production mio.advise entry socket.
-
-    Only a small, allowlisted projection is written to pytest output. The full
-    Knowledge response remains in-process and is checked below.
-    """
-    code = r'''
-import json
-from azazel_nexus_runtime.mio_socket_client import _exchange
-frame = {"request_id":"normal-entry-context", "privacy_class":"P0-public",
-         "question":"synthetic public observation context", "context":[]}
-reply = _exchange("mio-entry", "azmioentry", "mio.advise",
-                  {"deadline_ms":5000}, payload=frame, deadline_s=5.25)
-fast = reply["fast_assistance"]
-advisory = fast.get("fabric_knowledge_context_advisory")
-print(json.dumps({
-  "route": reply["route"],
-  "state": fast["state"],
-  "knowledge_status": fast["dependency_outcome"]["knowledge"],
-  "full_node_context_status": fast.get("full_node_context_status"),
-  "lite_claim_count": len(fast["knowledge"]),
-  "observation_count": len(fast["observations"]),
-  "advisory_authority": advisory.get("authority") if advisory else None,
-  "advisory_claim_status": advisory.get("claim_status") if advisory else None,
-  "advisory_trust": advisory.get("trust") if advisory else None,
-  "snapshot_state": advisory.get("snapshot_state") if advisory else None,
-  "partial_warning": "KNOWLEDGE_CONTEXT_PARTIAL" in fast["unknowns"],
-  "partial_check": bool(fast["next_checks"]) and fast["next_checks"][0] ==
-    "Request an authorized current full-node Knowledge snapshot; this partial or stale advisory is not a complete current snapshot.",
-  "question_unknown_only": bool(advisory) and not advisory["facts"] and any(
-    "could not be normalized" in item for item in advisory["unknowns"]),
-  "handoff_action": fast["handoff"]["current_action"] if fast.get("handoff") else None,
-}, sort_keys=True))
-'''
-    result = subprocess.run(
-        [sys.executable, "-B", "-c", code], cwd=ROOT,
-        env={**os.environ, "AZAZEL_ROOT": str(root)},
-        stdin=subprocess.DEVNULL, capture_output=True, text=True,
-        timeout=8, check=False,
-        preexec_fn=lambda: _drop_to("azoperator", "azazel-operator"),
-    )
-    assert result.returncode == 0, (result.stdout + result.stderr)[-1000:]
-    value = json.loads(result.stdout)
-    assert set(value) == {
-        "route", "state", "knowledge_status", "full_node_context_status", "lite_claim_count",
-        "observation_count", "advisory_authority", "advisory_claim_status",
-        "advisory_trust", "snapshot_state", "partial_warning", "partial_check",
-        "question_unknown_only", "handoff_action",
-    }
-    return value
-
-
 def _drop_to(account_name: str, supplementary_group: str) -> None:
     import grp
     import pwd
@@ -200,6 +156,174 @@ def _wait_socket(path: Path, process: subprocess.Popen[str], timeout: float = 10
             pass
         time.sleep(0.025)
     raise AssertionError("entryd did not bind its declared mio.advise socket")
+
+
+# ---------------------------------------------------------------------------
+# The B5 path (#439, ADR-0010): entryd (azmioentry) -> contextobsd (azmioctx)
+# -> contextd (azknowledgeegress) -> Knowledge. Shared by the process suites.
+# ---------------------------------------------------------------------------
+
+CONTEXTD_UNIT = "azazel-knowledge-contextd.service"
+#: The one frame the broker accepts: the observation-origin technique query.
+TECHNIQUES = ["T1059", "T1059.001"]
+TECHNIQUE_FRAME = {"privacy_class": "P0-public", "techniques": TECHNIQUES}
+
+
+def _grant_contextd() -> None:
+    """This boot's grant marker for contextd, as the activation pass writes it.
+
+    The broker refuses every request without it (`reason_code: withdrawn`).
+    The container is disposable; the marker is written by the product's own
+    `write_grant_markers` under the real `/run`, which is root's.
+    """
+    from azazel_nexus_runtime import activation_markers
+
+    if activation_markers.inspect_grant_marker(CONTEXTD_UNIT) is not None:
+        return
+    parent = Path("/run/azazel-activation")
+    parent.mkdir(mode=0o755, exist_ok=True)
+    parent.chmod(0o755)
+    os.chown(parent, 0, 0)
+    granted = parent / "granted"
+    if granted.exists():
+        shutil.rmtree(granted)
+    activation_markers.write_grant_markers([CONTEXTD_UNIT])
+    assert activation_markers.inspect_grant_marker(CONTEXTD_UNIT) is not None
+
+
+def _place_observation_rule(service_root: Path, limit: int = 60) -> Path:
+    """The root-owned observation rule (`technique-set/1`) under AZAZEL_ROOT.
+
+    Without it the broker refuses every technique query before sending. The
+    product loader (`load_observation_rule`) reads it; nothing here bypasses it.
+    """
+    from azazel_nexus_runtime.knowledge_context_config import OBSERVATION_RULE_SCHEMA
+
+    directory = service_root / "etc/azazel/knowledge-context"
+    directory.mkdir(parents=True, exist_ok=True)
+    for part in (service_root / "etc", service_root / "etc/azazel", directory):
+        part.chmod(0o755)
+        os.chown(part, 0, 0)
+    path = directory / "observation-query.json"
+    path.write_text(json.dumps({"schema": OBSERVATION_RULE_SCHEMA, "rule": "technique-set/1",
+                                "max_requests_per_minute": limit}))
+    path.chmod(0o644)
+    os.chown(path, 0, 0)
+    return path
+
+
+def _contextobs_layout(service_root: Path) -> None:
+    """The context observation unit's socket and ledger leaves (install.sh)."""
+    import grp
+    import pwd
+
+    ctx = pwd.getpwnam("azmioctx")
+    contextobs_gid = grp.getgrnam("azmio-contextobs").gr_gid
+    for leaf, owner, group, mode in (
+            ("run/mio-contextobs", ctx.pw_uid, contextobs_gid, 0o2710),
+            ("state/mio-contextobs", ctx.pw_uid, 0, 0o700)):
+        directory = service_root / "var/lib/azazel" / leaf
+        directory.mkdir(parents=True, exist_ok=True)
+        directory.chmod(mode)
+        os.chown(directory, owner, group)
+
+
+def _start_contextobsd(service_root: Path, env: dict) -> subprocess.Popen:
+    """The shipped `mio_contextobsd.main()` as azmioctx, with only the broker's client group."""
+    import grp
+    import pwd
+
+    ctx = pwd.getpwnam("azmioctx")
+    client_gid = grp.getgrnam("azknowledge-context-client").gr_gid
+
+    def apply():
+        os.setgroups([client_gid])
+        os.setgid(ctx.pw_gid)
+        os.setuid(ctx.pw_uid)
+
+    process = subprocess.Popen(
+        [sys.executable, "-B", "-c",
+         "from azazel_nexus_runtime.mio_contextobsd import main; raise SystemExit(main())"],
+        cwd=ROOT, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, preexec_fn=apply)
+    _wait_socket(service_root / "var/lib/azazel/run/mio-contextobs/mio-contextobs.sock", process)
+    return process
+
+
+def _start_entryd(service_root: Path, env: dict) -> subprocess.Popen:
+    """The shipped entryd as azmioentry with its two unit groups."""
+    import grp
+    import pwd
+
+    entry = pwd.getpwnam("azmioentry")
+    groups = [grp.getgrnam("azazel-operator").gr_gid, grp.getgrnam("azmio-contextobs").gr_gid]
+
+    def apply():
+        os.setgroups(groups)
+        os.setgid(entry.pw_gid)
+        os.setuid(entry.pw_uid)
+
+    process = subprocess.Popen(
+        [sys.executable, "-B", "-c",
+         "from azazel_nexus_runtime.mio_entryd import main; raise SystemExit(main())"],
+        cwd=ROOT, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, preexec_fn=apply)
+    _wait_socket(service_root / "var/lib/azazel/run/mio-advise/mio-advise.sock", process)
+    return process
+
+
+OBSERVE_CALLER = r'''
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from test_mio_context_observe import obs_frame
+from azazel_nexus_runtime.mio_socket_client import _exchange
+ids = json.loads(sys.argv[2])
+reply = _exchange("mio-advise", "azmioentry", "mio.context.observe",
+                  {"deadline_ms": 350}, payload=obs_frame(ids), deadline_s=1.5)
+fast = reply["fast_assistance"]
+record = fast.get("technique_knowledge") or {}
+print(json.dumps({
+  "outcome": reply["outcome"],
+  "timing_keys": sorted(reply["timing"]),
+  "hop_timing": reply["timing"]["locald"],
+  "full_node_context_status": fast.get("full_node_context_status"),
+  "fabric_advisory": "fabric_knowledge_context_advisory" in fast,
+  "transport": record.get("transport"),
+  "verification": record.get("verification"),
+  "techniques": [t["technique_id"] for t in record.get("techniques") or []],
+  "coverage": [t["coverage"] for t in record.get("techniques") or []],
+}, sort_keys=True))
+'''
+
+
+def _observe_via_entry(service_root: Path, ids=TECHNIQUES) -> dict:
+    """One explainer `mio.context.observe` through the real entryd socket, as azexplain."""
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", OBSERVE_CALLER, str(ROOT / "tests/unit"), json.dumps(list(ids))],
+        cwd=ROOT, env={**os.environ, "AZAZEL_ROOT": str(service_root)},
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=False,
+        preexec_fn=lambda: _drop_to("azexplain", "azmio-advise"))
+    assert result.returncode == 0, (result.stdout + result.stderr)[-1500:]
+    value = json.loads(result.stdout)
+    assert value["outcome"] == "context_observed", value
+    # The reply keeps its shape: the hop's timing under `locald` (ADR-0010).
+    assert value["timing_keys"] == ["entry_ms", "locald"], value
+    # The answer is never handed to M.I.O.
+    assert value["fabric_advisory"] is False, value
+    assert value["full_node_context_status"] == "unavailable", value
+    return value
+
+
+def _assert_technique_received(value: dict, ids=TECHNIQUES) -> None:
+    assert (value["transport"], value["verification"]) == ("received", "ok"), value
+    assert value["techniques"] == sorted(set(ids)), value
+    assert value["hop_timing"]["context"] == "received", value
+
+
+def _assert_technique_not_received(value: dict) -> None:
+    assert value["transport"] in {"unavailable", "refused"}, value
+    assert value["verification"] in {"not_run", "failed"}, value
+    assert value["hop_timing"] is None or value["hop_timing"]["context"] != "received", value
 
 
 @pytest.fixture
@@ -350,50 +474,67 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
         assert response.request_id and response.correlation_id
         assert "must-not-egress" not in response.model_dump_json()
 
-        # Exercise the service's ordinary AF-independent handler around the
-        # same production KnowledgeClient while its actual Knowledge peer is
-        # still running in a separate loopback process.
+        # The broker's handler around the same production KnowledgeClient, with
+        # its actual Knowledge peer still running: the technique query is
+        # served and verified, a free-form question is refused before sending.
         from types import SimpleNamespace
+        from azazel_nexus.technique_knowledge import project_technique_response
+        from azazel_nexus_runtime.knowledge_context_config import ObservationRule
         from azazel_nexus_runtime.knowledge_contextd import CONTEXT_VERB, KnowledgeContextBroker
+
+        posts = []
+        original_post = client._post_path
+
+        def counted_post(*args, **kwargs):
+            posts.append(1)
+            return original_post(*args, **kwargs)
+
+        client._post_path = counted_post
+        rule_file = root / "in-process-rule"
+        rule_file.write_text("rule")
+        info = os.lstat(rule_file)
+        audit_events = []
         broker = KnowledgeContextBroker(
             client=client, policy=policy, mission="synthetic-process-test",
-            alias_key=b"p" * 32, enabled=True,
-        )
-        broker_reply = broker.handle(SimpleNamespace(
-            verb=CONTEXT_VERB, arguments={
-                "deadline_ms": 8000,
-                "deadline_monotonic_ns": int((time.monotonic() + 8) * 1_000_000_000),
-            },
-            payload={"frame": {"privacy_class": "P0-public",
-                               "question": "synthetic public context"}},
-        ))
+            alias_key=b"p" * 32, enabled=True, audit=audit_events.append,
+            observation_rule=(ObservationRule("technique-set/1", 60),
+                              (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)),
+            observation_rule_path=rule_file, grant_marker=lambda: ("granted",))
+
+        def ask(frame):
+            return broker.handle(SimpleNamespace(
+                verb=CONTEXT_VERB, arguments={
+                    "deadline_ms": 8000,
+                    "deadline_monotonic_ns": int((time.monotonic() + 8) * 1_000_000_000),
+                },
+                payload={"frame": frame}))
+
+        broker_reply = ask(dict(TECHNIQUE_FRAME))
+        assert "response" in broker_reply, (broker_reply, audit_events[-1:])
         assert broker_reply["response"]["authority"] == "advisory_only"
-        assert "must-not-egress" not in json.dumps(broker_reply)
-        from azazel_nexus_runtime.mio_fast_assistance import fast_assistance
+        assert len(posts) == 1
+        record = project_technique_response(broker_reply["response"], TECHNIQUES)
+        assert (record["transport"], record["verification"]) == ("received", "ok"), record
+        assert [t["technique_id"] for t in record["techniques"]] == TECHNIQUES
+        print("B5-OBS interop technique coverage",
+              [(t["technique_id"], t["coverage"]) for t in record["techniques"]])
+        for question in ("synthetic public context", "ATT&CK technique context: T1059"):
+            marks = len(audit_events)
+            assert ask({"privacy_class": "P0-public", "question": question}) == {
+                "refusal": "unavailable"}
+            assert len(posts) == 1                       # Knowledge was not reached
+            assert [e["event_type"] for e in audit_events[marks:]] == [
+                "knowledge.context.completed"]
+            assert audit_events[-1]["reason_code"] == "refused_before_send"
+        client._post_path = original_post
 
-        producer_response = broker_reply["response"]
-        projected = fast_assistance(
-            {"request_id": "normal-process", "privacy_class": "P0-public",
-             "question": "synthetic public context", "context": []},
-            deadline_s=1.0,
-            fabric_knowledge_context_response=producer_response,
-        )
-        assert "fabric_knowledge_context_advisory" in projected, (
-            "MIO rejected signed producer response: "
-            f"snapshot={producer_response.get('snapshot')}; "
-            f"facts={len(producer_response.get('facts', []))}; "
-            f"subject_types={[item.get('subject', {}).get('entity_type') for item in producer_response.get('facts', [])]}; "
-            f"inferences={len(producer_response.get('inferences', []))}; "
-            f"unknowns={producer_response.get('unknowns')}; "
-            f"limitations={producer_response.get('limitations')}"
-        )
-
-        # Full normal path: three distinct child identities/processes for the
-        # Knowledge producer, its Nexus broker, and M.I.O. locald. The caller
-        # is the entry service and can only reach locald's declared socket.
+        # Full path: four distinct identities and processes on real sockets.
+        # Knowledge producer <- broker (azknowledgeegress) <- context
+        # observation (azmioctx) <- entryd (azmioentry) <- explainer (azexplain).
         import grp
         import pwd
 
+        _grant_contextd()
         service_root = root / "service-root"
         (service_root / "var/lib/azazel/run/knowledge-context").mkdir(parents=True)
         (service_root / "var/lib/azazel/run/mio").mkdir(parents=True)
@@ -406,6 +547,7 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
         egress = pwd.getpwnam("azknowledgeegress")
         mio = pwd.getpwnam("azmio")
         entry = pwd.getpwnam("azmioentry")
+        ctx = pwd.getpwnam("azmioctx")
         operator = pwd.getpwnam("azoperator")
         context_gid = grp.getgrnam("azknowledge-context-client").gr_gid
         operator_gid = grp.getgrnam("azazel-operator").gr_gid
@@ -423,19 +565,23 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
             (service_root / "var/lib/azazel/run/mio-status", entry.pw_uid, operator_gid, 0o2750),
             (service_root / "var/lib/azazel/run/ui-read", 0, 0, 0o711),
             (service_root / "var/lib/azazel/run/ui-read/mio", entry.pw_uid, 0, 0o2750),
+            (service_root / "var/lib/azazel/state", 0, 0, 0o711),
             (service_root / "var/lib/azazel/state/knowledge-context", egress.pw_uid, 0, 0o700),
             (service_root / "var/lib/azazel/state/mio", entry.pw_uid, 0, 0o700),
         ):
             directory.chmod(mode)
             os.chown(directory, owner, group)
+        _contextobs_layout(service_root)
+        _place_observation_rule(service_root)
         os.chmod(pki, 0o750)
         os.chown(pki, 0, egress.pw_gid)
         for name in ("ca.pem", "nexus.pem", "nexus.key"):
             path = pki / name
             path.chmod(0o640 if name.endswith(".key") else 0o644)
             os.chown(path, 0, egress.pw_gid)
-
-        test_env = {**os.environ, "AZAZEL_ROOT": str(service_root)}
+        broker_audit = service_root / "var/lib/azazel/state/knowledge-context/audit.jsonl"
+        test_env = {**os.environ, "AZAZEL_ROOT": str(service_root),
+                    "U29_AUDIT_FILE": str(broker_audit)}
 
         def credentials(account, supplementary=()):
             def apply():
@@ -443,6 +589,11 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
                 os.setgid(account.pw_gid)
                 os.setuid(account.pw_uid)
             return apply
+
+        def broker_events():
+            if not broker_audit.exists():
+                return []
+            return [json.loads(line) for line in broker_audit.read_text().splitlines() if line]
 
         broker_args = [
             sys.executable,
@@ -459,7 +610,7 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
             )
 
         broker_process = start_broker()
-        locald_process = None
+        contextobsd_process = None
         entryd_process = None
         try:
             assert _ready(broker_process)["ready"] is True
@@ -532,108 +683,71 @@ finally:
             assert refused.stdout.strip() == "permission-denied"
             assert broker_process.poll() is None
 
-            # The subsequent authorized MIO/entry request is the positive
-            # control against this same still-running broker socket/listener.
-            locald_process = subprocess.Popen(
-                [sys.executable, str(ROOT / "tests/real_process/_mio_locald_context_process.py")],
-                cwd=ROOT, env=test_env, stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                preexec_fn=credentials(mio, (context_gid,)),
-            )
-            assert _ready(locald_process)["ready"] is True
-            entryd_process = subprocess.Popen(
-                [sys.executable, "-B", "-c",
-                 "from azazel_nexus_runtime.mio_entryd import main; raise SystemExit(main())"],
-                cwd=ROOT, env=test_env, stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                preexec_fn=credentials(entry, (operator_gid,)),
-            )
-            _wait_socket(service_root / "var/lib/azazel/run/mio-advise/mio-advise.sock",
-                         entryd_process)
-            caller = subprocess.run(
-                [sys.executable, "-c",
-                 "import json; from azazel_nexus_runtime.mio_socket_client import LocalSocketClient; "
-                 "c=LocalSocketClient(); r=c.assess({'request_id':'normal-process',"
-                 "'privacy_class':'P0-public','question':'synthetic public context',"
-                 "'context':[]}, deadline_s=10); print(json.dumps(r))"],
-                cwd=ROOT, env=test_env, capture_output=True, text=True, timeout=15,
-                preexec_fn=credentials(entry, (operator_gid,)),
-            )
-            assert caller.returncode == 0, caller.stderr[-2000:]
-            assessed = json.loads(caller.stdout)
-            advisory = assessed.get("fabric_knowledge_context_advisory")
-            assert type(advisory) is dict, (
-                "full-node response was not projected by MIO: "
-                f"knowledge={assessed.get('dependency_outcome', {}).get('knowledge')}; "
-                f"unknowns={assessed.get('unknowns')}"
-            )
-            assert advisory["authority"] == "advisory_only"
-            assert advisory["claim_status"] == "source_reported_unverified"
-            assert advisory["trust"] == "unverified_advisory_only"
-            assert assessed["dependency_outcome"]["knowledge"] == "unavailable"
-            assert assessed["full_node_context_status"] == "received"
-            assert advisory["snapshot_state"] == "partial"
-            assert "KNOWLEDGE_CONTEXT_PARTIAL" in assessed["unknowns"]
-            assert assessed["next_checks"][0] == (
-                "Request an authorized current full-node Knowledge snapshot; "
-                "this partial or stale advisory is not a complete current snapshot.")
-            # A question is not a typed IOC. No exact match is claimed.
-            assert advisory["facts"] == []
-            assert any("could not be normalized" in item for item in advisory["unknowns"])
-            assert assessed["knowledge"] == []
-            assert assessed["observations"] == []
-            assert assessed["handoff"]["current_action"] is None
-            assert "must-not-egress" not in caller.stdout
+            # The model host's account is no broker client: given the client
+            # group so the filesystem passes, it is refused by the kernel peer
+            # credentials, and the producer is not reached.
+            peer_code = """
+import json, sys
+from azazel_nexus_runtime.knowledge_context_socket import (
+    KnowledgeContextUnavailable, request_context)
+frame = json.loads(sys.argv[1])
+try:
+    request_context(frame, deadline_s=8)
+    print(json.dumps({"outcome": "response"}))
+except KnowledgeContextUnavailable as exc:
+    print(json.dumps({"outcome": "unavailable", "stage": getattr(exc, "stage", None)}))
+"""
 
-            # The same real Knowledge response must also cross Nexus's ordinary
-            # operator entryd -> locald -> broker composition. This is separate
-            # from the lower-level locald call above and preserves Knowledge
-            # output as an unverified advisory.
-            entry_reply = _normal_entry_advisory(service_root)
-            assert entry_reply["knowledge_status"] == "unavailable", entry_reply
-            assert entry_reply["full_node_context_status"] == "received", entry_reply
-            assert entry_reply["snapshot_state"] == "partial", entry_reply
-            assert entry_reply["partial_warning"] is True, entry_reply
-            assert entry_reply["partial_check"] is True, entry_reply
-            assert entry_reply["question_unknown_only"] is True, entry_reply
-            assert entry_reply["lite_claim_count"] == 0, entry_reply
-            assert entry_reply["observation_count"] == 0, entry_reply
-            assert entry_reply["advisory_authority"] == "advisory_only", entry_reply
-            assert entry_reply["advisory_claim_status"] == "source_reported_unverified", entry_reply
-            assert entry_reply["advisory_trust"] == "unverified_advisory_only", entry_reply
-            assert entry_reply["handoff_action"] is None, entry_reply
+            def ask_broker(account, frame):
+                result = subprocess.run(
+                    [sys.executable, "-B", "-c", peer_code, json.dumps(frame)],
+                    cwd=ROOT, env=test_env, capture_output=True, text=True, timeout=15,
+                    preexec_fn=credentials(account, (context_gid,)))
+                assert result.returncode == 0, result.stderr[-1000:]
+                return json.loads(result.stdout)
 
-            # A stopped egress service must not leave its previous advisory in
-            # the ordinary path. Restarting the same isolated service should
-            # restore the route without changing caller identity or policy.
+            marks = len(broker_events())
+            assert ask_broker(mio, dict(TECHNIQUE_FRAME))["outcome"] == "unavailable"
+            denied = [e for e in broker_events()[marks:]
+                      if e.get("event_type") == "runtime.request_refused"]
+            assert [(e["uid"], e["reason"]) for e in denied] == [(mio.pw_uid, "principal_denied")]
+            assert not [e for e in broker_events()[marks:]
+                        if e.get("event_type") == "knowledge.context.requested"]
+            # The context observation account is served for the technique form
+            # and refused, before sending, for a free-form question.
+            marks = len(broker_events())
+            assert ask_broker(ctx, dict(TECHNIQUE_FRAME)) == {"outcome": "response"}
+            assert [e["event_type"] for e in broker_events()[marks:]] == [
+                "knowledge.context.requested", "knowledge.context.completed"]
+            assert broker_events()[-1]["outcome"] == "verified_advisory"
+            marks = len(broker_events())
+            assert ask_broker(ctx, {"privacy_class": "P0-public",
+                                    "question": "synthetic public context"})["outcome"] == (
+                "unavailable")
+            after = broker_events()[marks:]
+            assert [e["event_type"] for e in after] == ["knowledge.context.completed"], after
+            assert after[0]["reason_code"] == "refused_before_send"
+
+            # The explainer's observation-origin request through entryd and the
+            # context observation unit, against the same running broker.
+            contextobsd_process = _start_contextobsd(service_root, test_env)
+            entryd_process = _start_entryd(service_root, test_env)
+            observed = _observe_via_entry(service_root)
+            _assert_technique_received(observed)
+            print("B5-OBS interop chain", observed)
+            assert broker_events()[-1]["outcome"] == "verified_advisory"
+
+            # A stopped broker leaves no earlier answer in the path, and a
+            # restart restores it without changing caller identity or policy.
             broker_process.terminate()
             broker_process.wait(timeout=10)
             assert broker_process.returncode == 0
-            degraded = _normal_entry_advisory(service_root)
-            assert degraded["advisory_authority"] is None, degraded
-            assert degraded["knowledge_status"] == "unavailable", degraded
-            assert degraded["full_node_context_status"] == "unavailable", degraded
-            assert degraded["lite_claim_count"] == 0, degraded
-            assert degraded["observation_count"] == 0, degraded
-            assert degraded["handoff_action"] is None, degraded
-
+            _assert_technique_not_received(_observe_via_entry(service_root))
             broker_process = start_broker()
             assert _ready(broker_process)["ready"] is True
-            recovered = _normal_entry_advisory(service_root)
-            assert recovered["knowledge_status"] == "unavailable", recovered
-            assert recovered["full_node_context_status"] == "received", recovered
-            assert recovered["snapshot_state"] == "partial", recovered
-            assert recovered["partial_warning"] is True, recovered
-            assert recovered["partial_check"] is True, recovered
-            assert recovered["question_unknown_only"] is True, recovered
-            assert recovered["advisory_authority"] == "advisory_only", recovered
-            assert recovered["advisory_claim_status"] == "source_reported_unverified", recovered
-            assert recovered["advisory_trust"] == "unverified_advisory_only", recovered
-            assert recovered["lite_claim_count"] == 0, recovered
-            assert recovered["observation_count"] == 0, recovered
-            assert recovered["handoff_action"] is None, recovered
+            _assert_technique_received(_observe_via_entry(service_root))
         finally:
-            for process in (entryd_process, locald_process, broker_process):
+            for process in (entryd_process, contextobsd_process, broker_process):
                 if process is not None and process.poll() is None:
                     process.terminate()
                     process.wait(timeout=10)

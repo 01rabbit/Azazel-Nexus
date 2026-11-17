@@ -99,6 +99,8 @@ groupadd --gid 20013 azaudit
 groupadd --gid 20014 azaudit-submit
 groupadd --gid 20015 azknowledgeegress
 groupadd --gid 20016 azknowledge-context-client
+groupadd --gid 20017 azmioctx
+groupadd --gid 20018 azmio-contextobs
 useradd --uid 20001 --gid azknowledge --no-create-home --shell /usr/sbin/nologin azknowledge
 useradd --uid 20002 --gid azmio --no-create-home --shell /usr/sbin/nologin azmio
 useradd --uid 20003 --gid azmioentry --no-create-home --shell /usr/sbin/nologin azmioentry
@@ -108,9 +110,13 @@ useradd --uid 20010 --gid azintake --no-create-home --shell /usr/sbin/nologin az
 useradd --uid 20011 --gid azedge --no-create-home --shell /usr/sbin/nologin azedge
 useradd --uid 20013 --gid azaudit --no-create-home --shell /usr/sbin/nologin azaudit
 useradd --uid 20015 --gid azknowledgeegress --no-create-home --shell /usr/sbin/nologin azknowledgeegress
+useradd --uid 20017 --gid azmioctx --no-create-home --shell /usr/sbin/nologin azmioctx
 usermod --append --groups azknowledge-read,azmission-read azmio
-usermod --append --groups azknowledge-context-client azmio
-usermod --append --groups azazel-operator azmioentry
+# ADR-0010: the broker's one client is the context observation account, and
+# only entryd carries the context observation socket's group. azmio (locald)
+# is no client of the broker.
+usermod --append --groups azknowledge-context-client azmioctx
+usermod --append --groups azazel-operator,azmio-contextobs azmioentry
 usermod --append --groups azazel-operator azoperator
 usermod --append --groups azmio-advise azexplain
 usermod --append --groups azincident-read azintake
@@ -138,7 +144,10 @@ PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
 export NEXUS_REQUIRE_REAL_PROCESS=1
 PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
   tests/real_process/test_knowledge_context_process_interop.py \
-  tests/real_process/test_knowledge_context_linux_acceptance.py
+  tests/real_process/test_knowledge_context_linux_acceptance.py \
+  tests/real_process/test_knowledge_context_official_entry.py \
+  tests/real_process/test_knowledge_context_shipped_budget.py \
+  tests/real_process/test_knowledge_context_clock_rollback.py
 
 # Exercise the service's fixed degraded response with the shared package
 # absent. The positive adapter unit tests above intentionally need the wheel.

@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from test_knowledge_context_linux_acceptance import (  # noqa: F401  (stack is a fixture)
-    QUESTION, Stack, _binding_control, _doc, _end_replay, _envelope_times,
+    QUESTION, TECHNIQUE_FRAME, Stack, _binding_control, _doc, _end_replay, _envelope_times,
     _fresh_capture, _ok_response, _refused, _restart_broker_with_replay, _window, stack,
 )
 
@@ -57,8 +57,10 @@ def test_clock_cases_1_to_3_at_the_service_entry(stack: Stack):
     # Observed: with the broker clock ahead the producer refuses over HTTP before any
     # envelope exists (the layer is the producer's own request check; its exact reason
     # is not exposed to Nexus). Envelope expiry itself is covered by D1 and by the
-    # replay case below.
-    assert len(stack.exchanges()) == marks and notes and "KnowledgeRefused" in notes[-1].read_text()
+    # replay case below. For the technique query (ADR-0010) the refusal surfaces as
+    # the HTTP status; for the earlier question it surfaced as KnowledgeRefused.
+    assert len(stack.exchanges()) == marks and notes
+    assert notes[-1].read_text().split()[0] in {"HttpStatusRefused", "KnowledgeRefused"}
     assert stack.audit_events()[-1]["outcome"] == "unavailable"
 
     # Roll back: a new request is served again (no permanent refusal, no state).
@@ -93,8 +95,10 @@ def test_clock_case_2_same_request_cannot_be_resubmitted_through_the_entry(stack
     assert rid1 != rid2                                   # identical frame, new random id
     marks = len(stack.exchanges())
     for extra in ({"request_id": rid1}, {"envelope": "00"}, {"correlation_id": rid1}):
-        frame = {"privacy_class": "P0-public", "question": QUESTION, **extra}
+        frame = {**TECHNIQUE_FRAME, **extra}
         assert _refused(stack.as_service(_doc(frame=frame))) == "unavailable"
+    # ... and a free-form question is refused before sending (ADR-0010).
+    assert _refused(stack.as_service(_doc(QUESTION))) == "unavailable"
     assert len(stack.exchanges()) == marks                # producer never reached
 
 
@@ -106,7 +110,11 @@ def test_clock_case_4_nothing_is_stored_or_re_read_by_the_context_path(stack: St
                and "uid" not in e]
     assert context
     for event in context:
-        assert set(event) <= {"event_type", "outcome", "response_bytes", "elapsed_ms"}, event
+        assert set(event) <= {"event_type", "outcome", "response_bytes", "elapsed_ms",
+                              "reason_code"}, event
+        assert event.get("reason_code", "refused_before_send") in {
+            "refused_before_send", "transport", "verification", "technique_verification",
+            "busy", "late", "rate_limited", "withdrawn"}, event
     text = stack.audit.read_text()
     assert "request_id" not in text and "claims" not in text and "signature" not in text
 

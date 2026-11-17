@@ -7,8 +7,22 @@ client/server certificates, binds the Knowledge listener to loopback, sends
 only sanitizer-approved P0 data, and verifies the signed Fabric response,
 correlation, advisory-only authority and short expiry through Nexus's normal
 client verifier. Database, keys and server state are temporary. It does not
-wire the optional client into Nexus's normal service composition or configure
-production trust, credentials or network access.
+configure production trust, credentials or network access.
+
+Since ADR-0010 (#439) the Knowledge Context process files
+(`test_knowledge_context_*.py`) run the path the product ships: the explainer
+(`azexplain`) asks `mio.context.observe` on entryd (`azmioentry`), which relays
+to the model-free context observation unit (`mio_contextobsd.main()` as
+`azmioctx`, only the broker's client group), which asks the broker (contextd as
+`azknowledgeegress`) for the observed ATT&CK technique ids. The broker serves
+`azmioctx` alone and only the technique query: `azmio`, `azmioentry`, operators
+and root are refused by the kernel peer credentials, and a free-form question
+is refused before sending, so Knowledge receives nothing. Each run writes this
+boot's contextd grant marker with the product's `write_grant_markers` (the
+container's own `/run`) and places the root-owned observation rule under
+`AZAZEL_ROOT`; without them the broker refuses everything (`withdrawn`,
+`refused_before_send`). `run-container.sh` provisions `azmioctx` and
+`azmio-contextobs` for this and runs the five files after the focused phase.
 
 `test_mio_process_integration.py` is intentionally outside `tests/unit`: it
 needs Linux `SO_PEERCRED`, a root orchestrator only inside a disposable
