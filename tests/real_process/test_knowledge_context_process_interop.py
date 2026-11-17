@@ -520,8 +520,9 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
               [(t["technique_id"], t["coverage"]) for t in record["techniques"]])
         for question in ("synthetic public context", "ATT&CK technique context: T1059"):
             marks = len(audit_events)
+            # Every refusal names how far it got (60c990e): before sending.
             assert ask({"privacy_class": "P0-public", "question": question}) == {
-                "refusal": "unavailable"}
+                "refusal": "unavailable", "stage": "refused_before_send"}
             assert len(posts) == 1                       # Knowledge was not reached
             assert [e["event_type"] for e in audit_events[marks:]] == [
                 "knowledge.context.completed"]
