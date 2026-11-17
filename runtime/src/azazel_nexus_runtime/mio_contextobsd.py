@@ -121,8 +121,13 @@ class ContextObservationService:
         never reaches M.I.O.: it is validated and projected into
         `technique_knowledge`, and the core runs as it does when Full Node
         Context is unavailable. `timing` has fixed keys (ints in ms, no
-        incident data) so the success, delay and refusal cases can be
-        measured.
+        incident data, and the fixed word `core`) so the success, delay and
+        refusal cases can be measured.
+
+        The broker's outcome and the core's are reported apart: the
+        technique record rides on the result whether or not the core ran, and
+        `timing.core` says which (`ran`, or `failed` when the core raised and
+        the result is the fixed degraded payload).
         """
         if getattr(getattr(request, "verb", None), "name", None) != CONTEXT_OBSERVE_VERB.name:
             return {"outcome": "failed", "refusal": "unknown_verb"}
@@ -172,12 +177,17 @@ class ContextObservationService:
                 core_reserve_s=FAST_CORE_RESERVE_S, situation_frame=situation,
                 fabric_knowledge_context_response=None,
                 full_node_context_status=context_status)
-            result["technique_knowledge"] = technique_knowledge
+            core = "ran"
         except Exception:  # noqa: BLE001
+            # The broker's answer is not lost with the core: the degraded payload
+            # carries the same record, beside the status the reader requires.
             result = fast_assessment_degraded("unavailable")
+            result["full_node_context_status"] = context_status.value
+            core = "failed"
+        result["technique_knowledge"] = technique_knowledge
         return {"outcome": "context_observed", "fast_assistance": result,
                 "timing": {"context": technique_knowledge["transport"], "broker_ms": broker_ms,
-                           "total_ms": int((self._clock() - started) * 1000)}}
+                           "total_ms": int((self._clock() - started) * 1000), "core": core}}
 
 
 def main(

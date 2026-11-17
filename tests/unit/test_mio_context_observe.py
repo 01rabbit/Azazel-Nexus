@@ -104,7 +104,8 @@ def stub_relay(service, monkeypatch, result=None):
 
     def observe_context_timed(frame, *, deadline_s):
         calls.append((frame, deadline_s))
-        return result or good_fast("received"), {"context": "received", "broker_ms": 12, "total_ms": 30}
+        return result or good_fast("received"), {"context": "received", "broker_ms": 12,
+                                                 "total_ms": 30, "core": "ran"}
 
     monkeypatch.setattr(service.context_observer, "observe_context_timed", observe_context_timed)
     return calls
@@ -118,7 +119,8 @@ def test_entry_relays_validated_projection_writes_no_ledger_and_reports_timing(s
     assert reply["outcome"] == "context_observed"
     assert reply["fast_assistance"]["full_node_context_status"] == "received"
     assert set(reply["timing"]) == {"locald", "entry_ms"}
-    assert reply["timing"]["locald"] == {"context": "received", "broker_ms": 12, "total_ms": 30}
+    assert reply["timing"]["locald"] == {"context": "received", "broker_ms": 12, "total_ms": 30,
+                                         "core": "ran"}
     assert isinstance(reply["timing"]["entry_ms"], int)
     assert [c[0] for c in calls] == [frame]
     # deadline: 350 ms less entry's 30 ms delivery reserve, never more
@@ -201,7 +203,7 @@ def test_client_wires_the_contextobs_verb_and_degrades_without_the_service(monke
         seen.update(leaf=leaf, account=account, verb=verb, arguments=arguments,
                     payload=payload, deadline_s=deadline_s)
         return {"outcome": "context_observed", "fast_assistance": good_fast("received"),
-                "timing": {"context": "received", "broker_ms": 5, "total_ms": 9}}
+                "timing": {"context": "received", "broker_ms": 5, "total_ms": 9, "core": "ran"}}
 
     monkeypatch.setattr(client, "_exchange", exchange)
     local = client.ContextObserveSocketClient()
@@ -211,7 +213,8 @@ def test_client_wires_the_contextobs_verb_and_degrades_without_the_service(monke
     assert (seen["leaf"], seen["account"], seen["verb"]) == (
         "mio-contextobs", "azmioctx", "mio.contextobs.observe")
     assert seen["arguments"] == {"deadline_ms": 320} and seen["payload"] == frame
-    assert local.last_observe_timing == {"context": "received", "broker_ms": 5, "total_ms": 9}
+    assert local.last_observe_timing == {"context": "received", "broker_ms": 5, "total_ms": 9,
+                                         "core": "ran"}
 
     def broken(*a, **k):
         raise OSError("no socket")
@@ -337,7 +340,8 @@ def test_locald_technique_answer_is_projected_and_never_given_to_the_core(core, 
         ("T1059", "found", True), ("T1059.001", "no_match", False)]
     # the value passes the delivery reader
     assert read_fast_assistance(fast) == fast
-    assert set(reply["timing"]) == {"context", "broker_ms", "total_ms"}
+    assert set(reply["timing"]) == {"context", "broker_ms", "total_ms", "core"}
+    assert reply["timing"]["core"] == "ran"
     assert reply["timing"]["context"] == "received"
     assert all(type(reply["timing"][k]) is int for k in ("broker_ms", "total_ms"))
     assert reply["timing"]["total_ms"] <= 350
@@ -451,7 +455,8 @@ def test_timing_is_local_to_each_request(monkeypatch):
     def exchange(leaf, account, verb, arguments, *, payload=None, deadline_s):
         gate.wait(timeout=5)                                   # both are inside before either returns
         return {"outcome": "context_observed", "fast_assistance": good_fast("received"),
-                "timing": {"context": "received", "broker_ms": arguments["deadline_ms"],
+                "timing": {"context": "received", "core": "ran",
+                           "broker_ms": arguments["deadline_ms"],
                            "total_ms": arguments["deadline_ms"]}}
 
     monkeypatch.setattr(client, "_exchange", exchange)

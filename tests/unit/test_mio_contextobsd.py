@@ -298,7 +298,7 @@ def test_entry_is_served_and_nothing_is_recorded(root, monkeypatch):
     assert reply["ok"] is True
     result = reply["result"]
     assert result["outcome"] == "context_observed"
-    assert set(result["timing"]) == {"context", "broker_ms", "total_ms"}
+    assert set(result["timing"]) == {"context", "broker_ms", "total_ms", "core"}
     assert seen == [{"privacy_class": "P0-public", "techniques": ["T1059", "T1059.001"]}]
     ledger = runtime_paths.mio_contextobs_state_dir() / "contextobs.jsonl"
     assert ledger.read_text() == ""
@@ -381,7 +381,8 @@ def test_entry_relays_to_the_new_unit_not_to_locald(monkeypatch, tmp_path):
     def exchange(leaf, account, verb, arguments, *, payload=None, deadline_s):
         calls.append((leaf, account, verb))
         return {"outcome": "context_observed", "fast_assistance": good_fast("unavailable"),
-                "timing": {"context": "unavailable", "broker_ms": 1, "total_ms": 2}}
+                "timing": {"context": "unavailable", "broker_ms": 1, "total_ms": 2,
+                           "core": "ran"}}
 
     monkeypatch.setattr(client, "_exchange", exchange)
     service._explainer_uid = 4242
@@ -392,3 +393,99 @@ def test_entry_relays_to_the_new_unit_not_to_locald(monkeypatch, tmp_path):
     assert calls == [("mio-contextobs", "azmioctx", "mio.contextobs.observe")]
     # The reply keeps its shape; the hop's timing is still under `locald`.
     assert set(reply["timing"]) == {"locald", "entry_ms"}
+
+
+# ---- the broker's outcome and the core's are told apart --------------------
+
+class _BrokenCore:
+    """Stands in for mio_fast_assistance and fails as the shared core can."""
+
+    def _frame(self, source, *, with_selection=False):
+        raise RuntimeError("core unavailable")
+
+    def fast_assistance(self, *args, **kwargs):  # pragma: no cover - never reached
+        raise AssertionError("not called")
+
+
+def _observe(service, frame=None):
+    return service.handle(SimpleNamespace(verb=obsd.CONTEXT_OBSERVE_VERB,
+                                          arguments={"deadline_ms": 320},
+                                          payload=frame or obs_frame()))
+
+
+def test_a_core_failure_keeps_the_broker_answer_and_says_so(monkeypatch):
+    from _technique_fixture import make_response
+    from azazel_nexus.local_advisory import read_fast_assistance
+
+    monkeypatch.setitem(sys.modules, "azazel_nexus_runtime.mio_fast_assistance", _BrokenCore())
+    monkeypatch.setattr(obsd, "request_context", lambda query, *, deadline_s: make_response(
+        ["T1059", "T1059.001"]))
+    reply = _observe(obsd.ContextObservationService())
+    assert reply["outcome"] == "context_observed"
+    assert reply["timing"]["core"] == "failed"
+    assert reply["timing"]["context"] == "received"
+    fast = reply["fast_assistance"]
+    assert fast["state"] == "dependency_unavailable"            # the fixed degraded payload
+    record = fast["technique_knowledge"]
+    assert (record["transport"], record["verification"]) == ("received", "ok")
+    assert fast["full_node_context_status"] == "unavailable"
+    assert read_fast_assistance(fast) == fast                   # entry's reader accepts it
+
+
+def test_a_core_failure_and_a_broker_refusal_are_both_visible(monkeypatch):
+    monkeypatch.setitem(sys.modules, "azazel_nexus_runtime.mio_fast_assistance", _BrokenCore())
+
+    def refuse(query, *, deadline_s):
+        exc = obsd.KnowledgeContextUnavailable("refused")
+        exc.stage = "refused_before_send"
+        raise exc
+
+    monkeypatch.setattr(obsd, "request_context", refuse)
+    reply = _observe(obsd.ContextObservationService())
+    assert reply["timing"]["core"] == "failed" and reply["timing"]["context"] == "refused"
+    record = reply["fast_assistance"]["technique_knowledge"]
+    assert (record["transport"], record["verification"]) == ("refused", "not_run")
+
+
+def test_a_core_that_ran_says_so(monkeypatch):
+    from test_mio_context_observe import FakeCore
+
+    monkeypatch.setitem(sys.modules, "azazel_nexus_runtime.mio_fast_assistance", FakeCore())
+    monkeypatch.setattr(obsd, "request_context", lambda *a, **k: (_ for _ in ()).throw(
+        obsd.KnowledgeContextUnavailable("closed")))
+    reply = _observe(obsd.ContextObservationService())
+    assert reply["timing"]["core"] == "ran"
+    assert reply["fast_assistance"]["state"] != "dependency_unavailable"
+
+
+@pytest.mark.parametrize("timing", [
+    {"context": "received", "broker_ms": 1, "total_ms": 2},                      # no core word
+    {"context": "received", "broker_ms": 1, "total_ms": 2, "core": "maybe"},     # unknown word
+    {"context": "received", "broker_ms": 1, "total_ms": 2, "core": "ran", "x": 1},
+])
+def test_the_client_refuses_a_timing_without_the_fixed_core_word(monkeypatch, timing):
+    monkeypatch.setattr(client, "_exchange", lambda *a, **k: {
+        "outcome": "context_observed", "fast_assistance": good_fast("unavailable"),
+        "timing": timing})
+    fast, got = client.ContextObserveSocketClient().observe_context_timed(
+        obs_frame(), deadline_s=0.3)
+    assert got is None and fast["dependency_outcome"]["knowledge"] == "rejected"
+
+
+def test_entry_carries_the_core_word_to_the_explainer(monkeypatch, tmp_path):
+    from azazel_nexus_runtime import mio_entryd as entry
+    from azazel_nexus_runtime.principal import Principal
+    monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
+    monkeypatch.setattr(client.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=os.getuid()))
+    monkeypatch.setattr(client.grp, "getgrnam", lambda _: SimpleNamespace(gr_gid=os.getgid()))
+    runtime_paths.mio_state_dir().mkdir(parents=True)
+    service = entry.MioEntryService()
+    service._explainer_uid = 4242
+    timing = {"context": "received", "broker_ms": 1, "total_ms": 2, "core": "failed"}
+    monkeypatch.setattr(client, "_exchange", lambda *a, **k: {
+        "outcome": "context_observed", "fast_assistance": good_fast("unavailable"),
+        "timing": timing})
+    reply = service.handle(SimpleNamespace(
+        verb=entry.CONTEXT_OBSERVE_VERB, arguments={"deadline_ms": 350}, payload=obs_frame(),
+        principal=Principal(4242, 7, 1, frozenset({PrincipalClass.SERVICE}))))
+    assert reply["timing"]["locald"] == timing
