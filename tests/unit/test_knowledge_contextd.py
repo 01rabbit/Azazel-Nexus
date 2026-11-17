@@ -477,7 +477,7 @@ def test_every_broker_stage_is_one_the_client_and_the_projection_know():
     assert kd._STAGES <= kcs.STAGES
     projected = {s: (obs._refusal_projection(s)["transport"], obs._refusal_projection(s)["verification"])
                  for s in kcs.STAGES}
-    assert projected["withdrawn"] == ("received", "failed")
+    assert projected["withdrawn"] == ("received", "withdrawn")
     assert projected["refused_before_send"] == ("refused", "not_run")
     assert projected["transport"] == ("unavailable", "not_run")
 

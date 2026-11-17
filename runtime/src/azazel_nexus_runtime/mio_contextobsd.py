@@ -92,10 +92,8 @@ def _refusal_projection(stage) -> dict:
         "verification": ("refused", "failed"),
         "technique_verification": ("received", "failed"),
         # Answered and verified, then discarded because the grant was withdrawn
-        # before adoption: received, and not accepted. The stored pairs have no
-        # "received, not adopted", so it is recorded with the failed ones; the
-        # broker ledger keeps reason_code=withdrawn to tell them apart.
-        "withdrawn": ("received", "failed"),
+        # before adoption: received, and not adopted (not a verification failure).
+        "withdrawn": ("received", "withdrawn"),
     }.get(stage, ("unavailable", "not_run"))
     return not_run_projection(transport, verification)
 

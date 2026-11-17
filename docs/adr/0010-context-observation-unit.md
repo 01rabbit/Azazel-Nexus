@@ -126,5 +126,7 @@ marker changed before adoption). The admission check and the adoption recheck
 are separate phases (`admit`, `grant`); before this change both mapped to
 `refused_before_send`, which misreported an answer that had been received.
 contextobsd projects `withdrawn` as transport `received`, verification
-`failed` (the stored record has no "received, not adopted" pair); the broker
-ledger keeps `reason_code: withdrawn`.
+`withdrawn`, a pair added to the stored technique record for this case; the
+UI shows it as "採用前に許可が取り消されました（応答は採用しません）", not as a
+verification failure. The past reference adopts only `received`/`ok`, so the
+new word changes no adoption. The broker ledger keeps `reason_code: withdrawn`.

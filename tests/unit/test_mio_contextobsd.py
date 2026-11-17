@@ -22,6 +22,8 @@ from types import SimpleNamespace
 
 import pytest
 
+ROOT = Path(__file__).resolve().parents[2]
+
 from azazel_nexus.activation import CORE_UNITS
 from azazel_nexus.activation_policy import ACTIVATION_UNIT_ALLOWLIST
 from azazel_nexus_runtime import knowledge_contextd, principal, runtime_paths
@@ -489,3 +491,29 @@ def test_entry_carries_the_core_word_to_the_explainer(monkeypatch, tmp_path):
         verb=entry.CONTEXT_OBSERVE_VERB, arguments={"deadline_ms": 350}, payload=obs_frame(),
         principal=Principal(4242, 7, 1, frozenset({PrincipalClass.SERVICE}))))
     assert reply["timing"]["locald"] == timing
+
+
+@pytest.mark.parametrize("stage,pair", [
+    ("withdrawn", ("received", "withdrawn")),
+    ("refused_before_send", ("refused", "not_run")),
+    ("transport", ("unavailable", "not_run")),
+    ("verification", ("refused", "failed")),
+])
+def test_a_broker_stage_reaches_the_stored_record_as_its_own_pair(root, monkeypatch, stage, pair):
+    """request_context's stage -> contextobsd's reply -> the strict stored-record reader (and the UI words)."""
+    from azazel_nexus.technique_knowledge import read_projection
+    _as_entry(monkeypatch, os.getuid())
+
+    def request_context(query, *, deadline_s):
+        refused = obsd.KnowledgeContextUnavailable("broker refused")
+        refused.stage = stage
+        raise refused
+
+    monkeypatch.setattr(obsd, "request_context", request_context)
+    with Daemon(obsd.main):
+        reply = _ask()
+    tk = reply["result"]["fast_assistance"]["technique_knowledge"]
+    assert (tk["transport"], tk["verification"]) == pair
+    assert read_projection(tk) == tk
+    ui = (ROOT / "runtime" / "src" / "azazel_nexus_runtime" / "ui_static" / "app.js").read_text()
+    assert f"{pair[1]}: \"" in ui  # the UI has its own label for the verification word

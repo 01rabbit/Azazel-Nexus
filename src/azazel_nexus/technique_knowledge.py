@@ -11,7 +11,9 @@ Four axes are kept apart and never merged into one "available" word:
 
 * transport: `received` (a signed envelope arrived), `unavailable` (no usable
   answer), `refused` (declined locally or by the peer, an HTTP 422 included);
-* verification: `ok`, `failed` (a 422 counts as failed) or `not_run`;
+* verification: `ok`, `failed` (a 422 counts as failed), `not_run`, or
+  `withdrawn` (answered and verified, then not adopted because the grant was
+  withdrawn before adoption);
 * coverage per technique: `found`, `no_match`, `stale`, `unavailable`;
 * useful_content per technique: true exactly when coverage is `found`.
 
@@ -43,10 +45,12 @@ MAX_TECHNIQUES = 8
 #: One limit for the stored name, the UI and the handoff.
 NAME_MAX = 120
 TRANSPORT_WORDS = ("received", "unavailable", "refused")
-VERIFICATION_WORDS = ("ok", "failed", "not_run")
+VERIFICATION_WORDS = ("ok", "failed", "not_run", "withdrawn")
 COVERAGE_WORDS = ("found", "no_match", "stale", "unavailable")
 _PAIRS = frozenset({("received", "ok"), ("received", "failed"), ("refused", "failed"),
-                    ("refused", "not_run"), ("unavailable", "not_run")})
+                    ("refused", "not_run"), ("unavailable", "not_run"),
+                    # answered and verified, then not adopted: the grant was withdrawn first
+                    ("received", "withdrawn")})
 SNAPSHOT_STATES = ("complete", "partial", "stale")
 # ATT&CK v19 split `defense-evasion` into `stealth` and `defense-impairment`; the
 # enterprise corpus 20.1 uses only the new two (208 of 706 techniques). The old

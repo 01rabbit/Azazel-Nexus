@@ -770,7 +770,7 @@
   function techniqueBlock(tk) {
     var tkNode = block("未検証の ATT&CK ラベル（参考）");
     var transportLabel = { received: "署名応答受信（内容ありを意味しない）", unavailable: "ATT&CK 照会は通信できませんでした", refused: "ATT&CK 照会は拒否されました" };
-    var verificationLabel = { ok: "検証済み", failed: "検証失敗（応答は採用しません）", not_run: "検証は実行されていません" };
+    var verificationLabel = { ok: "検証済み", failed: "検証失敗（応答は採用しません）", not_run: "検証は実行されていません", withdrawn: "採用前に許可が取り消されました（応答は採用しません）" };
     var coverageLabel = { found: "対応あり", no_match: "該当なし", stale: "期限切れ", unavailable: "ATT&CK corpus 利用不可" };
     add(tkNode, kv([["通信", transportLabel[tk.transport] || "不明"], ["検証", verificationLabel[tk.verification] || "不明"]]));
     if (tk.as_of) {
