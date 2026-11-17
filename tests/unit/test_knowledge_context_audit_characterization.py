@@ -30,7 +30,8 @@ def test_peer_socket_timeout_is_unavailable_not_timeout():
                 raise KnowledgeContextRefused("peer refused or unavailable") from exc
 
     events = []
-    assert _broker(Client(), events).handle(_request()) == {"refusal": "unavailable"}
+    # The client was called and did not name a stage: reported as transport, never "before sending".
+    assert _broker(Client(), events).handle(_request()) == {"refusal": "unavailable", "stage": "transport"}
     assert [e["event_type"] for e in events] == [
         "knowledge.context.requested", "knowledge.context.completed"]
     assert events[-1]["outcome"] == "unavailable"
@@ -59,7 +60,7 @@ def test_already_expired_request_returns_timeout_without_any_audit():
     events = []
     broker = _broker(Forbidden(), events, monotonic=lambda: 20.0)
     request = _request(deadline_ms=500, deadline_monotonic_ns=19_000_000_000)
-    assert broker.handle(request) == {"refusal": "timeout"}
+    assert broker.handle(request) == {"refusal": "timeout", "stage": "refused_before_send"}
     assert events == []
 
 

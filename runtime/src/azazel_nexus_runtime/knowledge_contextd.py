@@ -55,6 +55,10 @@ _RATE_WINDOW_S = 60.0
 # Fixed request sections a client may name on the refusal it raises.
 _CLIENT_STAGES = frozenset({"refused_before_send", "transport", "verification",
                             "technique_verification"})
+#: Every word a refusal's `stage` can carry. `withdrawn`: the peer answered and
+#: the answer was verified, but the grant marker changed before adoption, so
+#: nothing from the peer was used (the ledger reason_code is `withdrawn` too).
+_STAGES = _CLIENT_STAGES | {"withdrawn"}
 #: The unit whose grant marker admits a request (the broker's own unit).
 _UNIT = "azazel-knowledge-contextd.service"
 
@@ -132,7 +136,7 @@ class KnowledgeContextBroker:
 
     def handle(self, request) -> dict:
         if getattr(getattr(request, "verb", None), "name", None) != CONTEXT_VERB.name:
-            return {"refusal": "unavailable"}
+            return {"refusal": "unavailable", "stage": "refused_before_send"}
         start = self._monotonic()
         deadline_ms = request.arguments["deadline_ms"]
         deadline_monotonic = request.arguments["deadline_monotonic_ns"] / 1_000_000_000
@@ -141,14 +145,14 @@ class KnowledgeContextBroker:
         deadline = min(start + deadline_ms / 1000, deadline_monotonic)
         deadline_s = deadline - start
         if deadline_s <= 0:
-            return {"refusal": "timeout"}
+            return {"refusal": "timeout", "stage": "refused_before_send"}
         reason = None
         phase = "frame"
         try:
             # The grant this request is accepted under. A broker whose grant
             # was withdrawn (marker removed) accepts nothing, even in the
             # seconds before the manager has stopped it.
-            phase = "grant"
+            phase = "admit"  # before anything is sent; "grant" is the adoption recheck
             admitted = self._grant_marker()
             if admitted is None:
                 reason = "withdrawn"
@@ -247,17 +251,20 @@ class KnowledgeContextBroker:
         except Exception:
             pass
         # Every accepted request is a technique query (#439), so every refusal
-        # carries how far it got, as a fixed word: the caller can keep transport
+        # (including the two early returns above) carries how far it got, as a
+        # fixed word from _STAGES: the caller can keep transport
         # and verification apart, and a refused question or malformed frame is
         # `refused_before_send` on the caller's side too, not a shape error.
         if phase == "client":
-            stage = reason if reason in _CLIENT_STAGES else None
+            # The client was called; a failure it does not name happened after
+            # the attempt began, so it is never reported as before sending.
+            stage = reason if reason in _CLIENT_STAGES else "transport"
+        elif phase == "grant":
+            stage = "withdrawn"  # received and verified, not adopted
         else:
             stage = {"late": "transport", "verification": "verification"}.get(
                 reason, "refused_before_send")
-        if stage is not None:
-            return {"refusal": outcome, "stage": stage}
-        return {"refusal": outcome}
+        return {"refusal": outcome, "stage": stage}
 
 
 def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -> int:

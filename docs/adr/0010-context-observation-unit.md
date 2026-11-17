@@ -70,9 +70,7 @@ refused (`principal_denied`). Locald loses `azknowledge-context-client`.
 only ever sends the technique form, the broker accepts only `{privacy_class:
 "P0-public", techniques: [...]}`. A `question` frame, including one that
 matches the old observation sentence, is refused with `refused_before_send`
-(in the ledger and, since 2026-11-17, also to the caller: every refusal now
-carries `stage`, so `request_context` raises with `stage=refused_before_send`
-instead of reporting a response-shape error) and never reaches the gate, the slot, the audit `requested` event or the
+(in the ledger and, since 2026-11-17, also to the caller) and never reaches the gate, the slot, the audit `requested` event or the
 client. Locald's `mio.local.assess` no longer queries the broker: it reports
 `full_node_context_status: not_queried` and its `mio.local.observe` verb is
 removed.
@@ -114,3 +112,19 @@ mask list. Locald stays excluded.
   review).
 * `timing.core` (`ran` / `failed`) tells a core failure from the broker's
   outcome; the technique record is kept on the degraded payload too.
+
+**D5 (2026-11-17). Every broker refusal carries a stage.** With one request
+form, the broker returns `{refusal, stage}` for every refusal, including the
+unknown-verb and already-expired early returns, so the caller never sees a
+response-shape error for a refusal. The words: `refused_before_send` (nothing
+was sent: no grant marker at admission, frame or question refused, gate,
+busy, audit failure, early returns), `transport` (the client was called and
+failed, including a failure that names no stage), `verification` and
+`technique_verification` (the answer failed checks), and `withdrawn` (the
+answer arrived and was verified, then was not adopted because the grant
+marker changed before adoption). The admission check and the adoption recheck
+are separate phases (`admit`, `grant`); before this change both mapped to
+`refused_before_send`, which misreported an answer that had been received.
+contextobsd projects `withdrawn` as transport `received`, verification
+`failed` (the stored record has no "received, not adopted" pair); the broker
+ledger keeps `reason_code: withdrawn`.

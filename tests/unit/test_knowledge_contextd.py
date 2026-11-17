@@ -89,7 +89,7 @@ def test_expired_queued_request_does_not_reach_knowledge():
         enabled=True, monotonic=lambda: 20.0,
     )
     request = _request(deadline_ms=500, deadline_monotonic_ns=19_000_000_000)
-    assert broker.handle(request) == {"refusal": "timeout"}
+    assert broker.handle(request) == {"refusal": "timeout", "stage": "refused_before_send"}
 
 
 def test_audit_failure_prevents_knowledge_egress():
@@ -467,3 +467,36 @@ def test_a_refused_question_reaches_the_caller_as_refused_before_send(monkeypatc
     reply = {"ok": True, "result": broker.handle(_request({"frame": {
         "privacy_class": "P0-public", "question": "public question"}}))}
     assert set(reply["result"]) == {"refusal", "stage"} and reply["result"]["stage"] in kcs.STAGES
+
+
+def test_every_broker_stage_is_one_the_client_and_the_projection_know():
+    """The broker's stage words are a subset of the client's STAGES, and each one has its own projection."""
+    from azazel_nexus_runtime import knowledge_context_socket as kcs
+    from azazel_nexus_runtime import knowledge_contextd as kd
+    from azazel_nexus_runtime import mio_contextobsd as obs
+    assert kd._STAGES <= kcs.STAGES
+    projected = {s: (obs._refusal_projection(s)["transport"], obs._refusal_projection(s)["verification"])
+                 for s in kcs.STAGES}
+    assert projected["withdrawn"] == ("received", "failed")
+    assert projected["refused_before_send"] == ("refused", "not_run")
+    assert projected["transport"] == ("unavailable", "not_run")
+
+
+def test_early_returns_and_unnamed_client_failures_carry_a_stage():
+    import types
+    broker = KnowledgeContextBroker(**OPEN_GATE, grant_marker=granted_marker, client=None,
+                                    policy=_policy(), mission="lab", alias_key=b"x" * 32,
+                                    enabled=True, audit=lambda e: None)
+    other = types.SimpleNamespace(verb=types.SimpleNamespace(name="other.verb"), arguments={}, payload={})
+    assert broker.handle(other) == {"refusal": "unavailable", "stage": "refused_before_send"}
+    expired = _request()
+    expired.arguments["deadline_monotonic_ns"] = 1
+    assert broker.handle(expired) == {"refusal": "timeout", "stage": "refused_before_send"}
+
+    class Client:
+        def request_context(self, **kwargs):
+            raise RuntimeError("unnamed failure")  # no stage attribute
+    broker = KnowledgeContextBroker(**OPEN_GATE, grant_marker=granted_marker, client=Client(),
+                                    policy=_policy(), mission="lab", alias_key=b"x" * 32,
+                                    enabled=True, audit=lambda e: None)
+    assert broker.handle(_request()) == {"refusal": "unavailable", "stage": "transport"}

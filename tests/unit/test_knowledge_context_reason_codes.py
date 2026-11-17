@@ -197,7 +197,7 @@ def test_exception_without_fixed_attribute_gets_no_reason():
             raise RuntimeError(SECRET)
 
     events = []
-    assert _broker(Client(), events).handle(_request()) == {"refusal": "unavailable"}
+    assert _broker(Client(), events).handle(_request()) == {"refusal": "unavailable", "stage": "transport"}
     _check(events, None, "unavailable")
 
 
@@ -210,7 +210,7 @@ def test_unknown_stage_value_is_not_exported():
             raise Boom(SECRET)
 
     events = []
-    assert _broker(Client(), events).handle(_request()) == {"refusal": "unavailable"}
+    assert _broker(Client(), events).handle(_request()) == {"refusal": "unavailable", "stage": "transport"}
     _check(events, None, "unavailable")
 
 
@@ -230,7 +230,7 @@ def test_already_expired_and_completed_audit_failure_stay_unchanged():
     events = []
     broker = _broker(object(), events, monotonic=lambda: 20.0)
     req = _request(deadline_ms=500, deadline_monotonic_ns=19_000_000_000)
-    assert broker.handle(req) == {"refusal": "timeout"}
+    assert broker.handle(req) == {"refusal": "timeout", "stage": "refused_before_send"}
     assert events == []
 
     class Client:
@@ -242,4 +242,4 @@ def test_already_expired_and_completed_audit_failure_stay_unchanged():
             raise OSError
     broker = KnowledgeContextBroker(**OPEN_GATE, grant_marker=granted_marker, client=Client(), policy=_policy(), mission="lab",
                                     alias_key=b"x" * 32, enabled=True, audit=audit)
-    assert broker.handle(_request()) == {"refusal": "unavailable"}
+    assert broker.handle(_request()) == {"refusal": "unavailable", "stage": "transport"}

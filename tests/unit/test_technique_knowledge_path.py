@@ -93,7 +93,7 @@ def test_broker_passes_the_typed_frame_to_the_client_and_refuses_a_question(env)
 @pytest.mark.parametrize("raised,stage", [
     ("refused_before_send", "refused_before_send"), ("transport", "transport"),
     ("verification", "verification"), ("technique_verification", "technique_verification"),
-    (None, None)])
+    (None, "transport")])
 def test_broker_reports_how_far_a_technique_query_got(env, raised, stage):
     write_rule(env, 6)
 
@@ -106,7 +106,7 @@ def test_broker_reports_how_far_a_technique_query_got(env, raised, stage):
     broker, _, _ = make(cfg.load_observation_rule())
     broker._client = Peer()
     reply = broker.handle(technique_frame())
-    assert reply == ({"refusal": "unavailable", "stage": stage} if stage else {"refusal": "unavailable"})
+    assert reply == {"refusal": "unavailable", "stage": stage}
     # a question frame is refused before sending, and says so to the caller
     assert broker.handle(_request(payload={"frame": {"privacy_class": "P0-public", "question": "q"}})) == {
         "refusal": "unavailable", "stage": "refused_before_send"}

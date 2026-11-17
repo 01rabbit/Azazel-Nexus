@@ -185,8 +185,9 @@ def _answers_with_marker_removed_meanwhile(root):
     return result, events, peer
 
 
-#: A technique query refused at the grant check (the broker reports the stage).
-WITHDRAWN = {"refusal": "unavailable", "stage": "refused_before_send"}
+#: A technique query whose answer arrived and was verified, then was not adopted
+#: because the grant changed meanwhile: the stage says so (not "before sending").
+WITHDRAWN = {"refusal": "unavailable", "stage": "withdrawn"}
 
 
 def _blocked(result, events, peer) -> bool:
