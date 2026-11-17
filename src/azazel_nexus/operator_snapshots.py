@@ -295,6 +295,7 @@ OBSERVED_UNITS = (
     "azazel-incident-explaind.service",
     "azazel-knowledge-contextd.service",
     "azazel-knowledge-lited.service",
+    "azazel-mio-contextobsd.service",
     "azazel-mio-entryd.service",
     "azazel-mio-locald.service",
     "azazel-mio-referenced.service",

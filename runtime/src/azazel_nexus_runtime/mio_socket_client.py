@@ -12,7 +12,6 @@ import grp
 import hashlib
 import json
 import pwd
-import secrets
 import socket
 import time
 
@@ -22,6 +21,7 @@ from azazel_nexus.audit import AuditUnavailable
 from azazel_nexus.local_advisory import read_delivered, read_fast_assistance, read_reference
 
 from .bootstrap_audit_client import _pairs, _read_exact, _set_remaining_timeout
+from .mio_fast_degraded import fast_assessment_degraded
 from .principal import SocketMisconfigured, peer_credentials, verify_socket
 from .runtime_paths import socket_group, socket_path
 from .protocol import Refusal
@@ -158,60 +158,11 @@ class LocalSocketClient:
         except Exception:
             return stale
 
-    def observe_context_timed(self, frame, *, deadline_s: float):
-        """Relay one explainer observation-origin request to locald.
-
-        Returns `(fast, timing)`: the re-run fast assistance, or the fixed
-        degraded payload on timeout, refusal or any failure, and locald's
-        fixed-key timing when it answered, otherwise None. Both are local to
-        this call, so concurrent requests cannot mix them. No ledger, no
-        generation: only the validated frame crosses the socket.
-        """
-        if type(deadline_s) not in {int, float} or deadline_s <= 0:
-            return fast_assessment_degraded("timeout"), None
-        milliseconds = max(1, min(350, int(deadline_s * 1000)))
-        try:
-            result = _exchange("mio", "azmio", "mio.local.observe",
-                               {"deadline_ms": milliseconds}, payload=frame,
-                               deadline_s=deadline_s)
-        except TimeoutError:
-            return fast_assessment_degraded("timeout"), None
-        except ServiceRefused:
-            return fast_assessment_degraded("rejected"), None
-        except (OSError, KeyError, SocketMisconfigured):
-            return fast_assessment_degraded("unavailable"), None
-        except ValueError:
-            return fast_assessment_degraded("rejected"), None
-        except Exception:
-            return fast_assessment_degraded("unavailable"), None
-        try:
-            if (type(result) is not dict or result.get("outcome") != "context_observed"
-                    or type(result.get("fast_assistance")) is not dict):
-                raise ValueError("invalid_context_observation")
-            fast = read_fast_assistance(result["fast_assistance"])
-            timing = result.get("timing")
-            if (type(timing) is not dict
-                    or set(timing) != {"context", "broker_ms", "total_ms"}
-                    or timing["context"] not in {"received", "unavailable", "refused"}
-                    or any(type(timing[key]) is not int or not 0 <= timing[key] <= 60_000
-                           for key in ("broker_ms", "total_ms"))):
-                raise ValueError("invalid_context_observation")
-            return fast, dict(timing)
-        except Exception:
-            return fast_assessment_degraded("rejected"), None
-
-    def observe_context(self, frame, *, deadline_s: float) -> dict:
-        """`observe_context_timed` without the timing; `last_observe_timing` keeps the latest
-        one for a single caller (shared state: concurrent callers use the timed form)."""
-        fast, timing = self.observe_context_timed(frame, deadline_s=deadline_s)
-        self.last_observe_timing = timing
-        return fast
-
     def assess(self, frame, *, deadline_s: float, caller_epoch=None) -> dict:
         """Call model-free assessment without asserting a verified context.
 
-        Only the caller's situation frame crosses the socket. Knowledge
-        Context is obtained by the service itself from its local broker.
+        Only the caller's situation frame crosses the socket. locald does not
+        query Full Node Context (`full_node_context_status: not_queried`).
         """
         self.last_slow_analysis = {"state": "closed", "usage": "unknown"}
         self.last_generation_metadata = None
@@ -286,20 +237,6 @@ class LocalSocketClient:
             return {"outcome": "failed", "refusal": "local_unavailable"}
 
 
-def fast_assessment_degraded(status: str) -> dict:
-    """Fixed model-free degradation payload for an absent/late locald reply."""
-    if status not in {"timeout", "unavailable", "rejected"}:
-        status = "unavailable"
-    trace_id = f"mio-{secrets.token_hex(8)}-1"
-    return {"schema_version": "mio.assistance.v1", "trace_id": trace_id,
-            "frame_id": trace_id + ":frame", "generation_method": "static_reference",
-            "state": "dependency_unavailable",
-            "observations": [], "hypotheses": [], "unknowns": ["Fast assessment unavailable"],
-            "next_checks": [], "knowledge": [], "handoff": None, "reasoning_trace": [],
-            "dependency_outcome": {"knowledge": status, "deception": "absent"},
-            }
-
-
 #: Locald's read-only admission verb (`mio_locald.ADMISSION_VERB`).
 ADMISSION_VERB_NAME = "mio.local.admission"
 
@@ -331,6 +268,72 @@ class LocalAdmissionReader:
         except Exception:  # noqa: BLE001 - an unreadable admission is no admission
             return False
         return set(reply) == {"admitted"} and reply["admitted"] is True
+
+
+class ContextObserveSocketClient:
+    """The model-free context observation service (`mio_contextobsd`), for entry.
+
+    Never the model host: the observation-origin Knowledge Context request
+    goes to its own unit, whose account is the broker's one SERVICE
+    principal (docs/adr/0010-context-observation-unit.md).
+    """
+
+    last_observe_timing = None
+
+    def observe_context_timed(self, frame, *, deadline_s: float):
+        """Relay one explainer observation-origin request to contextobsd.
+
+        Returns `(fast, timing)`: the re-run fast assistance, or the fixed
+        degraded payload on timeout, refusal or any failure, and the
+        service's fixed-key timing when it answered, otherwise None. Both are
+        local to this call, so concurrent requests cannot mix them. No
+        ledger, no generation: only the validated frame crosses the socket.
+        """
+        if type(deadline_s) not in {int, float} or deadline_s <= 0:
+            return fast_assessment_degraded("timeout"), None
+        from .mio_contextobsd import (
+            ACCOUNT, CONTEXT_OBSERVE_DEADLINE_MAX_MS, CONTEXT_OBSERVE_VERB, SOCKET_NAME,
+        )
+        milliseconds = max(1, min(CONTEXT_OBSERVE_DEADLINE_MAX_MS, int(deadline_s * 1000)))
+        try:
+            # The socket's owner and group are checked before connecting and
+            # the kernel peer uid (the service's own account) after.
+            result = _exchange(SOCKET_NAME, ACCOUNT, CONTEXT_OBSERVE_VERB.name,
+                               {"deadline_ms": milliseconds}, payload=frame,
+                               deadline_s=deadline_s)
+        except TimeoutError:
+            return fast_assessment_degraded("timeout"), None
+        except ServiceRefused:
+            return fast_assessment_degraded("rejected"), None
+        except (OSError, KeyError, SocketMisconfigured):
+            return fast_assessment_degraded("unavailable"), None
+        except ValueError:
+            return fast_assessment_degraded("rejected"), None
+        except Exception:
+            return fast_assessment_degraded("unavailable"), None
+        try:
+            if (type(result) is not dict or result.get("outcome") != "context_observed"
+                    or type(result.get("fast_assistance")) is not dict):
+                raise ValueError("invalid_context_observation")
+            fast = read_fast_assistance(result["fast_assistance"])
+            timing = result.get("timing")
+            if (type(timing) is not dict
+                    or set(timing) != {"context", "broker_ms", "total_ms", "core"}
+                    or timing["context"] not in {"received", "unavailable", "refused"}
+                    or timing["core"] not in {"ran", "failed"}
+                    or any(type(timing[key]) is not int or not 0 <= timing[key] <= 60_000
+                           for key in ("broker_ms", "total_ms"))):
+                raise ValueError("invalid_context_observation")
+            return fast, dict(timing)
+        except Exception:
+            return fast_assessment_degraded("rejected"), None
+
+    def observe_context(self, frame, *, deadline_s: float) -> dict:
+        """`observe_context_timed` without the timing; `last_observe_timing` keeps the latest
+        one for a single caller (shared state: concurrent callers use the timed form)."""
+        fast, timing = self.observe_context_timed(frame, deadline_s=deadline_s)
+        self.last_observe_timing = timing
+        return fast
 
 
 class ReferenceSocketClient:

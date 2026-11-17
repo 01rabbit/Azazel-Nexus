@@ -13,6 +13,7 @@ from pathlib import Path
 from azazel_nexus.knowledge_peer import KnowledgePeer, KnowledgeRegistry
 from azazel_nexus.provider_registry import ProviderRecord
 from azazel_nexus.sanitizer import PrivacyClass, SanitizerPolicy
+from azazel_nexus_runtime.knowledge_context_config import load_observation_rule
 from azazel_nexus_runtime.knowledge_contextd import KnowledgeContextBroker
 from azazel_nexus_runtime.principal import PrincipalPolicy
 from azazel_nexus_runtime.runtime_paths import socket_path
@@ -112,9 +113,13 @@ def _audit(event):
             handle.write(json.dumps(event, sort_keys=True) + "\n")
 
 
+# The broker accepts only the technique query (ADR-0010), and every one is
+# judged by the observation gate: the rule is the root-owned file the test
+# placed under AZAZEL_ROOT, read by the product loader.
 broker = KnowledgeContextBroker(
     client=client, policy=policy, mission="synthetic-process-test",
     alias_key=b"p" * 32, enabled=True, audit=_audit,
+    observation_rule=load_observation_rule(),
 )
 stopping = threading.Event()
 signal.signal(signal.SIGTERM, lambda *_: stopping.set())
@@ -127,7 +132,8 @@ def ready():
 sys.exit(serve_forever(
     path=socket_path("knowledge-context"), registry=VERBS,
     policy=PrincipalPolicy.resolve(
-        operator_group="azknowledge-context-client", service_accounts=("azmio",)),
+        # As the shipped main: the context observation account alone (ADR-0010).
+        operator_group="azknowledge-context-client", service_accounts=("azmioctx",)),
     audit=_audit, handler=broker.handle, stop=stopping.is_set,
     ready=ready,
 ))

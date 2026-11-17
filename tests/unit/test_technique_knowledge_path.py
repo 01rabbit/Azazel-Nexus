@@ -1,4 +1,4 @@
-"""The technique path: broker stages, locald axes, and no hand-off to M.I.O."""
+"""The technique path: broker stages, contextobsd axes, and no hand-off to M.I.O."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from _technique_fixture import make_response
 from azazel_nexus import technique_knowledge as tk
 from azazel_nexus_runtime import knowledge_context_config as cfg
 from azazel_nexus_runtime import knowledge_contextd as kc
+from azazel_nexus_runtime import mio_contextobsd as obsd
 from azazel_nexus_runtime import mio_locald as locald
 from azazel_nexus_runtime import runtime_paths
 from azazel_nexus_runtime.knowledge_context_socket import KnowledgeContextUnavailable
@@ -71,7 +72,7 @@ def test_broker_refuses_a_malformed_technique_frame_before_any_peer_call(env, fr
     assert peer.calls == 0
 
 
-def test_broker_passes_the_typed_frame_to_the_client_and_other_frames_are_unchanged(env):
+def test_broker_passes_the_typed_frame_to_the_client_and_refuses_a_question(env):
     write_rule(env, 6)
     seen = []
 
@@ -83,14 +84,16 @@ def test_broker_passes_the_typed_frame_to_the_client_and_other_frames_are_unchan
     broker, _, _ = make(cfg.load_observation_rule())
     broker._client = Peer()
     broker.handle(technique_frame(["T1059", "T1110"]))
-    broker.handle(_request(payload={"frame": {"privacy_class": "P0-public", "question": "public question"}}))
-    assert seen == [{"techniques": ["T1059", "T1110"]}, {"question": "public question"}]
+    # A free-form question is refused before sending (#439): never seen by the client.
+    assert broker.handle(_request(payload={"frame": {
+        "privacy_class": "P0-public", "question": "public question"}})) == {"refusal": "unavailable", "stage": "refused_before_send"}
+    assert seen == [{"techniques": ["T1059", "T1110"]}]
 
 
 @pytest.mark.parametrize("raised,stage", [
     ("refused_before_send", "refused_before_send"), ("transport", "transport"),
     ("verification", "verification"), ("technique_verification", "technique_verification"),
-    (None, None)])
+    (None, "transport")])
 def test_broker_reports_how_far_a_technique_query_got(env, raised, stage):
     write_rule(env, 6)
 
@@ -103,10 +106,10 @@ def test_broker_reports_how_far_a_technique_query_got(env, raised, stage):
     broker, _, _ = make(cfg.load_observation_rule())
     broker._client = Peer()
     reply = broker.handle(technique_frame())
-    assert reply == ({"refusal": "unavailable", "stage": stage} if stage else {"refusal": "unavailable"})
-    # a question query keeps the old one-word refusal
+    assert reply == {"refusal": "unavailable", "stage": stage}
+    # a question frame is refused before sending, and says so to the caller
     assert broker.handle(_request(payload={"frame": {"privacy_class": "P0-public", "question": "q"}})) == {
-        "refusal": "unavailable"}
+        "refusal": "unavailable", "stage": "refused_before_send"}
 
 
 # -- the local socket reader -----------------------------------------------------
@@ -148,10 +151,10 @@ def test_socket_client_raises_with_the_stage(monkeypatch):
     server.close()
 
 
-# -- locald: axes, and the technique answer never reaches M.I.O. -------------------
+# -- contextobsd: axes, and the technique answer never reaches M.I.O. -------------
 
 def observed(core, monkeypatch, request_context, ids=("T1059", "T1059.001")):
-    monkeypatch.setattr(locald, "request_context", request_context)
+    monkeypatch.setattr(obsd, "request_context", request_context)
     return service_().handle(locald_request(obs_frame(ids)))
 
 
@@ -159,7 +162,7 @@ def observed(core, monkeypatch, request_context, ids=("T1059", "T1059.001")):
     ("refused_before_send", ("refused", "not_run")), ("transport", ("unavailable", "not_run")),
     ("verification", ("refused", "failed")), ("technique_verification", ("received", "failed")),
     (None, ("unavailable", "not_run"))])
-def test_locald_maps_the_broker_stage_to_the_axes(core, monkeypatch, stage, pair):
+def test_contextobsd_maps_the_broker_stage_to_the_axes(core, monkeypatch, stage, pair):
     def refuse(frame, *, deadline_s):
         exc = KnowledgeContextUnavailable("broker refused")
         exc.stage = stage
@@ -170,7 +173,7 @@ def test_locald_maps_the_broker_stage_to_the_axes(core, monkeypatch, stage, pair
     assert record["techniques"] == [] and reply["timing"]["context"] == pair[0]
 
 
-def test_locald_validator_refusal_is_received_but_failed(core, monkeypatch):
+def test_contextobsd_validator_refusal_is_received_but_failed(core, monkeypatch):
     bad = make_response(IDS)
     bad["limitations"] = ["Block it."]
     record = observed(core, monkeypatch, lambda f, *, deadline_s: bad)["fast_assistance"]["technique_knowledge"]
@@ -179,7 +182,7 @@ def test_locald_validator_refusal_is_received_but_failed(core, monkeypatch):
 
 
 @pytest.mark.parametrize("payload", [{"response": "x"}, None, [], "text", {}])
-def test_locald_non_response_values_are_a_failed_verification(core, monkeypatch, payload):
+def test_contextobsd_non_response_values_are_a_failed_verification(core, monkeypatch, payload):
     record = observed(core, monkeypatch, lambda f, *, deadline_s: payload)["fast_assistance"]["technique_knowledge"]
     assert record["verification"] == "failed" and record["techniques"] == []
 
@@ -191,7 +194,7 @@ def test_mio_never_receives_a_technique_answer(core, monkeypatch, name):
     call, = core.calls
     # M.I.O. is run once, with no response and the unavailable word, as for no answer at all
     assert call["response"] is None
-    assert call["status"] is locald.FullNodeContextStatus.UNAVAILABLE
+    assert call["status"] is obsd.FullNodeContextStatus.UNAVAILABLE
     assert name not in json.dumps({k: v for k, v in call.items() if k != "source"}, default=str)
     fast = reply["fast_assistance"]
     assert "fabric_knowledge_context_advisory" not in fast and "full_node_context_received_at" not in fast
@@ -202,17 +205,17 @@ def test_mio_never_receives_a_technique_answer(core, monkeypatch, name):
 
 
 def test_the_existing_mio_hand_off_is_not_used_for_techniques():
-    source = inspect.getsource(locald.LocalRuntimeService._observe_context)
+    source = inspect.getsource(obsd.ContextObservationService.handle)
     assert "fabric_knowledge_context_response=None" in source
     assert "FullNodeContextStatus.RECEIVED" not in source
     assert "fabric_knowledge_context_response=response" not in source
-    # the other (question) path still uses it
-    assert "fabric_knowledge_context_response=fabric_context_response" in inspect.getsource(locald)
+    # and the model host no longer queries the broker at all (#439)
+    assert "request_context" not in inspect.getsource(locald)
 
 
 def test_a_budget_too_small_for_a_query_is_recorded_as_unavailable(core, monkeypatch):
     calls = []
-    monkeypatch.setattr(locald, "request_context", lambda *a, **k: calls.append(1))
+    monkeypatch.setattr(obsd, "request_context", lambda *a, **k: calls.append(1))
     reply = service_().handle(locald_request(obs_frame(), deadline=40))
     assert calls == []
     record = reply["fast_assistance"]["technique_knowledge"]

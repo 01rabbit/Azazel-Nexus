@@ -305,8 +305,8 @@ def test_the_current_generation_allowlist_includes_context_broker_and_no_exposur
         "azazel-edge-core.service", "azazel-edge-intaked.service",
         "azazel-edge-probed.service", "azazel-incident-explaind.service",
         "azazel-knowledge-contextd.service",
-        "azazel-knowledge-lited.service", "azazel-mio-entryd.service",
-        "azazel-mio-referenced.service",
+        "azazel-knowledge-lited.service", "azazel-mio-contextobsd.service",
+        "azazel-mio-entryd.service", "azazel-mio-referenced.service",
     })
     assert not GRANTABLE_UNITS & set(WATCH)
     from azazel_nexus_runtime.activation_pass import POLICY_UNIT_SCOPE

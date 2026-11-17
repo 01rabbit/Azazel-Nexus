@@ -829,6 +829,7 @@ GRANT_MARKER_UNITS = (
     "azazel-edge-probed.service",
     "azazel-incident-explaind.service",
     "azazel-knowledge-lited.service",
+    "azazel-mio-contextobsd.service",
     "azazel-mio-entryd.service",
     "azazel-mio-locald.service",
     "azazel-mio-referenced.service",
@@ -922,6 +923,7 @@ SYSTEM_ACCOUNTS = (
     "azmio",
     "azmioentry",
     "azmioref",
+    "azmioctx",
     "azremote",
     "azknowledgeegress",
     "azknowledge",
@@ -1409,8 +1411,10 @@ PROFILES: tuple[ServiceProfile, ...] = (
         requires=(ACTIVATION_CONTROLLER_UNIT,),
         conditions=_grant_condition("azazel-mio-locald.service"),
         is_model_host=True,
-        supplementary_groups=("azknowledge-read", "azmission-read",
-                              "azknowledge-context-client"),
+        # Not `azknowledge-context-client`: the Knowledge Context broker is
+        # asked by the model-free context observation unit, never by the one
+        # unit that could start a model process (#439).
+        supplementary_groups=("azknowledge-read", "azmission-read"),
         # Its own runtime directory. The socket that could start a process is
         # not the socket everything else answers on.
         runtime_directory="azazel/mio",
@@ -1487,8 +1491,9 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "It may use network address families only after commissioning; "
             "IPAddressDeny=any remains in force and this package supplies no "
             "IPAddressAllow entry; a deployment may add exactly one, derived "
-            "from the signed registry peer by az-knowledge-context-egress. The local socket is restricted to M.I.O. "
-            "locald by its dedicated group. It has no model, enforcement, or "
+            "from the signed registry peer by az-knowledge-context-egress. The local socket is restricted to the "
+            "model-free context observation unit by its dedicated group and its one "
+            "service account. It has no model, enforcement, or "
             "Knowledge store write access."
         ),
     ),
@@ -1773,7 +1778,9 @@ PROFILES: tuple[ServiceProfile, ...] = (
         unit="azazel-mio-entryd.service",
         executable="/usr/libexec/azazel/az-mio-entryd",
         account="azmioentry",
-        supplementary_groups=("azazel-operator",),
+        # `azmio-contextobs`: the context observation socket's own group,
+        # which no other unit carries (#439).
+        supplementary_groups=("azazel-operator", "azmio-contextobs"),
         # Private read-only snapshot: no commissioning key or permission change.
         # The two proposal files carry raw identity and are read from the
         # encrypted commissioning volume itself, never copied out (#244); only
@@ -1847,6 +1854,44 @@ PROFILES: tuple[ServiceProfile, ...] = (
             "no network namespace. Model execution stays with the model host "
             "and its own wiring and admission, which this unit neither needs "
             "nor satisfies."
+        ),
+    ),
+    ServiceProfile(
+        unit="azazel-mio-contextobsd.service",
+        executable="/usr/libexec/azazel/az-mio-contextobsd",
+        account="azmioctx",
+        description="Azazel-Nexus M.I.O. observation-origin Knowledge Context service",
+        documentation="https://github.com/01rabbit/Azazel-Nexus/blob/main/docs/knowledge-context-consumer.md",
+        address_families=("AF_UNIX",),
+        # Its own refusal ledger leaf and socket leaf. No model store, model
+        # admission, operator trust or Mission Pack path: what it asks is
+        # built from the relayed frame alone (#439).
+        read_write_paths=(
+            "/var/lib/azazel/state/mio-contextobs", "/var/lib/azazel/run/mio-contextobs",
+        ),
+        after=(ACTIVATION_CONTROLLER_UNIT,),
+        requires=(ACTIVATION_CONTROLLER_UNIT,),
+        conditions=_grant_condition("azazel-mio-contextobsd.service"),
+        # The broker's client group and nothing else.
+        supplementary_groups=("azknowledge-context-client",),
+        extra=(
+            ("PrivateNetwork", "yes"),
+            ("TimeoutStartSec", "30s"),
+            ("MemoryMax", "256M"),
+            ("MemorySwapMax", "0"),
+            ("TasksMax", "16"),
+            ("LimitNOFILE", "256"),
+            ("LimitFSIZE", "16777216"),
+            ("LogRateLimitIntervalSec", "30"),
+            ("LogRateLimitBurst", "50"),
+            ("LogExtraFields", "AZ_SERVICE=mio-contextobs"),
+        ),
+        rationale=(
+            "The one account the Knowledge Context broker serves. It answers the "
+            "entry service alone, asks the broker only for the observed ATT&CK "
+            "technique ids and re-runs the model-free core. It runs no model, holds "
+            "no model, admission or mission path, starts no process and has no "
+            "network namespace."
         ),
     ),
     ServiceProfile(

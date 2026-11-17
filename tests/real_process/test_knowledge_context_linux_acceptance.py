@@ -14,6 +14,13 @@ Test-only seams (all outside product code): the broker harness can record the
 real producer envelope and, while a control file exists, offer an earlier
 envelope at the *network edge* (`KnowledgeClient._post_path`), so replay is
 tested through the product's real signature / TTL / request-binding code.
+
+Since ADR-0010 (#439) the broker's one SERVICE principal is `azmioctx`, the
+model-free context observation unit, and it accepts only the technique query
+(`{privacy_class, techniques}`); `azmio`, `azmioentry`, operators and root are
+refused by the kernel peer credentials, and a free-form question is refused
+before sending. The contextd grant marker and the observation rule are placed
+as the activation pass and the operator would place them.
 """
 
 from __future__ import annotations
@@ -39,8 +46,10 @@ from pathlib import Path
 import pytest
 
 from test_knowledge_context_process_interop import (
-    ROOT, _PREREQUISITE_ERROR, _drop_to, _normal_entry_advisory, _pki, _ready,
-    _wait_socket, pytestmark,  # noqa: F401  (pytestmark re-exported for skip gating)
+    ROOT, TECHNIQUE_FRAME, TECHNIQUES, _PREREQUISITE_ERROR, _assert_technique_not_received,
+    _assert_technique_received, _contextobs_layout, _drop_to, _grant_contextd,
+    _observe_via_entry, _pki, _place_observation_rule, _ready, _start_contextobsd,
+    _start_entryd, _wait_socket, pytestmark,  # noqa: F401  (pytestmark re-exported for skip gating)
 )
 from azazel_nexus.knowledge_context_adapter import (
     KnowledgeContextRefused, read_signed_response,
@@ -94,7 +103,7 @@ import json, sys
 from azazel_nexus_runtime.knowledge_context_socket import (
     KnowledgeContextUnavailable, request_context)
 try:
-    request_context({"privacy_class": "P0-public", "question": "x"}, deadline_s=3)
+    request_context({"privacy_class": "P0-public", "techniques": ["T1059"]}, deadline_s=3)
     print(json.dumps({"outcome": "response"}))
 except KnowledgeContextUnavailable as exc:
     print(json.dumps({"outcome": "unavailable", "detail": str(exc),
@@ -139,19 +148,22 @@ def _free_port() -> int:
         return probe.getsockname()[1]
 
 
-def _doc(question=QUESTION, *, mono="MONO+8000", deadline_ms=8000, args=None, top=None,
+def _doc(question=None, *, mono="MONO+8000", deadline_ms=8000, args=None, top=None,
          frame=None):
+    """A broker request: the technique query, or a free-form question when named."""
     arguments = {"deadline_ms": deadline_ms, "deadline_monotonic_ns": mono}
     arguments.update(args or {})
+    if frame is None:
+        frame = ({"privacy_class": "P0-public", "question": question} if question is not None
+                 else dict(TECHNIQUE_FRAME))
     document = {"verb": "knowledge.context", "arguments": arguments,
-                "event": {"frame": frame or {"privacy_class": "P0-public",
-                                             "question": question}}}
+                "event": {"frame": frame}}
     document.update(top or {})
     return document
 
 
 class Stack:
-    """Producer + broker (+ optional locald/entryd) in the isolated container."""
+    """Producer + broker (+ optional contextobsd/entryd) in the isolated container."""
 
     def __init__(self, tmp: Path) -> None:
         self.tmp = tmp
@@ -161,10 +173,11 @@ class Stack:
         self.service_root = tmp / "service-root"
         self.producer: subprocess.Popen | None = None
         self.broker: subprocess.Popen | None = None
-        self.locald: subprocess.Popen | None = None
+        self.contextobsd: subprocess.Popen | None = None
         self.entryd: subprocess.Popen | None = None
         self.egress = pwd.getpwnam("azknowledgeegress")
         self.mio = pwd.getpwnam("azmio")
+        self.ctx = pwd.getpwnam("azmioctx")
         self.entry = pwd.getpwnam("azmioentry")
         self.operator = pwd.getpwnam("azoperator")
         self.ctx_gid = grp.getgrnam("azknowledge-context-client").gr_gid
@@ -205,6 +218,8 @@ class Stack:
         ):
             directory.chmod(mode)
             os.chown(directory, owner, group)
+        _contextobs_layout(sr)
+        _place_observation_rule(sr)
         os.chmod(self.pki, 0o750)
         os.chown(self.pki, 0, e.pw_gid)
         for name in ("ca.pem", "nexus.pem", "nexus.key"):
@@ -291,7 +306,8 @@ class Stack:
         return json.loads(result.stdout)
 
     def as_service(self, document=None) -> dict:
-        return self.call(self.mio, (self.ctx_gid,), document or _doc())
+        """The broker's one SERVICE principal: azmioctx with the client group."""
+        return self.call(self.ctx, (self.ctx_gid,), document or _doc())
 
     # -- evidence ---------------------------------------------------------
     def audit_events(self) -> list[dict]:
@@ -323,8 +339,8 @@ class Stack:
                                  ), endpoint.provider_id
 
     def shutdown(self) -> None:
-        for name in ("entryd", "locald"):
-            process = getattr(self, name)
+        for name in ("entryd", "contextobsd"):
+            process = getattr(self, name, None)
             if process is not None and process.poll() is None:
                 process.terminate(); process.wait(timeout=10)
         self.stop_broker()
@@ -337,6 +353,7 @@ def stack(tmp_path_factory):
     import shutil
     base = Path(tempfile.mkdtemp(prefix="u29-", dir="/tmp"))
     base.chmod(0o755)
+    _grant_contextd()
     state = Stack(base)
     try:
         ready = state.start_producer()
@@ -389,14 +406,28 @@ def test_a1_a5_allowed_peer_denied_peers_and_socket_attributes(stack: Stack):
     for ancestor in ("var/lib/azazel", "var/lib/azazel/run"):
         assert stat.S_IMODE((stack.service_root / ancestor).stat().st_mode) == 0o711
 
-    # A1 allowed peer (azmio + client group)
+    # A1 allowed peer (azmioctx + client group), technique query
     before = len(stack.exchanges())
     response = _ok_response(stack.as_service())
     assert response["authority"] == "advisory_only"
     assert len(stack.exchanges()) == before + 1  # the real producer was queried
+    body = json.loads(stack.exchanges()[-1][2])
+    assert [e["entity_type"] for e in body["entities"]] == ["attack-technique/v1"] * len(TECHNIQUES)
+    assert [e["value"] for e in body["entities"]] == TECHNIQUES
+
+    # A1b the same peer's free-form question is refused before sending (ADR-0010).
+    marks = (len(stack.audit_events()), len(stack.exchanges()))
+    for question in (QUESTION, "ATT&CK technique context: T1059"):
+        assert _refused(stack.as_service(_doc(question))) == "unavailable"
+    events = stack.audit_events()[marks[0]:]
+    assert [e["event_type"] for e in events] == ["knowledge.context.completed"] * 2, events
+    assert {e["reason_code"] for e in events} == {"refused_before_send"}
+    assert len(stack.exchanges()) == marks[1]                # Knowledge was not reached
 
     # A2 non-service uids with filesystem access: refused by the broker policy.
-    for account in (stack.operator, stack.entry):
+    # azmio (the model host) and azmioentry are daemon accounts and no
+    # principal here; azoperator is an operator.
+    for account in (stack.operator, stack.entry, stack.mio):
         marks = (len(stack.audit_events()), len(stack.exchanges()))
         reply = stack.call(account, (stack.ctx_gid,), _doc())
         assert _refused(reply) == "principal_denied", reply
@@ -418,15 +449,15 @@ def test_a1_a5_allowed_peer_denied_peers_and_socket_attributes(stack: Stack):
     assert root_refusal["uid"] == 0 and root_refusal["reason"] == "principal_denied"
 
     # A3 outside the group: kernel EACCES at connect (service uid alone is not enough).
-    assert stack.call(stack.mio, (), _doc())["connect"] == "EACCES"
+    assert stack.call(stack.ctx, (), _doc())["connect"] == "EACCES"
     assert stack.call(stack.operator, (), _doc())["connect"] == "EACCES"
 
     # The request body can name any identity; the kernel value is what counts.
     marks = len(stack.audit_events())
-    claim = _doc(top={"uid": stack.mio.pw_uid, "principal": "azmio"})
+    claim = _doc(top={"uid": stack.ctx.pw_uid, "principal": "azmioctx"})
     assert _refused(stack.call(stack.operator, (stack.ctx_gid,), claim)) == "principal_denied"
-    claim_in_args = _doc(args={"uid": stack.mio.pw_uid})
-    reply = stack.call(stack.mio, (stack.ctx_gid,), claim_in_args)
+    claim_in_args = _doc(args={"uid": stack.ctx.pw_uid})
+    reply = stack.call(stack.ctx, (stack.ctx_gid,), claim_in_args)
     assert _refused(reply) == "client_asserted_principal", reply
     kinds = [e["reason"] for e in stack.audit_events()[marks:]
              if e.get("event_type") == "runtime.request_refused"]
@@ -463,7 +494,7 @@ def test_a4_peer_information_missing_is_fail_closed(stack: Stack):
     engine = SocketServer(
         registry=REGISTRY,
         policy=PrincipalPolicy.resolve(operator_group="azknowledge-context-client",
-                                       service_accounts=("azmio",)),
+                                       service_accounts=("azmioctx",)),
         audit=events.append)
     client.sendall(struct.pack("!I", 2) + b"{}")
     client.shutdown(socket.SHUT_WR)
@@ -499,7 +530,7 @@ def test_a4b_client_refuses_impostor_broker_sockets(stack: Stack):
         result = subprocess.run(
             [sys.executable, "-B", "-c", BOUNDARY_CLIENT], cwd=ROOT,
             env={**stack.env, "AZAZEL_ROOT": str(sr2)}, capture_output=True, text=True,
-            timeout=15, preexec_fn=stack.credentials(stack.mio, (stack.ctx_gid,)))
+            timeout=15, preexec_fn=stack.credentials(stack.ctx, (stack.ctx_gid,)))
         assert result.returncode == 0, result.stderr[-800:]
         return json.loads(result.stdout)
 
@@ -558,7 +589,7 @@ def test_a6_restart_and_socket_regeneration_keep_the_boundary(stack: Stack):
         assert attributes() == expected
         assert _ok_response(stack.as_service())["authority"] == "advisory_only"
         assert _refused(stack.call(stack.operator, (stack.ctx_gid,), _doc())) == "principal_denied"
-        assert stack.call(stack.mio, (), _doc())["connect"] == "EACCES"
+        assert stack.call(stack.ctx, (), _doc())["connect"] == "EACCES"
         reasons = [e.get("reason") for e in stack.audit_events()[marks:]
                    if e.get("event_type") == "runtime.request_refused"]
         assert reasons == ["principal_denied"]
@@ -567,13 +598,13 @@ def test_a6_restart_and_socket_regeneration_keep_the_boundary(stack: Stack):
     # Orderly stop: the socket is removed, a client fails closed.
     assert stack.stop_broker(signal.SIGTERM) == 0
     assert not sock.exists()
-    assert stack.call(stack.mio, (stack.ctx_gid,), _doc())["connect"] in ("ENOENT",)
+    assert stack.call(stack.ctx, (stack.ctx_gid,), _doc())["connect"] in ("ENOENT",)
     stack.start_broker(); exercise()
     # Crash: a stale socket file remains; clients are refused (no listener), then
     # the restart replaces it with the same owner/group/mode.
     assert stack.stop_broker(signal.SIGKILL) == -signal.SIGKILL
     assert stat.S_ISSOCK(sock.lstat().st_mode)
-    assert stack.call(stack.mio, (stack.ctx_gid,), _doc())["connect"] == "ECONNREFUSED"
+    assert stack.call(stack.ctx, (stack.ctx_gid,), _doc())["connect"] == "ECONNREFUSED"
     stack.start_broker(); exercise()
 
 
@@ -733,6 +764,7 @@ def test_c4_audit_ledger_state_fail_closed():
         s.tmp = base
         s.egress = pwd.getpwnam("azknowledgeegress")
         s.mio = pwd.getpwnam("azmio")
+        s.ctx = pwd.getpwnam("azmioctx")
         s.entry = pwd.getpwnam("azmioentry")
         s.operator = pwd.getpwnam("azoperator")
         s.ctx_gid = grp.getgrnam("azknowledge-context-client").gr_gid
@@ -862,50 +894,23 @@ def test_d1_d2_nexus_signature_window_boundaries_and_unknown_clock(stack: Stack)
     assert narrow.resolve(peer_id, now=_iso(low)).endpoint.provider_id == peer_id
 
 
-def test_d3_mio_expiry_uses_its_own_wall_clock_without_grace(stack: Stack, monkeypatch):
-    """Nexus accepted the answer; MIO re-checks it against its own `now`.
+def test_d3_the_technique_record_carries_the_producers_own_window(stack: Stack):
+    """Nexus accepted the answer; its projection keeps the producer's window.
 
-    In production both read the host's CLOCK_REALTIME in different processes at
-    different instants (MIO's is later). Here only the MIO side is injected, a
-    deliberate test-only mismatch; inter-host clock difference is not tested.
+    Until ADR-0010 this case checked M.I.O.'s own expiry check on a Fabric
+    advisory. That path is gone: the technique answer is projected into the
+    closed `technique_knowledge` record and never handed to M.I.O. (area E).
     """
-    from azazel_nexus_runtime import mio_fast_assistance
+    from azazel_nexus.technique_knowledge import project_technique_response
 
     response = _ok_response(stack.as_service())
-    gen = datetime.fromisoformat(response["generated_at"].replace("Z", "+00:00"))
-    exp = datetime.fromisoformat(response["expires_at"].replace("Z", "+00:00"))
-
-    class Clock(datetime):
-        fixed: datetime = gen
-
-        @classmethod
-        def now(cls, tz=None):
-            return cls.fixed.astimezone(tz) if tz else cls.fixed
-
-    monkeypatch.setattr(mio_fast_assistance, "datetime", Clock)
-    source = {"request_id": "u29-clock", "privacy_class": "P0-public",
-              "question": QUESTION, "context": []}
-    seen = {}
-
-    def project(now: datetime):
-        Clock.fixed = now
-        result = mio_fast_assistance.fast_assistance(
-            source, deadline_s=2.0, fabric_knowledge_context_response=response)
-        advisory = result.get("fabric_knowledge_context_advisory")
-        seen[_iso(now)] = {"advisory": advisory is not None,
-                           "unknowns": sorted(u for u in result.get("unknowns", [])
-                                              if "KNOWLEDGE" in u)}
-        return advisory
-
-    micro = timedelta(microseconds=1)
-    assert project(gen - timedelta(seconds=1)) is None        # MIO clock behind: future-dated
-    assert project(gen) is not None
-    assert project(exp - micro) is not None
-    assert project(exp) is None                               # MIO clock at/after expiry
-    assert project(exp + timedelta(seconds=30)) is None
-    expired = seen[_iso(exp)]
-    assert "KNOWLEDGE_CONTEXT_PARTIAL" not in expired["unknowns"] or not expired["advisory"]
-    print("U29-OBS d3", json.dumps(seen, sort_keys=True))
+    record = project_technique_response(response, TECHNIQUES)
+    assert (record["transport"], record["verification"]) == ("received", "ok"), record
+    assert record["expires_at"] == response["expires_at"]
+    assert record["as_of"] == response["snapshot"]["as_of"]
+    assert [t["technique_id"] for t in record["techniques"]] == TECHNIQUES
+    print("U29-OBS d3", json.dumps({"coverage": [t["coverage"] for t in record["techniques"]],
+                                   "snapshot_state": record.get("snapshot_state")}))
 
 
 def test_d4_budget_uses_monotonic_clock_over_the_real_socket(stack: Stack):
@@ -925,56 +930,31 @@ def test_d4_budget_uses_monotonic_clock_over_the_real_socket(stack: Stack):
 
 
 # ---------------------------------------------------------------------------
-# Integration: producer -> mTLS -> broker -> AF_UNIX -> locald -> entryd
+# Integration: producer -> mTLS -> broker -> AF_UNIX -> contextobsd -> entryd
 # ---------------------------------------------------------------------------
 
 def _start_chain(stack: Stack) -> None:
-    stack.locald = subprocess.Popen(
-        [sys.executable, str(ROOT / "tests/real_process/_mio_locald_context_process.py")],
-        cwd=ROOT, env=stack.env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, text=True,
-        preexec_fn=stack.credentials(stack.mio, (stack.ctx_gid,)))
-    assert _ready(stack.locald)["ready"] is True
-    stack.entryd = subprocess.Popen(
-        [sys.executable, "-B", "-c",
-         "from azazel_nexus_runtime.mio_entryd import main; raise SystemExit(main())"],
-        cwd=ROOT, env=stack.env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, text=True,
-        preexec_fn=stack.credentials(stack.entry, (stack.operator_gid,)))
-    _wait_socket(stack.service_root / "var/lib/azazel/run/mio-advise/mio-advise.sock", stack.entryd)
-
-
-def _assert_advisory_only(entry: dict) -> None:
-    assert entry["full_node_context_status"] == "received", entry
-    assert entry["advisory_authority"] == "advisory_only", entry
-    assert entry["advisory_claim_status"] == "source_reported_unverified", entry
-    assert entry["advisory_trust"] == "unverified_advisory_only", entry
-    assert entry["snapshot_state"] == "partial" and entry["partial_warning"] is True, entry
-    assert entry["lite_claim_count"] == 0 and entry["observation_count"] == 0, entry
-    assert entry["handoff_action"] is None, entry            # OBSERVE-only; nothing executable
+    """The shipped contextobsd (azmioctx) and entryd (azmioentry) mains."""
+    stack.contextobsd = _start_contextobsd(stack.service_root, stack.env)
+    stack.entryd = _start_entryd(stack.service_root, stack.env)
 
 
 def test_e_normal_path_replay_degradation_and_recovery(stack: Stack):
     """Whole chain: success; replayed answer after a broker restart degrades with
-    no advisory and no lingering context; recovery is automatic."""
+    no technique record and no lingering context; recovery is automatic."""
     _start_chain(stack)
-    _assert_advisory_only(_normal_entry_advisory(stack.service_root))
+    _assert_technique_received(_observe_via_entry(stack.service_root))
     _rid, _req, envelope = _fresh_capture(stack)
     _restart_broker_with_replay(stack, envelope, signal.SIGKILL)
     try:
-        degraded = _normal_entry_advisory(stack.service_root)
-        assert degraded["advisory_authority"] is None, degraded
-        assert degraded["full_node_context_status"] == "unavailable", degraded
-        assert degraded["knowledge_status"] == "unavailable", degraded
-        assert degraded["lite_claim_count"] == 0 and degraded["observation_count"] == 0
-        assert degraded["handoff_action"] is None
+        _assert_technique_not_received(_observe_via_entry(stack.service_root))
     finally:
         _end_replay(stack)
-    _assert_advisory_only(_normal_entry_advisory(stack.service_root))
+    _assert_technique_received(_observe_via_entry(stack.service_root))
     # producer restarted (same key, same endpoint): the chain keeps working
     stack.stop_producer()
     stack.start_producer()
-    _assert_advisory_only(_normal_entry_advisory(stack.service_root))
+    _assert_technique_received(_observe_via_entry(stack.service_root))
 
 
 # ---------------------------------------------------------------------------
@@ -1001,7 +981,7 @@ def test_b2_real_daemon_under_setpriv_attributes_is_an_approximation(stack: Stac
     try:
         s = Stack.__new__(Stack)
         s.tmp, s.egress = base, stack.egress
-        s.mio, s.entry, s.operator = stack.mio, stack.entry, stack.operator
+        s.mio, s.ctx, s.entry, s.operator = stack.mio, stack.ctx, stack.entry, stack.operator
         s.ctx_gid, s.operator_gid = stack.ctx_gid, stack.operator_gid
         s.pki = base / "pki"; s.pki.mkdir()
         for name in ("ca.pem", "nexus.pem", "nexus.key"):
@@ -1039,11 +1019,11 @@ def test_b2_real_daemon_under_setpriv_attributes_is_an_approximation(stack: Stac
             ledger = s.service_root / "var/lib/azazel/state/knowledge-context/context.jsonl"
             assert ledger.exists() and stat.S_IMODE(ledger.stat().st_mode) == 0o640
             # allowed service peer: the shipped factory is uncommissioned -> fixed refusal
-            reply = s.call(s.mio, (s.ctx_gid,), _doc())
+            reply = s.call(s.ctx, (s.ctx_gid,), _doc())
             assert _refused(reply) == "unavailable", reply
             # denied operator peer: refused by policy; the daemon's own ledger shows it
             assert _refused(s.call(s.operator, (s.ctx_gid,), _doc())) == "principal_denied"
-            assert s.call(s.mio, (), _doc())["connect"] == "EACCES"
+            assert s.call(s.ctx, (), _doc())["connect"] == "EACCES"
             records = [json.loads(line) for line in ledger.read_text().splitlines() if line]
             refusals = [r for r in records if r["event"].get("reason") == "principal_denied"] \
                 if records and "event" in records[0] else \
@@ -1078,7 +1058,7 @@ def test_b2_real_daemon_under_setpriv_attributes_is_an_approximation(stack: Stac
         try:
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
-                reply = s.call(s.mio, (s.ctx_gid,), _doc())
+                reply = s.call(s.ctx, (s.ctx_gid,), _doc())
                 if reply["connect"] == "ok":
                     break
                 time.sleep(0.1)

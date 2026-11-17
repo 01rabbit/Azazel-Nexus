@@ -491,3 +491,32 @@ def test_locald_absent_without_budget_runs_no_core(service, monkeypatch):
     assert service._shared_fast_assistance(_fast_frame(), 0.0)["dependency_outcome"][
         "knowledge"] == "timeout"
     assert calls == []
+
+
+# ---- the shared core is imported before serving, not inside a request --------
+
+def test_prepare_shared_core_imports_the_core_and_never_raises(monkeypatch):
+    import sys
+    import types
+
+    fake = types.ModuleType("azazel_nexus_runtime.mio_fast_assistance")
+    monkeypatch.setitem(sys.modules, "azazel_nexus_runtime.mio_fast_assistance", fake)
+    assert entry.prepare_shared_core() is True
+    # An absent or broken shared package is the same degradation as before.
+    monkeypatch.setitem(sys.modules, "azazel_nexus_runtime.mio_fast_assistance", None)
+    assert entry.prepare_shared_core() is False
+
+
+def test_main_prepares_the_shared_core_before_it_serves():
+    """The first in-process fast assessment must not pay the import (about 40 ms
+    against a fast-lane budget of about 40 ms)."""
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(entry.main))
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name)]
+    names = [(node.lineno, node.func.id) for node in calls]
+    prepared = [line for line, name in names if name == "prepare_shared_core"]
+    served = [line for line, name in names if name == "serve_forever"]
+    assert len(prepared) == 1 and len(served) == 1 and prepared[0] < served[0]

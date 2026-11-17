@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 import threading
 import time
@@ -52,14 +51,14 @@ CONTEXT_VERB = Verb(
     payload_contract="bounded frame; broker constructs a P0-public request",
 )
 REGISTRY = VerbRegistry([CONTEXT_VERB])
-# An observation-origin question: 1 to 8 technique ids, nothing else.
-_TECHNIQUE = r"T[0-9]{4}(?:\.[0-9]{3})?"
-_OBSERVATION_QUESTION = re.compile(
-    rf"ATT&CK technique context: {_TECHNIQUE}(?: {_TECHNIQUE}){{0,7}}")
 _RATE_WINDOW_S = 60.0
 # Fixed request sections a client may name on the refusal it raises.
 _CLIENT_STAGES = frozenset({"refused_before_send", "transport", "verification",
                             "technique_verification"})
+#: Every word a refusal's `stage` can carry. `withdrawn`: the peer answered and
+#: the answer was verified, but the grant marker changed before adoption, so
+#: nothing from the peer was used (the ledger reason_code is `withdrawn` too).
+_STAGES = _CLIENT_STAGES | {"withdrawn"}
 #: The unit whose grant marker admits a request (the broker's own unit).
 _UNIT = "azazel-knowledge-contextd.service"
 
@@ -137,7 +136,7 @@ class KnowledgeContextBroker:
 
     def handle(self, request) -> dict:
         if getattr(getattr(request, "verb", None), "name", None) != CONTEXT_VERB.name:
-            return {"refusal": "unavailable"}
+            return {"refusal": "unavailable", "stage": "refused_before_send"}
         start = self._monotonic()
         deadline_ms = request.arguments["deadline_ms"]
         deadline_monotonic = request.arguments["deadline_monotonic_ns"] / 1_000_000_000
@@ -146,15 +145,14 @@ class KnowledgeContextBroker:
         deadline = min(start + deadline_ms / 1000, deadline_monotonic)
         deadline_s = deadline - start
         if deadline_s <= 0:
-            return {"refusal": "timeout"}
+            return {"refusal": "timeout", "stage": "refused_before_send"}
         reason = None
         phase = "frame"
-        technique_query = False
         try:
             # The grant this request is accepted under. A broker whose grant
             # was withdrawn (marker removed) accepts nothing, even in the
             # seconds before the manager has stopped it.
-            phase = "grant"
+            phase = "admit"  # before anything is sent; "grant" is the adoption recheck
             admitted = self._grant_marker()
             if admitted is None:
                 reason = "withdrawn"
@@ -168,27 +166,20 @@ class KnowledgeContextBroker:
             # trusted local inputs can make this assertion; the shipped
             # factory has no egress client and cannot use it for network IO.
             # Context arrays and all other fields stay local.
-            if (set(wire_frame) == {"privacy_class", "techniques"}
-                    and wire_frame["privacy_class"] == PrivacyClass.P0_PUBLIC.value):
-                # Observation-origin technique query: 1 to 8 sorted, unique ids.
-                # Always judged by the observation gate.
-                technique_query = True
-                frame = {"techniques": request_ids(wire_frame["techniques"])}
-            elif (set(wire_frame) != {"privacy_class", "question"}
-                    or wire_frame["privacy_class"] != PrivacyClass.P0_PUBLIC.value
-                    or type(wire_frame["question"]) is not str
-                    or not wire_frame["question"]
-                    or len(wire_frame["question"]) > 2048):
+            # Only the observation-origin technique query: 1 to 8 sorted,
+            # unique ids. A free-form `question` -- including one in the old
+            # observation sentence -- is refused here, before the gate, the
+            # slot, the `requested` event and any peer call (#439).
+            if (set(wire_frame) != {"privacy_class", "techniques"}
+                    or wire_frame["privacy_class"] != PrivacyClass.P0_PUBLIC.value):
                 raise ValueError
-            else:
-                frame = {"question": wire_frame["question"]}
-            if technique_query or _OBSERVATION_QUESTION.fullmatch(frame["question"]):
-                # Judged before the `requested` event and before the slot.
-                phase = "gate"
-                reason = self._observation_gate(start)
-                if reason is not None:
-                    raise ValueError
-                phase = "frame"
+            frame = {"techniques": request_ids(wire_frame["techniques"])}
+            # Judged before the `requested` event and before the slot.
+            phase = "gate"
+            reason = self._observation_gate(start)
+            if reason is not None:
+                raise ValueError
+            phase = "frame"
             if not self._slot.acquire(blocking=False):
                 reason = "busy"
                 raise TimeoutError
@@ -259,17 +250,21 @@ class KnowledgeContextBroker:
             self._audit(event)
         except Exception:
             pass
-        if technique_query:
-            # How far a technique query got, as a fixed word, so the caller can
-            # keep transport and verification apart. Other queries are unchanged.
-            if phase == "client":
-                stage = reason if reason in _CLIENT_STAGES else None
-            else:
-                stage = {"late": "transport", "verification": "verification"}.get(
-                    reason, "refused_before_send")
-            if stage is not None:
-                return {"refusal": outcome, "stage": stage}
-        return {"refusal": outcome}
+        # Every accepted request is a technique query (#439), so every refusal
+        # (including the two early returns above) carries how far it got, as a
+        # fixed word from _STAGES: the caller can keep transport
+        # and verification apart, and a refused question or malformed frame is
+        # `refused_before_send` on the caller's side too, not a shape error.
+        if phase == "client":
+            # The client was called; a failure it does not name happened after
+            # the attempt began, so it is never reported as before sending.
+            stage = reason if reason in _CLIENT_STAGES else "transport"
+        elif phase == "grant":
+            stage = "withdrawn"  # received and verified, not adopted
+        else:
+            stage = {"late": "transport", "verification": "verification"}.get(
+                reason, "refused_before_send")
+        return {"refusal": outcome, "stage": stage}
 
 
 def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -> int:
@@ -313,7 +308,10 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
         path=socket_path(SOCKET_NAME), registry=REGISTRY,
         policy=PrincipalPolicy.resolve(
             operator_group="azknowledge-context-client",
-            service_accounts=("azmio",),
+            # The one SERVICE principal (#439, docs/adr/0010-context-observation-unit.md):
+            # the model-free context observation service. Never the model host
+            # (`azmio`) and never entry (`azmioentry`); root is no SERVICE.
+            service_accounts=("azmioctx",),
         ),
         audit=ledger.append, handler=broker.handle, stop=stop,
         ready=ready if ready is not None else runtime_ready_callback(),

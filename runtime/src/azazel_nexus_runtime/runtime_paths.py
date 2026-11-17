@@ -41,6 +41,7 @@ __all__ = [
     "ledger_dir",
     "lite_trust_root",
     "mio_local_state_dir",
+    "mio_contextobs_state_dir",
     "mio_reference_state_dir",
     "knowledge_context_state_dir",
     "mio_state_dir",
@@ -71,6 +72,9 @@ _SOCKET_LEAVES = {
     # The model-free playbook reference service: its own leaf, never the
     # model host's, so reaching references never reaches a model verb.
     "mio-reference": "mio-reference",
+    # The model-free observation-origin Knowledge Context service (#439):
+    # its own leaf and its own client group, which only entry carries.
+    "mio-contextobs": "mio-contextobs",
     "remote": "remote",
     "knowledge": "knowledge",
     "knowledge-read": "knowledge-read",
@@ -87,6 +91,7 @@ _SOCKET_LEAVES = {
 _SOCKET_GROUPS = {
     "audit-submit": "azaudit-submit",
     "mio-advise": "azmio-advise",
+    "mio-contextobs": "azmio-contextobs",
     "knowledge-read": "azknowledge-read",
     "knowledge-context": "azknowledge-context-client",
     "edge-intake": "azedge",
@@ -97,6 +102,7 @@ _STATE_LEAVES = {
     "knowledge": "knowledge",
     "mio": "mio",
     "mio-reference": "mio-reference",
+    "mio-contextobs": "mio-contextobs",
     "audit": "auditd",
     "commission": "commission",
     "watchdog": "watchdog",
@@ -192,6 +198,11 @@ def mio_local_state_dir() -> Path:
 def mio_reference_state_dir() -> Path:
     """The reference service's own ledger leaf; no model or entry state."""
     return state_dir() / _STATE_LEAVES["mio-reference"]
+
+
+def mio_contextobs_state_dir() -> Path:
+    """The context observation service's own refusal ledger leaf."""
+    return state_dir() / _STATE_LEAVES["mio-contextobs"]
 
 
 def knowledge_state_dir() -> Path:

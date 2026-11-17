@@ -64,7 +64,9 @@ ACTIVATION_POLICY_SCHEMA = "azazel-nexus/activation-policy/v1"
 #: the ordinary path). The optional Knowledge Context egress broker
 #: `azazel-knowledge-contextd.service` is allowlisted (#395 preparation): a
 #: grant only lets it start; its bundle is not a grant input and the broker
-#: stays closed without a commissioned bundle.
+#: stays closed without a commissioned bundle. The model-free context
+#: observation service `azazel-mio-contextobsd.service`, the broker's one
+#: SERVICE principal, is allowlisted with it (2026-11-17, ADR 0010).
 #: The bootstrap helpers auditd and commissiond, watchdog,
 #: fetchd, locald and remoted stay excluded (§6.2) and cannot be named by a
 #: policy.
@@ -76,6 +78,7 @@ ACTIVATION_UNIT_ALLOWLIST = (
     "azazel-incident-explaind.service",
     "azazel-knowledge-contextd.service",
     "azazel-knowledge-lited.service",
+    "azazel-mio-contextobsd.service",
     "azazel-mio-entryd.service",
     "azazel-mio-referenced.service",
 )

@@ -37,6 +37,7 @@ disable azazel-mio-remoted.service
 disable azazel-knowledge-contextd.service
 disable azazel-mio-entryd.service
 disable azazel-mio-referenced.service
+disable azazel-mio-contextobsd.service
 disable azazel-knowledge-lited.service
 disable azazel-decoy-nsd.service
 disable azazel-decoy-netd.service

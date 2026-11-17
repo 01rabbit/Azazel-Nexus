@@ -9,7 +9,7 @@ from azazel_nexus.knowledge_context_adapter import KnowledgeContextRefused
 from azazel_nexus.knowledge_peer import KnowledgeRefused
 from stop_helpers import granted_marker
 from azazel_nexus_runtime.knowledge_contextd import KnowledgeContextBroker
-from test_knowledge_contextd import _policy, _request
+from test_knowledge_contextd import _policy, _request, OPEN_GATE
 from test_knowledge_context_transport import (
     client as _egress_client, registry as _registry)
 
@@ -31,7 +31,7 @@ QUESTION = "QUESTION-TEXT-7c1 public question"
 
 
 def _broker(client, events, **kw):
-    return KnowledgeContextBroker(grant_marker=granted_marker, client=client, policy=_policy(), mission="lab",
+    return KnowledgeContextBroker(**OPEN_GATE, grant_marker=granted_marker, client=client, policy=_policy(), mission="lab",
                                   alias_key=b"x" * 32, enabled=True,
                                   audit=events.append, **kw)
 
@@ -45,11 +45,11 @@ def _real(monkeypatch, post, *, enabled=True, response=None):
     if post is not None:
         monkeypatch.setattr(peer, "_post_path", post)
     events = []
-    broker = KnowledgeContextBroker(grant_marker=granted_marker, client=peer, policy=_policy(), mission="lab",
+    broker = KnowledgeContextBroker(**OPEN_GATE, grant_marker=granted_marker, client=peer, policy=_policy(), mission="lab",
                                     alias_key=b"x" * 32, enabled=True,
                                     audit=events.append)
     req = _request(payload={"frame": {"privacy_class": "P0-public",
-                                      "question": QUESTION}})
+                                      "techniques": ["T1059"]}})
     return broker, req, events, peer
 
 
@@ -71,15 +71,15 @@ def test_frame_shape_refusal_is_refused_before_send():
     events = []
     broker = _broker(object(), events)
     req = _request(payload={"frame": {"privacy_class": "P1", "question": "q"}})
-    assert broker.handle(req) == {"refusal": "unavailable"}
+    assert broker.handle(req) == {"refusal": "unavailable", "stage": "refused_before_send"}
     _check(events, "refused_before_send", "unavailable")
     assert [e["event_type"] for e in events] == ["knowledge.context.completed"]
 
 
 def test_uncommissioned_broker_is_refused_before_send():
     events = []
-    broker = KnowledgeContextBroker(grant_marker=granted_marker, audit=events.append)
-    assert broker.handle(_request()) == {"refusal": "unavailable"}
+    broker = KnowledgeContextBroker(**OPEN_GATE, grant_marker=granted_marker, audit=events.append)
+    assert broker.handle(_request()) == {"refusal": "unavailable", "stage": "refused_before_send"}
     _check(events, "refused_before_send", "unavailable")
 
 
@@ -97,9 +97,9 @@ def test_requested_audit_write_failure_is_refused_before_send():
             raise OSError(SECRET)
         events.append(event)
 
-    broker = KnowledgeContextBroker(grant_marker=granted_marker, client=Client(), policy=_policy(), mission="lab",
+    broker = KnowledgeContextBroker(**OPEN_GATE, grant_marker=granted_marker, client=Client(), policy=_policy(), mission="lab",
                                     alias_key=b"x" * 32, enabled=True, audit=audit)
-    assert broker.handle(_request()) == {"refusal": "unavailable"}
+    assert broker.handle(_request()) == {"refusal": "unavailable", "stage": "refused_before_send"}
     assert not calls
     _check(events, "refused_before_send", "unavailable")
 
@@ -108,7 +108,7 @@ def test_busy_slot_is_timeout_with_busy():
     events = []
     broker = _broker(object(), events)
     assert broker._slot.acquire(blocking=False)
-    assert broker.handle(_request()) == {"refusal": "timeout"}
+    assert broker.handle(_request()) == {"refusal": "timeout", "stage": "refused_before_send"}
     _check(events, "busy", "timeout")
 
 
@@ -121,20 +121,21 @@ def test_guarded_client_refusal_is_refused_before_send(tmp_path):
                                (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns))
     manifest.unlink()
     events = []
-    assert _broker(guard, events).handle(_request()) == {"refusal": "unavailable"}
+    assert _broker(guard, events).handle(_request()) == {
+        "refusal": "unavailable", "stage": "refused_before_send"}
     _check(events, "refused_before_send", "unavailable")
 
 
 def test_real_egress_disabled_client_is_refused_before_send(monkeypatch):
     broker, req, events, _ = _real(monkeypatch, None, enabled=False)
-    assert broker.handle(req) == {"refusal": "unavailable"}
+    assert broker.handle(req) == {"refusal": "unavailable", "stage": "refused_before_send"}
     _check(events, "refused_before_send", "unavailable")
 
 
 def test_real_egress_pre_send_section_failure_is_refused_before_send(monkeypatch):
     broker, req, events, peer = _real(monkeypatch, lambda *a: pytest.fail("sent"))
     peer.registry = None
-    assert broker.handle(req) == {"refusal": "unavailable"}
+    assert broker.handle(req) == {"refusal": "unavailable", "stage": "refused_before_send"}
     _check(events, "refused_before_send", "unavailable")
 
 
@@ -144,7 +145,7 @@ def test_real_egress_post_path_failure_is_transport(monkeypatch, raised):
     def fail(*a):
         raise raised
     broker, req, events, _ = _real(monkeypatch, fail)
-    assert broker.handle(req) == {"refusal": "unavailable"}
+    assert broker.handle(req) == {"refusal": "unavailable", "stage": "transport"}
     _check(events, "transport", "unavailable")
 
 
@@ -152,7 +153,7 @@ def test_real_egress_verification_failure_is_verification(monkeypatch):
     def refuse(*a, **k):
         raise KnowledgeContextRefused(SECRET)
     broker, req, events, _ = _real(monkeypatch, lambda *a: b"raw", response=refuse)
-    assert broker.handle(req) == {"refusal": "unavailable"}
+    assert broker.handle(req) == {"refusal": "unavailable", "stage": "verification"}
     _check(events, "verification", "unavailable")
 
 
@@ -170,7 +171,8 @@ def test_broker_side_rejection_after_verification_is_verification():
             def request_context(self, **kw):
                 return result
         events = []
-        assert _broker(Client(), events).handle(_request()) == {"refusal": "unavailable"}
+        assert _broker(Client(), events).handle(_request()) == {
+            "refusal": "unavailable", "stage": "verification"}
         _check(events, "verification", "unavailable")
 
 
@@ -185,7 +187,7 @@ def test_late_response_is_timeout_with_late():
     events = []
     broker = _broker(Client(), events, monotonic=lambda: clock[0])
     req = _request(deadline_ms=500, deadline_monotonic_ns=20_000_000_000)
-    assert broker.handle(req) == {"refusal": "timeout"}
+    assert broker.handle(req) == {"refusal": "timeout", "stage": "transport"}
     _check(events, "late", "timeout")
 
 
@@ -195,7 +197,7 @@ def test_exception_without_fixed_attribute_gets_no_reason():
             raise RuntimeError(SECRET)
 
     events = []
-    assert _broker(Client(), events).handle(_request()) == {"refusal": "unavailable"}
+    assert _broker(Client(), events).handle(_request()) == {"refusal": "unavailable", "stage": "transport"}
     _check(events, None, "unavailable")
 
 
@@ -208,7 +210,7 @@ def test_unknown_stage_value_is_not_exported():
             raise Boom(SECRET)
 
     events = []
-    assert _broker(Client(), events).handle(_request()) == {"refusal": "unavailable"}
+    assert _broker(Client(), events).handle(_request()) == {"refusal": "unavailable", "stage": "transport"}
     _check(events, None, "unavailable")
 
 
@@ -228,7 +230,7 @@ def test_already_expired_and_completed_audit_failure_stay_unchanged():
     events = []
     broker = _broker(object(), events, monotonic=lambda: 20.0)
     req = _request(deadline_ms=500, deadline_monotonic_ns=19_000_000_000)
-    assert broker.handle(req) == {"refusal": "timeout"}
+    assert broker.handle(req) == {"refusal": "timeout", "stage": "refused_before_send"}
     assert events == []
 
     class Client:
@@ -238,6 +240,6 @@ def test_already_expired_and_completed_audit_failure_stay_unchanged():
     def audit(event):
         if event["event_type"].endswith("completed"):
             raise OSError
-    broker = KnowledgeContextBroker(grant_marker=granted_marker, client=Client(), policy=_policy(), mission="lab",
+    broker = KnowledgeContextBroker(**OPEN_GATE, grant_marker=granted_marker, client=Client(), policy=_policy(), mission="lab",
                                     alias_key=b"x" * 32, enabled=True, audit=audit)
-    assert broker.handle(_request()) == {"refusal": "unavailable"}
+    assert broker.handle(_request()) == {"refusal": "unavailable", "stage": "transport"}

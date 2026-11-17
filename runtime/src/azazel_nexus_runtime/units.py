@@ -78,6 +78,7 @@ class UnitKey(str, Enum):
     KNOWLEDGE_CONTEXT = "knowledge-context"
     MIO_ENTRY = "mio-entry"
     MIO_REFERENCE = "mio-reference"
+    MIO_CONTEXT_OBSERVE = "mio-contextobs"
     KNOWLEDGE_LITE = "knowledge-lite"
     DECOY_NAMESPACE = "decoy-namespace"
     DECOY_NETWORK = "decoy-network"
@@ -104,6 +105,7 @@ UNIT_NAMES: dict[UnitKey, str] = {
     UnitKey.KNOWLEDGE_CONTEXT: "azazel-knowledge-contextd.service",
     UnitKey.MIO_ENTRY: "azazel-mio-entryd.service",
     UnitKey.MIO_REFERENCE: "azazel-mio-referenced.service",
+    UnitKey.MIO_CONTEXT_OBSERVE: "azazel-mio-contextobsd.service",
     UnitKey.KNOWLEDGE_LITE: "azazel-knowledge-lited.service",
     UnitKey.DECOY_NAMESPACE: "azazel-decoy-nsd.service",
     UnitKey.DECOY_NETWORK: "azazel-decoy-netd.service",

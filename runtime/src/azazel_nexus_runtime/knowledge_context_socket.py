@@ -14,11 +14,11 @@ import time
 from enum import Enum
 from typing import Any
 
-from .bootstrap_audit_client import (
-    AuditUnavailable, _pairs, _read_exact, _set_remaining_timeout,
-)
+from azazel_nexus.audit import AuditUnavailable
+
 from .principal import SocketMisconfigured, peer_credentials, verify_socket
 from .runtime_paths import socket_path
+from .socket_frames import _pairs, _read_exact, _set_remaining_timeout
 from .transport import MAX_FRAME_BYTES, _HEADER
 
 MAX_CONTEXT_FRAME_BYTES = 16 * 1024
@@ -37,7 +37,7 @@ class KnowledgeContextUnavailable(ValueError):
 
 #: How far a technique query got, as the broker reports it on a refusal.
 STAGES = frozenset({"refused_before_send", "transport", "verification",
-                    "technique_verification"})
+                    "technique_verification", "withdrawn"})
 
 
 class FullNodeContextStatus(str, Enum):

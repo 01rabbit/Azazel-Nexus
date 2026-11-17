@@ -54,6 +54,7 @@ from .mio_route_ledger import (
 from .mio_router import HANDOFF_RESERVE_MS, MIN_AI_ATTEMPT_MS, MioRouter
 from .mio_socket_client import (
     PROBE_MAX_S,
+    ContextObserveSocketClient,
     LocalAdmissionReader,
     LocalSocketClient,
     ReferenceSocketClient,
@@ -248,6 +249,9 @@ class MioEntryService:
         #: no admitted model still reaches it, and it can reach no model verb.
         #: It reads the router's clock, the one the request's deadline is on.
         self.reference = ReferenceSocketClient(clock=lambda: self.router.monotonic())
+        # The observation-origin Knowledge Context relay goes to its own
+        # model-free unit, never to the model host (#439).
+        self.context_observer = ContextObserveSocketClient()
         self._profile_reader = profile_reader
         self._local_admitted = local_admitted
         self._predictions_reader = predictions_reader
@@ -762,11 +766,13 @@ class MioEntryService:
         if transition is None or not transition["technique_ids"]:
             raise RequestRefused(Refusal.MALFORMED_FRAME, "edge_transition_context")
         remaining = deadline_at - self.router.monotonic() - ENTRY_DELIVERY_RESERVE_MS / 1000
-        fast, timing = self.local.observe_context_timed(frame, deadline_s=remaining)
+        fast, timing = self.context_observer.observe_context_timed(frame, deadline_s=remaining)
         fast = read_fast_assistance(fast)
         reply = {"outcome": "context_observed", "fast_assistance": fast}
         # Fixed keys, integer milliseconds, no incident data: success, delay
         # and refusal can be measured by the caller without a ledger write.
+        # `locald` names the relayed hop's timing; the key is kept from when
+        # locald answered this verb, so callers read the same shape.
         reply["timing"] = {
             "locald": timing,
             "entry_ms": max(0, int((self.router.monotonic() - started) * 1000)),
@@ -956,6 +962,25 @@ class MioEntryService:
         return reply
 
 
+def prepare_shared_core() -> bool:
+    """Import the shared model-free core before serving; never raises.
+
+    When locald is absent, `_shared_fast_assistance` runs the core in this
+    process with what is left of the request's one deadline (about 40 ms of a
+    clean 500 ms advise request). The first import of the shared package
+    takes about as long on its own (measured 42-82 ms in the isolated
+    container), so a first request that also paid for the import would time
+    out by chance. locald pays the import at start for the same reason
+    (`LocalRuntimeService.__init__`); so does this daemon, before READY. An
+    absent or broken package is the same degradation as before.
+    """
+    try:
+        from . import mio_fast_assistance  # noqa: F401
+    except Exception:  # noqa: BLE001 - the shared package is optional
+        return False
+    return True
+
+
 def main(
     argv: Sequence[str] | None = None, *, stop: Callable[[], bool] = lambda: False,
     ready: Callable[[], None] | None = None,
@@ -976,6 +1001,8 @@ def main(
     # deadline. Off (`LOCAL_MODEL_ADMISSION_ENABLED`), it reads False without
     # touching the socket, exactly as the constructor default did.
     service = MioEntryService(local_admitted=LocalAdmissionReader())
+    # Paid here, before READY, never inside a request's fast-lane budget.
+    prepare_shared_core()
     try:
         service.router.ledger.prepare()
         service.router._record({"event_type": "mio.entry.started"}, reserved=True)

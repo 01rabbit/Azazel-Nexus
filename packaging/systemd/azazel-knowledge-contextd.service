@@ -5,8 +5,7 @@
 # The dedicated optional Knowledge Context broker is separate from the M.I.O.
 # local runtime, remote inference, and artifact fetcher.
 # It may use network address families only after commissioning; IPAddressDeny=any remains in force and this package supplies no IPAddressAllow entry; a deployment may add exactly one, derived from the signed registry peer by az-knowledge-context-egress.
-# The local socket is restricted to M.I.O.
-# locald by its dedicated group.
+# The local socket is restricted to the model-free context observation unit by its dedicated group and its one service account.
 # It has no model, enforcement, or Knowledge store write access.
 
 [Unit]

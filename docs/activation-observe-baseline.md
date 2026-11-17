@@ -528,6 +528,37 @@ fetchd stay excluded and a policy naming them is still refused as a whole.
   Masks are different: a unit the pass withholds stays masked, which is the
   safe state; only granted units are unmasked and enabled.
 
+**Change to decision 2, 2026-11-17 変更（委任された技術判断）.** Recorded by
+[ADR-0010](adr/0010-context-observation-unit.md) in the same way as ADR-0008 on
+2026-10-30: the owner delegated the technical decision (specialists consulted,
+their result reviewed and decided by the coordinator). Issue #439 (B5).
+
+- *Decision 2 (scope)* adds `azazel-mio-contextobsd.service`, a model-free unit
+  (account `azmioctx`), to `ACTIVATION_UNIT_ALLOWLIST`,
+  `activation_markers.GRANTABLE_UNITS` and `CORE_UNITS` (SUPPORTING, no
+  wiring), with the grant marker, `Requires=`/`After=` the controller, the
+  installer's mask and preset `disable` of every governed unit. Locald,
+  remoted, fetchd, watchdog and the bootstrap helpers stay excluded; a policy
+  naming any of them is still refused as a whole.
+- **Reason.** The 2026-11-12 change made the broker grantable, but its one
+  SERVICE principal was `azmio`, the model host, which this decision excludes:
+  nothing grantable could ask the broker anything. Granting locald would have
+  put the model process and the only account that may ask the networked
+  broker in the same uid. The new unit takes locald's observation-origin
+  query (`mio.context.observe` now relays to `mio.contextobs.observe`),
+  answers entryd alone, holds the broker's client group and nothing else, and
+  is the broker's only SERVICE principal. Locald loses the client group, and
+  the broker refuses every free-form question before sending, so the ordinary
+  FAST_ASSESS path reports `not_queried`.
+- **Impact.** Nothing changes for a policy that does not name the new unit;
+  entryd then answers `mio.context.observe` with the fixed `unavailable`
+  payload. A policy that wants the observation-origin query names
+  `azazel-mio-contextobsd.service` together with contextd and entryd. An older
+  release given such a policy refuses it as a whole (allowlist). Introduce and
+  withdraw in the order given above for contextd. A test client running as
+  `azmio` is refused by the broker after this change, so it must not be mixed
+  into an acceptance run that relies on one.
+
 ## 7. P2 readers (inert)
 
 Phase P2 adds the readers of §3 without wiring them; `az-activated` imports

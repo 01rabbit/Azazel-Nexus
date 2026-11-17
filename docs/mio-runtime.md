@@ -969,9 +969,12 @@ These are software contracts and unit-test results, not hardware evidence.
 ### Optional full-node Knowledge Context
 
 Full-node context is a separate optional process path from Knowledge Lite.
-Ordinary FAST_ASSESS sends its bounded frame from locald to the dedicated
-`azazel-knowledge-contextd` AF_UNIX broker; callers cannot inject a verified
-response. The broker fixes the query privacy class to P0-public and delegates
+Since 2026-11-17 ([ADR-0010](adr/0010-context-observation-unit.md)) ordinary
+FAST_ASSESS does not query it (`full_node_context_status: not_queried`): the
+only client of the dedicated `azazel-knowledge-contextd` AF_UNIX broker is the
+model-free `azazel-mio-contextobsd`, which serves the explainer's
+`mio.context.observe` relay from entryd and sends only an ATT&CK technique
+query; callers cannot inject a verified response. The broker fixes the query privacy class to P0-public and delegates
 sanitization, mTLS, signature verification, expiry and request binding to the
 existing `KnowledgeClient` and Fabric adapter. An absent broker or any refusal
 leaves the local deterministic result available without full-node context.

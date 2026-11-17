@@ -10,6 +10,11 @@ modes: valid, bad-signature, wrong-key-id, wrong-request-id, wrong-correlation,
 wrong-subject, wrong-provider, expired-envelope, expired-semantic, delay.
 `delay` sleeps `delay_s` and then sends a *valid* envelope; `sent_after_delay`
 records whether the late answer was actually written.
+
+A technique query (typed `attack-technique/v1` entities, the only request the
+broker sends since ADR-0010) is answered with the closed technique shape the
+product validator requires (`technique_knowledge.validate_technique_response`);
+`wrong-subject` then names another technique.
 """
 from __future__ import annotations
 
@@ -28,6 +33,40 @@ from azazel_nexus.knowledge_context_adapter import (
     ENVELOPE_DOMAIN, ENVELOPE_SCHEMA, canonical_signed_payload)
 
 PROVIDER_ID = "azazel-knowledge"
+#: Names for the techniques the suites ask about; any other id is `no_match`.
+TECHNIQUE_CONTENT = {
+    "T1059": ("Command and Scripting Interpreter", "execution"),
+    "T1059.001": ("PowerShell", "execution"),
+    "T1110": ("Brute Force", "credential-access"),
+}
+ATTACK_VERSION = "15.1"
+
+
+def _technique_answer(ids, subject_shift: bool) -> dict:
+    """facts / snapshot / unknowns / limitations of a valid technique answer."""
+    from azazel_nexus import technique_knowledge as tk
+
+    def fact(tid, i, n, value):
+        return {"claim_class": "source_reported_fact", "fact_id": f"tq-{i}-{n}",
+                "subject": {"entity_type": tk.ENTITY_TYPE, "value": tid},
+                "predicate": tk._PREDICATES[n], "value": value,
+                "provenance": list(tk.COVERAGE_PROVENANCE if n == 0 else tk.CONTENT_PROVENANCE)}
+
+    facts, words = [], set()
+    for i, tid in enumerate(ids):
+        word = "found" if tid in TECHNIQUE_CONTENT else "no_match"
+        words.add(word)
+        subject = "T1566" if subject_shift and i == 0 else tid
+        facts.append(fact(subject, i, 0, word))
+        if word == "found":
+            name, tactics = TECHNIQUE_CONTENT[tid]
+            facts += [fact(tid, i, 1, name), fact(tid, i, 2, tactics),
+                      fact(tid, i, 3, ATTACK_VERSION)]
+    state = "complete" if words == {"found"} else "partial"
+    ref = tk.SNAPSHOT_REF_PREFIX + (ATTACK_VERSION if "found" in words else "none")
+    return {"snapshot": {"ref": ref, "state": state, "as_of": ts(-60)},
+            "facts": facts, "unknowns": [tk.NO_MATCH_UNKNOWN] if "no_match" in words else [],
+            "limitations": list(tk.LIMITATIONS)}
 
 
 def ts(offset_s: float = 0.0) -> str:
@@ -161,6 +200,10 @@ class SyntheticPeer:
             "expires_at": ts(20),
             "authority": "advisory_only",
         }
+        techniques = [e.value for e in request.entities
+                      if e.entity_type == "attack-technique/v1"]
+        if techniques and len(techniques) == len(request.entities):
+            response.update(_technique_answer(techniques, mode == "wrong-subject"))
         if mode == "expired-semantic":
             # Valid for the schema and the request binding (generated_at is not
             # earlier than requested_at, as_of <= generated_at < expires_at) but

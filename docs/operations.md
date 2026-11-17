@@ -206,6 +206,10 @@ there is no network address allowance or live credential. Bundle placement,
 activation, the address allowance and real credentials remain separate gates.
 Do not manually start it or add a systemd drop-in to enable egress. Installing
 the package only lays down the disabled unit, account and socket directory.
+Its one client is `azazel-mio-contextobsd.service` (`azmioctx`, ADR-0010),
+also masked and preset disabled; a policy that wants the explainer's
+observation-origin query names both units and entryd. The model host
+(`azazel-mio-locald.service`) is not a client and stays outside every policy.
 See [the Knowledge Context consumer boundary](knowledge-context-consumer.md)
 for the AF_UNIX process split and the credential, expiry, revocation and
 recovery decisions still required before live connection work. Its

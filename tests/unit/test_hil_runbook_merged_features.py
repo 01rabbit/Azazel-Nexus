@@ -60,8 +60,8 @@ def test_reference_runbook_states_the_installed_sandbox():
     assert ref["User"] == ["azmioref"] and "`azmioref`" in text
     assert ref["SupplementaryGroups"] == ["azmission-read"] and "`azmission-read` only" in text
     assert entry["User"] == ["azmioentry"] and "`azmioentry`" in text
-    assert entry["SupplementaryGroups"] == ["azazel-operator"]
-    assert "`azazel-operator` only" in text
+    assert entry["SupplementaryGroups"] == ["azazel-operator azmio-contextobs"]
+    assert "`azazel-operator` and `azmio-contextobs`" in text
     assert ref["PrivateNetwork"] == ["yes"] and "PrivateNetwork" not in entry
     assert "(`PrivateNetwork=yes`)" in text and "(no `PrivateNetwork=`; `IPAddressDeny=any`)" in text
     assert entry["IPAddressDeny"] == ["any"]

@@ -888,7 +888,7 @@ def test_the_pass_scope_and_tripwire_share_one_unit_set():
     assert activation_pass.UNIT_CHECK_SCOPE == GRANTABLE_UNITS | NON_GRANTABLE_MARKER_UNITS
     assert GRANTABLE_UNITS == frozenset(EDGE_SCOPE + DECOY_UNITS) | {
         "azazel-mio-referenced.service", "azazel-auditd-loop.service",
-        "azazel-knowledge-contextd.service"}
+        "azazel-knowledge-contextd.service", "azazel-mio-contextobsd.service"}
     assert NON_GRANTABLE_MARKER_UNITS == frozenset()
     assert not hasattr(activation_pass, "P4_UNIT_SCOPE")
     import ast

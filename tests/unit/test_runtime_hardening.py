@@ -413,10 +413,13 @@ def test_every_unit_but_the_controller_has_an_empty_capability_bounding_set():
             # auditd's append-only listener only (P4 import records).
             assert settings["SupplementaryGroups"] == ["azaudit-submit"]
         elif profile.unit == "azazel-mio-entryd.service":
-            assert settings["SupplementaryGroups"] == ["azazel-operator"]
+            assert settings["SupplementaryGroups"] == ["azazel-operator azmio-contextobs"]
         elif profile.unit == "azazel-mio-locald.service":
-            assert settings["SupplementaryGroups"] == [
-                "azknowledge-read azmission-read azknowledge-context-client"]
+            # Not the broker's client group (#439).
+            assert settings["SupplementaryGroups"] == ["azknowledge-read azmission-read"]
+        elif profile.unit == "azazel-mio-contextobsd.service":
+            # The broker's client group and nothing else.
+            assert settings["SupplementaryGroups"] == ["azknowledge-context-client"]
         elif profile.unit == "azazel-mio-referenced.service":
             # Verified playbooks only: no Knowledge, model or operator group.
             assert settings["SupplementaryGroups"] == ["azmission-read"]
@@ -441,7 +444,7 @@ def test_capabilities_and_supplementary_groups_have_an_exact_allowlist():
     assert widened == {
         "azazel-activated.service", "azazel-commissiond.service",
         "azazel-mio-entryd.service", "azazel-mio-locald.service",
-        "azazel-mio-referenced.service",
+        "azazel-mio-referenced.service", "azazel-mio-contextobsd.service",
         "azazel-incident-explaind.service", "azazel-decoy-netd.service",
         "azazel-decoy-nsd.service", "azazel-knowledge-lited.service",
     }
@@ -545,6 +548,7 @@ GRANT_LOOP_UNITS = frozenset({
     "azazel-edge-probed.service",
     "azazel-incident-explaind.service",
     "azazel-knowledge-lited.service",
+    "azazel-mio-contextobsd.service",
     "azazel-mio-entryd.service",
     "azazel-mio-locald.service",
     "azazel-mio-referenced.service",
@@ -933,15 +937,15 @@ def test_the_edge_probe_writes_only_its_result_leaf():
 
 def test_entry_can_traverse_and_connect_to_provider_socket_leaves():
     # Provider leaves are operator-group 2710 and their sockets are 0660.
+    # The context observation leaf has its own group, which only entry carries.
     assert _settings("azazel-mio-entryd.service")["SupplementaryGroups"] == [
-        "azazel-operator",
+        "azazel-operator azmio-contextobs",
     ]
 
 
 def test_locald_optional_selection_reads_have_no_write_grant():
     settings = _settings("azazel-mio-locald.service")
-    assert settings["SupplementaryGroups"] == [
-        "azknowledge-read azmission-read azknowledge-context-client"]
+    assert settings["SupplementaryGroups"] == ["azknowledge-read azmission-read"]
     assert settings["ReadOnlyPaths"] == ["-/etc/azazel/model-admission", "-/etc/azazel/operator-trust",
                                          "-/var/lib/azazel/models", "-/etc/azazel/mission-pack.json",
                                          "-/data/azazel/mission-packs"]

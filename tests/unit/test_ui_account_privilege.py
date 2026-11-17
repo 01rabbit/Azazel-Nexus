@@ -102,7 +102,7 @@ def test_every_daemon_server_is_found():
     # The daemons the U4 review named, plus every other socket server today.
     assert {"model_fetchd", "auditd", "watchdog", "commissiond"} <= found
     assert found == {"auditd", "commissiond", "knowledge_lited", "mio_entryd",
-                     "knowledge_contextd", "mio_locald", "mio_referenced",
+                     "knowledge_contextd", "mio_contextobsd", "mio_locald", "mio_referenced",
                      "model_fetchd", "watchdog"}
 
 

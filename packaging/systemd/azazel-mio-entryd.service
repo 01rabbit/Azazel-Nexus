@@ -15,7 +15,7 @@ Requires=azazel-activated.service
 [Service]
 Type=notify
 User=azmioentry
-SupplementaryGroups=azazel-operator
+SupplementaryGroups=azazel-operator azmio-contextobs
 ExecStart=/usr/libexec/azazel/az-mio-entryd
 LoadCredential=mio-profile_commissioning-proposal.expected.json:/etc/azazel/commissioning/commissioning-proposal.expected.json
 LoadCredential=mio-profile_commissioning-proposal.json:/etc/azazel/commissioning/commissioning-proposal.json
