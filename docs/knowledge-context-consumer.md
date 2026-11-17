@@ -161,33 +161,34 @@ everything, as before.
 
 ### The limit and its reach
 
-The broker counts observation-origin requests that passed the rule and limit
-check in the last 60 seconds, including ones that later fail (for example
-`busy`). At `max_requests_per_minute` the request is refused as `rate_limited`.
-Both refusals are decided before the `knowledge.context.requested` event, before
-the in-flight slot and before any peer call. The window is in memory, so a
-broker restart empties it. The limit covers questions of this shape only; other
-P0 questions are never counted.
+The broker counts the technique queries that passed the rule and limit check in
+the last 60 seconds, including ones that later fail (for example `busy`). At
+`max_requests_per_minute` the request is refused as `rate_limited`. Both
+refusals are decided before the `knowledge.context.requested` event, before the
+in-flight slot and before any peer call. The window is in memory, so a broker
+restart empties it. Since ADR-0010 every request the broker accepts is a
+technique query, so every accepted request is counted; a free-form question is
+refused before the gate (`refused_before_send`) and is neither counted nor able
+to latch the broker.
 
 The first stage is the explainer's existing six explanations per minute
 (`MAX_PER_MINUTE`), which the observation-origin candidates cannot exceed. The
-broker's limit is the second layer: it also bounds a restarted explainer and any
-caller that sends a question of this shape.
+broker's limit is the second layer: it also bounds a restarted explainer and the
+one account that may ask (`azmioctx`).
 
-Residual effects:
+Residual effect: occupancy. The broker has one in-flight slot with no queue. A
+technique query holds it for as long as the peer takes (at most the caller's
+deadline, 350 ms), so a second query arriving then gets `busy`, is counted, and
+its pair is not asked again (below). Since a `busy` refusal still counts toward
+the limit, repeated occupancy can use up the minute's allowance without a
+single send.
 
-- Occupancy. The broker has one in-flight slot with no queue. An
-  observation-origin request holds it for as long as the peer takes (at most the
-  caller's deadline, 350 ms), so an ordinary P0 request arriving then gets `busy`.
-  The reverse also happens: if an ordinary request holds the slot, an
-  observation-origin request gets `busy`, is counted, and its pair is not asked
-  again (below). Since a `busy` refusal still counts toward the limit,
-  repeated occupancy can use up the minute's allowance without a single send.
-- Effect on ordinary P0 callers. Without a rule, an ordinary P0 question whose
-  text happens to match the shape exactly is refused (`refused_before_send`),
-  and with a rule it is counted against the limit. The ordinary entry sends free
-  text questions, so this is not expected in normal use (推測です), but it
-  is the one place where the rule file changes the behaviour of the earlier path.
+*Before ADR-0010 (2026-11-17), for the record.* The broker also served
+caller-classified free-form P0 questions from locald's ordinary FAST_ASSESS.
+Those were not counted unless their text matched the observation sentence, they
+competed with observation-origin requests for the one slot, and a question that
+happened to match the sentence exactly was refused without a rule and counted
+with one. None of this applies now: that path and that sentence are gone.
 
 ### Audit `reason_code`
 
@@ -231,11 +232,14 @@ broker's only SERVICE principal (ADR-0010). Until 2026-11-17 the relay went to
   uid after; the service classifies the kernel peer credentials, so another
   member of the group, the model host or root is `principal_denied`.
 - The 350 ms deadline is a candidate contract, not a measured one. The reply
-  carries a fixed-key `timing` (`context`: received or unavailable, `broker_ms`,
-  `total_ms` from contextobsd, still under the key `locald` so that the reply
-  keeps its shape; `entry_ms` from entryd) so that success, delay and
-  refusal can be measured. Nothing is logged or recorded from it yet, and no
-  measurement has been taken.
+  carries a fixed-key `timing` (`context`: received, unavailable or refused,
+  `broker_ms`, `total_ms` and `core` from contextobsd, still under the key
+  `locald` so that the reply keeps its shape; `entry_ms` from entryd) so that
+  success, delay and refusal can be measured. `core` is `ran`, or `failed` when
+  the core raised and `fast_assistance` is the fixed degraded payload; the
+  broker's outcome is told apart from it, because the `technique_knowledge`
+  record rides on the result either way. Nothing is logged or recorded from the
+  timing yet, and no measurement has been taken.
 - The explainer does not adopt the reply as it arrives: it re-validates the
   returned `fast_assistance` with `read_fast_assistance` before the replacement
   rule runs, and a reply that fails is treated as `unavailable`.
@@ -553,11 +557,12 @@ re-evaluated when the screen is redrawn; it is not an independent trusted-clock
 verification. A new incident transition does not reuse the earlier
 full-node receipt while its new explanation is pending.
 
-The ordinary P0 entry sends a `question`, not a typed IOC. The candidate
-Knowledge producer cannot normalize that type as an IOC and reports it as an
-unknown rather than asserting an exact match. This entry establishes bounded
-question/unknown interoperability only; typed-IOC lookup requires a separate
-contract and must not reclassify restricted incident data as P0.
+The broker sends only the typed `attack-technique/v1` entities of the technique
+query; no `question` and no typed IOC. Before ADR-0010 the ordinary P0 entry
+sent a free-form `question`, which the candidate producer reported as an unknown
+rather than an exact match; that entry no longer exists. Typed-IOC lookup
+requires a separate contract and must not reclassify restricted incident data
+as P0.
 
 The service uses the separate `azknowledgeegress` account. The installed unit
 is preset disabled, requires its activation grant marker and is absent from
@@ -652,13 +657,13 @@ credential, trust anchor or network.
 `tests/real_process/test_knowledge_context_linux_acceptance.py` runs in the
 existing isolated root container (`run-docker.sh`: `--network=none`, no new
 capabilities, read-only mounts, `--rm`), with a real Knowledge mTLS producer
-process, the real broker, locald and entryd processes, distinct container-only
+process, the real broker, contextobsd and entryd processes, distinct container-only
 uids and real `SO_PEERCRED` / `SO_PEERGROUPS` on real AF_UNIX sockets. It
-changes no product code. **The results below were recorded before ADR-0010
-(2026-11-17), when the broker's SERVICE principal was `azmio` and locald was its
-client.** Since then the served peer is `azmioctx` (`azazel-mio-contextobsd`),
-`azmio` is refused like `azmioentry`, and the runner has to be re-run against
-the new unit before these rows describe the current code (not yet done). Two harness seams exist, both test-only: the
+changes no product code. Since ADR-0010 (2026-11-17) the served peer is
+`azmioctx` (`azazel-mio-contextobsd`), the request is the technique query, and
+the chain is the explainer → entryd → contextobsd → broker; the rows below were
+re-run in that form (container runner, Knowledge source 7019ac1). Two harness
+seams exist, both test-only: the
 producer wrapper fixes the signing seed and port across restarts, and the
 broker harness can record the producer envelope and, while a control file
 exists, offer an earlier envelope at the network edge (`_post_path`). The
@@ -669,8 +674,9 @@ product's own.
 
 | Case | Result observed |
 | --- | --- |
-| service peer `azmio` in the client group | served |
-| `azoperator` / `azmioentry` placed in the client group (so the filesystem passes) | refused inside the broker with `principal_denied`; the broker audit holds the kernel uid, the verb, no `requested` event and no producer exchange; root is refused the same way |
+| service peer `azmioctx` in the client group, technique query | served; the producer receives typed `attack-technique/v1` entities only |
+| the same peer, free-form question (also the old observation sentence) | refused before sending (`refused_before_send`); no `requested` event and no producer exchange |
+| `azoperator` / `azmioentry` / `azmio` placed in the client group (so the filesystem passes) | refused inside the broker with `principal_denied`; the broker audit holds the kernel uid, the verb, no `requested` event and no producer exchange; root is refused the same way |
 | service uid or operator uid outside the client group | `EACCES` at `connect` (this includes the effect of the 2710 parent directory; socket mode alone is not isolated) |
 | identity named in the request | at the top level or in `arguments`: `client_asserted_principal` from an allowed peer; a denied peer naming an allowed uid is still `principal_denied` (principal is checked first) |
 | client against an impostor socket | wrong owner, mode or group: refused before connect and nothing arrives; correct file attributes but the process behind the socket is another uid: refused as `peer identity` after connect and no request byte is sent |
@@ -939,14 +945,14 @@ is one of the open items above and is not defined here.
 ## Verification scope
 
 Unit tests cover caller injection refusal, P0 binding, payload bounds and the
-disabled default. The isolated real-process test started locald, the broker,
-and Knowledge as separate processes with synthetic certificates and loopback
-transport, and asserted the verified advisory response reached ordinary
-FAST_ASSESS; that path was removed by ADR-0010 (2026-11-17), and the
-real-process tests still describe it until they are reworked for
-`azazel-mio-contextobsd`. The candidate before that change passed this software test. The fixed
-head, repository identities, build artifacts and exact results are recorded
-in the #403 PR evidence. This does not establish production credential
+disabled default. The isolated real-process tests start Knowledge, the broker,
+the context observation unit and entryd as separate processes under their own
+uids, with synthetic certificates and loopback transport, and assert that the
+explainer's `mio.context.observe` gets a verified technique record
+(`technique_knowledge` received/ok) that is never handed to M.I.O., and that a
+free-form question never reaches Knowledge. Before ADR-0010 the same suite
+asserted a verified advisory on ordinary FAST_ASSESS through locald; that path
+was removed, and the #403 PR evidence records that earlier result. This does not establish production credential
 lifecycle, systemd egress, hardware, release or deployment.
 
 The candidate does not set a production dependency pin to an unreleased Fabric

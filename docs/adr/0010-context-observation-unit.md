@@ -103,6 +103,12 @@ mask list. Locald stays excluded.
   starts nothing. Cutting that edge is left for later.
 * Not done here (second stage): entryd running the core itself and handing the
   new unit only the P0 technique ids. Whether the core's output is the same
-  that way is not checked. The real-process tests under `tests/real_process/`
-  still start locald as the broker's client and have to be reworked for the
-  new unit.
+  that way is not checked.
+* The real-process suite (`tests/real_process/`) runs the new path under real
+  uids on real sockets: Knowledge producer ← contextd (`azknowledgeegress`) ←
+  contextobsd (`azmioctx`) ← entryd (`azmioentry`) ← explainer (`azexplain`),
+  with `azmio`, `azmioentry`, operators and root refused by the broker and
+  free-form questions refused before sending (reworked 2026-11-17 after
+  review).
+* `timing.core` (`ran` / `failed`) tells a core failure from the broker's
+  outcome; the technique record is kept on the degraded payload too.
