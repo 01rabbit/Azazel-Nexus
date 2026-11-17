@@ -391,49 +391,45 @@ def test_lite_success_does_not_hide_incomplete_full_node_snapshot(snapshot_state
 @pytest.mark.parametrize(('lite', 'expected'), [
     ('none', 'unavailable'), ('empty', 'unavailable'), ('available', 'available'),
 ])
-def test_locald_broker_failure_is_separate_from_lite(monkeypatch, lite, expected):
-    from azazel_nexus_runtime import mio_locald
-    calls = []
-    def unavailable(frame, *, deadline_s):
-        calls.append((frame, deadline_s))
-        raise mio_locald.KnowledgeContextUnavailable('private peer text')
-    monkeypatch.setattr(mio_locald, 'request_context', unavailable)
+def test_locald_never_asks_the_broker_and_lite_is_its_own(monkeypatch, lite, expected):
+    """ADR-0010: locald is no broker client; Full Node Context is `not_queried`."""
+    from azazel_nexus_runtime import knowledge_context_socket, mio_locald
+    monkeypatch.setattr(knowledge_context_socket, 'request_context',
+                        lambda *a, **k: pytest.fail('locald asked the broker'))
+    assert not hasattr(mio_locald, 'request_context')
     lookup = {'none': None, 'empty': lambda *a, **k: (),
               'available': lambda *a, **k: (_lite_ref(),)}[lite]
     source = {**_lite_frame(), 'privacy_class': 'P0-public'}
     reply = mio_locald.LocalRuntimeService(knowledge_lookup=lookup).handle(SimpleNamespace(
         verb=mio_locald.FAST_ASSESS_VERB, arguments={'deadline_ms': 1000}, payload=source))
     result = read_fast_assistance(reply['fast_assistance'])
-    assert len(calls) == 1 and calls[0][0]['privacy_class'] == 'P0-public'
-    assert 0 < calls[0][1] <= mio_locald.KNOWLEDGE_MAX_S
-    assert result['full_node_context_status'] == 'unavailable'
-    assert result['dependency_outcome']['knowledge'] == expected
+    assert result['full_node_context_status'] == 'not_queried'
     assert len(result['knowledge']) == (1 if lite == 'available' else 0)
-    assert 'private peer text' not in str(reply)
+    if lite == 'available':
+        assert result['dependency_outcome']['knowledge'] == expected
     assert 'fabric_knowledge_context_advisory' not in result
 
 
-def test_broker_failure_survives_socket_reader(monkeypatch):
-    from azazel_nexus_runtime import mio_locald, mio_socket_client
-    monkeypatch.setattr(mio_locald, 'request_context', lambda *a, **k: (
-        _ for _ in ()).throw(mio_locald.KnowledgeContextUnavailable('private')))
+def test_not_queried_survives_socket_reader(monkeypatch):
+    from azazel_nexus_runtime import knowledge_context_socket, mio_locald, mio_socket_client
+    monkeypatch.setattr(knowledge_context_socket, 'request_context',
+                        lambda *a, **k: pytest.fail('locald asked the broker'))
     source = {**_lite_frame(), 'privacy_class': 'P0-public'}
     reply = mio_locald.LocalRuntimeService().handle(SimpleNamespace(
         verb=mio_locald.FAST_ASSESS_VERB, arguments={'deadline_ms': 1000}, payload=source))
     monkeypatch.setattr(mio_socket_client, '_exchange', lambda *a, **k: reply)
     result = mio_socket_client.LocalSocketClient().assess(source, deadline_s=.5)
-    assert result['full_node_context_status'] == 'unavailable'
-    assert result['dependency_outcome']['knowledge'] == 'unavailable'
+    assert result['full_node_context_status'] == 'not_queried'
 
 
 @pytest.mark.parametrize(('privacy', 'deadline_ms'), [
     ('P3-restricted', 1000), ('P0-public', 44),
 ])
 def test_full_node_not_queried_only_when_no_request_is_made(monkeypatch, privacy, deadline_ms):
-    from azazel_nexus_runtime import mio_locald
+    from azazel_nexus_runtime import knowledge_context_socket, mio_locald
     def forbidden(*args, **kwargs):
         pytest.fail('broker must not be called')
-    monkeypatch.setattr(mio_locald, 'request_context', forbidden)
+    monkeypatch.setattr(knowledge_context_socket, 'request_context', forbidden)
     source = {**_lite_frame(), 'privacy_class': privacy}
     reply = mio_locald.LocalRuntimeService().handle(SimpleNamespace(
         verb=mio_locald.FAST_ASSESS_VERB, arguments={'deadline_ms': deadline_ms}, payload=source))
@@ -579,7 +575,8 @@ def test_normal_locald_fast_assess_injects_authenticated_lookup():
         read_fast_assistance(forged)
 
 
-def test_normal_locald_assessment_requests_context_from_local_broker(monkeypatch):
+def test_normal_locald_assessment_does_not_request_context(monkeypatch):
+    """ADR-0010: the ordinary P0 assessment asks the broker nothing."""
     from azazel_nexus_runtime import mio_locald
 
     source = {"request_id": "p0-normal", "privacy_class": "P0-public",
@@ -616,26 +613,20 @@ def test_normal_locald_assessment_requests_context_from_local_broker(monkeypatch
             {"outcome": "synthetic"},
         )[-1],
     )
-    broker_calls = []
-    monkeypatch.setattr(
-        mio_locald, "request_context",
-        lambda frame, *, deadline_s: (
-            broker_calls.append((frame, deadline_s)),
-            clock.__setitem__(0, clock[0] + 0.2),
-            response,
-        )[-1],
-    )
+    from azazel_nexus_runtime import knowledge_context_socket
+    monkeypatch.setattr(knowledge_context_socket, "request_context",
+                        lambda *a, **k: pytest.fail("locald asked the broker"))
+    assert response["authority"] == "advisory_only"        # what it would have been given
     service = mio_locald.LocalRuntimeService()
     reply = service.handle(SimpleNamespace(
         verb=mio_locald.FAST_ASSESS_VERB,
         arguments={"deadline_ms": 500},
         payload={"frame": source},
     ))
-    assert observed["fabric_knowledge_context_response"] == response
-    assert broker_calls and broker_calls[0][0] == {
-        "privacy_class": "P0-public", "question": "synthetic public question"}
-    assert 0 < broker_calls[0][1] <= mio_locald.KNOWLEDGE_MAX_S
-    assert fast_calls[0]["deadline_s"] == pytest.approx(0.28)
+    assert observed["fabric_knowledge_context_response"] is None
+    assert observed["full_node_context_status"] is mio_locald.FullNodeContextStatus.NOT_QUERIED
+    # No broker wait: the core gets the whole budget less the delivery reserve.
+    assert fast_calls[0]["deadline_s"] == pytest.approx(0.5 - mio_locald.DELIVERY_RESERVE_S)
     assert reply["fast_assistance"] == {"outcome": "synthetic"}
 
 
