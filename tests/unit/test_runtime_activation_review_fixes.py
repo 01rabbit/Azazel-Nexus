@@ -1569,6 +1569,67 @@ def test_a_queued_start_is_replaced_when_the_broker_is_withheld(queued):
     assert CTX not in (queued.world.markers() or [])
 
 
+def _budget_ends_after_the_preflight(queued, monkeypatch, *, broker_authority=True):
+    """Run the pass with the budget spent after the preflight; returns the READY calls.
+
+    Without the broker's stop authority the broker's own withdrawal (which
+    reloads too) is out of the picture: only the narrowing's reload remains.
+    """
+    from azazel_nexus_runtime import systemd_notify
+    ready = []
+    monkeypatch.setattr(systemd_notify, "notify_ready", lambda: ready.append(1))
+
+    def slow():
+        queued.clock.sleep(38.0)
+        return queued.world.evidence
+
+    with pytest.raises(RuntimeError, match="used its whole time budget"):
+        if broker_authority:
+            _pass(queued, producers=queued.world.producers(commissioning_evidence=slow))
+        else:
+            activated._locked_pass(
+                manager=queued.manager, root=queued.world.root, now=NOW, actor="test",
+                stop_authority=None, invocation_id="b" * 32, clock=queued.clock,
+                sleep=queued.clock.sleep,
+                producers=queued.world.producers(commissioning_evidence=slow))
+    return ready
+
+
+def test_budget_expiry_after_the_preflight_ends_the_batch_with_a_reload(queued, monkeypatch):
+    """The narrowing's reload follows the preflight masks (the preflight has none).
+
+    The models here (QueuedManager) are not a proof of systemd's ordering; they
+    only pin what this code asks of the manager.
+    """
+    ready = _budget_ends_after_the_preflight(queued, monkeypatch, broker_authority=False)
+    timeline = queued.manager.timeline
+    last_mask = max(i for i, (op, _) in enumerate(timeline) if op == "mask")
+    assert any(op == "reload" for op, _ in timeline[last_mask + 1:]), \
+        "no reload after the masks of a pass that ran out of budget"
+    assert ready == [] and queued.world.markers() is None
+    assert queued.model.running is False
+
+
+def test_budget_expiry_whose_reload_is_not_reached_still_starts_nothing(queued, monkeypatch):
+    """If the narrowing cannot reach Reload, the state is still fail-closed.
+
+    Model, not proof of systemd's ordering: no READY was sent (Type=notify), so
+    the controller fails and a job that Requires= it fails as a dependency
+    rather than running; no marker exists, so a job that was already past
+    that would be skipped by its ConditionPathExists=; the masks are on disk.
+    """
+    def refuse():
+        raise activated.UnitOperationFailed("bus out of time")
+
+    queued.manager.reload = refuse
+    ready = _budget_ends_after_the_preflight(queued, monkeypatch)
+    assert ready == []  # READY is only after the pass, its markers and its record
+    assert queued.world.markers() is None
+    assert queued.model.running is False
+    assert queued.manager.state(CTX) is UnitState.MASKED
+    assert all(queued.manager.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
+
+
 def test_a_queued_start_is_replaced_when_the_budget_ends(queued):
     def slow():
         queued.clock.sleep(38.0)

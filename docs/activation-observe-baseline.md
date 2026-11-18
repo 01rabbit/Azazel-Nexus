@@ -1132,8 +1132,19 @@ definition until it is reloaded, so a granted unit could still start as
 `masked`. Each batch of such changes now ends with one argument-less
 `Manager.Reload`. In a boot pass the preflight masks and the decision are one
 batch: the preflight does not reload, and the batch ends with the reload after
-the controller's grant batch (every way out that raises ends it with the
-narrowing's reload instead). The reason is that a reload with a unit masked
+the controller's grant batch. A way out that raises (an error, an expired
+budget) ends it with the narrowing's reload instead, which is attempted within
+the reserve left of the budget, with every bus call bounded by it; it is a
+best effort, not a guarantee that Reload is reached. If it is not reached,
+the state is still fail-closed: READY is sent only after the decision, the
+markers and the record are complete, so a pass that raised never sent it; the
+unit fails (`Type=notify`; at the latest `TimeoutStartSec=60s`, and
+`WatchdogSec` kills a hung pass), the start jobs of units with
+`Requires=azazel-activated.service` fail as a dependency, no marker exists
+(a unit past that point is skipped by its `ConditionPathExists=`), and the
+masks are on disk for the next boot. The budget is checked before READY and
+not after it; a failed READY or barrier is narrowed in
+`_notify_ready_or_withdraw` (with a reload, same best effort). The reason is that a reload with a unit masked
 fails the start job systemd queued for it; the preflight's reload failed the
 jobs of the units this boot then granted (observed on the VM, 2026-11-18: the
 second boot after a grant started none of them), while the withheld units'
