@@ -1310,10 +1310,10 @@ def _past_reference_md(pr, add):
     add("")
 
 
-def _technique_copy(tk):
+def _technique_copy(tk, now=None):
     """Fixed keys only, copied one by one after the closed reader; the name has the
     same limit as the stored record and is a display label."""
-    return {
+    result = {
         "version": tk["version"], "transport": tk["transport"],
         "verification": tk["verification"], "snapshot_state": tk["snapshot_state"],
         "as_of": tk["as_of"], "expires_at": tk["expires_at"],
@@ -1323,6 +1323,11 @@ def _technique_copy(tk):
             {k: (list(row[k]) if k == "tactics" else row[k]) for k in (
                 "technique_id", "coverage", "useful_content", "name", "name_withheld",
                 "tactics", "attack_version")}) for row in tk["techniques"]]}
+    if tk.get("version") == "technique-knowledge/2":
+        from .technique_knowledge import display_projection
+        result["validity"] = dict(tk["validity"])
+        result["server_validity"] = display_projection(tk, now)["server_validity"]
+    return result
 
 
 def _full_node_context(row, snaps, now) -> dict:
@@ -1374,7 +1379,7 @@ def _full_node_context(row, snaps, now) -> dict:
             tk = read_projection(full["technique_knowledge"])
         except ValueError:
             refuse()
-        out["technique_knowledge"] = _technique_copy(tk)
+        out["technique_knowledge"] = _technique_copy(tk, now)
     if row is not None and "technique_past_reference" in row:
         # DESIGN-D53: a derived, closed view; the name goes through the same withholding
         # as the current answer, on a copy (the recent row is never written back).
@@ -1385,7 +1390,7 @@ def _full_node_context(row, snaps, now) -> dict:
             refuse()
         pv = _past.view(row["technique_past_reference"], row["state"], now, whole_seconds=True)
         if "technique_knowledge" in pv:
-            pv["technique_knowledge"] = _technique_copy(pv["technique_knowledge"])
+            pv["technique_knowledge"] = _technique_copy(pv["technique_knowledge"], now)
         out["technique_past_reference"] = pv
     if trace is not None:
         out["transition_query"] = word(trace["transition_query"], _FN_QUERY)
@@ -2004,7 +2009,8 @@ def render_markdown(p: dict) -> str:
                 # answer is never shown as still valid after it lapsed; an unparsable time
                 # is said to be unjudgeable rather than treated as valid.
                 judged = _epoch(fn["basis"]["judged_at"])
-                expires = _epoch(tk["expires_at"]) if tk["expires_at"] is not None else None
+                expiry_value = tk.get("validity", {}).get("effective_expires_at", tk["expires_at"])
+                expires = _epoch(expiry_value) if expiry_value is not None else None
                 if tk["expires_at"] is None:
                     lapse_note = ""
                 elif judged is None or expires is None:
@@ -2013,6 +2019,10 @@ def render_markdown(p: dict) -> str:
                     lapse_note = "（この資料の生成時点で期限切れ）"
                 else:
                     lapse_note = ""
+                if "validity" in tk:
+                    v = tk["validity"]
+                    add(f"- 署名期限 {_md(v['signed_expires_at'])}、意味期限 {_md(v['semantic_expires_at'])}、実効期限 {_md(v['effective_expires_at'])}")
+                    add(f"- サーバ判定: usable={tk['server_validity']['usable']}、理由 {_md(tk['server_validity']['reason'])}、policy {_md(v['contract_id'])}")
                 add(f"- 基準時刻 {_md(tk['as_of'])}、期限 {_md(tk['expires_at'])}"
                     + lapse_note + "、"
                     f"権限 `{tk['authority']}`、信頼 `{tk['trust']}`")

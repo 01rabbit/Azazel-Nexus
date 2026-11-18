@@ -309,7 +309,7 @@ def remove_contextd_marker(root: Path = Path("/")) -> None:
         os.close(parent)
 
 
-def write_grant_markers(units: Iterable[str], root: Path = Path("/")) -> tuple[str, ...]:
+def write_grant_markers(units: Iterable[str], root: Path = Path("/"), *, context_clock_binding=None) -> tuple[str, ...]:
     """Create `granted/` fresh and one empty marker per unit; nothing else.
 
     Refuses when the parent directory is absent or foreign, or when
@@ -338,6 +338,11 @@ def write_grant_markers(units: Iterable[str], root: Path = Path("/")) -> tuple[s
                              | os.O_CLOEXEC, 0o644, dir_fd=leaf)
                 try:
                     os.fchmod(fd, 0o644)
+                    if name == CONTEXTD_MARKER_UNIT and context_clock_binding is not None:
+                        raw = clock_grant_binding_bytes(context_clock_binding)
+                        if os.write(fd, raw) != len(raw):
+                            raise GrantMarkerRefused("clock marker incomplete")
+                        os.fsync(fd)
                 finally:
                     os.close(fd)
             present = sorted(entry.name for entry in os.scandir(leaf))
@@ -348,3 +353,45 @@ def write_grant_markers(units: Iterable[str], root: Path = Path("/")) -> tuple[s
     finally:
         os.close(parent)
     return tuple(names)
+
+
+def clock_grant_binding_bytes(value):
+    import json
+    import re
+    if (type(value) is not dict or set(value) != {"boot_id", "contract_id", "commissioning_digest"}
+            or any(type(v) is not str or not re.fullmatch(r"sha256:[0-9a-f]{64}", v)
+                   for k, v in value.items() if k != "boot_id")
+            or type(value["boot_id"]) is not str
+            or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value["boot_id"])):
+        raise GrantMarkerRefused("clock marker binding")
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("ascii")
+
+
+def inspect_clock_grant_binding(expected, root=Path("/")):
+    """Read the exact policy evidence written by a successful activation pass."""
+    marker = inspect_grant_marker(CONTEXTD_MARKER_UNIT, root)
+    if marker is None:
+        return None
+    parent = _open_parent(root)
+    if parent is None:
+        return None
+    try:
+        leaf = os.open(_LEAF, _DIR_FLAGS, dir_fd=parent)
+        try:
+            fd = os.open(CONTEXTD_MARKER_UNIT, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=leaf)
+            try:
+                info = os.fstat(fd)
+                current = MarkerIdentity(info.st_dev, info.st_ino, info.st_ctime_ns)
+                raw = os.read(fd, 1025)
+                after = os.fstat(fd)
+                if current != marker or after.st_ctime_ns != info.st_ctime_ns:
+                    return None
+            finally:
+                os.close(fd)
+        finally:
+            os.close(leaf)
+    except OSError:
+        return None
+    finally:
+        os.close(parent)
+    return marker if raw == clock_grant_binding_bytes(expected) else None

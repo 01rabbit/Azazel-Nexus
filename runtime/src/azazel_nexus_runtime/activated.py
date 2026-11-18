@@ -45,6 +45,7 @@ start gates remain refusing pending their separate admission obligations.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import sys
@@ -1105,7 +1106,18 @@ def _run_once(
     try:
         if granted and not rolled_back:
             try:
-                markers = write_grant_markers(sorted(granted), root)
+                clock_binding = None
+                if inputs is not None and getattr(inputs, "evidence", None) is not None:
+                    proposal = json.loads(inputs.evidence.payload)
+                    if "clock_policy" in proposal:
+                        from azazel_nexus.observe_baseline import evidence_commissioning_digest
+                        clock_binding = {"boot_id": read_boot_id(),
+                                         "contract_id": proposal["clock_policy"]["contract_id"],
+                                         "commissioning_digest": evidence_commissioning_digest(inputs.evidence)}
+                if clock_binding is None:
+                    markers = write_grant_markers(sorted(granted), root)
+                else:
+                    markers = write_grant_markers(sorted(granted), root, context_clock_binding=clock_binding)
             except Exception:  # noqa: BLE001 - a unit without a marker never starts
                 # The record must never stand between this failure and the remask.
                 try:

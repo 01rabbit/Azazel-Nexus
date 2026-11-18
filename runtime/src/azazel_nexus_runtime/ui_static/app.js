@@ -742,7 +742,7 @@
     var fresh = pr.freshness;
     var judge = "サーバ判定 " + text(pr.judged_at || "不明");
     var lapsed = tk.expires_at ? Date.parse(tk.expires_at) : NaN;
-    if (!isNaN(lapsed)) {
+    if (tk.version !== "technique-knowledge/2" && !isNaN(lapsed)) {
       fresh = lapsed <= Date.now() ? "expired" : (fresh === "unjudgeable" ? "unjudgeable" : "fresh");
       judge = "端末時計 " + new Date().toISOString().slice(0, 19) + "Z";
     }
@@ -774,9 +774,20 @@
     var coverageLabel = { found: "対応あり", no_match: "該当なし", stale: "期限切れ", unavailable: "ATT&CK corpus 利用不可" };
     add(tkNode, kv([["通信", transportLabel[tk.transport] || "不明"], ["検証", verificationLabel[tk.verification] || "不明"]]));
     if (tk.as_of) {
+      if (tk.version === "technique-knowledge/2") {
+        var validity = tk.validity || {};
+        var server = tk.server_validity || {};
+        var known = !state.failing && typeof server.usable === "boolean";
+        add(tkNode, kv([["基準時刻", tk.as_of], ["署名期限", validity.signed_expires_at],
+          ["意味期限", validity.semantic_expires_at], ["実効期限", validity.effective_expires_at],
+          ["最終サーバ判定", known ? (server.usable ? "参照可能（取得時点）" : "現在判断不可：" + text(server.reason)) : "更新停止・状態不明"],
+          ["最終判定時刻", server.as_of], ["時刻契約", validity.contract_id],
+          ["権限", tk.authority], ["信頼", tk.trust === "unverified" ? "未検証" : tk.trust]]));
+      } else {
       var tkExp = tk.expires_at ? Date.parse(tk.expires_at) : null;
       var tkNote = tkExp === null ? "" : isNaN(tkExp) ? "（期限を判定できません）" : tkExp <= Date.now() ? "（期限切れ・端末時計で判定）" : "";
       add(tkNode, kv([["基準時刻", tk.as_of], ["期限", tk.expires_at ? text(tk.expires_at) + tkNote : tk.expires_at], ["権限", tk.authority], ["信頼", tk.trust === "unverified" ? "未検証" : tk.trust]]));
+      }
     }
     (tk.techniques || []).forEach(function (row) {
       add(tkNode, el("p", "small", text(row.technique_id) + "：" + (coverageLabel[row.coverage] || "不明")

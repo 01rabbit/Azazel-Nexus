@@ -59,7 +59,8 @@ def commissioned_profile() -> MioProfile:
             # v3 is v2 plus the Deception Lite scope (#196 G1a): both carry the
             # signed M.I.O. selection, verified above under the same signature.
             if document["schema"] in {"azazel-nexus/commissioning-proposal/v2",
-                                      "azazel-nexus/commissioning-proposal/v3"}:
+                                      "azazel-nexus/commissioning-proposal/v3",
+                                      "azazel-nexus/commissioning-proposal/v4"}:
                 _cache_result = _PROFILES[document["mio_profile"]]
             return _cache_result
     except Exception:

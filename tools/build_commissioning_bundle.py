@@ -102,6 +102,7 @@ class Inputs:
     issued_at: str | None = None
     now: str | None = None
     allow_unverified_staging: bool = False
+    clock_proposal: Path | None = None
 
 
 # ---------------------------------------------------------------- inputs
@@ -288,6 +289,15 @@ def plan(inp: Inputs, scratch: Scratch) -> Plan:
     if client_expiry < expires_dt or server_expiry < expires_dt:
         raise Refused("cert_expires_before_registry")
 
+    clock_policy = None
+    if inp.clock_proposal is not None:
+        from azazel_fabric.knowledge_context_clocklab import ClockContract
+        raw_proposal = read_input(inp.clock_proposal, "policy")
+        proposal = json.loads(raw_proposal)
+        if (proposal.get("schema") != "azazel-nexus/commissioning-proposal/v4"
+                or "sha256:" + hashlib.sha256(raw_proposal).hexdigest() != inp.commissioning_digest):
+            raise Refused("clock_proposal_binding")
+        clock_policy = ClockContract.from_dict(proposal["clock_policy"]).as_dict()
     document = {
         "schema": SCHEMA, "commissioning_digest": inp.commissioning_digest,
         "issued_at": issued, "expires_at": inp.expires_at, "version": inp.registry_version,
@@ -316,6 +326,9 @@ def plan(inp: Inputs, scratch: Scratch) -> Plan:
         "max_ttl_seconds": inp.max_ttl_seconds, "mission": inp.mission,
         "sanitizer_policy": policy,
     }
+    if clock_policy is not None:
+        manifest["schema"] = cfg.MANIFEST_SCHEMA_V2
+        manifest["clock_policy"] = clock_policy
     files = {
         "manifest.json": (json.dumps(manifest, sort_keys=True).encode(), PUBLIC_MODE),
         "registry-keys.json": (json.dumps(
@@ -528,6 +541,7 @@ def main(argv=None) -> int:
                  "peer-address", "commissioning-digest", "mission", "expires-at"):
         p.add_argument(f"--{flag}", required=True)
     p.add_argument("--peer-port", required=True, type=int)
+    p.add_argument("--clock-proposal", type=Path, help="explicit signed-proposal v4 body, lab only")
     p.add_argument("--max-ttl-seconds", type=int, default=KNOWLEDGE_TTL_CEILING)
     p.add_argument("--registry-version", type=int, default=1)
     p.add_argument("--issued-at")
@@ -543,7 +557,7 @@ def main(argv=None) -> int:
         client_key=a.client_key, server_cert=a.server_cert, alias_key=a.alias_key,
         policy=a.policy, peer_id=a.peer_id, client_identity=a.client_identity,
         peer_host=a.peer_host, peer_port=a.peer_port, peer_address=a.peer_address,
-        commissioning_digest=a.commissioning_digest, mission=a.mission,
+        commissioning_digest=a.commissioning_digest, mission=a.mission, clock_proposal=a.clock_proposal,
         expires_at=a.expires_at, out=a.out, max_ttl_seconds=a.max_ttl_seconds,
         registry_version=a.registry_version, issued_at=a.issued_at, now=a.now,
         allow_unverified_staging=a.allow_unverified_staging)

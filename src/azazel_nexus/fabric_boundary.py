@@ -142,7 +142,7 @@ class IdentityUnavailable(Exception):
 #: `azazel_nexus.status` now reports them as `unknown` and points at Fabric's
 #: `docs/release-compatibility.md`, which holds the answer (#23).
 #: `tests/unit/test_status_claims.py` keeps the retired phrasing out.
-FABRIC_PIN = "v0.10.0"
+FABRIC_PIN = "v0.10.0+u67.clocklab1"
 
 #: What this module needs to produce a projection at all.
 REQUIRED_FABRIC_MODULES = ("azazel_fabric.view", "azazel_fabric.schema.mode",
@@ -943,7 +943,8 @@ def restore_commissioning_inputs(document: dict) -> dict:
         schema = document["schema"]
         if schema not in {"azazel-nexus/commissioning-proposal/v1",
                           "azazel-nexus/commissioning-proposal/v2",
-                          "azazel-nexus/commissioning-proposal/v3"}:
+                          "azazel-nexus/commissioning-proposal/v3",
+                          "azazel-nexus/commissioning-proposal/v4"}:
             raise ValueError
         selection = {}
         if schema != "azazel-nexus/commissioning-proposal/v1":
@@ -957,7 +958,7 @@ def restore_commissioning_inputs(document: dict) -> dict:
                        topology_profile=TopologyProfile.model_validate(document["topology"]),
                        record_id=document["record"]["record_id"], operator=document["operator"],
                        confirmed_at=document["record"]["created_at"], **selection)
-        if schema == "azazel-nexus/commissioning-proposal/v3":
+        if schema == "azazel-nexus/commissioning-proposal/v3" or (schema == "azazel-nexus/commissioning-proposal/v4" and "deception_scope" in document):
             # Required in v3, as `mio_profile` is in v2 (#196 G1a, grant §4.1):
             # decoded whole here, so a retained view never holds a partial scope.
             from .decoy_scope import decode_deception_scope  # noqa: PLC0415
@@ -966,6 +967,12 @@ def restore_commissioning_inputs(document: dict) -> dict:
             decode_deception_scope(section, assignments=deception_scope_assignments(
                 context["inventory"], context["topology_profile"]))
             context["deception_scope"] = section
+        if schema == "azazel-nexus/commissioning-proposal/v4":
+            from azazel_fabric.knowledge_context_clocklab import ClockContract
+            contract = ClockContract.from_dict(document["clock_policy"])
+            if context.get("mio_profile") != "FULL" or contract.skew_budget_us != 5000:
+                raise ValueError
+            context["clock_policy"] = contract.as_dict()
         return context
     except (ImportError, ValueError, TypeError, KeyError, AttributeError, IdentityUnavailable):
         raise CommissioningRecordUnavailable("retained commissioning inputs unavailable") from None
@@ -1358,3 +1365,40 @@ def project_explanation(record) -> Projection:
         return Projection(available=False, reason="explanation claim projection unavailable")
     return Projection(available=True, reason="", fabric_version=fabric.__version__,
                       view=ExplanationProjection(claim_set=view, evidence_refs=refs))
+
+
+def validate_clocklab_request(payload, *, contract):
+    """Explicit v2 only; missing candidate Fabric never falls back to v1."""
+    try:
+        from azazel_fabric.knowledge_context_clocklab import KnowledgeContextRequestV2
+        request = KnowledgeContextRequestV2.model_validate(payload)
+        if request.contract_id != contract.contract_id:
+            raise ValueError("clock contract mismatch")
+        return request
+    except ImportError as exc:
+        raise KnowledgeContextUnavailable("clocklab Fabric unavailable") from exc
+    except (ValueError, TypeError) as exc:
+        raise KnowledgeContextInvalid("clocklab request refused") from exc
+
+
+def canonical_clocklab_request(request):
+    try:
+        from azazel_fabric.knowledge_context_clocklab import canonical_clocklab_bytes
+        return canonical_clocklab_bytes(request)
+    except ImportError as exc:
+        raise KnowledgeContextUnavailable("clocklab Fabric unavailable") from exc
+    except (ValueError, TypeError) as exc:
+        raise KnowledgeContextInvalid("clocklab request refused") from exc
+
+
+def validate_clocklab_response(request, payload, *, contract):
+    try:
+        from azazel_fabric.knowledge_context_clocklab import (
+            KnowledgeContextResponseV2, assert_response_correlates_v2)
+        response = KnowledgeContextResponseV2.model_validate(payload)
+        assert_response_correlates_v2(request, response, contract=contract)
+        return response
+    except ImportError as exc:
+        raise KnowledgeContextUnavailable("clocklab Fabric unavailable") from exc
+    except (ValueError, TypeError) as exc:
+        raise KnowledgeContextInvalid("clocklab response refused") from exc

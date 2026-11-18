@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 from collections import deque
+from datetime import UTC, datetime
 from collections.abc import Callable, Mapping, Sequence
 from threading import BoundedSemaphore
 from typing import Any
@@ -99,6 +100,7 @@ class KnowledgeContextBroker:
         #: a request is accepted and again before the answer is adopted.
         self._grant_marker = grant_marker
         self._slot = BoundedSemaphore(1)
+        self._adoption_lock = threading.Lock()
         # (rule, identity) read once at start-up, or None. Closed for good once
         # the rule file is removed or replaced (latch, until restart).
         self._observation = observation_rule
@@ -246,15 +248,35 @@ class KnowledgeContextBroker:
             # adopted before this check may still be on its way to the
             # caller after the marker is gone: delivery is not undone.
             phase = "grant"
-            if self._grant_marker() != admitted:
-                reason = "withdrawn"
-                raise ValueError
-            phase = "verified"
-            self._audit({"event_type": "knowledge.context.completed",
-                         "outcome": "verified_advisory",
-                         "response_bytes": len(encoded),
-                         "elapsed_ms": min(10_000, int((self._monotonic() - start) * 1000))})
-            return {"response": response}
+            from azazel_nexus.knowledge_clock_validity import VerifiedContext
+            with self._adoption_lock:
+                # v1 retains its existing behaviour; v2 has a final local proof.
+                result = {"response": response}
+                def check_grant():
+                    nonlocal reason
+                    if self._grant_marker() != admitted:
+                        reason = "withdrawn"
+                        raise ValueError
+
+                if isinstance(verified, VerifiedContext):
+                    result["validity"] = verified.adoption_validity(
+                        utc_now=lambda: datetime.now(UTC).isoformat(), monotonic=self._monotonic,
+                        caller_deadline=deadline)
+                    complete = json.dumps({"ok": True, "result": result}, allow_nan=False,
+                                          sort_keys=True, separators=(",", ":")).encode("utf-8")
+                    if len(complete) > MAX_RESPONSE_BYTES:
+                        raise ValueError("clock wrapper size")
+                    result["validity"] = verified.adoption_validity(
+                        utc_now=lambda: datetime.now(UTC).isoformat(), monotonic=self._monotonic,
+                        grant_check=check_grant, caller_deadline=deadline)
+                else:
+                    check_grant()
+                phase = "verified"
+                self._audit({"event_type": "knowledge.context.completed",
+                             "outcome": "verified_advisory",
+                             "response_bytes": len(encoded),
+                             "elapsed_ms": min(10_000, int((self._monotonic() - start) * 1000))})
+                return result
         except TimeoutError:
             outcome = "timeout"
         except Exception as exc:  # refusal details may include caller data; never export them

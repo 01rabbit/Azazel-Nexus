@@ -98,6 +98,8 @@ class KnowledgeClient:
         knowledge_context_enabled: bool = False,
         knowledge_context_max_ttl_seconds: int | None = None,
         utc_now: Callable[[], str] | None = None,
+        clock_contract=None,
+        clock_health=None,
     ):
         if type(knowledge_context_enabled) is not bool:
             raise ValueError("Knowledge Context enablement must be an explicit boolean")
@@ -108,6 +110,11 @@ class KnowledgeClient:
             raise ValueError("Knowledge Context maximum TTL must be a positive integer")
         if knowledge_context_enabled and knowledge_context_max_ttl_seconds is None:
             raise ValueError("enabled Knowledge Context requires an explicit maximum TTL")
+        if (clock_contract is None) != (clock_health is None):
+            raise ValueError("clock contract and health required together")
+        if clock_contract is not None and clock_contract.skew_budget_us != 5000:
+            raise ValueError("lab contract must be explicitly nonzero")
+        self.clock_contract, self.clock_health = clock_contract, clock_health
         self.registry = registry
         self.peer_id = peer_id
         self.knowledge_context_enabled = knowledge_context_enabled
@@ -232,6 +239,9 @@ class KnowledgeClient:
         technique_ids = (frame["techniques"]
                          if isinstance(frame, Mapping) and set(frame) == {"techniques"} else None)
         try:
+            generation = None
+            if self.clock_health is not None:
+                generation = self.clock_health.check()
             peer = self.registry.resolve(self.peer_id, now=self.utc_now())
             if PrivacyClass.P0_PUBLIC not in peer.endpoint.allowed_privacy_classes:
                 raise KnowledgeContextRefused(
@@ -244,8 +254,13 @@ class KnowledgeClient:
                 mission=mission,
                 alias_key=alias_key,
                 requested_at=self.utc_now(),
+                **({"clock_contract": self.clock_contract} if self.clock_contract is not None else {}),
             )
-            body = canonical_knowledge_context_request(request)
+            if self.clock_contract is None:
+                body = canonical_knowledge_context_request(request)
+            else:
+                from azazel_nexus.fabric_boundary import canonical_clocklab_request
+                body = canonical_clocklab_request(request)
             limit = min(
                 peer.endpoint.max_request_bytes,
                 _MAX_KNOWLEDGE_CONTEXT_REQUEST_BYTES,
@@ -262,6 +277,8 @@ class KnowledgeClient:
             stage = "verification"
             # Refuse a response if commissioning was revoked or expired in flight.
             self.registry.resolve(self.peer_id, now=self.utc_now())
+            if self.clock_health is not None:
+                self.clock_health.check(expected_generation=generation)
             verified = read_signed_response(
                 raw,
                 request=request,
@@ -269,12 +286,25 @@ class KnowledgeClient:
                 peer_id=self.peer_id,
                 now=self.utc_now(),
                 max_ttl_seconds=max_ttl_seconds,
+                **({"clock_contract": self.clock_contract} if self.clock_contract is not None else {}),
             )
+            signed_expiry = None
+            if self.clock_contract is not None:
+                verified, signed_expiry = verified
             if technique_ids is not None:
                 # Signature, TTL and Fabric correlation held; now the whole
                 # response must also be an acceptable technique answer.
                 stage = "technique_verification"
-                validate_technique_response(verified.model_dump(mode="json"), technique_ids)
+                technique_doc = verified.model_dump(mode="json")
+                if self.clock_contract is not None:
+                    from azazel_fabric.knowledge_context_clocklab import response_v1_projection
+                    technique_doc = response_v1_projection(verified).model_dump(mode="json")
+                validate_technique_response(technique_doc, technique_ids)
+            if self.clock_contract is not None:
+                from azazel_nexus.knowledge_clock_validity import VerifiedContext
+                return VerifiedContext(verified, self.clock_contract.contract_id, signed_expiry,
+                                       verified.expires_at.isoformat(), self.clock_contract.skew_budget_us,
+                                       generation, deadline, self.clock_health)
             return verified
         except (
             KnowledgeRefused,

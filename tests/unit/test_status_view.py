@@ -1680,7 +1680,20 @@ def test_the_ui_reads_exactly_the_keys_the_view_model_carries():
     block = js[js.index("function techniqueBlock("):js.index("// -- handoff card")]
     top = set(re.findall(r"\btk\.([a-z_]+)", block))
     rows = set(re.findall(r"\brow\.([a-z_]+)", block))
-    assert top <= set(carried) and rows <= set(carried["techniques"][0])
+    # v2 adds local/server validity. Check its actual read-model projection as
+    # well; do not require v1 records to carry fields from the separate branch.
+    from datetime import datetime, timedelta
+    from azazel_fabric.knowledge_context_clocklab import ClockContract
+    expiry = datetime.fromisoformat(record["expires_at"].replace("Z", "+00:00"))
+    validity = {"schema": "azazel-knowledge-clock-validity/1", "contract_id": ClockContract(5000).contract_id,
+                "signed_expires_at": record["expires_at"], "semantic_expires_at": record["expires_at"],
+                "effective_expires_at": (expiry - timedelta(milliseconds=5)).isoformat().replace("+00:00", "Z"),
+                "adopted_at": (expiry - timedelta(seconds=1)).isoformat().replace("+00:00", "Z"),
+                "skew_budget_us": 5000, "health_generation": ["n", "k", 1, 0]}
+    v2 = dict(record, version="technique-knowledge/2", validity=validity)
+    carried_v2 = _recent_fast(_tk_fast(v2))["fast_assistance"]["technique_knowledge"]
+    assert top <= set(carried) | set(carried_v2) and rows <= set(carried["techniques"][0])
+    assert carried_v2["server_validity"]["usable"] is False
     # the view-model renderer passes the view's own key to the shared block
     assert "fast.technique_knowledge" in js and "techniqueBlock(fast.technique_knowledge)" in js
     assert "techniqueBlock(full.technique_knowledge)" in js

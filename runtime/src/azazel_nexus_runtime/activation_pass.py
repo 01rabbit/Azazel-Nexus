@@ -388,6 +388,8 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
             verify_observe_baseline(generation=verified, files=tree, units=scope,
                                     unit_files=measured, package_digest=package_digest,
                                     package_components=components)
+            from .knowledge_context_config import assert_clock_commissioning_binding
+            assert_clock_commissioning_binding(result.evidence)
             if (verified.commissioning_evidence_binding != result.evidence.binding
                     or verified.commissioning_digest
                     != evidence_commissioning_digest(result.evidence)):
