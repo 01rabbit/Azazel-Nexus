@@ -223,10 +223,11 @@ def test_a_bus_failure_is_recorded_as_the_client_fixed_reason(first_pass_root, f
     assert [event["event_type"] for event in events] == [
         "activation.evidence_preflight_masked", "activation.rollback_failed"]
     # A call that did not complete finishes its session: the reload that ends
-    # each round of masks is refused on it (and nothing more is sent).
+    # the later round of masks is refused on it (and nothing more is sent). The
+    # preflight round does not reload.
     finished = ["manager reload: UnitOperationFailed"] if fault == "incomplete" else []
     assert events[0]["remask_failures"] == (
-        [f"{unit}: UnitOperationFailed" for unit in RUNNING] + finished)
+        [f"{unit}: UnitOperationFailed" for unit in RUNNING])
     if fault == "incomplete":
         # The wider narrowing finds the session finished: nothing is sent on
         # it, every unit is reported unreached (the real pass narrows on a new

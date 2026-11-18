@@ -400,16 +400,17 @@ def test_production_composition_records_a_real_fail_closed_decision(tmp_path):
     assert len(outcome.withheld) == len(CORE_UNITS)
     # Preflight narrows before evidence collection; the refusing decision then
     # independently verifies every mask. Neither pass may unmask/start a unit.
+    # The preflight does not reload: its masks and the decision's are one
+    # batch, ended by the decision's one Reload.
     assert calls == [
         entry
         for _pass in range(2)
         for entry in (
-            *((method, definition.name)
-              for definition in CORE_UNITS
-              for method in ("MaskUnitFiles", "GetUnitFileState", "GetInactiveState")),
-            ("Reload", ""),
+            (method, definition.name)
+            for definition in CORE_UNITS
+            for method in ("MaskUnitFiles", "GetUnitFileState", "GetInactiveState")
         )
-    ]
+    ] + [("Reload", "")]
     assert all(states[definition.name] == "masked" for definition in CORE_UNITS)
 
     from azazel_nexus.audit import AuditLedger

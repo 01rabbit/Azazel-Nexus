@@ -597,7 +597,9 @@ systemctl is-system-running
 
 Expected: the same pass result and markers; each granted unit `active` (the
 oneshot probe may be `inactive` with `Result=success` after running),
-`ConditionResult=yes`, started **after** the controller's READY; no `unmet
+`ConditionResult=yes`, started **after** the controller's READY; the jobs queued by Boot A's
+enable must survive the pass (the preflight does not reload the manager), so
+`journalctl` shows no `Job ... failed` for them; no `unmet
 condition` line for a granted unit; no pending jobs. Record the timestamps.
 Take **snapshot S2**.
 

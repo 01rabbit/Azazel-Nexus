@@ -420,12 +420,18 @@ class ActivationDaemon:
 
     def _remask_all(
         self, *, now: str, actor: str, event_type: str, error_type: str,
-        skip: frozenset = frozenset(),
+        skip: frozenset = frozenset(), reload: bool = True,
     ) -> list[str]:
         """Retry narrowing of every governed unit and record the attempt.
 
         `skip` names units left as they are: only the Knowledge Context
         broker's queued start job at preflight (see `_run_once`).
+        `reload=False` is the boot pass's preflight only: the masks are on disk
+        (the next boot's deny-by-default), and the reload that ends the batch
+        is the one after the decision (`activate`) or the narrowing that every
+        other way out of the pass makes. A reload here would fail the start
+        jobs systemd queued for units an earlier boot enabled, and nothing
+        starts them again.
         """
 
         failures: list[str] = []
@@ -437,9 +443,10 @@ class ActivationDaemon:
                                            self.contextd_before_mask)
             except Exception as exc:  # noqa: BLE001 - collect all failures
                 failures.append(f"{definition.name}: {type(exc).__name__}")
-        reload_failure = self._reload()  # the masks above are one batch
-        if reload_failure is not None:
-            failures.append(reload_failure)
+        if reload:
+            reload_failure = self._reload()  # the masks above are one batch
+            if reload_failure is not None:
+                failures.append(reload_failure)
         self._record(
             {
                 "event_type": event_type,
@@ -912,7 +919,10 @@ def _run_once(
             hold_state.held = True
     failures = daemon._remask_all(now=now, actor=actor,
         event_type="activation.evidence_preflight_masked", error_type="preflight",
-        skip=hold)
+        skip=hold, reload=False)
+    # No reload here: the preflight masks and the decision are one batch, ended
+    # by the reload in `daemon.activate` (or, on any way out that raises, by the
+    # narrowing in `_locked_pass`, which reloads).
     if failures:
         daemon._narrow_everything(now=now, actor=actor, after=failures)
     if marker_failure is not None:

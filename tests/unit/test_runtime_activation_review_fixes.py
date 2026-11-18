@@ -1549,6 +1549,10 @@ def test_a_queued_start_is_kept_on_grant_and_runs_after_ready(queued):
 def test_the_old_preflight_fails_the_queued_start(queued, monkeypatch):
     """Negative check: masking the broker at preflight fails its job (the S1 finding)."""
     monkeypatch.setattr(activated, "contextd_start_is_queued", lambda authority_: False)
+    original = activated.ActivationDaemon._remask_all
+    # The preflight no longer reloads (8504185 added that reload); put it back.
+    monkeypatch.setattr(activated.ActivationDaemon, "_remask_all",
+                        lambda self, **kw: original(self, **{**kw, "reload": True}))
     outcome = _pass(queued)
     assert CTX in outcome.granted  # re-granted ...
     assert queued.model.start_job_failed is True  # ... but its start job had failed

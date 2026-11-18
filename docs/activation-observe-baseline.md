@@ -404,7 +404,15 @@ pass keeps `lease=None`.
   the volatile `/run`) only for the units granted by this boot's pass, after
   recording the decision. A unit without its marker is skipped
   (`unmet condition check`) rather than started; with it, it starts normally
-  (both VM-confirmed with the same harmless test units). The marker grants
+  (both VM-confirmed with the same harmless test units). A later VM run
+  (2026-11-18, boot after a grant) showed that a reload with the unit masked
+  does fail its queued start job ("Failed to start"; the test units of
+  2026-10-20 are not reproduced). Neither observation is relied on: the marker
+  is what withholds a unit in the same boot, and the mask and the reload are
+  what the next boot starts from. The preflight of a boot pass does not
+  reload (see "Reload" in §8): a reload there fails the start jobs that
+  systemd queued, from the previous boot's enable, for the units this boot
+  grants, and nothing starts them again. The marker grants
   nothing by itself: absence only withholds, it is cleared at every kernel
   boot (not at a soft-reboot: §10.2, L-7), the controller still never
   starts a unit, and masking remains for the next boot.
@@ -1007,7 +1015,7 @@ it, as before. All six packaged units pass
 the `systemd_loaded_units` producer after the generation producer). The file
 check says what systemd *would* load. A unit loaded earlier in the boot runs
 its loaded definition until a daemon-reload, and the preflight mask does not
-reload. So the pass reads the manager over the controller's own D-Bus
+reload (the decision's reload follows it). So the pass reads the manager over the controller's own D-Bus
 session (the same `SystemdBusSession` that masks). The reads are read-only:
 `GetUnit`, then one `Properties.GetAll` of the `org.freedesktop.systemd1.Unit`
 interface. The session accepts `GetAll` only on the six grantable units'
@@ -1062,7 +1070,7 @@ published):
   after the controller, which the checks above establish, and `ExecCondition=`
   can only skip a start.
 - `NeedDaemonReload` is not required false: the preflight mask itself changes
-  the unit file state, and the loaded definition is what is compared.
+  the unit file state, and the manager is not reloaded before the collection, and the loaded definition is what is compared.
 - The watchdog, the fetch service and the model hosts are outside
   `GRANTABLE_UNITS`. No pass ever writes their marker, and their marker
   condition is the hardening test's to keep
@@ -1122,9 +1130,16 @@ It is the only unit the controller can stop.
 change files; a manager that loaded a unit earlier keeps its loaded
 definition until it is reloaded, so a granted unit could still start as
 `masked`. Each batch of such changes now ends with one argument-less
-`Manager.Reload`: after the preflight masks, after the controller's grant
-batch, after a rollback or wider narrowing, and after an emergency narrowing
-and a recheck's mask. A failed reload is fail-closed (grant unconfirmed,
+`Manager.Reload`. In a boot pass the preflight masks and the decision are one
+batch: the preflight does not reload, and the batch ends with the reload after
+the controller's grant batch (every way out that raises ends it with the
+narrowing's reload instead). The reason is that a reload with a unit masked
+fails the start job systemd queued for it; the preflight's reload failed the
+jobs of the units this boot then granted (observed on the VM, 2026-11-18: the
+second boot after a grant started none of them), while the withheld units'
+jobs are meant to fail at the decision's reload. A rollback or wider
+narrowing, an emergency narrowing and a recheck's mask each end with their
+own reload. A failed reload is fail-closed (grant unconfirmed,
 everything masked, non-zero exit). After the grant batch's reload, and before
 the floors are raised, any marker is written or READY is sent, the loaded
 definitions of the guarded units are verified again (§8.2: loaded, vendor
@@ -1443,8 +1458,8 @@ the controller has exited after step 1 (it has no `RemainAfterExit`), so
 starting the broker queues a second controller pass first. The second pass is
 designed to keep the broker's queued start job and to re-grant it:
 
-- its preflight removes the markers and masks and reloads every governed unit
-  except a broker that is inactive with a start job queued, which it leaves as
+- its preflight removes the markers and masks every governed unit (the
+  manager is reloaded after the decision, not here) except a broker that is inactive with a start job queued, which it leaves as
   it is (masking and reloading would make systemd fail that job; the job cannot
   run before READY, because the broker is ordered after the controller);
 - it decides: if the broker is granted again (unmask, enable, reload, marker
