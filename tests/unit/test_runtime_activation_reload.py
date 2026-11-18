@@ -19,6 +19,7 @@ import pytest
 
 from azazel_nexus.activation import CORE_UNITS, UnitState
 from azazel_nexus_runtime import activated
+from azazel_nexus_runtime.activation_budget import PassBudgetExpired
 from azazel_nexus_runtime.activation_loaded_units import verify_loaded_units
 from azazel_nexus_runtime.systemd_bus import (
     MANAGER_INTERFACE, SystemdBusSession, SystemdUnitCalls, _Reply,
@@ -53,16 +54,15 @@ def reload_positions(timeline):
 
 
 def assert_granting_pass_shape(timeline) -> None:
-    """Preflight masks, one reload, the grant batch, one reload."""
+    """Preflight masks and the grant batch are one batch, ended by one reload."""
     check_reload_after_every_batch(timeline)
     count = len(CORE_UNITS)
     assert [op for op, _ in timeline[:count]] == ["mask"] * count
-    assert timeline[count] == ("reload", ""), "no reload after the preflight masks"
-    rest = timeline[count + 1:]
+    rest = timeline[count:]
     assert sorted(unit for op, unit in rest if op == "unmask_and_enable") == sorted(SCOPE)
     assert rest[-1] == ("reload", ""), "no reload after the grants"
-    assert all(op != "reload" for op, _ in rest[:-1])
-    assert len(reload_positions(timeline)) == 2
+    assert all(op != "reload" for op, _ in rest[:-1]), "a reload before the decision"
+    assert len(reload_positions(timeline)) == 1
 
 
 def skip_reload(manager, which: int) -> None:
@@ -78,24 +78,32 @@ def skip_reload(manager, which: int) -> None:
     manager.reload = reload
 
 
-def test_a_granting_pass_reloads_after_the_preflight_masks_and_after_the_grants(world):
+def test_a_granting_pass_reloads_once_after_the_preflight_masks_and_the_grants(world):
     world.manager.timeline.clear()  # the fixture's setup widened everything first
     outcome = world.run()
     assert sorted(outcome.granted) == list(SCOPE)
     assert_granting_pass_shape(world.manager.timeline)
 
 
-def test_removing_the_preflight_reload_is_caught(world):
+def test_a_reload_between_the_preflight_and_the_decision_is_caught(world):
     world.manager.timeline.clear()
-    skip_reload(world.manager, 0)
-    world.run()
-    with pytest.raises(AssertionError, match="no reload after the preflight masks"):
+    original = activated.ActivationDaemon._remask_all
+
+    def with_reload(self, **kwargs):
+        return original(self, **{**kwargs, "reload": True})
+
+    activated.ActivationDaemon._remask_all = with_reload
+    try:
+        world.run()
+    finally:
+        activated.ActivationDaemon._remask_all = original
+    with pytest.raises(AssertionError, match="a reload before the decision"):
         assert_granting_pass_shape(world.manager.timeline)
 
 
 def test_removing_the_grant_reload_is_caught(world):
     world.manager.timeline.clear()
-    skip_reload(world.manager, 1)
+    skip_reload(world.manager, 0)
     world.run()
     with pytest.raises(AssertionError, match="without a Manager.Reload|no reload after the grants"):
         assert_granting_pass_shape(world.manager.timeline)
@@ -121,13 +129,90 @@ def test_a_failed_reload_after_the_grants_leaves_nothing_granted(world):
     assert world.raised == []
 
 
-def test_a_failed_preflight_reload_stops_the_pass_before_any_grant(world):
-    manager = RecordingUnitManager((d.name for d in CORE_UNITS), fail_reload=True)
+def test_a_failed_grant_reload_masks_every_unit_and_writes_no_marker(world):
+    manager = JobManager((d.name for d in CORE_UNITS), fail_reload=True)
     world.manager = manager
     with pytest.raises(Exception):
         world.run()
-    assert not any(op == "unmask_and_enable" for op, _ in manager.timeline)
+    assert all(manager.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
     assert world.markers() is None
+
+
+def test_a_pass_that_stops_after_the_preflight_leaves_no_marker(world):
+    def expired(deadline, clock):
+        raise PassBudgetExpired("synthetic")
+
+    original = activated.check_budget
+    activated.check_budget = expired
+    try:
+        with pytest.raises(PassBudgetExpired):
+            world.run()
+    finally:
+        activated.check_budget = original
+    # The masks are on disk and no marker exists: nothing can start. The
+    # reload for this way out is the narrowing in `_locked_pass`.
+    assert all(world.manager.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
+    assert world.markers() is None
+    assert world.raised == []
+
+
+# -- start jobs queued by an earlier boot (the regression of 8504185) ----------------
+
+
+class JobManager(RecordingUnitManager):
+    """A manager that fails a queued start job of a masked unit at a Reload."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.queued: set = set()
+        self.failed: set = set()
+
+    def reload(self) -> None:
+        for unit in sorted(self.queued):
+            if self.state(unit) is UnitState.MASKED:
+                self.queued.discard(unit)
+                self.failed.add(unit)
+        super().reload()
+
+
+def with_queued_jobs(world) -> JobManager:
+    manager = JobManager((d.name for d in CORE_UNITS))
+    for definition in CORE_UNITS:  # an earlier boot enabled everything
+        manager.unmask_and_enable(definition.name)
+        manager.queued.add(definition.name)
+    world.manager = manager
+    return manager
+
+
+def test_the_second_boot_keeps_the_start_jobs_of_granted_units(world):
+    manager = with_queued_jobs(world)
+    outcome = world.run()
+    assert sorted(outcome.granted) == list(SCOPE)
+    assert set(SCOPE) <= manager.queued
+    assert not set(SCOPE) & manager.failed
+
+
+def test_a_withheld_unit_loses_its_queued_job_at_the_decision_reload(world):
+    manager = with_queued_jobs(world)
+    world.run()
+    withheld = {d.name for d in CORE_UNITS} - set(SCOPE)
+    assert withheld and withheld <= manager.failed
+    assert not withheld & manager.queued
+
+
+def test_the_reload_after_the_preflight_would_fail_the_granted_jobs(world):
+    manager = with_queued_jobs(world)
+    original = activated.ActivationDaemon._remask_all
+
+    def with_reload(self, **kwargs):
+        return original(self, **{**kwargs, "reload": True})
+
+    activated.ActivationDaemon._remask_all = with_reload
+    try:
+        world.run()
+    finally:
+        activated.ActivationDaemon._remask_all = original
+    assert set(SCOPE) <= manager.failed  # the regression, detected
 
 
 def test_an_emergency_narrowing_reloads_after_its_masks(world):
@@ -165,9 +250,9 @@ def test_the_loaded_units_are_verified_again_after_the_grant_reload(world):
 
     outcome = world.run(loaded_units=loaded_units)
     assert sorted(outcome.granted) == list(SCOPE)
-    # collection, then (preflight reload before it) the grant reload, then the
-    # second verification, with nothing between the grant reload and it.
-    assert log == ["reload", "loaded_units", "reload", "loaded_units"]
+    # collection, then the grant reload, then the second verification, with
+    # nothing between the grant reload and it (the preflight does not reload).
+    assert log == ["loaded_units", "reload", "loaded_units"]
 
 
 def test_a_unit_that_fails_verification_after_the_reload_is_not_granted(world):
