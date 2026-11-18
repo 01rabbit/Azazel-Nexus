@@ -37,6 +37,75 @@ Text marked **要確認 (to confirm)** is a point this runbook could not settle
 from the code or existing documents; resolve it on the VM and record the
 answer with the run.
 
+## 運用追補: 許可・起動・閉鎖を分けて確認する
+
+以下は現行実装に基づく手順の補足であり、後続の過去のVM記録やその合否を
+変更しない。仮想環境の成立を実機の受入・配備・継続運用の承認に読み替えない。
+
+### 導入前の前提
+
+- `/data` は root と別の filesystem にする。
+  [`resource_assessment._mission_space`](../../runtime/src/azazel_nexus_runtime/resource_assessment.py)
+  は `/data` を symlink をたどらずに開き、root と同じ `st_dev`、不正な空き容量、
+  書込不能な filesystem を拒否する。単なるディレクトリ作成や同一deviceの
+  bind mountでは満たせない。導入前に `findmnt -T /data` と
+  `stat -c '%d %a %U:%G' / /data` を記録し、mount・device差・容量・権限を確認する。
+  必要な配置は実行する service account でも読めることを確かめる。
+- Edge package のスロットが bundle 内にあっても、installer は
+  `/opt/azazel/edge-core` へ自動配置・展開しない。運用者が正式packageを配置し、
+  展開物・manifest・hashを照合してから probe を採取する。probe の既定TTLは
+  300秒（[`edge_package.DEFAULT_TTL_SECONDS`](../../src/azazel_nexus/edge_package.py)）。
+  配置前のprobeや、保護storageの解錠中に期限切れになったprobeを使わない。
+  再採取は `sudo systemctl start azazel-edge-probe-preflight.service`。
+  これはgrantではなく、結果の時刻・bootとの対応・health成立をpass前に確認する。
+- これらが成立しなければgrantや照会へ進まず、当該系列を止めて証拠を保存する。
+  成立しない前提を拒否試験の成功として数えない。
+
+### 起動の状態遷移
+
+| 初期状態・操作 | 許可状態と稼働状態の期待 |
+| --- | --- |
+| fresh install 直後、boot前 | 通常のservice-manager導入では governed unit はmask。activated、probe-preflight、recheck.timerはenableだけでstartされない |
+| generation未公開の初回boot | grant・markerは0。passの台帳は `evidence_preflight_masked` → `refused`（`no_generation`）→ `inputs_incomplete` の3件。markerなしのrecheckは増分0。この件数をgrant bootへ一般化しない |
+| 正当なgrantの成立 | marker作成・unmask・enable。[`DbusUnitManager`](../../runtime/src/azazel_nexus_runtime/units.py) に `StartUnit` はなく、grantだけでactiveとはしない |
+| disk上maskedからboot開始 | 当bootのpassはunmask・enableまで。boot開始時のtransactionに起動jobがないため、次bootで起動する。ここから計2bootという意味であり、常に2回必要という規則ではない |
+| 既にunmask・enable済みからboot | 次の1bootで条件を再評価し起動する。各対象のmarker、active、MainPID、cgroup、job、READY前後のjournalを照合する |
+
+同じbootの `systemctl start` / `restart` は `Requires=azazel-activated.service`
+経由で追加passを呼びうる。稼働中のgoverned unitがあると、preflightは全markerを
+削除・remaskし、inactive確認で `RollbackFailed` になることがある
+（[M-5](../activation-observe-baseline.md)）。通常のgrant反映に追加passを使わず、
+状態に応じた再bootで確認する。`--job-mode=ignore-requirements` を代替にしない。
+
+Knowledge Context brokerだけはpreflight・recheckの専用撤回で停止する。
+それ以外はboot単位のgrantであり、7unit構成では残る6unitのprocessがmarkerなしで
+動き続ける場合がある（設計のM-2）。「新規起動を閉じた」ことを「全process停止」と
+報告しない。即時全閉鎖が必要な操作では、運用者が対象unitを明示stop・maskし、
+各cgroupが空、保留job・socket・通信がないことまで確認する。取消・失効後の
+再boot拒否がhealth不成立で先に止まったときは、取消・失効の理由そのものを
+独立に検証したとは数えない。
+
+### 件数、停止、時刻、再commission
+
+- 各段の基準行数と期待増分を試験前に固定する。観測受入、照会試行、broker受付、
+  送信前拒否、TCP試行と再送、TLS確立、Knowledge受付・応答、Nexus完了、台帳採用を
+  request IDと試行IDで区別する。SYN 1でもTLS前timeoutならlistener受付は0に
+  なりうる。timeout・撤回後の後着応答が有効な結果へ復活しないことを別に確かめる。
+- 最初の不一致で当該系列の追加送信を止める。再試行は原因・変更・新試行ID・
+  期待件数・中止条件を事前固定し、計画と判定器をレビューしてから行う。
+  実測へ期待を後付けで合わせず、旧FAIL・旧計画・訂正履歴は保持する。
+- `require_clock_synchronized` は
+  [`activation_clock_sync`](../../runtime/src/azazel_nexus_runtime/activation_clock_sync.py)
+  のtimesyncd markerだけを見る。chronyでは同期証明にならず、markerを代作しない。
+  閉域同期元とsystem clockの独立往復計測を使い、誤差・RTT・測定間隔を記録する。
+  正負両方向で要求・生成・応答・期限の検査を列挙し、一方向の差へ寄せない。
+  「1ms未満」等の一時点の観測値を正式契約や常時保証にせず、未来時刻や期限の
+  許容幅をこの手順で追加しない。
+- revoke後など既存状態で再commissionが拒否された場合、既存proposalや保護storageを
+  手編集して迂回しない。[commissioning §4](../commissioning.md)の新しく用意した
+  保護commissioning storageと最小profile directoryによる手順を使う。
+  旧証拠は保持し、新commissionはactivationやadmissionの許可を意味しない。
+
 ## 0. Already confirmed on the VM (mechanics only)
 
 The coordinator checked the following on the rehearsal VM (Debian 13 aarch64,
