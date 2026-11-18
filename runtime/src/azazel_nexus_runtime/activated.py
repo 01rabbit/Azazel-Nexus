@@ -922,7 +922,8 @@ def _run_once(
         skip=hold, reload=False)
     # No reload here: the preflight masks and the decision are one batch, ended
     # by the reload in `daemon.activate` (or, on any way out that raises, by the
-    # narrowing in `_locked_pass`, which reloads).
+    # narrowing in `_locked_pass`, which attempts one; reaching Reload is not
+    # guaranteed, see "Reload" in docs/activation-observe-baseline.md §8).
     if failures:
         daemon._narrow_everything(now=now, actor=actor, after=failures)
     if marker_failure is not None:
