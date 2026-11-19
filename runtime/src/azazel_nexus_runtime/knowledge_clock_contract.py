@@ -11,6 +11,13 @@ import time
 from threading import RLock
 from pathlib import Path
 
+# Each reader permits at most this much unobserved local wall displacement.
+# Both nodes can move in opposite directions after the same observation.
+PER_NODE_STEP_MARGIN_US = 1000
+PAIR_STEP_MARGIN_US = 2 * PER_NODE_STEP_MARGIN_US
+# K can publish a newer sample before this N snapshot is replaced. Reserve
+# every accepted K snapshot's hard error ceiling, not the old K sample's error.
+MAX_PEER_ERROR_US = 1000
 HEALTH_SCHEMA = "azazel-clocklab-health/1"
 _KEYS = {"schema", "contract_id", "n_boot_id", "k_boot_id", "generation",
          "observed_boottime_ns", "valid_until_boottime_ns", "n_error_us", "k_error_us",
@@ -24,6 +31,10 @@ def boottime_ns():
 class ClockHealth:
     def __init__(self, contract, path, *, boot_id=None, boottime=boottime_ns,
                  wall=time.time_ns, owner=0, trust_root=Path("/")):
+        # Reject old Fabric/configuration even if a mixed installation can
+        # still construct a policy/1 object under the previous weaker rules.
+        if contract.as_dict().get("schema") != "azazel-clocklab-policy/2":
+            raise ValueError("clock policy revision")
         self.contract, self.path = contract, Path(path)
         self._trust_root = Path(trust_root)
         self.path.relative_to(self._trust_root)
@@ -108,14 +119,14 @@ class ClockHealth:
         # Conservative ceil drift: both node ages accrue at 100ppm.
         n_age_us = (age_ns + 999) // 1000
         k_age_us = n_age_us + d["k_age_at_receipt_us"]
-        budget = (d["n_error_us"] + d["k_error_us"] + 2000 + d["mapping_bound_us"]
+        budget = (d["n_error_us"] + MAX_PEER_ERROR_US + PAIR_STEP_MARGIN_US + d["mapping_bound_us"]
                   + (100 * (n_age_us + k_age_us) + 999999) // 1000000)
         if (d["n_error_us"] > 1000 or d["k_error_us"] > 1000
                 or k_age_us >= 5_000_000 or budget > self.contract.skew_budget_us):
             raise ValueError("clock health budget")
         # Acquisition bracket includes BOOTTIME/wall syscall and scheduling skew.
         wall_delta = self._wall() - now
-        if abs(wall_delta - d["wall_minus_boottime_ns"]) > 2_000_000:
+        if abs(wall_delta - d["wall_minus_boottime_ns"]) > PER_NODE_STEP_MARGIN_US * 1000:
             raise ValueError("clock stepped")
         generation = (d["n_boot_id"], d["k_boot_id"], d["generation"], d["step_counter"])
         if expected_generation is not None and generation != expected_generation:

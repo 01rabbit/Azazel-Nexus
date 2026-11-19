@@ -144,7 +144,8 @@ def health_snapshot(tmp_path, *, mutate=None):
     doc = {"schema": "azazel-clocklab-health/1", "contract_id": CONTRACT.contract_id,
            "n_boot_id": "n-boot", "k_boot_id": "k-boot", "generation": 1,
            "observed_boottime_ns": 1_000_000_000, "valid_until_boottime_ns": 6_000_000_000,
-           "n_error_us": 1000, "k_error_us": 1000, "k_age_at_receipt_us": 0,
+           # Positive fixture reserves both nodes' independent 2ms displacement.
+           "n_error_us": 100, "k_error_us": 100, "k_age_at_receipt_us": 0,
            "mapping_bound_us": 0, "step_counter": 0, "wall_minus_boottime_ns": 100_000_000_000}
     if mutate:
         mutate(doc)
@@ -172,7 +173,7 @@ def test_health_checks_mapping_age_budget_step_and_latches(tmp_path):
     lambda d: d.update(n_boot_id="old-boot"),
     lambda d: d.update(contract_id="sha256:" + "0" * 64),
     lambda d: d.update(k_age_at_receipt_us=5_000_000),
-    lambda d: d.update(mapping_bound_us=1001),
+    lambda d: d.update(mapping_bound_us=2000),
     lambda d: d.update(n_error_us=1001),
     lambda d: d.update(observed_boottime_ns=3_000_000_000),
     lambda d: d.update(generation=True),
@@ -369,7 +370,10 @@ def test_health_latch_is_serialized_through_adoption_use():
 
 
 def test_final_health_snapshot_is_purely_reproved_after_marker_delay(tmp_path):
-    health, clock, _, _ = health_snapshot(tmp_path)
+    # Isolate the five-second age boundary from the stricter paired budget.
+    # Zero measurement error is a synthetic fixture, not a lab guarantee.
+    health, clock, _, _ = health_snapshot(
+        tmp_path, mutate=lambda d: d.update(n_error_us=0, k_error_us=0))
     clock.update(boot=5_990_000_000, wall=105_990_000_000)
     reads = []
     original = health._check
@@ -387,3 +391,77 @@ def test_final_health_snapshot_is_purely_reproved_after_marker_delay(tmp_path):
         verified.adoption_validity(utc_now=lambda: NOW, monotonic=lambda: 1, grant_check=marker)
     assert len(reads) == 1  # Final proof must not open another I/O time gap.
     assert health._latched is True
+
+
+@pytest.mark.parametrize("step_ns", [-1_900_000, 1_900_000, -1_999_000, 1_999_000])
+def test_old_pair_and_publication_counterexamples_reject_local_step(tmp_path, step_ns):
+    health, clock, _, _ = health_snapshot(tmp_path)
+    clock["wall"] += step_ns
+    with pytest.raises(ValueError, match="stepped"):
+        health.check()
+
+
+@pytest.mark.parametrize("step_us", [-1000, -900, 0, 900, 1000])
+def test_low_error_pair_with_each_one_ms_displacement_reserved(tmp_path, step_us):
+    health, clock, _, _ = health_snapshot(tmp_path)
+    clock["wall"] += step_us * 1000
+    assert health.check() == ("n-boot", "k-boot", 1, 0)
+
+
+@pytest.mark.parametrize("step_ns", [-1_000_001, 1_000_001])
+def test_single_local_step_over_reserved_bound_refused_and_latched(tmp_path, step_ns):
+    health, clock, _, _ = health_snapshot(tmp_path)
+    clock["wall"] += step_ns
+    with pytest.raises(ValueError, match="stepped"):
+        health.check()
+    clock["wall"] -= step_ns
+    with pytest.raises(ValueError, match="latched"):
+        health.check()
+
+
+@pytest.mark.parametrize("mapping_us,accepted", [(1000, True), (1001, False)])
+def test_pair_budget_boundary_reserves_future_k_error(tmp_path, mapping_us, accepted):
+    # 800 N + 1000 future K + 2000 steps + 200 drift + mapping = 5000/5001.
+    health, _, _, _ = health_snapshot(tmp_path, mutate=lambda d: d.update(
+        n_error_us=800, k_error_us=0, mapping_bound_us=mapping_us))
+    if accepted:
+        assert health.check() == ("n-boot", "k-boot", 1, 0)
+    else:
+        with pytest.raises(ValueError, match="budget"):
+            health.check()
+
+
+def test_future_k_error_is_reserved_even_if_old_k_error_is_zero(tmp_path):
+    health, _, _, _ = health_snapshot(tmp_path, mutate=lambda d: d.update(
+        n_error_us=1000, k_error_us=0, mapping_bound_us=801))
+    with pytest.raises(ValueError, match="budget"):
+        health.check()
+
+
+def test_old_fabric_policy_object_refused_before_health_read():
+    from azazel_nexus_runtime.knowledge_clock_contract import ClockHealth
+    class OldPolicy:
+        def as_dict(self): return {"schema": "azazel-clocklab-policy/1"}
+    with pytest.raises(ValueError, match="revision"):
+        ClockHealth(OldPolicy(), "/unused")
+
+
+def test_bundle_loader_rejects_old_policy_before_permissive_old_fabric(tmp_path,monkeypatch):
+    import json,os
+    import azazel_nexus_runtime.knowledge_context_config as config
+    from azazel_fabric.knowledge_context_clocklab import ClockContract
+    for name in config._FILES:
+        (tmp_path/name).write_bytes(b'')
+    manifest={name:None for name in config._MANIFEST_KEYS}
+    manifest.update(schema=config.MANIFEST_SCHEMA_V2,clock_policy={
+        'schema':'azazel-clocklab-policy/1','skew_budget_us':5000,
+        'max_observation_age_ms':5000,
+        'contract_id':'sha256:cf12dddea0953a51e8fb91b4524b6064118d1405a92601f3f89a8a8f28603de5'})
+    monkeypatch.setattr(config,'_open_dir',lambda path:os.open(tmp_path,os.O_RDONLY|os.O_DIRECTORY))
+    monkeypatch.setattr(config,'_read',lambda *args:(json.dumps(manifest).encode(),None))
+    calls=[]
+    monkeypatch.setattr(ClockContract,'from_dict',lambda value:calls.append(value))
+    with pytest.raises(config._Refused) as refused:
+        config._load(NOW,directory=tmp_path)
+    assert refused.value.code=='clock_policy'
+    assert calls==[]

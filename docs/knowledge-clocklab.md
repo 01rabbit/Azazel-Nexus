@@ -49,12 +49,27 @@ snapshot reads. Its exact `azazel-clocklab-health/1` keys are:
 - k_age_at_receipt_us and mapping_bound_us (conservative K-to-N freshness mapping);
 - wall_minus_boottime_ns (N sample).
 
-Age is strictly below five seconds at adoption. The guard includes both node
-ages at 100ppm, ceiling rounding, mapping bound and a 2000us sampling margin in
-the 5000us budget. It never directly subtracts K and N BOOTTIME values. Missing,
-unsafe, stale, over-budget, changed-boot/step/generation or stepped-wall evidence
-refuses; a broker guard latches closed until restart. A privileged external
-observer supplies evidence; this does not claim autonomous NTP monitoring.
+採用時の観測ageは5秒未満を必要とする。policy revisionを
+`azazel-clocklab-policy/2`へ変更し、contract IDを旧版と分離する。
+旧policy/1、旧peer ID、旧Fabricの混成導入はfallbackせず拒否する。
+既定v1は変更しない。N/K双方のローカルstep閾値は各1000usとし、
+K側は別に観測ageの100ppm項を計上する。Nの予算は、自身の実測誤差、
+将来の任意K snapshotの誤差hard上限1000us、両nodeのstep余裕計2000us、
+mapping、両node ageの100ppm分（切上げ）を含む。Kだけ先に新sampleを
+publishした窓では旧Kの実測誤差だけの予約では不十分になるためである。
+k_error_usフィールド自体も1000以下を必須とする。
+
+u68 producerはreceipt後2秒以内でpublicationを失効させる。
+Tのwall-minus-BOOTTIME anchorはlifecycle初回値の±250us内に固定し、
+毎回の観測値へ基準を移動しない。任意old/new T anchor間の最大500usを
+mappingへ予約し、同じ2秒上限と取得spanまでのrate換算を切上げて加える。
+5秒はwire契約の上限のままである。閾値・rate・取得誤差の仮定は仮想閉域の
+実験条件であり、物理時計・絶対UTCの保証にはしない。publish遅延、T移動の
+累積、予算枯渇では閉じ、可用性のため試験中に閾値や初回基準を変えない。
+
+欠落、不正権限、失効、予算超過、boot/step/generation変化、wall stepは拒否する。
+broker guardは閉じた状態をラッチする。特権外部observerが証拠を供給する設計であり、
+製品単独によるNTP監視の保証ではない。別nodeのBOOTTIME同士を減算しない。
 
 API and handoff retain raw/effective expiry separately. The UI shows the last
 server validity decision and as_of; browser Date.now does not extend v2
