@@ -13,8 +13,8 @@ wheels = [
 
 [[package]]
 name = "azazel-fabric"
-version = "0.10.0+u68.clocklab2"
-source = { git = "https://github.com/01rabbit/Azazel-Fabric.git?rev=47c6cec47326941f6c234d4f57f2caf4f04357a7#47c6cec47326941f6c234d4f57f2caf4f04357a7" }
+version = "0.10.1.dev0"
+source = { git = "https://github.com/01rabbit/Azazel-Fabric.git?rev=a4fa5535d3d0a0c9ed2694ea15b4b474ed587aa1#a4fa5535d3d0a0c9ed2694ea15b4b474ed587aa1" }
 dependencies = [
     { name = "pydantic" },
 ]
@@ -43,7 +43,7 @@ mio = [
 
 [package.metadata]
 requires-dist = [
-    { name = "azazel-fabric", marker = "extra == 'fabric'", git = "https://github.com/01rabbit/Azazel-Fabric.git?rev=47c6cec47326941f6c234d4f57f2caf4f04357a7" },
+    { name = "azazel-fabric", marker = "extra == 'fabric'", git = "https://github.com/01rabbit/Azazel-Fabric.git?rev=a4fa5535d3d0a0c9ed2694ea15b4b474ed587aa1" },
     { name = "azazel-mio", marker = "extra == 'mio'", git = "https://github.com/01rabbit/Azazel-MIO.git?rev=4511f1fcb4618a9675bc33abceeb606a60349583" },
     { name = "pynacl", marker = "extra == 'dev'", specifier = ">=1.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },

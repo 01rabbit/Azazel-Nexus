@@ -46,28 +46,31 @@ fabric = pytest.importorskip(
 # --------------------------------------------------------------------------
 
 
-def test_the_module_pin_and_the_manifest_pin_are_the_same_tag():
+def test_the_module_version_and_manifest_candidate_commit_are_bound():
     """Two statements of one value drift; this is what stops them.
 
-    The module names the tag it is written against and `pyproject.toml` names
-    the tag pip installs. A reader trusts the former and a machine obeys the
-    latter, so they disagreeing is worse than either being wrong alone.
+    The lab candidate names a package version and a separate immutable source
+    commit. Manufacturing must bind both; a version string is not a Git ref.
     """
 
     declared = re.findall(
         r'"azazel-fabric\s*@\s*git\+[^"@]+@(?P<tag>[^"]+)"',
         (ROOT / "pyproject.toml").read_text("utf-8"),
     )
-    assert declared == [FABRIC_PIN], (
-        f"pyproject.toml pins {declared} and fabric_boundary.py names "
-        f"{FABRIC_PIN!r}"
-    )
+    assert declared == ["a4fa5535d3d0a0c9ed2694ea15b4b474ed587aa1"], declared
+    assert FABRIC_PIN == "v0.10.1.dev0"
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("candidate_wheelhouse", ROOT / "tools/build_wheelhouse.py")
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    assert builder.SOURCE_BUILDS["azazel-fabric"]["commit"] == declared[0]
+    assert builder.SOURCE_BUILDS["azazel-fabric"]["version"] == FABRIC_PIN.lstrip("v")
 
 
-def test_the_pin_is_an_exact_tag_not_a_branch_or_a_commit():
-    """A branch is not a release and cannot be depended on."""
+def test_the_package_pin_is_an_exact_version_not_a_branch():
+    """An unpublished dev version has no release tag; source is commit-pinned."""
 
-    assert re.fullmatch(r"v\d+\.\d+\.\d+(?:rc\d+|a\d+|b\d+)?", FABRIC_PIN), FABRIC_PIN
+    assert re.fullmatch(r"v\d+\.\d+\.\d+(?:rc\d+|a\d+|b\d+)?(?:\.dev\d+)?", FABRIC_PIN), FABRIC_PIN
 
 
 def test_the_installed_fabric_is_the_pinned_one():

@@ -84,9 +84,9 @@ BUNDLED_EXTRAS = ("fabric", "mio")
 #: table and both target locks together.
 SOURCE_BUILDS = {
     "azazel-fabric": {
-        "version": "0.10.0+u68.clocklab2",
+        "version": "0.10.1.dev0",
         "repository": "https://github.com/01rabbit/Azazel-Fabric.git",
-        "commit": "47c6cec47326941f6c234d4f57f2caf4f04357a7",
+        "commit": "a4fa5535d3d0a0c9ed2694ea15b4b474ed587aa1",
     },
     "azazel-mio": {
         "version": "0.1.0.dev20261108+gitguidance8",

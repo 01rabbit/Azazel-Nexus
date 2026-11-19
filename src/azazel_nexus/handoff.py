@@ -232,7 +232,7 @@ def public_binding_id(text):
             and not [code for code in detect(text) if code != "host_port"])
 
 
-def _clock_contract_digest(value):
+def _clock_contract_digest(value, *, past=False):
     """Only the closed v2 technique projection's public policy digest.
 
     This is display metadata, never a grant, signature or health acceptance.
@@ -240,9 +240,32 @@ def _clock_contract_digest(value):
     """
     from .technique_knowledge import read_projection
     try:
-        tk = value["knowledge"]["full_node_context"]["technique_knowledge"]
+        context = value["knowledge"]["full_node_context"]
+        if past:
+            pr = context["technique_past_reference"]
+            if (type(pr) is not dict or set(pr) != {
+                    "adoption", "adoption_reason", "binding", "freshness", "judged_at",
+                    "kind", "retained", "revocation", "state", "technique_knowledge"}
+                    or pr["adoption"] != "not_adoptable" or pr["revocation"] != "not_checked"
+                    or pr["retained"] is not True or pr["state"] != "retained"
+                    or (pr["kind"], pr["adoption_reason"]) not in {
+                        ("past_before_update", "past_observation"),
+                        ("past_closed", "closed_incident")}):
+                return None
+            binding = pr["binding"]
+            if (type(binding) is not dict or set(binding) != {
+                    "incident_id", "observed_sequence", "technique_ids", "attempted_at"}
+                    or binding["incident_id"] != value["incident"]["incident_id"]
+                    or type(binding["observed_sequence"]) is not int
+                    or binding["observed_sequence"] < 1):
+                return None
+            tk = pr["technique_knowledge"]
+        else:
+            tk = context["technique_knowledge"]
         stored = {k: v for k, v in tk.items() if k != "server_validity"}
         read_projection(stored)
+        if past and binding["technique_ids"] != [r["technique_id"] for r in stored["techniques"]]:
+            return None
         validity = stored["validity"]
         if stored["version"] == "technique-knowledge/2":
             return validity["contract_id"]
@@ -256,11 +279,15 @@ def scan_package(value) -> list[str]:
     from .model_text import is_typed_content_digest
     found = []
     vocabulary = fixed_vocabulary()
-    clock_digest = _clock_contract_digest(value)
+    clock_digests = {
+        ("knowledge", "full_node_context", "technique_knowledge", "validity", "contract_id"):
+            _clock_contract_digest(value),
+        ("knowledge", "full_node_context", "technique_past_reference", "technique_knowledge",
+         "validity", "contract_id"): _clock_contract_digest(value, past=True),
+    }
     for path, text in _walk(value):
         key = path[-1] if path else None
-        if (path == ("knowledge", "full_node_context", "technique_knowledge", "validity", "contract_id")
-                and text == clock_digest and _DIGEST.fullmatch(text)):
+        if (path in clock_digests and text == clock_digests[path] and _DIGEST.fullmatch(text)):
             continue
         if (is_typed_content_digest(text)
                 and (path[-3:] == ("binding", "evidence_refs", "id")
