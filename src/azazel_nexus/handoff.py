@@ -232,13 +232,36 @@ def public_binding_id(text):
             and not [code for code in detect(text) if code != "host_port"])
 
 
+def _clock_contract_digest(value):
+    """Only the closed v2 technique projection's public policy digest.
+
+    This is display metadata, never a grant, signature or health acceptance.
+    Keep other hex values and digests in arbitrary fields under the leak scan.
+    """
+    from .technique_knowledge import read_projection
+    try:
+        tk = value["knowledge"]["full_node_context"]["technique_knowledge"]
+        stored = {k: v for k, v in tk.items() if k != "server_validity"}
+        read_projection(stored)
+        validity = stored["validity"]
+        if stored["version"] == "technique-knowledge/2":
+            return validity["contract_id"]
+    except (KeyError, TypeError, ValueError, AttributeError):
+        pass
+    return None
+
+
 def scan_package(value) -> list[str]:
     """Every category found in any string of a package or manifest value."""
     from .model_text import is_typed_content_digest
     found = []
     vocabulary = fixed_vocabulary()
+    clock_digest = _clock_contract_digest(value)
     for path, text in _walk(value):
         key = path[-1] if path else None
+        if (path == ("knowledge", "full_node_context", "technique_knowledge", "validity", "contract_id")
+                and text == clock_digest and _DIGEST.fullmatch(text)):
+            continue
         if (is_typed_content_digest(text)
                 and (path[-3:] == ("binding", "evidence_refs", "id")
                      or path[-2:] == ("binding", "advisory_refs"))):
@@ -2022,7 +2045,14 @@ def render_markdown(p: dict) -> str:
                 if "validity" in tk:
                     v = tk["validity"]
                     add(f"- 署名期限 {_md(v['signed_expires_at'])}、意味期限 {_md(v['semantic_expires_at'])}、実効期限 {_md(v['effective_expires_at'])}")
-                    add(f"- サーバ判定: usable={tk['server_validity']['usable']}、理由 {_md(tk['server_validity']['reason'])}、policy {_md(v['contract_id'])}")
+                    # Display only closed labels: Markdown escaping a multi-underscore
+                    # code would resemble a Windows path to the final leak scan.
+                    reason_label = {"in_window": "期限内", "expired": "期限切れ",
+                                    "clock_unknown": "時刻未確認",
+                                    "clock_health_unavailable": "時刻監視未確認",
+                                    "clock_rollback": "時計逆行"}.get(
+                                        tk["server_validity"]["reason"], "未確認")
+                    add(f"- サーバ判定: usable={tk['server_validity']['usable']}、理由 {reason_label}、policy {_md(v['contract_id'])}")
                 add(f"- 基準時刻 {_md(tk['as_of'])}、期限 {_md(tk['expires_at'])}"
                     + lapse_note + "、"
                     f"権限 `{tk['authority']}`、信頼 `{tk['trust']}`")
