@@ -82,11 +82,14 @@ def main(argv=None) -> int:
               "/etc/azazel/commissioning/lite-revocations.signed.", file=sys.stderr)
         return 2
     if args and args[0] == "proposal-export":
-        if len(args) != 3 or args[1] != "--operator":
-            print("Use proposal-export --operator LABEL; no path overrides are accepted.", file=sys.stderr)
+        if (len(args) not in {3, 5} or args[1] != "--operator"
+                or (len(args) == 5 and args[3] != "--clock-policy")):
+            print("Use proposal-export --operator LABEL [--clock-policy FILE]; no other path overrides are accepted.", file=sys.stderr)
             return 2
         from .proposal_export import run
 
+        if len(args) == 5:
+            return run(args[2], _PermanentAddresses(), clock_policy_path=args[4])
         return run(args[2], _PermanentAddresses())
     if args and args[0] == "proposal-review":
         if (len(args) not in {3, 4} or args[1] != "--operator"

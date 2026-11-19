@@ -66,3 +66,25 @@ Tests exercise signed v2 positive/negative B boundaries, policy/nonce replay
 binding, effective expiry equality, expiry crossing after client validation,
 health loss/unsafe files, server-time projection and v2 grant binding. Formal
 fresh-VM acceptance and human visual acceptance are separate and unperformed.
+
+## Explicit full-proposal CLI input
+
+`az-nexus-commission proposal-export --operator LABEL --clock-policy /absolute/policy.json`
+opts into v4 through the normal interactive protected export. The file must be
+root-owned, a single-link regular file of 1–4096 bytes, with root-owned real
+directory ancestors and no group/other write permission on any component.
+Symlinks, duplicate JSON keys, unknown fields, non-finite values and ambiguous
+paths are refused. Its complete `ClockContract.as_dict()` must name the 5000us
+lab budget, 5000ms observation age and matching contract ID. The selected M.I.O.
+ceiling must be FULL. This is an explicit lab configuration, not a production
+clock guarantee. There is no fallback to zero or an older peer.
+
+The consent screen identifies the policy digest. Export reopens the entire
+input path after consent and compares exact bytes, file metadata/identity and
+ancestor identities before retaining the ordinary protected proposal and
+separate expected bytes. The policy is inside those full-proposal signature
+bytes and the commissioning digest; no manual proposal/expected-context editing
+or separate policy signature substitutes for the formal path. Omitting the flag
+preserves the existing proposal format and behavior. This command signs nothing
+and activates nothing. Older candidate wheels predating this CLI input do not
+establish that the formal v4 export can run; rebuild the candidate artifacts.
