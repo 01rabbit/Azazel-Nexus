@@ -33,7 +33,10 @@ class ClockHealth:
                  wall=time.time_ns, owner=0, trust_root=Path("/")):
         # Reject old Fabric/configuration even if a mixed installation can
         # still construct a policy/1 object under the previous weaker rules.
-        if contract.as_dict().get("schema") != "azazel-clocklab-policy/2":
+        policy = contract.as_dict()
+        if (policy.get("schema") != "azazel-clocklab-policy/2"
+                or type(policy.get("consumer_revision")) is not int
+                or policy["consumer_revision"] != 2):
             raise ValueError("clock policy revision")
         self.contract, self.path = contract, Path(path)
         self._trust_root = Path(trust_root)

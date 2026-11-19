@@ -52,7 +52,7 @@ def commissioning_proposal_payload(*, inventory, resource_profile, topology_prof
         document["deception_scope"] = render_deception_scope(scope)
     if clock_policy is not None:
         from azazel_fabric.knowledge_context_clocklab import ClockContract
-        contract = ClockContract.from_dict(clock_policy)
+        contract = ClockContract.from_dict(clock_policy, consumer_revision=2)
         if mio_profile != "FULL" or contract.skew_budget_us != 5000:
             raise ApprovalRefused("clocklab policy requires explicit FULL lab commissioning")
         document["schema"] = "azazel-nexus/commissioning-proposal/v4"

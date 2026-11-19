@@ -50,7 +50,10 @@ snapshot reads. Its exact `azazel-clocklab-health/1` keys are:
 - wall_minus_boottime_ns (N sample).
 
 採用時の観測ageは5秒未満を必要とする。policy revisionを
-`azazel-clocklab-policy/2`へ変更し、contract IDを旧版と分離する。
+`azazel-clocklab-policy/2`の署名対象bodyにstrict整数`consumer_revision: 2`を含め、
+contract IDを旧版・初期policy/2候補とも分離する。
+`ClockContract.from_dict`はPython側にも明示`consumer_revision=2`を要求するため、
+旧consumerが新Fabricだけを導入して新IDを名乗る混成設定も拒否する。
 旧policy/1、旧peer ID、旧Fabricの混成導入はfallbackせず拒否する。
 既定v1は変更しない。N/K双方のローカルstep閾値は各1000usとし、
 K側は別に観測ageの100ppm項を計上する。Nの予算は、自身の実測誤差、

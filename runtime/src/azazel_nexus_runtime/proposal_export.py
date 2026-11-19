@@ -90,7 +90,7 @@ def _clock_policy_input(path):
         value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique,
                            parse_constant=invalid_constant)
         from azazel_fabric.knowledge_context_clocklab import ClockContract
-        contract = ClockContract.from_dict(value)
+        contract = ClockContract.from_dict(value, consumer_revision=2)
         if contract.skew_budget_us != 5000:
             raise DraftRefused("clock policy requires the explicit finite lab contract")
         return contract.as_dict(), (tuple(ancestry), before, raw)

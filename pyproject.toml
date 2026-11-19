@@ -45,7 +45,7 @@ dev = ["pytest>=8", "pynacl>=1.5"]
 # Fabric cannot enter `dependencies` above -- a CORE path that fails when a
 # contract library is missing is not a CORE path. Fabric uses an exact tag,
 # never a branch or development commit (ADR-0001).
-fabric = ["azazel-fabric @ git+https://github.com/01rabbit/Azazel-Fabric.git@3579ffeab3a1cdd3275e401b09d3f6511010ed9e"]
+fabric = ["azazel-fabric @ git+https://github.com/01rabbit/Azazel-Fabric.git@47c6cec47326941f6c234d4f57f2caf4f04357a7"]
 
 # Optional shared M.I.O. core for the complete runtime distribution. Keep it
 # out of CORE dependencies; the offline bundle builds this exact source commit.

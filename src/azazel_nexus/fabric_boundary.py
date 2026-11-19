@@ -969,7 +969,7 @@ def restore_commissioning_inputs(document: dict) -> dict:
             context["deception_scope"] = section
         if schema == "azazel-nexus/commissioning-proposal/v4":
             from azazel_fabric.knowledge_context_clocklab import ClockContract
-            contract = ClockContract.from_dict(document["clock_policy"])
+            contract = ClockContract.from_dict(document["clock_policy"], consumer_revision=2)
             if context.get("mio_profile") != "FULL" or contract.skew_budget_us != 5000:
                 raise ValueError
             context["clock_policy"] = contract.as_dict()

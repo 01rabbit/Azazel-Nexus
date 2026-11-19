@@ -297,7 +297,7 @@ def plan(inp: Inputs, scratch: Scratch) -> Plan:
         if (proposal.get("schema") != "azazel-nexus/commissioning-proposal/v4"
                 or "sha256:" + hashlib.sha256(raw_proposal).hexdigest() != inp.commissioning_digest):
             raise Refused("clock_proposal_binding")
-        clock_policy = ClockContract.from_dict(proposal["clock_policy"]).as_dict()
+        clock_policy = ClockContract.from_dict(proposal["clock_policy"], consumer_revision=2).as_dict()
     document = {
         "schema": SCHEMA, "commissioning_digest": inp.commissioning_digest,
         "issued_at": issued, "expires_at": inp.expires_at, "version": inp.registry_version,

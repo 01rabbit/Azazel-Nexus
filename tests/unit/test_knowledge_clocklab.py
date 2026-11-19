@@ -438,15 +438,17 @@ def test_future_k_error_is_reserved_even_if_old_k_error_is_zero(tmp_path):
         health.check()
 
 
-def test_old_fabric_policy_object_refused_before_health_read():
+@pytest.mark.parametrize("old_schema", ["azazel-clocklab-policy/1", "azazel-clocklab-policy/2"])
+def test_old_fabric_policy_object_refused_before_health_read(old_schema):
     from azazel_nexus_runtime.knowledge_clock_contract import ClockHealth
     class OldPolicy:
-        def as_dict(self): return {"schema": "azazel-clocklab-policy/1"}
+        def as_dict(self): return {"schema": old_schema}
     with pytest.raises(ValueError, match="revision"):
         ClockHealth(OldPolicy(), "/unused")
 
 
-def test_bundle_loader_rejects_old_policy_before_permissive_old_fabric(tmp_path,monkeypatch):
+@pytest.mark.parametrize("policy_revision", [1, 2])
+def test_bundle_loader_rejects_old_policy_or_old_fabric_without_ack(tmp_path,monkeypatch,policy_revision):
     import json,os
     import azazel_nexus_runtime.knowledge_context_config as config
     from azazel_fabric.knowledge_context_clocklab import ClockContract
@@ -454,9 +456,9 @@ def test_bundle_loader_rejects_old_policy_before_permissive_old_fabric(tmp_path,
         (tmp_path/name).write_bytes(b'')
     manifest={name:None for name in config._MANIFEST_KEYS}
     manifest.update(schema=config.MANIFEST_SCHEMA_V2,clock_policy={
-        'schema':'azazel-clocklab-policy/1','skew_budget_us':5000,
+        'schema':f'azazel-clocklab-policy/{policy_revision}','consumer_revision':2,'skew_budget_us':5000,
         'max_observation_age_ms':5000,
-        'contract_id':'sha256:cf12dddea0953a51e8fb91b4524b6064118d1405a92601f3f89a8a8f28603de5'})
+        'contract_id':ClockContract(5000).contract_id})
     monkeypatch.setattr(config,'_open_dir',lambda path:os.open(tmp_path,os.O_RDONLY|os.O_DIRECTORY))
     monkeypatch.setattr(config,'_read',lambda *args:(json.dumps(manifest).encode(),None))
     calls=[]
