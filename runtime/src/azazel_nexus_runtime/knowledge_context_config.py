@@ -8,6 +8,7 @@ module. Absence of the directory is the default and means "closed".
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -27,7 +28,7 @@ from .runtime_paths import (
 )
 
 __all__ = ["CommissioningResult", "load_commissioning", "load_commissioning_from", "MANIFEST_SCHEMA",
-           "ObservationRule", "load_observation_rule", "OBSERVATION_RULE_SCHEMA"]
+           "ObservationRule", "load_observation_rule", "observation_rule_identity", "OBSERVATION_RULE_SCHEMA"]
 
 MANIFEST_SCHEMA = "azazel.knowledge-context.commissioning/1"
 OBSERVATION_RULE_SCHEMA = "azazel.knowledge-context.observation-query/1"
@@ -372,11 +373,48 @@ def _read_rule_file():
         os.close(dirfd)
 
 
+def _rule_identity(info, data):
+    """File version plus a digest of the content.
+
+    Timestamps are kernel-tick coarse, so a rewrite in place can leave
+    (dev, ino, mtime_ns, ctime_ns) unchanged and a deliberate writer can restore
+    them; the content digest closes that gap.
+    """
+    return (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns,
+            hashlib.sha256(data).hexdigest())
+
+
+def observation_rule_identity(path):
+    """The current identity of the file at ``path``, or None when it is absent
+    or cannot be read as a regular file. Never raises.
+
+    The gate only asks "is this still the file read at start-up", so there is no
+    ownership or mode judgement here (the start-up read already made it); any
+    difference, any doubt, reads as changed. The content digest is the part a
+    restored timestamp cannot fake.
+    """
+    try:
+        before = os.lstat(path)
+        if not stat.S_ISREG(before.st_mode):
+            return None
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        try:
+            info = os.fstat(fd)
+            if (info.st_dev, info.st_ino) != (before.st_dev, before.st_ino) or info.st_size > _RULE_LIMIT:
+                return None
+            data = os.read(fd, _RULE_LIMIT + 1)
+        finally:
+            os.close(fd)
+        return _rule_identity(info, data)
+    except Exception:  # noqa: BLE001 - any doubt reads as "changed"
+        return None
+
+
 def load_observation_rule():
     """Read the observation-query rule once.
 
     Returns ``(ObservationRule, identity)`` with identity ``(dev, ino, mtime_ns,
-    ctime_ns)``, or None for absence or any defect. Never raises and never says
+    ctime_ns, sha256 of the content)``, or None for absence or any defect. Never raises and never says
     why: the caller may only learn "usable" or "not usable".
     """
     try:
@@ -392,8 +430,7 @@ def load_observation_rule():
         limit = doc["max_requests_per_minute"]
         if type(limit) is not int or not 1 <= limit <= 60:
             return None
-        return (ObservationRule("technique-set/1", limit),
-                (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns))
+        return (ObservationRule("technique-set/1", limit), _rule_identity(info, data))
     except BaseException as exc:  # noqa: BLE001 - never raise, never explain
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
             raise

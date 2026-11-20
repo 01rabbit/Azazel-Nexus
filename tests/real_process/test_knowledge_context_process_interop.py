@@ -479,7 +479,7 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
         # served and verified, a free-form question is refused before sending.
         from types import SimpleNamespace
         from azazel_nexus.technique_knowledge import project_technique_response
-        from azazel_nexus_runtime.knowledge_context_config import ObservationRule
+        from azazel_nexus_runtime.knowledge_context_config import ObservationRule, observation_rule_identity
         from azazel_nexus_runtime.knowledge_contextd import CONTEXT_VERB, KnowledgeContextBroker
 
         posts = []
@@ -492,13 +492,12 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
         client._post_path = counted_post
         rule_file = root / "in-process-rule"
         rule_file.write_text("rule")
-        info = os.lstat(rule_file)
         audit_events = []
         broker = KnowledgeContextBroker(
             client=client, policy=policy, mission="synthetic-process-test",
             alias_key=b"p" * 32, enabled=True, audit=audit_events.append,
             observation_rule=(ObservationRule("technique-set/1", 60),
-                              (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)),
+                              observation_rule_identity(rule_file)),
             observation_rule_path=rule_file, grant_marker=lambda: ("granted",))
 
         def ask(frame):

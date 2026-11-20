@@ -53,13 +53,12 @@ def _open_gate() -> dict:
     import os
     import tempfile
 
-    from azazel_nexus_runtime.knowledge_context_config import ObservationRule
+    from azazel_nexus_runtime.knowledge_context_config import ObservationRule, observation_rule_identity
 
     fd, name = tempfile.mkstemp(prefix="azazel-observation-rule-")
     os.close(fd)
-    info = os.lstat(name)
     return {"observation_rule": (ObservationRule("technique-set/1", 60),
-                                 (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)),
+                                 observation_rule_identity(name)),
             "observation_rule_path": name}
 
 
