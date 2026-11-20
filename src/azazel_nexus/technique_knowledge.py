@@ -265,14 +265,13 @@ def project_technique_response(response, technique_ids) -> dict:
     validity = None
     if type(response) is dict and set(response) == {"response", "validity"}:
         from .knowledge_clock_validity import read_validity
-        from azazel_fabric.knowledge_context_clocklab import (
-            KnowledgeContextResponseV2, response_v1_projection)
+        from .fabric_boundary import clocklab_response_v1
         validity = read_validity(response["validity"])
-        semantic = KnowledgeContextResponseV2.model_validate(response["response"])
-        if (semantic.contract_id != validity["contract_id"]
-                or semantic.expires_at != datetime.fromisoformat(validity["semantic_expires_at"].replace("Z", "+00:00"))):
+        contract_id, expires_at, projected = clocklab_response_v1(response["response"])
+        if (contract_id != validity["contract_id"]
+                or expires_at != datetime.fromisoformat(validity["semantic_expires_at"].replace("Z", "+00:00"))):
             raise TechniqueVerificationFailed("clock validity binding")
-        response = response_v1_projection(semantic).model_dump(mode="json")
+        response = projected
     checked = validate_technique_response(response, technique_ids)
     rows = []
     for item in checked["techniques"]:
@@ -394,6 +393,21 @@ def read_projection(value) -> dict:
     return value
 
 
+_clock_health_provider = None
+
+
+def set_clock_health_provider(provider) -> None:
+    """Register how the host reads clock health: `provider(contract)` returns an
+    object with `.check(expected_generation=...)`.
+
+    The library cannot import the runtime that owns the health file (the
+    dependency runs runtime -> library), so the runtime hands the reader in. With
+    none registered a v2 record is never shown as usable.
+    """
+    global _clock_health_provider
+    _clock_health_provider = provider
+
+
 def display_projection(value, now, *, health_check=None):
     """Server-time view; old v1 records are retained reference only in clocklab."""
     import copy
@@ -408,12 +422,13 @@ def display_projection(value, now, *, health_check=None):
         reason = "clock_health_unavailable"
         try:
             if health_check is None:
-                from azazel_fabric.knowledge_context_clocklab import ClockContract
-                from azazel_nexus_runtime.knowledge_context_config import _clock_health
-                contract = ClockContract(skew_budget_us=validity["skew_budget_us"])
+                if _clock_health_provider is None:
+                    raise ValueError("no clock health provider registered")
+                from .fabric_boundary import clock_contract
+                contract = clock_contract(skew_budget_us=validity["skew_budget_us"])
                 if contract.contract_id != validity["contract_id"]:
                     raise ValueError
-                health_check = _clock_health(contract).check
+                health_check = _clock_health_provider(contract).check
             health_check(expected_generation=tuple(validity["health_generation"]))
             adopted = _instant(validity["adopted_at"]).timestamp()
             expiry = _instant(validity["effective_expires_at"]).timestamp()

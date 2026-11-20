@@ -476,6 +476,16 @@ def _clock_health(contract):
     return ClockHealth(contract, runtime_paths.ROOT / "run/azazel/knowledge-clock-health.json")
 
 
+def install_clock_health_provider() -> None:
+    """Hand the library the reader of this host's clock-health file.
+
+    The library shows a v2 technique record as usable only when the health file
+    agrees, but cannot import the runtime; the serving process registers this.
+    """
+    from azazel_nexus.technique_knowledge import set_clock_health_provider
+    set_clock_health_provider(_clock_health)
+
+
 def assert_clock_commissioning_binding(evidence):
     """A nonzero policy must be inside the full operator-signed proposal.
 
