@@ -492,12 +492,14 @@ def test_nexus_client_interoperates_with_knowledge_mtls_process(service_accessib
         client._post_path = counted_post
         rule_file = root / "in-process-rule"
         rule_file.write_text("rule")
+        rule_identity = observation_rule_identity(rule_file)
+        assert rule_identity is not None
         audit_events = []
         broker = KnowledgeContextBroker(
             client=client, policy=policy, mission="synthetic-process-test",
             alias_key=b"p" * 32, enabled=True, audit=audit_events.append,
             observation_rule=(ObservationRule("technique-set/1", 60),
-                              observation_rule_identity(rule_file)),
+                              rule_identity),
             observation_rule_path=rule_file, grant_marker=lambda: ("granted",))
 
         def ask(frame):

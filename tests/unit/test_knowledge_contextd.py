@@ -57,8 +57,9 @@ def _open_gate() -> dict:
 
     fd, name = tempfile.mkstemp(prefix="azazel-observation-rule-")
     os.close(fd)
-    return {"observation_rule": (ObservationRule("technique-set/1", 60),
-                                 observation_rule_identity(name)),
+    identity = observation_rule_identity(name)
+    assert identity is not None  # a None identity would close the gate, not open it
+    return {"observation_rule": (ObservationRule("technique-set/1", 60), identity),
             "observation_rule_path": name}
 
 

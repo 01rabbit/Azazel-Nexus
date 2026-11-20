@@ -208,6 +208,62 @@ def test_rule_identity_covers_content(env):
     assert cfg.observation_rule_identity(path) is None
 
 
+def latch_events(events):
+    return [e for e in events if e["event_type"] == "knowledge.context.observation_latched"]
+
+
+@pytest.mark.parametrize("identity", [None, (), (1, 2, 3, 4), (1, 2, 3, 4, 5, 6), [1, 2, 3, 4, "x"], "abcde"])
+def test_a_malformed_identity_closes_from_the_first_request(env, identity):
+    write_rule(env, 6)
+    broker, peer, events = make((cfg.ObservationRule("technique-set/1", 6), identity))
+    for _ in range(3):
+        assert broker.handle(tech()) == GATED
+        assert last(events)["reason_code"] == "refused_before_send"
+    assert peer.calls == 0
+    assert [e["reason_code"] for e in latch_events(events)] == ["invalid_identity"]
+
+
+@pytest.mark.parametrize("mutate,reason", [("remove", "missing"), ("replace", "changed"),
+                                           ("rewrite", "changed"), ("unreadable", "unreadable")])
+def test_latching_is_recorded_once_with_its_reason(env, mutate, reason):
+    path = write_rule(env, 6)
+    broker, peer, events = make(cfg.load_observation_rule())
+    assert "response" in broker.handle(tech())
+    assert latch_events(events) == []
+    if mutate == "remove":
+        path.unlink()
+    elif mutate == "replace":
+        other = path.with_name("new.json")
+        other.write_text(path.read_text())
+        os.chmod(other, 0o644)
+        os.replace(other, path)
+    elif mutate == "rewrite":
+        path.write_text(path.read_text() + " ")
+    else:
+        path.unlink()
+        path.mkdir()  # present but not a regular file
+    for _ in range(3):
+        assert broker.handle(tech()) == GATED
+    assert latch_events(events) == [{"event_type": "knowledge.context.observation_latched",
+                                     "outcome": "latched", "reason_code": reason}]
+
+
+def test_a_failing_audit_sink_does_not_keep_the_gate_open(env):
+    path = write_rule(env, 6)
+    broker, peer, events = make(cfg.load_observation_rule())
+    real = broker._audit
+
+    def flaky(event):
+        if event["event_type"] == "knowledge.context.observation_latched":
+            raise OSError("sink down")
+        real(event)
+    broker._audit = flaky
+    path.write_text(path.read_text() + " ")
+    assert broker.handle(tech()) == GATED
+    assert broker.handle(tech()) == GATED
+    assert peer.calls == 0
+
+
 @pytest.mark.parametrize("question,observation", [
     ("ATT&CK technique context: T1059", True),
     ("ATT&CK technique context: T1059.001", True),
