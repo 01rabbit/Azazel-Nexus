@@ -2,6 +2,10 @@
 import json,os,stat
 from types import SimpleNamespace
 import pytest
+
+# The lab clock contract exists only in the unpublished candidate Fabric (ADR-0011);
+# against the pinned tag these modules are not applicable.
+pytest.importorskip("azazel_fabric.knowledge_context_clocklab")
 from azazel_fabric.knowledge_context_clocklab import ClockContract
 from azazel_nexus import commissioning_draft
 from azazel_nexus.commissioning_approval import verify_commissioning_proposal
@@ -15,10 +19,17 @@ POLICY=ClockContract(skew_budget_us=5000).as_dict()
 def policy_file(tmp_path,monkeypatch):
  p=tmp_path/'clock-policy.json';p.write_text(json.dumps(POLICY));p.chmod(0o600)
  original=proposal_export._policy_stat
+ # The sandbox's own ancestors (a Linux CI /tmp is 1777) are outside the test's
+ # control; only they are masked. The policy file and the directory holding it
+ # keep every real mode check, so the writable-parent refusals stay exercised.
+ outside=set()
+ for ancestor in p.parent.parents:
+  info=ancestor.stat();outside.add((info.st_dev,info.st_ino))
  def host_owner(info,*,directory=False):
   # Host fixture has no root privilege; retain all real mode/type/inode checks.
   info=SimpleNamespace(**{name:getattr(info,name) for name in ('st_dev','st_ino','st_mode','st_uid','st_gid','st_nlink','st_size','st_mtime_ns','st_ctime_ns')})
   info.st_uid=0
+  if directory and (info.st_dev,info.st_ino) in outside:info.st_mode&=~(stat.S_ISVTX|stat.S_IWGRP|stat.S_IWOTH)
   return original(info,directory=directory)
  monkeypatch.setattr(proposal_export,'_policy_stat',host_owner)
  return p

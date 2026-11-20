@@ -1,5 +1,10 @@
 # Clocklab contract candidate (not production acceptance)
 
+The clocklab modules need the unpublished Fabric candidate `a4fa553` (`0.10.1.dev0`),
+installed by hand and not through the `fabric` extra, which stays on `v0.10.0`
+([ADR-0011](adr/0011-clocklab-candidate-fabric.md)). Against the pinned tag the v2
+mode refuses; it never falls back to v1.
+
 The existing v1 request, envelope signature domain, zero clock tolerance and
 empty activation grant markers remain available. Nonzero clocklab is an explicit
 separate v2 commissioning mode, with a 5000 microsecond laboratory hypothesis.

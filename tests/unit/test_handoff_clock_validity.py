@@ -2,6 +2,10 @@
 import copy
 from datetime import datetime,timedelta
 import pytest
+
+# The lab clock contract exists only in the unpublished candidate Fabric (ADR-0011);
+# against the pinned tag these modules are not applicable.
+pytest.importorskip("azazel_fabric.knowledge_context_clocklab")
 from azazel_nexus import handoff
 from azazel_fabric.knowledge_context_clocklab import ClockContract
 from azazel_nexus.technique_knowledge import project_technique_response

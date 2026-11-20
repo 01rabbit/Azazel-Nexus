@@ -1683,9 +1683,15 @@ def test_the_ui_reads_exactly_the_keys_the_view_model_carries():
     # v2 adds local/server validity. Check its actual read-model projection as
     # well; do not require v1 records to carry fields from the separate branch.
     from datetime import datetime, timedelta
-    from azazel_fabric.knowledge_context_clocklab import ClockContract
+    try:
+        from azazel_fabric.knowledge_context_clocklab import ClockContract
+        contract_id = ClockContract(5000).contract_id
+    except ImportError:
+        # The pinned Fabric has no clock contract; the read model carries the id
+        # as an opaque closed digest and shows the record as not usable (ADR-0011).
+        contract_id = "sha256:" + "0" * 64
     expiry = datetime.fromisoformat(record["expires_at"].replace("Z", "+00:00"))
-    validity = {"schema": "azazel-knowledge-clock-validity/1", "contract_id": ClockContract(5000).contract_id,
+    validity = {"schema": "azazel-knowledge-clock-validity/1", "contract_id": contract_id,
                 "signed_expires_at": record["expires_at"], "semantic_expires_at": record["expires_at"],
                 "effective_expires_at": (expiry - timedelta(milliseconds=5)).isoformat().replace("+00:00", "Z"),
                 "adopted_at": (expiry - timedelta(seconds=1)).isoformat().replace("+00:00", "Z"),

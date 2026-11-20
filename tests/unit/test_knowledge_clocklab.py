@@ -4,6 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
+# The lab clock contract exists only in the unpublished candidate Fabric (ADR-0011);
+# against the pinned tag these modules are not applicable.
+pytest.importorskip("azazel_fabric.knowledge_context_clocklab")
+
 from azazel_fabric.knowledge_context_clocklab import ClockContract
 from azazel_nexus.knowledge_context_adapter import (
     ENVELOPE_DOMAIN_V2, ENVELOPE_SCHEMA_V2, KnowledgeContextRefused,
