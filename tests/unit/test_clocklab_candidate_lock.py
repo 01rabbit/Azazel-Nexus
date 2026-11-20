@@ -3,6 +3,7 @@ import hashlib
 import re
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 LAB = ROOT / "packaging/offline/lab"
@@ -31,3 +32,85 @@ def test_the_installer_refuses_a_wheel_with_another_hash(tmp_path):
     result = subprocess.run([str(LAB / "install-clocklab-candidate.sh"), str(tmp_path)],
                             capture_output=True, text=True)
     assert result.returncode == 1 and "refused" in result.stderr
+
+
+# -- acceptance and replacement, with a synthetic wheel under its own lock -------
+
+import base64
+import shutil
+import sys
+import venv
+import zipfile
+
+import pytest
+
+
+def _wheel(directory: Path, body: str) -> Path:
+    """A minimal azazel_fabric-0.10.1.dev0 wheel whose module holds `body`."""
+    name = "azazel_fabric-0.10.1.dev0-py3-none-any.whl"
+    files = {
+        "azazel_fabric/__init__.py": body,
+        "azazel_fabric-0.10.1.dev0.dist-info/METADATA":
+            "Metadata-Version: 2.1\nName: azazel-fabric\nVersion: 0.10.1.dev0\n",
+        "azazel_fabric-0.10.1.dev0.dist-info/WHEEL":
+            "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+    }
+    record = "".join(
+        f"{n},sha256={base64.urlsafe_b64encode(hashlib.sha256(c.encode()).digest()).rstrip(b'=').decode()},{len(c)}\n"
+        for n, c in files.items())
+    files["azazel_fabric-0.10.1.dev0.dist-info/RECORD"] = record + "azazel_fabric-0.10.1.dev0.dist-info/RECORD,,\n"
+    path = directory / name
+    with zipfile.ZipFile(path, "w") as archive:
+        for n, c in files.items():
+            archive.writestr(n, c)
+    return path
+
+
+@pytest.fixture
+def lab(tmp_path):
+    """The real installer script beside a lock of the test's own, and a scratch venv."""
+    directory = tmp_path / "lab"
+    directory.mkdir()
+    shutil.copy(LAB / "install-clocklab-candidate.sh", directory)
+    venv_dir = tmp_path / "venv"
+    venv.create(venv_dir, with_pip=True)
+    return SimpleNamespace(directory=directory, python=str(venv_dir / "bin" / "python"),
+                            wheels=tmp_path / "wheels")
+
+
+def _lock(lab, wheel: Path):
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    (lab.directory / "requirements-clocklab-candidate.lock").write_text(
+        f"azazel-fabric==0.10.1.dev0 \\\n    --hash=sha256:{digest}\n", encoding="utf-8")
+
+
+def _install(lab):
+    return subprocess.run([str(lab.directory / "install-clocklab-candidate.sh"), str(lab.wheels), lab.python],
+                          capture_output=True, text=True)
+
+
+def _installed_body(lab):
+    return subprocess.run([lab.python, "-c", "import azazel_fabric;print(open(azazel_fabric.__file__).read())"],
+                          capture_output=True, text=True).stdout.strip()
+
+
+def test_the_installer_accepts_the_locked_wheel_and_verifies_the_files(lab):
+    lab.wheels.mkdir()
+    _lock(lab, _wheel(lab.wheels, "BUILD = 'locked'"))
+    result = _install(lab)
+    assert result.returncode == 0, result.stderr
+    assert "verified" in result.stdout and _installed_body(lab) == "BUILD = 'locked'"
+
+
+def test_the_installer_replaces_an_installed_build_of_the_same_version(lab, tmp_path):
+    other = tmp_path / "other"
+    other.mkdir()
+    old = _wheel(other, "BUILD = 'another build, same version'")
+    assert subprocess.run([lab.python, "-m", "pip", "install", "--no-index", "--no-deps", str(old)],
+                          capture_output=True, text=True).returncode == 0
+    assert _installed_body(lab) == "BUILD = 'another build, same version'"
+    lab.wheels.mkdir()
+    _lock(lab, _wheel(lab.wheels, "BUILD = 'locked'"))
+    result = _install(lab)
+    assert result.returncode == 0, result.stderr
+    assert _installed_body(lab) == "BUILD = 'locked'"
