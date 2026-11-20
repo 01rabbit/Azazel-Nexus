@@ -34,12 +34,20 @@ separate `api-context-candidate`, "not to be combined".
    default wheelhouse path carries it
    (`tests/unit/test_clocklab_candidate_lock.py`). The wheel is reproduced with
    the pinned backend of `tools/build_wheelhouse.py` (`SOURCE_DATE_EPOCH=315532800`).
-   `fabric_boundary` still only recognises the version string; the hash
+   After `pip install` the installer compares every file of the wheel's RECORD
+   with the installed file, so an older build of the same version that was kept
+   fails the install. `fabric_boundary` still only recognises the version string; the hash
    check is the install-time gate, so a wheel that claims `0.10.1.dev0` without
    passing it is outside this decision.
 3. `fabric_boundary` recognises the candidate by the exact version string
    `0.10.1.dev0` (`CLOCKLAB_CANDIDATE_FABRIC_VERSION`), and only in the
-   commissioning projections a v4 proposal passes through. Every other
+   commissioning projections a v4 proposal passes through. Every v2 entry
+   (`clock_contract*`, `validate_clocklab_*`, `canonical_clocklab_request`,
+   `clocklab_response_*`) requires that exact version even when the module can be
+   imported, and otherwise raises `ClocklabUnavailable` (a
+   `KnowledgeContextUnavailable` and an `ImportError`). The runtime reaches
+   Fabric only through these functions (`tests/unit/test_runtime_fabric_boundary_static.py`).
+   Every other
    projection, the explanation ledger and the tested-tuple check still require
    the pin and report "pinned Fabric is required" otherwise.
 4. Without the candidate there is no v2 and no fallback to v1: the clocklab

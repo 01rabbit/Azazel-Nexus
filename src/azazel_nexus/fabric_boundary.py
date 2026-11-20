@@ -982,8 +982,7 @@ def restore_commissioning_inputs(document: dict) -> dict:
                 context["inventory"], context["topology_profile"]))
             context["deception_scope"] = section
         if schema == "azazel-nexus/commissioning-proposal/v4":
-            from azazel_fabric.knowledge_context_clocklab import ClockContract
-            contract = ClockContract.from_dict(document["clock_policy"], consumer_revision=2)
+            contract = clock_contract_from_dict(document["clock_policy"], consumer_revision=2)
             if context.get("mio_profile") != "FULL" or contract.skew_budget_us != 5000:
                 raise ValueError
             context["clock_policy"] = contract.as_dict()
@@ -1381,14 +1380,41 @@ def project_explanation(record) -> Projection:
                       view=ExplanationProjection(claim_set=view, evidence_refs=refs))
 
 
+class ClocklabUnavailable(KnowledgeContextUnavailable, ImportError):
+    """The clock-contract module is absent, or this Fabric is not the lab candidate.
+
+    It is also an `ImportError`, so every caller that already refuses on a
+    missing module refuses on a wrong version the same way.
+    """
+
+
+def _clocklab():
+    """The clocklab module, only from the exact lab candidate Fabric (ADR-0011).
+
+    Importable is not enough: a Fabric of any other version that happens to
+    carry the module is refused, and nothing falls back to v1.
+    """
+    try:
+        import azazel_fabric
+        from azazel_fabric import knowledge_context_clocklab as module
+    except ImportError as exc:
+        raise ClocklabUnavailable("clocklab Fabric unavailable") from exc
+    if module is None:  # `from pkg import sub` yields None for a blocked submodule
+        raise ClocklabUnavailable("clocklab Fabric unavailable")
+    if getattr(azazel_fabric, "__version__", None) != CLOCKLAB_CANDIDATE_FABRIC_VERSION:
+        raise ClocklabUnavailable("clocklab Fabric version is not the lab candidate")
+    return module
+
+
 def validate_clocklab_request(payload, *, contract):
     """Explicit v2 only; missing candidate Fabric never falls back to v1."""
     try:
-        from azazel_fabric.knowledge_context_clocklab import KnowledgeContextRequestV2
-        request = KnowledgeContextRequestV2.model_validate(payload)
+        request = _clocklab().KnowledgeContextRequestV2.model_validate(payload)
         if request.contract_id != contract.contract_id:
             raise ValueError("clock contract mismatch")
         return request
+    except KnowledgeContextUnavailable:
+        raise
     except ImportError as exc:
         raise KnowledgeContextUnavailable("clocklab Fabric unavailable") from exc
     except (ValueError, TypeError) as exc:
@@ -1397,8 +1423,9 @@ def validate_clocklab_request(payload, *, contract):
 
 def canonical_clocklab_request(request):
     try:
-        from azazel_fabric.knowledge_context_clocklab import canonical_clocklab_bytes
-        return canonical_clocklab_bytes(request)
+        return _clocklab().canonical_clocklab_bytes(request)
+    except KnowledgeContextUnavailable:
+        raise
     except ImportError as exc:
         raise KnowledgeContextUnavailable("clocklab Fabric unavailable") from exc
     except (ValueError, TypeError) as exc:
@@ -1407,11 +1434,12 @@ def canonical_clocklab_request(request):
 
 def validate_clocklab_response(request, payload, *, contract):
     try:
-        from azazel_fabric.knowledge_context_clocklab import (
-            KnowledgeContextResponseV2, assert_response_correlates_v2)
-        response = KnowledgeContextResponseV2.model_validate(payload)
-        assert_response_correlates_v2(request, response, contract=contract)
+        module = _clocklab()
+        response = module.KnowledgeContextResponseV2.model_validate(payload)
+        module.assert_response_correlates_v2(request, response, contract=contract)
         return response
+    except KnowledgeContextUnavailable:
+        raise
     except ImportError as exc:
         raise KnowledgeContextUnavailable("clocklab Fabric unavailable") from exc
     except (ValueError, TypeError) as exc:
@@ -1419,32 +1447,35 @@ def validate_clocklab_response(request, payload, *, contract):
 
 
 def clock_contract(*, skew_budget_us):
-    """Fabric's `ClockContract` for a skew budget (candidate Fabric only).
+    """Fabric's `ClockContract` for a skew budget (lab candidate Fabric only).
 
-    The only other modules that need the contract (`commissioning_approval`,
-    `technique_knowledge`) reach it through here. A Fabric without the clocklab
-    module raises `ImportError`, which each caller already treats as refusal;
-    nothing falls back to the v1 contract.
+    The modules that need the contract (`commissioning_approval`,
+    `technique_knowledge`, and the runtime) reach it through here. Anything but
+    the candidate raises `ClocklabUnavailable`; nothing falls back to v1.
     """
-    from azazel_fabric.knowledge_context_clocklab import ClockContract
-    return ClockContract(skew_budget_us=skew_budget_us)
+    return _clocklab().ClockContract(skew_budget_us=skew_budget_us)
 
 
 def clock_contract_from_dict(body, *, consumer_revision):
     """The contract named by a signed canonical body, at an explicit consumer revision."""
-    from azazel_fabric.knowledge_context_clocklab import ClockContract
-    return ClockContract.from_dict(body, consumer_revision=consumer_revision)
+    return _clocklab().ClockContract.from_dict(body, consumer_revision=consumer_revision)
+
+
+def clocklab_response_model(payload):
+    """A v2 response validated as Fabric's model (the caller binds it to validity)."""
+    return _clocklab().KnowledgeContextResponseV2.model_validate(payload)
+
+
+def clocklab_response_v1_projection(response):
+    """The v1-shaped dict the closed technique reader consumes, from a verified v2 model."""
+    return _clocklab().response_v1_projection(response).model_dump(mode="json")
 
 
 def clocklab_response_v1(payload):
     """Validate a v2 response and return `(contract_id, expires_at, v1 projection)`.
 
-    The v1 projection is what the closed technique reader consumes; the contract
-    id and semantic expiry are returned so the caller can bind them to the
-    retained validity record.
+    The contract id and semantic expiry are returned so the caller can bind them
+    to the retained validity record.
     """
-    from azazel_fabric.knowledge_context_clocklab import (
-        KnowledgeContextResponseV2, response_v1_projection)
-    semantic = KnowledgeContextResponseV2.model_validate(payload)
-    return (semantic.contract_id, semantic.expires_at,
-            response_v1_projection(semantic).model_dump(mode="json"))
+    semantic = clocklab_response_model(payload)
+    return (semantic.contract_id, semantic.expires_at, clocklab_response_v1_projection(semantic))

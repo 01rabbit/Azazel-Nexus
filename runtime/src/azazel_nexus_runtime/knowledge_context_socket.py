@@ -124,8 +124,8 @@ def read_context_result(result):
     if set(result) == {"response", "validity"} and type(result["response"]) is dict:
         try:
             from azazel_nexus.knowledge_clock_validity import read_validity
-            from azazel_fabric.knowledge_context_clocklab import KnowledgeContextResponseV2
-            semantic = KnowledgeContextResponseV2.model_validate(result["response"])
+            from azazel_nexus.fabric_boundary import clocklab_response_model
+            semantic = clocklab_response_model(result["response"])
             validity = read_validity(result["validity"])
             if (semantic.contract_id != validity["contract_id"]
                     or semantic.expires_at != datetime.fromisoformat(

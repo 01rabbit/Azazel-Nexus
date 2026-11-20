@@ -212,13 +212,13 @@ def _load(now: str, directory=None, *, peer_only: bool = False) -> Commissioning
             if set(manifest) != _MANIFEST_KEYS | {"clock_policy"}:
                 raise _Refused("manifest_schema")
             try:
-                from azazel_fabric.knowledge_context_clocklab import ClockContract
+                from azazel_nexus.fabric_boundary import clock_contract_from_dict
                 if (type(manifest["clock_policy"]) is not dict
                         or manifest["clock_policy"].get("schema") != "azazel-clocklab-policy/2"
                         or type(manifest["clock_policy"].get("consumer_revision")) is not int
                         or manifest["clock_policy"]["consumer_revision"] != 2):
                     raise ValueError("clock policy revision")
-                clock_contract = ClockContract.from_dict(manifest["clock_policy"], consumer_revision=2)
+                clock_contract = clock_contract_from_dict(manifest["clock_policy"], consumer_revision=2)
                 if clock_contract.skew_budget_us != 5000:
                     raise ValueError
             except (ImportError, ValueError, TypeError):

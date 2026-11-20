@@ -297,8 +297,8 @@ class KnowledgeClient:
                 stage = "technique_verification"
                 technique_doc = verified.model_dump(mode="json")
                 if self.clock_contract is not None:
-                    from azazel_fabric.knowledge_context_clocklab import response_v1_projection
-                    technique_doc = response_v1_projection(verified).model_dump(mode="json")
+                    from azazel_nexus.fabric_boundary import clocklab_response_v1_projection
+                    technique_doc = clocklab_response_v1_projection(verified)
                 validate_technique_response(technique_doc, technique_ids)
             if self.clock_contract is not None:
                 from azazel_nexus.knowledge_clock_validity import VerifiedContext
