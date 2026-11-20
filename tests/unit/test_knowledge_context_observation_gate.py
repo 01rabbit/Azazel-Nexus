@@ -169,6 +169,45 @@ def test_rule_change_latches_closed_until_restart(env, mutate):
     assert "response" in fresh.handle(tech())
 
 
+def test_unchanged_rule_stays_open(env):
+    write_rule(env, 6)
+    broker, peer, events = make(cfg.load_observation_rule())
+    for _ in range(3):
+        assert "response" in broker.handle(tech())
+    assert peer.calls == 3
+
+
+@pytest.mark.parametrize("same_size", [False, True])
+def test_rewrite_with_unchanged_inode_mtime_and_size_still_latches(env, same_size):
+    """Timestamps are coarse and can be restored; the content decides (#445)."""
+    path = write_rule(env, 6)
+    broker, peer, events = make(cfg.load_observation_rule())
+    assert "response" in broker.handle(tech())
+    before = os.lstat(path)
+    text = path.read_text()
+    path.write_text(text.replace('": 6', '": 9') if same_size else text + " ")
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    after = os.lstat(path)
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+    if same_size:
+        assert after.st_size == before.st_size
+    # ctime cannot be set from user space; the content digest must carry the decision
+    for _ in range(2):
+        assert broker.handle(tech()) == GATED
+        assert last(events)["reason_code"] == "refused_before_send"
+    assert peer.calls == 1
+
+
+def test_rule_identity_covers_content(env):
+    path = write_rule(env, 6)
+    first = cfg.observation_rule_identity(path)
+    assert first == cfg.load_observation_rule()[1]
+    path.write_text(path.read_text().replace('": 6', '": 9'))
+    assert cfg.observation_rule_identity(path) != first
+    path.unlink()
+    assert cfg.observation_rule_identity(path) is None
+
+
 @pytest.mark.parametrize("question,observation", [
     ("ATT&CK technique context: T1059", True),
     ("ATT&CK technique context: T1059.001", True),
