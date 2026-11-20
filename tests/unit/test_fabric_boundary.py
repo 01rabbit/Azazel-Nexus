@@ -26,6 +26,7 @@ from azazel_nexus.capability import (
     state_for,
 )
 from azazel_nexus.fabric_boundary import (
+    CLOCKLAB_CANDIDATE_FABRIC_VERSION,
     FABRIC_PIN,
     PLANNED_FABRIC_MODULES,
     REQUIRED_FABRIC_MODULES,
@@ -46,39 +47,56 @@ fabric = pytest.importorskip(
 # --------------------------------------------------------------------------
 
 
-def test_the_module_version_and_manifest_candidate_commit_are_bound():
+def test_the_module_pin_and_the_manifest_pin_are_the_same_tag():
     """Two statements of one value drift; this is what stops them.
 
-    The lab candidate names a package version and a separate immutable source
-    commit. Manufacturing must bind both; a version string is not a Git ref.
+    The module names the tag it is written against and `pyproject.toml` names
+    the tag pip installs. A reader trusts the former and a machine obeys the
+    latter, so they disagreeing is worse than either being wrong alone.
     """
 
     declared = re.findall(
         r'"azazel-fabric\s*@\s*git\+[^"@]+@(?P<tag>[^"]+)"',
         (ROOT / "pyproject.toml").read_text("utf-8"),
     )
-    assert declared == ["a4fa5535d3d0a0c9ed2694ea15b4b474ed587aa1"], declared
-    assert FABRIC_PIN == "v0.10.1.dev0"
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("candidate_wheelhouse", ROOT / "tools/build_wheelhouse.py")
-    builder = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(builder)
-    assert builder.SOURCE_BUILDS["azazel-fabric"]["commit"] == declared[0]
-    assert builder.SOURCE_BUILDS["azazel-fabric"]["version"] == FABRIC_PIN.lstrip("v")
+    assert declared == [FABRIC_PIN], (
+        f"pyproject.toml pins {declared} and fabric_boundary.py names "
+        f"{FABRIC_PIN!r}"
+    )
 
 
-def test_the_package_pin_is_an_exact_version_not_a_branch():
-    """An unpublished dev version has no release tag; source is commit-pinned."""
+def test_the_pin_is_an_exact_tag_not_a_branch_or_a_commit():
+    """A branch is not a release and cannot be depended on."""
 
-    assert re.fullmatch(r"v\d+\.\d+\.\d+(?:rc\d+|a\d+|b\d+)?(?:\.dev\d+)?", FABRIC_PIN), FABRIC_PIN
+    assert re.fullmatch(r"v\d+\.\d+\.\d+(?:rc\d+|a\d+|b\d+)?", FABRIC_PIN), FABRIC_PIN
 
 
 def test_the_installed_fabric_is_the_pinned_one():
     """A local install that has drifted off the pin proves nothing about it."""
 
+    if fabric.__version__ == CLOCKLAB_CANDIDATE_FABRIC_VERSION:
+        pytest.skip("the lab clock candidate was installed by hand (ADR-0011); "
+                    "the run against the pinned tag is the evidence for the pin")
     assert fabric.__version__ == FABRIC_PIN.lstrip("v"), (
         f"installed azazel_fabric is {fabric.__version__}, the pin is {FABRIC_PIN}"
     )
+
+
+def test_only_the_commissioning_gates_recognise_the_lab_candidate():
+    """The candidate is one exact string, never a range, and the pin stays the tag."""
+
+    from types import SimpleNamespace
+
+    from azazel_nexus import fabric_boundary as boundary
+
+    def versioned(version):
+        return SimpleNamespace(__version__=version)
+
+    assert FABRIC_PIN == "v0.10.0" and CLOCKLAB_CANDIDATE_FABRIC_VERSION == "0.10.1.dev0"
+    assert boundary._commissioning_fabric(versioned("0.10.0"))
+    assert boundary._commissioning_fabric(versioned("0.10.1.dev0"))
+    for other in ("0.10.1.dev1", "0.10.1", "0.10.0.dev0", "0.9.0", None):
+        assert not boundary._commissioning_fabric(versioned(other)), other
 
 
 # --------------------------------------------------------------------------

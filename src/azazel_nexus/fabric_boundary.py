@@ -91,6 +91,7 @@ from azazel_nexus.inventory import InterfaceReadout
 
 __all__ = [
     "FABRIC_PIN",
+    "CLOCKLAB_CANDIDATE_FABRIC_VERSION",
     "PLANNED_FABRIC_MODULES",
     "REQUIRED_FABRIC_MODULES",
     "IdentityUnavailable",
@@ -142,7 +143,20 @@ class IdentityUnavailable(Exception):
 #: `azazel_nexus.status` now reports them as `unknown` and points at Fabric's
 #: `docs/release-compatibility.md`, which holds the answer (#23).
 #: `tests/unit/test_status_claims.py` keeps the retired phrasing out.
-FABRIC_PIN = "v0.10.1.dev0"
+FABRIC_PIN = "v0.10.0"
+
+#: The unpublished Fabric build that adds the explicit lab clock contract
+#: (Azazel-Fabric a4fa553). It is not the pin: `FABRIC_PIN` stays the published
+#: tag (ADR-0001, ADR-0009) and no extra, lock or wheelhouse installs this build.
+#: A lab installs it by hand, and only the commissioning projections -- the ones a
+#: v4 proposal needs -- recognise it, by this exact version string.
+CLOCKLAB_CANDIDATE_FABRIC_VERSION = "0.10.1.dev0"
+
+
+def _commissioning_fabric(fabric) -> bool:
+    return getattr(fabric, "__version__", None) in (
+        FABRIC_PIN.lstrip("v"), CLOCKLAB_CANDIDATE_FABRIC_VERSION)
+
 
 #: What this module needs to produce a projection at all.
 REQUIRED_FABRIC_MODULES = ("azazel_fabric.view", "azazel_fabric.schema.mode",
@@ -654,7 +668,7 @@ def project_hardware_inventory(*, readouts: Sequence[InterfaceReadout], platform
     Refused interfaces prevent a claim that the complete set was projected.
     """
     fabric, _ = _import_fabric()
-    if fabric is None or getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+    if fabric is None or not _commissioning_fabric(fabric):
         raise CommissioningRecordUnavailable("pinned Fabric is required")
     from .activation import ActivationRefused, _utc_lease_time  # noqa: PLC0415
 
@@ -713,7 +727,7 @@ def project_resource_profile(*, observation: dict, inventory: Any, profile_id: s
     Missing storage is not zero and memory is never adjusted a second time.
     """
     fabric, failure = _import_fabric()
-    if fabric is None or getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+    if fabric is None or not _commissioning_fabric(fabric):
         raise CommissioningRecordUnavailable("pinned Fabric is required")
     from .activation import ActivationRefused, _utc_lease_time  # noqa: PLC0415
 
@@ -778,7 +792,7 @@ def project_reviewed_topology(*, payload: bytes, signature: bytes, operator: str
     commissioning storage, never terminal output or general audit logs.
     """
     fabric, _ = _import_fabric()
-    if fabric is None or getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+    if fabric is None or not _commissioning_fabric(fabric):
         raise CommissioningRecordUnavailable("pinned Fabric is required")
     from .activation import ActivationRefused, _utc_lease_time  # noqa: PLC0415
     from .commissioning_draft import (  # noqa: PLC0415
@@ -847,7 +861,7 @@ def assert_current_inventory_matches(*, retained: Any, current: Any) -> None:
     trusted clock. Caller must authenticate the retained snapshot separately.
     """
     fabric, _ = _import_fabric()
-    if fabric is None or getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+    if fabric is None or not _commissioning_fabric(fabric):
         raise CommissioningRecordUnavailable("pinned Fabric is required")
     from .activation import ActivationRefused, _utc_lease_time
 
@@ -934,7 +948,7 @@ def restore_commissioning_inputs(document: dict) -> dict:
     No filesystem, signature or admission decision belongs in this decoder.
     """
     fabric, _ = _import_fabric()
-    if fabric is None or getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+    if fabric is None or not _commissioning_fabric(fabric):
         raise CommissioningRecordUnavailable("pinned Fabric is required")
     try:
         from azazel_fabric.provisioning_contracts import (  # noqa: PLC0415
@@ -989,7 +1003,7 @@ def build_commissioning_record(*, inventory=None, resource_profile=None,
     Raw content is confidential; this function neither prints nor persists it.
     """
     fabric, _ = _import_fabric()
-    if fabric is None or getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+    if fabric is None or not _commissioning_fabric(fabric):
         raise CommissioningRecordUnavailable("pinned Fabric is required")
     from .activation import ActivationRefused, _utc_lease_time  # noqa: PLC0415
 
@@ -1402,3 +1416,35 @@ def validate_clocklab_response(request, payload, *, contract):
         raise KnowledgeContextUnavailable("clocklab Fabric unavailable") from exc
     except (ValueError, TypeError) as exc:
         raise KnowledgeContextInvalid("clocklab response refused") from exc
+
+
+def clock_contract(*, skew_budget_us):
+    """Fabric's `ClockContract` for a skew budget (candidate Fabric only).
+
+    The only other modules that need the contract (`commissioning_approval`,
+    `technique_knowledge`) reach it through here. A Fabric without the clocklab
+    module raises `ImportError`, which each caller already treats as refusal;
+    nothing falls back to the v1 contract.
+    """
+    from azazel_fabric.knowledge_context_clocklab import ClockContract
+    return ClockContract(skew_budget_us=skew_budget_us)
+
+
+def clock_contract_from_dict(body, *, consumer_revision):
+    """The contract named by a signed canonical body, at an explicit consumer revision."""
+    from azazel_fabric.knowledge_context_clocklab import ClockContract
+    return ClockContract.from_dict(body, consumer_revision=consumer_revision)
+
+
+def clocklab_response_v1(payload):
+    """Validate a v2 response and return `(contract_id, expires_at, v1 projection)`.
+
+    The v1 projection is what the closed technique reader consumes; the contract
+    id and semantic expiry are returned so the caller can bind them to the
+    retained validity record.
+    """
+    from azazel_fabric.knowledge_context_clocklab import (
+        KnowledgeContextResponseV2, response_v1_projection)
+    semantic = KnowledgeContextResponseV2.model_validate(payload)
+    return (semantic.contract_id, semantic.expires_at,
+            response_v1_projection(semantic).model_dump(mode="json"))

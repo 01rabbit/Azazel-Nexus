@@ -26,11 +26,10 @@
 # annotated_types-0.8.0-py3-none-any.whl
 annotated-types==0.8.0 \
     --hash=sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0
-# azazel_fabric-0.10.1.dev0-py3-none-any.whl
-# built from https://github.com/01rabbit/Azazel-Fabric.git commit a4fa5535d3d0a0c9ed2694ea15b4b474ed587aa1
-# Lab-only clock contract candidate; reproducible pinned backend, SOURCE_DATE_EPOCH=315532800.
-azazel-fabric==0.10.1.dev0 \
-    --hash=sha256:9f9926bcb03ec50ae6feac2185041c07cb4b83a1cb28df7e68ff5fb102317e6e
+# azazel_fabric-0.10.0-py3-none-any.whl
+# built from https://github.com/01rabbit/Azazel-Fabric.git v0.10.0 = 397fcce7a87ca7ab1a5e84bc196c44d70c404907
+azazel-fabric==0.10.0 \
+    --hash=sha256:b22356fd672cd60471606d3a7b73ccdba99091e680fedd854381a29d76e21424
 # azazel_mio-0.1.0.dev20261108+gitguidance8-py3-none-any.whl
 # built from https://github.com/01rabbit/Azazel-MIO.git commit 4511f1fcb4618a9675bc33abceeb606a60349583
 # reproduced from exact source archive on CPython 3.12.16, setuptools 84.0.0, SOURCE_DATE_EPOCH=1794147123, umask 022; wheel is platform independent
