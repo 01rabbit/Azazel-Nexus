@@ -23,11 +23,20 @@ separate `api-context-candidate`, "not to be combined".
 
 1. `FABRIC_PIN`, the `fabric` extra, `uv.lock`, the wheelhouse builder and both
    target locks stay on `v0.10.0` (`397fcce`).
-2. The candidate is installed by hand in a lab environment, instead of the
-   `fabric` extra, never together with it:
-   `pip install "azazel-fabric @ git+https://github.com/01rabbit/Azazel-Fabric.git@a4fa5535d3d0a0c9ed2694ea15b4b474ed587aa1"`.
-   No extra, lock or offline bundle carries it. An offline lab bundle for the
-   candidate is a separate, reviewed build and is not part of this change.
+2. The candidate is identified by its wheel hash, not by its version string. Its
+   own file, `packaging/offline/lab/requirements-clocklab-candidate.lock`,
+   pins `azazel-fabric==0.10.1.dev0` (commit `a4fa553`) at
+   `sha256:9f9926bcb03ec50ae6feac2185041c07cb4b83a1cb28df7e68ff5fb102317e6e`.
+   `packaging/offline/lab/install-clocklab-candidate.sh <wheel dir>` compares
+   the wheel to that hash and refuses a mismatch, then installs with
+   `pip --require-hashes --no-deps`. It is installed instead of the `fabric`
+   extra, never together with it. No extra, stable lock, `uv.lock` or the
+   default wheelhouse path carries it
+   (`tests/unit/test_clocklab_candidate_lock.py`). The wheel is reproduced with
+   the pinned backend of `tools/build_wheelhouse.py` (`SOURCE_DATE_EPOCH=315532800`).
+   `fabric_boundary` still only recognises the version string; the hash
+   check is the install-time gate, so a wheel that claims `0.10.1.dev0` without
+   passing it is outside this decision.
 3. `fabric_boundary` recognises the candidate by the exact version string
    `0.10.1.dev0` (`CLOCKLAB_CANDIDATE_FABRIC_VERSION`), and only in the
    commissioning projections a v4 proposal passes through. Every other
