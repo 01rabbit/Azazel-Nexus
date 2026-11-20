@@ -25,6 +25,7 @@ from azazel_nexus.compatibility import (
     TestedTupleSet,
 )
 from azazel_nexus.fabric_boundary import (
+    CLOCKLAB_CANDIDATE_FABRIC_VERSION,
     FABRIC_PIN,
     check_tested_tuple,
     project_tested_tuple,
@@ -35,10 +36,13 @@ fabric = pytest.importorskip(
     "azazel_fabric",
     reason="the Fabric extra is optional; CORE must work without it",
 )
-if fabric.__version__ != FABRIC_PIN.lstrip("v"):
+if fabric.__version__ == CLOCKLAB_CANDIDATE_FABRIC_VERSION:
     # The tested-tuple projection is pinned to the published tag; the lab clock
     # candidate is recognised only by the commissioning projections (ADR-0011).
-    pytest.skip("pinned Fabric required", allow_module_level=True)
+    pytest.skip("lab clock candidate installed; the pinned run is the evidence", allow_module_level=True)
+if fabric.__version__ != FABRIC_PIN.lstrip("v"):
+    pytest.fail(f"installed Fabric {fabric.__version__} is neither the pin {FABRIC_PIN} "
+                "nor the lab candidate", pytrace=False)
 contracts = pytest.importorskip("azazel_fabric.provisioning_contracts")
 models = pytest.importorskip("azazel_fabric.provisioning_contracts.models")
 golden = pytest.importorskip("azazel_fabric.testing.provisioning")
