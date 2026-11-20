@@ -45,7 +45,6 @@ start gates remain refusing pending their separate admission obligations.
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import re
 import sys
@@ -1108,12 +1107,9 @@ def _run_once(
             try:
                 clock_binding = None
                 if inputs is not None and getattr(inputs, "evidence", None) is not None:
-                    proposal = json.loads(inputs.evidence.payload)
-                    if "clock_policy" in proposal:
-                        from azazel_nexus.observe_baseline import evidence_commissioning_digest
-                        clock_binding = {"boot_id": read_boot_id(),
-                                         "contract_id": proposal["clock_policy"]["contract_id"],
-                                         "commissioning_digest": evidence_commissioning_digest(inputs.evidence)}
+                    from .activation_pass import clock_binding_from_evidence
+                    clock_binding = clock_binding_from_evidence(
+                        inputs.evidence, boot_id=read_boot_id())
                 if clock_binding is None:
                     markers = write_grant_markers(sorted(granted), root)
                 else:

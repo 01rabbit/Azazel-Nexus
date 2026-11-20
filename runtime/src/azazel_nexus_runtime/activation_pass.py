@@ -48,6 +48,7 @@ still decide every grant; Edge evidence can only narrow it.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
@@ -246,6 +247,19 @@ class _Refused(Exception):
 
 def _utc(instant: datetime) -> str:
     return instant.astimezone(timezone.utc).strftime(_TIME)
+
+
+def clock_binding_from_evidence(evidence: CommissioningEvidence, *, boot_id: str) -> Optional[dict]:
+    """The grant-marker clock binding a verified v4 proposal asks for, else None.
+
+    `activated` must not name the readers (`observe_baseline` among them); the
+    pass module is its one door to them, so the digest is derived here.
+    """
+    proposal = json.loads(evidence.payload)
+    if "clock_policy" not in proposal:
+        return None
+    return {"boot_id": boot_id, "contract_id": proposal["clock_policy"]["contract_id"],
+            "commissioning_digest": evidence_commissioning_digest(evidence)}
 
 
 def raised_high_water(inputs: PassInputs, *, now: str) -> HighWater:
