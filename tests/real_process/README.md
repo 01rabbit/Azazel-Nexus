@@ -108,3 +108,17 @@ authentication, restart/replay, clock-boundary and a `setpriv` approximation of
 the broker's confinement, in the same container and phase as the process
 interop test. It does not run systemd; see "Linux isolated acceptance" in
 `docs/knowledge-context-consumer.md`.
+
+## Lab candidate Fabric path (u70)
+
+`run-docker.sh` keeps the stable Fabric v0.10.0 wheel as its default. A lab
+candidate is a separate input: set `FABRIC_PROFILE=candidate`,
+`FABRIC_WHEEL_DIR`, `FABRIC_WHEEL_NAME`, `FABRIC_WHEEL_SHA256` (checked against
+the wheel and both Nexus offline locks) and `FABRIC_EXPECTED_VERSION`; Knowledge
+is introduced with its `api-context-candidate` extra, never together with `api`.
+`RECORD_DIR` mounts a host directory that receives one `fabric-load-*.json` per
+process: the `azazel_fabric` version, file, RECORD check, `direct_url.json` and
+wheel hash that process actually imported (Nexus and Knowledge sides alike).
+`TEST_TARGETS` narrows the run to named files.
+`test_knowledge_context_clocklab_interop.py` pairs Nexus's client with a real
+Knowledge listener in v1 and lab-v2 configurations.

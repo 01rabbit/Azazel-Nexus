@@ -215,6 +215,13 @@ PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
   tests/real_process/test_knowledge_context_shipped_budget.py \
   tests/real_process/test_knowledge_context_clock_rollback.py
 
+# Lab clock contract pairs need the candidate Fabric; the stable v0.10.0 path
+# has no ClockContract, so this file is selected only for the candidate.
+if [[ "$FABRIC_PROFILE" == candidate ]]; then
+  PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
+    tests/real_process/test_knowledge_context_clocklab_interop.py
+fi
+
 # Exercise the service's fixed degraded response with the shared package
 # absent. The positive adapter unit tests above intentionally need the wheel.
 python -m pip uninstall --yes azazel-mio >/dev/null
