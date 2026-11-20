@@ -17,6 +17,9 @@ else
   FABRIC_WHEEL_SHA256=b22356fd672cd60471606d3a7b73ccdba99091e680fedd854381a29d76e21424
   FABRIC_EXPECTED_VERSION=0.10.0
 fi
+case "$FABRIC_WHEEL_NAME" in
+  */*|..*|"") echo "FABRIC_WHEEL_NAME must be a plain file name: $FABRIC_WHEEL_NAME" >&2; exit 2 ;;
+esac
 export FABRIC_PROFILE FABRIC_WHEEL_NAME FABRIC_WHEEL_SHA256 FABRIC_EXPECTED_VERSION
 printf 'fabric profile=%s wheel=%s\n' "$FABRIC_PROFILE" "$FABRIC_WHEEL_NAME"
 printf 'fixed source heads: Nexus=%s Knowledge=%s\n' \
@@ -61,6 +64,11 @@ if os.environ['FABRIC_PROFILE'] == 'candidate':
     lab = Path('/src/packaging/offline/lab/requirements-clocklab-candidate.lock').read_text(encoding='utf-8')
     if re.findall(r'--hash=sha256:([0-9a-f]{64})', lab) != [fabric_expected]:
         raise SystemExit('candidate Fabric digest differs from the lab lock')
+    locked_version = re.findall(r'(?m)^azazel-fabric==(\S+) ', lab)
+    if locked_version != [os.environ['FABRIC_EXPECTED_VERSION']]:
+        raise SystemExit(f'FABRIC_EXPECTED_VERSION differs from the lab lock {locked_version}')
+    if fabric_wheel.name != f'azazel_fabric-{locked_version[0]}-py3-none-any.whl':
+        raise SystemExit('candidate wheel name differs from the lab lock version')
     for lock in locks:
         if fabric_expected in lock.read_text(encoding='utf-8'):
             raise SystemExit(f'candidate Fabric digest leaked into stable {lock}')
@@ -193,10 +201,14 @@ usermod --append --groups azincident-read azintake
 cd "$SCRATCH_SRC"
 if [[ -n "${TEST_TARGETS:-}" ]]; then
   # Focused run (u70): only the named files, same real-process settings.
+  # It is not the full set, and its output says so.
   export NEXUS_REQUIRE_REAL_PROCESS=1
+  echo "### 限定実行 (TEST_TARGETS): 全件ではない: $TEST_TARGETS"
   # shellcheck disable=SC2086
   PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider $TEST_TARGETS
-  exit $?
+  status=$?
+  echo "### 限定実行 (TEST_TARGETS) の終了: 全件の結果ではない (exit=$status)"
+  exit $status
 fi
 PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
   tests/unit/test_knowledge_context_adapter.py \

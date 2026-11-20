@@ -182,11 +182,11 @@ def test_a_v2_pair_is_accepted_and_expiry_agrees_on_every_surface(listener_facto
     assert response.schema_version == "knowledge-context-response/v2"
     assert response.contract_id == CONTRACT.contract_id
     assert verified.contract_id == CONTRACT.contract_id
-    assert verified.signed_expires_at == response.expires_at.isoformat().replace("+00:00", "Z") \
-        or verified.signed_expires_at.startswith(response.expires_at.strftime("%Y-%m-%dT%H:%M:%S"))
     # The response document as the listener signed it, then the projection a
     # service stores, then every output surface.
     document = response.model_dump(mode="json")
+    # Exact equality, not a prefix: the signed expiry is the response's expiry.
+    assert verified.signed_expires_at == document["expires_at"]
     # The product's own final adoption check produces the validity.
     validity = verified.adoption_validity(
         utc_now=lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z"),
@@ -214,8 +214,8 @@ def test_c1_v2_client_against_v1_listener_is_refused_at_verification(listener_fa
     listener = listener_factory("v1")
     error = refused(listener.client(v2=True, nexus_health=nexus_health))
     assert error.stage == "verification"
-    assert isinstance(error.__cause__.__cause__ or error.__cause__, HttpStatusRefused)
-    assert getattr(error.__cause__, "status", None) == 422
+    assert isinstance(error.__cause__, HttpStatusRefused)
+    assert error.__cause__.status == 422
     # Control: the matching (v1) client is served by the same listener.
     assert ask(listener.client(v2=False)).schema_version == "knowledge-context-response/v1"
     nexus_health.unlink(missing_ok=True)
@@ -227,7 +227,8 @@ def test_c2_v1_client_against_v2_listener_is_refused_at_verification(listener_fa
     listener = listener_factory("v2")
     error = refused(listener.client(v2=False))
     assert error.stage == "verification"
-    assert getattr(error.__cause__, "status", None) == 422
+    assert isinstance(error.__cause__, HttpStatusRefused)
+    assert error.__cause__.status == 422
     # Control: the matching (v2) client is served by the same listener.
     assert ask(listener.client(v2=True, nexus_health=nexus_health)).response.schema_version.endswith("/v2")
     nexus_health.unlink(missing_ok=True)
@@ -242,11 +243,12 @@ def test_d_producer_health_lapse_is_503_at_transport_and_latches(listener_factor
     write_nexus_health(nexus_health)
     error = refused(listener.client(v2=True, nexus_health=nexus_health))
     assert error.stage == "transport"
-    assert getattr(error.__cause__, "status", None) == 503
+    assert isinstance(error.__cause__, HttpStatusRefused) and error.__cause__.status == 503
     write_knowledge_health(listener.health)                          # fresh again: the latch holds
     write_nexus_health(nexus_health)
     error = refused(listener.client(v2=True, nexus_health=nexus_health))
-    assert error.stage == "transport" and getattr(error.__cause__, "status", None) == 503
+    assert error.stage == "transport"
+    assert isinstance(error.__cause__, HttpStatusRefused) and error.__cause__.status == 503
     nexus_health.unlink(missing_ok=True)
 
 
@@ -257,5 +259,8 @@ def test_e_nexus_health_lapse_is_refused_before_send(listener_factory):
     client = listener.client(v2=True, nexus_health=nexus_health)
     error = refused(client)
     assert error.stage == "refused_before_send"
+    # The reason: Nexus's own clock-health check failed (observation too old), not
+    # a disabled client, a bad deadline or a full queue.
+    assert isinstance(error.__cause__, ValueError), repr(error.__cause__)
     assert client.posts == 0                                         # Knowledge was never reached
     nexus_health.unlink(missing_ok=True)
