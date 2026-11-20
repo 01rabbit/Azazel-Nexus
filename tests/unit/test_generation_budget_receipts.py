@@ -261,7 +261,11 @@ def test_unknown_version_history_is_preserved_and_projects_unsupported(tmp_path)
     original=path.read_bytes()
     assert other.events()[-1]==future
     e.generation_store=other
-    e.recent=[dict(incident_id=receipt['incident_id'],explanation={})]
+    # A window row as the builder makes it; `_keep_window` measures rows with the real
+    # recent-incidents builder (#427), which reads last_seen/first_seen and the rest.
+    from azazel_nexus.incident_explain import build_recent_incident
+    from test_incident_explain import transition
+    e.recent=[build_recent_incident(transition(incident_id=receipt['incident_id']))]
     e._restore_generation_results()
     assert e.recent[0]['explanation']['slow_analysis']['budget']['outcome']=='unsupported'
     assert e._generation_terminal[receipt['result_handle']]==future
