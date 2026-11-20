@@ -32,6 +32,26 @@ def _installer_python() -> str:
     pytest.skip("the installer requires Python 3.11 or newer")
 
 
+_DEBIAN_13_OS_RELEASE = (
+    'PRETTY_NAME="Debian GNU/Linux 13 (trixie)"\nNAME="Debian GNU/Linux"\n'
+    'VERSION_ID="13"\nVERSION_CODENAME=trixie\nID=debian\n')
+
+
+def pin_reviewed_install_profile(tools_dir: Path, scratch: Path) -> None:
+    """Point the copied profile tool at a reviewed Debian 13 os-release.
+
+    The installer reads /etc/os-release, so a test host of another release is
+    refused before the branch under test. Only the copy's default path
+    changes; the profile table and its acceptance rule are the product's."""
+    fixed = scratch / "os-release"
+    fixed.write_text(_DEBIAN_13_OS_RELEASE, encoding="utf-8")
+    tool = tools_dir / "install_profile_fields.py"
+    source = tool.read_text(encoding="utf-8")
+    old = 'Path("/etc/os-release")'
+    assert source.count(old) == 1
+    tool.write_text(source.replace(old, f"Path({str(fixed)!r})"), encoding="utf-8")
+
+
 def _copy_installer_tree(tmp_path: Path) -> Path:
     """Copy real installer inputs; replace only wrapper publication."""
     root = tmp_path / "installer-tree"
@@ -41,6 +61,7 @@ def _copy_installer_tree(tmp_path: Path) -> Path:
                  "provision_mission_read.py", "purge_mio_profile_copies.py",
                  "check_decoy_apparmor_wrappers.py"):
         shutil.copy2(REPO_ROOT / "tools" / name, root / "tools" / name)
+    pin_reviewed_install_profile(root / "tools", tmp_path)
     shutil.copytree(REPO_ROOT / "src", root / "src")
     shutil.copytree(REPO_ROOT / "runtime" / "src", root / "runtime" / "src")
     fake_stager = root / "tools" / "stage_runtime_entrypoints.py"
@@ -141,8 +162,6 @@ def test_staged_install_copies_rule_without_running_tmpfiles(tmp_path):
 
 def test_staged_install_stops_when_the_legacy_copy_purge_refuses(tmp_path):
     """A refused #244 purge exits non-zero before any unit file is written."""
-    if not Path("/etc/os-release").is_file():
-        pytest.skip("installer requires the host's os-release install profile")
 
     installer_root = _copy_installer_tree(tmp_path)
     destdir = tmp_path / "stage"

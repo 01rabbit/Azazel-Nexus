@@ -275,19 +275,38 @@ def _installer_python() -> str:
     pytest.skip("the installer requires Python 3.11 or newer")
 
 
+_DEBIAN_13_OS_RELEASE = (
+    'PRETTY_NAME="Debian GNU/Linux 13 (trixie)"\nNAME="Debian GNU/Linux"\n'
+    'VERSION_ID="13"\nVERSION_CODENAME=trixie\nID=debian\n')
+
+
+def pin_reviewed_install_profile(tools_dir: Path, scratch: Path) -> None:
+    """Point the copied profile tool at a reviewed Debian 13 os-release.
+
+    The installer reads /etc/os-release, so a test host of another release is
+    refused before the branch under test. Only the copy's default path
+    changes; the profile table and its acceptance rule are the product's."""
+    fixed = scratch / "os-release"
+    fixed.write_text(_DEBIAN_13_OS_RELEASE, encoding="utf-8")
+    tool = tools_dir / "install_profile_fields.py"
+    source = tool.read_text(encoding="utf-8")
+    old = 'Path("/etc/os-release")'
+    assert source.count(old) == 1
+    tool.write_text(source.replace(old, f"Path({str(fixed)!r})"), encoding="utf-8")
+
+
 def test_a_staged_install_writes_no_record(tmp_path):
     """DESTDIR staging (`--without-service-manager`) writes no record and does
     not run the tool: its compiler, interpreter and policy features are not
     the node's, so a record from there would describe another compilation."""
 
-    if not Path("/etc/os-release").is_file():
-        pytest.skip("installer requires the host's os-release install profile")
     root = tmp_path / "installer-tree"
     shutil.copytree(ROOT / "packaging", root / "packaging")
     (root / "tools").mkdir()
     for name in ("install_profile_fields.py", "provision_mission_read.py",
                  "purge_mio_profile_copies.py", "check_decoy_apparmor_wrappers.py"):
         shutil.copy2(ROOT / "tools" / name, root / "tools" / name)
+    pin_reviewed_install_profile(root / "tools", tmp_path)
     shutil.copytree(ROOT / "src", root / "src")
     shutil.copytree(ROOT / "runtime" / "src", root / "runtime" / "src")
     marker = tmp_path / "record-tool-ran"
