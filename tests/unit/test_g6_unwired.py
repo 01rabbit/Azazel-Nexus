@@ -254,6 +254,31 @@ def _dynamic_strings(tree: ast.AST) -> list[str]:
     return found
 
 
+#: `reload` is a dynamic import only as `importlib.reload` / `imp.reload` or a
+#: bare imported `reload(`; `self._reload()` and `manager.reload()` are not.
+_RELOAD_MODULES = {"importlib", "imp"}
+#: `exec` and `eval` run code that may import by any name.
+_CODE_RUNNERS = {"exec", "eval"}
+
+
+def _calls_dynamic_import(tree: ast.AST) -> bool:
+    """True when the tree calls a dynamic-import entry point (an AST call, not
+    a substring of the text, so `self._reload()` is not one)."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name):
+            if func.id in _DYNAMIC or func.id in _CODE_RUNNERS:
+                return True
+        elif isinstance(func, ast.Attribute) and func.attr in _DYNAMIC:
+            if func.attr != "reload":
+                return True
+            if isinstance(func.value, ast.Name) and func.value.id in _RELOAD_MODULES:
+                return True
+    return False
+
+
 def _names_part(spelled: str, short: str) -> bool:
     """`decoy_apparmor`, `pkg.decoy_apparmor`, `.decoy_apparmor` and the like."""
     return spelled.rsplit(".", 1)[-1].endswith(short)
@@ -278,7 +303,7 @@ def _scan():
         tree = ast.parse(text)
         spelled = _static_imports(tree)
         strings = _dynamic_strings(tree)
-        uses_dynamic = any(f"{name}(" in text for name in _DYNAMIC)
+        uses_dynamic = _calls_dynamic_import(tree)
         for module, allowed in IMPORTERS.items():
             short = module.rsplit(".", 1)[1]
             own = rel == _part_file(module)
@@ -318,6 +343,26 @@ def test_each_public_name_appears_in_exactly_its_listed_files(scanned):
 def test_no_dynamic_import_reaches_a_part(scanned):
     _, _, dynamic = scanned
     assert dynamic == []
+
+
+@pytest.mark.parametrize("call", [
+    "importlib.import_module('x')", "__import__('x')", "importlib.reload(m)",
+    "reload(m)", "exec('import x')", "eval('__import__(\"x\")')",
+    "importlib.util.spec_from_file_location('x', p)", "runpy.run_module('x')",
+])
+def test_the_scan_detects_a_real_dynamic_import_beside_the_family(call):
+    """Positive control: a real dynamic import is still found."""
+    tree = ast.parse(f"x = 'activation_approval'\n{call}\n")
+    assert _calls_dynamic_import(tree)
+
+
+@pytest.mark.parametrize("code", [
+    "self._reload()", "self.manager.reload()", "def _reload(self): pass",
+    "x = 'import_module('",
+])
+def test_the_scan_ignores_names_that_are_not_dynamic_imports(code):
+    """Negative control: the false positive of #445 (a method named reload)."""
+    assert not _calls_dynamic_import(ast.parse(code))
 
 
 def test_the_table_names_real_parts():
