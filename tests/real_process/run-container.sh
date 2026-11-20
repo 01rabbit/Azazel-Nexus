@@ -56,10 +56,20 @@ if fabric_actual != fabric_expected:
     raise SystemExit('Fabric Knowledge Context contract wheel digest mismatch')
 print(f'verified Fabric {os.environ["FABRIC_EXPECTED_VERSION"]} wheel digest: {fabric_actual}')
 if os.environ['FABRIC_PROFILE'] == 'candidate':
+    # The candidate is pinned only by its own lab lock (ADR-0011); it must be
+    # absent from both stable Debian locks.
+    lab = Path('/src/packaging/offline/lab/requirements-clocklab-candidate.lock').read_text(encoding='utf-8')
+    if re.findall(r'--hash=sha256:([0-9a-f]{64})', lab) != [fabric_expected]:
+        raise SystemExit('candidate Fabric digest differs from the lab lock')
+    for lock in locks:
+        if fabric_expected in lock.read_text(encoding='utf-8'):
+            raise SystemExit(f'candidate Fabric digest leaked into stable {lock}')
+    print('candidate Fabric digest matches the lab lock and is absent from both stable locks')
+else:
     for lock in locks:
         if fabric_expected not in lock.read_text(encoding='utf-8'):
-            raise SystemExit(f'candidate Fabric digest absent from {lock}')
-    print('candidate Fabric digest matches both Nexus offline locks')
+            raise SystemExit(f'stable Fabric digest absent from {lock}')
+    print('stable Fabric digest matches both Nexus offline locks')
 PY
 
 SCRATCH_SRC=$(mktemp -d /tmp/nxs-real-process.XXXXXX)
@@ -88,15 +98,15 @@ if [[ "$FABRIC_PROFILE" == candidate ]]; then
   # Knowledge's `api-context-candidate` extra (never the stable `api` extra).
   # Its Fabric requirement is a git URL, which cannot resolve offline, so the
   # pinned wheel above stands in for it; the other extra members are installed
-  # by name and the extra's pin is checked against the Nexus pin.
+  # by name and the extra's pin is checked against the Nexus lab lock.
   python - <<'PYEXTRA'
 import re, pathlib, os
 k = pathlib.Path(os.environ['KNOWLEDGE_TEST_SRC'], 'pyproject.toml').read_text()
-n = pathlib.Path('/src/pyproject.toml').read_text()
+n = pathlib.Path('/src/packaging/offline/lab/requirements-clocklab-candidate.lock').read_text()
 extra = re.search(r'(?ms)^api-context-candidate = \[(.*?)^\]', k).group(1)
 pin = re.search(r'Azazel-Fabric\.git@([0-9a-f]{40})', extra).group(1)
-assert pin in n, 'Knowledge candidate extra and Nexus fabric extra pin different Fabric commits'
-print('api-context-candidate Fabric pin', pin, 'equals the Nexus fabric extra pin')
+assert pin in n, 'Knowledge candidate extra and the Nexus lab lock name different Fabric commits'
+print('api-context-candidate Fabric pin', pin, 'equals the Nexus lab lock commit')
 PYEXTRA
   python -m pip install --no-index --no-deps --find-links=/wheels -e "$SCRATCH_KNOWLEDGE"
 fi

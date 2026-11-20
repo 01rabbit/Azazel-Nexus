@@ -114,7 +114,7 @@ interop test. It does not run systemd; see "Linux isolated acceptance" in
 `run-docker.sh` keeps the stable Fabric v0.10.0 wheel as its default. A lab
 candidate is a separate input: set `FABRIC_PROFILE=candidate`,
 `FABRIC_WHEEL_DIR`, `FABRIC_WHEEL_NAME`, `FABRIC_WHEEL_SHA256` (checked against
-the wheel and both Nexus offline locks) and `FABRIC_EXPECTED_VERSION`; Knowledge
+the wheel and the lab lock `packaging/offline/lab/requirements-clocklab-candidate.lock`) and `FABRIC_EXPECTED_VERSION`; Knowledge
 is introduced with its `api-context-candidate` extra, never together with `api`.
 `RECORD_DIR` mounts a host directory that receives one `fabric-load-*.json` per
 process: the `azazel_fabric` version, file, RECORD check, `direct_url.json` and
