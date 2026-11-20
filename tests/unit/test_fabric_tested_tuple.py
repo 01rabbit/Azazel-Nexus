@@ -35,6 +35,10 @@ fabric = pytest.importorskip(
     "azazel_fabric",
     reason="the Fabric extra is optional; CORE must work without it",
 )
+if fabric.__version__ != FABRIC_PIN.lstrip("v"):
+    # The tested-tuple projection is pinned to the published tag; the lab clock
+    # candidate is recognised only by the commissioning projections (ADR-0011).
+    pytest.skip("pinned Fabric required", allow_module_level=True)
 contracts = pytest.importorskip("azazel_fabric.provisioning_contracts")
 models = pytest.importorskip("azazel_fabric.provisioning_contracts.models")
 golden = pytest.importorskip("azazel_fabric.testing.provisioning")

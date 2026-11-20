@@ -127,7 +127,12 @@ def test_fabric_absent_is_safe(monkeypatch):
 
 
 def test_fabric_present_production_projection(monkeypatch):
-    pytest.importorskip("azazel_fabric")
+    fabric = pytest.importorskip("azazel_fabric")
+    from azazel_nexus.fabric_boundary import FABRIC_PIN
+    if fabric.__version__ != FABRIC_PIN.lstrip("v"):
+        # The status line shows published versions only; a development build is
+        # refused by design (ADR-0011).
+        pytest.skip("pinned Fabric required")
     from azazel_nexus import fabric_boundary
     real = fabric_boundary.project_capability
     seen = []

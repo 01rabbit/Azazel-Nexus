@@ -129,7 +129,7 @@ REVIEWED_PURE_BODIES = {'33fbaff835f33066544564df181cfdac1a84c790c04277f6f46c90c
  '579fd732d0649db3a7e06cf946dba96cde0748545077dfb62282c8ca505c363b': 'mio_profile.__post_init__',
  '7ace2b97884230200c3ff06ed376ff682cf7eaeaca91bd8b69f45932f9ae4170': 'fabric_boundary._missing_planned',
  'b06b058cee681cb88d520e89c80c5d21d457cf768cbd4b5c4cca3fe388f7fa0c': 'fabric_boundary.confirm_role',
- 'bd70432970c734d9b1b36b9508cf5b06f8ce358c63fa8c690a51ace7e408c49e': 'fabric_boundary.project_hardware_inventory',
+ 'eccf48b015a912e199a2be5d222520882e667e7ffad455600ea42e2f5618bcdd': 'fabric_boundary.project_hardware_inventory',
  'bff8b4c3e8a4245fc398dbb0cdf0b53d4d1be294a089d99249a6de44485b211a': 'model_catalog.__post_init__',
  'c252c16599a660a85ef64afa8c264ee3234a3763658b0510a84949c1a2e664d1': 'fabric_boundary.assert_local_record_matches_full_proposal',
  'f9274719bde04288a876b319b669fc26a61e867e41ef21198de9b7b67afa1664': 'mio_profile.__post_init__'}
