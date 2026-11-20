@@ -401,10 +401,16 @@ def set_clock_health_provider(provider) -> None:
     object with `.check(expected_generation=...)`.
 
     The library cannot import the runtime that owns the health file (the
-    dependency runs runtime -> library), so the runtime hands the reader in. With
-    none registered a v2 record is never shown as usable.
+    dependency runs runtime -> library), so the runtime hands the reader in. It
+    is registered once: the same provider again is a no-op, a different one is
+    refused, and so is anything that is not callable. With none registered a v2
+    record is never shown as usable.
     """
     global _clock_health_provider
+    if not callable(provider):
+        raise TypeError("clock health provider must be callable")
+    if _clock_health_provider is not None and _clock_health_provider is not provider:
+        raise ValueError("a different clock health provider is already registered")
     _clock_health_provider = provider
 
 
@@ -434,8 +440,8 @@ def display_projection(value, now, *, health_check=None):
             expiry = _instant(validity["effective_expires_at"]).timestamp()
             usable = adopted <= now < expiry
             reason = "in_window" if usable else "expired" if now >= expiry else "clock_rollback"
-        except (ImportError, OSError, ValueError, TypeError):
-            pass
+        except Exception:  # noqa: BLE001 - any failure to judge health is not usable
+            usable, reason = False, "clock_health_unavailable"
     out["server_validity"] = {"usable": usable, "reason": reason,
                               "as_of": now if type(now) in (int, float) and math.isfinite(now) else None}
     return out

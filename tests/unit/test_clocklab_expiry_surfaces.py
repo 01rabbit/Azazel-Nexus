@@ -46,3 +46,22 @@ def test_fixed_v2_record_expiry_agrees_on_every_surface(tmp_path, monkeypatch):
     from test_handoff_clock_validity import record
 
     expiry_surfaces_agree(record(), tmp_path, monkeypatch, "expiry-surfaces")
+
+
+def test_three_milliseconds_before_the_expiry_is_already_expired_through_the_provider(monkeypatch):
+    """The effective expiry is 5 ms before the signed one, so 3 ms before it is past."""
+    import pytest
+    from types import SimpleNamespace
+    pytest.importorskip("azazel_fabric.knowledge_context_clocklab")
+    from azazel_nexus import technique_knowledge as tk
+    from test_handoff_clock_validity import record
+
+    value = record()
+    expiry = datetime.fromisoformat(value["expires_at"].replace("Z", "+00:00"))
+    monkeypatch.setattr(tk, "_clock_health_provider", None)
+    tk.set_clock_health_provider(lambda contract: SimpleNamespace(check=lambda **kw: True))
+    before = tk.display_projection(value, (expiry - timedelta(milliseconds=3)).timestamp())
+    assert before["server_validity"]["usable"] is False
+    assert before["server_validity"]["reason"] == "expired"
+    earlier = tk.display_projection(value, (expiry - timedelta(milliseconds=6)).timestamp())
+    assert earlier["server_validity"]["usable"] is True and earlier["server_validity"]["reason"] == "in_window"
