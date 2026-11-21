@@ -1,8 +1,17 @@
 """製品の provider が実際の health ファイルを読んで、送信の前で閉じることを固定する。
 
 `config._clock_health(contract)` が返す本物の ClockHealth を egress client に渡す。
-差し替えるのは時計（ClockHealth の既定の注入点 boottime/wall）、ファイルの持ち主と
-信頼の根（試験用ディレクトリ）、送信の層（_post_path）だけ。実時刻と sleep は使わない。
+provider 本体（パスの組み立てと ClockHealth の呼び出し）は実物のまま通す。
+差し替えるのは次の 3 つだけ。
+- 時計: ClockHealth の正式な keyword 引数 boottime/wall。製品の関数内 import の先
+  (knowledge_clock_contract.ClockHealth) を、keyword を足すだけの薄い subclass に置く。
+  method は上書きしない。実時刻と sleep は使わない。
+- owner と trust_root: 注入している。コンテナの uid は 0 ではなく、製品の既定
+  (root 所有の "/") では試験用ディレクトリを信頼できないため。持ち主・権限・symlink の
+  検査そのものは tests/unit/test_knowledge_clocklab.py の
+  test_health_file_owner_mode_symlink_and_generation 付近（192-203 行）が担う。ここでは
+  provider 経由で mode 0o666 が送信前に閉じることだけを 1 件足す。
+- 送信: _post_path（egress client 下の偽の transport）。
 実プロセス試験の D/E（Knowledge 側・Nexus 側の失効）と同じ結論を単体で確かめる。
 """
 import json
@@ -14,6 +23,7 @@ pytest.importorskip("azazel_fabric.knowledge_context_clocklab")
 
 from azazel_fabric.knowledge_context_clocklab import ClockContract
 from azazel_nexus.sanitizer import PrivacyClass
+from azazel_nexus_runtime import knowledge_clock_contract
 from azazel_nexus_runtime import knowledge_context_config as config
 from azazel_nexus_runtime import knowledge_egress, runtime_paths
 from azazel_nexus_runtime.knowledge_clock_contract import ClockHealth
@@ -24,7 +34,7 @@ from test_knowledge_context_transport import NOW, material, registry
 CONTRACT = ClockContract(skew_budget_us=5000)
 BOOT_ID = "n-boot"
 # 一つの時計から作る: ファイルの観測・期限・wall 差と、reader が見る now はすべてここから出る。
-OBSERVED, VALID_UNTIL, WALL_OFFSET = 1_000_000_000, 6_000_000_000, 100_000_000_000
+OBSERVED, VALID_UNTIL, WALL_OFFSET = 1_000_000_000, 3_000_000_000, 100_000_000_000
 
 
 @pytest.fixture
@@ -39,13 +49,15 @@ def health_env(tmp_path, monkeypatch):
     path = directory / "knowledge-clock-health.json"
     clock = {"boot": 2_000_000_000}
     monkeypatch.setattr(runtime_paths, "ROOT", root)
-    # 製品の _clock_health は ClockHealth(contract, path) だけを呼ぶ。既定の注入点を差し替える。
-    defaults = ClockHealth.__init__.__kwdefaults__
-    monkeypatch.setitem(defaults, "boottime", lambda: clock["boot"])
-    monkeypatch.setitem(defaults, "wall", lambda: clock["boot"] + WALL_OFFSET)
-    monkeypatch.setitem(defaults, "boot_id", BOOT_ID)
-    monkeypatch.setitem(defaults, "owner", os.getuid())
-    monkeypatch.setitem(defaults, "trust_root", root)
+    injected = dict(boottime=lambda: clock["boot"], wall=lambda: clock["boot"] + WALL_OFFSET,
+                    boot_id=BOOT_ID, owner=os.getuid(), trust_root=root)
+
+    class InjectedClockHealth(ClockHealth):
+        def __init__(self, contract, path):
+            super().__init__(contract, path, **injected)
+
+    # 製品の _clock_health は関数内で import して ClockHealth(contract, path) を呼ぶ。
+    monkeypatch.setattr(knowledge_clock_contract, "ClockHealth", InjectedClockHealth)
 
     def write():
         doc = {"schema": "azazel-clocklab-health/1", "contract_id": CONTRACT.contract_id,
@@ -62,7 +74,9 @@ def health_env(tmp_path, monkeypatch):
 def _egress(monkeypatch):
     """製品の provider が作る ClockHealth を持つ client。送信の層だけ数える偽物。"""
     health = config._clock_health(CONTRACT)
-    assert type(health) is ClockHealth
+    assert isinstance(health, ClockHealth)
+    assert set(vars(type(health))) - {"__module__", "__qualname__", "__doc__", "__firstlineno__",
+                                      "__static_attributes__", "__init__"} == set()
     peer = KnowledgeClient(
         registry=registry(443), peer_id="knowledge-node-1",
         ca_certificate=material("trusted-ca.crt"),
@@ -122,4 +136,29 @@ def test_expired_file_refuses_before_any_send(health_env, monkeypatch):
     assert caught.value.stage == "refused_before_send"
     assert type(caught.value.__cause__) is ValueError
     assert str(caught.value.__cause__) == "clock health age"
+    assert health._latched is True
+
+
+def test_the_last_instant_before_the_deadline_is_accepted(health_env, monkeypatch):
+    path, clock, write = health_env
+    write()
+    peer, health, sent = _egress(monkeypatch)
+    clock["boot"] = VALID_UNTIL - 1
+    with pytest.raises(Exception) as caught:
+        _ask(peer)
+    assert len(sent) == 1
+    assert caught.value.stage == "transport"
+    assert health._latched is False
+
+
+def test_group_or_other_writable_file_refuses_before_any_send(health_env, monkeypatch):
+    path, clock, write = health_env
+    write()
+    path.chmod(0o666)
+    peer, health, sent = _egress(monkeypatch)
+    with pytest.raises(Exception) as caught:
+        _ask(peer)
+    assert sent == []
+    assert caught.value.stage == "refused_before_send"
+    assert str(caught.value.__cause__) == "clock health file"
     assert health._latched is True
