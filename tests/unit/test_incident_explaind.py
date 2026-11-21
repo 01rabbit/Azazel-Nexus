@@ -1418,6 +1418,29 @@ def _loose_rows(n, target):
     return [_scaled_row(i + 1, lo) for i in range(n)]
 
 
+#: The guidance record the real deterministic path writes for a transition with no report text,
+#: as `azazel_mio.guidance` (azazel-mio 4511f1fc) produced it. azazel-mio is an optional extra
+#: (pyproject `mio`); without it the explainer writes a record with no guidance. The tests that
+#: size a window by the real settle path inject this instead of depending on that package.
+#: The digests inside are not recomputed. The record exists only to give rows a
+#: size; rebuild it once a reader starts verifying the guidance digest.
+_GENERIC_GUIDANCE = json.loads('{"claim_boundaries": ["do not assert identity or intent", "do not treat recommendation as executable", "prefer unknown over unsupported certainty"], "competing_explanations": [{"evidence_refs": ["sha256:7858220ea290116fbd659835face8df29f0765be467fcf46d65c9fb1d49e2939"], "prompt": "hostile activity", "role": "hostile", "slot": "hostile_activity", "support": "unverified_candidate"}, {"evidence_refs": ["sha256:7858220ea290116fbd659835face8df29f0765be467fcf46d65c9fb1d49e2939"], "prompt": "benign or misconfigured activity", "role": "benign", "slot": "benign_activity", "support": "unverified_candidate"}, {"evidence_refs": ["sha256:7858220ea290116fbd659835face8df29f0765be467fcf46d65c9fb1d49e2939"], "prompt": "insufficient evidence to distinguish", "role": "unresolved", "slot": "insufficient_evidence", "support": "unverified_candidate"}], "content_kind": "deterministic_guidance", "discriminating_material": ["evidence consistent with routine operation weakens hostile hypothesis", "absence of any corroborating signal keeps the situation unresolved"], "evidence_gaps": {"items": [], "reason": "no_effective_read_capabilities", "source": "deterministic"}, "facts": [{"kind": "edge_decision", "text": "Edge selected_action=None, result=not_executed, executed_count=0", "trust": "deterministic"}], "generation_method": "deterministic_guidance", "guidance_digest": "sha256:cf0c432d794ca02ed9b82e299fcf2e7589212f27dadaa2576ea7056522539e78", "guidance_schema_version": "1.0.0", "handoff": {"evidence_refs": ["sha256:7858220ea290116fbd659835face8df29f0765be467fcf46d65c9fb1d49e2939"], "frame_id": "mio-d879c7c90478ed47-1:frame", "incident_id": "inc-d879c7c90478ed47", "privacy_class": "P3-restricted", "request_id": "inc-d879c7c90478ed47:1", "sections": {"competing_explanations": ["hostile_activity", "benign_activity", "insufficient_evidence"], "execution": "none (current_action null)", "missing_information": ["Situation question and context are untrusted reports"], "report_basis": [], "safe_next_checks": ["[required] From existing read-only records, fix the time window of the main complaint: when it started, whether it continues now, and how severe it is. If the clock, time zone or aggregation window is unknown, settle that first.", "[required] Line up the other log lines\' timestamps against that window and list overlaps and near misses as candidates to examine. A time match alone does not establish a relation, and a line outside the window is not ruled out as a delayed cause."]}, "trace_id": "mio-d879c7c90478ed47-1"}, "model_calls": 0, "next_checks": [{"id": "generic-evidence-first-v1:q1", "mode": "read_only_existing_authority", "text": "From existing read-only records, fix the time window of the main complaint: when it started, whether it continues now, and how severe it is. If the clock, time zone or aggregation window is unknown, settle that first.", "tier": "required"}, {"id": "generic-evidence-first-v1:q2", "mode": "read_only_existing_authority", "text": "Line up the other log lines\' timestamps against that window and list overlaps and near misses as candidates to examine. A time match alone does not establish a relation, and a line outside the window is not ruled out as a delayed cause.", "tier": "required"}], "playbook_digest": "sha256:f93dcb368d18c44bf06dfd8ba061ff96155b0eafc5d06d32ffac4e0bfb731ff5", "playbook_id": "generic-evidence-first-v1", "playbook_version": "1.2.0", "recommendation": {"current_action": null, "executable": false, "recommended_action": "OBSERVE", "source": "deterministic_fixed"}, "selection_mode": "generic_fallback", "topics_addressed": [], "unknown_groups": [{"merged": [], "sources": ["frame"], "text": "Situation question and context are untrusted reports", "topic": null}], "weight_notes": []}')
+
+
+def _generic_guidance(frame):
+    """The fixed guidance bound to the transition in `frame` (incident, request, trace, frame, evidence)."""
+    from azazel_nexus.incident_explain import read_fast_transition
+    transition = read_fast_transition(frame)
+    incident_id, sequence = frame["request_id"].rsplit(":", 1)
+    trace = f"mio-{incident_id[4:]}-{sequence}"
+    value = json.loads(json.dumps(_GENERIC_GUIDANCE))
+    value["handoff"].update(incident_id=incident_id, request_id=frame["request_id"], trace_id=trace,
+                            frame_id=trace + ":frame", evidence_refs=list(transition["evidence_refs"]))
+    for explanation in value["competing_explanations"]:
+        explanation["evidence_refs"] = list(transition["evidence_refs"])
+    return value
+
+
 def _window(tmp_path, rows, **kwargs):
     seed = make(tmp_path)
     seed.recent = json.loads(json.dumps(rows))
@@ -1528,7 +1551,7 @@ def test_window_stays_within_bound_settling_incidents_one_at_a_time_with_large_r
     """
     from azazel_nexus.incident_explain import RECENT_BYTES, CODES
     maximal = _loose_rows(4, RECENT_BYTES - 16000)     # reader-bounded large rows, 30 KB left over
-    e = _window(tmp_path, maximal)
+    e = _window(tmp_path, maximal, guidance=_generic_guidance)
     shrunk = []
     for n in range(10):
         append(e, transition(incident_id=f"inc-{0xa00 + n:016x}"))
@@ -1864,7 +1887,7 @@ def test_window_stays_within_bound_s5_unavailable_reduces_the_oldest(tmp_path):
 
 def test_window_stays_within_bound_s5_settle_minimum_still_over_reduces_the_oldest(tmp_path):
     maximal = _loose_rows(4, _RECENT_BYTES - 16000)
-    e = _window(tmp_path, maximal)
+    e = _window(tmp_path, maximal, guidance=_generic_guidance)
     for n in range(11):
         append(e, transition(incident_id=f"inc-{0xa00 + n:016x}"))
         e.monotonic = lambda n=n: 61 * (n + 1)
@@ -2018,7 +2041,7 @@ def test_codes_are_unchanged():
 
 
 def test_window_stays_within_bound_and_ordinary_windows_are_untouched(tmp_path):
-    settled = _settled_row()
+    settled = _settled_row(guidance=_generic_guidance)
     rows = []
     for n in range(20):
         copy_ = json.loads(json.dumps(settled))
@@ -2027,7 +2050,7 @@ def test_window_stays_within_bound_and_ordinary_windows_are_untouched(tmp_path):
         copy_["explanation"]["guidance"]["handoff"]["incident_id"] = copy_["incident_id"]
         rows.append(copy_)
     assert 2 * 1024 < len(json.dumps(rows[0])) < 8 * 1024        # ordinary rows, 20 of them
-    e = _window(tmp_path, rows)
+    e = _window(tmp_path, rows, guidance=_generic_guidance)
     before = json.loads(json.dumps(e.recent))
     e._keep_window(before[0]["incident_id"])
     assert e.recent == before and not e.refused
