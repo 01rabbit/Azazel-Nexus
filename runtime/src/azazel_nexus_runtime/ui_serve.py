@@ -75,7 +75,7 @@ from azazel_nexus.ui_login import (
     CODE_ALPHABET, CODE_LENGTH, CODE_TTL_S, SCHEMA as LOGIN_SCHEMA, login_code_path,
     normalize_code,
 )
-from .knowledge_context_config import load_observation_rule
+from .knowledge_context_config import install_clock_health_provider, load_observation_rule
 from azazel_nexus.ui_model import browser_json, project
 
 __all__ = ["main"]
@@ -840,6 +840,7 @@ def _rotate(app: UiApp, stop: threading.Event) -> None:
 def build_app(sock, *, fixture: Optional[Path], login_file: Path,
               clock: Callable[[], float] = time.time) -> UiApp:
     port = sock.getsockname()[1]
+    install_clock_health_provider()
     source = FixtureSource(fixture) if fixture is not None else LiveSource()
     codes = LoginCodes(publish_to(login_file), f"http://127.0.0.1:{port}/")
     return UiApp(source=source, codes=codes, port=port, clock=clock)

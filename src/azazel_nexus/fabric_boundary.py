@@ -91,6 +91,7 @@ from azazel_nexus.inventory import InterfaceReadout
 
 __all__ = [
     "FABRIC_PIN",
+    "CLOCKLAB_CANDIDATE_FABRIC_VERSION",
     "PLANNED_FABRIC_MODULES",
     "REQUIRED_FABRIC_MODULES",
     "IdentityUnavailable",
@@ -143,6 +144,19 @@ class IdentityUnavailable(Exception):
 #: `docs/release-compatibility.md`, which holds the answer (#23).
 #: `tests/unit/test_status_claims.py` keeps the retired phrasing out.
 FABRIC_PIN = "v0.10.0"
+
+#: The unpublished Fabric build that adds the explicit lab clock contract
+#: (Azazel-Fabric a4fa553). It is not the pin: `FABRIC_PIN` stays the published
+#: tag (ADR-0001, ADR-0009) and no extra, lock or wheelhouse installs this build.
+#: A lab installs it by hand, and only the commissioning projections -- the ones a
+#: v4 proposal needs -- recognise it, by this exact version string.
+CLOCKLAB_CANDIDATE_FABRIC_VERSION = "0.10.1.dev0"
+
+
+def _commissioning_fabric(fabric) -> bool:
+    return getattr(fabric, "__version__", None) in (
+        FABRIC_PIN.lstrip("v"), CLOCKLAB_CANDIDATE_FABRIC_VERSION)
+
 
 #: What this module needs to produce a projection at all.
 REQUIRED_FABRIC_MODULES = ("azazel_fabric.view", "azazel_fabric.schema.mode",
@@ -654,7 +668,7 @@ def project_hardware_inventory(*, readouts: Sequence[InterfaceReadout], platform
     Refused interfaces prevent a claim that the complete set was projected.
     """
     fabric, _ = _import_fabric()
-    if fabric is None or getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+    if fabric is None or not _commissioning_fabric(fabric):
         raise CommissioningRecordUnavailable("pinned Fabric is required")
     from .activation import ActivationRefused, _utc_lease_time  # noqa: PLC0415
 
@@ -713,7 +727,7 @@ def project_resource_profile(*, observation: dict, inventory: Any, profile_id: s
     Missing storage is not zero and memory is never adjusted a second time.
     """
     fabric, failure = _import_fabric()
-    if fabric is None or getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+    if fabric is None or not _commissioning_fabric(fabric):
         raise CommissioningRecordUnavailable("pinned Fabric is required")
     from .activation import ActivationRefused, _utc_lease_time  # noqa: PLC0415
 
@@ -778,7 +792,7 @@ def project_reviewed_topology(*, payload: bytes, signature: bytes, operator: str
     commissioning storage, never terminal output or general audit logs.
     """
     fabric, _ = _import_fabric()
-    if fabric is None or getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+    if fabric is None or not _commissioning_fabric(fabric):
         raise CommissioningRecordUnavailable("pinned Fabric is required")
     from .activation import ActivationRefused, _utc_lease_time  # noqa: PLC0415
     from .commissioning_draft import (  # noqa: PLC0415
@@ -847,7 +861,7 @@ def assert_current_inventory_matches(*, retained: Any, current: Any) -> None:
     trusted clock. Caller must authenticate the retained snapshot separately.
     """
     fabric, _ = _import_fabric()
-    if fabric is None or getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+    if fabric is None or not _commissioning_fabric(fabric):
         raise CommissioningRecordUnavailable("pinned Fabric is required")
     from .activation import ActivationRefused, _utc_lease_time
 
@@ -934,7 +948,7 @@ def restore_commissioning_inputs(document: dict) -> dict:
     No filesystem, signature or admission decision belongs in this decoder.
     """
     fabric, _ = _import_fabric()
-    if fabric is None or getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+    if fabric is None or not _commissioning_fabric(fabric):
         raise CommissioningRecordUnavailable("pinned Fabric is required")
     try:
         from azazel_fabric.provisioning_contracts import (  # noqa: PLC0415
@@ -943,7 +957,8 @@ def restore_commissioning_inputs(document: dict) -> dict:
         schema = document["schema"]
         if schema not in {"azazel-nexus/commissioning-proposal/v1",
                           "azazel-nexus/commissioning-proposal/v2",
-                          "azazel-nexus/commissioning-proposal/v3"}:
+                          "azazel-nexus/commissioning-proposal/v3",
+                          "azazel-nexus/commissioning-proposal/v4"}:
             raise ValueError
         selection = {}
         if schema != "azazel-nexus/commissioning-proposal/v1":
@@ -957,7 +972,7 @@ def restore_commissioning_inputs(document: dict) -> dict:
                        topology_profile=TopologyProfile.model_validate(document["topology"]),
                        record_id=document["record"]["record_id"], operator=document["operator"],
                        confirmed_at=document["record"]["created_at"], **selection)
-        if schema == "azazel-nexus/commissioning-proposal/v3":
+        if schema == "azazel-nexus/commissioning-proposal/v3" or (schema == "azazel-nexus/commissioning-proposal/v4" and "deception_scope" in document):
             # Required in v3, as `mio_profile` is in v2 (#196 G1a, grant §4.1):
             # decoded whole here, so a retained view never holds a partial scope.
             from .decoy_scope import decode_deception_scope  # noqa: PLC0415
@@ -966,6 +981,11 @@ def restore_commissioning_inputs(document: dict) -> dict:
             decode_deception_scope(section, assignments=deception_scope_assignments(
                 context["inventory"], context["topology_profile"]))
             context["deception_scope"] = section
+        if schema == "azazel-nexus/commissioning-proposal/v4":
+            contract = clock_contract_from_dict(document["clock_policy"], consumer_revision=2)
+            if context.get("mio_profile") != "FULL" or contract.skew_budget_us != 5000:
+                raise ValueError
+            context["clock_policy"] = contract.as_dict()
         return context
     except (ImportError, ValueError, TypeError, KeyError, AttributeError, IdentityUnavailable):
         raise CommissioningRecordUnavailable("retained commissioning inputs unavailable") from None
@@ -982,7 +1002,7 @@ def build_commissioning_record(*, inventory=None, resource_profile=None,
     Raw content is confidential; this function neither prints nor persists it.
     """
     fabric, _ = _import_fabric()
-    if fabric is None or getattr(fabric, "__version__", None) != FABRIC_PIN.lstrip("v"):
+    if fabric is None or not _commissioning_fabric(fabric):
         raise CommissioningRecordUnavailable("pinned Fabric is required")
     from .activation import ActivationRefused, _utc_lease_time  # noqa: PLC0415
 
@@ -1358,3 +1378,104 @@ def project_explanation(record) -> Projection:
         return Projection(available=False, reason="explanation claim projection unavailable")
     return Projection(available=True, reason="", fabric_version=fabric.__version__,
                       view=ExplanationProjection(claim_set=view, evidence_refs=refs))
+
+
+class ClocklabUnavailable(KnowledgeContextUnavailable, ImportError):
+    """The clock-contract module is absent, or this Fabric is not the lab candidate.
+
+    It is also an `ImportError`, so every caller that already refuses on a
+    missing module refuses on a wrong version the same way.
+    """
+
+
+def _clocklab():
+    """The clocklab module, only from the exact lab candidate Fabric (ADR-0011).
+
+    Importable is not enough: a Fabric of any other version that happens to
+    carry the module is refused, and nothing falls back to v1.
+    """
+    try:
+        import azazel_fabric
+        from azazel_fabric import knowledge_context_clocklab as module
+    except ImportError as exc:
+        raise ClocklabUnavailable("clocklab Fabric unavailable") from exc
+    if module is None:  # `from pkg import sub` yields None for a blocked submodule
+        raise ClocklabUnavailable("clocklab Fabric unavailable")
+    if getattr(azazel_fabric, "__version__", None) != CLOCKLAB_CANDIDATE_FABRIC_VERSION:
+        raise ClocklabUnavailable("clocklab Fabric version is not the lab candidate")
+    return module
+
+
+def validate_clocklab_request(payload, *, contract):
+    """Explicit v2 only; missing candidate Fabric never falls back to v1."""
+    try:
+        request = _clocklab().KnowledgeContextRequestV2.model_validate(payload)
+        if request.contract_id != contract.contract_id:
+            raise ValueError("clock contract mismatch")
+        return request
+    except KnowledgeContextUnavailable:
+        raise
+    except ImportError as exc:
+        raise KnowledgeContextUnavailable("clocklab Fabric unavailable") from exc
+    except (ValueError, TypeError) as exc:
+        raise KnowledgeContextInvalid("clocklab request refused") from exc
+
+
+def canonical_clocklab_request(request):
+    try:
+        return _clocklab().canonical_clocklab_bytes(request)
+    except KnowledgeContextUnavailable:
+        raise
+    except ImportError as exc:
+        raise KnowledgeContextUnavailable("clocklab Fabric unavailable") from exc
+    except (ValueError, TypeError) as exc:
+        raise KnowledgeContextInvalid("clocklab request refused") from exc
+
+
+def validate_clocklab_response(request, payload, *, contract):
+    try:
+        module = _clocklab()
+        response = module.KnowledgeContextResponseV2.model_validate(payload)
+        module.assert_response_correlates_v2(request, response, contract=contract)
+        return response
+    except KnowledgeContextUnavailable:
+        raise
+    except ImportError as exc:
+        raise KnowledgeContextUnavailable("clocklab Fabric unavailable") from exc
+    except (ValueError, TypeError) as exc:
+        raise KnowledgeContextInvalid("clocklab response refused") from exc
+
+
+def clock_contract(*, skew_budget_us):
+    """Fabric's `ClockContract` for a skew budget (lab candidate Fabric only).
+
+    The modules that need the contract (`commissioning_approval`,
+    `technique_knowledge`, and the runtime) reach it through here. Anything but
+    the candidate raises `ClocklabUnavailable`; nothing falls back to v1.
+    """
+    return _clocklab().ClockContract(skew_budget_us=skew_budget_us)
+
+
+def clock_contract_from_dict(body, *, consumer_revision):
+    """The contract named by a signed canonical body, at an explicit consumer revision."""
+    return _clocklab().ClockContract.from_dict(body, consumer_revision=consumer_revision)
+
+
+def clocklab_response_model(payload):
+    """A v2 response validated as Fabric's model (the caller binds it to validity)."""
+    return _clocklab().KnowledgeContextResponseV2.model_validate(payload)
+
+
+def clocklab_response_v1_projection(response):
+    """The v1-shaped dict the closed technique reader consumes, from a verified v2 model."""
+    return _clocklab().response_v1_projection(response).model_dump(mode="json")
+
+
+def clocklab_response_v1(payload):
+    """Validate a v2 response and return `(contract_id, expires_at, v1 projection)`.
+
+    The contract id and semantic expiry are returned so the caller can bind them
+    to the retained validity record.
+    """
+    semantic = clocklab_response_model(payload)
+    return (semantic.contract_id, semantic.expires_at, clocklab_response_v1_projection(semantic))

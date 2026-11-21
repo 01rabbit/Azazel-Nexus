@@ -31,6 +31,7 @@ __all__ = ["CommissioningResult", "load_commissioning", "load_commissioning_from
            "ObservationRule", "load_observation_rule", "observation_rule_identity", "OBSERVATION_RULE_SCHEMA"]
 
 MANIFEST_SCHEMA = "azazel.knowledge-context.commissioning/1"
+MANIFEST_SCHEMA_V2 = "azazel.knowledge-context.commissioning/2"
 OBSERVATION_RULE_SCHEMA = "azazel.knowledge-context.observation-query/1"
 _RULE_LIMIT = 4096
 _RULE_KEYS = {"schema", "rule", "max_requests_per_minute"}
@@ -69,6 +70,7 @@ class CommissioningResult:
     #: the registry's commissioning digest; the egress allowance derives from them.
     peer: Any = None
     commissioning_digest: str | None = None
+    clock_policy: dict | None = None
 
     def __repr__(self) -> str:
         return f"CommissioningResult(status={self.status!r}, reason_code={self.reason_code!r})"
@@ -77,8 +79,9 @@ class CommissioningResult:
 class _GuardedClient:
     """Latches closed for good once the manifest is removed or replaced."""
 
-    def __init__(self, inner, manifest_path, identity):
+    def __init__(self, inner, manifest_path, identity, clock_binding=None):
         self._inner = inner
+        self._clock_binding = clock_binding
         self._path = manifest_path
         self._identity = identity
         self._latched = False
@@ -95,6 +98,10 @@ class _GuardedClient:
                 except OSError:
                     current = None
                 if current != self._identity:
+                    self._latched = True
+            if self._clock_binding is not None:
+                from .activation_markers import inspect_clock_grant_binding
+                if inspect_clock_grant_binding(self._clock_binding, runtime_paths.ROOT) is None:
                     self._latched = True
             if self._latched:
                 refusal = KnowledgeRefused("commissioning bundle changed")
@@ -198,9 +205,27 @@ def _load(now: str, directory=None, *, peer_only: bool = False) -> Commissioning
             raise _Refused("bundle_incomplete" if names < set(_FILES) else "bundle_unexpected")
         raw, manifest_stat = _read(dirfd, "manifest.json")
         manifest = _json(raw, "manifest_schema")
-        if type(manifest) is not dict or set(manifest) != _MANIFEST_KEYS:
+        if type(manifest) is not dict:
             raise _Refused("manifest_schema")
-        if manifest["schema"] != MANIFEST_SCHEMA:
+        clock_contract = None
+        if manifest.get("schema") == MANIFEST_SCHEMA_V2:
+            if set(manifest) != _MANIFEST_KEYS | {"clock_policy"}:
+                raise _Refused("manifest_schema")
+            try:
+                from azazel_nexus.fabric_boundary import clock_contract_from_dict
+                if (type(manifest["clock_policy"]) is not dict
+                        or manifest["clock_policy"].get("schema") != "azazel-clocklab-policy/2"
+                        or type(manifest["clock_policy"].get("consumer_revision")) is not int
+                        or manifest["clock_policy"]["consumer_revision"] != 2):
+                    raise ValueError("clock policy revision")
+                clock_contract = clock_contract_from_dict(manifest["clock_policy"], consumer_revision=2)
+                if clock_contract.skew_budget_us != 5000:
+                    raise ValueError
+            except (ImportError, ValueError, TypeError):
+                raise _Refused("clock_policy") from None
+        elif set(manifest) != _MANIFEST_KEYS:
+            raise _Refused("manifest_schema")
+        if manifest["schema"] not in {MANIFEST_SCHEMA, MANIFEST_SCHEMA_V2}:
             raise _Refused("manifest_schema")
         if type(manifest["enabled"]) is not bool:
             raise _Refused("manifest_schema")
@@ -255,7 +280,8 @@ def _load(now: str, directory=None, *, peer_only: bool = False) -> Commissioning
             # U49 egress derivation: the verified peer without any secret file.
             return CommissioningResult(
                 "commissioned", policy=policy, registry_version=registry.version,
-                peer=peer, commissioning_digest=registry.commissioning_digest)
+                peer=peer, commissioning_digest=registry.commissioning_digest,
+                clock_policy=None if clock_contract is None else clock_contract.as_dict())
         for name in ("ca.pem", "client.pem", "client.key"):
             _read(dirfd, name)
         alias_key = _read(dirfd, "alias.key")[0]
@@ -263,6 +289,7 @@ def _load(now: str, directory=None, *, peer_only: bool = False) -> Commissioning
             raise _Refused("alias_short")
         base = bundle
         try:
+            clock_health = None if clock_contract is None else _clock_health(clock_contract)
             client = KnowledgeClient(
                 registry=registry, peer_id=manifest["peer_id"],
                 ca_certificate=str(base / "ca.pem"),
@@ -270,18 +297,25 @@ def _load(now: str, directory=None, *, peer_only: bool = False) -> Commissioning
                             (str(base / "client.pem"), str(base / "client.key"))},
                 knowledge_context_enabled=True,
                 knowledge_context_max_ttl_seconds=ttl,
+                **({"clock_contract": clock_contract,
+                    "clock_health": clock_health} if clock_contract is not None else {}),
             )
         except Exception:
             raise _Refused("identity_unusable") from None
         guarded = _GuardedClient(
             client, str(base / "manifest.json"),
             (manifest_stat.st_dev, manifest_stat.st_ino,
-             manifest_stat.st_mtime_ns, manifest_stat.st_ctime_ns))
+             manifest_stat.st_mtime_ns, manifest_stat.st_ctime_ns),
+            clock_binding=None if clock_contract is None else {
+                "boot_id": clock_health._boot_id,
+                "contract_id": clock_contract.contract_id,
+                "commissioning_digest": registry.commissioning_digest})
         return CommissioningResult(
             "commissioned", client=guarded, policy=policy,
             mission=manifest["mission"], alias_key=alias_key,
             registry_version=registry.version, peer=peer,
-            commissioning_digest=registry.commissioning_digest)
+            commissioning_digest=registry.commissioning_digest,
+            clock_policy=None if clock_contract is None else clock_contract.as_dict())
     finally:
         os.close(dirfd)
 
@@ -435,3 +469,36 @@ def load_observation_rule():
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
             raise
         return None
+
+
+def _clock_health(contract):
+    from .knowledge_clock_contract import ClockHealth
+    return ClockHealth(contract, runtime_paths.ROOT / "run/azazel/knowledge-clock-health.json")
+
+
+def install_clock_health_provider() -> None:
+    """Hand the library the reader of this host's clock-health file.
+
+    The library shows a v2 technique record as usable only when the health file
+    agrees, but cannot import the runtime; the serving process registers this.
+    """
+    from azazel_nexus.technique_knowledge import set_clock_health_provider
+    set_clock_health_provider(_clock_health)
+
+
+def assert_clock_commissioning_binding(evidence):
+    """A nonzero policy must be inside the full operator-signed proposal.
+
+    The caller has already verified evidence; its digest is what generations
+    and activation approvals bind. Missing/changed bundle cannot bind a policy.
+    """
+    import hashlib
+    proposal = json.loads(evidence.payload)
+    expected = proposal.get("clock_policy")
+    bundle = load_egress_peer()
+    actual = bundle.clock_policy
+    if expected is None and actual is None:
+        return
+    if (bundle.status != "commissioned" or actual != expected
+            or bundle.commissioning_digest != "sha256:" + hashlib.sha256(evidence.payload).hexdigest()):
+        raise ValueError("clock commissioning binding")

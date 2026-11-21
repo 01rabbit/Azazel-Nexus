@@ -1,0 +1,10 @@
+# Lab-only clock contract candidate (ADR-0011). NOT part of the stable offline
+# locks, the `fabric` extra, uv.lock or the wheelhouse default path. Never
+# combine with the stable azazel-fabric==0.10.0.
+#
+# azazel_fabric-0.10.1.dev0-py3-none-any.whl
+# built from https://github.com/01rabbit/Azazel-Fabric.git commit a4fa5535d3d0a0c9ed2694ea15b4b474ed587aa1
+# reproduced by tools/build_wheelhouse.py's pinned backend, SOURCE_DATE_EPOCH=315532800.
+# Install only with: packaging/offline/lab/install-clocklab-candidate.sh <wheel dir>
+azazel-fabric==0.10.1.dev0 \
+    --hash=sha256:9f9926bcb03ec50ae6feac2185041c07cb4b83a1cb28df7e68ff5fb102317e6e

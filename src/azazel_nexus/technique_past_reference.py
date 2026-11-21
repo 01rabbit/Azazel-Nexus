@@ -208,7 +208,7 @@ def view(value, row_state, now, *, whole_seconds=False):
     if type(now) in (int, float) and math.isfinite(now) and now >= 0:
         judged_at = datetime.fromtimestamp(int(now), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
-            expires = _instant(record["expires_at"])
+            expires = _instant(record.get("validity", {}).get("effective_expires_at", record["expires_at"]))
             lapsed = (math.floor(now) >= math.floor(expires)) if whole_seconds else now >= expires
             freshness = "expired" if lapsed else "fresh"
         except ValueError:

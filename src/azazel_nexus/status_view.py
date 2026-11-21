@@ -214,7 +214,7 @@ KNOWLEDGE_DEPENDENCY_WORDS = frozenset({"available", "partial", "absent", "not_q
                                         "expired", "rejected", "unavailable", "unknown"})
 
 
-def _fast_assistance_availability(fast) -> dict:
+def _fast_assistance_availability(fast, now=None) -> dict:
     """Only the two closed words the UI needs to say why Knowledge was not used."""
     node = fast.get("full_node_context")
     status = node.get("full_node_context_status") if isinstance(node, dict) else None
@@ -230,7 +230,8 @@ def _fast_assistance_availability(fast) -> dict:
             record = read_projection(node["technique_knowledge"])
         except ValueError:
             raise _Refused("refused") from None
-        out["technique_knowledge"] = _plain(record)
+        from .technique_knowledge import display_projection
+        out["technique_knowledge"] = _plain(display_projection(record, now))
     return out
 
 
@@ -855,7 +856,7 @@ def _recent_extra(value, snapshot, now=None, reader="operator"):
         copy["explanation"] = _pick(explanation, EXPLANATION_FIELDS)
         if isinstance(explanation.get("fast_assistance"), dict):
             copy["explanation"]["fast_assistance"] = _fast_assistance_availability(
-                explanation["fast_assistance"])
+                explanation["fast_assistance"], now)
         if "guidance" in explanation:
             from .guidance_record import guidance_view, read_guidance
             read_guidance(explanation["guidance"], public=True)

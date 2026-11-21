@@ -332,6 +332,8 @@ class _Baseline:
 def _measure_baseline() -> _Baseline:
     policy = _step("activation policy unavailable or refused", _load_policy)
     evidence = _step("verified commissioning evidence unavailable", _load_evidence)
+    from .knowledge_context_config import assert_clock_commissioning_binding
+    _step("clock commissioning binding refused", assert_clock_commissioning_binding, evidence)
     units = list(policy.units)
     unit_files = _step("installed unit files unavailable or not protected",
                        _measure_unit_files, units)

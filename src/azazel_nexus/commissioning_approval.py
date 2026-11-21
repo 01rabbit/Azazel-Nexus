@@ -14,7 +14,8 @@ from .operator_trust import ApprovalPurpose, ApprovalRefused, MAX_APPROVAL_BYTES
 def commissioning_proposal_payload(*, inventory, resource_profile, topology_profile,
                                    record_id: str, operator: str, confirmed_at: str,
                                    mio_profile: str | None = None,
-                                   deception_scope: dict | None = None) -> bytes:
+                                   deception_scope: dict | None = None,
+                                   clock_policy: dict | None = None) -> bytes:
     """Canonical unsigned bytes for external review/signing in protected storage.
 
     `deception_scope` makes the wrapper `commissioning-proposal/v3`: v2 plus
@@ -49,6 +50,13 @@ def commissioning_proposal_payload(*, inventory, resource_profile, topology_prof
         # `mio_profile` is in v2; never a separately signed document.
         document["schema"] = "azazel-nexus/commissioning-proposal/v3"
         document["deception_scope"] = render_deception_scope(scope)
+    if clock_policy is not None:
+        from .fabric_boundary import clock_contract_from_dict
+        contract = clock_contract_from_dict(clock_policy, consumer_revision=2)
+        if mio_profile != "FULL" or contract.skew_budget_us != 5000:
+            raise ApprovalRefused("clocklab policy requires explicit FULL lab commissioning")
+        document["schema"] = "azazel-nexus/commissioning-proposal/v4"
+        document["clock_policy"] = contract.as_dict()
     payload = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     if len(payload) > MAX_APPROVAL_BYTES:
         raise ApprovalRefused("full commissioning proposal exceeds approval size bound")
@@ -59,7 +67,8 @@ def verify_commissioning_proposal(*, trust: OperatorTrust, payload: bytes, signa
                                   inventory, resource_profile, topology_profile,
                                   record_id: str, operator: str, confirmed_at: str,
                                   mio_profile: str | None = None,
-                                  deception_scope: dict | None = None) -> None:
+                                  deception_scope: dict | None = None,
+                                  clock_policy: dict | None = None) -> None:
     """Verify against independent expected snapshots, never inputs learned from payload.
 
     Rebuild all cross-record bindings, then demand exact canonical signed bytes.
@@ -70,7 +79,7 @@ def verify_commissioning_proposal(*, trust: OperatorTrust, payload: bytes, signa
                  payload=payload, signature=signature)
     expected = commissioning_proposal_payload(inventory=inventory, resource_profile=resource_profile,
         topology_profile=topology_profile, record_id=record_id, operator=operator, confirmed_at=confirmed_at,
-        mio_profile=mio_profile, deception_scope=deception_scope)
+        mio_profile=mio_profile, deception_scope=deception_scope, clock_policy=clock_policy)
     if payload != expected:
         raise ApprovalRefused("commissioning proposal does not match expected snapshots")
 

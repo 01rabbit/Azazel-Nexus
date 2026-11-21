@@ -26,6 +26,7 @@ from azazel_nexus.capability import (
     state_for,
 )
 from azazel_nexus.fabric_boundary import (
+    CLOCKLAB_CANDIDATE_FABRIC_VERSION,
     FABRIC_PIN,
     PLANNED_FABRIC_MODULES,
     REQUIRED_FABRIC_MODULES,
@@ -73,9 +74,29 @@ def test_the_pin_is_an_exact_tag_not_a_branch_or_a_commit():
 def test_the_installed_fabric_is_the_pinned_one():
     """A local install that has drifted off the pin proves nothing about it."""
 
+    if fabric.__version__ == CLOCKLAB_CANDIDATE_FABRIC_VERSION:
+        pytest.skip("the lab clock candidate was installed by hand (ADR-0011); "
+                    "the run against the pinned tag is the evidence for the pin")
     assert fabric.__version__ == FABRIC_PIN.lstrip("v"), (
         f"installed azazel_fabric is {fabric.__version__}, the pin is {FABRIC_PIN}"
     )
+
+
+def test_only_the_commissioning_gates_recognise_the_lab_candidate():
+    """The candidate is one exact string, never a range, and the pin stays the tag."""
+
+    from types import SimpleNamespace
+
+    from azazel_nexus import fabric_boundary as boundary
+
+    def versioned(version):
+        return SimpleNamespace(__version__=version)
+
+    assert FABRIC_PIN == "v0.10.0" and CLOCKLAB_CANDIDATE_FABRIC_VERSION == "0.10.1.dev0"
+    assert boundary._commissioning_fabric(versioned("0.10.0"))
+    assert boundary._commissioning_fabric(versioned("0.10.1.dev0"))
+    for other in ("0.10.1.dev1", "0.10.1", "0.10.0.dev0", "0.9.0", None):
+        assert not boundary._commissioning_fabric(versioned(other)), other
 
 
 # --------------------------------------------------------------------------

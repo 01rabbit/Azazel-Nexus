@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import socket
 import time
+from datetime import datetime
 from enum import Enum
 from typing import Any
 
@@ -109,12 +110,32 @@ def request_context(frame: dict, *, deadline_s: float) -> dict:
     if (type(reply) is not dict or set(reply) != {"ok", "result"}
             or reply["ok"] is not True or type(reply["result"]) is not dict):
         raise KnowledgeContextUnavailable("broker refused")
-    result = reply["result"]
+    return read_context_result(reply["result"])
+
+
+def read_context_result(result):
+    """Strict local wrapper reader, independent of the transport."""
+    if type(result) is not dict:
+        raise KnowledgeContextUnavailable("broker result shape")
     if set(result) == {"refusal", "stage"} and result["stage"] in STAGES:
         refused = KnowledgeContextUnavailable("broker refused")
         refused.stage = result["stage"]
         raise refused
-    if set(result) != {"response"} or type(result["response"]) is not dict:
+    if set(result) == {"response", "validity"} and type(result["response"]) is dict:
+        try:
+            from azazel_nexus.knowledge_clock_validity import read_validity
+            from azazel_nexus.fabric_boundary import clocklab_response_model
+            semantic = clocklab_response_model(result["response"])
+            validity = read_validity(result["validity"])
+            if (semantic.contract_id != validity["contract_id"]
+                    or semantic.expires_at != datetime.fromisoformat(
+                        validity["semantic_expires_at"].replace("Z", "+00:00"))):
+                raise ValueError
+            return {"response": semantic.model_dump(mode="json"), "validity": validity}
+        except (ImportError, ValueError, TypeError) as exc:
+            raise KnowledgeContextUnavailable("broker clock validity") from exc
+    if (set(result) != {"response"} or type(result["response"]) is not dict
+            or result["response"].get("schema_version") == "knowledge-context-response/v2"):
         raise KnowledgeContextUnavailable("broker response shape")
     return result["response"]
 

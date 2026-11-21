@@ -1105,7 +1105,15 @@ def _run_once(
     try:
         if granted and not rolled_back:
             try:
-                markers = write_grant_markers(sorted(granted), root)
+                clock_binding = None
+                if inputs is not None and getattr(inputs, "evidence", None) is not None:
+                    from .activation_pass import clock_binding_from_evidence
+                    clock_binding = clock_binding_from_evidence(
+                        inputs.evidence, boot_id=read_boot_id())
+                if clock_binding is None:
+                    markers = write_grant_markers(sorted(granted), root)
+                else:
+                    markers = write_grant_markers(sorted(granted), root, context_clock_binding=clock_binding)
             except Exception:  # noqa: BLE001 - a unit without a marker never starts
                 # The record must never stand between this failure and the remask.
                 try:

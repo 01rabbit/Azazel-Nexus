@@ -232,13 +232,63 @@ def public_binding_id(text):
             and not [code for code in detect(text) if code != "host_port"])
 
 
+def _clock_contract_digest(value, *, past=False):
+    """Only the closed v2 technique projection's public policy digest.
+
+    This is display metadata, never a grant, signature or health acceptance.
+    Keep other hex values and digests in arbitrary fields under the leak scan.
+    """
+    from .technique_knowledge import read_projection
+    try:
+        context = value["knowledge"]["full_node_context"]
+        if past:
+            pr = context["technique_past_reference"]
+            if (type(pr) is not dict or set(pr) != {
+                    "adoption", "adoption_reason", "binding", "freshness", "judged_at",
+                    "kind", "retained", "revocation", "state", "technique_knowledge"}
+                    or pr["adoption"] != "not_adoptable" or pr["revocation"] != "not_checked"
+                    or pr["retained"] is not True or pr["state"] != "retained"
+                    or (pr["kind"], pr["adoption_reason"]) not in {
+                        ("past_before_update", "past_observation"),
+                        ("past_closed", "closed_incident")}):
+                return None
+            binding = pr["binding"]
+            if (type(binding) is not dict or set(binding) != {
+                    "incident_id", "observed_sequence", "technique_ids", "attempted_at"}
+                    or binding["incident_id"] != value["incident"]["incident_id"]
+                    or type(binding["observed_sequence"]) is not int
+                    or binding["observed_sequence"] < 1):
+                return None
+            tk = pr["technique_knowledge"]
+        else:
+            tk = context["technique_knowledge"]
+        stored = {k: v for k, v in tk.items() if k != "server_validity"}
+        read_projection(stored)
+        if past and binding["technique_ids"] != [r["technique_id"] for r in stored["techniques"]]:
+            return None
+        validity = stored["validity"]
+        if stored["version"] == "technique-knowledge/2":
+            return validity["contract_id"]
+    except (KeyError, TypeError, ValueError, AttributeError):
+        pass
+    return None
+
+
 def scan_package(value) -> list[str]:
     """Every category found in any string of a package or manifest value."""
     from .model_text import is_typed_content_digest
     found = []
     vocabulary = fixed_vocabulary()
+    clock_digests = {
+        ("knowledge", "full_node_context", "technique_knowledge", "validity", "contract_id"):
+            _clock_contract_digest(value),
+        ("knowledge", "full_node_context", "technique_past_reference", "technique_knowledge",
+         "validity", "contract_id"): _clock_contract_digest(value, past=True),
+    }
     for path, text in _walk(value):
         key = path[-1] if path else None
+        if (path in clock_digests and text == clock_digests[path] and _DIGEST.fullmatch(text)):
+            continue
         if (is_typed_content_digest(text)
                 and (path[-3:] == ("binding", "evidence_refs", "id")
                      or path[-2:] == ("binding", "advisory_refs"))):
@@ -1310,10 +1360,10 @@ def _past_reference_md(pr, add):
     add("")
 
 
-def _technique_copy(tk):
+def _technique_copy(tk, now=None):
     """Fixed keys only, copied one by one after the closed reader; the name has the
     same limit as the stored record and is a display label."""
-    return {
+    result = {
         "version": tk["version"], "transport": tk["transport"],
         "verification": tk["verification"], "snapshot_state": tk["snapshot_state"],
         "as_of": tk["as_of"], "expires_at": tk["expires_at"],
@@ -1323,6 +1373,11 @@ def _technique_copy(tk):
             {k: (list(row[k]) if k == "tactics" else row[k]) for k in (
                 "technique_id", "coverage", "useful_content", "name", "name_withheld",
                 "tactics", "attack_version")}) for row in tk["techniques"]]}
+    if tk.get("version") == "technique-knowledge/2":
+        from .technique_knowledge import display_projection
+        result["validity"] = dict(tk["validity"])
+        result["server_validity"] = display_projection(tk, now)["server_validity"]
+    return result
 
 
 def _full_node_context(row, snaps, now) -> dict:
@@ -1374,7 +1429,7 @@ def _full_node_context(row, snaps, now) -> dict:
             tk = read_projection(full["technique_knowledge"])
         except ValueError:
             refuse()
-        out["technique_knowledge"] = _technique_copy(tk)
+        out["technique_knowledge"] = _technique_copy(tk, now)
     if row is not None and "technique_past_reference" in row:
         # DESIGN-D53: a derived, closed view; the name goes through the same withholding
         # as the current answer, on a copy (the recent row is never written back).
@@ -1385,7 +1440,7 @@ def _full_node_context(row, snaps, now) -> dict:
             refuse()
         pv = _past.view(row["technique_past_reference"], row["state"], now, whole_seconds=True)
         if "technique_knowledge" in pv:
-            pv["technique_knowledge"] = _technique_copy(pv["technique_knowledge"])
+            pv["technique_knowledge"] = _technique_copy(pv["technique_knowledge"], now)
         out["technique_past_reference"] = pv
     if trace is not None:
         out["transition_query"] = word(trace["transition_query"], _FN_QUERY)
@@ -2004,7 +2059,8 @@ def render_markdown(p: dict) -> str:
                 # answer is never shown as still valid after it lapsed; an unparsable time
                 # is said to be unjudgeable rather than treated as valid.
                 judged = _epoch(fn["basis"]["judged_at"])
-                expires = _epoch(tk["expires_at"]) if tk["expires_at"] is not None else None
+                expiry_value = tk.get("validity", {}).get("effective_expires_at", tk["expires_at"])
+                expires = _epoch(expiry_value) if expiry_value is not None else None
                 if tk["expires_at"] is None:
                     lapse_note = ""
                 elif judged is None or expires is None:
@@ -2013,6 +2069,17 @@ def render_markdown(p: dict) -> str:
                     lapse_note = "（この資料の生成時点で期限切れ）"
                 else:
                     lapse_note = ""
+                if "validity" in tk:
+                    v = tk["validity"]
+                    add(f"- 署名期限 {_md(v['signed_expires_at'])}、意味期限 {_md(v['semantic_expires_at'])}、実効期限 {_md(v['effective_expires_at'])}")
+                    # Display only closed labels: Markdown escaping a multi-underscore
+                    # code would resemble a Windows path to the final leak scan.
+                    reason_label = {"in_window": "期限内", "expired": "期限切れ",
+                                    "clock_unknown": "時刻未確認",
+                                    "clock_health_unavailable": "時刻監視未確認",
+                                    "clock_rollback": "時計逆行"}.get(
+                                        tk["server_validity"]["reason"], "未確認")
+                    add(f"- サーバ判定: usable={tk['server_validity']['usable']}、理由 {reason_label}、policy {_md(v['contract_id'])}")
                 add(f"- 基準時刻 {_md(tk['as_of'])}、期限 {_md(tk['expires_at'])}"
                     + lapse_note + "、"
                     f"権限 `{tk['authority']}`、信頼 `{tk['trust']}`")

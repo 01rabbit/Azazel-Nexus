@@ -48,6 +48,7 @@ still decide every grant; Edge evidence can only narrow it.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
@@ -248,6 +249,19 @@ def _utc(instant: datetime) -> str:
     return instant.astimezone(timezone.utc).strftime(_TIME)
 
 
+def clock_binding_from_evidence(evidence: CommissioningEvidence, *, boot_id: str) -> Optional[dict]:
+    """The grant-marker clock binding a verified v4 proposal asks for, else None.
+
+    `activated` must not name the readers (`observe_baseline` among them); the
+    pass module is its one door to them, so the digest is derived here.
+    """
+    proposal = json.loads(evidence.payload)
+    if "clock_policy" not in proposal:
+        return None
+    return {"boot_id": boot_id, "contract_id": proposal["clock_policy"]["contract_id"],
+            "commissioning_digest": evidence_commissioning_digest(evidence)}
+
+
 def raised_high_water(inputs: PassInputs, *, now: str) -> HighWater:
     """The floors after a verified approval: each field the max, never lower.
 
@@ -388,6 +402,8 @@ def collect_pass_inputs(*, producers: PassProducers, generations, ledger, now: s
             verify_observe_baseline(generation=verified, files=tree, units=scope,
                                     unit_files=measured, package_digest=package_digest,
                                     package_components=components)
+            from .knowledge_context_config import assert_clock_commissioning_binding
+            assert_clock_commissioning_binding(result.evidence)
             if (verified.commissioning_evidence_binding != result.evidence.binding
                     or verified.commissioning_digest
                     != evidence_commissioning_digest(result.evidence)):

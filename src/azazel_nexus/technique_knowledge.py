@@ -262,6 +262,16 @@ def _fact(fact, index, i, n, tid):
 
 def project_technique_response(response, technique_ids) -> dict:
     """The closed record for a validated response (validates again first)."""
+    validity = None
+    if type(response) is dict and set(response) == {"response", "validity"}:
+        from .knowledge_clock_validity import read_validity
+        from .fabric_boundary import clocklab_response_v1
+        validity = read_validity(response["validity"])
+        contract_id, expires_at, projected = clocklab_response_v1(response["response"])
+        if (contract_id != validity["contract_id"]
+                or expires_at != datetime.fromisoformat(validity["semantic_expires_at"].replace("Z", "+00:00"))):
+            raise TechniqueVerificationFailed("clock validity binding")
+        response = projected
     checked = validate_technique_response(response, technique_ids)
     rows = []
     for item in checked["techniques"]:
@@ -271,10 +281,14 @@ def project_technique_response(response, technique_ids) -> dict:
             # Heuristic deterrent: the label is withheld, coverage stays found.
             row["name"], row["name_withheld"] = None, True
         rows.append(row)
-    return {"version": PROJECTION_VERSION, "transport": "received", "verification": "ok",
+    result = {"version": PROJECTION_VERSION, "transport": "received", "verification": "ok",
             "snapshot_state": checked["snapshot_state"], "as_of": checked["as_of"],
             "expires_at": checked["expires_at"], "provenance": dict(PROVENANCE),
             "authority": AUTHORITY, "trust": TRUST, "techniques": rows}
+    if validity is not None:
+        result["version"] = "technique-knowledge/2"
+        result["validity"] = validity
+    return read_projection(result)
 
 
 def not_run_projection(transport: str, verification: str) -> dict:
@@ -290,6 +304,16 @@ def read_projection(value) -> dict:
     def bad():
         raise ValueError("technique_knowledge_refused")
 
+    if type(value) is dict and value.get("version") == "technique-knowledge/2":
+        from .knowledge_clock_validity import read_validity
+        base = dict(value)
+        validity = read_validity(base.pop("validity", None))
+        base["version"] = PROJECTION_VERSION
+        read_projection(base)
+        if (base["verification"] != "ok"
+                or _instant(base["expires_at"]) != _instant(validity["semantic_expires_at"])):
+            bad()
+        return value
     if (type(value) is not dict
             or set(value) != {"version", "transport", "verification", "snapshot_state", "as_of",
                               "expires_at", "provenance", "authority", "trust", "techniques"}
@@ -367,3 +391,57 @@ def read_projection(value) -> dict:
     if len({row["attack_version"] for row in rows if row["coverage"] == "found"}) > 1:
         bad()
     return value
+
+
+_clock_health_provider = None
+
+
+def set_clock_health_provider(provider) -> None:
+    """Register how the host reads clock health: `provider(contract)` returns an
+    object with `.check(expected_generation=...)`.
+
+    The library cannot import the runtime that owns the health file (the
+    dependency runs runtime -> library), so the runtime hands the reader in. It
+    is registered once: the same provider again is a no-op, a different one is
+    refused, and so is anything that is not callable. With none registered a v2
+    record is never shown as usable.
+    """
+    global _clock_health_provider
+    if not callable(provider):
+        raise TypeError("clock health provider must be callable")
+    if _clock_health_provider is not None and _clock_health_provider is not provider:
+        raise ValueError("a different clock health provider is already registered")
+    _clock_health_provider = provider
+
+
+def display_projection(value, now, *, health_check=None):
+    """Server-time view; old v1 records are retained reference only in clocklab."""
+    import copy
+    import math
+    out = copy.deepcopy(read_projection(value))
+    if value.get("version") != "technique-knowledge/2":
+        return out
+    validity = value["validity"]
+    usable = False
+    reason = "clock_unknown"
+    if type(now) in (int, float) and math.isfinite(now) and now >= 0:
+        reason = "clock_health_unavailable"
+        try:
+            if health_check is None:
+                if _clock_health_provider is None:
+                    raise ValueError("no clock health provider registered")
+                from .fabric_boundary import clock_contract
+                contract = clock_contract(skew_budget_us=validity["skew_budget_us"])
+                if contract.contract_id != validity["contract_id"]:
+                    raise ValueError
+                health_check = _clock_health_provider(contract).check
+            health_check(expected_generation=tuple(validity["health_generation"]))
+            adopted = _instant(validity["adopted_at"]).timestamp()
+            expiry = _instant(validity["effective_expires_at"]).timestamp()
+            usable = adopted <= now < expiry
+            reason = "in_window" if usable else "expired" if now >= expiry else "clock_rollback"
+        except Exception:  # noqa: BLE001 - any failure to judge health is not usable
+            usable, reason = False, "clock_health_unavailable"
+    out["server_validity"] = {"usable": usable, "reason": reason,
+                              "as_of": now if type(now) in (int, float) and math.isfinite(now) else None}
+    return out

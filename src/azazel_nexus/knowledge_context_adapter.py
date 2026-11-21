@@ -12,7 +12,7 @@ import hashlib
 import json
 import secrets
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from .knowledge_peer import KnowledgeRegistry
 from .sanitizer import PrivacyClass, SanitizerPolicy, sanitize
@@ -20,6 +20,8 @@ from .signature import SignatureRefused, verify_detached
 
 ENVELOPE_SCHEMA = "azazel-nexus/knowledge-context-envelope/1"
 ENVELOPE_DOMAIN = b"azazel-nexus/knowledge-context-envelope/v1\x00"
+ENVELOPE_SCHEMA_V2 = "azazel-nexus/knowledge-context-envelope/2"
+ENVELOPE_DOMAIN_V2 = b"azazel-nexus/knowledge-context-envelope/v2\x00"
 MAX_ENVELOPE_BYTES = 256 * 1024
 
 
@@ -105,6 +107,7 @@ def make_request(
     mission: str,
     alias_key: bytes,
     requested_at: str,
+    clock_contract=None,
 ):
     """Create the versioned request from fields explicitly allowed by sanitizer.
 
@@ -114,9 +117,10 @@ def make_request(
     if privacy_class is not PrivacyClass.P0_PUBLIC:
         raise KnowledgeContextRefused("only P0-public context queries are admitted")
     if isinstance(frame, Mapping) and set(frame) == {"techniques"}:
-        return _make_technique_request(
+        request = _make_technique_request(
             frame["techniques"], privacy_class=privacy_class, policy=policy, mission=mission,
             alias_key=alias_key, requested_at=requested_at)
+        return _clocklab_request(request, clock_contract)
     decision = sanitize(
         frame, privacy_class=privacy_class, policy=policy, mission=mission,
         alias_key=alias_key,
@@ -152,7 +156,17 @@ def make_request(
     except (ImportError, TypeError, ValueError, KeyError, RecursionError,
             KnowledgeContextUnavailable) as exc:
         raise KnowledgeContextRefused("sanitized query does not fit Fabric v1") from exc
-    return request
+    return _clocklab_request(request, clock_contract)
+
+
+def _clocklab_request(request, contract):
+    if contract is None:
+        return request
+    from .fabric_boundary import validate_clocklab_request
+    doc = request.model_dump(mode="json")
+    doc["schema_version"] = "knowledge-context-request/v2"
+    doc["contract_id"] = contract.contract_id
+    return validate_clocklab_request(doc, contract=contract)
 
 
 def read_signed_response(
@@ -163,6 +177,7 @@ def read_signed_response(
     peer_id: str,
     now: str,
     max_ttl_seconds: int,
+    clock_contract=None,
 ):
     """Verify key-id binding, signature, bounded transport TTL and Fabric binding.
 
@@ -181,6 +196,9 @@ def read_signed_response(
         validate_knowledge_context_response,
     )
 
+    schema = ENVELOPE_SCHEMA if clock_contract is None else ENVELOPE_SCHEMA_V2
+    domain = ENVELOPE_DOMAIN if clock_contract is None else ENVELOPE_DOMAIN_V2
+    budget = timedelta(microseconds=0 if clock_contract is None else clock_contract.skew_budget_us)
     signature, payload = raw[:64], raw[64:]
     try:
         peer = registry.resolve(peer_id, now=now)
@@ -189,30 +207,37 @@ def read_signed_response(
         doc = json.loads(payload)
         if (not isinstance(doc, dict) or _canonical(doc) != payload
                 or set(doc) != {"schema", "key_id", "issued_at", "expires_at", "payload"}
-                or doc["schema"] != ENVELOPE_SCHEMA
+                or doc["schema"] != schema
                 or not isinstance(doc["key_id"], str) or not doc["key_id"]
                 or doc["key_id"] != expected_key_id
                 or not isinstance(doc["payload"], dict)):
             raise ValueError
         if not verify_detached(
-            public_key=key, message=ENVELOPE_DOMAIN + payload, signature=signature
+            public_key=key, message=domain + payload, signature=signature
         ):
             raise ValueError
         issued = _instant(doc["issued_at"])
         expires = _instant(doc["expires_at"])
         current = _instant(now)
-        if not issued <= current < expires or (expires - issued).total_seconds() > max_ttl_seconds:
+        if (not issued <= current + budget < expires or issued >= expires
+                or (expires - issued).total_seconds() > max_ttl_seconds):
             raise ValueError
-        response = validate_knowledge_context_response(request, doc["payload"])
+        if clock_contract is None:
+            response = validate_knowledge_context_response(request, doc["payload"])
+        else:
+            from .fabric_boundary import validate_clocklab_response
+            response = validate_clocklab_response(request, doc["payload"], contract=clock_contract)
         if response.provider_id != peer_id:
             raise ValueError
         semantic_generated = _instant(response.generated_at.isoformat())
         semantic_expires = _instant(response.expires_at.isoformat())
-        if (issued < semantic_generated or semantic_generated > current
-                or semantic_expires <= current or semantic_expires > expires
+        if (issued < semantic_generated or semantic_generated > current + budget
+                or semantic_expires <= current + budget or semantic_expires > expires
                 or (semantic_expires - semantic_generated).total_seconds()
                 > max_ttl_seconds):
             raise ValueError
+        if clock_contract is not None:
+            return response, doc["expires_at"]
         return response
     except (ImportError, TypeError, ValueError, KeyError, UnicodeError,
             RecursionError, OverflowError, SignatureRefused,

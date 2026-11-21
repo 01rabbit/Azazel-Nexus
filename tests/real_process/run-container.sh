@@ -4,6 +4,24 @@ umask 022
 
 : "${NEXUS_EXPECTED_HEAD:?fixed Nexus source commit required by run-docker.sh}"
 : "${KNOWLEDGE_EXPECTED_HEAD:?fixed Knowledge source commit required by run-docker.sh}"
+# Fabric input. Default is the stable v0.10.0 tag wheel (unchanged path). The
+# lab candidate is a separate input: FABRIC_PROFILE=candidate with the wheel
+# name, its sha256 and the expected version passed in (run-docker.sh).
+FABRIC_PROFILE=${FABRIC_PROFILE:-stable}
+if [[ "$FABRIC_PROFILE" == candidate ]]; then
+  : "${FABRIC_WHEEL_NAME:?candidate profile needs FABRIC_WHEEL_NAME}"
+  : "${FABRIC_WHEEL_SHA256:?candidate profile needs FABRIC_WHEEL_SHA256}"
+  : "${FABRIC_EXPECTED_VERSION:?candidate profile needs FABRIC_EXPECTED_VERSION}"
+else
+  FABRIC_WHEEL_NAME=azazel_fabric-0.10.0-py3-none-any.whl
+  FABRIC_WHEEL_SHA256=b22356fd672cd60471606d3a7b73ccdba99091e680fedd854381a29d76e21424
+  FABRIC_EXPECTED_VERSION=0.10.0
+fi
+case "$FABRIC_WHEEL_NAME" in
+  */*|..*|"") echo "FABRIC_WHEEL_NAME must be a plain file name: $FABRIC_WHEEL_NAME" >&2; exit 2 ;;
+esac
+export FABRIC_PROFILE FABRIC_WHEEL_NAME FABRIC_WHEEL_SHA256 FABRIC_EXPECTED_VERSION
+printf 'fabric profile=%s wheel=%s\n' "$FABRIC_PROFILE" "$FABRIC_WHEEL_NAME"
 printf 'fixed source heads: Nexus=%s Knowledge=%s\n' \
   "$NEXUS_EXPECTED_HEAD" "$KNOWLEDGE_EXPECTED_HEAD"
 
@@ -13,7 +31,8 @@ import hashlib
 import re
 
 wheel = Path('/wheel/azazel_mio-0.1.0.dev20261108+gitguidance8-py3-none-any.whl')
-fabric_wheel = Path('/fabric-wheel/azazel_fabric-0.10.0-py3-none-any.whl')
+import os
+fabric_wheel = Path('/fabric-wheel') / os.environ['FABRIC_WHEEL_NAME']
 locks = [
     Path('/src/packaging/offline/requirements-aarch64-cp313.lock'),
     Path('/src/packaging/offline/requirements-x86_64-cp313.lock'),
@@ -34,16 +53,37 @@ actual = hashlib.sha256(wheel.read_bytes()).hexdigest()
 if actual != expected:
     raise SystemExit('MIO wheel digest mismatch')
 print(f'verified MIO wheel digest against both Debian locks: {actual}')
-fabric_expected = 'b22356fd672cd60471606d3a7b73ccdba99091e680fedd854381a29d76e21424'
+fabric_expected = os.environ['FABRIC_WHEEL_SHA256']
 fabric_actual = hashlib.sha256(fabric_wheel.read_bytes()).hexdigest()
 if fabric_actual != fabric_expected:
     raise SystemExit('Fabric Knowledge Context contract wheel digest mismatch')
-print(f'verified Fabric v0.10.0 tag-source test wheel digest: {fabric_actual}')
+print(f'verified Fabric {os.environ["FABRIC_EXPECTED_VERSION"]} wheel digest: {fabric_actual}')
+if os.environ['FABRIC_PROFILE'] == 'candidate':
+    # The candidate is pinned only by its own lab lock (ADR-0011); it must be
+    # absent from both stable Debian locks.
+    lab = Path('/src/packaging/offline/lab/requirements-clocklab-candidate.lock').read_text(encoding='utf-8')
+    if re.findall(r'--hash=sha256:([0-9a-f]{64})', lab) != [fabric_expected]:
+        raise SystemExit('candidate Fabric digest differs from the lab lock')
+    locked_version = re.findall(r'(?m)^azazel-fabric==(\S+) ', lab)
+    if locked_version != [os.environ['FABRIC_EXPECTED_VERSION']]:
+        raise SystemExit(f'FABRIC_EXPECTED_VERSION differs from the lab lock {locked_version}')
+    if fabric_wheel.name != f'azazel_fabric-{locked_version[0]}-py3-none-any.whl':
+        raise SystemExit('candidate wheel name differs from the lab lock version')
+    for lock in locks:
+        if fabric_expected in lock.read_text(encoding='utf-8'):
+            raise SystemExit(f'candidate Fabric digest leaked into stable {lock}')
+    print('candidate Fabric digest matches the lab lock and is absent from both stable locks')
+else:
+    for lock in locks:
+        if fabric_expected not in lock.read_text(encoding='utf-8'):
+            raise SystemExit(f'stable Fabric digest absent from {lock}')
+    print('stable Fabric digest matches both Nexus offline locks')
 PY
 
 SCRATCH_SRC=$(mktemp -d /tmp/nxs-real-process.XXXXXX)
 SCRATCH_KNOWLEDGE=$(mktemp -d /tmp/knowledge-real-process.XXXXXX)
 cleanup() {
+  if [[ -d /tmp/fabric-load && -d /out ]]; then cp -a /tmp/fabric-load/. /out/ 2>/dev/null || true; fi
   rm -rf -- "$SCRATCH_SRC"
   rm -rf -- "$SCRATCH_KNOWLEDGE"
 }
@@ -59,12 +99,49 @@ export KNOWLEDGE_TEST_SRC="$SCRATCH_KNOWLEDGE"
 python -m pip install --no-index --find-links=/wheels --find-links=/fabric-wheel \
   -e "${SCRATCH_SRC}[dev]" -e "$SCRATCH_SRC/runtime" \
   /wheel/azazel_mio-0.1.0.dev20261108+gitguidance8-py3-none-any.whl \
-  /fabric-wheel/azazel_fabric-0.10.0-py3-none-any.whl \
+  "/fabric-wheel/$FABRIC_WHEEL_NAME" \
   fastapi uvicorn pydantic PyYAML idna PyNaCl httpx
+
+if [[ "$FABRIC_PROFILE" == candidate ]]; then
+  # Knowledge's `api-context-candidate` extra (never the stable `api` extra).
+  # Its Fabric requirement is a git URL, which cannot resolve offline, so the
+  # pinned wheel above stands in for it; the other extra members are installed
+  # by name and the extra's pin is checked against the Nexus lab lock.
+  python - <<'PYEXTRA'
+import re, pathlib, os
+k = pathlib.Path(os.environ['KNOWLEDGE_TEST_SRC'], 'pyproject.toml').read_text()
+n = pathlib.Path('/src/packaging/offline/lab/requirements-clocklab-candidate.lock').read_text()
+extra = re.search(r'(?ms)^api-context-candidate = \[(.*?)^\]', k).group(1)
+pin = re.search(r'Azazel-Fabric\.git@([0-9a-f]{40})', extra).group(1)
+assert pin in n, 'Knowledge candidate extra and the Nexus lab lock name different Fabric commits'
+print('api-context-candidate Fabric pin', pin, 'equals the Nexus lab lock commit')
+PYEXTRA
+  python -m pip install --no-index --no-deps --find-links=/wheels -e "$SCRATCH_KNOWLEDGE"
+fi
+if [[ "$FABRIC_PROFILE" == candidate || "${FABRIC_LOAD_RECORD:-0}" == 1 ]]; then
+  # Test-only hook: every process that imports azazel_fabric records the
+  # version, file, RECORD check, direct_url and wheel hash it actually loaded.
+  mkdir -p /tmp/fabric-load && chmod 1777 /tmp/fabric-load
+  python - <<'PYEXPECT'
+import json, os
+json.dump({"wheel_path": "/fabric-wheel/" + os.environ["FABRIC_WHEEL_NAME"],
+           "wheel_sha256": os.environ["FABRIC_WHEEL_SHA256"],
+           "version": os.environ["FABRIC_EXPECTED_VERSION"], "profile": os.environ["FABRIC_PROFILE"]},
+          open("/tmp/fabric-load/expect.json", "w"))
+PYEXPECT
+  SP=$(python -c 'import sysconfig;print(sysconfig.get_path("purelib"))')
+  cp "$SCRATCH_SRC/tests/real_process/_fabric_load_hook/_az_fabric_load_hook.py" "$SP/"
+  printf 'import _az_fabric_load_hook; _az_fabric_load_hook.install()\n' > "$SP/az_fabric_load_hook.pth"
+  chmod 0644 "$SP/_az_fabric_load_hook.py" "$SP/az_fabric_load_hook.pth"
+fi
 
 # Verify the installed distribution and import come from this environment's site-packages.
 python -I -B - <<'PYVERIFY'
 import importlib.metadata as metadata
+import os
+_fab = metadata.version('azazel-fabric')
+assert _fab == os.environ['FABRIC_EXPECTED_VERSION'], _fab
+print('installed azazel-fabric', _fab)
 import pathlib
 import sysconfig
 import azazel_mio
@@ -122,6 +199,17 @@ usermod --append --groups azmio-advise azexplain
 usermod --append --groups azincident-read azintake
 
 cd "$SCRATCH_SRC"
+if [[ -n "${TEST_TARGETS:-}" ]]; then
+  # Focused run (u70): only the named files, same real-process settings.
+  # It is not the full set, and its output says so.
+  export NEXUS_REQUIRE_REAL_PROCESS=1
+  echo "### 限定実行 (TEST_TARGETS): 全件ではない: $TEST_TARGETS"
+  # shellcheck disable=SC2086
+  PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider $TEST_TARGETS
+  status=$?
+  echo "### 限定実行 (TEST_TARGETS) の終了: 全件の結果ではない (exit=$status)"
+  exit $status
+fi
 PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
   tests/unit/test_knowledge_context_adapter.py \
   tests/unit/test_knowledge_context_transport.py \
@@ -148,6 +236,13 @@ PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
   tests/real_process/test_knowledge_context_official_entry.py \
   tests/real_process/test_knowledge_context_shipped_budget.py \
   tests/real_process/test_knowledge_context_clock_rollback.py
+
+# Lab clock contract pairs need the candidate Fabric; the stable v0.10.0 path
+# has no ClockContract, so this file is selected only for the candidate.
+if [[ "$FABRIC_PROFILE" == candidate ]]; then
+  PYTHONDONTWRITEBYTECODE=1 python -B -m pytest -q -p no:cacheprovider \
+    tests/real_process/test_knowledge_context_clocklab_interop.py
+fi
 
 # Exercise the service's fixed degraded response with the shared package
 # absent. The positive adapter unit tests above intentionally need the wheel.
