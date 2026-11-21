@@ -26,7 +26,8 @@ from azazel_nexus.technique_knowledge import request_ids
 
 from .activation_markers import inspect_grant_marker
 from .knowledge_context_socket import MAX_CONTEXT_FRAME_BYTES, read_context_frame
-from .knowledge_context_config import load_commissioning, load_observation_rule
+from .knowledge_context_config import (
+    load_commissioning, load_observation_rule, observation_rule_identity)
 from .principal import PrincipalClass, PrincipalPolicy
 from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
 from .runtime_paths import (
@@ -110,6 +111,30 @@ class KnowledgeContextBroker:
                        and type(mission) is str and bool(mission)
                        and type(alias_key) is bytes and len(alias_key) >= 32)
 
+    @staticmethod
+    def _latch_cause(path, identity) -> str | None:
+        """Why the gate must close for good, or None while the rule is unchanged.
+
+        An identity that is not a (dev, ino, mtime, ctime, digest) tuple can
+        never match a read, so it closes instead of comparing None to None.
+        """
+        if type(identity) is not tuple or len(identity) != 5:
+            return "invalid_identity"
+        current = observation_rule_identity(path)
+        if current == identity:
+            return None
+        if current is not None:
+            return "changed"
+        return "unreadable" if os.path.lexists(path) else "missing"
+
+    def _record_latch(self, cause: str) -> None:
+        """One ledger event when the gate latches; the sink failing changes nothing."""
+        try:
+            self._audit({"event_type": "knowledge.context.observation_latched",
+                         "outcome": "latched", "reason_code": cause})
+        except Exception:
+            pass
+
     def _observation_gate(self, now: float) -> str | None:
         """None to proceed (and count the request), else the reason_code."""
         with self._observation_lock:
@@ -118,13 +143,10 @@ class KnowledgeContextBroker:
             rule, identity = self._observation
             if not self._latched:
                 path = self._observation_path or knowledge_context_observation_rule_path()
-                try:
-                    info = os.lstat(path)
-                    current = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
-                except OSError:
-                    current = None
-                if current != identity:
+                cause = self._latch_cause(path, identity)
+                if cause is not None:
                     self._latched = True
+                    self._record_latch(cause)
             if self._latched:
                 return "refused_before_send"
             while self._counted and now - self._counted[0] >= _RATE_WINDOW_S:

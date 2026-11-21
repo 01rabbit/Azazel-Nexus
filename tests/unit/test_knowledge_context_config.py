@@ -1,5 +1,6 @@
 """Commissioning bundle loader and main() wiring; synthetic material only."""
 
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -288,7 +289,8 @@ def test_observation_rule_valid_returns_rule_and_identity(root):
     rule, identity = cfg.load_observation_rule()
     info = os.lstat(path)
     assert rule == ("technique-set/1", 6)
-    assert identity == (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
+    assert identity == (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns,
+                        hashlib.sha256(path.read_bytes()).hexdigest())
     put_rule(root, dict(_RULE, max_requests_per_minute=60))
     assert cfg.load_observation_rule()[0].max_requests_per_minute == 60
 
