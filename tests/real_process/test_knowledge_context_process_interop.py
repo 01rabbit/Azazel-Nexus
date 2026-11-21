@@ -86,13 +86,23 @@ def _pki(root: Path) -> Path:
     root.mkdir()
     _openssl(
         ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "ca.key",
-         "-out", "ca.pem", "-subj", "/CN=process-test-ca", "-days", "2"],
+         "-out", "ca.pem", "-subj", "/CN=process-test-ca", "-days", "2",
+         "-addext", "basicConstraints=critical,CA:TRUE",
+         "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+         "-addext", "subjectKeyIdentifier=hash"],
         root,
     )
     (root / "server.ext").write_text(
-        "subjectAltName=DNS:knowledge.test\nextendedKeyUsage=serverAuth\n"
+        "subjectAltName=DNS:knowledge.test\n"
+        "keyUsage=critical,digitalSignature,keyEncipherment\n"
+        "authorityKeyIdentifier=keyid\n"
+        "extendedKeyUsage=serverAuth\n"
     )
-    (root / "client.ext").write_text("extendedKeyUsage=clientAuth\n")
+    (root / "client.ext").write_text(
+        "keyUsage=critical,digitalSignature,keyEncipherment\n"
+        "authorityKeyIdentifier=keyid\n"
+        "extendedKeyUsage=clientAuth\n"
+    )
     for name, ext in (("server", "server.ext"), ("nexus", "client.ext")):
         _openssl(
             ["req", "-newkey", "rsa:2048", "-nodes", "-keyout", f"{name}.key",
