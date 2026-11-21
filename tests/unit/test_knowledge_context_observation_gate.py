@@ -34,9 +34,13 @@ def frame(question):
                                        "question": question}})
 
 
-def tech(ids=("T1059", "T1059.001")):
+def tech(ids=("T1059", "T1059.001"), at=None):
+    """A technique request. ``at`` is the injected broker clock (seconds):
+    the absolute deadline must come from that same clock, or the result
+    depends on the host's real monotonic value (uptime) -- #448."""
+    deadline = {} if at is None else {"deadline_monotonic_ns": int((at + 0.5) * 1_000_000_000)}
     return _request(payload={"frame": {"privacy_class": "P0-public",
-                                       "techniques": list(ids)}})
+                                       "techniques": list(ids)}}, **deadline)
 
 
 GATED = {"refusal": "unavailable", "stage": "refused_before_send"}
@@ -116,18 +120,18 @@ def test_rate_limit_counts_to_the_cap_and_recovers_after_60s(env):
     broker, peer, events = make(cfg.load_observation_rule(), lambda: now[0])
     for i in range(6):
         now[0] = 100.0 + i
-        assert "response" in broker.handle(tech())
+        assert "response" in broker.handle(tech(at=now[0]))
     now[0] = 106.0
     n = len(events)
-    assert broker.handle(tech()) == GATED
+    assert broker.handle(tech(at=now[0])) == GATED
     assert peer.calls == 6
     assert [e["event_type"] for e in events[n:]] == ["knowledge.context.completed"]
     assert (last(events)["outcome"], last(events)["reason_code"]) == (
         "unavailable", "rate_limited")
     now[0] = 159.9   # first count (t=100) still inside the window
-    assert broker.handle(tech()) == GATED
+    assert broker.handle(tech(at=now[0])) == GATED
     now[0] = 160.0   # t=100 has aged out
-    assert "response" in broker.handle(tech())
+    assert "response" in broker.handle(tech(at=now[0]))
     assert peer.calls == 7
 
 
@@ -136,10 +140,10 @@ def test_busy_request_is_still_counted(env):
     now = [10.0]
     broker, peer, events = make(cfg.load_observation_rule(), lambda: now[0])
     assert broker._slot.acquire(blocking=False)
-    assert broker.handle(tech()) == BUSY
+    assert broker.handle(tech(at=now[0])) == BUSY
     assert last(events)["reason_code"] == "busy"
-    assert broker.handle(tech()) == BUSY
-    assert broker.handle(tech()) == GATED
+    assert broker.handle(tech(at=now[0])) == BUSY
+    assert broker.handle(tech(at=now[0])) == GATED
     assert last(events)["reason_code"] == "rate_limited"
 
 
