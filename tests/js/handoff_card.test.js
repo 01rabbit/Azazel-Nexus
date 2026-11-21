@@ -5,7 +5,7 @@ const MODEL = JSON.parse(fs.readFileSync(modelPath, "utf8")), LABELS = JSON.pars
 class N {
   constructor(tag) { this.tag = tag; this.children = []; this._t = ""; this.hidden = false; this.className = ""; this.attrs = {}; this.ls = {}; this.value = ""; this.dataset = {}; this.disabled = false; }
   get firstChild() { return this.children[0] || null; }
-  appendChild(c) { this.children.push(c); return c; }
+  appendChild(c) { if (gate.hold && c.tag === "button" && /を保存$/.test(c.textContent)) gate.leaks.push(c.textContent); this.children.push(c); return c; }
   removeChild(c) { this.children = this.children.filter(x => x !== c); }
   set textContent(v) { this.children = []; this._t = String(v); }
   get textContent() { return this._t + this.children.map(c => c.textContent).join(""); }
@@ -17,7 +17,8 @@ const doc = { body: new N("body"), getElementById: id => nodes[id] || (nodes[id]
   createTextNode: s => { const n = new N("#t"); n._t = String(s); return n; }, addEventListener() {} };
 let clock = 1e12, timers = [], saved = [];
 // The real digest is used. Only the hand-over of its result can be held, so a test can look at the "verifying" state and then let it finish.
-const gate = { hold: false, pending: [], release() { this.hold = false; const p = this.pending.splice(0); p.forEach(f => f()); } };
+const gate = { hold: false, pending: [], leaks: [], // leaks: save buttons created (even if replaced in the same tick) while the digest result is held
+  release() { this.hold = false; const p = this.pending.splice(0); p.forEach(f => f()); } };
 const gatedCrypto = { subtle: { digest: (alg, data) => nodeCrypto.webcrypto.subtle.digest(alg, data)
   .then(buf => gate.hold ? new Promise(r => gate.pending.push(() => r(buf))) : buf) } };
 const sandbox = { Node: N, document: doc, window: { scrollY: 0, scrollTo() {}, crypto: gatedCrypto }, crypto: gatedCrypto, TextEncoder, console,
@@ -40,11 +41,16 @@ const WAIT_MS = 5000; // real time (not the fake clock), measured outside the sa
 // Every handoff card in the panel (one per incident), each from its fetch button to 140 characters on, so the status line and any 照合 text show.
 const observed = () => { const t = panel().textContent.replace(/\s+/g, " "), cards = t.match(/引継ぎを取得状態：.{0,140}/g) || ["(no handoff card) " + t.slice(0, 120)];
   const t0 = panel().textContent, v = /■ 照合に失敗/.test(t0) ? "failed" : /● 照合：/.test(t0) ? "verified" : /◆ 照合中/.test(t0) ? "verifying" : "none";
-  return "save buttons=" + saveButtons().length + ", verification line=" + v + ", handoff cards=" + JSON.stringify(cards); };
+  const refusal = (t.match(/■ .{0,200}/g) || []).join(" | ") || "(none)";
+  return "save buttons=" + saveButtons().length + ", held digests=" + gate.pending.length + ", save buttons created while held=" + JSON.stringify(gate.leaks)
+    + ", verification line=" + v + ", refusal lines=" + JSON.stringify(refusal) + ", handoff cards=" + JSON.stringify(cards); };
 // Poll a user-visible condition until it holds, yielding to the event loop (so the digest threadpool can finish). No fixed sleep.
-async function waitFor(expected, pred, ms = WAIT_MS) {
-  const t0 = process.hrtime.bigint();
+// pred is checked before the deadline on purpose: the limit only stops a hang, it does not judge speed.
+// opts.invariant is checked on every poll (before pred); a break fails at once with the last observation.
+async function waitFor(expected, pred, opts = {}) {
+  const ms = opts.ms || WAIT_MS, t0 = process.hrtime.bigint();
   for (;;) {
+    if (opts.invariant && !opts.invariant()) throw new Error("invariant broken while waiting for: " + expected + "; invariant: " + opts.invariantName + "; last observed: " + observed());
     if (pred()) return;
     if (Number(process.hrtime.bigint() - t0) / 1e6 > ms) throw new Error("timeout after " + ms + "ms waiting for: " + expected + "; last observed: " + observed());
     await new Promise(r => setImmediate(r));
@@ -93,8 +99,9 @@ const res = {};
   assert.match(panel().textContent, /取得中/); assert.equal(saveButtons().length, 0);
   gate.hold = true; release(ok(handoff(ID1)));
   // A1: all three digests were computed but their results are held, so the card shows "verifying" and no save button.
-  await waitFor("fetched card with verification pending (3 digests held)", () => /取得済み/.test(panel().textContent) && /照合中/.test(panel().textContent) && gate.pending.length === 3);
-  assert.equal(saveButtons().length, 0, "A1: no save button while verification is held");
+  await waitFor("fetched card with verification pending (3 digests held)", () => /取得済み/.test(panel().textContent) && /照合中/.test(panel().textContent) && gate.pending.length === 3,
+    { invariant: () => saveButtons().length === 0 && gate.leaks.length === 0, invariantName: "no save button while the digest result is held" });
+  assert.equal(saveButtons().length, 0, "A1: no save button while verification is held"); assert.deepEqual(gate.leaks, [], "A1: no save button was ever created while held");
   gate.release();
   // A2: one button each for JSON, Japanese Markdown and manifest.
   await waitFor("3 save buttons after verification", hasSave(3));
@@ -161,7 +168,7 @@ const res = {};
   view = () => ok(model()); await advance(5000);
   // 6. timeout keeps the previous good result under an explicit label.
   routes["/api/handoff/"] = () => ok(handoff(ID1)); fetchButtons()[0].ls.click(); await flush();
-  assert.match(panel().textContent, /取得済み/);
+  assert.match(panel().textContent, /取得済み/); await waitFor("previous result verified (3 save buttons) before the refetch", hasSave(3));
   routes["/api/handoff/"] = () => "hang"; fetchButtons()[0].ls.click(); await flush();
   await advance(20000);
   assert.match(panel().textContent, /取得できませんでした/); assert.match(panel().textContent, /別時点の結果（取得時刻/);
