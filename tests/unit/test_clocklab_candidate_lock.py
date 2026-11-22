@@ -159,7 +159,8 @@ def test_the_cache_python_writes_on_import_does_not_fail_the_check(lab):
     assert not cache.exists()
     assert subprocess.run([lab.python, "-c", "import azazel_fabric"]).returncode == 0
     assert list(cache.glob("*.pyc"))
-    result = _install(lab)
+    # the check alone, on the tree as the import left it (no reinstall in between)
+    result = _check(lab)
     assert result.returncode == 0, result.stderr
 
 
@@ -218,3 +219,32 @@ def test_an_unreadable_directory_fails_the_check_with_its_path(lab):
         assert "cannot scan azazel_fabric/sealed" in result.stderr
     finally:
         sub.chmod(0o755)
+
+
+def test_a_linked_scan_root_is_refused_before_any_installed_file_is_read(lab, tmp_path):
+    site = _installed(lab)
+    package = site / "azazel_fabric"
+    moved = tmp_path / "moved_package"
+    package.rename(moved)
+    (moved / "__init__.py").write_text("BUILD = 'something else'\n")
+    package.symlink_to(moved, target_is_directory=True)
+    result = _check(lab)
+    assert result.returncode != 0
+    assert "azazel_fabric is a symbolic link" in result.stderr
+    assert "differs" not in result.stderr and "missing" not in result.stderr
+    (moved / "__init__.py").unlink()
+    result = _check(lab)
+    assert result.returncode != 0
+    assert "azazel_fabric is a symbolic link" in result.stderr and "missing" not in result.stderr
+
+
+def test_a_linked_dist_info_with_other_content_is_refused_first(lab, tmp_path):
+    site = _installed(lab)
+    info = site / "azazel_fabric-0.10.1.dev0.dist-info"
+    moved = tmp_path / "moved_dist_info"
+    info.rename(moved)
+    (moved / "WHEEL").write_text("changed\n")
+    info.symlink_to(moved, target_is_directory=True)
+    result = _check(lab)
+    assert result.returncode != 0
+    assert "dist-info is a symbolic link" in result.stderr and "differs" not in result.stderr

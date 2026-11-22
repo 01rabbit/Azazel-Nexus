@@ -25,6 +25,13 @@ with zipfile.ZipFile(sys.argv[1]) as wheel:
     record = next(n for n in wheel.namelist() if n.endswith(".dist-info/RECORD"))
     rows = list(csv.reader(io.TextIOWrapper(wheel.open(record), encoding="utf-8")))
 dist = metadata.distribution("azazel-fabric")
+# The two trees that are scanned must be real directories: a link would make every
+# file read below come from somewhere else. Refused before any installed file is read.
+dist_info = record.rsplit("/", 1)[0]
+root = dist.locate_file("")
+for top in ("azazel_fabric", dist_info):
+    if os.path.islink(os.path.join(root, top)):
+        raise SystemExit(f"{top} is a symbolic link")
 if dist.version != "0.10.1.dev0":
     raise SystemExit(f"installed azazel-fabric is {dist.version}, not 0.10.1.dev0")
 checked = 0
@@ -47,7 +54,6 @@ if not checked:
 # Reported, never deleted. Allowed besides RECORD: the INSTALLER and REQUESTED
 # markers pip writes, and __pycache__/*.pyc that Python creates on import.
 listed = {name for name, _digest, _size in rows}
-dist_info = next(n for n in listed if n.endswith(".dist-info/RECORD")).rsplit("/", 1)[0]
 listed |= {f"{dist_info}/RECORD", f"{dist_info}/INSTALLER", f"{dist_info}/REQUESTED"}
 root = dist.locate_file("")
 # Residual risk, accepted: a stale __pycache__/*.pyc (unchecked hash-based, or with a
