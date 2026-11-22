@@ -664,7 +664,10 @@ def test_metadata_crosses_socket_router_and_operator_entry(tmp_path, monkeypatch
     monkeypatch.setattr(mio_socket_client, '_exchange', lambda *a, **k: {
         **document, 'outcome': 'advisory',
     })
+    # The default router takes `clock`, so the 1000 ms deadline is created and
+    # judged on one clock that does not move; a CI stall cannot refuse it.
     entry = mio_entryd.MioEntryService(
+        clock=lambda: 1000.0,
         profile_reader=lambda: MioProfile.FASTEST_PERMITTED, local_admitted=lambda: True,
         predictions_reader=lambda: {
             Route.LOCAL: Prediction('local', True, 10, 10, 10, False, 'fixture')})
