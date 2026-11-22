@@ -479,7 +479,11 @@ not prove a running service. **HG-05 remains unmeasured and provider admission
 blocked.** No enforcement readiness is asserted. Exit 0 means guidance was
 produced, not that commissioning or activation completed. See the
 [setup guide](operations.md#0-read-only-operator-setup-guide) for statuses,
-verification scope, and JSON fields.
+verification scope, and JSON fields. For the inference configuration steps and
+the post-install startup checks (unit states, the controller's first-boot
+decision, what masked units mean), see
+[Configuring inference](operations.md#configuring-inference) and
+[Checking startup after installation](operations.md#checking-startup-after-installation).
 
 The generated wrappers keep the absolute interpreter path in their invocation.
 They invoke Python directly with a site-disabled (`-IS`) shebang, without an
@@ -934,11 +938,13 @@ table. A completed pass withholds all units until the implementation has
 authenticated producers for generation health, an activation lease, a
 commissioning record, and Edge baseline evidence. A zero exit status means
 that this safe decision was recorded; it does not mean a service was admitted.
-The installer still masks every operational unit and enables only this
-controller for the next boot. Its packaged `Type=notify` service no longer remains
-logically active after the current refusing pass exits. That pass emits no
-readiness notification, so systemd startup remains unsuccessful even if the
-refusal was recorded with exit status zero. Audit and commissioning
+The installer masks every governed unit and enables, without starting, this
+controller, the Edge probe preflight and the activation recheck timer. Its packaged `Type=notify` service no longer remains
+logically active after the current refusing pass exits. That pass
+sends READY only after its decision and record are complete, so a recorded
+refusal ends with exit status zero and `Result=success`; if READY cannot be
+confirmed the pass tries to withdraw its grants and exits nonzero, so check
+containment separately after any nonzero exit. Audit and commissioning
 carry `BindsTo` plus `After` dependencies on the controller; this is not yet a
 deployed bootstrap supervisor or verified reboot fence.
 

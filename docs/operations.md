@@ -220,6 +220,194 @@ a running broker needs `systemctl stop` or a reboot, and the next pass
 reports a containment failure until then. Roll back in this order: policy
 first, confirm closed on the next pass, then the release.
 
+### Configuring inference
+
+This build has three inference routes on paper and one in operation. Setup
+(above) only reports; this section says what an operator can actually set and
+where the path stops. Every step marked **hardware only** needs the target
+machine and cannot be completed, or counted as evidence, on a VM or container
+(see [hardware gates](hardware-gates.md)). Nothing here has been run on
+hardware.
+
+| Route | State in this build | What the operator does |
+| --- | --- | --- |
+| Deterministic | The default and the only route that answers. once started, `az-mio-entryd` routes to `deterministic handoff` and adds the fixed notice; `az-mio-referenced` returns verified playbook text or a reason when none is usable. | Nothing to enable: there is no inference setting. Supply playbooks with the Mission Pack steps below. |
+| Local model | Closed by a code kill switch (`LOCAL_MODEL_ADMISSION_ENABLED = False`). Entry never selects LOCAL. | Prepare the pieces below up to the point the code allows. Turning the route on needs a reviewed code change, not a setting. |
+| Remote provider | Absent. `az-mio-remoted` has no transport (`no_transport`, "absent rather than disabled"). | None. The `FULL` ceiling and the opt-in store do not make a remote route appear. |
+
+**Deterministic path.** The ceiling (CORE/LITE/FULL) is chosen with
+`az-nexus-commission proposal-export --operator LABEL` and the separate
+`proposal-review --operator LABEL`, as described above (`proposal-export`
+needs an interactive terminal and the protected commissioning inputs, and the
+draft is signed off-host before `proposal-review` reads and checks it);
+without a verified
+selection entryd uses CORE. Playbook text comes from an active Mission Pack:
+
+```sh
+azazel-nexus pack inspect MEDIA_DIR
+azazel-nexus pack verify MEDIA_DIR
+sudo azazel-nexus pack stage MEDIA_DIR --actor LABEL
+sudo azazel-nexus pack activate GENERATION --actor LABEL --reason TEXT
+```
+
+Each `pack` operation accepts `--dry-run`; `inspect` only reads the media.
+With no active pack the selection reports `no_pack` (an unreadable store or
+an unavailable reference service gives a different reason), and the handoff
+still ends deterministically. **Hardware only** from `verify` on: those
+operations read the
+commissioned `/etc/azazel/mission-pack.json`, need `/data/azazel/mission-packs`
+on encrypted storage, refuse a lab host, and (`stage`, `activate`, `rollback`)
+need root unless `--dry-run`. Verification refuses every pack while the Core
+reserve is unmeasured (`resource gate: HG-05 Core reserve unmeasured`), so
+the target machine is needed to complete them.
+
+**Local model path.** The steps, in the order the code requires them:
+
+1. Runtime binary (software step). Give the reviewed pinned `llama-server`
+   to the installer, in the first installation:
+   `sudo env PYTHON=/opt/azazel-nexus/venv/bin/python sh packaging/install.sh --llama-runtime /path/to/llama-server`.
+   The option checks the binary against the architecture pin and publishes
+   `/usr/libexec/azazel/llama-server`; omit it and no runtime is placed (an
+   existing one stays). Running `install.sh` again on an installed node is
+   not a runtime-only operation: it repeats `daemon-reload`, the masks and the
+   three enables, and stops nothing that is running. Building the binary is in
+   [Local runtime](mio-local-runtime.md#pinned-runtime-build-and-offline-installation).
+2. Model bytes (software step). The current activation policy does not
+   name `azazel-model-fetchd`, `azazel-mio-locald` or `azazel-mio-remoted`, so
+   no pass grants them and preparing fetch files does not make them start at
+   a later boot. Bring the model in with the offline import
+   ([Offline model import](model-import.md)). `azazel-nexus model-import-fetched MODEL_ID [--acknowledge-license]`
+   is the root command for a file already in `/var/lib/azazel/fetch/ready/`;
+   it also needs the commissioned model trust and catalog under
+   `/var/lib/azazel/models` and is refused on a lab host (`LAB_HOST_MARKER`,
+   unrelated to hardware measurement). `setup` lists the step as
+   `model-import-fetched`. Promotion is not admission.
+3. Core reserve and admission evidence (**hardware only**). `azazel-nexus hil-preflight`
+   (no arguments; it asks for confirmation and writes a protected record on
+   success) says whether the HG-05 campaign may start; the campaign,
+   signing ceremony and evidence layout are in the
+   [M.I.O. admission runbook](hil-runbooks/mio-admission.md) and
+   [Local embedding admission](local-model-admission.md).
+4. Request and verify (root). `az-nexus-model-admission request --role embedding`
+   reads one JSON line on stdin and prints the unsigned payload;
+   `az-nexus-model-admission verify --role embedding` reports the decision.
+   Both are read-only. `request` expects one newline-terminated JSON line with
+   the five keys of [Local embedding admission](local-model-admission.md), and
+   prints the review information with the payload.
+   After the root and lab-host checks pass, `verify` prints
+   `embedding -> refused:ADMISSION_DISABLED` (exit status 0) while the kill
+   switch is closed,
+   however complete the evidence; that outcome needs no HG-05 measurement.
+
+Whatever has been prepared, `azazel-nexus setup --json` keeps
+`"provider_admission": "blocked"` and `"hg05": "unmeasured"` until the code and
+the hardware evidence change. If locald is started without admission it serves
+keyword retrieval for a request that passes its frame, deadline and input
+gates, when verified playbooks are available.
+
+**Remote path.** There is nothing to configure. entryd keeps the operator's
+remote opt-in (`mio.remote.opt_in.status`, `.set`, `.withdraw`) on its operator
+socket, but no operator client for those verbs ships, and the sender refuses
+every request for lack of a transport. The design constraints are in
+[remote inference](remote-inference.md) and
+[remote commissioning](remote-commissioning.md).
+
+To see what the node currently reports, run `azazel-nexus status` (or
+`status --json`; the `azazel-nexus` commands in this section assume
+`/opt/azazel-nexus/venv/bin` is on PATH): the M.I.O. section shows the recorded ceiling and its
+liveness.
+
+### Checking startup after installation
+
+`packaging/install.sh` starts nothing (it ends with "Operational units are
+masked."). Use these checks in order. A run with `--without-service-manager`
+prints `SERVICE-MANAGER STAGE NOT EXECUTED`; nothing is masked or enabled
+then, and the checks below do not apply.
+
+1. **Unit state before the first reboot.** Three units are enabled and not
+   started: `azazel-activated.service`, `azazel-edge-probe-preflight.service`
+   and `azazel-activation-recheck.timer`. Every governed unit is masked
+   (the `systemctl mask` lines of `install.sh`: the commissioning, audit,
+   watchdog, Edge, explainer, model, M.I.O., Knowledge and decoy services).
+   The observer timers and `azazel-ui.socket` are neither enabled nor masked.
+
+   ```sh
+   systemctl is-enabled azazel-activated.service azazel-edge-probe-preflight.service azazel-activation-recheck.timer
+   systemctl is-enabled azazel-mio-entryd.service azazel-knowledge-lited.service azazel-auditd.service
+   ```
+
+   The first command prints `enabled` three times; the second prints `masked`
+   for each. `azazel-nexus setup` prints the controller, the core governed units, entryd
+   and Knowledge Lite in its `activation-units` step as a
+   `systemctl status ... --no-pager` command (not the preflight or the recheck
+   timer); it
+   reads only unit files and `/dev/null` masks and never asks the service
+   manager.
+
+2. **First boot: the controller's decision.** On the normal path the
+   controller makes one pass and exits. The same `ExecStart` branches to the
+   bootstrap supervisor when a protected bootstrap selection exists (see
+   [Debian installation](debian-live-install.md)), and a dependent unit's start
+   can request another pass in the same boot. The expectations below are for
+   a completed normal pass.
+
+   ```sh
+   systemctl show azazel-activated.service -p Result -p ExecMainStatus
+   journalctl -b -u azazel-activated.service -o cat
+   sudo tail -n 1 /var/lib/azazel/state/activation.jsonl
+   ```
+
+   A recorded refusal reads `Result=success`, `ExecMainStatus=0` and
+   `az-activated completed safely: granted=0, withheld=N, reasons=...`
+   (for example `no_generation` on a node with no promoted generation;
+   `N` counts the governed units; `tail -n 1` of the ledger is only the newest
+   record, so match it to this boot's journal before relying on it). Exit status 0 means the decision was
+   recorded, **not** that a service was admitted. `systemctl status` then shows
+   `inactive (dead)`, which is the normal end of a one-pass `Type=notify`
+   service. A failed pass exits non-zero, usually with `az-activated failed
+   before completing a safe pass: <label>`; a refusal of the service context
+   or an unavailable pass lock prints a different message, and a pass that
+   could not take the lock changes nothing. After any non-zero exit, check
+   separately that the governed units are still masked and not running
+   (`systemctl is-enabled`, `systemctl is-active`). Do not unmask anything by
+   hand to recover: see [activation rehearsal](hil-runbooks/activation-rehearsal.md)
+   for the refusal causes and the signed-approval path.
+
+3. **What "not granted" and "masked" mean.** A governed unit that shows
+   `Loaded: masked` and `Active: inactive (dead)` was not granted; this is
+   the expected state until a signed approval is installed and a later boot
+   admits the unit, and it is not a failure. A masked unit refuses
+   `systemctl start`. The `services` section of `status --json` is a snapshot written by
+   `az-units-observe`: a unit that systemd holds no object for shows
+   `load_state: not-loaded` even when it is masked on disk, so `masked` is
+   not guaranteed there. On a fresh snapshot the section is `degraded` /
+   `unit_failed` when an observed unit is `failed` (this wins), otherwise
+   `unknown` / `unit_state_unread` when a unit could not be read. An old
+   snapshot is `stale` and keeps its last values; one that was never written
+   is `unavailable`.
+
+4. **Read-only views.** `azazel-nexus health` prints `systemd units: unknown`
+   by design: it does not query the service manager. For live unit state, use
+   `systemctl` or the `services` section, which `azazel-units-observe.timer`
+   feeds (the NOC timer feeds the `noc` section). Enable both once:
+
+   ```sh
+   sudo systemctl enable --now azazel-units-observe.timer azazel-noc-observe.timer
+   azazel-nexus status --json
+   ```
+
+   The timers are configured to fire every 30 s and 60 s; a successful write
+   is not guaranteed each time. The `services` snapshot is stale after 120 s,
+   so a stopped observer shows as stale. `azazel-nexus setup` lists `operator-observers` as `needed`
+   until both timers are enabled.
+
+Hardware only (not established): that the controller runs and records its
+decision at a real Debian 13 boot, that the governed units stay masked across
+reboots (HG-01, HG-02), and that an admitted unit starts on the target. The
+rehearsals in [activation rehearsal](hil-runbooks/activation-rehearsal.md)
+and [VM integration](hil-runbooks/vm-integration.md) show mechanics on a VM
+only.
+
 ## 1. Resource envelopes
 
 Status: the resource envelopes and field behavior below are a **target contract**.
