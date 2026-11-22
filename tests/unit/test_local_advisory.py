@@ -126,8 +126,10 @@ def test_entry_router_runtime_roundtrip_and_audit(service, tmp_path, monkeypatch
     local, calls = service
     from azazel_nexus_runtime.mio_router import MioRouter
 
+    # The 1000 ms deadline is judged on an injected clock that does not move,
+    # so a CI stall cannot turn this answered path into a deadline refusal.
     entry = mio_entryd.MioEntryService(
-        router=MioRouter(local=local),
+        router=MioRouter(local=local, monotonic=lambda: 1000.0),
         profile_reader=lambda: MioProfile.FASTEST_PERMITTED,
         local_admitted=lambda: True,
         predictions_reader=lambda: {
