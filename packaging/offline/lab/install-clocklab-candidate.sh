@@ -50,18 +50,33 @@ listed = {name for name, _digest, _size in rows}
 dist_info = next(n for n in listed if n.endswith(".dist-info/RECORD")).rsplit("/", 1)[0]
 listed |= {f"{dist_info}/RECORD", f"{dist_info}/INSTALLER", f"{dist_info}/REQUESTED"}
 root = dist.locate_file("")
-extra = []
+# Residual risk, accepted: a stale __pycache__/*.pyc (unchecked hash-based, or with a
+# matching mtime and size) of a module that is listed can still be loaded.
+extra, problems = [], []
+def rel_of(path):
+    return os.path.relpath(path, root).replace(os.sep, "/")
+def walk_error(error):
+    problems.append(f"cannot scan {rel_of(error.filename) if error.filename else error}: {error.strerror or error}")
 for top in ("azazel_fabric", dist_info):
-    for folder, dirs, files in os.walk(root / top):
+    start = os.path.join(root, top)
+    if os.path.islink(start):
+        problems.append(f"{top} is a symbolic link")
+        continue
+    for folder, dirs, files in os.walk(start, onerror=walk_error, followlinks=False):
+        for name in dirs:
+            if os.path.islink(os.path.join(folder, name)):
+                problems.append(f"{rel_of(os.path.join(folder, name))} is a symbolic link to a directory")
         for file in files:
-            rel = os.path.relpath(os.path.join(folder, file), root).replace(os.sep, "/")
+            rel = rel_of(os.path.join(folder, file))
             if rel in listed:
                 continue
             if file.endswith(".pyc") and os.path.basename(folder) == "__pycache__":
                 continue
             extra.append(rel)
 if extra:
-    raise SystemExit("installed files not in the locked wheel's RECORD (left in place): " + ", ".join(sorted(extra)))
+    problems.append("installed files not in the locked wheel's RECORD (left in place): " + ", ".join(sorted(extra)))
+if problems:
+    raise SystemExit("; ".join(problems))
 print(f"verified {checked} installed files against the locked wheel")
 PYCHECK
 echo "installed lab candidate Fabric sha256=$ACTUAL"
