@@ -1151,3 +1151,45 @@ jobs:
             echo "Knowledge Context tests skipped with the exact candidate installed" >&2
             exit 1
           fi
+
+      # Lab clock candidate (ADR-0011). Built from the pinned commit with the
+      # hash-pinned backend, under the same conditions as
+      # tools/build_wheelhouse.py (SOURCE_DATE_EPOCH, umask 022,
+      # --no-build-isolation --no-index), then installed by the lab installer,
+      # which refuses any wheel whose sha256 differs from the lock.
+      - name: Build, verify and install the clock candidate Fabric (a4fa553)
+        run: |
+          set -euo pipefail
+          FABRIC_SHA=a4fa5535d3d0a0c9ed2694ea15b4b474ed587aa1
+          WORK="$RUNNER_TEMP/clocklab"
+          mkdir -p "$WORK/wheels" "$WORK/src"
+          git clone --quiet https://github.com/01rabbit/Azazel-Fabric.git "$WORK/fabric.git"
+          git -C "$WORK/fabric.git" checkout --quiet "$FABRIC_SHA"
+          test "$(git -C "$WORK/fabric.git" rev-parse HEAD)" = "$FABRIC_SHA"
+          git -c tar.umask=0022 -C "$WORK/fabric.git" archive --format=tar "$FABRIC_SHA" | tar -x -C "$WORK/src"
+          python -m venv "$WORK/backend"
+          BPY="$WORK/backend/bin/python"
+          "$BPY" -I -m pip install --disable-pip-version-check --no-cache-dir \
+            --require-hashes --only-binary=:all: --no-deps -r packaging/offline/build-backend.lock
+          (
+            umask 022
+            env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 HOME="$HOME" \
+              PIP_CONFIG_FILE=/dev/null PIP_NO_INPUT=1 SOURCE_DATE_EPOCH=315532800 \
+              "$BPY" -I -m pip --disable-pip-version-check --no-cache-dir wheel \
+              --no-build-isolation --no-deps --no-index -w "$WORK/wheels" "$WORK/src"
+          )
+          ls -l "$WORK/wheels"
+          bash packaging/offline/lab/install-clocklab-candidate.sh "$WORK/wheels" python
+          python -c 'import importlib.metadata as m; print("azazel-fabric", m.version("azazel-fabric"))'
+          sha256sum "$WORK"/wheels/*.whl
+
+      - name: C2 clock health file through the provider (candidate Fabric, no skips)
+        run: |
+          set -o pipefail
+          python -m pytest tests/unit/test_clock_health_file_through_provider.py -v -rA | tee "$RUNNER_TEMP/c2.txt"
+          summary=$(grep -E '^=+ .*(passed|failed|error|skipped).* in [0-9.]+s' "$RUNNER_TEMP/c2.txt" | tail -n 1 || true)
+          echo "pytest summary: $summary"
+          if [[ ! $summary =~ ^=+\ 5\ passed(,\ [0-9]+\ warnings?)?\ in\ [0-9.]+s ]]; then
+            echo "C2 must report exactly 5 passed with no skip, failure or error" >&2
+            exit 1
+          fi
