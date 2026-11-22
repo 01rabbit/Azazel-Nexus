@@ -114,3 +114,54 @@ def test_the_installer_replaces_an_installed_build_of_the_same_version(lab, tmp_
     result = _install(lab)
     assert result.returncode == 0, result.stderr
     assert _installed_body(lab) == "BUILD = 'locked'"
+
+
+# -- files that are not in the locked wheel's RECORD ----------------------------
+
+def _site(lab) -> Path:
+    out = subprocess.run([lab.python, "-c", "import azazel_fabric,os;print(os.path.dirname(os.path.dirname(azazel_fabric.__file__)))"],
+                         capture_output=True, text=True).stdout.strip()
+    return Path(out)
+
+
+def _installed(lab):
+    lab.wheels.mkdir()
+    _lock(lab, _wheel(lab.wheels, "BUILD = 'locked'"))
+    result = _install(lab)
+    assert result.returncode == 0, result.stderr
+    return _site(lab)
+
+
+def test_an_unlisted_py_in_the_package_fails_and_is_left_in_place(lab):
+    site = _installed(lab)
+    stale = site / "azazel_fabric" / "_stale_left_over.py"
+    stale.write_text("OLD = 1\n")
+    result = _install(lab)
+    assert result.returncode != 0
+    assert "azazel_fabric/_stale_left_over.py" in result.stderr
+    assert stale.exists()
+
+
+def test_an_unlisted_file_in_the_dist_info_fails(lab):
+    site = _installed(lab)
+    extra = site / "azazel_fabric-0.10.1.dev0.dist-info" / "extra.txt"
+    extra.write_text("x")
+    result = _install(lab)
+    assert result.returncode != 0 and "dist-info/extra.txt" in result.stderr and extra.exists()
+
+
+def test_the_cache_python_writes_on_import_does_not_fail_the_check(lab):
+    site = _installed(lab)
+    assert subprocess.run([lab.python, "-c", "import azazel_fabric"]).returncode == 0
+    assert list((site / "azazel_fabric" / "__pycache__").glob("*.pyc"))
+    result = _install(lab)
+    assert result.returncode == 0, result.stderr
+
+
+def test_a_stray_file_in_another_package_does_not_fail_the_check(lab):
+    site = _installed(lab)
+    (site / "otherpkg").mkdir()
+    (site / "otherpkg" / "stale.py").write_text("x = 1\n")
+    (site / "loose_module.py").write_text("x = 1\n")
+    result = _install(lab)
+    assert result.returncode == 0, result.stderr
