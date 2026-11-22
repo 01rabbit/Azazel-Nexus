@@ -423,3 +423,104 @@ def test_verify_streams_without_reading_whole_file(ledger, monkeypatch):
     monkeypatch.setattr(Path, "read_text", whole_file_read)
     ledger.verify()
     assert len(list(ledger)) == 2
+
+
+# -- the head refuses a last record that does not hash (#433) -----------------
+
+
+def _tamper_last(ledger, mutate):
+    lines = ledger.path.read_text(encoding="utf-8").splitlines()
+    record = json.loads(lines[-1])
+    mutate(record)
+    lines[-1] = json.dumps(record, sort_keys=True, separators=(",", ":"))
+    ledger.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _flip_hash_digit(record):
+    h = record["event_hash"]
+    record["event_hash"] = h[:-1] + ("0" if h[-1] != "0" else "1")
+
+
+def test_a_changed_last_hash_refuses_the_append_and_writes_nothing(ledger):
+    ledger.append({"event_type": "a"})
+    ledger.append({"event_type": "b"})
+    _tamper_last(ledger, _flip_hash_digit)
+    before = ledger.path.read_bytes()
+
+    with pytest.raises(AuditChainBroken):
+        ledger.append({"event_type": "c"})
+    assert ledger.path.read_bytes() == before
+
+
+def test_a_changed_last_event_with_its_hash_kept_refuses_the_append(ledger):
+    ledger.append({"event_type": "a"})
+    ledger.append({"event_type": "b", "secret_detail": "do-not-echo"})
+    _tamper_last(ledger, lambda r: r["event"].update(event_type="b-edited"))
+    before = ledger.path.read_bytes()
+
+    with pytest.raises(AuditChainBroken) as caught:
+        ledger.append({"event_type": "c"})
+    assert ledger.path.read_bytes() == before
+    assert "do-not-echo" not in str(caught.value)
+    assert "b-edited" not in str(caught.value)
+
+
+def test_head_alone_also_refuses_a_last_record_that_does_not_hash(ledger):
+    ledger.append({"event_type": "a"})
+    _tamper_last(ledger, _flip_hash_digit)
+    with pytest.raises(AuditChainBroken):
+        ledger.head()
+
+
+def test_an_intact_chain_is_unchanged_by_the_recompute(ledger):
+    # W1c: normal, empty and missing ledgers, and chain_from.
+    assert ledger.head() == (0, GENESIS_HASH)
+    first = ledger.append({"event_type": "a"})
+    second = ledger.append({"event_type": "b"})
+    assert ledger.head() == (2, second.event_hash)
+    assert second.previous_hash == first.event_hash
+    ledger.verify()
+    segment = AuditLedger(ledger.path.parent / "segment2.jsonl")
+    third = segment.append({"event_type": "c"}, chain_from=(2, second.event_hash))
+    assert (third.sequence, third.previous_hash) == (3, second.event_hash)
+    assert segment.head() == (3, third.event_hash)
+
+
+def test_a_tampered_middle_record_is_still_only_verifys_to_find(ledger):
+    ledger.append({"event_type": "a"})
+    ledger.append({"event_type": "b"})
+    lines = ledger.path.read_text(encoding="utf-8").splitlines()
+    first = json.loads(lines[0])
+    first["event"]["event_type"] = "a-edited"
+    lines[0] = json.dumps(first, sort_keys=True, separators=(",", ":"))
+    ledger.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    ledger.head()  # last record is intact, by design not noticed here
+    with pytest.raises(AuditChainBroken):
+        ledger.verify()
+
+
+# -- a last record that is JSON but cannot be hashed (#433) -------------------
+
+
+def _write_raw_last(ledger, record_text):
+    ledger.path.parent.mkdir(parents=True, exist_ok=True)
+    ledger.path.write_bytes((record_text + "\n").encode("utf-8"))
+
+
+@pytest.mark.parametrize("record_text", [
+    '{"sequence":1,"previous_hash":"\\u00e9","event_hash":"x","event":{"a":"secret-event"}}',
+    '{"sequence":1,"previous_hash":"' + GENESIS_HASH + '","event_hash":"x",'
+    '"event":{"a":"secret-event\\ud800"}}',
+], ids=["non-ascii-previous-hash", "lone-surrogate-in-event"])
+def test_an_unhashable_last_record_is_a_broken_chain_and_appends_nothing(ledger, record_text):
+    _write_raw_last(ledger, record_text)
+    before = ledger.path.read_bytes()
+
+    with pytest.raises(AuditChainBroken) as head_error:
+        ledger.head()
+    with pytest.raises(AuditChainBroken):
+        ledger.append({"event_type": "c"})
+
+    assert ledger.path.read_bytes() == before
+    assert "secret-event" not in str(head_error.value)
