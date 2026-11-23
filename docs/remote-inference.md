@@ -105,8 +105,28 @@ opt-in store ([runtime](mio-runtime.md) *Remote opt-in store*), and refuses
 with `opt_in_unavailable` (store unreadable, malformed, rolled back or busy),
 `opt_in_not_granted` (absent, incomplete, unconfirmed or withdrawn) or
 `opt_in_generation_mismatch` (any other generation in force). The gate stays
-held until the transport returns, and a withdrawal returns only after it has
-drained, so no send starts after a confirmed withdrawal. Without an injected
+held until the transport returns. A withdrawal is committed first: from then
+on no sender reads the grant. A reply with `drained: true` comes only after the
+senders that read the old generation have let go of the gate, so no send on it
+starts after that reply; `status: "withdrawn"` alone confirms the record, not
+the drain. A withdrawal waits at most 65 s for senders that read the old generation; if
+one is still holding the gate when the wait ends, the withdrawal stands and the
+reply says `drained: false`. That sender may be inside its transport call and
+complete later, or may have read the old grant and not yet called the transport
+and begin the call after the reply: either way a send on the old generation can
+still happen. Entryd takes the same gate exclusively while it opens a grant,
+and seals the generation it opens until then (`send.seal`): a sender meanwhile
+gets `opt_in_unavailable`, and one that reads a sealed record gets
+`opt_in_not_granted`. If entryd cannot close a grant durably it answers
+`status: "unsettled"` with `may_be_in_force_generation`: that generation may be
+in force, sends are stopped only while entryd runs (it keeps the gate), and the
+caller repeats `withdraw` until it returns a success reply (its record is
+synced and read back first; `status` reads `withdrawn`, or `unavailable` when
+the store or seal cannot be read). A `set` reply that never arrives is as unknown as `granted`
+(N+1 may be in force), and entryd's unsettled state is not carried over a
+restart, so `status` no longer reading `unsettled` is not a confirmation. See *Remote opt-in store* in
+[runtime](mio-runtime.md) for the order, the grounds and the one remaining
+limit. Without an injected
 reader the daemon reads entryd's store as `azmioentry`; on a node where
 `azremote` cannot read that leaf (every node as shipped) the answer is
 `opt_in_unavailable`. Making it readable to `azremote` is part of wiring a

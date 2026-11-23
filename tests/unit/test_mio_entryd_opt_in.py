@@ -452,7 +452,10 @@ def test_a_confirmation_that_fails_after_publishing_is_withdrawn_before_the_repl
 
     def confirm_then_fail(generation, **kw):
         published.append(real_confirm(generation, **kw))
-        assert _separate_store().reading().permits  # it really was open
+        # Published, but sealed (#465): every reader reads it closed.
+        sealed = _separate_store().reading()
+        assert sealed.status == "unconfirmed" and not sealed.permits
+        assert sealed.generation == generation + 1
         raise OSError("fixture: directory fsync")
 
     monkeypatch.setattr(service.consent, "confirm", confirm_then_fail)
@@ -467,32 +470,52 @@ def test_a_confirmation_that_fails_after_publishing_is_withdrawn_before_the_repl
 
 
 @pytest.mark.parametrize("withdraw_failure", ["oserror", "refused"])
-def test_a_refusal_after_a_published_confirmation_always_means_closed(
+def test_a_grant_that_cannot_be_read_closed_after_the_seal_is_unsettled_and_gated(
         service, monkeypatch, withdraw_failure):
-    # Published, then the confirmation fails, then the narrowing fails too:
-    # the grant is in force and already recorded (with `opens_generation`),
-    # so the reply must say granted, never a refusal over an open store.
-    from azazel_nexus_runtime.mio_remote_consent import ConsentRefused
+    # #465 (was: "the reply must say granted"). The grant is confirmed and
+    # the seal removed, but the read back and the narrowing both fail: the
+    # reply is a reading-shaped `unsettled` (not a refusal, not `granted`),
+    # and entryd keeps the send gate so no sender can use the grant.
+    from azazel_nexus_runtime.mio_remote_consent import _UNAVAILABLE, ConsentRefused
 
     _set_all_but_last(service)
-    real_confirm = service.consent.confirm
+    real_unseal = service.consent.unseal
+    real_reading = service.consent.reading
+    state = {"eio": False}
 
-    def confirm_then_fail(generation, **kw):
-        real_confirm(generation, **kw)
-        raise OSError("fixture: directory fsync")
+    def unseal():
+        real_unseal()
+        state["eio"] = True  # from here the re-read hits EIO
+
+    def reading():
+        return _UNAVAILABLE if state["eio"] else real_reading()
 
     def withdraw_fails(*a, **kw):
         raise {"oserror": OSError, "refused": ConsentRefused}[withdraw_failure]("fixture")
 
-    monkeypatch.setattr(service.consent, "confirm", confirm_then_fail)
+    real_seal, seals = service.consent.seal, []
+
+    def seal(generation):
+        seals.append(generation)
+        if len(seals) > 1:
+            raise OSError(5, "fixture: re-seal")
+        return real_seal(generation)
+
+    monkeypatch.setattr(service.consent, "unseal", unseal)
+    monkeypatch.setattr(service.consent, "reading", reading)
     monkeypatch.setattr(service.consent, "withdraw", withdraw_fails)
+    monkeypatch.setattr(service.consent, "seal", seal)
     reply = _set_last(service)
-    reading = _separate_store().reading()
-    assert reply["status"] == "granted" and reading.permits
-    assert reply["generation"] == reading.generation
+    assert reply == {"status": "unsettled", "generation": None, "granted": [],
+                     "missing": [p.value for p in PREREQUISITES],
+                     "may_be_in_force_generation": 5}
+    other = _separate_store()
+    assert other.reading().permits and other.reading().generation == 5
+    with other.send_gate() as gated:
+        assert not gated.permits and gated.generation is None  # gate is held
     grant = [e for e in recorded(service) if e["event_type"] == "mio.remote.opt_in"][-1]
-    assert grant["opens_generation"] == reading.generation
-    assert service.unrecorded_withdraw_failed == 1
+    assert grant["opens_generation"] == 5
+    assert service._unsettled is not None
 
 
 @pytest.mark.parametrize("published", [False, True])
