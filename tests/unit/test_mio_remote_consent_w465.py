@@ -3,8 +3,9 @@ grant is held shut by entryd. Real subprocesses over the on-disk store (the
 reader runs the real `RemoteInferenceService.handle`), plus unit tests of the
 new store API and of the unsettled state.
 
-Observations are written to $W465_OUT (default u71/out/w10) as
-after4-R1.json, after-R2.json and after-controls.json. Order across processes
+Observations are written only when $W465_OUT is set (the work record used
+u71/out/w10), as after4-R1.json, after-R2.json and after-controls.json; the
+E1-E5 combinations go to $W465_OUT11 (combos.json) the same way. Order across processes
 uses files and FIFOs; the only injected durations are gate-wait bounds.
 """
 
@@ -37,7 +38,7 @@ pytestmark = pytest.mark.real_process
 
 HERE = Path(__file__).resolve().parent
 OPERATOR = Principal(1001, 1001, 1, frozenset({PrincipalClass.OPERATOR}))
-OUT = Path(os.environ.get("W465_OUT", HERE.parents[2] / "out" / "w10"))
+OUT = Path(os.environ["W465_OUT"]) if os.environ.get("W465_OUT") else None
 LAST = list(PREREQUISITES)[-1]
 
 
@@ -80,6 +81,8 @@ def serve_once(service, monkeypatch, verb, arguments):
 
 
 def dump(name, data, merge=False):
+    if OUT is None:
+        return
     try:
         OUT.mkdir(parents=True, exist_ok=True)
         path = OUT / name
@@ -811,7 +814,7 @@ def test_store_withdraw_without_a_drain_does_not_wait(tmp_path):
 # --- W11: the combinations E1-E5, failure at the real fsync, reader in another
 # process after the writer is SIGKILLed. Sync by a FIFO, no sleeps. ---
 
-OUT11 = Path(os.environ.get("W465_OUT11", HERE.parents[2] / "out" / "w11"))
+OUT11 = Path(os.environ["W465_OUT11"]) if os.environ.get("W465_OUT11") else None
 
 
 def _run_combo_child(tmp_path, mode):
@@ -895,17 +898,19 @@ def test_w11_combination_then_writer_sigkill_then_other_process_sends(tmp_path, 
     sent = send_in_new_process(state, result["opens"])
     reply = (result.get("returned") or result.get("refused")
              if mode != "e5" else "no reply (EOF on the client socket)")
-    OUT11.mkdir(parents=True, exist_ok=True)
-    path = OUT11 / "combos.json"
-    data = json.loads(path.read_text()) if path.exists() else {}
-    data[mode] = {"reply": reply, "opens_N_plus_1": result["opens"],
+    observed = {"reply": reply, "opens_N_plus_1": result["opens"],
                   "injected_fsync_hits": result["hits"], "consent_calls": result["calls"],
                   "store_after_sigkill": view, "seal_value": seal_value,
                   "send_other_process": sent,
                   **({"read_back_before_kill": result["read_back"],
                       "client_bytes_after_kill": result["client_bytes_after_kill"]}
                      if mode == "e5" else {})}
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    if OUT11 is not None:
+        OUT11.mkdir(parents=True, exist_ok=True)
+        path = OUT11 / "combos.json"
+        data = json.loads(path.read_text()) if path.exists() else {}
+        data[mode] = observed
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     assert result["opens"] == 5
     if mode != "e5":
         hits = result["hits"]
