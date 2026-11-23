@@ -38,7 +38,7 @@ class KnowledgeContextUnavailable(ValueError):
 
 #: How far a technique query got, as the broker reports it on a refusal.
 STAGES = frozenset({"refused_before_send", "transport", "verification",
-                    "technique_verification", "withdrawn"})
+                    "technique_verification", "withdrawn", "unrecorded"})
 
 
 class FullNodeContextStatus(str, Enum):

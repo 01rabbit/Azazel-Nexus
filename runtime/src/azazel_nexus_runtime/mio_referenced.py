@@ -47,7 +47,8 @@ from azazel_nexus.reasoning_playbook import Library, match
 
 from .mio_playbooks import PlaybookSelectionHolder
 from .principal import PrincipalClass, PrincipalPolicy
-from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
+from .chain_guard import ChainGuard
+from .protocol import Argument, ArgumentKind, Refusal, RequestRefused, Verb, VerbRegistry
 from .runtime_paths import (
     mio_reference_state_dir,
     mission_pack_config,
@@ -179,9 +180,13 @@ def main(
         raise AuditUnavailable("M.I.O. reference ledger unavailable") from error
     selection = PlaybookSelectionHolder(config=mission_pack_config(), root=mission_pack_root())
     service = ReferenceService()
+    guard = ChainGuard(ledger.append)
+
+    def ledger_refusal():
+        raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger")
 
     def refresh() -> None:
-        library = selection.refresh(audit=ledger.append)
+        library = selection.refresh(audit=guard.append)
         service.set_playbooks(library, selection.selection.reason)
 
     refresh()
@@ -190,14 +195,14 @@ def main(
         refresh()
         reply = service.handle(request)
         # Only the outcome and the fixed reason; never the frame or the text.
-        ledger.append({"event_type": "mio.reference.reply", "outcome": reply["outcome"],
+        guard.append({"event_type": "mio.reference.reply", "outcome": reply["outcome"],
                        "reason": reply.get("reason")})
         return reply
 
     return serve_forever(
         path=socket_path(SOCKET_NAME), registry=REGISTRY,
         policy=PrincipalPolicy.resolve(service_accounts=("azmioentry",)),
-        audit=ledger.append, handler=handle, stop=stop,
+        audit=guard.record_refusal, handler=guard.guarded(handle, ledger_refusal), stop=stop,
         ready=ready if ready is not None else runtime_ready_callback(),
     )
 

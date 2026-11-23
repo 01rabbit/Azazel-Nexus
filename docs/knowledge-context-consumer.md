@@ -353,12 +353,15 @@ The stored record also carries `as_of`, `expires_at`, `provenance` (the two fixe
 The Knowledge side must emit exactly these constants.
 
 Axes of the record (`technique-knowledge/1`): `transport` (`received`,
-`unavailable`, `refused`), `verification` (`ok`, `failed`, `not_run`; HTTP 422
-counts as `failed`), per technique `coverage` (`found`, `no_match`, `stale`,
-`unavailable`) and `useful_content` (true exactly for `found`). The pairs in use
-are received/ok, received/failed (validator refusal), refused/failed (signature,
-Fabric, 422), refused/not_run (refused before send), unavailable/not_run. A
-record that is not received/ok carries no techniques. `name` and `tactics` are
+`unavailable`, `refused`), `verification` (`ok`, `failed`, `not_run`,
+`withdrawn`, `unrecorded`; HTTP 422 counts as `failed`), per technique
+`coverage` (`found`, `no_match`, `stale`, `unavailable`) and `useful_content`
+(true exactly for `found`). The pairs in use are received/ok, received/failed
+(validator refusal), received/withdrawn (verified, not adopted because the grant
+marker changed), received/unrecorded (verified, not adopted because the broker
+could not record its completion: its audit chain broke, #458), refused/failed
+(signature, Fabric, 422), refused/not_run (refused before send),
+unavailable/not_run. A record that is not received/ok carries no techniques. `name` and `tactics` are
 display labels: they are not copied into observations, hypotheses, next checks,
 actions, the reasoning trace or unknowns. The UI shows them with `textContent`
 under 「未検証の ATT&CK ラベル（参考）」; the handoff copies fixed keys only.

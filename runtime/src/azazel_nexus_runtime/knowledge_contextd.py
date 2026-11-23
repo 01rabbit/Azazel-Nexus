@@ -21,7 +21,7 @@ from collections.abc import Callable, Mapping, Sequence
 from threading import BoundedSemaphore
 from typing import Any
 
-from azazel_nexus.audit import AuditLedger, AuditUnavailable
+from azazel_nexus.audit import AuditChainBroken, AuditLedger, AuditUnavailable
 from azazel_nexus.sanitizer import PrivacyClass, SanitizerPolicy
 from azazel_nexus.technique_knowledge import request_ids
 
@@ -30,6 +30,7 @@ from .knowledge_context_socket import MAX_CONTEXT_FRAME_BYTES, read_context_fram
 from .knowledge_context_config import (
     load_commissioning, load_observation_rule, observation_rule_identity)
 from .principal import PrincipalClass, PrincipalPolicy
+from .chain_guard import ChainGuard
 from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
 from .runtime_paths import (
     knowledge_context_observation_rule_path, knowledge_context_state_dir, socket_path,
@@ -60,7 +61,9 @@ _CLIENT_STAGES = frozenset({"refused_before_send", "transport", "verification",
 #: Every word a refusal's `stage` can carry. `withdrawn`: the peer answered and
 #: the answer was verified, but the grant marker changed before adoption, so
 #: nothing from the peer was used (the ledger reason_code is `withdrawn` too).
-_STAGES = _CLIENT_STAGES | {"withdrawn"}
+#: `unrecorded`: the answer was verified, but the ledger could not record it
+#: (broken chain), so it was discarded; adopted nowhere, like `withdrawn`.
+_STAGES = _CLIENT_STAGES | {"withdrawn", "unrecorded"}
 #: The unit whose grant marker admits a request (the broker's own unit).
 _UNIT = "azazel-knowledge-contextd.service"
 
@@ -339,15 +342,46 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
         # records exactly what it recorded before.
         event["observation_rule"] = "loaded"
     ledger.append(event)
+    guard = ChainGuard(ledger.append)
+    #: Set when the record of a verified answer could not be written.
+    unrecorded = [False]
+
+    def audit(event: dict) -> None:
+        try:
+            guard.append(event)
+        except AuditChainBroken:
+            if (event["event_type"] == "knowledge.context.completed"
+                    and event.get("outcome") == "verified_advisory"):
+                unrecorded[0] = True
+            raise
+
     if commissioning.status == "commissioned":
         broker = KnowledgeContextBroker(
             client=commissioning.client, policy=commissioning.policy,
             mission=commissioning.mission, alias_key=commissioning.alias_key,
-            enabled=True, audit=ledger.append,
+            enabled=True, audit=audit,
             observation_rule=observation,
         )
     else:
-        broker = KnowledgeContextBroker(audit=ledger.append)
+        broker = KnowledgeContextBroker(audit=audit)
+    def handle(request):
+        """Record before send; on a broken chain nothing is sent to Knowledge."""
+        unrecorded[0] = False
+        if guard.broken:
+            guard.count_unrecorded()
+            return {"refusal": "unavailable", "stage": "refused_before_send"}
+        reply = broker.handle(request)
+        if not guard.broken:
+            return reply
+        # Found during this request. A refusal the broker already chose keeps
+        # its own stage (the client's, or before send); only a verified answer
+        # that could not be recorded gets the word for that.
+        guard.count_unrecorded()
+        if unrecorded[0] or "refusal" not in reply:
+            return {"refusal": "unavailable", "stage": "unrecorded"}
+        return reply
+
+    handle.__self__ = broker
     return serve_forever(
         path=socket_path(SOCKET_NAME), registry=REGISTRY,
         policy=PrincipalPolicy.resolve(
@@ -357,7 +391,9 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
             # (`azmio`) and never entry (`azmioentry`); root is no SERVICE.
             service_accounts=("azmioctx",),
         ),
-        audit=ledger.append, handler=broker.handle, stop=stop,
+        audit=guard.record_refusal,
+        handler=handle,
+        stop=stop,
         ready=ready if ready is not None else runtime_ready_callback(),
     )
 

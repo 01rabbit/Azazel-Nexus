@@ -18,7 +18,7 @@ from typing import Any, Protocol
 
 from azazel_nexus import model_admission
 from azazel_nexus.advisory_response import AdvisoryRefused
-from azazel_nexus.audit import AuditLedger, AuditUnavailable
+from azazel_nexus.audit import AuditChainBroken, AuditLedger, AuditUnavailable
 from azazel_nexus.lite_import import KnowledgeRef
 from azazel_nexus.local_advisory import (
     DELIVERED_MAX_BYTES,
@@ -45,11 +45,12 @@ from azazel_nexus.model_runtime import (
 )
 from azazel_nexus.reasoning_playbook import Library, technique_ids
 
+from .chain_guard import ChainGuard
 from .knowledge_client import KnowledgeUnavailable, lookup_context
 from .knowledge_context_socket import FullNodeContextStatus
 from .mio_playbooks import PlaybookSelectionHolder
 from .principal import PrincipalClass, PrincipalPolicy
-from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
+from .protocol import Argument, ArgumentKind, Refusal, RequestRefused, Verb, VerbRegistry
 from .runtime_paths import (
     mio_local_state_dir,
     mission_pack_config,
@@ -394,7 +395,7 @@ class LocalRuntimeService:
                     knowledge = tuple(self._knowledge_lookup(ids, deadline_s=budget))
                     knowledge_state = "available" if knowledge else "no_context"
                 except Exception as error:  # noqa: BLE001 - optional context
-                    if isinstance(error, AuditUnavailable):
+                    if isinstance(error, (AuditUnavailable, AuditChainBroken)):
                         raise
                     knowledge, knowledge_state = (), "unavailable"
         audit({"event_type": "mio.local.reference", "playbook_ids": [p.id for p in playbooks],
@@ -409,7 +410,7 @@ class LocalRuntimeService:
         except TimeoutError:
             return refuse("deadline", "timed_out")
         except Exception as error:
-            if isinstance(error, AuditUnavailable):
+            if isinstance(error, (AuditUnavailable, AuditChainBroken)):
                 raise
             return refuse("runtime_failed")
         audit({"event_type": "mio.local.selection", **telemetry})
@@ -472,7 +473,7 @@ def retrieval_pipeline(server, frame, playbooks=(), knowledge=(), model_id="benc
                                    "control_characters", "empty"}:
                     dropped = "explanation_schema"
             except Exception as error:
-                if isinstance(error, AuditUnavailable):
+                if isinstance(error, (AuditUnavailable, AuditChainBroken)):
                     raise
                 dropped = "runtime_failed"
     if dropped:
@@ -545,7 +546,7 @@ def prepare_local_models(candidates, *, staging, audit):
                     "admitted": lambda model_id, selected=candidate.entry.model_id: model_id == selected,
                     "runtime": lambda runtime_id, descriptors=held: descriptors.recheck(), "server": None}, handles
         except Exception as error:
-            if isinstance(error, AuditUnavailable):
+            if isinstance(error, (AuditUnavailable, AuditChainBroken)):
                 raise
             if server is not None:
                 server.stop()
@@ -583,6 +584,7 @@ def main(
             pass
     except OSError as error:
         raise AuditUnavailable("M.I.O. local ledger unavailable") from error
+    guard = ChainGuard(ledger.append)
     selection = PlaybookSelectionHolder(config=mission_pack_config(), root=mission_pack_root())
     library = selection.refresh(audit=ledger.append)
     from .model_admission_evidence import (
@@ -599,6 +601,13 @@ def main(
     providers, handles = prepare_local_models(candidates, staging=STAGING, audit=ledger.append)
     service = LocalRuntimeService(playbooks=library, knowledge_lookup=lookup_context, **providers)
 
+    def ledger_refusal():
+        raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger")
+
+    # A broken chain closes every verb of this daemon, admission and readiness
+    # included: no verb here is diagnostic-only, so none keeps answering.
+    # Periodic work is different: revocation and resource release narrow, so
+    # they run to the end and only their records are skipped once broken.
     def withdraw():
         service._retriever = None
         service._server = None
@@ -607,29 +616,33 @@ def main(
             try:
                 server.stop()
             except Exception:  # noqa: BLE001 - disconnect first; never restore a withdrawn retriever
-                ledger.append({"event_type": "mio.local.refused", "role": "embedding",
-                               "refusal": "withdrawal_stop_failed"})
+                guard.best_effort({"event_type": "mio.local.refused", "role": "embedding",
+                                   "refusal": "withdrawal_stop_failed"})
 
     next_poll = time.monotonic()
 
     def poll():
         nonlocal next_poll
         if time.monotonic() >= next_poll:
-            admissions.refresh(withdraw=withdraw, audit=ledger.append)
             next_poll = time.monotonic() + POLL_INTERVAL_SECONDS
+            admissions.refresh(withdraw=withdraw, audit=guard.best_effort)
         return stop()
 
     def handle(request):
-        admissions.refresh(withdraw=withdraw, audit=ledger.append)
-        service.set_playbooks(selection.refresh(audit=ledger.append))
-        return service.handle(request, audit=ledger.append)
+        admissions.refresh(withdraw=withdraw, audit=guard.best_effort)
+        if guard.broken:
+            # Revocation and release are done; nothing else runs for this request
+            # (no playbook refresh, no assessment, no Knowledge Lite lookup).
+            ledger_refusal()
+        service.set_playbooks(selection.refresh(audit=guard.append))
+        return service.handle(request, audit=guard.append)
 
     try:
         return serve_forever(
             path=socket_path(SOCKET_NAME), registry=REGISTRY,
             policy=PrincipalPolicy.resolve(service_accounts=("azmioentry",)),
-            audit=ledger.append,
-            handler=handle,
+            audit=guard.record_refusal,
+            handler=guard.guarded(handle, ledger_refusal),
             stop=poll, ready=ready if ready is not None else runtime_ready_callback(),
         )
     finally:
