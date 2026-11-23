@@ -737,7 +737,8 @@ class MioEntryService:
         `unsettled` is not a refusal and not a grant: the audited generation
         `may_be_in_force_generation` may already be in force. While entryd
         runs, the gate stops every send; if entryd ends, it can be sent on.
-        `permits` is false in this reply and `granted` is empty.
+        The reply has no `permits` field: `granted` is empty and `missing`
+        lists all four prerequisites.
         """
         reading = self.consent.reading()
         if self._unsettled is None:

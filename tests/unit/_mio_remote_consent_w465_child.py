@@ -96,16 +96,19 @@ def faultset(root: str, ready: str, mode: str) -> None:
         set_one(prerequisite)
     consent = service.consent
     flag = {"eio": False}
+    hits = {"confirm_dir_fsync": 0, "withdraw": 0, "read_eio": 0}
     real_read_at, real_confirm, real_unseal = consent._read_at, consent.confirm, consent.unseal
     real_fsync, real_seal = os.fsync, consent.seal
     armed = {"dir": False}
 
     def withdraw(*a, **kw):
+        hits["withdraw"] += 1
         raise ConsentRefused("fixture: withdraw busy")
 
     def read_at(leaf):
         # EIO only for the reads `reading()` makes (a write's read-back works).
         if flag["eio"] and sys._getframe(1).f_code.co_name == "reading":
+            hits["read_eio"] += 1
             raise OSError(5, "fixture: EIO reading the record")
         return real_read_at(leaf)
 
@@ -115,6 +118,7 @@ def faultset(root: str, ready: str, mode: str) -> None:
         if armed["dir"] and stat.S_ISDIR(os.fstat(fd).st_mode):
             armed["dir"] = False
             flag["eio"] = True
+            hits["confirm_dir_fsync"] += 1
             raise OSError(5, "fixture: directory fsync after rename")
         real_fsync(fd)
 
@@ -147,13 +151,14 @@ def faultset(root: str, ready: str, mode: str) -> None:
     except entry.RequestRefused as exc:
         result = {"refused": str(exc.args)}
     result["state"] = str(runtime_paths.mio_state_dir())
+    result["hits"] = hits
     tmp = Path(ready + ".tmp")
     tmp.write_text(json.dumps(result))
     os.replace(tmp, ready)
     time.sleep(600)
 
 
-def combo(root: str, fifo: str, mode: str) -> None:
+def combo(root: str, fifo: str, mode: str, sock_fd: int = -1) -> None:
     """The completing `set` of entryd with the failure placed at the real
     `os.fsync` (the call is not run and raises EIO), per combination:
 
@@ -163,8 +168,10 @@ def combo(root: str, fifo: str, mode: str) -> None:
     e3: `unseal`'s directory fsync fails, the withdrawal's writes fail, the
         re-seal works.
     e4: from `unseal` on every fsync fails (withdraw and re-seal fail).
-    e5: unseal and the read back succeed; the process then writes `parked` to
-        the FIFO and blocks before any reply (the parent SIGKILLs it).
+    e5: unseal and the read back succeed inside `_open_grant`; the process then
+        writes `parked` to the FIFO and blocks inside the handler, before the
+        reply frame is built (the parent SIGKILLs it and expects EOF on the
+        socket it holds).
 
     For e1-e4 the reply (JSON) goes to the FIFO and the process parks.
     """
@@ -201,17 +208,20 @@ def combo(root: str, fifo: str, mode: str) -> None:
     consent = service.consent
     real = {n: getattr(consent, n) for n in ("seal", "confirm", "unseal", "withdraw", "reading")}
     real_fsync = os.fsync
-    fail = {"mode": None}  # None | "dir" | "all": the fsync is not run
+    fail = {"mode": None, "op": None}  # mode: None | "dir" | "all"
     seen = {"opens": None, "unsealed": False, "seals": 0}
+    hits: list = []  # [operation, "dir"|"file"] of each injected fsync failure
+    calls: list = []  # consent operations in call order
 
     def fsync(fd):
-        if fail["mode"] == "all" or (
-                fail["mode"] == "dir" and stat.S_ISDIR(os.fstat(fd).st_mode)):
+        is_dir = stat.S_ISDIR(os.fstat(fd).st_mode)
+        if fail["mode"] == "all" or (fail["mode"] == "dir" and is_dir):
+            hits.append([fail["op"], "dir" if is_dir else "file"])
             raise OSError(5, "fixture: fsync failed without running")
         real_fsync(fd)
 
-    def during(mode_, call, *a, **kw):
-        fail["mode"] = mode_
+    def during(mode_, op, call, *a, **kw):
+        fail["mode"], fail["op"] = mode_, op
         try:
             return call(*a, **kw)
         finally:
@@ -220,31 +230,39 @@ def combo(root: str, fifo: str, mode: str) -> None:
     def seal(generation):
         seen["seals"] += 1
         seen["opens"] = generation
+        calls.append("seal")
+        if mode == "e4" and seen["seals"] > 1:
+            fail["op"] = "seal"
         if mode == "e1" and seen["seals"] == 1:
-            return during("dir", real["seal"], generation)
+            return during("dir", "seal", real["seal"], generation)
         return real["seal"](generation)
 
     def confirm(generation, **kw):
+        calls.append("confirm")
         if mode == "e2":
-            return during("dir", real["confirm"], generation, **kw)
+            return during("dir", "confirm", real["confirm"], generation, **kw)
         return real["confirm"](generation, **kw)
 
     def unseal():
+        calls.append("unseal")
         if mode == "e3":
             try:
-                return during("dir", real["unseal"])
+                return during("dir", "unseal", real["unseal"])
             finally:
                 seen["unsealed"] = True
         if mode == "e4":
-            fail["mode"] = "all"  # stays: nothing is durable from here
+            fail["mode"], fail["op"] = "all", "unseal"  # stays: nothing is durable from here
             seen["unsealed"] = True
             return real["unseal"]()
         real["unseal"]()
         seen["unsealed"] = True
 
     def withdraw(*a, **kw):
+        calls.append("withdraw")
+        if mode == "e4":
+            fail["op"] = "withdraw"
         if mode in ("e2", "e3"):
-            return during("all", real["withdraw"], *a, **kw)
+            return during("all", "withdraw", real["withdraw"], *a, **kw)
         return real["withdraw"](*a, **kw)
 
     def reading():
@@ -253,6 +271,7 @@ def combo(root: str, fifo: str, mode: str) -> None:
                 and sys._getframe(1).f_code.co_name == "_open_grant"):
             post({"parked": True, "opens": seen["opens"],
                   "state": str(runtime_paths.mio_state_dir()),
+                  "hits": hits, "calls": calls,
                   "read_back": {"generation": value.generation,
                                 "status": value.status, "permits": value.permits}})
             time.sleep(600)
@@ -261,12 +280,29 @@ def combo(root: str, fifo: str, mode: str) -> None:
     os.fsync = fsync
     consent.seal, consent.confirm, consent.unseal = seal, confirm, unseal
     consent.withdraw, consent.reading = withdraw, reading
+    if mode == "e5":
+        # The last set goes through the real socket engine (as `serve_once`
+        # does); the parent holds the other end and sees EOF when this process
+        # is killed before a reply frame is written.
+        import socket as _socket
+
+        from azazel_nexus_runtime import transport
+        from azazel_nexus_runtime.principal import PrincipalPolicy
+
+        transport.peer_credentials = lambda c: (1, os.getuid(), os.getgid())
+        transport.peer_supplementary_groups = lambda c: ()
+        engine = transport.SocketServer(
+            registry=entry.REGISTRY, policy=PrincipalPolicy(os.getgid(), frozenset()),
+            audit=service.record_refusal)
+        engine.serve_connection(_socket.socket(fileno=sock_fd), service.handle)
+        raise SystemExit("e5: the handler returned before the park")
     try:
         result = {"returned": set_one(list(PREREQUISITES)[-1])}
     except entry.RequestRefused as exc:
         result = {"refused": str(exc.args)}
     fail["mode"] = None
-    result.update(state=str(runtime_paths.mio_state_dir()), opens=seen["opens"])
+    result.update(state=str(runtime_paths.mio_state_dir()), opens=seen["opens"],
+                  hits=hits, calls=calls)
     post(result)
     time.sleep(600)
 
@@ -275,6 +311,7 @@ if __name__ == "__main__":
     if sys.argv[1] == "hold":
         hold(sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5])
     elif sys.argv[1] == "combo":
-        combo(sys.argv[2], sys.argv[3], sys.argv[4])
+        combo(sys.argv[2], sys.argv[3], sys.argv[4],
+              int(sys.argv[5]) if len(sys.argv) > 5 else -1)
     else:
         faultset(sys.argv[2], sys.argv[3], sys.argv[4])

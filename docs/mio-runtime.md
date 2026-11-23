@@ -353,7 +353,8 @@ is ordered so that a refusal stays true even if entryd ends at any point:
    generation only, written like a record -- private temporary file, fsync,
    rename, directory fsync, read back). Every reader (`reading()` and the send
    gate) reads a record at or below the sealed generation as closed
-   (`unconfirmed`, `permits` false); a seal that exists but cannot be read or
+   (`unconfirmed`, or `withdrawn` if the record is a withdrawal; `permits`
+   false either way); a seal that exists but cannot be read or
    decoded is `unavailable`. Not sealed: nothing is confirmed, the grant stays
    pending, the reply is `opt_in_store`.
 2. `confirm` publishes the next generation (closed by the seal). If it fails
@@ -403,7 +404,12 @@ treat N+1 as possibly in force. Entryd's unsettled state is in memory and is
 not carried over a restart, so after one `status` can answer `granted`. The only
 confirmation that a grant is closed is a `withdraw` that returns a success
 reply whose `status` is `withdrawn`. `status` no longer reading `unsettled` is
-not a confirmation (the state may simply have been lost). The operator repeats
+not a confirmation (the state may simply have been lost). `withdrawn` confirms
+the record: no sender reads the grant from then on. Senders that had already
+read it are covered only by `drained: true`; with `drained: false` a send on
+the old generation can still happen (*Remote inference*). While unsettled,
+entryd itself holds the gate, so nothing is in flight and the withdrawal is
+written without a drain and answers `drained: true`. The operator repeats
 `withdraw` until it does (it is written without a drain while unsettled and
 releases the gate when it returns; its reply may read `unavailable` if the store
 still cannot be read, and that is not the confirmation either).
@@ -415,13 +421,27 @@ Remaining cases, exactly:
   so the grant is unsettled; or entryd died at that moment, before the reply was
   written). The OS drops the gate's `flock`, and the audited N+1 can be sent on.
   The caller sees either `unsettled`, or no reply at all, and treats it as above.
-* Every other ending (killed before the seal, after it, after `confirm`, while
-  the gate is waited for) leaves the store closed, whatever the caller saw.
+  This includes an open that was read back and then lost with the process
+  before `granted` was written to the socket.
+* For the generation this `set` opens, every ending before `unseal` is called
+  (killed before the seal, after it, after `confirm`, while the gate is waited
+  for) leaves it closed, whatever the caller saw. After a `granted` reply it is
+  in force by design, and an ending of entryd does not change that.
 * A power loss after a closing rename whose directory sync failed is the same
   class; a read does not release anything for that reason.
+* What was measured is process endings (SIGKILL) with the kernel running. For a
+  power loss the refusal rests on the order above (the seal's file and
+  directory syncs return before `confirm` renames; a refusal after `unseal`
+  waits for a closing write's syncs) and holds only if a sync that returned is
+  durable on the node's filesystem and storage. A drive that acknowledges a
+  flush it has not made breaks it. On macOS `fsync` does not flush the drive's
+  cache and `F_FULLFSYNC` is not used, so this argument is for the Linux nodes
+  only. Not tested on real power loss.
 * While the directory sync keeps failing, each retry (tick, `status`, `set`)
-  writes another withdrawn record, so the generation advances with every retry
-  and the (single-threaded) accept loop is held for the sync. The gate stays
+  whose `withdraw` reaches its rename writes another withdrawn record, so the
+  generation advances with those retries (a retry that fails before the rename
+  writes nothing; at the generation ceiling the withdrawal is written at the
+  same generation), and the (single-threaded) accept loop is held for the sync. The gate stays
   held and nothing is sent; this is bounded only by the fault ending. Not
   changed here.
 * Senders that predate the seal (the base build's reader) do not read it; the
@@ -430,11 +450,17 @@ Remaining cases, exactly:
 **Recovery of an unreadable seal (maintenance).** A `send.seal` that exists but
 cannot be read or decoded makes the store read `unavailable`: a `withdraw` can
 still be written (it never reads the seal), but afterwards `status` stays
-`unavailable` and a `set` is refused, also after a restart. Procedure: confirm
-that a `withdraw` returned a success reply with `status: "withdrawn"` (sends are
-then closed by the withdrawn record); only then, as root with entryd stopped,
-remove `remote-consent/send.seal` from entryd's state leaf; start entryd and
-check `status` reads `withdrawn`; then `set` the four prerequisites again.
+`unavailable` and a `set` is refused, also after a restart. The `withdraw`
+reply cannot read `withdrawn` here (its reading includes the seal, so it says
+`unavailable`); what it does confirm is the write: a `withdraw` returns success
+only after its record was fsynced, renamed, directory-synced and read back.
+Procedure: get a success reply (`ok: true`) to `withdraw`, its `status`
+`unavailable`, and find its route ledger line `mio.remote.opt_in.withdrawn`
+with the generation it wrote (sends are then closed by that withdrawn record);
+a refusal, including `ledger`, is not this ground, so repeat. Only then, as
+root with entryd stopped, remove `remote-consent/send.seal` from entryd's state
+leaf; start entryd and check that `status` reads `withdrawn` at that generation
+or above; then `set` the four prerequisites again.
 Never remove the seal while a grant may be in force and unconfirmed. Statuses:
 `absent`, `incomplete`, `unconfirmed`, `granted`, `withdrawn`, `unavailable`,
 and `unsettled` (a reply of entryd only, never a stored status). A

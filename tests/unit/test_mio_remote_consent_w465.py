@@ -27,7 +27,7 @@ from azazel_nexus_runtime import mio_entryd as entry
 from azazel_nexus_runtime import mio_socket_client as client
 from azazel_nexus_runtime import runtime_paths
 from azazel_nexus_runtime.mio_remote_consent import (
-    _UNAVAILABLE, ConsentRefused, ConsentStore)
+    _UNAVAILABLE, ConsentRefused, ConsentStore, decode_seal)
 from azazel_nexus_runtime.principal import Principal, PrincipalClass
 
 from azazel_nexus.audit import AuditChainBroken
@@ -177,6 +177,7 @@ def reads_fail(service, monkeypatch, flag):
         if flag.get("eio") and sys._getframe(1).f_code.co_name == "reading":
             if flag.get("once"):
                 flag["eio"] = False
+            flag["hits"] = flag.get("hits", 0) + 1
             raise OSError(5, "fixture: EIO reading the record")
         return real(leaf)
 
@@ -269,14 +270,24 @@ def set_last_by_socket(service, monkeypatch):
                       {"prerequisite": LAST.value})
 
 
-def test_r1_triple_fault_is_closed_by_the_seal(service, monkeypatch):
+def test_r1_confirm_published_then_fails_and_withdraw_fails_is_closed_by_the_seal(
+        service, monkeypatch):
+    # Faults that really hit: the directory fsync after confirm's rename, and
+    # the withdrawal. The read EIO is armed too but is NOT reached on the fixed
+    # path (a failed confirm goes straight to `_narrow`, no read-back); a
+    # read-back EIO is really hit by r1d / r1e / r1c below.
     first_three(service)
     reads = {"eio": False}
-    inject_publish_then_fail(service, monkeypatch,
-                             after_publish=lambda g: reads.update(eio=True))
+    seen = inject_publish_then_fail(service, monkeypatch,
+                                    after_publish=lambda g: reads.update(eio=True))
     reads_fail(service, monkeypatch, reads)
-    monkeypatch.setattr(service.consent, "withdraw",
-                        lambda *a, **kw: (_ for _ in ()).throw(ConsentRefused("busy")))
+    withdraws = []
+
+    def withdraw(*a, **kw):
+        withdraws.append(1)
+        raise ConsentRefused("busy")
+
+    monkeypatch.setattr(service.consent, "withdraw", withdraw)
     response = set_last_by_socket(service, monkeypatch)
     state = runtime_paths.mio_state_dir()
     view = store_view(state)
@@ -286,6 +297,8 @@ def test_r1_triple_fault_is_closed_by_the_seal(service, monkeypatch):
         "set_response_on_socket": response, "store_after": view,
         "send_other_process": sent, "gate_free": gate_free(state)}, merge=True)
     assert response == {"ok": False, "refusal": "verb_unavailable"}
+    assert seen["published"] == 5 and len(withdraws) == 1  # the injected faults hit
+    assert reads.get("hits", 0) == 0  # the read EIO was not reached
     # #465-1 fixed: N+1 is published, but sealed, so it reads closed.
     assert view == {"generation": 5, "status": "unconfirmed", "permits": False}
     assert sent["calls"] == 0 and sent["refusal"] == "opt_in_not_granted"
@@ -533,7 +546,9 @@ def _run_fault_child(tmp_path, mode):
     return result
 
 
-def test_r1b_a_refused_set_killed_after_its_reply_leaves_no_send(tmp_path):
+def test_r1b_confirm_fails_and_withdraw_fails_then_killed_leaves_no_send(tmp_path):
+    # Hits: confirm's directory fsync and the withdrawal. No read EIO is reached
+    # on the fixed path (read-back EIO: r1c / r1d / r1e).
     result = _run_fault_child(tmp_path, "confirm_fails")
     state = Path(result["state"])
     view = store_view(state)
@@ -541,6 +556,7 @@ def test_r1b_a_refused_set_killed_after_its_reply_leaves_no_send(tmp_path):
     dump("after4-R1.json", {"sigkill_after_refusal": {
         "set_response": result["refused"], "store_after_kill": view,
         "send_other_process": sent}}, merge=True)
+    assert result["hits"] == {"confirm_dir_fsync": 1, "withdraw": 1, "read_eio": 0}
     assert "opt_in_store" in result["refused"]
     assert view == {"generation": 5, "status": "unconfirmed", "permits": False}
     assert sent["calls"] == 0 and sent["refusal"] == "opt_in_not_granted"
@@ -799,27 +815,51 @@ OUT11 = Path(os.environ.get("W465_OUT11", HERE.parents[2] / "out" / "w11"))
 
 
 def _run_combo_child(tmp_path, mode):
+    import socket as _socket
+
+    from azazel_nexus_runtime import transport
+
     root, fifo = tmp_path / "root", tmp_path / "sync"
     root.mkdir()
     os.mkfifo(fifo)
     rfd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)  # before the child opens it
-    child = subprocess.Popen(
-        [sys.executable, str(HERE / "_mio_remote_consent_w465_child.py"),
-         "combo", str(root), str(fifo), mode], env=_env(), stderr=subprocess.PIPE)
+    argv = [sys.executable, str(HERE / "_mio_remote_consent_w465_child.py"),
+            "combo", str(root), str(fifo), mode]
+    client_end = server_end = None
+    pass_fds = ()
+    if mode == "e5":  # the client's socket: its EOF is measured after the kill
+        client_end, server_end = _socket.socketpair()
+        transport.send_frame(client_end, {"verb": "mio.remote.opt_in.set",
+                                          "arguments": {"prerequisite": LAST.value}})
+        client_end.shutdown(_socket.SHUT_WR)
+        argv.append(str(server_end.fileno()))
+        pass_fds = (server_end.fileno(),)
+    child = subprocess.Popen(argv, env=_env(), stderr=subprocess.PIPE, pass_fds=pass_fds)
+    if server_end is not None:
+        server_end.close()  # only the child holds it: its death is the client's EOF
     try:
         buf = b""
         deadline = time.monotonic() + 60
         while b"\n" not in buf:
             left = deadline - time.monotonic()
-            assert left > 0 and child.poll() is None, child.stderr.read().decode()
+            if left <= 0 or child.poll() is not None:
+                if child.poll() is None:
+                    child.kill()  # never read stderr of a live child
+                    child.wait(timeout=10)
+                raise AssertionError(child.stderr.read().decode() or "no sync point")
             ready, _, _ = select.select([rfd], [], [], min(left, 1))
             if ready:
                 buf += os.read(rfd, 65536)
         result = json.loads(buf.splitlines()[0])
         child.send_signal(signal.SIGKILL)
         child.wait(timeout=10)
+        if client_end is not None:
+            client_end.settimeout(10)
+            result["client_bytes_after_kill"] = len(client_end.recv(65536))  # 0 = EOF
     finally:
         os.close(rfd)
+        if client_end is not None:
+            client_end.close()
         if child.poll() is None:
             child.kill()
             child.wait(timeout=10)
@@ -828,27 +868,70 @@ def _run_combo_child(tmp_path, mode):
     return result
 
 
+# What each combination must have hit, as [operation, fd kind] of the injected
+# fsync failures, and the consent operations that were called (in order).
+W11_PATH = {
+    "e1": ([["seal", "dir"]], ["seal"]),
+    "e2": ([["confirm", "dir"], ["withdraw", "file"]], ["seal", "confirm", "withdraw"]),
+    "e3": ([["unseal", "dir"], ["withdraw", "file"]],
+           ["seal", "confirm", "unseal", "withdraw", "seal"]),
+    "e4": ([["unseal", "dir"], ["withdraw", "file"], ["seal", "file"]],
+           ["seal", "confirm", "unseal", "withdraw", "seal"]),
+}
+
+
 @pytest.mark.parametrize("mode", ["e1", "e2", "e3", "e4", "e5"])
 def test_w11_combination_then_writer_sigkill_then_other_process_sends(tmp_path, mode):
+    """E1-E3: refused, and after the writer's SIGKILL a sender in another
+    process sends 0 times on N+1, having hit exactly the intended faults.
+    E4 (unsettled) and E5 (the handler is stopped inside `_open_grant` after the
+    read-back, before it builds a reply; the socket client sees EOF) are the
+    documented limit: N+1 is granted in the store and one send goes through."""
     result = _run_combo_child(tmp_path, mode)
     state = Path(result["state"])
     view = store_view(state)
+    seal_file = _seal_path(state)
+    seal_value = decode_seal(seal_file.read_bytes()) if seal_file.exists() else None
     sent = send_in_new_process(state, result["opens"])
     reply = (result.get("returned") or result.get("refused")
-             if mode != "e5" else "no reply (writer killed before replying)")
+             if mode != "e5" else "no reply (EOF on the client socket)")
     OUT11.mkdir(parents=True, exist_ok=True)
     path = OUT11 / "combos.json"
     data = json.loads(path.read_text()) if path.exists() else {}
     data[mode] = {"reply": reply, "opens_N_plus_1": result["opens"],
-                  "store_after_sigkill": view, "seal_present": _seal_path(state).exists(),
+                  "injected_fsync_hits": result["hits"], "consent_calls": result["calls"],
+                  "store_after_sigkill": view, "seal_value": seal_value,
                   "send_other_process": sent,
-                  **({"read_back_before_kill": result["read_back"]} if mode == "e5" else {})}
+                  **({"read_back_before_kill": result["read_back"],
+                      "client_bytes_after_kill": result["client_bytes_after_kill"]}
+                     if mode == "e5" else {})}
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    assert result["opens"] == 5
+    if mode != "e5":
+        hits = result["hits"]
+        if mode == "e4":  # repeated file fsyncs inside a write: compare the set
+            hits = [list(h) for h in dict.fromkeys(map(tuple, hits))]
+        assert (hits, result["calls"]) == W11_PATH[mode]
     if mode in ("e1", "e2", "e3"):
         assert "opt_in_store" in result["refused"]
-        assert sent["calls"] == 0
+        assert sent["calls"] == 0 and sent["refusal"] == "opt_in_not_granted"
         assert view["permits"] is False
+    if mode == "e1":  # confirm never ran: N+1 not published, the seal(5) file is visible
+        assert view == {"generation": 4, "status": "unconfirmed", "permits": False}
+        assert "confirm" not in result["calls"] and seal_value == 5
+    elif mode in ("e2", "e3"):
+        assert view == {"generation": 5, "status": "unconfirmed", "permits": False}
+        assert seal_value == 5  # e3: the re-seal succeeded
     elif mode == "e4":
-        assert result["returned"]["status"] == "unsettled"  # observed only
+        assert result["returned"]["status"] == "unsettled"
+        assert result["returned"]["may_be_in_force_generation"] == 5
+        assert view == {"generation": 5, "status": "granted", "permits": True}
+        assert seal_value is None
+        assert sent["calls"] == 1  # the documented limit
     else:
         assert "returned" not in result and "refused" not in result
+        assert result["read_back"] == {"generation": 5, "status": "granted", "permits": True}
+        assert result["calls"] == ["seal", "confirm", "unseal"]
+        assert result["client_bytes_after_kill"] == 0  # EOF, no reply frame
+        assert view == {"generation": 5, "status": "granted", "permits": True}
+        assert sent["calls"] == 1  # the documented limit

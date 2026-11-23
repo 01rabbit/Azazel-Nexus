@@ -105,8 +105,11 @@ opt-in store ([runtime](mio-runtime.md) *Remote opt-in store*), and refuses
 with `opt_in_unavailable` (store unreadable, malformed, rolled back or busy),
 `opt_in_not_granted` (absent, incomplete, unconfirmed or withdrawn) or
 `opt_in_generation_mismatch` (any other generation in force). The gate stays
-held until the transport returns, and a withdrawal returns only after it has
-drained, so no send starts after a confirmed withdrawal. A withdrawal waits at most 65 s for senders that read the old generation; if
+held until the transport returns. A withdrawal is committed first: from then
+on no sender reads the grant. A reply with `drained: true` comes only after the
+senders that read the old generation have let go of the gate, so no send on it
+starts after that reply; `status: "withdrawn"` alone confirms the record, not
+the drain. A withdrawal waits at most 65 s for senders that read the old generation; if
 one is still holding the gate when the wait ends, the withdrawal stands and the
 reply says `drained: false`. That sender may be inside its transport call and
 complete later, or may have read the old grant and not yet called the transport

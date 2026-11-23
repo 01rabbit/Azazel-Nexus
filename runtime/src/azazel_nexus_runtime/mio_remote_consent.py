@@ -100,7 +100,8 @@ released, only after one of them returned (or while the seal is provably still
 in place). Otherwise the grant is *unsettled*: it is not a refusal; the audited
 generation may already be in force, entryd keeps the gate (sends refuse while it
 runs) and names `may_be_in_force_generation`. Remaining limit: if entryd ends
-in that state the OS drops the `flock` and that generation can be sent on.
+in that state, or after the seal's removal and before its reply is written, the
+OS drops the `flock` and that generation can be sent on.
 Nothing here infers a grant from an unreadable store.
 
 ## Separate from Knowledge
