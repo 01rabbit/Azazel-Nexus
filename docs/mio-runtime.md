@@ -349,7 +349,10 @@ closed. The grant record names both the pending generation and
 `opens_generation`, the one `confirm` writes and a send is bound to. If the
 confirmation itself fails (also after its rename, at the directory sync or the
 read back), the request is refused and entryd withdraws the grant at once
-(`opt_in_not_confirmed`, best effort) so the reply and the store agree. A
+(`opt_in_not_confirmed`, best effort) so the reply and the store agree: a
+refusal is returned only when the store then reads closed. If that narrowing
+fails over a published confirmation, the grant is in force and already
+recorded with its `opens_generation`, and the reply says `granted`. A
 withdrawal is never refused for a spent route budget share: it skips the
 share check, like every narrowing. A set over a pending record starts from
 the empty set. Statuses:

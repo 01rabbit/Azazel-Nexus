@@ -466,6 +466,58 @@ def test_a_confirmation_that_fails_after_publishing_is_withdrawn_before_the_repl
             gated, published[0].generation) is not None
 
 
+@pytest.mark.parametrize("withdraw_failure", ["oserror", "refused"])
+def test_a_refusal_after_a_published_confirmation_always_means_closed(
+        service, monkeypatch, withdraw_failure):
+    # Published, then the confirmation fails, then the narrowing fails too:
+    # the grant is in force and already recorded (with `opens_generation`),
+    # so the reply must say granted, never a refusal over an open store.
+    from azazel_nexus_runtime.mio_remote_consent import ConsentRefused
+
+    _set_all_but_last(service)
+    real_confirm = service.consent.confirm
+
+    def confirm_then_fail(generation, **kw):
+        real_confirm(generation, **kw)
+        raise OSError("fixture: directory fsync")
+
+    def withdraw_fails(*a, **kw):
+        raise {"oserror": OSError, "refused": ConsentRefused}[withdraw_failure]("fixture")
+
+    monkeypatch.setattr(service.consent, "confirm", confirm_then_fail)
+    monkeypatch.setattr(service.consent, "withdraw", withdraw_fails)
+    reply = _set_last(service)
+    reading = _separate_store().reading()
+    assert reply["status"] == "granted" and reading.permits
+    assert reply["generation"] == reading.generation
+    grant = [e for e in recorded(service) if e["event_type"] == "mio.remote.opt_in"][-1]
+    assert grant["opens_generation"] == reading.generation
+    assert service.unrecorded_withdraw_failed == 1
+
+
+@pytest.mark.parametrize("published", [False, True])
+def test_whenever_the_set_is_refused_no_separate_reader_may_send(service, monkeypatch, published):
+    # The invariant across every confirm/withdraw failure: refused => closed.
+    from azazel_nexus_runtime.mio_remote_consent import ConsentRefused
+    from azazel_nexus_runtime.mio_remoted import RemoteInferenceService
+
+    _set_all_but_last(service)
+    real_confirm = service.consent.confirm
+
+    def confirm_fails(generation, **kw):
+        if published:
+            real_confirm(generation, **kw)
+        raise OSError("fixture")
+
+    monkeypatch.setattr(service.consent, "confirm", confirm_fails)
+    with pytest.raises(RequestRefused):
+        _set_last(service)
+    other = _separate_store()
+    with other.send_gate() as gated:
+        for generation in range(1, 8):
+            assert RemoteInferenceService._consent_refusal(gated, generation) is not None
+
+
 def test_the_grant_record_names_the_generation_a_send_is_bound_to(service):
     _set_all_but_last(service)
     reply = _set_last(service)

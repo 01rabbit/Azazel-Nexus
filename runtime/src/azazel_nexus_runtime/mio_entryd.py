@@ -690,6 +690,13 @@ class MioEntryService:
                         self.consent.withdraw("opt_in_not_confirmed", operator=ENTRYD_ACTOR)
                     except (ConsentRefused, OSError):
                         self.unrecorded_withdraw_failed += 1
+                    # A refusal is returned only for a store that reads
+                    # closed. If the published grant could not be narrowed,
+                    # it is in force -- and already recorded, with the
+                    # generation it opens -- so the reply says that instead.
+                    now = self.consent.reading()
+                    if now.permits and now.generation == record.generation + 1:
+                        return self._reading_reply(now)
                     # Say so if the ledger allows; a break found here is the
                     # daemon's broken state too.
                     try:
