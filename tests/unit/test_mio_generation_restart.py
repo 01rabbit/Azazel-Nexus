@@ -366,6 +366,12 @@ def test_epoch_travels_explainer_entry_client_local_lane_and_stale_poll_is_withh
     adapter.fast_assistance = lambda *a,**k: client.fast_assessment_degraded('unavailable')
     monkeypatch.setitem(sys.modules,adapter.__name__,adapter)
     local = mio_locald.LocalRuntimeService(generation_lane=lane,generation_id='fixture')
+    # The advise deadline (500 ms) leaves the fast lane about 45 ms after its
+    # reserves, measured on the router's clock after the request's ledger
+    # writes. On a stalled CI runner that slack ran out, locald was never
+    # asked, and no result handle came back. A clock that does not move keeps
+    # the deadline from being judged on the runner's speed.
+    service = mio_entryd.MioEntryService(clock=lambda: 1000.0)
     principal = Principal(os.getuid(),os.getgid(),1,frozenset({PrincipalClass.SERVICE}))
     service._explainer_uid = principal.uid
     calls = []
