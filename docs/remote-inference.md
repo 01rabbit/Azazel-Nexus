@@ -103,7 +103,7 @@ before the transport -- and before the "no transport" refusal, so this runs
 in the shipped build too -- the daemon takes the send gate of the remote
 opt-in store ([runtime](mio-runtime.md) *Remote opt-in store*), and refuses
 with `opt_in_unavailable` (store unreadable, malformed, rolled back or busy),
-`opt_in_not_granted` (absent, incomplete or withdrawn) or
+`opt_in_not_granted` (absent, incomplete, unconfirmed or withdrawn) or
 `opt_in_generation_mismatch` (any other generation in force). The gate stays
 held until the transport returns, and a withdrawal returns only after it has
 drained, so no send starts after a confirmed withdrawal. Without an injected

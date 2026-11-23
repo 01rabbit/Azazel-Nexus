@@ -666,15 +666,32 @@ class MioEntryService:
                                      "operator": operator,
                                      "prerequisite": prerequisite.value})
                 raise RequestRefused(Refusal.VERB_UNAVAILABLE, "opt_in_store") from None
-            reading = self.consent.reading()
-            if reading.permits and reading.generation == record.generation:
+            if record.pending:
+                # The completing set is committed but closed (`unconfirmed`):
+                # no sender can use it until its record is written and the
+                # grant is confirmed. A crash from here leaves it closed.
                 try:
-                    self.router._record({**reading.opt_in.as_event(),
+                    self.router._record({**record.opt_in().as_event(),
                                          "generation": record.generation})
                 except (AuditChainBroken, AuditUnavailable, OSError) as failure:
                     self._withdraw_unrecorded(operator, failure)
                     raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger") from None
-            return self._reading_reply(reading)
+                try:
+                    self.consent.confirm(record.generation, operator=operator)
+                except (ConsentRefused, OSError):
+                    # Stays pending, so closed. Say so if the ledger allows;
+                    # a break found here is the daemon's broken state too.
+                    try:
+                        self.router._record({"event_type": "mio.remote.opt_in.not_committed",
+                                             "operator": operator,
+                                             "prerequisite": prerequisite.value})
+                    except (AuditChainBroken, AuditUnavailable, OSError) as failure:
+                        self.refusals_unrecorded += 1
+                        if isinstance(failure, AuditChainBroken):
+                            self.ledger_broken = True
+                            self.ledger_break_reason = str(failure)
+                    raise RequestRefused(Refusal.VERB_UNAVAILABLE, "opt_in_store") from None
+            return self._reading_reply(self.consent.reading())
         reason = request.arguments["reason"]
         try:
             record, drained = self.consent.withdraw(reason, operator=operator)
@@ -705,9 +722,11 @@ class MioEntryService:
         withdrawal cannot be recorded either. It is entryd's own act, so the
         stored actor is `ENTRYD_ACTOR` and the reason the internal
         `audit_record_failed`, not the requesting operator's. The refusal is
-        counted as unrecorded. Residual: if the withdrawal itself fails
-        before it commits, the grant may remain in force; that is counted in
-        `unrecorded_withdraw_failed` and the refusal still stands.
+        counted as unrecorded. The grant being withdrawn is still pending, so
+        it is already closed: if the withdrawal itself fails before it commits
+        the record stays `unconfirmed` (nothing permits it), which is counted
+        in `unrecorded_withdraw_failed` and the refusal still stands. A later
+        set starts again from the empty set.
         """
         self.refusals_unrecorded += 1
         if isinstance(failure, AuditChainBroken):
