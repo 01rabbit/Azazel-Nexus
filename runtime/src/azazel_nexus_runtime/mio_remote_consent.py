@@ -143,8 +143,9 @@ WITHDRAWAL_REASONS = (
     "incident_response",
 )
 #: Reasons only entryd itself records (never an operator verb argument): the
-#: automatic withdrawal of a grant whose record could not be written.
-INTERNAL_WITHDRAWAL_REASONS = ("audit_record_failed",)
+#: automatic withdrawal of a grant whose record could not be written, or
+#: whose confirmation failed (possibly after it was already published).
+INTERNAL_WITHDRAWAL_REASONS = ("audit_record_failed", "opt_in_not_confirmed")
 
 
 class ConsentRefused(Exception):

@@ -414,7 +414,7 @@ def test_the_grant_is_not_usable_while_its_record_is_being_written(service, monk
     assert _separate_store().reading().permits
 
 
-def test_a_confirmation_that_fails_leaves_the_grant_pending_and_is_refused(
+def test_a_confirmation_that_fails_is_withdrawn_and_refused(
         service, monkeypatch):
     from azazel_nexus_runtime.mio_remote_consent import ConsentRefused
     from azazel_nexus_runtime.protocol import Refusal
@@ -429,11 +429,60 @@ def test_a_confirmation_that_fails_leaves_the_grant_pending_and_is_refused(
         _set_last(service)
     assert refused.value.refusal is Refusal.VERB_UNAVAILABLE
     assert "opt_in_store" in str(refused.value.args)
-    assert _separate_store().reading().status == "unconfirmed"
-    assert not _separate_store().reading().permits
+    # Refused, so narrowed at once by entryd itself.
+    reading = _separate_store().reading()
+    assert reading.status == "withdrawn" and not reading.permits
+    assert reading.opt_in.withdrawn.reason == "opt_in_not_confirmed"
     events = [e["event_type"] for e in recorded(service)]
     assert events.count("mio.remote.opt_in") == 1
     assert events[-1] == "mio.remote.opt_in.not_committed"
+
+
+def test_a_confirmation_that_fails_after_publishing_is_withdrawn_before_the_reply(
+        service, monkeypatch):
+    # The confirmed record is published (rename) and then the confirmation
+    # fails (directory sync or read-back): the request is refused, so the
+    # grant must not stay usable to another process.
+    from azazel_nexus_runtime.mio_remoted import RemoteInferenceService
+    from azazel_nexus_runtime.protocol import Refusal
+
+    _set_all_but_last(service)
+    real_confirm = service.consent.confirm
+    published = []
+
+    def confirm_then_fail(generation, **kw):
+        published.append(real_confirm(generation, **kw))
+        assert _separate_store().reading().permits  # it really was open
+        raise OSError("fixture: directory fsync")
+
+    monkeypatch.setattr(service.consent, "confirm", confirm_then_fail)
+    with pytest.raises(RequestRefused) as refused:
+        _set_last(service)
+    assert refused.value.refusal is Refusal.VERB_UNAVAILABLE and published
+    other = _separate_store()
+    assert other.reading().status == "withdrawn"
+    with other.send_gate() as gated:
+        assert RemoteInferenceService._consent_refusal(
+            gated, published[0].generation) is not None
+
+
+def test_the_grant_record_names_the_generation_a_send_is_bound_to(service):
+    _set_all_but_last(service)
+    reply = _set_last(service)
+    grant = [e for e in recorded(service) if e["event_type"] == "mio.remote.opt_in"][-1]
+    assert grant["opens_generation"] == grant["generation"] + 1 == reply["generation"]
+    assert _separate_store().reading().generation == grant["opens_generation"]
+
+
+def test_a_withdrawal_reaches_the_store_when_the_callers_share_is_spent(service, monkeypatch):
+    grant(service)
+    assert _separate_store().reading().permits
+    monkeypatch.setattr(service.router.ledger, "room", lambda key: False, raising=False)
+    verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="operator_request")
+    assert _separate_store().reading().status == "withdrawn"
+    # A widening verb is still refused on a spent share.
+    with pytest.raises(RequestRefused):
+        verb(service, entry.OPT_IN_SET_VERB, prerequisite=list(PREREQUISITES)[0].value)
 
 
 @pytest.mark.parametrize("fault", ["unavailable", "broken"])

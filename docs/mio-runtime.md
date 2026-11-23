@@ -345,7 +345,14 @@ written *pending* (`unconfirmed`: `permits` is false for the recheck and the
 send gate), recorded, and only then confirmed by a further generation without
 `pending`; if the record fails the grant is withdrawn (best effort), and if
 that also fails or the process dies the record stays `unconfirmed`, i.e.
-closed. A set over a pending record starts from the empty set. Statuses:
+closed. The grant record names both the pending generation and
+`opens_generation`, the one `confirm` writes and a send is bound to. If the
+confirmation itself fails (also after its rename, at the directory sync or the
+read back), the request is refused and entryd withdraws the grant at once
+(`opt_in_not_confirmed`, best effort) so the reply and the store agree. A
+withdrawal is never refused for a spent route budget share: it skips the
+share check, like every narrowing. A set over a pending record starts from
+the empty set. Statuses:
 `absent`, `incomplete`, `unconfirmed`, `granted`, `withdrawn`, `unavailable`.
 Writes are a private temporary file, fsync, rename,
 directory fsync and read back.

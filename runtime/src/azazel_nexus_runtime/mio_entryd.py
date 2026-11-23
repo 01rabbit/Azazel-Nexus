@@ -599,11 +599,11 @@ class MioEntryService:
             raise RequestRefused(Refusal.RATE_LIMITED, "principal_rate")
         key = self._budget_key(uid)
         room = getattr(self.router.ledger, "room", None)
-        # A withdrawal on a known-broken chain must reach the consent store:
-        # room() reads the ledger's boundary metadata, which may be the very
-        # thing that is damaged (or full), so it is skipped for that verb only.
-        withdrawing = (self.ledger_broken
-                       and getattr(getattr(request, "verb", None), "name", None)
+        # A withdrawal must always reach the consent store: narrowing is never
+        # refused for want of a record. room() reads the ledger's boundary
+        # metadata, which may be damaged, and a spent share is no reason to
+        # keep a grant in force, so it is skipped for that verb only.
+        withdrawing = (getattr(getattr(request, "verb", None), "name", None)
                        == OPT_IN_WITHDRAW_VERB.name)
         if room is not None and not withdrawing and not room(key):
             # This caller's share of today's segment is spent; no other
@@ -671,16 +671,27 @@ class MioEntryService:
                 # no sender can use it until its record is written and the
                 # grant is confirmed. A crash from here leaves it closed.
                 try:
+                    # `confirm` writes exactly the next generation or nothing,
+                    # so this line also names the generation a send is bound to.
                     self.router._record({**record.opt_in().as_event(),
-                                         "generation": record.generation})
+                                         "generation": record.generation,
+                                         "opens_generation": record.generation + 1})
                 except (AuditChainBroken, AuditUnavailable, OSError) as failure:
                     self._withdraw_unrecorded(operator, failure)
                     raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger") from None
                 try:
                     self.consent.confirm(record.generation, operator=operator)
                 except (ConsentRefused, OSError):
-                    # Stays pending, so closed. Say so if the ledger allows;
-                    # a break found here is the daemon's broken state too.
+                    # Refused, so narrowed at once: a confirm can fail after
+                    # its record was already published (directory sync or
+                    # read-back), and the reply and the store must agree.
+                    # Before publication it stays pending, which is closed.
+                    try:
+                        self.consent.withdraw("opt_in_not_confirmed", operator=ENTRYD_ACTOR)
+                    except (ConsentRefused, OSError):
+                        self.unrecorded_withdraw_failed += 1
+                    # Say so if the ledger allows; a break found here is the
+                    # daemon's broken state too.
                     try:
                         self.router._record({"event_type": "mio.remote.opt_in.not_committed",
                                              "operator": operator,
