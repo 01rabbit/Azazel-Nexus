@@ -153,8 +153,128 @@ def faultset(root: str, ready: str, mode: str) -> None:
     time.sleep(600)
 
 
+def combo(root: str, fifo: str, mode: str) -> None:
+    """The completing `set` of entryd with the failure placed at the real
+    `os.fsync` (the call is not run and raises EIO), per combination:
+
+    e1: the directory fsync after `seal(N+1)`'s rename fails.
+    e2: confirm's directory fsync fails after N+1 is published, and the
+        withdrawal's writes fail too (the seal stays).
+    e3: `unseal`'s directory fsync fails, the withdrawal's writes fail, the
+        re-seal works.
+    e4: from `unseal` on every fsync fails (withdraw and re-seal fail).
+    e5: unseal and the read back succeed; the process then writes `parked` to
+        the FIFO and blocks before any reply (the parent SIGKILLs it).
+
+    For e1-e4 the reply (JSON) goes to the FIFO and the process parks.
+    """
+    from types import SimpleNamespace
+
+    from azazel_nexus.mio_profile import PREREQUISITES
+    from azazel_nexus_runtime import mio_entryd as entry
+    from azazel_nexus_runtime import mio_socket_client as client
+    from azazel_nexus_runtime import runtime_paths
+    from azazel_nexus_runtime.principal import Principal, PrincipalClass
+
+    os.environ["AZAZEL_ROOT"] = root
+    runtime_paths.ROOT = Path(root)
+    client.pwd.getpwnam = lambda _: SimpleNamespace(pw_uid=os.getuid())
+    client.grp.getgrnam = lambda _: SimpleNamespace(gr_gid=os.getgid())
+    runtime_paths.mio_state_dir().mkdir(parents=True)
+    runtime_paths.mio_state_dir().chmod(0o700)
+    service = entry.MioEntryService()
+    operator = Principal(1001, 1001, 1, frozenset({PrincipalClass.OPERATOR}))
+
+    def set_one(prerequisite):
+        return service.handle(SimpleNamespace(
+            verb=entry.OPT_IN_SET_VERB, principal=operator,
+            arguments={"prerequisite": prerequisite.value}))
+
+    for prerequisite in list(PREREQUISITES)[:-1]:
+        set_one(prerequisite)
+
+    def post(payload: dict) -> None:
+        fd = os.open(fifo, os.O_WRONLY)
+        os.write(fd, json.dumps(payload).encode() + b"\n")
+        os.close(fd)
+
+    consent = service.consent
+    real = {n: getattr(consent, n) for n in ("seal", "confirm", "unseal", "withdraw", "reading")}
+    real_fsync = os.fsync
+    fail = {"mode": None}  # None | "dir" | "all": the fsync is not run
+    seen = {"opens": None, "unsealed": False, "seals": 0}
+
+    def fsync(fd):
+        if fail["mode"] == "all" or (
+                fail["mode"] == "dir" and stat.S_ISDIR(os.fstat(fd).st_mode)):
+            raise OSError(5, "fixture: fsync failed without running")
+        real_fsync(fd)
+
+    def during(mode_, call, *a, **kw):
+        fail["mode"] = mode_
+        try:
+            return call(*a, **kw)
+        finally:
+            fail["mode"] = None
+
+    def seal(generation):
+        seen["seals"] += 1
+        seen["opens"] = generation
+        if mode == "e1" and seen["seals"] == 1:
+            return during("dir", real["seal"], generation)
+        return real["seal"](generation)
+
+    def confirm(generation, **kw):
+        if mode == "e2":
+            return during("dir", real["confirm"], generation, **kw)
+        return real["confirm"](generation, **kw)
+
+    def unseal():
+        if mode == "e3":
+            try:
+                return during("dir", real["unseal"])
+            finally:
+                seen["unsealed"] = True
+        if mode == "e4":
+            fail["mode"] = "all"  # stays: nothing is durable from here
+            seen["unsealed"] = True
+            return real["unseal"]()
+        real["unseal"]()
+        seen["unsealed"] = True
+
+    def withdraw(*a, **kw):
+        if mode in ("e2", "e3"):
+            return during("all", real["withdraw"], *a, **kw)
+        return real["withdraw"](*a, **kw)
+
+    def reading():
+        value = real["reading"]()
+        if (mode == "e5" and seen["unsealed"]
+                and sys._getframe(1).f_code.co_name == "_open_grant"):
+            post({"parked": True, "opens": seen["opens"],
+                  "state": str(runtime_paths.mio_state_dir()),
+                  "read_back": {"generation": value.generation,
+                                "status": value.status, "permits": value.permits}})
+            time.sleep(600)
+        return value
+
+    os.fsync = fsync
+    consent.seal, consent.confirm, consent.unseal = seal, confirm, unseal
+    consent.withdraw, consent.reading = withdraw, reading
+    try:
+        result = {"returned": set_one(list(PREREQUISITES)[-1])}
+    except entry.RequestRefused as exc:
+        result = {"refused": str(exc.args)}
+    fail["mode"] = None
+    result.update(state=str(runtime_paths.mio_state_dir()), opens=seen["opens"])
+    post(result)
+    time.sleep(600)
+
+
 if __name__ == "__main__":
     if sys.argv[1] == "hold":
         hold(sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5])
+    elif sys.argv[1] == "combo":
+        combo(sys.argv[2], sys.argv[3], sys.argv[4])
     else:
         faultset(sys.argv[2], sys.argv[3], sys.argv[4])

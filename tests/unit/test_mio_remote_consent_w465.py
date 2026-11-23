@@ -790,3 +790,65 @@ def test_store_withdraw_without_a_drain_does_not_wait(tmp_path):
     assert store.withdraw("operator_request", operator="uid:1", drain=False)[1] is True
     hold.release()
     assert hold.held is False and gate_free(state)
+
+
+# --- W11: the combinations E1-E5, failure at the real fsync, reader in another
+# process after the writer is SIGKILLed. Sync by a FIFO, no sleeps. ---
+
+OUT11 = Path(os.environ.get("W465_OUT11", HERE.parents[2] / "out" / "w11"))
+
+
+def _run_combo_child(tmp_path, mode):
+    root, fifo = tmp_path / "root", tmp_path / "sync"
+    root.mkdir()
+    os.mkfifo(fifo)
+    rfd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)  # before the child opens it
+    child = subprocess.Popen(
+        [sys.executable, str(HERE / "_mio_remote_consent_w465_child.py"),
+         "combo", str(root), str(fifo), mode], env=_env(), stderr=subprocess.PIPE)
+    try:
+        buf = b""
+        deadline = time.monotonic() + 60
+        while b"\n" not in buf:
+            left = deadline - time.monotonic()
+            assert left > 0 and child.poll() is None, child.stderr.read().decode()
+            ready, _, _ = select.select([rfd], [], [], min(left, 1))
+            if ready:
+                buf += os.read(rfd, 65536)
+        result = json.loads(buf.splitlines()[0])
+        child.send_signal(signal.SIGKILL)
+        child.wait(timeout=10)
+    finally:
+        os.close(rfd)
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
+        child.stderr.close()
+    assert child.returncode == -signal.SIGKILL
+    return result
+
+
+@pytest.mark.parametrize("mode", ["e1", "e2", "e3", "e4", "e5"])
+def test_w11_combination_then_writer_sigkill_then_other_process_sends(tmp_path, mode):
+    result = _run_combo_child(tmp_path, mode)
+    state = Path(result["state"])
+    view = store_view(state)
+    sent = send_in_new_process(state, result["opens"])
+    reply = (result.get("returned") or result.get("refused")
+             if mode != "e5" else "no reply (writer killed before replying)")
+    OUT11.mkdir(parents=True, exist_ok=True)
+    path = OUT11 / "combos.json"
+    data = json.loads(path.read_text()) if path.exists() else {}
+    data[mode] = {"reply": reply, "opens_N_plus_1": result["opens"],
+                  "store_after_sigkill": view, "seal_present": _seal_path(state).exists(),
+                  "send_other_process": sent,
+                  **({"read_back_before_kill": result["read_back"]} if mode == "e5" else {})}
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    if mode in ("e1", "e2", "e3"):
+        assert "opt_in_store" in result["refused"]
+        assert sent["calls"] == 0
+        assert view["permits"] is False
+    elif mode == "e4":
+        assert result["returned"]["status"] == "unsettled"  # observed only
+    else:
+        assert "returned" not in result and "refused" not in result
