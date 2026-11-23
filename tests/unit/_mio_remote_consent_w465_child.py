@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import select
+import stat
 import sys
 import time
 
@@ -74,7 +75,7 @@ def faultset(root: str, ready: str, mode: str) -> None:
     from azazel_nexus_runtime import mio_entryd as entry
     from azazel_nexus_runtime import mio_socket_client as client
     from azazel_nexus_runtime import runtime_paths
-    from azazel_nexus_runtime.mio_remote_consent import _UNAVAILABLE, ConsentRefused
+    from azazel_nexus_runtime.mio_remote_consent import ConsentRefused
     from azazel_nexus_runtime.principal import Principal, PrincipalClass
 
     os.environ["AZAZEL_ROOT"] = root
@@ -95,23 +96,36 @@ def faultset(root: str, ready: str, mode: str) -> None:
         set_one(prerequisite)
     consent = service.consent
     flag = {"eio": False}
-    real_reading, real_confirm, real_unseal = consent.reading, consent.confirm, consent.unseal
+    real_read_at, real_confirm, real_unseal = consent._read_at, consent.confirm, consent.unseal
+    real_fsync, real_seal = os.fsync, consent.seal
+    armed = {"dir": False}
 
     def withdraw(*a, **kw):
         raise ConsentRefused("fixture: withdraw busy")
 
-    def reading():
-        return _UNAVAILABLE if flag["eio"] else real_reading()
+    def read_at(leaf):
+        # EIO only for the reads `reading()` makes (a write's read-back works).
+        if flag["eio"] and sys._getframe(1).f_code.co_name == "reading":
+            raise OSError(5, "fixture: EIO reading the record")
+        return real_read_at(leaf)
+
+    def fsync(fd):
+        # The real `confirm` renames N+1 into place; its directory fsync then
+        # fails with EIO without running.
+        if armed["dir"] and stat.S_ISDIR(os.fstat(fd).st_mode):
+            armed["dir"] = False
+            flag["eio"] = True
+            raise OSError(5, "fixture: directory fsync after rename")
+        real_fsync(fd)
 
     def confirm(generation, **kw):
-        record = real_confirm(generation, **kw)
-        if mode == "confirm_fails":
-            flag["eio"] = True
-            raise OSError(5, "fixture: fsync after rename")
-        return record
+        armed["dir"] = mode == "confirm_fails"
+        try:
+            return real_confirm(generation, **kw)
+        finally:
+            armed["dir"] = False
 
     seals = {"n": 0}
-    real_seal = consent.seal
 
     def seal(generation):
         seals["n"] += 1
@@ -123,7 +137,8 @@ def faultset(root: str, ready: str, mode: str) -> None:
         real_unseal()
         flag["eio"] = True
 
-    consent.withdraw, consent.reading, consent.confirm = withdraw, reading, confirm
+    os.fsync = fsync
+    consent.withdraw, consent._read_at, consent.confirm = withdraw, read_at, confirm
     consent.seal = seal
     if mode == "unsettled":
         consent.unseal = unseal

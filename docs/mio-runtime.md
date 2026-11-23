@@ -394,22 +394,50 @@ entryd runs, it holds the send gate exclusively, so every send refuses
 sent on. The reply (to `set`, and to `status` while it lasts) is a reading in
 shape with `status: "unsettled"`, `granted: []`, `generation` as read or
 `null`, and `may_be_in_force_generation`; the socket carries refusals as a code
-only, which is why it is not a refusal. The caller (operator) should treat the
-grant as possibly open: repeat `withdraw` (it is written without a drain and
-releases the gate when it returns; its own reply may read `unavailable` if the
-store still cannot be read) and check `status` until it is no longer
-`unsettled`. A `set` while unsettled is refused. A grant is never inferred
-from an unreadable store.
+only, which is why it is not a refusal. A `set` while unsettled is refused. A
+grant is never inferred from an unreadable store.
 
-Remaining limit, exactly: the seal has been removed (or may have been), the
-confirmed open could not be read back, neither closing write was confirmed,
-and entryd ends. The gate hold is a `flock`, which the OS drops, and the
-audited N+1 can be sent on. Every other ending (killed before the seal, after
-it, after `confirm`, while the gate is waited for) leaves the store closed. A
-power loss after a closing rename whose directory sync failed is the same
-class and is why a read does not release anything. Statuses: `absent`,
-`incomplete`, `unconfirmed`, `granted`, `withdrawn`, `unavailable`, and
-`unsettled` (a reply of entryd only, never a stored status). A
+**What the caller may rely on.** A `set` reply that does not arrive (EOF,
+timeout, a dropped connection) has an unknown result, exactly like `granted`:
+treat N+1 as possibly in force. Entryd's unsettled state is in memory and is
+not carried over a restart, so after one `status` can answer `granted`. The only
+confirmation that a grant is closed is a `withdraw` that returns a success
+reply whose `status` is `withdrawn`. `status` no longer reading `unsettled` is
+not a confirmation (the state may simply have been lost). The operator repeats
+`withdraw` until it does (it is written without a drain while unsettled and
+releases the gate when it returns; its reply may read `unavailable` if the store
+still cannot be read, and that is not the confirmation either).
+
+Remaining cases, exactly:
+
+* Entryd ends after the seal was removed and before its closing write was
+  confirmed (the open could not be read back, withdraw and re-seal both failed,
+  so the grant is unsettled; or entryd died at that moment, before the reply was
+  written). The OS drops the gate's `flock`, and the audited N+1 can be sent on.
+  The caller sees either `unsettled`, or no reply at all, and treats it as above.
+* Every other ending (killed before the seal, after it, after `confirm`, while
+  the gate is waited for) leaves the store closed, whatever the caller saw.
+* A power loss after a closing rename whose directory sync failed is the same
+  class; a read does not release anything for that reason.
+* While the directory sync keeps failing, each retry (tick, `status`, `set`)
+  writes another withdrawn record, so the generation advances with every retry
+  and the (single-threaded) accept loop is held for the sync. The gate stays
+  held and nothing is sent; this is bounded only by the fault ending. Not
+  changed here.
+* Senders that predate the seal (the base build's reader) do not read it; the
+  seal is not enforced against a mixed deployment.
+
+**Recovery of an unreadable seal (maintenance).** A `send.seal` that exists but
+cannot be read or decoded makes the store read `unavailable`: a `withdraw` can
+still be written (it never reads the seal), but afterwards `status` stays
+`unavailable` and a `set` is refused, also after a restart. Procedure: confirm
+that a `withdraw` returned a success reply with `status: "withdrawn"` (sends are
+then closed by the withdrawn record); only then, as root with entryd stopped,
+remove `remote-consent/send.seal` from entryd's state leaf; start entryd and
+check `status` reads `withdrawn`; then `set` the four prerequisites again.
+Never remove the seal while a grant may be in force and unconfirmed. Statuses:
+`absent`, `incomplete`, `unconfirmed`, `granted`, `withdrawn`, `unavailable`,
+and `unsettled` (a reply of entryd only, never a stored status). A
 withdrawal is never refused for a spent route budget share: it skips the
 share check, like every narrowing. A set over a pending record starts from
 the empty set.

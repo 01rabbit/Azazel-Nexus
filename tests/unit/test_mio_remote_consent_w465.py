@@ -4,7 +4,7 @@ reader runs the real `RemoteInferenceService.handle`), plus unit tests of the
 new store API and of the unsettled state.
 
 Observations are written to $W465_OUT (default u71/out/w10) as
-after3-R1.json, after-R2.json and after-controls.json. Order across processes
+after4-R1.json, after-R2.json and after-controls.json. Order across processes
 uses files and FIFOs; the only injected durations are gate-wait bounds.
 """
 
@@ -14,6 +14,7 @@ import json
 import os
 import select
 import stat
+import sys
 import signal
 import time
 from pathlib import Path
@@ -165,13 +166,30 @@ def write_release(path):
         os.close(fd)
 
 
+def reads_fail(service, monkeypatch, flag):
+    """`reading()` hits EIO in `_read_at` while `flag["eio"]` is set (and only
+    for the reads `reading()` makes: a write's own read-back still works, so the
+    implementation's decisions, not the fixture, decide what is evaluated).
+    `flag["once"]` makes it a single failure."""
+    real = service.consent._read_at
+
+    def read_at(leaf):
+        if flag.get("eio") and sys._getframe(1).f_code.co_name == "reading":
+            if flag.get("once"):
+                flag["eio"] = False
+            raise OSError(5, "fixture: EIO reading the record")
+        return real(leaf)
+
+    monkeypatch.setattr(service.consent, "_read_at", read_at)
+
+
 def make_unsettled(service, monkeypatch):
     """Faults that leave a confirmed grant unsettled: after the seal is removed
     the re-read fails (EIO), and neither closing write (withdraw, re-seal)
     works. Clear `withdraw` / `seal` / `eio` to let a retry through."""
     faults = {"withdraw": True, "seal": True, "eio": False, "seals": 0}
     real = {n: getattr(service.consent, n)
-            for n in ("reading", "withdraw", "seal", "unseal")}
+            for n in ("withdraw", "seal", "unseal")}
 
     def unseal():
         real["unseal"]()
@@ -191,8 +209,7 @@ def make_unsettled(service, monkeypatch):
     monkeypatch.setattr(service.consent, "unseal", unseal)
     monkeypatch.setattr(service.consent, "seal", seal)
     monkeypatch.setattr(service.consent, "withdraw", withdraw)
-    monkeypatch.setattr(service.consent, "reading",
-                        lambda: _UNAVAILABLE if faults["eio"] else real["reading"]())
+    reads_fail(service, monkeypatch, faults)
     return faults
 
 
@@ -202,32 +219,47 @@ UNSETTLED = {"status": "unsettled", "generation": None, "granted": [],
 
 
 def inject_dir_fsync_failures(monkeypatch, armed):
-    """The directory fsync after a rename fails (the record is visible but not
-    known to be durable). `armed["n"]` failures remain; 0 is off."""
+    """The directory fsync after a rename fails with EIO *without running*
+    (the record is visible but not known to be durable). `armed["n"]` failures
+    remain; 0 is off."""
     real = os.fsync
 
     def fsync(fd):
-        real(fd)
         if armed["n"] > 0 and stat.S_ISDIR(os.fstat(fd).st_mode):
             armed["n"] -= 1
             armed["failed"] += 1
+            # Not executed: the rename is visible, its directory is not synced.
             raise OSError(5, "fixture: directory fsync after rename")
+        real(fd)
 
     monkeypatch.setattr(os, "fsync", fsync)
 
 
 def inject_publish_then_fail(service, monkeypatch, after_publish=None):
-    """confirm: the rename publishes N+1, then the fsync/read-back 'fails'."""
+    """confirm: the real `confirm` renames N+1 into place, then the directory
+    fsync it calls fails with EIO without running (after_publish runs at that
+    point, with the grant visible)."""
     real_confirm = service.consent.confirm
-    seen = {"published": None}
+    real_fsync = os.fsync
+    seen = {"published": None, "armed": False}
+
+    def fsync(fd):
+        if seen["armed"] and stat.S_ISDIR(os.fstat(fd).st_mode):
+            seen["armed"] = False
+            seen["published"] = seen["opens"]
+            if after_publish is not None:
+                after_publish(seen["opens"])
+            raise OSError(5, "fixture: directory fsync after rename")
+        real_fsync(fd)
 
     def confirm(generation, *, operator):
-        record = real_confirm(generation, operator=operator)
-        seen["published"] = record.generation
-        if after_publish is not None:
-            after_publish(record)
-        raise OSError(5, "fixture: fsync after rename")
+        seen.update(armed=True, opens=generation + 1)
+        try:
+            return real_confirm(generation, operator=operator)
+        finally:
+            seen["armed"] = False
 
+    monkeypatch.setattr(os, "fsync", fsync)
     monkeypatch.setattr(service.consent, "confirm", confirm)
     return seen
 
@@ -239,20 +271,17 @@ def set_last_by_socket(service, monkeypatch):
 
 def test_r1_triple_fault_is_closed_by_the_seal(service, monkeypatch):
     first_three(service)
-    seen = inject_publish_then_fail(service, monkeypatch)
-    real_reading = service.consent.reading
-
-    def reading():
-        return _UNAVAILABLE if seen["published"] is not None else real_reading()
-
-    monkeypatch.setattr(service.consent, "reading", reading)
+    reads = {"eio": False}
+    inject_publish_then_fail(service, monkeypatch,
+                             after_publish=lambda g: reads.update(eio=True))
+    reads_fail(service, monkeypatch, reads)
     monkeypatch.setattr(service.consent, "withdraw",
                         lambda *a, **kw: (_ for _ in ()).throw(ConsentRefused("busy")))
     response = set_last_by_socket(service, monkeypatch)
     state = runtime_paths.mio_state_dir()
     view = store_view(state)
     sent = send_in_new_process(state, 5)
-    dump("after3-R1.json", {
+    dump("after4-R1.json", {
         "case": "R1 (confirm published then fails, withdraw fails, re-read EIO)",
         "set_response_on_socket": response, "store_after": view,
         "send_other_process": sent, "gate_free": gate_free(state)}, merge=True)
@@ -280,7 +309,7 @@ def test_r1_unsettled_is_a_reading_on_the_socket_and_is_gated_then_settled(
     service.settle_opt_in()  # what a tick does
     after = store_view(state)
     after_sent = send_in_new_process(state, 5)
-    dump("after3-R1.json", {"unsettled": {
+    dump("after4-R1.json", {"unsettled": {
         "set_response_on_socket": response, "status_on_socket": status,
         "set_while_unsettled": again, "store_while_unsettled": view,
         "send_other_process": sent, "gate_free_while_unsettled": free_while_unsettled,
@@ -308,28 +337,21 @@ def test_r1d_after_the_seal_is_gone_a_read_is_not_a_ground_to_refuse(
     inject_dir_fsync_failures(monkeypatch, armed)
     seals = []
     real_seal, real_unseal = service.consent.seal, service.consent.unseal
-    real_reading = service.consent.reading
-    eio = {"once": False}
+    eio = {"eio": False, "once": True}
+    reads_fail(service, monkeypatch, eio)
 
     def unseal():
         real_unseal()
         armed["n"] = 1  # the next directory fsync is the withdrawal's
-        eio["once"] = True
-
-    def reading():
-        if eio["once"]:
-            eio["once"] = False
-            return _UNAVAILABLE
-        return real_reading()
+        eio["eio"] = True
 
     monkeypatch.setattr(service.consent, "unseal", unseal)
-    monkeypatch.setattr(service.consent, "reading", reading)
     monkeypatch.setattr(service.consent, "seal",
                         lambda g: (seals.append(g), real_seal(g))[1])
     response = set_last_by_socket(service, monkeypatch)
     view = store_view(state)
     sent = send_in_new_process(state, 5)
-    dump("after3-R1.json", {"dir_fsync_after_withdraw_rename": {
+    dump("after4-R1.json", {"dir_fsync_after_withdraw_rename": {
         "set_response_on_socket": response, "dir_fsync_failures": armed["failed"],
         "seal_calls": seals, "store_after": view, "send_other_process": sent,
         "seal_present": _seal_path(state).exists(), "gate_free": gate_free(state)}},
@@ -349,22 +371,15 @@ def test_r1e_dir_fsync_always_failing_leaves_the_grant_unsettled_and_gated(
     armed = {"n": 0, "failed": 0}
     inject_dir_fsync_failures(monkeypatch, armed)
     real_unseal = service.consent.unseal
-    real_reading = service.consent.reading
-    eio = {"once": False}
+    eio = {"eio": False, "once": True}
+    reads_fail(service, monkeypatch, eio)
 
     def unseal():
         real_unseal()
         armed["n"] = 10 ** 6
-        eio["once"] = True
-
-    def reading():
-        if eio["once"]:
-            eio["once"] = False
-            return _UNAVAILABLE
-        return real_reading()
+        eio["eio"] = True
 
     monkeypatch.setattr(service.consent, "unseal", unseal)
-    monkeypatch.setattr(service.consent, "reading", reading)
     response = set_last_by_socket(service, monkeypatch)
     # Visible records read closed from now on, but nothing is confirmed durable.
     for _ in range(3):
@@ -373,7 +388,7 @@ def test_r1e_dir_fsync_always_failing_leaves_the_grant_unsettled_and_gated(
     held_while_failing = service._unsettled is not None
     armed["n"] = 0
     service.settle_opt_in()  # a confirmed write: the gate goes
-    dump("after3-R1.json", {"dir_fsync_always_fails": {
+    dump("after4-R1.json", {"dir_fsync_always_fails": {
         "set_response_on_socket": response, "dir_fsync_failures": armed["failed"],
         "gate_held_across_retries": held_while_failing,
         "released_after_a_confirmed_write": service._unsettled is None,
@@ -389,8 +404,8 @@ def test_r2_a_sender_during_publication_reads_the_seal(service, monkeypatch):
     held = {}
     inject_publish_then_fail(
         service, monkeypatch,
-        after_publish=lambda record: held.update(
-            in_flight=send_in_new_process(state, record.generation)))
+        after_publish=lambda generation: held.update(
+            in_flight=send_in_new_process(state, generation)))
     real_withdraw = service.consent.withdraw
     withdrawn = {}
 
@@ -404,7 +419,7 @@ def test_r2_a_sender_during_publication_reads_the_seal(service, monkeypatch):
     response = set_last_by_socket(service, monkeypatch)
     view = store_view(state)
     new = send_in_new_process(state, 5)
-    dump("after3-R2.json", {"during_publication": {
+    dump("after4-R2.json", {"during_publication": {
         "set_response_on_socket": response, "store_after_response": view,
         "withdraw": withdrawn, "in_flight_sender": held["in_flight"],
         "new_sender_with_N_plus_1_envelope": new, "gate_free": gate_free(state)}},
@@ -445,7 +460,7 @@ def test_r2a_a_real_sender_held_after_its_read_times_the_gate_out(
         if sender.poll() is None:
             sender.kill()
             sender.wait(timeout=10)
-    dump("after3-R2.json", {"real_sender_held_at_old_generation": {
+    dump("after4-R2.json", {"real_sender_held_at_old_generation": {
         "set_response_on_socket": response, "store_after_response": view,
         "new_sender_with_N_plus_1_envelope": new,
         "resumed_sender_old_generation_5": resumed,
@@ -484,7 +499,7 @@ def test_r2b_a_normal_withdraw_with_a_held_old_sender_says_drained_false(
         if sender.poll() is None:
             sender.kill()
             sender.wait(timeout=10)
-    dump("after3-R2.json", {"normal_withdraw_with_a_held_old_sender": {
+    dump("after4-R2.json", {"normal_withdraw_with_a_held_old_sender": {
         "withdraw_response_on_socket": reply, "store_after_response": view,
         "resumed_sender_old_generation_5": resumed}}, merge=True)
     assert reply["ok"] is True and reply["result"]["status"] == "withdrawn"
@@ -523,7 +538,7 @@ def test_r1b_a_refused_set_killed_after_its_reply_leaves_no_send(tmp_path):
     state = Path(result["state"])
     view = store_view(state)
     sent = send_in_new_process(state, view["generation"])
-    dump("after3-R1.json", {"sigkill_after_refusal": {
+    dump("after4-R1.json", {"sigkill_after_refusal": {
         "set_response": result["refused"], "store_after_kill": view,
         "send_other_process": sent}}, merge=True)
     assert "opt_in_store" in result["refused"]
@@ -539,7 +554,7 @@ def test_r1c_the_remaining_limit_unsettled_then_killed_can_send(tmp_path):
     state = Path(result["state"])
     view = store_view(state)
     sent = send_in_new_process(state, view["generation"])
-    dump("after3-R1.json", {"remaining_limit_unsettled_then_sigkill": {
+    dump("after4-R1.json", {"remaining_limit_unsettled_then_sigkill": {
         "set_response": result["returned"], "store_after_kill": view,
         "send_other_process": sent}}, merge=True)
     # `unsettled` means: generation 5 may already be in force. It stops sends
@@ -557,7 +572,7 @@ def test_control_normal_confirmed_set_is_sent_once(service, monkeypatch):
                        {"prerequisite": LAST.value})
     state = runtime_paths.mio_state_dir()
     sent = send_in_new_process(state, 5)
-    dump("after3-controls.json", {"granted": {
+    dump("after4-controls.json", {"granted": {
         "reply": reply, "send": sent, "gate_free": gate_free(state),
         "seal_present": (state / "remote-consent" / "send.seal").exists()}}, merge=True)
     assert reply["result"]["status"] == "granted" and reply["result"]["generation"] == 5
@@ -583,7 +598,7 @@ def test_control_pending_before_audit_sends_zero(service, monkeypatch):
     view = store_view(state)
     results = [send_in_new_process(state, g)
                for g in (view["generation"], view["generation"] + 1)]
-    dump("after3-controls.json", {"pending": {"store": view, "sends": results}}, merge=True)
+    dump("after4-controls.json", {"pending": {"store": view, "sends": results}}, merge=True)
     assert view["status"] == "unconfirmed" and not view["permits"]
     assert all(r["calls"] == 0 and r["refusal"] == "opt_in_not_granted" for r in results)
 
