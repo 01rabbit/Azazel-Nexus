@@ -77,18 +77,28 @@ deadline); if it ever expires the withdrawal stands and the reply says the
 drain was not confirmed. This build has no transport, so nothing holds the
 gate in production.
 
-Entryd also takes the gate exclusively (`hold_gate_exclusive`, bounded) around
-opening a grant: before `confirm`, and until the grant is read back as open or
-the store is read as closed. A sender that reads the published generation
-therefore cannot be in flight when `set` answers with a refusal, and one that
-arrives meanwhile refuses `unavailable`. When the confirmation failed and the
-narrowing failed too (store not read as closed), entryd keeps holding the gate
-(`opt_in_unsettled`) and retries the narrowing without a drain
-(`withdraw(gate_held=True)`: it holds the gate itself, so nothing is in flight
-and the drain is counted as confirmed). Limit: the hold is a `flock` on an
-open file description. If entryd ends while unsettled the OS drops it, and a
-grant that was published and recorded (with its `opens_generation`) can then be
-sent on. Nothing here infers a grant from an unreadable store.
+Entryd opens a grant under two further guards:
+
+* **The seal** (`send.seal`, `seal()` / `unseal()`): entryd durably seals the
+  generation `confirm` will write, before it confirms. A record at or below the
+  sealed generation reads `unconfirmed` (closed) in `reading()` and
+  `send_gate()`; a seal that exists but cannot be read or decoded reads
+  `unavailable`; no seal reads as before. So a refusal stays true if entryd
+  ends at any point after the seal.
+* **The exclusive gate** (`hold_gate_exclusive`, bounded): taken after
+  `confirm`, held while the seal is removed and the grant read back as open.
+  A sender inside its transport holds the gate shared, so the exclusive hold
+  waits for it; a sender that arrives meanwhile refuses `unavailable`.
+
+When the seal's removal or the read back cannot be confirmed, entryd withdraws
+under the gate (`withdraw(drain=False)`: it holds the gate itself or the
+generation is sealed, so nothing is in flight and the drain counts as
+confirmed). If the store still does not read closed, the grant is *unsettled*:
+entryd keeps the gate and retries. Remaining limit: if entryd ends in exactly
+that state (the seal actually removed, the read back and the narrowing both
+failing), the OS drops
+the `flock` and the published, recorded grant reads granted. Nothing here
+infers a grant from an unreadable store.
 
 ## Separate from Knowledge
 
@@ -126,6 +136,7 @@ __all__ = [
     "ConsentStore",
     "DRAIN_TIMEOUT_S",
     "GateHold",
+    "SEAL_FILENAME",
     "LEAF",
     "RECORD_FILENAME",
     "SCHEMA",
@@ -139,6 +150,9 @@ SCHEMA = "azazel-nexus/mio-remote-opt-in/v1"
 LEAF = "remote-consent"
 RECORD_FILENAME = "opt-in.json"
 GATE_FILENAME = "send.gate"
+SEAL_FILENAME = "send.seal"
+SEAL_SCHEMA = "azazel-nexus/mio-remote-opt-in-seal/v1"
+_SEAL_PARTIAL = ".send.seal.partial"
 _PARTIAL = ".opt-in.json.partial"
 _LIMIT = 4096
 _MAX_GENERATION = 2**63 - 1
@@ -272,6 +286,30 @@ def decode_record(raw: bytes) -> ConsentRecord:
         raise ConsentRefused("opt-in record refused") from None
 
 
+def encode_seal(generation: int) -> bytes:
+    if type(generation) is not int or not 1 <= generation <= _MAX_GENERATION:
+        raise ConsentRefused("a seal names a bounded positive generation")
+    return json.dumps({"schema": SEAL_SCHEMA, "generation": generation},
+                      sort_keys=True, separators=(",", ":")).encode()
+
+
+def decode_seal(raw: bytes) -> int:
+    """Exactly one canonical seal, or a refusal. Never repaired."""
+    try:
+        if type(raw) is not bytes or not 0 < len(raw) <= _LIMIT:
+            raise ConsentRefused("size")
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique)
+        if (type(document) is not dict or set(document) != {"schema", "generation"}
+                or document["schema"] != SEAL_SCHEMA):
+            raise ConsentRefused("fields")
+        generation = document["generation"]
+        if encode_seal(generation) != raw:
+            raise ConsentRefused("not canonical")
+        return generation
+    except Exception:
+        raise ConsentRefused("opt-in seal refused") from None
+
+
 @dataclass(frozen=True)
 class ConsentReading:
     """What a selection, a recheck or a send reads. Never an exception.
@@ -293,11 +331,13 @@ _UNAVAILABLE = ConsentReading(NO_OPT_IN, None, "unavailable")
 _ABSENT = ConsentReading(NO_OPT_IN, 0, "absent")
 
 
-def _reading_of(record: ConsentRecord) -> ConsentReading:
+def _reading_of(record: ConsentRecord, sealed: Optional[int] = None) -> ConsentReading:
+    """`sealed` is the generation entryd sealed while it opens a grant: a record
+    at or below it is closed (`unconfirmed`) whatever it says."""
     opt_in = record.opt_in()
     if record.withdrawn is not None:
         status = "withdrawn"
-    elif record.pending:
+    elif record.pending or (sealed is not None and record.generation <= sealed):
         status = "unconfirmed"
     elif opt_in.complete:
         status = "granted"
@@ -480,9 +520,10 @@ class ConsentStore:
             with self._lock, self._leaf(create=False) as leaf:
                 record = None if leaf is None else self._read_at(leaf)
                 record = self._checked(record)
+                sealed = None if leaf is None else self._read_seal(leaf)
         except Exception:
             return _UNAVAILABLE
-        return _ABSENT if record is None else _reading_of(record)
+        return _ABSENT if record is None else _reading_of(record, sealed)
 
     @contextmanager
     def send_gate(self) -> Iterator[ConsentReading]:
@@ -503,9 +544,10 @@ class ConsentStore:
                         fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
                         with self._lock:
                             record = self._checked(self._read_at(leaf))
+                            sealed = self._read_seal(leaf)
                         if self._after_send_read is not None:
                             self._after_send_read()
-                        reading = _ABSENT if record is None else _reading_of(record)
+                        reading = _ABSENT if record is None else _reading_of(record, sealed)
                     elif self._seen == 0 and self._read_at(leaf) is None:
                         reading = _ABSENT
         except Exception:
@@ -607,32 +649,101 @@ class ConsentStore:
         wait; past the bound it raises `ConsentRefused` and holds nothing.
         """
         deadline = self._monotonic() + timeout_s
-        with self._leaf(create=True) as leaf:
-            fd = self._gate_fd(leaf, create=True)
+        fd = None
         try:
+            with self._leaf(create=True) as leaf:
+                fd = self._gate_fd(leaf, create=True)
             while True:
                 try:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    return GateHold(fd)
+                    held, fd = GateHold(fd), None
+                    return held
                 except OSError:
                     if self._monotonic() >= deadline:
                         raise ConsentRefused("send gate is busy") from None
                     time.sleep(_DRAIN_POLL_S)
-        except BaseException:
+        finally:
+            if fd is not None:
+                os.close(fd)
+
+    # -- the seal (entryd only) -------------------------------------------
+
+    def _read_seal(self, leaf: int) -> Optional[int]:
+        """`None` only for a missing file; anything else a generation or a refusal."""
+        try:
+            fd = os.open(SEAL_FILENAME,
+                         os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                         dir_fd=leaf)
+        except FileNotFoundError:
+            return None
+        try:
+            info = self._protected(fd, directory=False, private=True)
+            if not 0 < info.st_size <= _LIMIT:
+                raise ConsentRefused("opt-in seal size refused")
+            data = os.read(fd, _LIMIT + 1)
+            if len(data) != info.st_size:
+                raise ConsentRefused("opt-in seal changed while reading")
+            return decode_seal(data)
+        finally:
             os.close(fd)
-            raise
+
+    def seal(self, generation: int) -> None:
+        """Durably close every record at or below `generation` (written like a
+        record: private temporary file, fsync, rename, directory fsync, read
+        back). Raises `ConsentRefused` or `OSError` if that is not confirmed."""
+        data = encode_seal(generation)
+        with self._lock, self._leaf(create=True) as leaf:
+            try:
+                stale = os.stat(_SEAL_PARTIAL, dir_fd=leaf, follow_symlinks=False)
+            except FileNotFoundError:
+                stale = None
+            if stale is not None:
+                if not stat.S_ISREG(stale.st_mode):
+                    raise ConsentRefused("opt-in seal partial entry is not a regular file")
+                os.unlink(_SEAL_PARTIAL, dir_fd=leaf)
+            fd = os.open(_SEAL_PARTIAL,
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         0o600, dir_fd=leaf)
+            try:
+                os.fchmod(fd, 0o600)
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(fd, view):]
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(_SEAL_PARTIAL, SEAL_FILENAME, src_dir_fd=leaf, dst_dir_fd=leaf)
+            os.fsync(leaf)
+            if self._read_seal(leaf) != generation:
+                raise ConsentRefused("opt-in seal read-back differs")
+
+    def unseal(self) -> None:
+        """Remove the seal and read that it is gone, or raise. Called only
+        under the exclusive send gate, on the success path."""
+        with self._lock, self._leaf(create=False) as leaf:
+            if leaf is None:
+                return
+            try:
+                os.unlink(SEAL_FILENAME, dir_fd=leaf)
+            except FileNotFoundError:
+                pass
+            os.fsync(leaf)
+            if self._read_seal(leaf) is not None:
+                raise ConsentRefused("opt-in seal still present")
 
     def withdraw(self, reason: str, *, operator: str,
-                 gate_held: bool = False) -> tuple[ConsentRecord, bool]:
+                 drain: bool = True) -> tuple[ConsentRecord, bool]:
         """Commit the withdrawal, then drain senders on the old generation.
 
         Returns the record and whether the drain was confirmed. Allowed over
         a store rolled back under this process (the withdrawal is written
         above the generation seen), never over one that cannot be read.
 
-        `gate_held` is for the caller that holds the gate exclusively
-        (`hold_gate_exclusive`): no sender can be in flight, so the drain is
-        skipped and counts as confirmed (waiting would meet its own lock).
+        `drain=False` is for the caller that holds the gate exclusively
+        (`hold_gate_exclusive`) or that has sealed the generation: no sender
+        can be in flight on it, so the drain is skipped and counts as
+        confirmed (waiting would meet its own lock, or a sender it is not
+        waiting on).
         """
         if reason not in WITHDRAWAL_REASONS + INTERNAL_WITHDRAWAL_REASONS:
             raise ConsentRefused("a known withdrawal reason is required")
@@ -646,7 +757,7 @@ class ConsentStore:
                                  withdrawn=(operator, at, reason))
 
         record = self._change(make, over_rollback=True)
-        return record, (True if gate_held else self._drain())
+        return record, (self._drain() if drain else True)
 
     def _drain(self) -> bool:
         """Wait for senders that read the previous generation. Bounded."""

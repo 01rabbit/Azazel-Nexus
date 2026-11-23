@@ -42,5 +42,79 @@ def hold(state_dir: str, generation: int, reached: str, release: str) -> None:
                       "status": store.reading().status}))
 
 
+def faultset(root: str, ready: str, mode: str) -> None:
+    """entryd's real `set` path, in this process, with faults injected on the
+    completing set. Writes the reply (JSON) to `ready` and parks, so the parent
+    can SIGKILL it after the reply and before anything else happens.
+
+    mode `confirm_fails`: confirm publishes N+1 then fails (fsync), the
+    narrowing fails, and the re-read hits EIO.
+    mode `unsettled`: confirm succeeds and the seal is removed, then the
+    read back hits EIO and the narrowing fails (the reply is `unsettled`).
+    """
+    import time
+    from types import SimpleNamespace
+
+    from azazel_nexus.mio_profile import PREREQUISITES
+    from azazel_nexus_runtime import mio_entryd as entry
+    from azazel_nexus_runtime import mio_socket_client as client
+    from azazel_nexus_runtime import runtime_paths
+    from azazel_nexus_runtime.mio_remote_consent import _UNAVAILABLE, ConsentRefused
+    from azazel_nexus_runtime.principal import Principal, PrincipalClass
+
+    os.environ["AZAZEL_ROOT"] = root
+    runtime_paths.ROOT = Path(root)
+    client.pwd.getpwnam = lambda _: SimpleNamespace(pw_uid=os.getuid())
+    client.grp.getgrnam = lambda _: SimpleNamespace(gr_gid=os.getgid())
+    runtime_paths.mio_state_dir().mkdir(parents=True)
+    runtime_paths.mio_state_dir().chmod(0o700)
+    service = entry.MioEntryService()
+    operator = Principal(1001, 1001, 1, frozenset({PrincipalClass.OPERATOR}))
+
+    def set_one(prerequisite):
+        return service.handle(SimpleNamespace(
+            verb=entry.OPT_IN_SET_VERB, principal=operator,
+            arguments={"prerequisite": prerequisite.value}))
+
+    for prerequisite in list(PREREQUISITES)[:-1]:
+        set_one(prerequisite)
+    consent = service.consent
+    flag = {"eio": False}
+    real_reading, real_confirm, real_unseal = consent.reading, consent.confirm, consent.unseal
+
+    def withdraw(*a, **kw):
+        raise ConsentRefused("fixture: withdraw busy")
+
+    def reading():
+        return _UNAVAILABLE if flag["eio"] else real_reading()
+
+    def confirm(generation, **kw):
+        record = real_confirm(generation, **kw)
+        if mode == "confirm_fails":
+            flag["eio"] = True
+            raise OSError(5, "fixture: fsync after rename")
+        return record
+
+    def unseal():
+        real_unseal()
+        flag["eio"] = True
+
+    consent.withdraw, consent.reading, consent.confirm = withdraw, reading, confirm
+    if mode == "unsettled":
+        consent.unseal = unseal
+    try:
+        result = {"returned": set_one(list(PREREQUISITES)[-1])}
+    except entry.RequestRefused as exc:
+        result = {"refused": str(exc.args)}
+    result["state"] = str(runtime_paths.mio_state_dir())
+    tmp = Path(ready + ".tmp")
+    tmp.write_text(json.dumps(result))
+    os.replace(tmp, ready)
+    time.sleep(600)
+
+
 if __name__ == "__main__":
-    hold(sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5])
+    if sys.argv[1] == "hold":
+        hold(sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5])
+    else:
+        faultset(sys.argv[2], sys.argv[3], sys.argv[4])

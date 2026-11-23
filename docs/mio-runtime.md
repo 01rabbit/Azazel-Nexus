@@ -346,32 +346,55 @@ send gate), recorded, and only then confirmed by a further generation without
 `pending`; if the record fails the grant is withdrawn (best effort), and if
 that also fails or the process dies the record stays `unconfirmed`, i.e.
 closed. The grant record names both the pending generation and
-`opens_generation`, the one `confirm` writes and a send is bound to. After the
-record is written, `set` takes the send gate exclusively (bounded wait,
-`opt_in_gate_wait_s`, 2 s) and keeps it through `confirm` and the read back, so
-no sender can read the published generation while it runs and none is in
-flight when a refusal is returned. If the gate cannot be taken, nothing is
-confirmed: the grant stays pending (closed) and the reply is `opt_in_store`.
-If the confirmation fails (also after its rename, at the directory sync or the
-read back), entryd narrows the grant with the gate still held, without a drain
-(`opt_in_not_confirmed`): when the store then reads closed the gate is released
-and the reply is `opt_in_store`. When it cannot be read as closed (the
-narrowing failed and the store reads granted or `unavailable`), the grant is
-*unsettled*: the reply is `opt_in_unsettled`, entryd keeps the gate exclusively
-(every sender refuses `opt_in_unavailable`), and retries the narrowing on each
-tick and before each opt-in verb, releasing the gate when the store reads
-closed. While unsettled, `set` is refused `opt_in_unsettled`, `withdraw` is
-committed without a drain (`drained: true`: nothing can be in flight), and the
-`status` reply carries `unsettled: true` (the key is absent otherwise, so the
-reply keeps its shape; its `status` is what the store reads and is not a
-statement that a send would pass). A grant is never inferred from an unreadable
-store. Limit: the hold is a `flock`; if entryd ends while unsettled the OS
-releases it and the published, recorded grant (`opens_generation`) can then be
-sent on. A
+`opens_generation`, the one `confirm` writes and a send is bound to. Opening it
+is ordered so that a refusal stays true even if entryd ends at any point:
+
+1. The next generation is **sealed** durably (`send.seal` in the leaf: the
+   generation only, written like a record -- private temporary file, fsync,
+   rename, directory fsync, read back). Every reader (`reading()` and the send
+   gate) reads a record at or below the sealed generation as closed
+   (`unconfirmed`, `permits` false); a seal that exists but cannot be read or
+   decoded is `unavailable`. Not sealed: nothing is confirmed, the grant stays
+   pending, the reply is `opt_in_store`.
+2. `confirm` publishes the next generation (closed by the seal). If it fails
+   the seal holds it closed; entryd narrows best effort without a drain (no
+   sender can hold a sealed generation) and replies `opt_in_store`.
+3. `set` takes the send gate exclusively (bounded wait, `opt_in_gate_wait_s`,
+   2 s). A sender inside a transport call holds it shared; if it is not taken,
+   the grant is withdrawn (no drain) and the reply is `opt_in_store`, the seal
+   left in place.
+4. The seal is removed (unlink, directory fsync) and read gone, the grant is
+   read back as open, the gate is released and `granted` is returned. A stale
+   seal below the record in force closes nothing; it is replaced by the next
+   `set`'s seal and removed only on this success path.
+5. If the removal or the read back cannot be confirmed, the grant is
+   withdrawn under the gate (no drain). If the store then reads closed
+   (withdrawn, or still sealed) the gate is released and the reply is
+   `opt_in_store`. If it does not read closed, the grant is *unsettled*: entryd
+   keeps the gate exclusively (every sender refuses `opt_in_unavailable`),
+   the reply is a reading-shaped success with `status: "unsettled"`
+   (`granted: []`, `generation` as read or `null`, so `permits` is false; the
+   socket carries refusals as a code only, which is why this is not a refusal),
+   and the `status` verb returns the same while it lasts. The narrowing is
+   retried on each tick and before `status` and `set`; a store that reads
+   closed releases the gate. A `set` while unsettled is refused; the `withdraw`
+   verb is committed first, without a drain (`drained: true`: nothing can be in
+   flight), then the gate is released. A grant is never inferred from an
+   unreadable store.
+
+Remaining limit, exactly: the seal has actually been removed but that could
+not be confirmed by the read back, the narrowing fails too (so the grant is
+unsettled), and entryd ends. If the seal is in fact still there the store reads
+closed and this does not apply. The
+gate hold is a `flock`, which the OS drops, and the published, recorded grant
+(`opens_generation`) reads granted. Every other ending (entryd killed before
+the seal, after it, after `confirm`, while the gate is waited for) leaves the
+store closed. Statuses: `absent`, `incomplete`, `unconfirmed`, `granted`,
+`withdrawn`, `unavailable`, and `unsettled` (a reply of entryd only, never a
+stored status). A
 withdrawal is never refused for a spent route budget share: it skips the
 share check, like every narrowing. A set over a pending record starts from
-the empty set. Statuses:
-`absent`, `incomplete`, `unconfirmed`, `granted`, `withdrawn`, `unavailable`.
+the empty set.
 Writes are a private temporary file, fsync, rename,
 directory fsync and read back.
 
