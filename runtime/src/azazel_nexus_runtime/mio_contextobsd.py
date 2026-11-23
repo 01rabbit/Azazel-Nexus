@@ -44,6 +44,7 @@ from .knowledge_context_socket import (
 )
 from .mio_fast_degraded import fast_assessment_degraded
 from .principal import PrincipalClass, PrincipalPolicy
+from .chain_guard import ChainGuard
 from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
 from .runtime_paths import mio_contextobs_state_dir, socket_path
 from .serve import serve_forever
@@ -94,6 +95,9 @@ def _refusal_projection(stage) -> dict:
         # Answered and verified, then discarded because the grant was withdrawn
         # before adoption: received, and not adopted (not a verification failure).
         "withdrawn": ("received", "withdrawn"),
+        # Answered and verified, then discarded because the ledger could not
+        # record it: not adopted, like `withdrawn`.
+        "unrecorded": ("received", "unrecorded"),
     }.get(stage, ("unavailable", "not_run"))
     return not_run_projection(transport, verification)
 
@@ -221,6 +225,8 @@ def main(
     except Exception:  # noqa: BLE001 - the shared package is optional
         pass
     service = ContextObservationService()
+    # No request here needs a record; a broken chain only stops refusal records.
+    guard = ChainGuard(ledger.append)
     return serve_forever(
         path=socket_path(SOCKET_NAME), registry=REGISTRY,
         # The socket's own group; the entry account is the one SERVICE
@@ -230,7 +236,7 @@ def main(
         # the socket's own group (`socket_group(SOCKET_NAME)`) and ENTRY_ACCOUNT.
         policy=PrincipalPolicy.resolve(operator_group="azmio-contextobs",
                                        service_accounts=("azmioentry",)),
-        audit=ledger.append, handler=service.handle, stop=stop,
+        audit=guard.record_refusal, handler=service.handle, stop=stop,
         ready=ready if ready is not None else runtime_ready_callback(),
     )
 

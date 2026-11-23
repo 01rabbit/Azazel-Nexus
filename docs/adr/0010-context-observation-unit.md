@@ -130,3 +130,13 @@ contextobsd projects `withdrawn` as transport `received`, verification
 UI shows it as "採用前に許可が取り消されました（応答は採用しません）", not as a
 verification failure. The past reference adopts only `received`/`ok`, so the
 new word changes no adoption. The broker ledger keeps `reason_code: withdrawn`.
+
+**Addendum (#458). `unrecorded`.** When the audit chain is found broken while
+the broker runs, the broker stops touching the ledger and refuses what needs a
+record. A request refused at the entrance, or whose `requested` record failed,
+is `refused_before_send`. A client failure keeps the stage the client gave even
+if the break is first found when that failure is recorded. An answer that was
+received and verified but could not be recorded is `unrecorded`: contextobsd
+projects it as transport `received`, verification `unrecorded`, the UI shows
+"記録できなかったため、結果を採用していません", and the past reference does not
+adopt it (it adopts only `received`/`ok`).
