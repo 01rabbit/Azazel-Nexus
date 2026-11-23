@@ -244,6 +244,22 @@ def test_knowledge_contextd_sends_nothing_once_the_chain_is_broken(monkeypatch, 
     _transport_refusal_does_not_end_or_touch(served)
 
 
+def test_knowledge_contextd_does_not_enter_the_broker_once_the_chain_is_broken(monkeypatch, tmp_path):
+    # Once the break is known, the request is refused at the entrance: the
+    # broker (its rate window, grant marker and observation records) is not
+    # entered at all, not merely refused again by the pre-send record.
+    served, sent, request = _broker(monkeypatch, tmp_path)
+    broker = served["handler"].__self__
+    FakeLedger.broken = True
+    served["handler"](request())
+    FakeLedger.broken = False
+    entered = []
+    real_handle = broker.handle
+    broker.handle = lambda req: entered.append(req) or real_handle(req)
+    assert served["handler"](request()) == {"refusal": "unavailable", "stage": "refused_before_send"}
+    assert entered == [] and sent == []
+
+
 def test_knowledge_contextd_reports_the_stage_reached_when_the_completion_record_breaks(
         monkeypatch, tmp_path):
     served, sent, request = _broker(monkeypatch, tmp_path, answer={"authority": "advisory_only"})
