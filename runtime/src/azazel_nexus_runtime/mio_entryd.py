@@ -276,6 +276,12 @@ class MioEntryService:
         #: unknown whether the segment holds it; cleared by re-reading the
         #: chain's last capability record (#227).
         self._capability_uncertain = False
+        #: Set when a running chain turned out to be broken. Never cleared
+        #: here: a request that needs a record is refused until a restart
+        #: verifies the chain again.
+        self.ledger_broken = False
+        #: Why; kept in memory only. The status snapshot has a fixed shape.
+        self.ledger_break_reason: str | None = None
         # Verify before trusting a historical comparison basis. This happens
         # once per owner, never on the status/profile read path. Verification
         # and the scan are one pass over the retained segments only, so start
@@ -447,6 +453,12 @@ class MioEntryService:
             del self._refusal_recorded[oldest]
             self._refusals_suppressed.pop(oldest, None)
         suppressed = self._refusals_suppressed.pop(uid, Counter())
+        if self.ledger_broken:
+            # Known break: the ledger is not touched again. The counts stay
+            # in the same units a full segment uses.
+            self.refusals_unrecorded += 1
+            self._keep_suppressed(uid, suppressed)
+            return
         event = {**event,
                  "suppressed": dict(sorted(suppressed.items())),
                  "rate_limited": dict(sorted(self.rate_limited.items())),
@@ -457,6 +469,13 @@ class MioEntryService:
         try:
             self.router._record(event)
         except RouteSegmentFull:
+            self.refusals_unrecorded += 1
+            self._keep_suppressed(uid, suppressed)
+        except AuditChainBroken as exc:
+            self.ledger_break_reason = str(exc)
+            # The refusal that triggered this record is already on its way
+            # back to the caller; a broken chain must not end the daemon.
+            self.ledger_broken = True
             self.refusals_unrecorded += 1
             self._keep_suppressed(uid, suppressed)
         except BaseException:
@@ -543,6 +562,25 @@ class MioEntryService:
         return observed
 
     def handle(self, request) -> dict:
+        """Serve one request; a broken chain refuses it instead of ending the daemon.
+
+        Opt-in and context-observation requests need no record, so they are
+        served as before while the chain is broken. Every other request is
+        refused with a fixed reason and never reaches the router.
+        """
+        verb_name = getattr(getattr(request, "verb", None), "name", None)
+        needs_record = (verb_name not in OPT_IN_VERBS
+                        and verb_name != CONTEXT_OBSERVE_VERB.name)
+        if self.ledger_broken and needs_record:
+            raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger")
+        try:
+            return self._handle_request(request)
+        except AuditChainBroken as exc:
+            self.ledger_broken = True
+            self.ledger_break_reason = str(exc)
+            raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger") from None
+
+    def _handle_request(self, request) -> dict:
         # Before anything is written: a refused request leaves only the
         # transport's (aggregated) refusal record.
         principal = getattr(request, "principal", None)
@@ -552,7 +590,13 @@ class MioEntryService:
             raise RequestRefused(Refusal.RATE_LIMITED, "principal_rate")
         key = self._budget_key(uid)
         room = getattr(self.router.ledger, "room", None)
-        if room is not None and not room(key):
+        # A withdrawal on a known-broken chain must reach the consent store:
+        # room() reads the ledger's boundary metadata, which may be the very
+        # thing that is damaged (or full), so it is skipped for that verb only.
+        withdrawing = (self.ledger_broken
+                       and getattr(getattr(request, "verb", None), "name", None)
+                       == OPT_IN_WITHDRAW_VERB.name)
+        if room is not None and not withdrawing and not room(key):
             # This caller's share of today's segment is spent; no other
             # caller's share is touched.
             self.rate_limited["route_budget"] += 1
@@ -590,6 +634,13 @@ class MioEntryService:
             return self._reading_reply(self.consent.reading())
         operator = f"uid:{principal.uid}"
         if name == OPT_IN_SET_VERB.name:
+            if self.ledger_broken:
+                # Widening needs its records: refused before any marker,
+                # append or consent change. Residual (#458): a fixed refusal
+                # from `set` at the first detection (the post-commit record
+                # failing) does not mean consent was unchanged; the committed
+                # generation stays in force for the shared consent store.
+                raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger")
             prerequisite = RemotePrerequisite(request.arguments["prerequisite"])
             before = self.consent.reading()
             if before.generation is None:
@@ -618,12 +669,18 @@ class MioEntryService:
         except (ConsentRefused, OSError):
             # Remote is already refused: every reading of a store that cannot
             # be believed is `NO_OPT_IN`. Nothing was written.
+            if self.ledger_broken:
+                raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger") from None
             self._mark(key)
             self.router._record({"event_type": "mio.remote.opt_in.withdraw_refused",
                                  "operator": operator, "reason": reason})
             raise RequestRefused(Refusal.VERB_UNAVAILABLE, "opt_in_store") from None
         # Committed before any ledger write: a ledger fault from here on
-        # never leaves the opt-in in force.
+        # never leaves the opt-in in force. Narrowing is never blocked on
+        # recording: on a known-broken chain the withdrawal stands, the
+        # ledger is not touched, and the caller still gets the fixed refusal.
+        if self.ledger_broken:
+            raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger")
         self._mark(key)
         self.router._record({**record.opt_in().withdrawn.as_event(),
                              "generation": record.generation, "drained": drained})
@@ -1023,7 +1080,12 @@ def main(
     def tick() -> bool:
         if stop():
             return True
-        service.reconcile_capability()
+        if not service.ledger_broken:
+            try:
+                service.reconcile_capability()
+            except AuditChainBroken as exc:
+                service.ledger_broken = True
+                service.ledger_break_reason = str(exc)
         # A recorded change reaches the snapshot at once, not an interval later.
         if recorded() != written[0]:
             written[0] = recorded()

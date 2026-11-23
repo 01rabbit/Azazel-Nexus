@@ -866,6 +866,11 @@ class AuditService:
                     "refused": count, "occurred_at": occurred_at,
                 })
                 entry = self.ledger.append(event, day=day)
+            except AuditChainBroken as exc:
+                # A break found here is the break found at start.
+                self.verified = False
+                self.break_reason = str(exc)
+                return
             except Exception:  # noqa: BLE001 - never turn the caller's refusal into an error
                 # Keep the count; a later tick tries again after the window.
                 self._summary_last[key] = now
@@ -1022,10 +1027,18 @@ class AuditService:
                 "head_hash": self.head_hash,
             }
         if request.verb.name == "audit.verify":
+            try:
+                checkpoints = [c.__dict__ for c in self.ledger.checkpoint()]
+            except AuditChainBroken as exc:
+                # The damage is still on disk and checkpoint() parses every
+                # segment. Report it; capacity below is read with stat only.
+                self.verified = False
+                self.break_reason = str(exc)
+                checkpoints = []
             return {
                 "verified": self.verified,
                 "break": self.break_reason,
-                "checkpoints": [c.__dict__ for c in self.ledger.checkpoint()],
+                "checkpoints": checkpoints,
                 "capacity": self.ledger.capacity(),
                 "rate_limited": dict(sorted(self.rate_limited.items())),
                 "rate_limit_summaries_dropped": self.summaries_dropped,
@@ -1071,6 +1084,12 @@ class AuditService:
         slot = self._admit(getattr(request, "principal", None), event_type, event, day)
         try:
             entry = self.ledger.append(event, day=day)
+        except AuditChainBroken as exc:
+            # Same state as a break found at start: no further append, the
+            # diagnostics keep answering, and nothing clears it but a restart.
+            self.verified = False
+            self.break_reason = str(exc)
+            raise RequestRefused(Refusal.ARGUMENT_RANGE, "chain") from None
         except AuditUnavailable:
             # Fail closed. Telling a caller the event is recorded when it is
             # not would make the next entry's hash depend on that claim.

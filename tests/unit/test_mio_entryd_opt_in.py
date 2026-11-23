@@ -251,3 +251,55 @@ def test_the_default_store_is_entryds_own_leaf(service):
     assert isinstance(service.consent, ConsentStore)
     assert service.consent.directory == runtime_paths.mio_state_dir()
     assert service.consent.owner == os.geteuid()
+
+
+def test_while_the_chain_is_broken_set_is_refused_and_withdraw_narrows_without_a_record(
+        service, monkeypatch):
+    from azazel_nexus_runtime.protocol import Refusal
+
+    prerequisites = list(PREREQUISITES)
+    for prerequisite in prerequisites[:-1]:
+        verb(service, entry.OPT_IN_SET_VERB, prerequisite=prerequisite.value)
+    service.ledger_broken = True
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("the ledger was touched while broken")
+
+    monkeypatch.setattr(service.router, "_record", forbidden)
+    monkeypatch.setattr(service, "_mark", forbidden)
+    before = service.consent.reading()
+    with pytest.raises(RequestRefused) as refused:
+        verb(service, entry.OPT_IN_SET_VERB, prerequisite=prerequisites[-1].value)
+    assert refused.value.refusal is Refusal.VERB_UNAVAILABLE
+    after = service.consent.reading()
+    assert (after.generation, after.status) == (before.generation, before.status)
+
+    with pytest.raises(RequestRefused) as withdrawn:
+        verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="incident_response")
+    assert withdrawn.value.refusal is Refusal.VERB_UNAVAILABLE
+    assert service.consent.reading().status == "withdrawn"
+    assert verb(service, entry.OPT_IN_STATUS_VERB)["status"] == "withdrawn"
+
+
+@pytest.mark.parametrize("room_fault", ["broken_metadata", "no_room"])
+def test_a_withdrawal_on_a_broken_chain_narrows_even_when_room_would_refuse(
+        service, monkeypatch, room_fault):
+    from azazel_nexus.audit import AuditChainBroken
+    from azazel_nexus_runtime.protocol import Refusal
+
+    grant(service)
+    assert service.consent.reading().permits
+    service.ledger_broken = True
+
+    def room(key):
+        if room_fault == "broken_metadata":
+            raise AuditChainBroken("fixture damaged boundary metadata")
+        return False
+
+    monkeypatch.setattr(service.router.ledger, "room", room)
+    monkeypatch.setattr(service.router, "_record",
+                        lambda *a, **k: pytest.fail("the ledger was touched"))
+    with pytest.raises(RequestRefused) as refused:
+        verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="incident_response")
+    assert refused.value.refusal is Refusal.VERB_UNAVAILABLE
+    assert service.consent.reading().status == "withdrawn"
