@@ -303,7 +303,12 @@ Whatever has been prepared, `azazel-nexus setup --json` keeps
 `"provider_admission": "blocked"` and `"hg05": "unmeasured"` until the code and
 the hardware evidence change. If locald is started without admission it serves
 keyword retrieval for a request that passes its frame, deadline and input
-gates, when verified playbooks are available.
+gates, when verified playbooks are available. That holds until locald finds
+its own audit chain broken while running (an append refused with
+`AuditChainBroken`, #458): from then on it answers every request with the
+fixed refusal `VERB_UNAVAILABLE` (`ledger`), still withdraws revoked admissions
+and releases resources, and writes nothing more to that ledger. Only a restart
+clears this, and a restart verifies the chain again before serving.
 
 **Remote path.** There is nothing to configure. entryd keeps the operator's
 remote opt-in (`mio.remote.opt_in.status`, `.set`, `.withdraw`) on its operator
@@ -1535,7 +1540,9 @@ after 300 s). `audit: ok -- WARNING: capacity warning (...)`, also listed
 under `next:`, means the chain or its filesystem crossed a threshold. It is
 not a failure: nothing is deleted, by policy; see "Audit chain retention"
 above for what each reason asks of the operator.
-`audit: FAILED` means only that the chain did not verify at auditd's start. `audit: unknown` means no readable snapshot (auditd not
+`audit: FAILED` means that the chain did not verify at auditd's start, or
+that auditd found it broken while running (#458); either way appends are
+refused until a restart whose full verification succeeds. `audit: unknown` means no readable snapshot (auditd not
 running, or install.sh not re-run after the upgrade that added the leaf) or a
 stale one.
 Queue overflow, exhausted retries and clean-shutdown abandonment count as

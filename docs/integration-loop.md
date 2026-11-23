@@ -971,14 +971,16 @@ nothing latches.
   `ok` when the chain verified at auditd's start; a capacity warning is not
   a failure, so the line stays `ok`, its detail starts with `WARNING:
   capacity warning (...)`, says nothing is deleted, and the warning is also
-  listed under `next:`. `FAILED` is reserved for a chain that did not verify
-  at auditd's start. `unknown` when the snapshot is absent or refused (auditd not running,
+  listed under `next:`. `FAILED` is reserved for a chain that is not verified:
+  it did not verify at auditd's start, or auditd found it broken while
+  running. `unknown` when the snapshot is absent or refused (auditd not running,
   or install.sh not re-run after an upgrade) or stale (older than 300 s,
   `STATUS_STALE_S`, or dated in the future; the last values, including a
   warning, are shown labelled as such and are not listed under `next:`).
   `--ledger PATH` still verifies a ledger file directly and prints `audit chain:` instead. `chain_verified` starts as the result of the
   verification auditd makes at its start. It turns `false` when auditd finds a
-  break while running (an append that cannot read the chain's tail, a
+  break while running (an append that cannot read the chain's tail or finds
+  that its last record does not hash to its `event_hash` (#433), a
   rate-limit summary, or `audit.verify`); from then on every append is
   refused, diagnostics keep answering, and only a restart whose full
   verification succeeds clears it (the status file shows that at its next
