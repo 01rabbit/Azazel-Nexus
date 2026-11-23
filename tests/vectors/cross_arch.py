@@ -1083,6 +1083,9 @@ def mio_consent(ctx: Context):
     for prerequisite in PREREQUISITES:
         record = store.set_prerequisite(prerequisite, operator="uid:1001")
         steps.append(observe(f"set:{prerequisite.value}", record))
+    # The completing set is pending (closed) until its record is confirmed.
+    record = store.confirm(record.generation, operator="uid:1001")
+    steps.append(observe("confirmed", record))
     record, drained = store.withdraw("operator_request", operator="uid:1001")
     steps.append({**observe("withdrawn", record), "drained": drained})
     record = store.set_prerequisite(list(PREREQUISITES)[0], operator="uid:1001")
