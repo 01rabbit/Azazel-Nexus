@@ -362,8 +362,8 @@ is ordered so that a refusal stays true even if entryd ends at any point:
    sender can hold a sealed generation) and replies `opt_in_store`.
 3. `set` takes the send gate exclusively (bounded wait, `opt_in_gate_wait_s`,
    2 s). A sender inside a transport call holds it shared; if it is not taken,
-   the grant is withdrawn (no drain) and the reply is `opt_in_store`, the seal
-   left in place.
+   entryd narrows best effort (no drain) and replies `opt_in_store`; the seal,
+   left in place, is what holds it closed.
 4. The seal is removed (unlink, directory fsync) and read gone, the grant is
    read back as open, the gate is released and `granted` is returned. A stale
    seal below the record in force closes nothing; it is replaced by the next

@@ -309,7 +309,7 @@ def test_r1_confirm_published_then_fails_and_withdraw_fails_is_closed_by_the_sea
     view = store_view(state)
     sent = send_in_new_process(state, 5)
     dump("after4-R1.json", {
-        "case": "R1 (confirm published then fails, withdraw fails, re-read EIO)",
+        "case": "R1 (confirm published then fails, withdraw fails; the re-read EIO is armed but never reached)",
         "set_response_on_socket": response, "store_after": view,
         "send_other_process": sent, "gate_free": gate_free(state)}, merge=True)
     assert response == {"ok": False, "refusal": "verb_unavailable"}
