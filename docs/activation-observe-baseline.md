@@ -365,6 +365,31 @@ shared lock (`AuditLedger` re-reads the head on each append but offers no
 cross-process lock); an interleaving would break the chain, which every
 reader then refuses. Run them while no pass is running.
 
+What an append establishes about the ledger is narrow (#433). Before it
+writes, `AuditLedger.head()` checks that the last line's `event_hash` equals
+the hash of that line's own `previous_hash` and `event`. If it does not, or
+the line does not parse or cannot be hashed, the append raises
+`AuditChainBroken` and writes nothing. The cost does not grow with the
+ledger. The check does not detect an edit to `sequence` alone, a last line
+rewritten with a hash consistent with its edited content, or a bad link to the
+line before it; an edited or re-linked record in the middle is not seen at
+append time either. `verify()`, which walks the whole chain, catches a bad link
+or a record that does not hash to its `event_hash`. A last line whose event and
+hash were rewritten together, keeping its sequence and link, is consistent and
+passes `verify()` too, as does a ledger rewritten consistently end to end.
+`append(chain_from=...)` does not call `head()`. A successful append therefore
+does not mean the ledger's integrity was verified, and records or reports must
+not say so. The writers do not call `verify()` before appending; the health
+collector does, for the grant decision.
+
+Recovery after the last line is found tampered: stop the writers, keep the
+damaged file as it is, restore the ledger from a trusted copy, and run
+`verify()` over the whole chain before any writer resumes. Do not roll back
+the high-water store to fit a restored ledger. The §7 high-water recovery
+verifies the ledger first, so it does not repair it. The existing text for a
+torn last line (§8) only says that an operator must repair the ledger; the
+steps above are the ones to use for that case too.
+
 ### 3.6 Composition
 
 In order: preflight remask; commissioning evidence; independent context (node,

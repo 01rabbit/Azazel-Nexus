@@ -142,11 +142,22 @@ class AuditLedger:
         asking does not grow with the ledger. It is still read from the file on
         every call rather than remembered, for the reason the class gives.
 
-        Whether the records before it chain is `verify`'s question, not this
-        one. An `append` that is not preceded by `verify` therefore no longer
-        notices an unparseable record in the middle of the file (#175). It
-        never noticed an edited or re-linked one, so a caller that needs the
-        chain to hold before writing has always had to call `verify`.
+        That last record's `event_hash` is compared with the hash of its own
+        `previous_hash` and `event` (#433), and `AuditChainBroken` is raised
+        if they differ or the record cannot be hashed. An `append` that reads
+        the head therefore refuses to extend a chain whose final line had its
+        event or its hash edited, and writes nothing. The message names the
+        path and sequence, never the event.
+
+        This does not detect an edit to `sequence` alone, a final line
+        rewritten with a hash that is consistent with its edited content, or
+        a bad link between the final line and the one before it. Nor does it
+        look at any earlier record: an unparseable, edited or re-linked one
+        in the middle is `verify`'s question (#175). `append(chain_from=...)`
+        does not call `head()` at all. A caller that needs the whole chain to
+        hold before writing must call `verify`. An append that read the head
+        here says only that the last line hashed to its own `event_hash`; one
+        given `chain_from` says nothing about this file at all.
         """
 
         try:
@@ -181,6 +192,20 @@ class AuditLedger:
         if not line.strip():
             return 0, GENESIS_HASH
         entry = self._parse(line, "last record")
+        try:
+            recomputed = entry.recomputed()
+        except (UnicodeError, ValueError, TypeError):
+            # A record that is valid JSON but cannot be hashed (a non-ASCII
+            # previous_hash, a lone surrogate in the event) is a broken one.
+            raise AuditChainBroken(
+                f"{self.path} last record (sequence {entry.sequence}) cannot "
+                "be hashed"
+            ) from None
+        if recomputed != entry.event_hash:
+            raise AuditChainBroken(
+                f"{self.path} last record (sequence {entry.sequence}) does not "
+                "hash to its recorded event_hash"
+            )
         return entry.sequence, entry.event_hash
 
     def _parse(self, line: str, where: str) -> AuditEntry:

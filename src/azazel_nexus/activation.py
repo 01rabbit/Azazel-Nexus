@@ -48,7 +48,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Callable, Iterable, Optional, Sequence
 
-from .audit import AuditLedger, AuditUnavailable
+from .audit import AuditChainBroken, AuditLedger, AuditUnavailable
 from .commissioning import CommissioningRecord
 from .commissioning_evidence import CommissioningEvidence
 from .generation import GenerationRefused, GenerationStore
@@ -1056,7 +1056,7 @@ class ActivationController:
                 verdicts.append(
                     self._decide(definition, generation, record, now=now, actor=actor)
                 )
-        except AuditUnavailable:
+        except (AuditUnavailable, AuditChainBroken):
             self._mask_all("audit_unavailable: the ledger could not record this "
                            "activation, so the activation does not happen")
             raise
@@ -1295,7 +1295,7 @@ class ActivationController:
                         "detail": f"{type(exc).__name__}: {exc}",
                     }
                 )
-            except AuditUnavailable:
+            except (AuditUnavailable, AuditChainBroken):
                 # The node is already as narrow as this component can make
                 # it. Refusing to continue because the ledger is unavailable
                 # would leave the rest of the units undecided as well.

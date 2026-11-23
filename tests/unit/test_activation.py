@@ -40,7 +40,7 @@ from azazel_nexus.activation import (
     UnitTier,
     Watchdog,
 )
-from azazel_nexus.audit import AuditLedger, AuditUnavailable
+from azazel_nexus.audit import AuditChainBroken, AuditLedger, AuditUnavailable
 from azazel_nexus.commissioning import CommissioningRecord, ConfirmedRole
 from azazel_nexus.generation import GenerationStore, tree_digest
 
@@ -773,6 +773,51 @@ def test_every_unit_is_still_decided_when_one_will_not_mask(tmp_path):
     outcome = controller.activate(now=NOW, actor=ACTOR, lease=_lease())
     assert len(outcome.verdicts) == len(CORE_UNITS)
     assert controller.unmaskable == {"azazel-commissiond.service"}
+
+
+def test_a_chain_break_while_recording_a_decision_narrows_like_an_unavailable_ledger(tmp_path):
+    """#433: a tail tampered during the pass is a refusal to record, not a way out."""
+
+    units = RecordingUnitController(d.name for d in CORE_UNITS)
+    ledger = AuditLedger(tmp_path / "ledger.jsonl")
+
+    def broken(event, **kwargs):
+        raise AuditChainBroken("the last record does not hash")
+
+    ledger.append = broken  # type: ignore[assignment]
+    controller = ActivationController(
+        units=units, generations=_store_with_generation(tmp_path), ledger=ledger
+    )
+
+    with pytest.raises(AuditChainBroken):
+        controller.activate(now=NOW, actor=ACTOR, lease=_lease())
+
+    assert [c[0] for c in units.calls] == ["mask"] * len(CORE_UNITS)
+    assert all(units.state(d.name) is UnitState.MASKED for d in CORE_UNITS)
+
+
+def test_a_chain_break_recording_a_mask_failure_does_not_stop_the_other_masks(tmp_path):
+    class WontMaskOne(RecordingUnitController):
+        def _mask(self, unit):
+            if unit == "azazel-commissiond.service":
+                raise OSError("stuck")
+            super()._mask(unit)
+
+    units = WontMaskOne(d.name for d in CORE_UNITS)
+    ledger = AuditLedger(tmp_path / "ledger.jsonl")
+
+    def broken(event, **kwargs):
+        raise AuditChainBroken("the last record does not hash")
+
+    ledger.append = broken  # type: ignore[assignment]
+    controller = ActivationController(
+        units=units, generations=GenerationStore(tmp_path / "empty"), ledger=ledger
+    )
+    controller._mask_all("test")
+
+    assert controller.unmaskable == {"azazel-commissiond.service"}
+    assert all(units.state(d.name) is UnitState.MASKED
+               for d in CORE_UNITS if d.name != "azazel-commissiond.service")
 
 
 # -- a unit is not granted before the thing it would serve exists ---------

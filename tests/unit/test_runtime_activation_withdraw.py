@@ -6,10 +6,12 @@ Same fake manager, temporary root and in-memory key as
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from azazel_nexus.activation import CORE_UNITS, UnitState
-from azazel_nexus.audit import AuditLedger, AuditUnavailable
+from azazel_nexus.audit import AuditChainBroken, AuditLedger, AuditUnavailable
 from azazel_nexus_runtime import activated, systemd_notify
 from azazel_nexus_runtime.units import UnitOperationFailed
 
@@ -105,3 +107,67 @@ def test_a_sent_readiness_notification_keeps_the_grants(world, monkeypatch):
     _withdraw(world)
     assert world.markers() == list(SCOPE)
     assert world.events() == before
+
+
+# -- a tampered last record refuses the writer's append (#433) -----------------
+
+
+def _flip_last_hash(path):
+    lines = path.read_text(encoding="utf-8").splitlines()
+    record = json.loads(lines[-1])
+    h = record["event_hash"]
+    record["event_hash"] = h[:-1] + ("0" if h[-1] != "0" else "1")
+    lines[-1] = json.dumps(record, sort_keys=True, separators=(",", ":"))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_a_pass_over_a_tampered_last_record_appends_nothing_and_grants_nothing(world):
+    world.run()
+    _flip_last_hash(world.ledger_path)
+    before = world.ledger_path.read_bytes()
+
+    # The refusal is the same AuditChainBroken a torn last line already gave.
+    # The masks come before the record that cannot be written, so containment
+    # has run by the time it surfaces.
+    with pytest.raises(AuditChainBroken):
+        world.run()
+
+    assert world.ledger_path.read_bytes() == before
+    assert _all_masked(world)
+    assert world.markers() is None
+
+
+def test_a_torn_last_line_gives_the_same_refusal_and_containment(world):
+    """The pre-existing case the tampered-hash one is compared against."""
+    world.run()
+    with world.ledger_path.open("ab") as handle:
+        handle.write(b'{"sequence": 99, "pre')
+    before = world.ledger_path.read_bytes()
+
+    with pytest.raises(AuditChainBroken):
+        world.run()
+
+    assert world.ledger_path.read_bytes() == before
+    assert _all_masked(world)
+    assert world.markers() is None
+
+
+def test_a_tail_tamper_during_judgement_leaves_every_unit_masked_and_no_grant(world, monkeypatch):
+    """#433: AuditChainBroken mid-loop narrows like AuditUnavailable does."""
+    original = AuditLedger.append
+    seen = {"granted": 0}
+
+    def append(self, event, *args, **kwargs):
+        if event.get("event_type") == "activation.unit_granted":
+            seen["granted"] += 1
+            if seen["granted"] == 2:
+                _flip_last_hash(self.path)
+        return original(self, event, *args, **kwargs)
+
+    monkeypatch.setattr(AuditLedger, "append", append)
+    with pytest.raises((AuditChainBroken, RuntimeError)):
+        world.run()
+
+    assert seen["granted"] >= 2
+    assert _all_masked(world)
+    assert world.markers() is None
