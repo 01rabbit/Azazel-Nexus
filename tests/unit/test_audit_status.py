@@ -321,7 +321,7 @@ def test_health_reports_fresh_values_warning_and_broken_chain():
             "daily:edge.incident.closed:ordinary=2); summaries dropped: 3") in detail
     # FAILED is reserved for a chain that did not verify at auditd's start.
     healthy, detail, advisory = audit_health(_snapshot(chain_verified=False), 1000.0)
-    assert healthy is False and detail.startswith("chain did not verify at auditd start")
+    assert healthy is False and detail.startswith("chain not verified (failed at auditd start or broken while running)")
     assert advisory is None
 
 
@@ -371,7 +371,7 @@ def test_a_capacity_warning_is_ok_with_a_note_and_a_next_action(tmp_path, monkey
 
 def test_a_broken_chain_is_failed_and_a_next_action(tmp_path, monkeypatch):
     text = _health(tmp_path, monkeypatch, _snapshot(chain_verified=False))
-    assert "    audit: FAILED -- chain did not verify at auditd start" in text
+    assert "    audit: FAILED -- chain not verified (failed at auditd start or broken while running)" in text
 
 
 def test_a_reader_fault_never_stops_the_health_section(tmp_path, monkeypatch):
