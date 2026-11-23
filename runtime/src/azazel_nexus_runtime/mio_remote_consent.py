@@ -77,6 +77,19 @@ deadline); if it ever expires the withdrawal stands and the reply says the
 drain was not confirmed. This build has no transport, so nothing holds the
 gate in production.
 
+Entryd also takes the gate exclusively (`hold_gate_exclusive`, bounded) around
+opening a grant: before `confirm`, and until the grant is read back as open or
+the store is read as closed. A sender that reads the published generation
+therefore cannot be in flight when `set` answers with a refusal, and one that
+arrives meanwhile refuses `unavailable`. When the confirmation failed and the
+narrowing failed too (store not read as closed), entryd keeps holding the gate
+(`opt_in_unsettled`) and retries the narrowing without a drain
+(`withdraw(gate_held=True)`: it holds the gate itself, so nothing is in flight
+and the drain is counted as confirmed). Limit: the hold is a `flock` on an
+open file description. If entryd ends while unsettled the OS drops it, and a
+grant that was published and recorded (with its `opens_generation`) can then be
+sent on. Nothing here infers a grant from an unreadable store.
+
 ## Separate from Knowledge
 
 This is consent to route a sanitised question to an online AI provider.
@@ -112,6 +125,7 @@ __all__ = [
     "ConsentRefused",
     "ConsentStore",
     "DRAIN_TIMEOUT_S",
+    "GateHold",
     "LEAF",
     "RECORD_FILENAME",
     "SCHEMA",
@@ -290,6 +304,27 @@ def _reading_of(record: ConsentRecord) -> ConsentReading:
     else:
         status = "incomplete"
     return ConsentReading(opt_in, record.generation, status)
+
+
+class GateHold:
+    """An exclusive hold on the send gate, taken by entryd (the single writer).
+
+    While it is held every sender in another process reads `unavailable` and
+    refuses at once (it never waits). It is released by `release()` or, if the
+    process ends, by the OS: the lock is on this open file description.
+    """
+
+    def __init__(self, fd: int) -> None:
+        self._fd: Optional[int] = fd
+
+    @property
+    def held(self) -> bool:
+        return self._fd is not None
+
+    def release(self) -> None:
+        fd, self._fd = self._fd, None
+        if fd is not None:
+            os.close(fd)
 
 
 class ConsentStore:
@@ -563,12 +598,41 @@ class ConsentStore:
 
         return self._change(make, over_rollback=False)
 
-    def withdraw(self, reason: str, *, operator: str) -> tuple[ConsentRecord, bool]:
+    def hold_gate_exclusive(self, timeout_s: float) -> GateHold:
+        """Take the send gate exclusively, waiting at most `timeout_s`.
+
+        Entryd takes it before it opens a grant (`confirm`) and keeps it until
+        the grant is read back as open, or the store is read as closed. A
+        sender holding the gate shared (inside its transport call) makes this
+        wait; past the bound it raises `ConsentRefused` and holds nothing.
+        """
+        deadline = self._monotonic() + timeout_s
+        with self._leaf(create=True) as leaf:
+            fd = self._gate_fd(leaf, create=True)
+        try:
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return GateHold(fd)
+                except OSError:
+                    if self._monotonic() >= deadline:
+                        raise ConsentRefused("send gate is busy") from None
+                    time.sleep(_DRAIN_POLL_S)
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def withdraw(self, reason: str, *, operator: str,
+                 gate_held: bool = False) -> tuple[ConsentRecord, bool]:
         """Commit the withdrawal, then drain senders on the old generation.
 
         Returns the record and whether the drain was confirmed. Allowed over
         a store rolled back under this process (the withdrawal is written
         above the generation seen), never over one that cannot be read.
+
+        `gate_held` is for the caller that holds the gate exclusively
+        (`hold_gate_exclusive`): no sender can be in flight, so the drain is
+        skipped and counts as confirmed (waiting would meet its own lock).
         """
         if reason not in WITHDRAWAL_REASONS + INTERNAL_WITHDRAWAL_REASONS:
             raise ConsentRefused("a known withdrawal reason is required")
@@ -582,7 +646,7 @@ class ConsentStore:
                                  withdrawn=(operator, at, reason))
 
         record = self._change(make, over_rollback=True)
-        return record, self._drain()
+        return record, (True if gate_held else self._drain())
 
     def _drain(self) -> bool:
         """Wait for senders that read the previous generation. Bounded."""

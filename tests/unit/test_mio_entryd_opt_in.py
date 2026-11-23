@@ -467,12 +467,14 @@ def test_a_confirmation_that_fails_after_publishing_is_withdrawn_before_the_repl
 
 
 @pytest.mark.parametrize("withdraw_failure", ["oserror", "refused"])
-def test_a_refusal_after_a_published_confirmation_always_means_closed(
+def test_a_published_confirmation_whose_narrowing_fails_is_unsettled_and_gated(
         service, monkeypatch, withdraw_failure):
-    # Published, then the confirmation fails, then the narrowing fails too:
-    # the grant is in force and already recorded (with `opens_generation`),
-    # so the reply must say granted, never a refusal over an open store.
+    # #465 (was: "the reply must say granted"). Published, then the
+    # confirmation fails, then the narrowing fails too: the store reads open,
+    # but entryd holds the send gate, so no sender can use it, and the reply
+    # is `opt_in_unsettled`, never `granted` and never plain `opt_in_store`.
     from azazel_nexus_runtime.mio_remote_consent import ConsentRefused
+    from azazel_nexus_runtime.protocol import Refusal
 
     _set_all_but_last(service)
     real_confirm = service.consent.confirm
@@ -486,13 +488,19 @@ def test_a_refusal_after_a_published_confirmation_always_means_closed(
 
     monkeypatch.setattr(service.consent, "confirm", confirm_then_fail)
     monkeypatch.setattr(service.consent, "withdraw", withdraw_fails)
-    reply = _set_last(service)
-    reading = _separate_store().reading()
-    assert reply["status"] == "granted" and reading.permits
-    assert reply["generation"] == reading.generation
+    with pytest.raises(RequestRefused) as refused:
+        _set_last(service)
+    assert refused.value.refusal is Refusal.VERB_UNAVAILABLE
+    assert "opt_in_unsettled" in str(refused.value.args)
+    other = _separate_store()
+    reading = other.reading()
+    assert reading.permits and reading.generation == 5  # published and recorded
+    with other.send_gate() as gated:
+        assert not gated.permits and gated.generation is None  # gate is held
     grant = [e for e in recorded(service) if e["event_type"] == "mio.remote.opt_in"][-1]
     assert grant["opens_generation"] == reading.generation
     assert service.unrecorded_withdraw_failed == 1
+    assert service._unsettled is not None
 
 
 @pytest.mark.parametrize("published", [False, True])

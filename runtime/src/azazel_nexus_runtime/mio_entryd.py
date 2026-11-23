@@ -117,6 +117,11 @@ CONTEXT_OBSERVE_VERB = Verb(
 #: explainer), not the advice listener -- and no argument is free text.
 #: The stored actor of a withdrawal entryd makes by itself.
 ENTRYD_ACTOR = "az-mio-entryd"
+#: How long `set` waits for the send gate before it opens a grant. A sender
+#: inside a transport call holds it for up to a request deadline (60 s); entry's
+#: accept loop is single-threaded, so the wait is short. Not taken: the grant
+#: stays pending (closed) and the set is refused.
+OPT_IN_GATE_WAIT_S = 2.0
 OPT_IN_STATUS_VERB = Verb(
     "mio.remote.opt_in.status",
     admits=frozenset({PrincipalClass.OPERATOR}),
@@ -284,6 +289,12 @@ class MioEntryService:
         self.ledger_broken = False
         #: Grants whose record failed and whose automatic withdrawal also failed.
         self.unrecorded_withdraw_failed = 0
+        #: How long `set` waits for the send gate (see OPT_IN_GATE_WAIT_S).
+        self.opt_in_gate_wait_s = OPT_IN_GATE_WAIT_S
+        #: A published, recorded grant that could not be read as closed after
+        #: its confirmation failed: `(generation, GateHold)`. Entryd keeps the
+        #: send gate exclusively until a retry reads the store as closed.
+        self._unsettled = None
         #: Why; kept in memory only. The status snapshot has a fixed shape.
         self.ledger_break_reason: str | None = None
         # Verify before trusting a historical comparison basis. This happens
@@ -639,10 +650,19 @@ class MioEntryService:
         if principal is None or PrincipalClass.OPERATOR not in principal.classes:
             raise RequestRefused(Refusal.PRINCIPAL_DENIED, "opt_in_operator")
         name = request.verb.name
+        self.settle_opt_in()
         if name == OPT_IN_STATUS_VERB.name:
-            return self._reading_reply(self.consent.reading())
+            reply = self._reading_reply(self.consent.reading())
+            if self._unsettled is not None:
+                # The store may read `granted`, but entryd holds the send gate
+                # exclusively: no send passes. Said only when it is so, so the
+                # reply keeps its shape otherwise.
+                reply["unsettled"] = True
+            return reply
         operator = f"uid:{principal.uid}"
         if name == OPT_IN_SET_VERB.name:
+            if self._unsettled is not None:
+                raise RequestRefused(Refusal.VERB_UNAVAILABLE, "opt_in_unsettled")
             if self.ledger_broken:
                 # Widening needs its records: refused before any marker,
                 # append or consent change. If the record after the commit
@@ -679,40 +699,14 @@ class MioEntryService:
                 except (AuditChainBroken, AuditUnavailable, OSError) as failure:
                     self._withdraw_unrecorded(operator, failure)
                     raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger") from None
-                try:
-                    self.consent.confirm(record.generation, operator=operator)
-                except (ConsentRefused, OSError):
-                    # Refused, so narrowed at once: a confirm can fail after
-                    # its record was already published (directory sync or
-                    # read-back), and the reply and the store must agree.
-                    # Before publication it stays pending, which is closed.
-                    try:
-                        self.consent.withdraw("opt_in_not_confirmed", operator=ENTRYD_ACTOR)
-                    except (ConsentRefused, OSError):
-                        self.unrecorded_withdraw_failed += 1
-                    # A refusal is returned only for a store that reads
-                    # closed. If the published grant could not be narrowed,
-                    # it is in force -- and already recorded, with the
-                    # generation it opens -- so the reply says that instead.
-                    now = self.consent.reading()
-                    if now.permits and now.generation == record.generation + 1:
-                        return self._reading_reply(now)
-                    # Say so if the ledger allows; a break found here is the
-                    # daemon's broken state too.
-                    try:
-                        self.router._record({"event_type": "mio.remote.opt_in.not_committed",
-                                             "operator": operator,
-                                             "prerequisite": prerequisite.value})
-                    except (AuditChainBroken, AuditUnavailable, OSError) as failure:
-                        self.refusals_unrecorded += 1
-                        if isinstance(failure, AuditChainBroken):
-                            self.ledger_broken = True
-                            self.ledger_break_reason = str(failure)
-                    raise RequestRefused(Refusal.VERB_UNAVAILABLE, "opt_in_store") from None
+                return self._open_grant(record, operator, prerequisite)
             return self._reading_reply(self.consent.reading())
         reason = request.arguments["reason"]
+        # Holding the gate ourselves (unsettled): nothing can be in flight, so
+        # the narrowing skips the drain, which would meet our own lock.
+        held = {"gate_held": True} if self._unsettled is not None else {}
         try:
-            record, drained = self.consent.withdraw(reason, operator=operator)
+            record, drained = self.consent.withdraw(reason, operator=operator, **held)
         except (ConsentRefused, OSError):
             # Remote is already refused: every reading of a store that cannot
             # be believed is `NO_OPT_IN`. Nothing was written.
@@ -722,6 +716,7 @@ class MioEntryService:
             self.router._record({"event_type": "mio.remote.opt_in.withdraw_refused",
                                  "operator": operator, "reason": reason})
             raise RequestRefused(Refusal.VERB_UNAVAILABLE, "opt_in_store") from None
+        self.settle_opt_in()
         # Committed before any ledger write: a ledger fault from here on
         # never leaves the opt-in in force. Narrowing is never blocked on
         # recording: on a known-broken chain the withdrawal stands, the
@@ -732,6 +727,87 @@ class MioEntryService:
         self.router._record({**record.opt_in().withdrawn.as_event(),
                              "generation": record.generation, "drained": drained})
         return {**self._reading_reply(self.consent.reading()), "drained": drained}
+
+    @staticmethod
+    def _closed(reading: ConsentReading) -> bool:
+        """Read as closed: believed (not `unavailable`) and not permitting."""
+        return reading.generation is not None and not reading.permits
+
+    def settle_opt_in(self) -> None:
+        """Retry the narrowing of an unsettled grant; release the gate once
+        the store reads as closed. Never raises; a no-op when settled."""
+        pending = self._unsettled
+        if pending is None:
+            return
+        _, gate = pending
+        if not self._closed(self.consent.reading()):
+            try:
+                self.consent.withdraw("opt_in_not_confirmed", operator=ENTRYD_ACTOR,
+                                      gate_held=True)
+            except (ConsentRefused, OSError):
+                pass
+        if self._closed(self.consent.reading()):
+            self._unsettled = None
+            gate.release()
+
+    def _record_unrecorded_ok(self, event: dict) -> None:
+        """A refusal's record, if the ledger allows; a break found here is the
+        daemon's broken state too."""
+        try:
+            self.router._record(event)
+        except (AuditChainBroken, AuditUnavailable, OSError) as failure:
+            self.refusals_unrecorded += 1
+            if isinstance(failure, AuditChainBroken):
+                self.ledger_broken = True
+                self.ledger_break_reason = str(failure)
+
+    def _open_grant(self, record, operator: str, prerequisite) -> dict:
+        """Confirm a recorded pending grant under the send gate.
+
+        The gate is taken exclusively first, so no sender can read the
+        published generation while this runs, and none is in flight when a
+        refusal is returned. Returns the reply only for a grant read back as
+        open; every other end raises a refusal.
+        """
+        not_committed = {"event_type": "mio.remote.opt_in.not_committed",
+                         "operator": operator, "prerequisite": prerequisite.value}
+        try:
+            gate = self.consent.hold_gate_exclusive(self.opt_in_gate_wait_s)
+        except (ConsentRefused, OSError):
+            # Nothing was published: the grant stays pending, which is closed.
+            self._record_unrecorded_ok(not_committed)
+            raise RequestRefused(Refusal.VERB_UNAVAILABLE, "opt_in_store") from None
+        opens = record.generation + 1
+        try:
+            # `confirm` writes exactly the next generation or nothing.
+            self.consent.confirm(record.generation, operator=operator)
+            now = self.consent.reading()
+            if now.permits and now.generation == opens:
+                gate.release()
+                return self._reading_reply(now)
+        except (ConsentRefused, OSError):
+            # It can have failed after its rename (directory sync, read-back).
+            pass
+        except BaseException:
+            gate.release()
+            raise
+        # Refused, so narrowed now, with the gate still ours.
+        try:
+            self.consent.withdraw("opt_in_not_confirmed", operator=ENTRYD_ACTOR,
+                                  gate_held=True)
+        except (ConsentRefused, OSError):
+            self.unrecorded_withdraw_failed += 1
+        if not self._closed(self.consent.reading()):
+            # Neither read as open nor as closed (or still granted): keep the
+            # gate and say so. Never inferred as granted, never as closed.
+            self._unsettled = (opens, gate)
+            self._record_unrecorded_ok({
+                "event_type": "mio.remote.opt_in.unsettled", "operator": operator,
+                "prerequisite": prerequisite.value, "generation": opens})
+            raise RequestRefused(Refusal.VERB_UNAVAILABLE, "opt_in_unsettled")
+        gate.release()
+        self._record_unrecorded_ok(not_committed)
+        raise RequestRefused(Refusal.VERB_UNAVAILABLE, "opt_in_store")
 
     def _withdraw_unrecorded(self, operator: str, failure: Exception) -> None:
         """Narrow at once a grant whose record could not be written.
@@ -1149,6 +1225,7 @@ def main(
     def tick() -> bool:
         if stop():
             return True
+        service.settle_opt_in()
         if not service.ledger_broken:
             try:
                 service.reconcile_capability()

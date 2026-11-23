@@ -106,7 +106,9 @@ with `opt_in_unavailable` (store unreadable, malformed, rolled back or busy),
 `opt_in_not_granted` (absent, incomplete, unconfirmed or withdrawn) or
 `opt_in_generation_mismatch` (any other generation in force). The gate stays
 held until the transport returns, and a withdrawal returns only after it has
-drained, so no send starts after a confirmed withdrawal. Without an injected
+drained, so no send starts after a confirmed withdrawal. Entryd takes the same gate exclusively while it opens a grant, so a
+sender meanwhile (or while a grant is unsettled) gets `opt_in_unavailable`
+(*Remote opt-in store* in [runtime](mio-runtime.md)). Without an injected
 reader the daemon reads entryd's store as `azmioentry`; on a node where
 `azremote` cannot read that leaf (every node as shipped) the answer is
 `opt_in_unavailable`. Making it readable to `azremote` is part of wiring a

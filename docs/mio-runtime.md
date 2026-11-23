@@ -346,13 +346,28 @@ send gate), recorded, and only then confirmed by a further generation without
 `pending`; if the record fails the grant is withdrawn (best effort), and if
 that also fails or the process dies the record stays `unconfirmed`, i.e.
 closed. The grant record names both the pending generation and
-`opens_generation`, the one `confirm` writes and a send is bound to. If the
-confirmation itself fails (also after its rename, at the directory sync or the
-read back), the request is refused and entryd withdraws the grant at once
-(`opt_in_not_confirmed`, best effort) so the reply and the store agree: a
-refusal is returned only when the store then reads closed. If that narrowing
-fails over a published confirmation, the grant is in force and already
-recorded with its `opens_generation`, and the reply says `granted`. A
+`opens_generation`, the one `confirm` writes and a send is bound to. After the
+record is written, `set` takes the send gate exclusively (bounded wait,
+`opt_in_gate_wait_s`, 2 s) and keeps it through `confirm` and the read back, so
+no sender can read the published generation while it runs and none is in
+flight when a refusal is returned. If the gate cannot be taken, nothing is
+confirmed: the grant stays pending (closed) and the reply is `opt_in_store`.
+If the confirmation fails (also after its rename, at the directory sync or the
+read back), entryd narrows the grant with the gate still held, without a drain
+(`opt_in_not_confirmed`): when the store then reads closed the gate is released
+and the reply is `opt_in_store`. When it cannot be read as closed (the
+narrowing failed and the store reads granted or `unavailable`), the grant is
+*unsettled*: the reply is `opt_in_unsettled`, entryd keeps the gate exclusively
+(every sender refuses `opt_in_unavailable`), and retries the narrowing on each
+tick and before each opt-in verb, releasing the gate when the store reads
+closed. While unsettled, `set` is refused `opt_in_unsettled`, `withdraw` is
+committed without a drain (`drained: true`: nothing can be in flight), and the
+`status` reply carries `unsettled: true` (the key is absent otherwise, so the
+reply keeps its shape; its `status` is what the store reads and is not a
+statement that a send would pass). A grant is never inferred from an unreadable
+store. Limit: the hold is a `flock`; if entryd ends while unsettled the OS
+releases it and the published, recorded grant (`opens_generation`) can then be
+sent on. A
 withdrawal is never refused for a spent route budget share: it skips the
 share check, like every narrowing. A set over a pending record starts from
 the empty set. Statuses:
