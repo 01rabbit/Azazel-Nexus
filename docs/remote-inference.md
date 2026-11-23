@@ -106,11 +106,18 @@ with `opt_in_unavailable` (store unreadable, malformed, rolled back or busy),
 `opt_in_not_granted` (absent, incomplete, unconfirmed or withdrawn) or
 `opt_in_generation_mismatch` (any other generation in force). The gate stays
 held until the transport returns, and a withdrawal returns only after it has
-drained, so no send starts after a confirmed withdrawal. Entryd takes the same gate exclusively while it opens a grant, and seals the
-generation it opens until then (`send.seal`): a sender meanwhile, or while a
-grant is unsettled, gets `opt_in_unavailable`, and one that reads a sealed
-record gets `opt_in_not_granted`. See *Remote opt-in store* in
-[runtime](mio-runtime.md) for the order and the one remaining limit. Without an injected
+drained, so no send starts after a confirmed withdrawal. A withdrawal waits at most 65 s for senders that read the old generation; if
+one is still inside its transport call when the wait ends, the withdrawal
+stands and the reply says `drained: false`: a send that read the old grant may
+still complete. Entryd takes the same gate exclusively while it opens a grant,
+and seals the generation it opens until then (`send.seal`): a sender meanwhile
+gets `opt_in_unavailable`, and one that reads a sealed record gets
+`opt_in_not_granted`. If entryd cannot close a grant durably it answers
+`status: "unsettled"` with `may_be_in_force_generation`: that generation may be
+in force, sends are stopped only while entryd runs (it keeps the gate), and the
+caller repeats `withdraw` and checks `status`. See *Remote opt-in store* in
+[runtime](mio-runtime.md) for the order, the grounds and the one remaining
+limit. Without an injected
 reader the daemon reads entryd's store as `azmioentry`; on a node where
 `azremote` cannot read that leaf (every node as shipped) the answer is
 `opt_in_unavailable`. Making it readable to `azremote` is part of wiring a

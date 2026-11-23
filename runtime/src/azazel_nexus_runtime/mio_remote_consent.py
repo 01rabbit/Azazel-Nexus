@@ -90,15 +90,18 @@ Entryd opens a grant under two further guards:
   A sender inside its transport holds the gate shared, so the exclusive hold
   waits for it; a sender that arrives meanwhile refuses `unavailable`.
 
-When the seal's removal or the read back cannot be confirmed, entryd withdraws
-under the gate (`withdraw(drain=False)`: it holds the gate itself or the
-generation is sealed, so nothing is in flight and the drain counts as
-confirmed). If the store still does not read closed, the grant is *unsettled*:
-entryd keeps the gate and retries. Remaining limit: if entryd ends in exactly
-that state (the seal actually removed, the read back and the narrowing both
-failing), the OS drops
-the `flock` and the published, recorded grant reads granted. Nothing here
-infers a grant from an unreadable store.
+When the seal's removal or the read back cannot be confirmed, a read is no
+ground (a record that reads closed may be a rename whose directory sync
+failed). Entryd closes by a confirmed write under the gate: `withdraw`
+(`drain=False`: it holds the gate itself or the generation is sealed, so the
+drain counts as confirmed) -- `_write_at` fsyncs the file and the directory and
+reads back, or raises -- else a re-seal. A refusal is returned, and the gate
+released, only after one of them returned (or while the seal is provably still
+in place). Otherwise the grant is *unsettled*: it is not a refusal; the audited
+generation may already be in force, entryd keeps the gate (sends refuse while it
+runs) and names `may_be_in_force_generation`. Remaining limit: if entryd ends
+in that state the OS drops the `flock` and that generation can be sent on.
+Nothing here infers a grant from an unreadable store.
 
 ## Separate from Knowledge
 
@@ -504,7 +507,11 @@ class ConsentStore:
             if not create:
                 return None
             fd = os.open(GATE_FILENAME, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=leaf)
-            os.fchmod(fd, 0o600)
+            try:
+                os.fchmod(fd, 0o600)
+            except BaseException:
+                os.close(fd)
+                raise
         try:
             self._protected(fd, directory=False, private=True)
         except BaseException:

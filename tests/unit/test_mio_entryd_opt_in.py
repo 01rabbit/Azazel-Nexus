@@ -493,19 +493,28 @@ def test_a_grant_that_cannot_be_read_closed_after_the_seal_is_unsettled_and_gate
     def withdraw_fails(*a, **kw):
         raise {"oserror": OSError, "refused": ConsentRefused}[withdraw_failure]("fixture")
 
+    real_seal, seals = service.consent.seal, []
+
+    def seal(generation):
+        seals.append(generation)
+        if len(seals) > 1:
+            raise OSError(5, "fixture: re-seal")
+        return real_seal(generation)
+
     monkeypatch.setattr(service.consent, "unseal", unseal)
     monkeypatch.setattr(service.consent, "reading", reading)
     monkeypatch.setattr(service.consent, "withdraw", withdraw_fails)
+    monkeypatch.setattr(service.consent, "seal", seal)
     reply = _set_last(service)
     assert reply == {"status": "unsettled", "generation": None, "granted": [],
-                     "missing": [p.value for p in PREREQUISITES]}
+                     "missing": [p.value for p in PREREQUISITES],
+                     "may_be_in_force_generation": 5}
     other = _separate_store()
     assert other.reading().permits and other.reading().generation == 5
     with other.send_gate() as gated:
         assert not gated.permits and gated.generation is None  # gate is held
     grant = [e for e in recorded(service) if e["event_type"] == "mio.remote.opt_in"][-1]
     assert grant["opens_generation"] == 5
-    assert service.unrecorded_withdraw_failed == 1
     assert service._unsettled is not None
 
 

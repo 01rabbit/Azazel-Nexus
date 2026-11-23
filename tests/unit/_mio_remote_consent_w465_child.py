@@ -12,7 +12,9 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import select
 import sys
+import time
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -26,12 +28,24 @@ def hold(state_dir: str, generation: int, reached: str, release: str) -> None:
     store = ConsentStore(Path(state_dir), owner=os.geteuid())
 
     def seam() -> None:
-        fd = os.open(reached, os.O_WRONLY)  # blocks until the parent reads
+        deadline = time.monotonic() + 30
+        while True:  # a bounded wait for the parent to read the notice
+            try:
+                fd = os.open(reached, os.O_WRONLY | os.O_NONBLOCK)
+                break
+            except OSError:
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(0.01)
         os.write(fd, b"1")
         os.close(fd)
-        fd = os.open(release, os.O_RDONLY)  # blocks until the parent releases
-        os.read(fd, 1)
-        os.close(fd)
+        fd = os.open(release, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            ready, _, _ = select.select([fd], [], [], 30)
+            if not ready or os.read(fd, 1) != b"1":
+                raise RuntimeError("no release from the parent")
+        finally:
+            os.close(fd)
 
     store._after_send_read = seam
     service = helpers._service(transport=helpers._spy_transport(calls), consent=store)
@@ -50,7 +64,8 @@ def faultset(root: str, ready: str, mode: str) -> None:
     mode `confirm_fails`: confirm publishes N+1 then fails (fsync), the
     narrowing fails, and the re-read hits EIO.
     mode `unsettled`: confirm succeeds and the seal is removed, then the
-    read back hits EIO and the narrowing fails (the reply is `unsettled`).
+    read back hits EIO and both closing writes (withdraw, re-seal) fail (the
+    reply is `unsettled`).
     """
     import time
     from types import SimpleNamespace
@@ -95,11 +110,21 @@ def faultset(root: str, ready: str, mode: str) -> None:
             raise OSError(5, "fixture: fsync after rename")
         return record
 
+    seals = {"n": 0}
+    real_seal = consent.seal
+
+    def seal(generation):
+        seals["n"] += 1
+        if mode == "unsettled" and seals["n"] > 1:
+            raise OSError(5, "fixture: seal write")
+        return real_seal(generation)
+
     def unseal():
         real_unseal()
         flag["eio"] = True
 
     consent.withdraw, consent.reading, consent.confirm = withdraw, reading, confirm
+    consent.seal = seal
     if mode == "unsettled":
         consent.unseal = unseal
     try:

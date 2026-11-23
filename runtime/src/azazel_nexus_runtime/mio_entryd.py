@@ -702,6 +702,7 @@ class MioEntryService:
         # Holding the gate ourselves (unsettled): nothing can be in flight, so
         # the narrowing skips the drain, which would meet our own lock.
         held = {"drain": False} if self._unsettled is not None else {}
+        was_unsettled = self._unsettled is not None
         try:
             record, drained = self.consent.withdraw(reason, operator=operator, **held)
         except (ConsentRefused, OSError):
@@ -713,7 +714,11 @@ class MioEntryService:
             self.router._record({"event_type": "mio.remote.opt_in.withdraw_refused",
                                  "operator": operator, "reason": reason})
             raise RequestRefused(Refusal.VERB_UNAVAILABLE, "opt_in_store") from None
-        self.settle_opt_in()
+        if was_unsettled:
+            # The operator's withdrawal returned: it is written, synced and read
+            # back (`_write_at`), so it is the durable ground to let go of the
+            # gate, whatever a later read says.
+            self._release_unsettled()
         # Committed before any ledger write: a ledger fault from here on
         # never leaves the opt-in in force. Narrowing is never blocked on
         # recording: on a known-broken chain the withdrawal stands, the
@@ -726,36 +731,52 @@ class MioEntryService:
         return {**self._reading_reply(self.consent.reading()), "drained": drained}
 
     def _status_reply(self) -> dict:
-        """The reading, or `unsettled` while entryd holds a grant shut that it
-        could not read as closed: nothing is granted (no send passes), whatever
-        the store reads. Same shape as a reading; permits nothing."""
+        """The reading, or `unsettled` while entryd holds the send gate over a
+        grant it could not close durably.
+
+        `unsettled` is not a refusal and not a grant: the audited generation
+        `may_be_in_force_generation` may already be in force. While entryd
+        runs, the gate stops every send; if entryd ends, it can be sent on.
+        `permits` is false in this reply and `granted` is empty.
+        """
         reading = self.consent.reading()
         if self._unsettled is None:
             return self._reading_reply(reading)
         return {"status": "unsettled", "generation": reading.generation,
-                "granted": [], "missing": [p.value for p in PREREQUISITES]}
+                "granted": [], "missing": [p.value for p in PREREQUISITES],
+                "may_be_in_force_generation": self._unsettled[0]}
 
-    @staticmethod
-    def _closed(reading: ConsentReading) -> bool:
-        """Read as closed: believed (not `unavailable`) and not permitting."""
-        return reading.generation is not None and not reading.permits
+    def _close_durably(self, opens: int) -> bool:
+        """Close `opens` by a write that is confirmed, not by a read.
+
+        (b) `withdraw` returned: its record was fsynced, renamed, directory
+        synced and read back, or it raised. (c) failing that, `seal(opens)`
+        returned, with the same guarantees. Neither: False. The gate is held,
+        so no drain.
+        """
+        for close in (
+            lambda: self.consent.withdraw("opt_in_not_confirmed",
+                                          operator=ENTRYD_ACTOR, drain=False),
+            lambda: self.consent.seal(opens),
+        ):
+            try:
+                close()
+                return True
+            except (ConsentRefused, OSError):
+                continue
+        return False
+
+    def _release_unsettled(self) -> None:
+        pending, self._unsettled = self._unsettled, None
+        if pending is not None:
+            pending[1].release()
 
     def settle_opt_in(self) -> None:
-        """Retry the narrowing of an unsettled grant; release the gate once
-        the store reads as closed. Never raises; a no-op when settled."""
+        """Retry closing an unsettled grant; release the gate only on a
+        confirmed write (`_close_durably`), never on a read. Never raises."""
         pending = self._unsettled
-        if pending is None:
-            return
-        _, gate = pending
-        if not self._closed(self.consent.reading()):
-            try:
-                self.consent.withdraw("opt_in_not_confirmed", operator=ENTRYD_ACTOR,
-                                      drain=False)
-            except (ConsentRefused, OSError):
-                pass
-        if self._closed(self.consent.reading()):
-            self._unsettled = None
-            gate.release()
+        if pending is not None and self._close_durably(pending[0]):
+            self._release_unsettled()
 
     def _record_unrecorded_ok(self, event: dict) -> None:
         """A refusal's record, if the ledger allows; a break found here is the
@@ -779,9 +800,12 @@ class MioEntryService:
            is withdrawn (best effort) and refused; the seal keeps it closed.
         4. The seal is removed and read gone; only then is the gate released
            and `granted` returned. When that cannot be confirmed the grant is
-           withdrawn under the gate; if it still does not read closed it is
-           *unsettled*: the gate is kept, `status` is `unsettled`, and the
-           narrowing is retried (`settle_opt_in`).
+           closed by a confirmed write (withdraw, else re-seal; a read is not
+           a ground), then the gate is released and the set refused. If neither
+           write is confirmed it is *unsettled*: the gate is kept, the reply
+           names `may_be_in_force_generation`, and `settle_opt_in` retries.
+        Refusal grounds: (a) the seal is still in place (before `unseal` is
+        called), (b) `withdraw` returned, (c) `seal` returned again.
         """
         not_committed = {"event_type": "mio.remote.opt_in.not_committed",
                          "operator": operator, "prerequisite": prerequisite.value}
@@ -803,7 +827,7 @@ class MioEntryService:
         try:
             gate = self.consent.hold_gate_exclusive(self.opt_in_gate_wait_s)
         except (ConsentRefused, OSError):
-            self._narrow(drain=False)
+            self._narrow(drain=False)  # the seal is still in place
             raise refused() from None
         try:
             try:
@@ -814,9 +838,9 @@ class MioEntryService:
                     return self._reading_reply(now)
             except (ConsentRefused, OSError):
                 pass
-            # Not confirmed open: narrow under the gate, no drain.
-            self._narrow(drain=False)
-            if self._closed(self.consent.reading()):
+            # From the `unseal` call on, the seal may be gone and a read proves
+            # nothing durable: close by a confirmed write, or stay unsettled.
+            if self._close_durably(opens):
                 gate.release()
                 raise refused()
             self._unsettled = (opens, gate)
