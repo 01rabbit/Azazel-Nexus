@@ -1127,6 +1127,14 @@ was written with exit status zero. The eventual long-running supervisor must
 notify only after mandatory containment and admission, but **before** waiting
 for helper readiness (helpers wait for controller startup through `After`).
 No such readiness signal is emitted by the current production entrypoint.
+
+> Current code (b3b891a), correction to the statement above: the production
+> entrypoint now sends READY. After the decision, markers and ledger record of a
+> normal pass it calls `notify_ready()` and `notify_barrier()`, then prints
+> "completed safely" and exits 0
+> (`runtime/src/azazel_nexus_runtime/activated.py:1810-1828`, `:2013-2017`,
+> `:1980-1986`).
+
 Independent review caught a preflight race in the initial `Type=exec` draft:
 it would release dependent starts as soon as exec succeeded. That draft was
 withdrawn before deployment, and tests now require explicit main-process
@@ -1163,6 +1171,10 @@ declaration, and confirmed the intentional unsuccessful startup while the
 entrypoint emits no `READY=1`. This is source review, not OS lifecycle approval.
 Other governed services still have their prior lifetime relationships; the
 two-helper mechanism is not a fence for provider/fetch/Edge/watchdog units.
+
+> Current code (b3b891a), historical note: the "no `READY=1`" statement above
+> describes the entrypoint at that date; the normal pass now sends READY (see the
+> correction after the 2026-10-14 dependency increment).
 
 Final local targeted validation: **54 passed in 0.19s**. Existing Debian ARM64
 review-copy bootstrap/runtime subset: **776 passed in 2.31s**. These tests cover
@@ -1204,6 +1216,10 @@ socket fixtures, then independently verify installed notify/job behavior before
 claiming that a service start completes. Do not supply success from ActiveState
 or an injected callback alone.
 
+> Current code (b3b891a), historical note: the missing default notification for
+> helpers was addressed in the next section (2026-10-14, main-process
+> notification and supervisor handoff).
+
 ### Main-process notification and supervisor handoff (2026-10-14)
 
 `systemd_notify.notify_ready()` now sends only `READY=1` over a one-second
@@ -1235,6 +1251,17 @@ no additional ordering defect. Production `activated.main` is deliberately not
 wired to this supervisor yet and still emits no readiness notification: missing
 protected producers, start backend and persistent-mask/reboot fence must not be
 replaced with a successful signal.
+
+> Current code (b3b891a), correction to the statement above: `activated.main`
+> is now wired to the supervisor. When a protected bootstrap selection exists it
+> branches to `run_selected_bootstrap`, which builds `BootstrapSupervisor` with
+> `controller_ready=notify_ready`
+> (`runtime/src/azazel_nexus_runtime/activated.py:1921-1934`,
+> `runtime/src/azazel_nexus_runtime/bootstrap_entrypoint.py:106-126`). The
+> normal pass emits READY as noted above. The supervisor order in the paragraph
+> above is also superseded: `open_pair` and the `pair_grant_opened` record come
+> before READY, and the first helper start follows
+> (`runtime/src/azazel_nexus_runtime/bootstrap.py:919-970`).
 
 The first targeted run had **82 passed / 6 failed** because the newly delegated
 test used the wrong import-time ROOT monkeypatch seam and its fake socket lacked
@@ -1570,6 +1597,11 @@ No public CLI/RPC, reload, grant, start or unmask path was added. A successful
 inspection remains a projection, not semantic admission or readiness. The
 production entrypoint is still not wired to the bootstrap supervisor.
 
+> Current code (b3b891a), historical note: `activated.main` now branches to
+> `BootstrapSupervisor` when a protected selection exists
+> (`runtime/src/azazel_nexus_runtime/activated.py:1921-1934`,
+> `runtime/src/azazel_nexus_runtime/bootstrap_entrypoint.py:106-126`).
+
 A test-only worker supplied 12 cases using the actual inspector and simulated
 transport. Coordinator review strengthened the widening regression to inspect
 successfully first, then verify start/unmask still refuse without another bus
@@ -1737,6 +1769,11 @@ READY, and it does not wire `BootstrapSupervisor`; that concrete composition
 gap remains. A successful one-shot would conflict with the contract rather
 than solve it. The first-audit-event versus auditd-start ordering cycle and
 non-executable pair grant backend also remain unresolved.
+
+> Current code (b3b891a), historical note: the entrypoint now sends READY after
+> a normal pass and wires `BootstrapSupervisor` for a protected selection
+> (`runtime/src/azazel_nexus_runtime/activated.py:1810-1828`, `:1921-1934`,
+> `:2013-2017`). The `Type=notify` contract above is unchanged.
 
 The local Debian ARM64 VM again passed the strict package snapshot parser with
 the same 1,672-record digest; no package names were emitted and no VM files or
