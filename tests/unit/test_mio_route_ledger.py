@@ -730,8 +730,11 @@ def test_a_carried_record_is_never_written_from_an_unsettled_reading(service, mo
     monkeypatch.setattr(svc, "_settle_capability", unreadable)
     clock.advance(DAY)
     before = svc.router.ledger.head()
-    with pytest.raises(AuditChainBroken):
+    # A broken chain found while serving is a fixed refusal, not an exit (#458).
+    with pytest.raises(RequestRefused) as refused:
         svc.handle(route_request(1001))
+    assert refused.value.refusal is Refusal.VERB_UNAVAILABLE
+    assert svc.ledger_broken
     assert svc.router.ledger.head() == before  # nothing was carried or recorded
 
 
