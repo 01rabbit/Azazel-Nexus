@@ -392,7 +392,7 @@ class RouteLedger(DailySegments):
         created = size == 0 and not path.exists()
         try:
             entry = AuditLedger(path, private=True).append(event, chain_from=head)
-        except AuditUnavailable:
+        except AuditUnavailable as failure:
             # The line may be in the file although its sync failed. What a
             # read shows is the page cache: after a failed fsync the kernel
             # may still show a line it never persisted ("fsyncgate"), so this
@@ -407,7 +407,11 @@ class RouteLedger(DailySegments):
             try:
                 landed = (AuditLedger(path).head()
                           == (expected.sequence, expected.recomputed()))
-            except (OSError, AuditUnavailable, AuditChainBroken):
+            except AuditChainBroken as broken:
+                # The chain itself cannot be read: that is a detected break,
+                # not an unknown write. The unknown outcome stays as the cause.
+                raise broken from failure
+            except (OSError, AuditUnavailable):
                 landed = False
             if landed and self.on_written is not None:
                 self.on_written(event)

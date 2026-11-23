@@ -100,6 +100,7 @@ __all__ = [
     "RECORD_FILENAME",
     "SCHEMA",
     "WITHDRAWAL_REASONS",
+    "INTERNAL_WITHDRAWAL_REASONS",
     "decode_record",
     "encode_record",
 ]
@@ -125,6 +126,9 @@ WITHDRAWAL_REASONS = (
     "provider_change",
     "incident_response",
 )
+#: Reasons only entryd itself records (never an operator verb argument): the
+#: automatic withdrawal of a grant whose record could not be written.
+INTERNAL_WITHDRAWAL_REASONS = ("audit_record_failed",)
 
 
 class ConsentRefused(Exception):
@@ -158,7 +162,7 @@ class ConsentRecord:
             if (type(self.withdrawn) is not tuple or len(self.withdrawn) != 3
                     or any(type(v) is not str or not v.strip() or len(v) > 64
                            for v in self.withdrawn)
-                    or self.withdrawn[2] not in WITHDRAWAL_REASONS):
+                    or self.withdrawn[2] not in WITHDRAWAL_REASONS + INTERNAL_WITHDRAWAL_REASONS):
                 raise ConsentRefused("a withdrawal records operator, time and a known reason")
 
     def opt_in(self) -> RemoteOptIn:
@@ -507,7 +511,7 @@ class ConsentStore:
         a store rolled back under this process (the withdrawal is written
         above the generation seen), never over one that cannot be read.
         """
-        if reason not in WITHDRAWAL_REASONS:
+        if reason not in WITHDRAWAL_REASONS + INTERNAL_WITHDRAWAL_REASONS:
             raise ConsentRefused("a known withdrawal reason is required")
 
         def make(current, generation):

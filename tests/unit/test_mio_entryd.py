@@ -628,3 +628,86 @@ def test_the_tick_does_not_reconcile_again_after_the_break(service, monkeypatch)
     captured["stop"]()
     captured["stop"]()
     assert len(calls) == 1
+
+
+def _serve_once(service, monkeypatch, verb, arguments):
+    """One request through the transport's serve_connection (the entryd boundary)."""
+    import json as _json
+    import socket as _socket
+
+    from azazel_nexus_runtime import transport
+    from azazel_nexus_runtime.principal import PrincipalPolicy
+
+    monkeypatch.setattr(transport, "peer_credentials", lambda c: (1, os.getuid(), os.getgid()))
+    monkeypatch.setattr(transport, "peer_supplementary_groups", lambda c: ())
+    engine = transport.SocketServer(
+        registry=entry.REGISTRY, policy=PrincipalPolicy(os.getgid(), frozenset()),
+        audit=service.record_refusal)
+    left, right = _socket.socketpair()
+    with left, right:
+        transport.send_frame(left, {"verb": verb, "arguments": arguments})
+        left.shutdown(_socket.SHUT_WR)
+        engine.serve_connection(right, service.handle)
+        right.shutdown(_socket.SHUT_WR)
+        return _json.loads(transport.read_frame(left))
+
+
+def test_a_write_failure_with_an_unreadable_chain_is_a_fixed_refusal_and_the_loop_survives(
+        service, monkeypatch):
+    from azazel_nexus import audit
+
+    monkeypatch.setattr(service.local, "observe", lambda **_: "local_unavailable")
+    monkeypatch.setattr(service.remote, "observe", lambda **_: "remote_unavailable")
+    failed = []
+    real_append, real_head = audit.AuditLedger.append, audit.AuditLedger.head
+
+    def append(self, event, **kwargs):
+        if not failed:
+            failed.append("append")
+            raise AuditUnavailable("sync fixture")
+        return real_append(self, event, **kwargs)
+
+    def head(self):
+        if failed == ["append"]:
+            raise AuditChainBroken("unreadable fixture")
+        return real_head(self)
+
+    monkeypatch.setattr(audit.AuditLedger, "append", append)
+    monkeypatch.setattr(audit.AuditLedger, "head", head)
+    args = {"privacy_class": PrivacyClass.P0_PUBLIC.value, "deadline_ms": 1000}
+    first = _serve_once(service, monkeypatch, "mio.route", args)
+    assert first == {"ok": False, "refusal": "verb_unavailable"}
+    assert service.ledger_broken is True
+    second = _serve_once(service, monkeypatch, "mio.route", args)
+    assert second == {"ok": False, "refusal": "verb_unavailable"}
+
+
+@pytest.mark.parametrize("failure", [AuditUnavailable("fixture"), OSError("fixture")],
+                         ids=["audit_unavailable", "oserror"])
+def test_when_the_post_commit_record_and_the_refusal_record_both_fail_the_loop_survives(
+        service, monkeypatch, failure):
+    from azazel_nexus.mio_profile import PREREQUISITES
+    from azazel_nexus_runtime import transport
+    from azazel_nexus_runtime.principal import PrincipalPolicy
+
+    monkeypatch.setattr(service, "_explainer_uid", None, raising=False)
+    names = [p.value for p in PREREQUISITES]
+    service.rate = type("R", (), {"take": lambda self, uid: True})()
+    monkeypatch.setattr(transport, "peer_credentials", lambda c: (1, os.getuid(), os.getgid()))
+    monkeypatch.setattr(transport, "peer_supplementary_groups", lambda c: ())
+    policy = PrincipalPolicy(os.getgid(), frozenset())
+    for name in names[:-1]:
+        _serve_once(service, monkeypatch, "mio.remote.opt_in.set", {"prerequisite": name})
+    real = service.router._record
+
+    def record(event, **kw):
+        if event.get("event_type") in {"mio.remote.opt_in", "runtime.request_refused"}:
+            raise failure
+        return real(event, **kw)
+
+    monkeypatch.setattr(service.router, "_record", record)
+    reply = _serve_once(service, monkeypatch, "mio.remote.opt_in.set", {"prerequisite": names[-1]})
+    assert reply == {"ok": False, "refusal": "verb_unavailable"}
+    assert service.consent.reading().status == "withdrawn"
+    assert service.ledger_broken is False
+    assert service.refusals_unrecorded >= 2

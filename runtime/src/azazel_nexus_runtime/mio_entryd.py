@@ -115,6 +115,8 @@ CONTEXT_OBSERVE_VERB = Verb(
 #: The remote opt-in (`mio_remote_consent`): the only writers of the store,
 #: and its read. `OPERATOR` alone -- not `SERVICE` (the arbiter, the
 #: explainer), not the advice listener -- and no argument is free text.
+#: The stored actor of a withdrawal entryd makes by itself.
+ENTRYD_ACTOR = "az-mio-entryd"
 OPT_IN_STATUS_VERB = Verb(
     "mio.remote.opt_in.status",
     admits=frozenset({PrincipalClass.OPERATOR}),
@@ -280,6 +282,8 @@ class MioEntryService:
         #: here: a request that needs a record is refused until a restart
         #: verifies the chain again.
         self.ledger_broken = False
+        #: Grants whose record failed and whose automatic withdrawal also failed.
+        self.unrecorded_withdraw_failed = 0
         #: Why; kept in memory only. The status snapshot has a fixed shape.
         self.ledger_break_reason: str | None = None
         # Verify before trusting a historical comparison basis. This happens
@@ -471,6 +475,11 @@ class MioEntryService:
         except RouteSegmentFull:
             self.refusals_unrecorded += 1
             self._keep_suppressed(uid, suppressed)
+        except (AuditUnavailable, OSError):
+            # Not a detected break (an I/O failure, raw or wrapped): counted,
+            # and the refusal is still sent.
+            self.refusals_unrecorded += 1
+            self._keep_suppressed(uid, suppressed)
         except AuditChainBroken as exc:
             self.ledger_break_reason = str(exc)
             # The refusal that triggered this record is already on its way
@@ -546,7 +555,7 @@ class MioEntryService:
                 # Not recorded, so not accepted: the next sample retries.
                 self._next_capability_check = self._clock() + CAPABILITY_INTERVAL_SECONDS
                 return observed
-            except (AuditUnavailable, OSError):
+            except (AuditUnavailable, AuditChainBroken, OSError):
                 # Written or not is unknown unless the ledger reported this
                 # very record (a carried record opening the segment may have
                 # been reported before it).
@@ -636,10 +645,9 @@ class MioEntryService:
         if name == OPT_IN_SET_VERB.name:
             if self.ledger_broken:
                 # Widening needs its records: refused before any marker,
-                # append or consent change. Residual (#458): a fixed refusal
-                # from `set` at the first detection (the post-commit record
-                # failing) does not mean consent was unchanged; the committed
-                # generation stays in force for the shared consent store.
+                # append or consent change. If the record after the commit
+                # fails, the grant is withdrawn at once (below), so the
+                # refusal and the consent state agree.
                 raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger")
             prerequisite = RemotePrerequisite(request.arguments["prerequisite"])
             before = self.consent.reading()
@@ -660,8 +668,12 @@ class MioEntryService:
                 raise RequestRefused(Refusal.VERB_UNAVAILABLE, "opt_in_store") from None
             reading = self.consent.reading()
             if reading.permits and reading.generation == record.generation:
-                self.router._record({**reading.opt_in.as_event(),
-                                     "generation": record.generation})
+                try:
+                    self.router._record({**reading.opt_in.as_event(),
+                                         "generation": record.generation})
+                except (AuditChainBroken, AuditUnavailable, OSError) as failure:
+                    self._withdraw_unrecorded(operator, failure)
+                    raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger") from None
             return self._reading_reply(reading)
         reason = request.arguments["reason"]
         try:
@@ -685,6 +697,26 @@ class MioEntryService:
         self.router._record({**record.opt_in().withdrawn.as_event(),
                              "generation": record.generation, "drained": drained})
         return {**self._reading_reply(self.consent.reading()), "drained": drained}
+
+    def _withdraw_unrecorded(self, operator: str, failure: Exception) -> None:
+        """Narrow at once a grant whose record could not be written.
+
+        Narrowing is never blocked on recording, so this runs although the
+        withdrawal cannot be recorded either. It is entryd's own act, so the
+        stored actor is `ENTRYD_ACTOR` and the reason the internal
+        `audit_record_failed`, not the requesting operator's. The refusal is
+        counted as unrecorded. Residual: if the withdrawal itself fails
+        before it commits, the grant may remain in force; that is counted in
+        `unrecorded_withdraw_failed` and the refusal still stands.
+        """
+        self.refusals_unrecorded += 1
+        if isinstance(failure, AuditChainBroken):
+            self.ledger_broken = True
+            self.ledger_break_reason = str(failure)
+        try:
+            self.consent.withdraw("audit_record_failed", operator=ENTRYD_ACTOR)
+        except (ConsentRefused, OSError):
+            self.unrecorded_withdraw_failed += 1
 
     def _handoff(self, frame: dict, result, deadline_at: float) -> dict:
         """The deterministic terminal step's reply: no AI is called here.

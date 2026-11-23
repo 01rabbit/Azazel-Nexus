@@ -960,7 +960,8 @@ nothing latches.
   and every 60 s (`STATUS_INTERVAL_S`), so the warning turning on or off
   reaches status within a minute. Schema `azazel-nexus/audit-status/v1`, at
   most 8 KiB, closed shape: `written_at`, `chain_verified` (did the chain
-  verify at auditd's start), `chain_bytes`, `segments`,
+  verify at auditd's start, and it turns `false` when a break is found while
+  running), `chain_bytes`, `segments`,
   `filesystem_free_bytes`, `warning` with `warning_reasons` (`chain_size`,
   `filesystem_free`, exactly what the numbers imply), the two thresholds,
   `rate_limited` totals (`<limit>:<event_type>:<tier>`, the 48 largest) and
@@ -975,10 +976,16 @@ nothing latches.
   or install.sh not re-run after an upgrade) or stale (older than 300 s,
   `STATUS_STALE_S`, or dated in the future; the last values, including a
   warning, are shown labelled as such and are not listed under `next:`).
-  `--ledger PATH` still verifies a ledger file directly and prints `audit chain:` instead. `chain_verified` is the result of the
-  verification auditd makes at its start only: damage to a segment after
-  that is not reflected until auditd restarts or an operator runs
-  `audit.verify`. A missing or unwritable leaf never stops auditd. The unit
+  `--ledger PATH` still verifies a ledger file directly and prints `audit chain:` instead. `chain_verified` starts as the result of the
+  verification auditd makes at its start. It turns `false` when auditd finds a
+  break while running (an append that cannot read the chain's tail, a
+  rate-limit summary, or `audit.verify`); from then on every append is
+  refused, diagnostics keep answering, and only a restart whose full
+  verification succeeds clears it (the status file shows that at its next
+  write). Damage that no running call reads is still not reflected
+  until then. The `checkpoint` list in `audit.verify` only parses each
+  segment; it does not recompute hashes, so a well-formed record with a wrong
+  hash is not caught by that call alone. A missing or unwritable leaf never stops auditd. The unit
   grants the leaf as `ReadWritePaths=-/var/lib/azazel/run/audit-status` (the
   `-` lets systemd start the unit when the directory does not exist, which a
   plain entry would refuse with 226/NAMESPACE); auditd then logs `cannot

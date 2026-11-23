@@ -510,11 +510,9 @@ def test_a_refusal_record_that_fails_keeps_the_suppressed_counts(service, monkey
         raise failure("fixture")
 
     monkeypatch.setattr(svc.router.ledger, "append", fail)
-    if failure is RouteSegmentFull:
-        svc.record_refusal({**refusal, "reason": "rate_limited"})
-    else:
-        with pytest.raises(AuditUnavailable):
-            svc.record_refusal({**refusal, "reason": "rate_limited"})
+    # An unavailable ledger no longer ends the serve loop (#461): the failed
+    # record is counted as unrecorded and the suppressed counts are kept.
+    svc.record_refusal({**refusal, "reason": "rate_limited"})
     svc.record_refusal({**refusal, "reason": "principal_denied"})  # suppressed meanwhile
     monkeypatch.setattr(svc.router.ledger, "append", real)
     clock.advance(entry.REFUSAL_RECORD_INTERVAL_SECONDS)
@@ -686,7 +684,9 @@ def test_a_failure_after_a_capability_record_cannot_refuse_the_next_start(
         monkeypatch.setattr(audit.os, "fsync", fsync)
         if step == "fsync-unreadable":
             monkeypatch.setattr(audit.AuditLedger, "head", head)
-    with pytest.raises(AuditUnavailable):
+    # An unreadable chain after the failed sync is a detected break (#461):
+    # AuditChainBroken, with the unknown write kept as its cause.
+    with pytest.raises(AuditChainBroken if step == "fsync-unreadable" else AuditUnavailable):
         svc.reconcile_capability()
     assert failed
     last = last_capability(svc)

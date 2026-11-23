@@ -8,6 +8,7 @@ opt-in selects no remote route (asserted below).
 
 from __future__ import annotations
 
+import json
 import os
 from types import SimpleNamespace
 
@@ -303,3 +304,41 @@ def test_a_withdrawal_on_a_broken_chain_narrows_even_when_room_would_refuse(
         verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="incident_response")
     assert refused.value.refusal is Refusal.VERB_UNAVAILABLE
     assert service.consent.reading().status == "withdrawn"
+
+
+@pytest.mark.parametrize("failure", ["broken", "unavailable", "oserror"])
+def test_a_set_whose_record_fails_after_the_commit_withdraws_the_grant(
+        service, monkeypatch, failure):
+    from azazel_nexus.audit import AuditChainBroken, AuditUnavailable
+    from azazel_nexus_runtime.protocol import Refusal
+
+    for prerequisite in list(PREREQUISITES)[:-1]:
+        verb(service, entry.OPT_IN_SET_VERB, prerequisite=prerequisite.value)
+    real = service.router._record
+
+    def record(event, **kw):
+        if event.get("event_type") == "mio.remote.opt_in":
+            raise {"broken": AuditChainBroken, "unavailable": AuditUnavailable,
+                   "oserror": OSError}[failure]("fixture")
+        return real(event, **kw)
+
+    monkeypatch.setattr(service.router, "_record", record)
+    with pytest.raises(RequestRefused) as refused:
+        verb(service, entry.OPT_IN_SET_VERB, prerequisite=list(PREREQUISITES)[-1].value)
+    assert refused.value.refusal is Refusal.VERB_UNAVAILABLE
+    assert service.consent.reading().status == "withdrawn"
+    assert not service.consent.reading().permits
+    assert service.refusals_unrecorded == 1
+    assert service.ledger_broken is (failure == "broken")
+    withdrawn = service.consent.reading()
+    document = json.loads((runtime_paths.mio_state_dir() / "remote-consent" / "opt-in.json").read_text())
+    assert document["withdrawn"]["reason"] == "audit_record_failed"
+    assert document["withdrawn"]["operator"] == entry.ENTRYD_ACTOR
+    assert withdrawn.status == "withdrawn"
+
+
+def test_the_operator_verb_does_not_offer_the_internal_withdrawal_reason(service):
+    argument = entry.OPT_IN_WITHDRAW_VERB.arguments[0]
+    assert "audit_record_failed" not in argument.choices
+    with pytest.raises(Exception):
+        entry.OPT_IN_WITHDRAW_VERB.bind({"reason": "audit_record_failed"})
