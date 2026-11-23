@@ -295,6 +295,61 @@ def test_a_broken_chain_is_reported_and_never_repaired(tmp_path):
     assert segment.read_text(encoding="utf-8") == before, "the daemon rewrote the chain"
 
 
+def test_a_tail_broken_at_runtime_refuses_appends_and_keeps_diagnostics(tmp_path):
+    """A break found while serving is the break found at start, not an exit."""
+
+    service = _service(tmp_path)
+    _append(service)
+    segment = service.ledger.root / "2026-09-20.jsonl"
+    with segment.open("a", encoding="utf-8") as handle:
+        handle.write('{"partial":')
+    before = segment.read_text(encoding="utf-8")
+
+    with pytest.raises(RequestRefused) as first:
+        _append(service)
+    assert first.value.refusal is Refusal.ARGUMENT_RANGE
+    assert service.verified is False
+    assert service.break_reason
+
+    # Repairing the file does not clear it: only a restart verifies again.
+    segment.write_text(before.rsplit("\n", 2)[0] + "\n", encoding="utf-8")
+    with pytest.raises(RequestRefused) as later:
+        _append(service)
+    assert later.value.refusal is Refusal.ARGUMENT_RANGE
+
+    status = service.handle(_request("audit.verify", {}, principal=OPERATOR))
+    assert status["verified"] is False
+    assert status["break"]
+
+
+def test_verify_while_the_damage_remains_reports_it_and_does_not_raise(tmp_path):
+    service = _service(tmp_path)
+    _append(service)
+    segment = service.ledger.root / "2026-09-20.jsonl"
+    with segment.open("a", encoding="utf-8") as handle:
+        handle.write('{"partial":')
+    status = service.handle(_request("audit.verify", {}, principal=OPERATOR))
+    assert status["verified"] is False
+    assert status["break"]
+    assert status["checkpoints"] == []
+    assert "capacity" in status
+    with pytest.raises(RequestRefused):
+        _append(service)
+
+
+def test_a_rate_limit_summary_that_finds_the_break_moves_to_the_broken_state(tmp_path, monkeypatch):
+    service = _service(tmp_path)
+    service._summary_pending[(1, "service", "activation.unit_granted", "service", "rate")] = 3
+
+    def append(*args, **kwargs):
+        raise AuditChainBroken("fixture broken tail")
+
+    monkeypatch.setattr(service.ledger, "append", append)
+    service._summarize()
+    assert service.verified is False
+    assert service.break_reason == "fixture broken tail"
+
+
 def test_a_skipped_sequence_is_a_break(tmp_path):
     service = _service(tmp_path)
     _append(service)

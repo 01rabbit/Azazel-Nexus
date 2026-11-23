@@ -8,6 +8,7 @@ opt-in selects no remote route (asserted below).
 
 from __future__ import annotations
 
+import json
 import os
 from types import SimpleNamespace
 
@@ -89,9 +90,9 @@ def test_status_set_and_withdraw_through_the_operator_verbs(service):
         "status": "absent", "generation": 0, "granted": [],
         "missing": [p.value for p in PREREQUISITES]}
     reply = grant(service)
-    assert reply["status"] == "granted" and reply["generation"] == 4
+    assert reply["status"] == "granted" and reply["generation"] == 5
     reply = verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="privacy_review")
-    assert reply["status"] == "withdrawn" and reply["generation"] == 5
+    assert reply["status"] == "withdrawn" and reply["generation"] == 6
     assert reply["drained"] is True
 
     events = recorded(service)
@@ -104,7 +105,7 @@ def test_status_set_and_withdraw_through_the_operator_verbs(service):
                  for e in events if e["event_type"] == "mio.remote.opt_in.withdrawn"]
     assert withdrawn == [{"event_type": "mio.remote.opt_in.withdrawn", "operator": "uid:1001",
                           "at": withdrawn[0]["at"], "reason": "privacy_review",
-                          "generation": 5, "drained": True}]
+                          "generation": 6, "drained": True}]
 
 
 def test_a_grant_is_recorded_before_it_is_committed(service, monkeypatch):
@@ -251,3 +252,330 @@ def test_the_default_store_is_entryds_own_leaf(service):
     assert isinstance(service.consent, ConsentStore)
     assert service.consent.directory == runtime_paths.mio_state_dir()
     assert service.consent.owner == os.geteuid()
+
+
+def test_while_the_chain_is_broken_set_is_refused_and_withdraw_narrows_without_a_record(
+        service, monkeypatch):
+    from azazel_nexus_runtime.protocol import Refusal
+
+    prerequisites = list(PREREQUISITES)
+    for prerequisite in prerequisites[:-1]:
+        verb(service, entry.OPT_IN_SET_VERB, prerequisite=prerequisite.value)
+    service.ledger_broken = True
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("the ledger was touched while broken")
+
+    monkeypatch.setattr(service.router, "_record", forbidden)
+    monkeypatch.setattr(service, "_mark", forbidden)
+    before = service.consent.reading()
+    with pytest.raises(RequestRefused) as refused:
+        verb(service, entry.OPT_IN_SET_VERB, prerequisite=prerequisites[-1].value)
+    assert refused.value.refusal is Refusal.VERB_UNAVAILABLE
+    after = service.consent.reading()
+    assert (after.generation, after.status) == (before.generation, before.status)
+
+    with pytest.raises(RequestRefused) as withdrawn:
+        verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="incident_response")
+    assert withdrawn.value.refusal is Refusal.VERB_UNAVAILABLE
+    assert service.consent.reading().status == "withdrawn"
+    assert verb(service, entry.OPT_IN_STATUS_VERB)["status"] == "withdrawn"
+
+
+@pytest.mark.parametrize("room_fault", ["broken_metadata", "no_room"])
+def test_a_withdrawal_on_a_broken_chain_narrows_even_when_room_would_refuse(
+        service, monkeypatch, room_fault):
+    from azazel_nexus.audit import AuditChainBroken
+    from azazel_nexus_runtime.protocol import Refusal
+
+    grant(service)
+    assert service.consent.reading().permits
+    service.ledger_broken = True
+
+    def room(key):
+        if room_fault == "broken_metadata":
+            raise AuditChainBroken("fixture damaged boundary metadata")
+        return False
+
+    monkeypatch.setattr(service.router.ledger, "room", room)
+    monkeypatch.setattr(service.router, "_record",
+                        lambda *a, **k: pytest.fail("the ledger was touched"))
+    with pytest.raises(RequestRefused) as refused:
+        verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="incident_response")
+    assert refused.value.refusal is Refusal.VERB_UNAVAILABLE
+    assert service.consent.reading().status == "withdrawn"
+
+
+@pytest.mark.parametrize("failure", ["broken", "unavailable", "oserror"])
+def test_a_set_whose_record_fails_after_the_commit_withdraws_the_grant(
+        service, monkeypatch, failure):
+    from azazel_nexus.audit import AuditChainBroken, AuditUnavailable
+    from azazel_nexus_runtime.protocol import Refusal
+
+    for prerequisite in list(PREREQUISITES)[:-1]:
+        verb(service, entry.OPT_IN_SET_VERB, prerequisite=prerequisite.value)
+    real = service.router._record
+
+    def record(event, **kw):
+        if event.get("event_type") == "mio.remote.opt_in":
+            raise {"broken": AuditChainBroken, "unavailable": AuditUnavailable,
+                   "oserror": OSError}[failure]("fixture")
+        return real(event, **kw)
+
+    monkeypatch.setattr(service.router, "_record", record)
+    with pytest.raises(RequestRefused) as refused:
+        verb(service, entry.OPT_IN_SET_VERB, prerequisite=list(PREREQUISITES)[-1].value)
+    assert refused.value.refusal is Refusal.VERB_UNAVAILABLE
+    assert service.consent.reading().status == "withdrawn"
+    assert not service.consent.reading().permits
+    assert service.refusals_unrecorded == 1
+    assert service.ledger_broken is (failure == "broken")
+    withdrawn = service.consent.reading()
+    document = json.loads((runtime_paths.mio_state_dir() / "remote-consent" / "opt-in.json").read_text())
+    assert document["withdrawn"]["reason"] == "audit_record_failed"
+    assert document["withdrawn"]["operator"] == entry.ENTRYD_ACTOR
+    assert withdrawn.status == "withdrawn"
+
+
+def test_the_operator_verb_does_not_offer_the_internal_withdrawal_reason(service):
+    argument = entry.OPT_IN_WITHDRAW_VERB.arguments[0]
+    assert "audit_record_failed" not in argument.choices
+    with pytest.raises(Exception):
+        entry.OPT_IN_WITHDRAW_VERB.bind({"reason": "audit_record_failed"})
+
+
+# -- a completing grant is closed until its record is confirmed ------------
+
+
+def _separate_store():
+    return ConsentStore(runtime_paths.mio_state_dir(), owner=os.geteuid())
+
+
+def _set_all_but_last(service):
+    for prerequisite in list(PREREQUISITES)[:-1]:
+        verb(service, entry.OPT_IN_SET_VERB, prerequisite=prerequisite.value)
+
+
+def _set_last(service):
+    return verb(service, entry.OPT_IN_SET_VERB, prerequisite=list(PREREQUISITES)[-1].value)
+
+
+@pytest.mark.parametrize("withdraw_failure", ["oserror", "refused"])
+@pytest.mark.parametrize("record_failure", ["broken", "unavailable", "oserror"])
+def test_w9_1_a_grant_whose_record_and_withdrawal_both_fail_stays_closed(
+        service, monkeypatch, record_failure, withdraw_failure):
+    from azazel_nexus.audit import AuditChainBroken, AuditUnavailable
+    from azazel_nexus_runtime.mio_remote_consent import ConsentRefused
+    from azazel_nexus_runtime.mio_remoted import RemoteInferenceService
+    from azazel_nexus_runtime.protocol import Refusal
+
+    _set_all_but_last(service)
+    real = service.router._record
+
+    def record(event, **kw):
+        if event.get("event_type") == "mio.remote.opt_in":
+            raise {"broken": AuditChainBroken, "unavailable": AuditUnavailable,
+                   "oserror": OSError}[record_failure]("fixture")
+        return real(event, **kw)
+
+    def fail(*a, **kw):
+        raise {"oserror": OSError, "refused": ConsentRefused}[withdraw_failure]("fixture")
+
+    monkeypatch.setattr(service.router, "_record", record)
+    monkeypatch.setattr(service.consent, "withdraw", fail)
+    with pytest.raises(RequestRefused) as refused:
+        _set_last(service)
+    assert refused.value.refusal is Refusal.VERB_UNAVAILABLE
+    assert service.unrecorded_withdraw_failed == 1
+
+    other = _separate_store()
+    reading = other.reading()
+    assert reading.status == "unconfirmed" and not reading.permits
+    with other.send_gate() as gated:
+        assert not gated.permits
+        assert RemoteInferenceService._consent_refusal(gated, gated.generation) is not None
+        assert RemoteInferenceService._consent_refusal(gated, gated.generation)[0] == "opt_in_not_granted"
+
+
+def test_the_grant_is_not_usable_while_its_record_is_being_written(service, monkeypatch):
+    _set_all_but_last(service)
+    real = service.router._record
+    seen = []
+
+    def record(event, **kw):
+        if event.get("event_type") == "mio.remote.opt_in":
+            seen.append(_separate_store().reading())
+        return real(event, **kw)
+
+    monkeypatch.setattr(service.router, "_record", record)
+    reply = _set_last(service)
+    assert [r.status for r in seen] == ["unconfirmed"] and not seen[0].permits
+    assert reply["status"] == "granted" and reply["generation"] == 5
+    assert _separate_store().reading().permits
+
+
+def test_a_confirmation_that_fails_is_withdrawn_and_refused(
+        service, monkeypatch):
+    from azazel_nexus_runtime.mio_remote_consent import ConsentRefused
+    from azazel_nexus_runtime.protocol import Refusal
+
+    _set_all_but_last(service)
+
+    def fail(*a, **kw):
+        raise ConsentRefused("fixture: busy")
+
+    monkeypatch.setattr(service.consent, "confirm", fail)
+    with pytest.raises(RequestRefused) as refused:
+        _set_last(service)
+    assert refused.value.refusal is Refusal.VERB_UNAVAILABLE
+    assert "opt_in_store" in str(refused.value.args)
+    # Refused, so narrowed at once by entryd itself.
+    reading = _separate_store().reading()
+    assert reading.status == "withdrawn" and not reading.permits
+    assert reading.opt_in.withdrawn.reason == "opt_in_not_confirmed"
+    events = [e["event_type"] for e in recorded(service)]
+    assert events.count("mio.remote.opt_in") == 1
+    assert events[-1] == "mio.remote.opt_in.not_committed"
+
+
+def test_a_confirmation_that_fails_after_publishing_is_withdrawn_before_the_reply(
+        service, monkeypatch):
+    # The confirmed record is published (rename) and then the confirmation
+    # fails (directory sync or read-back): the request is refused, so the
+    # grant must not stay usable to another process.
+    from azazel_nexus_runtime.mio_remoted import RemoteInferenceService
+    from azazel_nexus_runtime.protocol import Refusal
+
+    _set_all_but_last(service)
+    real_confirm = service.consent.confirm
+    published = []
+
+    def confirm_then_fail(generation, **kw):
+        published.append(real_confirm(generation, **kw))
+        assert _separate_store().reading().permits  # it really was open
+        raise OSError("fixture: directory fsync")
+
+    monkeypatch.setattr(service.consent, "confirm", confirm_then_fail)
+    with pytest.raises(RequestRefused) as refused:
+        _set_last(service)
+    assert refused.value.refusal is Refusal.VERB_UNAVAILABLE and published
+    other = _separate_store()
+    assert other.reading().status == "withdrawn"
+    with other.send_gate() as gated:
+        assert RemoteInferenceService._consent_refusal(
+            gated, published[0].generation) is not None
+
+
+@pytest.mark.parametrize("withdraw_failure", ["oserror", "refused"])
+def test_a_refusal_after_a_published_confirmation_always_means_closed(
+        service, monkeypatch, withdraw_failure):
+    # Published, then the confirmation fails, then the narrowing fails too:
+    # the grant is in force and already recorded (with `opens_generation`),
+    # so the reply must say granted, never a refusal over an open store.
+    from azazel_nexus_runtime.mio_remote_consent import ConsentRefused
+
+    _set_all_but_last(service)
+    real_confirm = service.consent.confirm
+
+    def confirm_then_fail(generation, **kw):
+        real_confirm(generation, **kw)
+        raise OSError("fixture: directory fsync")
+
+    def withdraw_fails(*a, **kw):
+        raise {"oserror": OSError, "refused": ConsentRefused}[withdraw_failure]("fixture")
+
+    monkeypatch.setattr(service.consent, "confirm", confirm_then_fail)
+    monkeypatch.setattr(service.consent, "withdraw", withdraw_fails)
+    reply = _set_last(service)
+    reading = _separate_store().reading()
+    assert reply["status"] == "granted" and reading.permits
+    assert reply["generation"] == reading.generation
+    grant = [e for e in recorded(service) if e["event_type"] == "mio.remote.opt_in"][-1]
+    assert grant["opens_generation"] == reading.generation
+    assert service.unrecorded_withdraw_failed == 1
+
+
+@pytest.mark.parametrize("published", [False, True])
+def test_whenever_the_set_is_refused_no_separate_reader_may_send(service, monkeypatch, published):
+    # The invariant across every confirm/withdraw failure: refused => closed.
+    from azazel_nexus_runtime.mio_remote_consent import ConsentRefused
+    from azazel_nexus_runtime.mio_remoted import RemoteInferenceService
+
+    _set_all_but_last(service)
+    real_confirm = service.consent.confirm
+
+    def confirm_fails(generation, **kw):
+        if published:
+            real_confirm(generation, **kw)
+        raise OSError("fixture")
+
+    monkeypatch.setattr(service.consent, "confirm", confirm_fails)
+    with pytest.raises(RequestRefused):
+        _set_last(service)
+    other = _separate_store()
+    with other.send_gate() as gated:
+        for generation in range(1, 8):
+            assert RemoteInferenceService._consent_refusal(gated, generation) is not None
+
+
+def test_the_grant_record_names_the_generation_a_send_is_bound_to(service):
+    _set_all_but_last(service)
+    reply = _set_last(service)
+    grant = [e for e in recorded(service) if e["event_type"] == "mio.remote.opt_in"][-1]
+    assert grant["opens_generation"] == grant["generation"] + 1 == reply["generation"]
+    assert _separate_store().reading().generation == grant["opens_generation"]
+
+
+def test_a_withdrawal_reaches_the_store_when_the_callers_share_is_spent(service, monkeypatch):
+    grant(service)
+    assert _separate_store().reading().permits
+    monkeypatch.setattr(service.router.ledger, "room", lambda key: False, raising=False)
+    verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="operator_request")
+    assert _separate_store().reading().status == "withdrawn"
+    # A widening verb is still refused on a spent share.
+    with pytest.raises(RequestRefused):
+        verb(service, entry.OPT_IN_SET_VERB, prerequisite=list(PREREQUISITES)[0].value)
+
+
+@pytest.mark.parametrize("fault", ["unavailable", "broken"])
+def test_a_confirmation_that_fails_while_the_ledger_is_down_still_refuses(
+        service, monkeypatch, fault):
+    from azazel_nexus.audit import AuditChainBroken, AuditUnavailable
+    from azazel_nexus_runtime.mio_remote_consent import ConsentRefused
+    from azazel_nexus_runtime.protocol import Refusal
+
+    _set_all_but_last(service)
+    unrecorded = service.refusals_unrecorded
+
+    def confirm_fails(*a, **kw):
+        # The ledger goes away (or is found broken) just before the
+        # not_committed record.
+        def down(event, **kw):
+            if fault == "broken":
+                raise AuditChainBroken("fixture: chain")
+            raise AuditUnavailable("down")
+        monkeypatch.setattr(service.router, "_record", down)
+        raise ConsentRefused("fixture")
+
+    monkeypatch.setattr(service.consent, "confirm", confirm_fails)
+    with pytest.raises(RequestRefused) as refused:
+        _set_last(service)
+    assert refused.value.refusal is Refusal.VERB_UNAVAILABLE
+    assert not _separate_store().reading().permits
+    assert service.refusals_unrecorded == unrecorded + 1
+    # A break found by this record is the daemon's broken state, not swallowed.
+    assert service.ledger_broken is (fault == "broken")
+
+
+def test_a_set_after_an_unconfirmed_grant_starts_from_the_empty_set(service, monkeypatch):
+    from azazel_nexus_runtime.mio_remote_consent import ConsentRefused
+
+    _set_all_but_last(service)
+    monkeypatch.setattr(service.consent, "confirm",
+                        lambda *a, **kw: (_ for _ in ()).throw(ConsentRefused("x")))
+    with pytest.raises(RequestRefused):
+        _set_last(service)
+    monkeypatch.undo()
+    reply = verb(service, entry.OPT_IN_SET_VERB, prerequisite=PREREQUISITES[0].value)
+    assert reply["status"] == "incomplete"
+    assert reply["granted"] == [PREREQUISITES[0].value]

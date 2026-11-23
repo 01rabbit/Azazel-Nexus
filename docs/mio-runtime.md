@@ -340,7 +340,24 @@ generation, so a withdrawal always takes effect. A
 grant is recorded in the route ledger (`mio.remote.opt_in.set`) before it is
 committed; a withdrawal is committed before it is recorded
 (`mio.remote.opt_in.withdrawn` with the generation), so a ledger fault never
-leaves an opt-in in force. Writes are a private temporary file, fsync, rename,
+leaves an opt-in in force. The set that completes the four prerequisites is
+written *pending* (`unconfirmed`: `permits` is false for the recheck and the
+send gate), recorded, and only then confirmed by a further generation without
+`pending`; if the record fails the grant is withdrawn (best effort), and if
+that also fails or the process dies the record stays `unconfirmed`, i.e.
+closed. The grant record names both the pending generation and
+`opens_generation`, the one `confirm` writes and a send is bound to. If the
+confirmation itself fails (also after its rename, at the directory sync or the
+read back), the request is refused and entryd withdraws the grant at once
+(`opt_in_not_confirmed`, best effort) so the reply and the store agree: a
+refusal is returned only when the store then reads closed. If that narrowing
+fails over a published confirmation, the grant is in force and already
+recorded with its `opens_generation`, and the reply says `granted`. A
+withdrawal is never refused for a spent route budget share: it skips the
+share check, like every narrowing. A set over a pending record starts from
+the empty set. Statuses:
+`absent`, `incomplete`, `unconfirmed`, `granted`, `withdrawn`, `unavailable`.
+Writes are a private temporary file, fsync, rename,
 directory fsync and read back.
 
 Reads are fail-closed and never raise: absent is `NO_OPT_IN` (generation 0);
@@ -697,7 +714,7 @@ taken after it returns. `MAX_AI_ATTEMPTS`, the reserves and
 `InFlightDisposition` are unchanged. Entry passes a recheck that re-evaluates
 `remote_admission` with the opt-in read **again** from the remote opt-in store
 (see *Remote opt-in store* below) and `unchecked_reading()`. A generation that
-moved since the selection, a withdrawn or incomplete opt-in, and a store that
+moved since the selection, a withdrawn, incomplete or unconfirmed opt-in, and a store that
 cannot be believed all read as `NO_OPT_IN`, so the recheck only narrows. Trust
 stays `unchecked` and the allowlist empty, so in this build remote is still
 never selected and nothing changes in production. Remaining: cancelling a

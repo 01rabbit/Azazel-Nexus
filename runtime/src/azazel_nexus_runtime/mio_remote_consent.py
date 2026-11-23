@@ -12,7 +12,8 @@ This is the one place a remote opt-in lives on the node.
 record: which of the four prerequisites (`mio_profile.PREREQUISITES`) the
 operator explicitly set, who and when, whether it was withdrawn and why, and
 a **generation**. Every change -- setting a prerequisite or withdrawing --
-writes the next generation. Nothing lowers it and there is no reset verb.
+writes the next generation (so does `confirm`, below). Nothing lowers it
+and there is no reset verb.
 
 The generation is what a send is bound to. The sanitizer boundary puts the
 generation it read into the signed envelope (`remote_envelope`), and
@@ -20,6 +21,20 @@ generation it read into the signed envelope (`remote_envelope`), and
 the transport, under the send gate below. A withdrawal moves the generation,
 so an envelope minted before it never matches again -- not after a
 re-grant, which moves it once more.
+
+## A grant is pending until its audit record is confirmed
+
+`set_prerequisite` writes the record that completes the four prerequisites
+with `pending: true` (the key exists only then; older records decode
+unchanged). Its reading is `unconfirmed` and `permits` is False, for the
+recheck and for the send gate alike, so no sender can use a grant whose audit
+record is not yet known to be written. Only `confirm(generation)` -- which
+entryd calls after the record is written -- writes the next generation without
+`pending`. A crash anywhere before it leaves the pending record on disk, which
+stays closed after a restart. `withdraw` over a pending record writes a
+withdrawn record without `pending`, and a later set starts from the empty
+set: the unrecorded prerequisite is never carried over. Only the completing
+set is pending; an incomplete set grants nothing, so it has nothing to close.
 
 ## Written only through the operator verbs
 
@@ -31,7 +46,8 @@ an opt-in, and absence of the record is `NO_OPT_IN`.
 
 ## Fail-closed reading
 
-`reading()` never raises. Absent is `NO_OPT_IN` at generation 0. A record
+`reading()` never raises. Absent is `NO_OPT_IN` at generation 0. A pending
+record reads `unconfirmed`, which is also `NO_OPT_IN`. A record
 that is malformed, not canonical, oversized, linked, mis-owned, group or
 other accessible, changing while read, or **lower than a generation this
 process has already seen** (including absent after present: a rolled-back or
@@ -100,6 +116,7 @@ __all__ = [
     "RECORD_FILENAME",
     "SCHEMA",
     "WITHDRAWAL_REASONS",
+    "INTERNAL_WITHDRAWAL_REASONS",
     "decode_record",
     "encode_record",
 ]
@@ -125,6 +142,10 @@ WITHDRAWAL_REASONS = (
     "provider_change",
     "incident_response",
 )
+#: Reasons only entryd itself records (never an operator verb argument): the
+#: automatic withdrawal of a grant whose record could not be written, or
+#: whose confirmation failed (possibly after it was already published).
+INTERNAL_WITHDRAWAL_REASONS = ("audit_record_failed", "opt_in_not_confirmed")
 
 
 class ConsentRefused(Exception):
@@ -142,6 +163,7 @@ class ConsentRecord:
     operator: str
     at: str
     withdrawn: Optional[tuple[str, str, str]] = None  # operator, at, reason
+    pending: bool = False
 
     def __post_init__(self) -> None:
         if type(self.generation) is not int or not 1 <= self.generation <= _MAX_GENERATION:
@@ -154,11 +176,15 @@ class ConsentRecord:
         for text in (self.operator, self.at):
             if type(text) is not str or not text.strip() or len(text) > 64:
                 raise ConsentRefused("operator and time are bounded non-empty text")
+        if type(self.pending) is not bool:
+            raise ConsentRefused("pending is a boolean")
+        if self.pending and self.withdrawn is not None:
+            raise ConsentRefused("a withdrawn record is not pending")
         if self.withdrawn is not None:
             if (type(self.withdrawn) is not tuple or len(self.withdrawn) != 3
                     or any(type(v) is not str or not v.strip() or len(v) > 64
                            for v in self.withdrawn)
-                    or self.withdrawn[2] not in WITHDRAWAL_REASONS):
+                    or self.withdrawn[2] not in WITHDRAWAL_REASONS + INTERNAL_WITHDRAWAL_REASONS):
                 raise ConsentRefused("a withdrawal records operator, time and a known reason")
 
     def opt_in(self) -> RemoteOptIn:
@@ -178,11 +204,19 @@ def encode_record(record: ConsentRecord) -> bytes:
     if record.withdrawn is not None:
         operator, at, reason = record.withdrawn
         withdrawn = {"operator": operator, "at": at, "reason": reason}
-    return json.dumps({
+    document = {
         "schema": SCHEMA, "generation": record.generation,
         "granted": list(record.granted), "operator": record.operator,
         "at": record.at, "withdrawn": withdrawn,
-    }, sort_keys=True, separators=(",", ":")).encode()
+    }
+    if record.pending:
+        # Only a pending record carries the key, so every record written
+        # before it existed still decodes, and encodes, unchanged.
+        document["pending"] = True
+    return json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+
+
+_FIELDS = {"schema", "generation", "granted", "operator", "at", "withdrawn"}
 
 
 def _unique(pairs):
@@ -201,11 +235,12 @@ def decode_record(raw: bytes) -> ConsentRecord:
             raise ConsentRefused("size")
         document = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique)
         if (type(document) is not dict
-                or set(document) != {"schema", "generation", "granted", "operator",
-                                     "at", "withdrawn"}
+                or set(document) not in (_FIELDS, _FIELDS | {"pending"})
                 or document["schema"] != SCHEMA
                 or type(document["granted"]) is not list):
             raise ConsentRefused("fields")
+        if "pending" in document and document["pending"] is not True:
+            raise ConsentRefused("pending is present only as true")
         withdrawn = document["withdrawn"]
         if withdrawn is not None:
             if type(withdrawn) is not dict or set(withdrawn) != {"operator", "at", "reason"}:
@@ -214,6 +249,7 @@ def decode_record(raw: bytes) -> ConsentRecord:
         record = ConsentRecord(
             generation=document["generation"], granted=tuple(document["granted"]),
             operator=document["operator"], at=document["at"], withdrawn=withdrawn,
+            pending="pending" in document,
         )
         if encode_record(record) != raw:
             raise ConsentRefused("not canonical")
@@ -232,7 +268,7 @@ class ConsentReading:
 
     opt_in: RemoteOptIn
     generation: Optional[int]
-    status: str  # absent | incomplete | granted | withdrawn | unavailable
+    status: str  # absent | incomplete | unconfirmed | granted | withdrawn | unavailable
 
     @property
     def permits(self) -> bool:
@@ -247,6 +283,8 @@ def _reading_of(record: ConsentRecord) -> ConsentReading:
     opt_in = record.opt_in()
     if record.withdrawn is not None:
         status = "withdrawn"
+    elif record.pending:
+        status = "unconfirmed"
     elif opt_in.complete:
         status = "granted"
     else:
@@ -483,19 +521,44 @@ class ConsentStore:
         """Record one prerequisite the operator explicitly set; next generation.
 
         After a withdrawal the set starts empty again: a withdrawn opt-in is
-        not resumed by setting one of its four prerequisites.
+        not resumed by setting one of its four prerequisites. The same holds
+        over a pending record: the unrecorded prerequisite is not carried.
+        A set that completes the four is written pending (`confirm`).
         """
         if type(prerequisite) is not RemotePrerequisite:
             raise ConsentRefused("a known prerequisite is required")
 
         def make(current, generation):
             granted = set()
-            if current is not None and current.withdrawn is None:
+            if current is not None and current.withdrawn is None and not current.pending:
                 granted = set(current.granted)
             granted.add(prerequisite.value)
             order = [p.value for p in PREREQUISITES]
             return ConsentRecord(generation=generation,
                                  granted=tuple(sorted(granted, key=order.index)),
+                                 operator=operator, at=self._clock(),
+                                 pending=len(granted) == len(order))
+
+        return self._change(make, over_rollback=False)
+
+    def confirm(self, generation: int, *, operator: str) -> ConsentRecord:
+        """Open a pending grant once its record is confirmed; next generation.
+
+        Succeeds only if the record in force is exactly `generation`, pending
+        and not withdrawn. The written record has the same granted set, the
+        confirming operator and time, and no `pending`. Anything else (moved,
+        withdrawn, already confirmed, generation exhausted, busy, unreadable)
+        is `ConsentRefused` and the store is left as it was: a pending record
+        stays closed.
+        """
+        if type(generation) is not int:
+            raise ConsentRefused("a generation is required")
+
+        def make(current, next_generation):
+            if (current is None or current.generation != generation
+                    or not current.pending or current.withdrawn is not None):
+                raise ConsentRefused("no such pending grant to confirm")
+            return ConsentRecord(generation=next_generation, granted=current.granted,
                                  operator=operator, at=self._clock())
 
         return self._change(make, over_rollback=False)
@@ -507,7 +570,7 @@ class ConsentStore:
         a store rolled back under this process (the withdrawal is written
         above the generation seen), never over one that cannot be read.
         """
-        if reason not in WITHDRAWAL_REASONS:
+        if reason not in WITHDRAWAL_REASONS + INTERNAL_WITHDRAWAL_REASONS:
             raise ConsentRefused("a known withdrawal reason is required")
 
         def make(current, generation):

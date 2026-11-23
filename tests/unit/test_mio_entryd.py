@@ -12,9 +12,9 @@ from azazel_nexus_runtime import mio_entryd as entry
 from azazel_nexus_runtime import mio_socket_client as client
 from azazel_nexus_runtime import runtime_paths
 from azazel_nexus_runtime.principal import Principal, PrincipalClass
-from azazel_nexus_runtime.protocol import ArgumentKind, RequestRefused
+from azazel_nexus_runtime.protocol import ArgumentKind, Refusal, RequestRefused
 
-from azazel_nexus.audit import AuditUnavailable
+from azazel_nexus.audit import AuditChainBroken, AuditUnavailable
 from azazel_nexus.mio_profile import MioProfile
 from azazel_nexus.route_ledger import RouteChain
 from azazel_nexus.routing import Route
@@ -520,3 +520,194 @@ def test_main_prepares_the_shared_core_before_it_serves():
     prepared = [line for line, name in names if name == "prepare_shared_core"]
     served = [line for line, name in names if name == "serve_forever"]
     assert len(prepared) == 1 and len(served) == 1 and prepared[0] < served[0]
+
+
+def _break_appends(service, monkeypatch):
+    calls = []
+
+    def append(event, **kwargs):
+        calls.append(event["event_type"])
+        raise AuditChainBroken("fixture broken tail")
+
+    monkeypatch.setattr(service.router.ledger, "append", append)
+    return calls
+
+
+def test_runtime_chain_break_refuses_the_request_and_every_later_one(service, monkeypatch):
+    monkeypatch.setattr(service.local, "observe", lambda **_: "local_unavailable")
+    monkeypatch.setattr(service.remote, "observe", lambda **_: "remote_unavailable")
+    calls = _break_appends(service, monkeypatch)
+    with pytest.raises(RequestRefused) as first:
+        service.handle(request())
+    assert first.value.refusal is Refusal.VERB_UNAVAILABLE
+    assert service.ledger_broken is True
+    attempted = len(calls)
+    with pytest.raises(RequestRefused) as later:
+        service.handle(request())
+    assert later.value.refusal is Refusal.VERB_UNAVAILABLE
+    assert len(calls) == attempted, "a broken chain must not be written to again"
+
+
+def test_runtime_chain_break_in_the_reply_ledger_seq_read_is_a_refusal(service, monkeypatch):
+    monkeypatch.setattr(service.local, "observe", lambda **_: "local_unavailable")
+    monkeypatch.setattr(service.remote, "observe", lambda **_: "remote_unavailable")
+
+    def head():
+        raise AuditChainBroken("fixture broken tail")
+
+    monkeypatch.setattr(service.router.ledger, "head", head)
+    with pytest.raises(RequestRefused) as refused:
+        service.handle(request())
+    assert refused.value.refusal is Refusal.VERB_UNAVAILABLE
+    assert service.ledger_broken is True
+
+
+def test_runtime_chain_break_in_the_refusal_record_does_not_escape(service, monkeypatch):
+    _break_appends(service, monkeypatch)
+    service.record_refusal({"event_type": "runtime.request_refused",
+                            "reason": "verb_unavailable", "uid": 1})
+    assert service.ledger_broken is True
+    assert service.refusals_unrecorded == 1
+
+
+def test_runtime_chain_break_in_the_capability_tick_does_not_end_the_loop(service, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(entry, "serve_forever", lambda **kw: captured.update(kw) or 0)
+    monkeypatch.setattr(entry.PrincipalPolicy, "resolve", lambda **kw: "policy")
+    runtime_paths.socket_path("mio-advise").parent.mkdir(parents=True)
+    assert entry.main([], ready=lambda: None) == 0
+    handler = captured["handler"].__self__
+
+    def reconcile(*args, **kwargs):
+        raise AuditChainBroken("fixture broken tail")
+
+    monkeypatch.setattr(handler, "reconcile_capability", reconcile)
+    assert captured["stop"]() is False
+    assert handler.ledger_broken is True
+    assert captured["stop"]() is False
+
+
+def test_after_the_break_a_transport_refusal_never_touches_the_ledger(service, monkeypatch):
+    from azazel_nexus_runtime.transport import SocketServer
+
+    _break_appends(service, monkeypatch)
+    engine = SocketServer(registry=entry.REGISTRY, policy=None, audit=service.record_refusal)
+    refused = RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger")
+    engine._record_refusal(refused, None, b"{}")
+    assert service.ledger_broken is True
+    assert service.ledger_break_reason == "fixture broken tail"
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("the ledger was touched after the break")
+
+    monkeypatch.setattr(service.router, "_record", forbidden)
+    monkeypatch.setattr(service.router.ledger, "append", forbidden)
+    before = service.refusals_unrecorded
+    monkeypatch.setattr(service, "_clock", lambda: 10 ** 9)
+    engine._record_refusal(refused, None, b"{}")
+    engine._record_refusal(refused, None, b"{}")
+    assert service.refusals_unrecorded > before
+
+
+def test_the_tick_does_not_reconcile_again_after_the_break(service, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(entry, "serve_forever", lambda **kw: captured.update(kw) or 0)
+    monkeypatch.setattr(entry.PrincipalPolicy, "resolve", lambda **kw: "policy")
+    runtime_paths.socket_path("mio-advise").parent.mkdir(parents=True)
+    assert entry.main([], ready=lambda: None) == 0
+    handler = captured["handler"].__self__
+    calls = []
+
+    def reconcile(*args, **kwargs):
+        calls.append(1)
+        raise AuditChainBroken("fixture broken tail")
+
+    monkeypatch.setattr(handler, "reconcile_capability", reconcile)
+    captured["stop"]()
+    assert len(calls) == 1
+    captured["stop"]()
+    captured["stop"]()
+    assert len(calls) == 1
+
+
+def _serve_once(service, monkeypatch, verb, arguments):
+    """One request through the transport's serve_connection (the entryd boundary)."""
+    import json as _json
+    import socket as _socket
+
+    from azazel_nexus_runtime import transport
+    from azazel_nexus_runtime.principal import PrincipalPolicy
+
+    monkeypatch.setattr(transport, "peer_credentials", lambda c: (1, os.getuid(), os.getgid()))
+    monkeypatch.setattr(transport, "peer_supplementary_groups", lambda c: ())
+    engine = transport.SocketServer(
+        registry=entry.REGISTRY, policy=PrincipalPolicy(os.getgid(), frozenset()),
+        audit=service.record_refusal)
+    left, right = _socket.socketpair()
+    with left, right:
+        transport.send_frame(left, {"verb": verb, "arguments": arguments})
+        left.shutdown(_socket.SHUT_WR)
+        engine.serve_connection(right, service.handle)
+        right.shutdown(_socket.SHUT_WR)
+        return _json.loads(transport.read_frame(left))
+
+
+def test_a_write_failure_with_an_unreadable_chain_is_a_fixed_refusal_and_the_loop_survives(
+        service, monkeypatch):
+    from azazel_nexus import audit
+
+    monkeypatch.setattr(service.local, "observe", lambda **_: "local_unavailable")
+    monkeypatch.setattr(service.remote, "observe", lambda **_: "remote_unavailable")
+    failed = []
+    real_append, real_head = audit.AuditLedger.append, audit.AuditLedger.head
+
+    def append(self, event, **kwargs):
+        if not failed:
+            failed.append("append")
+            raise AuditUnavailable("sync fixture")
+        return real_append(self, event, **kwargs)
+
+    def head(self):
+        if failed == ["append"]:
+            raise AuditChainBroken("unreadable fixture")
+        return real_head(self)
+
+    monkeypatch.setattr(audit.AuditLedger, "append", append)
+    monkeypatch.setattr(audit.AuditLedger, "head", head)
+    args = {"privacy_class": PrivacyClass.P0_PUBLIC.value, "deadline_ms": 1000}
+    first = _serve_once(service, monkeypatch, "mio.route", args)
+    assert first == {"ok": False, "refusal": "verb_unavailable"}
+    assert service.ledger_broken is True
+    second = _serve_once(service, monkeypatch, "mio.route", args)
+    assert second == {"ok": False, "refusal": "verb_unavailable"}
+
+
+@pytest.mark.parametrize("failure", [AuditUnavailable("fixture"), OSError("fixture")],
+                         ids=["audit_unavailable", "oserror"])
+def test_when_the_post_commit_record_and_the_refusal_record_both_fail_the_loop_survives(
+        service, monkeypatch, failure):
+    from azazel_nexus.mio_profile import PREREQUISITES
+    from azazel_nexus_runtime import transport
+    from azazel_nexus_runtime.principal import PrincipalPolicy
+
+    monkeypatch.setattr(service, "_explainer_uid", None, raising=False)
+    names = [p.value for p in PREREQUISITES]
+    service.rate = type("R", (), {"take": lambda self, uid: True})()
+    monkeypatch.setattr(transport, "peer_credentials", lambda c: (1, os.getuid(), os.getgid()))
+    monkeypatch.setattr(transport, "peer_supplementary_groups", lambda c: ())
+    policy = PrincipalPolicy(os.getgid(), frozenset())
+    for name in names[:-1]:
+        _serve_once(service, monkeypatch, "mio.remote.opt_in.set", {"prerequisite": name})
+    real = service.router._record
+
+    def record(event, **kw):
+        if event.get("event_type") in {"mio.remote.opt_in", "runtime.request_refused"}:
+            raise failure
+        return real(event, **kw)
+
+    monkeypatch.setattr(service.router, "_record", record)
+    reply = _serve_once(service, monkeypatch, "mio.remote.opt_in.set", {"prerequisite": names[-1]})
+    assert reply == {"ok": False, "refusal": "verb_unavailable"}
+    assert service.consent.reading().status == "withdrawn"
+    assert service.ledger_broken is False
+    assert service.refusals_unrecorded >= 2

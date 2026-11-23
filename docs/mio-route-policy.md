@@ -150,7 +150,7 @@ recheck that refuses, raises or returns anything but a permitting
 refusal. Entry passes a recheck that re-evaluates `remote_admission` with the
 same inputs as the selection, except that the opt-in is read again from the
 remote opt-in store (`mio_remote_consent`): a generation moved since the
-selection, a withdrawn or incomplete opt-in, or a store that cannot be
+selection, a withdrawn, incomplete or unconfirmed (granted but not yet recorded) opt-in, or a store that cannot be
 believed (unreadable, malformed, rolled back) reads as `NO_OPT_IN`. Trust is
 still `unchecked` and the endpoint allowlist empty, so remote is never
 selected and production behaviour is unchanged. Evidence:

@@ -41,7 +41,7 @@ def _grant_all(store: ConsentStore) -> ConsentRecord:
     record = None
     for prerequisite in PREREQUISITES:
         record = store.set_prerequisite(prerequisite, operator=OPERATOR)
-    return record
+    return store.confirm(record.generation, operator=OPERATOR)
 
 
 def _record_path(directory):
@@ -70,11 +70,14 @@ def test_each_prerequisite_is_explicit_and_each_change_is_a_generation(directory
         record = store.set_prerequisite(prerequisite, operator=OPERATOR)
         generations.append(record.generation)
         reading = store.reading()
-        assert reading.permits is (index == len(PREREQUISITES) - 1)
+        assert not reading.permits
+        assert reading.status == ("unconfirmed" if index == len(PREREQUISITES) - 1
+                                  else "incomplete")
     assert generations == [1, 2, 3, 4]
+    confirmed = store.confirm(4, operator=OPERATOR)
     reading = store.reading()
-    assert reading.status == "granted" and reading.opt_in.active()
-    assert reading.generation == 4
+    assert reading.status == "granted" and reading.opt_in.active() and reading.permits
+    assert reading.generation == confirmed.generation == 5
 
 
 def test_setting_the_same_prerequisite_again_still_moves_the_generation(directory):
@@ -89,7 +92,7 @@ def test_withdrawal_moves_the_generation_and_stops_permitting(directory):
     _grant_all(store)
     record, drained = store.withdraw("privacy_review", operator="uid:1002")
     assert drained is True
-    assert record.generation == 5
+    assert record.generation == 6
     reading = store.reading()
     assert reading.status == "withdrawn" and not reading.permits
     assert reading.opt_in.withdrawn.operator == "uid:1002"
@@ -103,10 +106,10 @@ def test_a_regrant_starts_from_nothing_and_never_reuses_a_generation(directory):
     _grant_all(store)
     store.withdraw("operator_request", operator=OPERATOR)
     record = store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR)
-    assert record.generation == 6 and record.granted == ("remote use",)
+    assert record.generation == 7 and record.granted == ("remote use",)
     assert not store.reading().permits
     record = _grant_all(store)
-    assert record.generation == 10 and store.reading().permits
+    assert record.generation == 12 and store.reading().permits
 
 
 def test_an_unknown_withdrawal_reason_or_prerequisite_is_refused(directory):
@@ -127,7 +130,7 @@ def test_a_withdrawal_survives_a_restart(directory):
     restarted = _store(directory)
     reading = restarted.reading()
     assert reading.status == "withdrawn" and not reading.permits
-    assert reading.generation == 5
+    assert reading.generation == 6
 
 
 def test_a_stale_partial_file_from_a_crash_is_never_read(directory):
@@ -260,10 +263,10 @@ def test_a_withdrawal_over_a_rolled_back_record_is_written_above_it(directory):
     store = _store(directory)
     _grant_all(store)
     granted = _record_path(directory).read_bytes()
-    store.withdraw("operator_request", operator=OPERATOR)  # generation 5
-    _corrupt(directory, granted)  # generation 4, granted
+    store.withdraw("operator_request", operator=OPERATOR)  # generation 6
+    _corrupt(directory, granted)  # generation 5, granted
     record, _ = store.withdraw("incident_response", operator=OPERATOR)
-    assert record.generation == 6
+    assert record.generation == 7
     assert store.reading().status == "withdrawn"
 
 
@@ -343,7 +346,7 @@ def test_a_drain_that_expires_leaves_the_withdrawal_in_force(directory):
         os.close(fd)
     assert drained is False
     assert store.reading().status == "withdrawn"
-    assert record.generation == 5
+    assert record.generation == 6
 
 
 def test_the_store_does_not_reach_knowledge():
@@ -360,20 +363,131 @@ def test_the_store_does_not_reach_knowledge():
 
 def test_at_the_generation_ceiling_a_grant_is_refused_and_a_withdrawal_still_works(
         directory, monkeypatch):
-    monkeypatch.setattr(mc, "_MAX_GENERATION", 4)
+    monkeypatch.setattr(mc, "_MAX_GENERATION", 5)
     store = _store(directory)
     record = _grant_all(store)
-    assert record.generation == 4 and store.reading().permits
+    assert record.generation == 5 and store.reading().permits
     with pytest.raises(ConsentRefused):
         store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR)
     record, drained = store.withdraw("incident_response", operator=OPERATOR)
-    assert drained is True and record.generation == 4
+    assert drained is True and record.generation == 5
     reading = store.reading()
     assert reading.status == "withdrawn" and not reading.permits
     # Not a rollback for this process, nor for a restarted one.
     assert _store(directory).reading().status == "withdrawn"
     # A second withdrawal at the ceiling also stands; a grant stays refused.
-    assert store.withdraw("operator_request", operator=OPERATOR)[0].generation == 4
+    assert store.withdraw("operator_request", operator=OPERATOR)[0].generation == 5
     with pytest.raises(ConsentRefused):
         store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR)
     assert store.reading().status == "withdrawn"
+
+
+# -- a completing grant is pending until confirmed -------------------------
+
+
+def _complete_pending(store):
+    record = None
+    for prerequisite in PREREQUISITES:
+        record = store.set_prerequisite(prerequisite, operator=OPERATOR)
+    return record
+
+
+def test_the_completing_set_is_pending_and_permits_nothing_to_any_reader(directory):
+    store = _store(directory)
+    record = _complete_pending(store)
+    assert record.pending and record.generation == 4
+    for reader in (store, _store(directory)):
+        reading = reader.reading()
+        assert reading.status == "unconfirmed" and not reading.permits
+        assert reading.opt_in.complete
+        with reader.send_gate() as gated:
+            assert gated.status == "unconfirmed" and not gated.permits
+
+
+def test_an_incomplete_set_is_not_pending(directory):
+    store = _store(directory)
+    record = store.set_prerequisite(PREREQUISITES[0], operator=OPERATOR)
+    assert not record.pending and store.reading().status == "incomplete"
+    assert b"pending" not in _record_path(directory).read_bytes()
+
+
+def test_confirm_opens_the_pending_grant_with_the_next_generation(directory):
+    store = _store(directory)
+    pending = _complete_pending(store)
+    confirmed = store.confirm(pending.generation, operator="uid:1002")
+    assert confirmed.generation == 5 and not confirmed.pending
+    assert confirmed.granted == pending.granted and confirmed.operator == "uid:1002"
+    assert b"pending" not in _record_path(directory).read_bytes()
+    other = _store(directory).reading()
+    assert other.status == "granted" and other.permits and other.generation == 5
+
+
+@pytest.mark.parametrize("case", ["wrong_generation", "already_confirmed", "withdrawn",
+                                  "absent", "incomplete"])
+def test_confirm_refuses_anything_but_the_pending_generation_in_force(directory, case):
+    store = _store(directory)
+    if case == "absent":
+        generation = 1
+    elif case == "incomplete":
+        generation = store.set_prerequisite(PREREQUISITES[0], operator=OPERATOR).generation
+    else:
+        pending = _complete_pending(store)
+        generation = pending.generation
+        if case == "wrong_generation":
+            generation -= 1
+        elif case == "already_confirmed":
+            store.confirm(generation, operator=OPERATOR)
+        else:
+            store.withdraw("operator_request", operator=OPERATOR)
+    before = _record_path(directory).read_bytes() if _record_path(directory).exists() else None
+    with pytest.raises(ConsentRefused):
+        store.confirm(generation, operator=OPERATOR)
+    after = _record_path(directory).read_bytes() if _record_path(directory).exists() else None
+    assert before == after
+    assert store.reading().permits is (case == "already_confirmed")
+
+
+def test_confirm_at_the_generation_ceiling_is_refused_and_stays_pending(directory, monkeypatch):
+    monkeypatch.setattr(mc, "_MAX_GENERATION", 4)
+    store = _store(directory)
+    pending = _complete_pending(store)
+    with pytest.raises(ConsentRefused):
+        store.confirm(pending.generation, operator=OPERATOR)
+    assert store.reading().status == "unconfirmed" and not store.reading().permits
+
+
+def test_withdrawing_a_pending_grant_writes_a_record_without_pending(directory):
+    store = _store(directory)
+    pending = _complete_pending(store)
+    record, _ = store.withdraw("audit_record_failed", operator="entryd")
+    assert record.generation == pending.generation + 1 and not record.pending
+    assert b"pending" not in _record_path(directory).read_bytes()
+    assert _store(directory).reading().status == "withdrawn"
+
+
+def test_a_set_over_a_pending_record_starts_from_the_empty_set(directory):
+    store = _store(directory)
+    _complete_pending(store)
+    record = store.set_prerequisite(PREREQUISITES[1], operator=OPERATOR)
+    assert record.granted == (PREREQUISITES[1].value,) and not record.pending
+    assert store.reading().status == "incomplete"
+
+
+def test_pending_is_encoded_only_when_true_and_decoded_only_as_true():
+    plain = ConsentRecord(generation=1, granted=("remote use",), operator=OPERATOR,
+                          at="2026-10-28T00:00:00Z")
+    pending = ConsentRecord(generation=1, granted=("remote use",), operator=OPERATOR,
+                            at="2026-10-28T00:00:00Z", pending=True)
+    raw = encode_record(plain)
+    assert b"pending" not in raw and decode_record(raw) == plain
+    raw = encode_record(pending)
+    assert b'"pending":true' in raw and decode_record(raw) == pending
+    for bad in (raw.replace(b'"pending":true', b'"pending":false'),
+                raw.replace(b'"pending":true', b'"pending":1'),
+                raw.replace(b'"pending":true', b'"pending":null')):
+        with pytest.raises(ConsentRefused):
+            decode_record(bad)
+    with pytest.raises(ConsentRefused):
+        ConsentRecord(generation=1, granted=(), operator=OPERATOR, at="t",
+                      withdrawn=(OPERATOR, "t", "operator_request"), pending=True)
+    assert mc.SCHEMA == "azazel-nexus/mio-remote-opt-in/v1"

@@ -131,14 +131,20 @@
       ]
     },
     "mio.consent": {
-      "sha256": "032be5d5e2c461b4c5e0c1769857c90ad251c36a8ac0fc11bea484902f608ed0",
-      "covers": "ConsentStore の世代と send gate（未設定→4 前提→撤回→再設定、時刻注入）と、非正準・重複・過大な記録の拒否",
+      "sha256": "812dd5b40560356906c862ec36ca658d0cc91be92b691f428870ad02622c6aa1",
+      "covers": "ConsentStore の世代と send gate（未設定→4 前提（pending）→confirm→撤回→再設定、時刻注入）と、非正準・重複・過大な記録の拒否",
       "history": [
         {
           "date": "2026-10-29",
           "sha256": "032be5d5e2c461b4c5e0c1769857c90ad251c36a8ac0fc11bea484902f608ed0",
           "commit_note": "初版（共通試験ベクトルの導入）",
           "reason": "初めて固定した。aarch64（colima）と amd64（Rosetta）、Python 3.11 と 3.12 で同じ値になることを確認してから記録した"
+        },
+        {
+          "date": "2026-11-23",
+          "sha256": "812dd5b40560356906c862ec36ca658d0cc91be92b691f428870ad02622c6aa1",
+          "commit_note": "#461（#458）opt-in の pending と confirm",
+          "reason": "意図した意味の変更。4 つの前提が揃う set は pending（unconfirmed、permits 偽、レコードに \"pending\":true）で書き、監査記録の後の confirm で次の世代に granted になる。vector に confirm の段を足したため、以後の世代が 1 つずつ進む。aarch64 と amd64（Rosetta）の Python 3.12 で同じ値になることを確認した"
         }
       ]
     },
