@@ -811,8 +811,9 @@ class MioEntryService:
         timeout, dropped connection) has an unknown result, like `granted`:
         N+1 may be in force. The unsettled state lives in this process only; after
         a restart `status` can read `granted`. The one confirmation of closure is
-        a `withdraw` that returns success with `status` `withdrawn`; `status` no
-        longer reading `unsettled` is not one. Remaining case: entryd ends after
+        a `withdraw` that returns success (its write is synced and read back;
+        `status` reads `withdrawn`, or `unavailable` if the store or seal cannot
+        be read); `status` no longer reading `unsettled` is not one. Remaining case: entryd ends after
         the seal was removed and before a closing write was confirmed.
         """
         not_committed = {"event_type": "mio.remote.opt_in.not_committed",

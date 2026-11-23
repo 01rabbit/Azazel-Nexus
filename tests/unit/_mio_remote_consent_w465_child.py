@@ -96,7 +96,7 @@ def faultset(root: str, ready: str, mode: str) -> None:
         set_one(prerequisite)
     consent = service.consent
     flag = {"eio": False}
-    hits = {"confirm_dir_fsync": 0, "withdraw": 0, "read_eio": 0}
+    hits = {"confirm_dir_fsync": 0, "withdraw": 0, "read_eio": 0, "open_read_eio": 0}
     real_read_at, real_confirm, real_unseal = consent._read_at, consent.confirm, consent.unseal
     real_fsync, real_seal = os.fsync, consent.seal
     armed = {"dir": False}
@@ -109,6 +109,9 @@ def faultset(root: str, ready: str, mode: str) -> None:
         # EIO only for the reads `reading()` makes (a write's read-back works).
         if flag["eio"] and sys._getframe(1).f_code.co_name == "reading":
             hits["read_eio"] += 1
+            caller = sys._getframe(1).f_back  # the read-back made directly by `_open_grant`
+            if caller is not None and caller.f_code.co_name == "_open_grant":
+                hits["open_read_eio"] += 1
             raise OSError(5, "fixture: EIO reading the record")
         return real_read_at(leaf)
 

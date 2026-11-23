@@ -82,7 +82,7 @@ Entryd opens a grant under two further guards:
 * **The seal** (`send.seal`, `seal()` / `unseal()`): entryd durably seals the
   generation `confirm` will write, before it confirms. A record at or below the
   sealed generation reads `unconfirmed` (closed) in `reading()` and
-  `send_gate()`; a seal that exists but cannot be read or decoded reads
+  `send_gate()`, or `withdrawn` if it is a withdrawal; a seal that exists but cannot be read or decoded reads
   `unavailable`; no seal reads as before. So a refusal stays true if entryd
   ends at any point after the seal.
 * **The exclusive gate** (`hold_gate_exclusive`, bounded): taken after
@@ -100,8 +100,9 @@ released, only after one of them returned (or while the seal is provably still
 in place). Otherwise the grant is *unsettled*: it is not a refusal; the audited
 generation may already be in force, entryd keeps the gate (sends refuse while it
 runs) and names `may_be_in_force_generation`. Remaining limit: if entryd ends
-in that state, or after the seal's removal and before its reply is written, the
-OS drops the `flock` and that generation can be sent on.
+in that state, or after the seal's removal and before a closing write is
+confirmed (this includes an open read back and lost with the process before its
+`granted` reply), the OS drops the `flock` and that generation can be sent on.
 Nothing here infers a grant from an unreadable store.
 
 ## Separate from Knowledge
@@ -337,7 +338,8 @@ _ABSENT = ConsentReading(NO_OPT_IN, 0, "absent")
 
 def _reading_of(record: ConsentRecord, sealed: Optional[int] = None) -> ConsentReading:
     """`sealed` is the generation entryd sealed while it opens a grant: a record
-    at or below it is closed (`unconfirmed`) whatever it says."""
+    at or below it is closed whatever it says -- `withdrawn` if it is a
+    withdrawal, `unconfirmed` otherwise."""
     opt_in = record.opt_in()
     if record.withdrawn is not None:
         status = "withdrawn"
@@ -366,9 +368,17 @@ class GateHold:
         return self._fd is not None
 
     def release(self) -> None:
+        """Let go of the gate. Never raises: the caller has already decided
+        (opened, or closed by a confirmed write), and an error here must not be
+        read as a failure to open. Linux frees the descriptor, and the lock with
+        it, even when `close` reports an error; where it might not, the gate
+        stays held and senders keep refusing, which fails closed."""
         fd, self._fd = self._fd, None
         if fd is not None:
-            os.close(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 class ConsentStore:

@@ -169,6 +169,17 @@ def write_release(path):
         os.close(fd)
 
 
+def in_open_grant() -> bool:
+    """True when the `_read_at` that called this is the read-back made directly
+    by `_open_grant` (via `reading()`), not a status reply, a sender or the
+    test itself."""
+    read_at = sys._getframe(1)
+    reading = read_at.f_back
+    caller = None if reading is None else reading.f_back
+    return (reading is not None and reading.f_code.co_name == "reading"
+            and caller is not None and caller.f_code.co_name == "_open_grant")
+
+
 def reads_fail(service, monkeypatch, flag):
     """`reading()` hits EIO in `_read_at` while `flag["eio"]` is set (and only
     for the reads `reading()` makes: a write's own read-back still works, so the
@@ -181,6 +192,8 @@ def reads_fail(service, monkeypatch, flag):
             if flag.get("once"):
                 flag["eio"] = False
             flag["hits"] = flag.get("hits", 0) + 1
+            if in_open_grant():  # the read-back after `unseal`
+                flag["open_hits"] = flag.get("open_hits", 0) + 1
             raise OSError(5, "fixture: EIO reading the record")
         return real(leaf)
 
@@ -331,6 +344,7 @@ def test_r1_unsettled_is_a_reading_on_the_socket_and_is_gated_then_settled(
         "send_other_process": sent, "gate_free_while_unsettled": free_while_unsettled,
         "after_retry": {"store": after, "send": after_sent,
                         "gate_free": gate_free(state)}}}, merge=True)
+    assert faults.get("open_hits", 0) >= 1  # the read-back EIO really happened
     assert response == {"ok": True, "result": UNSETTLED}
     assert status == {"ok": True, "result": UNSETTLED}
     assert again == {"ok": False, "refusal": "verb_unavailable"}
@@ -374,6 +388,7 @@ def test_r1d_after_the_seal_is_gone_a_read_is_not_a_ground_to_refuse(
         merge=True)
     assert response == {"ok": False, "refusal": "verb_unavailable"}
     assert armed["failed"] == 1
+    assert eio.get("open_hits") == 1  # the read-back EIO really happened
     assert seals == [5, 5]  # sealed, then re-sealed: ground (c), not a read
     assert _seal_path(state).exists()
     assert sent["calls"] == 0 and view["permits"] is False
@@ -409,6 +424,7 @@ def test_r1e_dir_fsync_always_failing_leaves_the_grant_unsettled_and_gated(
         "gate_held_across_retries": held_while_failing,
         "released_after_a_confirmed_write": service._unsettled is None,
         "store_after": store_view(state)}}, merge=True)
+    assert eio.get("open_hits", 0) >= 1  # the read-back EIO really happened
     # The visible withdrawn record is generation 6; N+1 = 5 may be in force.
     assert response == {"ok": True, "result": {**UNSETTLED, "generation": 6}}
     assert service._unsettled is None and gate_free(state)
@@ -559,7 +575,8 @@ def test_r1b_confirm_fails_and_withdraw_fails_then_killed_leaves_no_send(tmp_pat
     dump("after4-R1.json", {"sigkill_after_refusal": {
         "set_response": result["refused"], "store_after_kill": view,
         "send_other_process": sent}}, merge=True)
-    assert result["hits"] == {"confirm_dir_fsync": 1, "withdraw": 1, "read_eio": 0}
+    assert result["hits"] == {"confirm_dir_fsync": 1, "withdraw": 1, "read_eio": 0,
+                              "open_read_eio": 0}
     assert "opt_in_store" in result["refused"]
     assert view == {"generation": 5, "status": "unconfirmed", "permits": False}
     assert sent["calls"] == 0 and sent["refusal"] == "opt_in_not_granted"
@@ -578,6 +595,7 @@ def test_r1c_the_remaining_limit_unsettled_then_killed_can_send(tmp_path):
         "send_other_process": sent}}, merge=True)
     # `unsettled` means: generation 5 may already be in force. It stops sends
     # while entryd runs; once entryd ends, it can be sent on (the sender below).
+    assert result["hits"]["open_read_eio"] >= 1  # the read-back EIO really happened
     assert result["returned"]["status"] == "unsettled"
     assert result["returned"]["may_be_in_force_generation"] == 5
     assert view == {"generation": 5, "status": "granted", "permits": True}
@@ -597,6 +615,41 @@ def test_control_normal_confirmed_set_is_sent_once(service, monkeypatch):
     assert reply["result"]["status"] == "granted" and reply["result"]["generation"] == 5
     assert sent["calls"] == 1 and sent["refusal"] is None
     assert gate_free(state) and not (state / "remote-consent" / "send.seal").exists()
+
+
+def test_a_gate_close_error_after_unseal_and_read_back_still_grants(service, monkeypatch):
+    # `os.close` of the gate descriptor reports EIO after the descriptor is
+    # released (the lock goes with it). The grant was confirmed (unseal and the
+    # read-back succeeded): `set` must say granted, not unsettled and not close
+    # the grant by a withdrawal.
+    first_three(service)
+    state = runtime_paths.mio_state_dir()
+    real_hold, real_close = service.consent.hold_gate_exclusive, os.close
+    gate_fds, withdraws = [], []
+
+    def hold(timeout):
+        gate = real_hold(timeout)
+        gate_fds.append(gate._fd)
+        return gate
+
+    def close(fd):
+        real_close(fd)  # the descriptor is released either way
+        if fd in gate_fds:
+            raise OSError(5, "fixture: close of the gate descriptor")
+
+    real_withdraw = service.consent.withdraw
+    monkeypatch.setattr(service.consent, "hold_gate_exclusive", hold)
+    monkeypatch.setattr(service.consent, "withdraw",
+                        lambda *a, **kw: (withdraws.append(1), real_withdraw(*a, **kw))[1])
+    monkeypatch.setattr(os, "close", close)
+    reply = set_last_by_socket(service, monkeypatch)
+    monkeypatch.setattr(os, "close", real_close)
+    assert len(gate_fds) == 1
+    assert reply["ok"] is True and reply["result"]["status"] == "granted"
+    assert reply["result"]["generation"] == 5
+    assert service._unsettled is None and withdraws == []
+    assert store_view(state) == {"generation": 5, "status": "granted", "permits": True}
+    assert gate_free(state)
 
 
 def test_control_pending_before_audit_sends_zero(service, monkeypatch):

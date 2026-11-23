@@ -403,7 +403,11 @@ timeout, a dropped connection) has an unknown result, exactly like `granted`:
 treat N+1 as possibly in force. Entryd's unsettled state is in memory and is
 not carried over a restart, so after one `status` can answer `granted`. The only
 confirmation that a grant is closed is a `withdraw` that returns a success
-reply whose `status` is `withdrawn`. `status` no longer reading `unsettled` is
+reply: its record was fsynced, renamed, directory-synced and read back before
+the reply. Its `status` reads `withdrawn`; when the store or the seal cannot be
+read it reads `unavailable`, and the route ledger line
+`mio.remote.opt_in.withdrawn` names the generation written (see the recovery
+below). A refusal to `withdraw`, `ledger` included, is not a confirmation. `status` no longer reading `unsettled` is
 not a confirmation (the state may simply have been lost). `withdrawn` confirms
 the record: no sender reads the grant from then on. Senders that had already
 read it are covered only by `drained: true`; with `drained: false` a send on
@@ -411,8 +415,7 @@ the old generation can still happen (*Remote inference*). While unsettled,
 entryd itself holds the gate, so nothing is in flight and the withdrawal is
 written without a drain and answers `drained: true`. The operator repeats
 `withdraw` until it does (it is written without a drain while unsettled and
-releases the gate when it returns; its reply may read `unavailable` if the store
-still cannot be read, and that is not the confirmation either).
+releases the gate when it returns).
 
 Remaining cases, exactly:
 
@@ -434,9 +437,9 @@ Remaining cases, exactly:
   directory syncs return before `confirm` renames; a refusal after `unseal`
   waits for a closing write's syncs) and holds only if a sync that returned is
   durable on the node's filesystem and storage. A drive that acknowledges a
-  flush it has not made breaks it. On macOS `fsync` does not flush the drive's
-  cache and `F_FULLFSYNC` is not used, so this argument is for the Linux nodes
-  only. Not tested on real power loss.
+  flush it has not made breaks it. On macOS `fsync` alone does not guarantee
+  that the data reached the permanent storage, and `F_FULLFSYNC` is not used,
+  so this argument is for the Linux nodes only. Not tested on real power loss.
 * While the directory sync keeps failing, each retry (tick, `status`, `set`)
   whose `withdraw` reaches its rename writes another withdrawn record, so the
   generation advances with those retries (a retry that fails before the rename

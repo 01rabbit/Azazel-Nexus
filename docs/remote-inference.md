@@ -120,8 +120,9 @@ gets `opt_in_unavailable`, and one that reads a sealed record gets
 `opt_in_not_granted`. If entryd cannot close a grant durably it answers
 `status: "unsettled"` with `may_be_in_force_generation`: that generation may be
 in force, sends are stopped only while entryd runs (it keeps the gate), and the
-caller repeats `withdraw` until it returns a success reply with `status:
-"withdrawn"`. A `set` reply that never arrives is as unknown as `granted`
+caller repeats `withdraw` until it returns a success reply (its record is
+synced and read back first; `status` reads `withdrawn`, or `unavailable` when
+the store or seal cannot be read). A `set` reply that never arrives is as unknown as `granted`
 (N+1 may be in force), and entryd's unsettled state is not carried over a
 restart, so `status` no longer reading `unsettled` is not a confirmation. See *Remote opt-in store* in
 [runtime](mio-runtime.md) for the order, the grounds and the one remaining
