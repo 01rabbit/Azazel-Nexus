@@ -40,6 +40,7 @@ __all__ = [
     "AuditChainBroken",
     "AuditEntry",
     "AuditUnavailable",
+    "AuditOutcomeUnknown",
     "AuditLedger",
     "canonical_event_bytes",
 ]
@@ -67,6 +68,26 @@ class AuditUnavailable(Exception):
     write would be operating in a state the ledger does not describe, and
     `IMPLEMENTATION_SPEC.md` §8 makes audit failure fail-closed.
     """
+
+
+class AuditOutcomeUnknown(AuditUnavailable):
+    """A line may be in the ledger, and the caller cannot tell.
+
+    Raised when a complete line was written and its sync failed, and when a
+    partial line could not be taken back. `AuditUnavailable` without this
+    subclass still means nothing was written. Callers that must not repeat an
+    operation or a line settle it with `AuditLedger.settle(entry, ...)`
+    before going on, instead of guessing from the head moving.
+
+    `absent_head` is the head the file would show if the line is not there.
+    """
+
+    def __init__(self, message: str, *, entry: "AuditEntry", path: Path,
+                 absent_head: tuple[int, str]) -> None:
+        super().__init__(message)
+        self.entry = entry
+        self.path = path
+        self.absent_head = absent_head
 
 
 def canonical_event_bytes(event: Mapping[str, Any]) -> bytes:
@@ -135,30 +156,8 @@ class AuditLedger:
         except OSError as exc:  # pragma: no cover - surfaced by callers
             raise AuditUnavailable(f"{self.path} could not be read: {exc}") from exc
 
-    def head(self) -> tuple[int, str]:
-        """`(last sequence, last hash)`, or `(0, GENESIS_HASH)` for an empty chain.
-
-        Only the last record is read, from the end of the file, so the cost of
-        asking does not grow with the ledger. It is still read from the file on
-        every call rather than remembered, for the reason the class gives.
-
-        That last record's `event_hash` is compared with the hash of its own
-        `previous_hash` and `event` (#433), and `AuditChainBroken` is raised
-        if they differ or the record cannot be hashed. An `append` that reads
-        the head therefore refuses to extend a chain whose final line had its
-        event or its hash edited, and writes nothing. The message names the
-        path and sequence, never the event.
-
-        This does not detect an edit to `sequence` alone, a final line
-        rewritten with a hash that is consistent with its edited content, or
-        a bad link between the final line and the one before it. Nor does it
-        look at any earlier record: an unparseable, edited or re-linked one
-        in the middle is `verify`'s question (#175). `append(chain_from=...)`
-        does not call `head()` at all. A caller that needs the whole chain to
-        hold before writing must call `verify`. An append that read the head
-        here says only that the last line hashed to its own `event_hash`; one
-        given `chain_from` says nothing about this file at all.
-        """
+    def _tail_line(self) -> str:
+        """The last non-blank line of the file ("" when there is none)."""
 
         try:
             with self.path.open("rb") as handle:
@@ -185,10 +184,38 @@ class AuditLedger:
                         break
                     tail = stripped[:cut]
         except FileNotFoundError:
-            return 0, GENESIS_HASH
+            return ""
         except OSError as exc:  # pragma: no cover - surfaced by callers
             raise AuditUnavailable(f"{self.path} could not be read: {exc}") from exc
 
+        return line
+
+    def head(self) -> tuple[int, str]:
+        """`(last sequence, last hash)`, or `(0, GENESIS_HASH)` for an empty chain.
+
+        Only the last record is read, from the end of the file, so the cost of
+        asking does not grow with the ledger. It is still read from the file on
+        every call rather than remembered, for the reason the class gives.
+
+        That last record's `event_hash` is compared with the hash of its own
+        `previous_hash` and `event` (#433), and `AuditChainBroken` is raised
+        if they differ or the record cannot be hashed. An `append` that reads
+        the head therefore refuses to extend a chain whose final line had its
+        event or its hash edited, and writes nothing. The message names the
+        path and sequence, never the event.
+
+        This does not detect an edit to `sequence` alone, a final line
+        rewritten with a hash that is consistent with its edited content, or
+        a bad link between the final line and the one before it. Nor does it
+        look at any earlier record: an unparseable, edited or re-linked one
+        in the middle is `verify`'s question (#175). `append(chain_from=...)`
+        does not call `head()` at all. A caller that needs the whole chain to
+        hold before writing must call `verify`. An append that read the head
+        here says only that the last line hashed to its own `event_hash`; one
+        given `chain_from` says nothing about this file at all.
+        """
+
+        line = self._tail_line()
         if not line.strip():
             return 0, GENESIS_HASH
         entry = self._parse(line, "last record")
@@ -207,6 +234,35 @@ class AuditLedger:
                 "hash to its recorded event_hash"
             )
         return entry.sequence, entry.event_hash
+
+    def settle(self, entry: AuditEntry, *, absent_head: tuple[int, str]) -> str:
+        """Whether `entry` is in this file: `"present"` or `"absent"`.
+
+        For a write whose outcome is unknown. The answer comes from the file's
+        head read again, never from the head having moved: `present` is the
+        head being exactly `(entry.sequence, hash of entry)` with the entry's
+        own `previous_hash`; `absent` is the head being `absent_head`, which
+        is what the file shows when the line is not there (`(0, GENESIS_HASH)`
+        for a segment that was empty, otherwise the head the line was to
+        follow). Any other head is a chain this single writer did not make
+        and raises `AuditChainBroken`, as does a torn last line. A file that
+        cannot be read raises `AuditUnavailable`: the outcome stays unknown.
+        """
+
+        head = self.head()
+        if head == (entry.sequence, entry.recomputed()):
+            tail = self._parse(self._tail_line(), "last record")
+            if tail.previous_hash != entry.previous_hash:
+                raise AuditChainBroken(
+                    f"{self.path} line {entry.sequence} does not follow the head it was written after"
+                )
+            return "present"
+        if head == tuple(absent_head):
+            return "absent"
+        raise AuditChainBroken(
+            f"{self.path} head is neither the unknown line (sequence {entry.sequence}) "
+            "nor the head it would have followed"
+        )
 
     def _parse(self, line: str, where: str) -> AuditEntry:
         """One record, or `AuditChainBroken`. Never a `KeyError`.
@@ -327,6 +383,11 @@ class AuditLedger:
             ensure_ascii=False,
         )
 
+        # What a failure means depends on how far the write got.
+        offset = 0
+        written = 0
+        complete = False
+        stuck = False
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             # Opened append-only and flushed to the device before returning.
@@ -348,27 +409,36 @@ class AuditLedger:
             with (open(self.path, "ab", buffering=0, opener=opener)
                   if self.private else self.path.open("ab", buffering=0)) as handle:
                 offset = os.fstat(handle.fileno()).st_size
-                written = 0
                 try:
                     while written < len(data):
                         written += handle.write(data[written:])
                 except OSError:
-                    _withdraw(handle.fileno(), offset, written)
+                    stuck = not _withdraw(handle.fileno(), offset, written)
                     raise
+                complete = True
                 # A complete line whose sync failed is left as it is: its
                 # outcome is unknown, and callers settle it from the ledger.
                 if sync:
                     os.fsync(handle.fileno())
         except OSError as exc:
-            raise AuditUnavailable(
+            message = (
                 f"{self.path} could not be appended to ({exc}); the event was "
                 "not recorded and the caller must not proceed as though it was"
-            ) from exc
+            )
+            if complete or stuck:
+                # Not "not recorded": the line may be there.
+                raise AuditOutcomeUnknown(
+                    f"{self.path} append outcome unknown ({exc}); settle it "
+                    "before repeating the line or the operation",
+                    entry=entry, path=self.path,
+                    absent_head=(0, GENESIS_HASH) if offset == 0 else (sequence, previous_hash),
+                ) from exc
+            raise AuditUnavailable(message) from exc
 
         return entry
 
 
-def _withdraw(fd: int, offset: int, written: int) -> None:
+def _withdraw(fd: int, offset: int, written: int) -> bool:
     """Take back the partial line of a write that failed (for example, a full disk).
 
     A write that stops part-way (no space left, an I/O error) leaves a torn
@@ -377,15 +447,19 @@ def _withdraw(fd: int, offset: int, written: int) -> None:
     the event was *not* recorded. Truncate to where this append began, but only
     when the file still ends exactly where this call left it -- anything else
     means another writer appended too, and then nothing is touched.
-    Best effort: if the truncation itself fails, the refusal stands as before.
+    Returns whether the file is known to hold nothing of this append: True
+    when nothing was written or the truncation was made and synced. False
+    means the torn line may still be there, so the outcome is unknown.
     Only a partial write is withdrawn; a complete line whose fsync failed is
     not (see `append`).
     """
     if not written:
-        return
+        return True
     try:
         if os.fstat(fd).st_size == offset + written:
             os.ftruncate(fd, offset)
             os.fsync(fd)
+            return True
     except OSError:
         pass
+    return False

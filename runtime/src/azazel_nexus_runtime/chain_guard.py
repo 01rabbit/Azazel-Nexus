@@ -1,62 +1,193 @@
-"""One daemon's view of its ledger once the running chain turned out broken.
+"""One daemon's view of its ledger when writing to it fails while serving.
 
-A break found while serving is the break found at start, except that the
-process stays up: requests that need a record are refused with a fixed reason,
-the ledger is not touched again, and nothing clears the state but a restart
-(which verifies the chain again). Kept per daemon boundary; the shared
-transport and serve loop are unchanged.
+Three states.
+
+`ok`: appends go through.
+
+`broken` (#458): the running chain turned out broken. Requests that need a
+record are refused with a fixed reason, the ledger is not touched again, and
+nothing clears the state but a restart (which verifies the chain again).
+
+`owed` (#467): a write's outcome is unknown (a complete line was written and
+its sync failed, or an operation was done and its record could not be
+written). Nothing that needs a record runs, no line is appended and no
+operation is repeated, until the debt is settled: the line is looked for by its
+sequence and hash (never by the head having moved), and a record of how it
+turned out -- `audit.outcome_settled` or `audit.late_record` -- is appended
+and read back as the head. A debt that cannot be settled (the ledger cannot be
+read) stays, and the daemon keeps refusing and keeps answering diagnostics.
+
+The guard never repeats an operation and never writes the event again.
+Kept per daemon boundary.
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from dataclasses import dataclass
+from typing import Any, Callable, Optional
 
-from azazel_nexus.audit import AuditChainBroken
+from azazel_nexus.audit import (
+    AuditChainBroken,
+    AuditEntry,
+    AuditOutcomeUnknown,
+    AuditUnavailable,
+)
+
+__all__ = ["ChainGuard", "Owed"]
+
+SETTLED = "audit.outcome_settled"
+LATE = "audit.late_record"
+
+
+@dataclass
+class Owed:
+    """One record the ledger owes."""
+
+    event: dict
+    #: The line that may be in the ledger; None when nothing was written.
+    entry: Optional[AuditEntry]
+    absent_head: Optional[tuple]
+    #: Whether the operation this record belongs to was already done.
+    performed: bool
+    #: The settlement record being written, and its own unknown line.
+    record: Optional[dict] = None
+    record_entry: Optional[AuditEntry] = None
+    record_absent: Optional[tuple] = None
 
 
 class ChainGuard:
-    def __init__(self, append: Callable[[dict], Any]) -> None:
+    def __init__(self, append: Callable[[dict], Any],
+                 settle: Callable[..., str] | None = None) -> None:
+        """`append(event)` writes one line. `settle(entry, absent_head=...)` is the
+        ledger's `settle`; without it a line of unknown outcome can never be
+        settled and the guard stays owed (it refuses, which is the safe side).
+        """
         self._append = append
+        self._settle = settle
         self.broken = False
         #: Memory only; never sent to a caller.
         self.reason: str | None = None
-        #: Refusal records that were not written because the chain is broken.
+        #: Refusal records that were not written because the ledger could not take them.
         self.refusals_unrecorded = 0
+        self.owed: list[Owed] = []
+
+    # -- state -----------------------------------------------------------
+
+    @property
+    def state(self) -> str:
+        return "broken" if self.broken else "owed" if self.owed else "ok"
+
+    def status(self) -> dict:
+        """For a diagnostic verb: the state and the sequence not yet settled."""
+        first = self.owed[0] if self.owed else None
+        sequence = first.entry.sequence if first is not None and first.entry is not None else None
+        return {"audit": self.state, "unsettled_sequence": sequence}
 
     def _mark(self, exc: BaseException) -> None:
         self.broken = True
         self.reason = str(exc)
 
-    def append(self, event: dict) -> Any:
-        """The audit callable for a request in flight."""
+    # -- settling --------------------------------------------------------
+
+    def settle_owed(self) -> bool:
+        """Settle what the ledger owes. Never raises; True when nothing is owed."""
+        while self.owed:
+            if self.broken or not self._settle_first(self.owed[0]):
+                return False
+            self.owed.pop(0)
+        return True
+
+    def _settle_first(self, owed: Owed) -> bool:
+        try:
+            if owed.record_entry is not None:
+                if self._settle is None:
+                    return False
+                outcome = self._settle(owed.record_entry, absent_head=owed.record_absent)
+                owed.record_entry = None
+                if outcome == "present":
+                    return True
+            if owed.record is None:
+                if owed.entry is None:
+                    owed.record = {"event_type": LATE, "late_event": owed.event,
+                                   "performed": True}
+                else:
+                    if self._settle is None:
+                        return False
+                    outcome = self._settle(owed.entry, absent_head=owed.absent_head)
+                    if outcome == "absent" and not owed.performed:
+                        return True
+                    owed.record = {"event_type": SETTLED,
+                                   "settled_sequence": owed.entry.sequence,
+                                   "settled_event_hash": owed.entry.event_hash,
+                                   "outcome": outcome, "performed": owed.performed}
+                    if outcome == "absent":
+                        owed.record["late_event"] = owed.event
+            self._append(owed.record)
+            return True
+        except AuditChainBroken as exc:
+            self._mark(exc)
+            return False
+        except AuditOutcomeUnknown as exc:
+            owed.record_entry, owed.record_absent = exc.entry, exc.absent_head
+            return False
+        except AuditUnavailable:
+            return False
+
+    # -- writing ---------------------------------------------------------
+
+    def append(self, event: dict, *, performed: bool = False) -> Any:
+        """The audit callable for a request in flight.
+
+        `performed` says the operation this record belongs to has already
+        happened, so a record that cannot be written is a debt. A record that
+        precedes its operation (`performed=False`) that fails leaves nothing
+        owed: the operation does not run.
+        """
         if self.broken:
             raise AuditChainBroken(self.reason or "chain broken")
+        if self.owed and not self.settle_owed():
+            if self.broken:
+                raise AuditChainBroken(self.reason or "chain broken")
+            if performed:
+                self.owed.append(Owed(event, None, None, True))
+            raise AuditUnavailable("audit outcome not settled")
         try:
             return self._append(event)
         except AuditChainBroken as exc:
             self._mark(exc)
             raise
+        except AuditOutcomeUnknown as exc:
+            self.owed.append(Owed(event, exc.entry, exc.absent_head, performed))
+            raise
+        except AuditUnavailable:
+            if performed:
+                self.owed.append(Owed(event, None, None, True))
+            raise
 
     def record_refusal(self, event: dict) -> None:
-        """The audit callable of the transport: a refusal is already on its way back."""
+        """The audit callable of the transport: a refusal is already on its way back.
+
+        Never raises. A record that cannot be written is counted; a line of
+        unknown outcome becomes a debt.
+        """
         if self.broken:
             self.refusals_unrecorded += 1
             return
         try:
-            self._append(event)
-        except AuditChainBroken as exc:
-            self._mark(exc)
+            self.append(event)
+        except (AuditChainBroken, AuditUnavailable):
             self.refusals_unrecorded += 1
 
     def best_effort(self, event: dict) -> None:
-        """Record `event` if the chain allows; a break is noted and never raised.
+        """Record `event` if the ledger allows; a failure is noted and never raised.
 
         For work that narrows (withdrawal, resource release) and must finish
-        whether or not its record can be written.
+        whether or not its record can be written. The work is done, so a
+        record that cannot be written is a debt.
         """
         try:
-            self.append(event)
-        except AuditChainBroken:
+            self.append(event, performed=True)
+        except (AuditChainBroken, AuditUnavailable):
             pass
 
     def count_unrecorded(self) -> None:
@@ -64,18 +195,26 @@ class ChainGuard:
         self.refusals_unrecorded += 1
 
     def guarded(self, handler: Callable[[Any], Any], refuse: Callable[[], Any]) -> Callable[[Any], Any]:
-        """`handler` that answers `refuse()` instead of serving on a broken chain."""
+        """`handler` that answers `refuse()` instead of serving while the ledger cannot be trusted.
+
+        A result computed while a record was lost is not returned.
+        """
 
         def handle(request: Any) -> Any:
             if self.broken:
                 return refuse()
+            if self.owed and not self.settle_owed():
+                return refuse()
+            lost = len(self.owed)
             try:
                 reply = handler(request)
             except AuditChainBroken as exc:
                 self._mark(exc)
                 return refuse()
-            if self.broken:
-                # A break swallowed inside the handler: the reply is unrecorded.
+            except AuditUnavailable:
+                return refuse()
+            if self.broken or len(self.owed) > lost:
+                # A failure swallowed inside the handler: the reply is unrecorded.
                 return refuse()
             return reply
 
