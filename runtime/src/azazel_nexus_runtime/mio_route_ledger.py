@@ -161,12 +161,14 @@ class RouteLedger(DailySegments):
         """
         try:
             boundary = read_boundary(self.directory)
+            if boundary is not None and path.name <= boundary["retired"]:
+                raise AuditUnavailable("M.I.O. route segment is outside the retained chain")
+            earlier = [s for s in self.chain.segments(boundary) if s.name < path.name]
         except OSError as exc:
-            # A boundary that cannot be read places nothing: unknown, not a crash.
-            raise AuditUnavailable("M.I.O. route boundary cannot be read") from exc
-        if boundary is not None and path.name <= boundary["retired"]:
-            raise AuditUnavailable("M.I.O. route segment is outside the retained chain")
-        for segment in reversed([s for s in self.chain.segments(boundary) if s.name < path.name]):
+            # A boundary or a listing that cannot be read places nothing:
+            # unknown, not a crash.
+            raise AuditUnavailable("M.I.O. route chain cannot be read") from exc
+        for segment in reversed(earlier):
             head = AuditLedger(segment).head()
             if head != (0, GENESIS_HASH):
                 return head
@@ -390,6 +392,18 @@ class RouteLedger(DailySegments):
         return self.guard.append(dict(event), performed=performed)
 
     def _append_once(self, event: Mapping[str, Any], *, reserved: bool = False) -> AuditEntry:
+        """`_append_inner`, with an I/O failure of the chain's own reading as `AuditUnavailable`.
+
+        Listing the segments and reading the boundary again can fail with a raw
+        `OSError`; nothing was written then, and the ledger is unavailable
+        (#467), not a crash of whoever called.
+        """
+        try:
+            return self._append_inner(event, reserved=reserved)
+        except OSError as exc:
+            raise AuditUnavailable("M.I.O. route ledger could not be read") from exc
+
+    def _append_inner(self, event: Mapping[str, Any], *, reserved: bool = False) -> AuditEntry:
         """Add one entry at the chain head, or add nothing and raise.
 
         `reserved` charges the record to `CONTROL_RESERVE` (start and

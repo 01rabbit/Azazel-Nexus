@@ -1350,7 +1350,7 @@ def main(
             except AuditChainBroken as exc:
                 service.ledger_broken = True
                 service.ledger_break_reason = str(exc)
-            except AuditUnavailable:
+            except (AuditUnavailable, OSError):
                 # Not an end of the process (#467). The capability reading
                 # stays as it was, marked uncertain where it must be, and the
                 # next tick tries again.

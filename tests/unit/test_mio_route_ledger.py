@@ -907,3 +907,98 @@ def test_a_line_found_after_a_failed_sync_is_spent_from_the_budget(state, monkey
         {"sequence": e.sequence, "previous_hash": e.previous_hash, "event_hash": e.event_hash,
          "event": e.event}, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()) + 1
         for e in chain if e.event["event_type"] in {"a", "b"})
+
+
+# -- #467 review 3: a failure of the chain's own reading is "unknown", never a raw OSError ----
+
+def _unknown_line(route, monkeypatch):
+    import errno
+    from azazel_nexus.audit import AuditOutcomeUnknown
+    monkeypatch.setattr(os, "fsync", lambda fd: (_ for _ in ()).throw(OSError(errno.EIO, "x")))
+    try:
+        with pytest.raises(AuditOutcomeUnknown):
+            route.append({"event_type": "b"})
+    finally:
+        monkeypatch.undo()
+
+
+def _fail_listing(monkeypatch, directory):
+    import errno
+    from pathlib import Path
+    real = Path.iterdir
+
+    def iterdir(self):
+        if self == directory:
+            raise PermissionError(errno.EACCES, "injected listing failure")
+        return real(self)
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+
+
+def test_a_listing_failure_while_settling_leaves_the_outcome_unknown_and_recovers(state, monkeypatch):
+    clock = Clock()
+    route = ledger(state, clock)
+    route.append({"event_type": "a"})
+    _unknown_line(route, monkeypatch)
+    assert route.guard.owed
+    _fail_listing(monkeypatch, route.directory)
+    assert route.guard.settle_owed() is False                 # no raw OSError
+    with pytest.raises(AuditUnavailable):
+        route.append({"event_type": "c"})
+    monkeypatch.undo()
+    assert route.guard.settle_owed()
+    kinds = [e.event["event_type"] for e in RouteChain(route.directory)]
+    assert kinds == ["a", "b", "audit.outcome_settled"]
+    RouteChain(route.directory).verify()
+
+
+def test_a_boundary_reread_failure_while_writing_the_settlement_record_stays_a_debt(state, monkeypatch):
+    import errno
+    from pathlib import Path
+    clock = Clock()
+    route = ledger(state, clock)
+    route.append({"event_type": "a"})
+    _unknown_line(route, monkeypatch)
+    # A boundary exists (nothing retired yet that matters); its second read fails.
+    head = route.head()
+    (route.directory / BOUNDARY).write_text(json.dumps({
+        "sequence": 0, "hash": "0" * 64, "oldest": None, "retired": "2000-01-01.jsonl"}))
+    real, reads = Path.read_bytes, {"n": 0}
+
+    def read_bytes(self):
+        if self.name == BOUNDARY:
+            reads["n"] += 1
+            if reads["n"] == 2:
+                raise OSError(errno.EIO, "injected boundary reread failure")
+        return real(self)
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    assert route.guard.settle_owed() is False                 # the record could not be written
+    assert route.guard.owed
+    monkeypatch.undo()
+    assert route.guard.settle_owed()
+    assert [e.event["event_type"] for e in RouteChain(route.directory)][-1] == "audit.outcome_settled"
+    assert head[0] == 2
+
+
+def test_entryd_survives_a_listing_failure_while_owed(service, monkeypatch):
+    svc, clock = service
+    svc.handle(route_request(1001))
+    route = svc.router.ledger
+    import errno
+    from azazel_nexus.audit import AuditOutcomeUnknown
+    monkeypatch.setattr(os, "fsync", lambda fd: (_ for _ in ()).throw(OSError(errno.EIO, "x")))
+    with pytest.raises(RequestRefused):
+        svc.handle(route_request(1001))
+    monkeypatch.undo()
+    assert route.guard.owed
+    _fail_listing(monkeypatch, route.directory)
+    with pytest.raises(RequestRefused) as refused:            # a fixed refusal, not an OSError
+        svc.handle(route_request(1001))
+    assert refused.value.detail == "ledger"
+    assert svc._settle_audit() is False
+    # What the tick does: a capability record (a raw OSError would end the loop).
+    with pytest.raises(AuditUnavailable):
+        svc.router._record({"event_type": "mio.capability.transition", "from": None,
+                            "to": "CORE", "reasons": {}}, reserved=True)
+    monkeypatch.undo()
+    assert svc._settle_audit() is True
+    RouteChain(route.directory).verify()
