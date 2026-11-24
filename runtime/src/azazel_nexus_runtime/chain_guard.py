@@ -96,6 +96,9 @@ class ChainGuard:
         self.refusals_unrecorded = 0
         self.owed: list[Owed] = []
         self.last_break: str | None = None
+        #: `(event, entry)` of a line settled as present, until the next append
+        #: of anything else: the one an identical resend may be answered with.
+        self.last_present: tuple | None = None
 
     # -- state -----------------------------------------------------------
 
@@ -146,6 +149,8 @@ class ChainGuard:
                         return False
                     outcome = self._settle(owed.entry, absent_head=owed.absent_head,
                                        path=owed.path)
+                    if outcome == "present":
+                        self.last_present = (owed.event, owed.entry)
                     if outcome == "absent" and not owed.performed:
                         return True
                     owed.record = {"event_type": SETTLED,
@@ -185,7 +190,9 @@ class ChainGuard:
                 self.owed.append(Owed(event, None, None, True))
             raise AuditUnavailable("audit outcome not settled")
         try:
-            return self._append(event)
+            entry = self._append(event)
+            self.last_present = None
+            return entry
         except AuditChainBroken as exc:
             self._mark(exc)
             raise

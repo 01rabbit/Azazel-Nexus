@@ -95,9 +95,11 @@ from typing import Callable, Iterator, Mapping, Optional, Sequence
 from azazel_nexus.audit import (
     GENESIS_HASH,
     AuditChainBroken,
+    AuditOutcomeUnknown,
     AuditEntry,
     AuditLedger,
     AuditUnavailable,
+    canonical_event_bytes,
 )
 from azazel_nexus.audit_status import (
     RATE_LIMITED_KEYS,
@@ -111,6 +113,7 @@ from azazel_nexus.lite_bundle import Gate
 from azazel_nexus.lite_enrollment import ENROLLMENT_REFUSAL_CODES
 from azazel_nexus.lite_import import IMPORT_REFUSAL_CODES, REVOCATION_REFUSAL_CODES
 
+from .chain_guard import ChainGuard, settle_by_path
 from .principal import PrincipalClass
 from .protocol import (
     Argument,
@@ -680,6 +683,15 @@ class AuditService:
                  ui_status_path: Optional[Path] = None,
                  ) -> None:
         self.ledger = ledger
+        #: Debts of unknown outcomes and their settling (#467). A break found
+        #: here is `verified=False`, kept by this service.
+        self._day = None
+        self.guard = ChainGuard(
+            lambda event: self.ledger.append(event, day=self._day), settle_by_path,
+            append_internal=lambda event: self.ledger.append(event, day=self._internal_day()),
+            sticky_break=False)
+        #: Who wrote the line whose outcome was unknown, by the event's bytes.
+        self._unknown_writer: dict = {}
         #: Where the operator-readable snapshot goes; `None` writes none.
         self.status_path = status_path
         #: The read-only UI's byte-identical copy (ADR-0007); `None` writes none.
@@ -775,6 +787,19 @@ class AuditService:
         except Exception:  # noqa: BLE001 - reported once by start()
             self._recount_failed = True
 
+    def _internal_day(self) -> str:
+        """The segment the guard's own records go to: the latest, never a new one."""
+        segments = self.ledger.segments()
+        return segments[-1].stem if segments else self._today()
+
+    def _settle_audit(self) -> bool:
+        """Settle what the chain owes; a break found on the way is this service's break."""
+        settled = self.guard.settle_owed()
+        if self.guard.last_break is not None and self.verified:
+            self.verified = False
+            self.break_reason = self.guard.last_break
+        return settled
+
     def _today(self) -> str:
         """auditd's current UTC day. Drops counts for days before yesterday.
 
@@ -865,12 +890,22 @@ class AuditService:
                     "refused_event_type": event_type, "tier": tier, "limit": limit,
                     "refused": count, "occurred_at": occurred_at,
                 })
-                entry = self.ledger.append(event, day=day)
+                self._day = day
+                entry = self.guard.append(event)
             except AuditChainBroken as exc:
                 # A break found here is the break found at start.
                 self.verified = False
                 self.break_reason = str(exc)
                 return
+            except AuditOutcomeUnknown:
+                # Written or not is settled, not guessed: a summary that
+                # landed is not written again (the count would double).
+                present = self.guard.settle_owed() and self.guard.last_present is not None \
+                    and self.guard.last_present[0] == event
+                if not present:
+                    self._summary_last[key] = now
+                    continue
+                entry = self.guard.last_present[1]
             except Exception:  # noqa: BLE001 - never turn the caller's refusal into an error
                 # Keep the count; a later tick tries again after the window.
                 self._summary_last[key] = now
@@ -890,6 +925,8 @@ class AuditService:
         """
 
         try:
+            if self.guard.owed:
+                self._settle_audit()
             self._summarize()
             now = self.monotonic()
             if now - self._status_written >= STATUS_INTERVAL_S:
@@ -1027,6 +1064,9 @@ class AuditService:
                 "head_hash": self.head_hash,
             }
         if request.verb.name == "audit.verify":
+            if self.guard.owed:
+                self._settle_audit()
+            unreadable = False
             try:
                 checkpoints = [c.__dict__ for c in self.ledger.checkpoint()]
             except AuditChainBroken as exc:
@@ -1035,7 +1075,11 @@ class AuditService:
                 self.verified = False
                 self.break_reason = str(exc)
                 checkpoints = []
-            return {
+            except AuditUnavailable:
+                # The chain cannot be read now (#467): say so, keep answering.
+                unreadable = True
+                checkpoints = []
+            reply = {
                 "verified": self.verified,
                 "break": self.break_reason,
                 "checkpoints": checkpoints,
@@ -1043,6 +1087,10 @@ class AuditService:
                 "rate_limited": dict(sorted(self.rate_limited.items())),
                 "rate_limit_summaries_dropped": self.summaries_dropped,
             }
+            if unreadable or self.guard.owed:
+                reply["unavailable"] = unreadable
+                reply["audit"] = self.guard.status()
+            return reply
         return self._append(request)
 
     def _append(self, request) -> dict:
@@ -1081,19 +1129,38 @@ class AuditService:
         # Last, so only a record that would otherwise be appended spends a
         # token or a place in the day. The day is the segment it lands in.
         self._today()
-        slot = self._admit(getattr(request, "principal", None), event_type, event, day)
+        principal = getattr(request, "principal", None)
+        writer = getattr(principal, "uid", None)
+        if self.guard.owed:
+            self._settle_audit()
+            if not self.verified:
+                raise RequestRefused(Refusal.ARGUMENT_RANGE, "chain")
+        # A resend of the very event whose line was just settled as present
+        # is answered with that line, never appended again (#467). Same bytes,
+        # same writer, nothing appended since.
+        settled = self.guard.last_present
+        if (settled is not None and canonical_event_bytes(settled[0]) == canonical_event_bytes(event)
+                and self._unknown_writer.get(canonical_event_bytes(event)) == writer):
+            entry = settled[1]
+            return {"sequence": entry.sequence, "event_hash": entry.event_hash}
+        slot = self._admit(principal, event_type, event, day)
+        self._day = day
         try:
-            entry = self.ledger.append(event, day=day)
+            entry = self.guard.append(event)
         except AuditChainBroken as exc:
             # Same state as a break found at start: no further append, the
             # diagnostics keep answering, and nothing clears it but a restart.
             self.verified = False
             self.break_reason = str(exc)
             raise RequestRefused(Refusal.ARGUMENT_RANGE, "chain") from None
+        except AuditOutcomeUnknown:
+            self._unknown_writer = {canonical_event_bytes(event): writer}
+            raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger") from None
         except AuditUnavailable:
-            # Fail closed. Telling a caller the event is recorded when it is
-            # not would make the next entry's hash depend on that claim.
-            raise
+            # Fail closed and stay up (#467): the caller is told it was not
+            # recorded, which is true (nothing was written); the transport
+            # and the diagnostics go on.
+            raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger") from None
         if slot is not None:
             slot_day, uid, index = slot
             self._incidents_by_day.setdefault(slot_day, {}).setdefault(uid, [0, 0])[index] += 1
