@@ -499,7 +499,7 @@ with the generation it wrote (sends are then closed by that withdrawn record);
 a refusal, including `ledger`, is not this ground, so repeat. Only then, as
 root with entryd stopped, remove `remote-consent/send.seal` from entryd's state
 leaf; start entryd and check that `status` reads `withdrawn` at that generation
-or above; then `set` the four prerequisites again, each naming the generation `status` or the last reply reported.
+or above; then `set` the four prerequisites again, one at a time, each naming the generation `status` or the last reply reported. Before passing a reply's generation on, check that the reply still lists every prerequisite set so far and is not `withdrawn`: the reply is read after the write, so a `withdraw` that came in between shows there, and continuing from its generation would build on the withdrawn state. If it does not, stop and read `status`.
 Never remove the seal while a grant may be in force and unconfirmed. Statuses:
 `absent`, `incomplete`, `unconfirmed`, `granted`, `withdrawn`, `unavailable`,
 and `unsettled` (a reply of entryd only, never a stored status). A
