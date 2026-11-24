@@ -344,6 +344,25 @@ def test_audit_failure_keeps_egress_closed_and_recovery_reopens_it(ctx):
 
 
 @pytest.mark.real_process
+@pytest.mark.parametrize("nth, missing", [(2, "commissioning"), (3, "recovery row")])
+def test_egress_stays_closed_until_commissioning_and_the_recovery_row_are_written(ctx, nth, missing):
+    assert ctx.start()
+    ctx.stopat("a")
+    assert ctx.request(1)["transport"] == "no_reply"
+    ctx.wait_dead()
+    ctx.stopat("")
+    ctx.arm("pre", nth)           # the write-open that fails: 1 is the start check, 2 commissioning, 3 the row
+    assert ctx.start()
+    assert ctx.faults() == 1      # the injection fired once
+    status = ctx.status()
+    assert status["egress"] == "closed" and status["reason"] == "audit_unavailable", missing
+    assert ctx.calls() == 0       # nothing was sent while it was closed
+    status = ctx.wait_status("egress", "open")
+    assert status["egress"] == "open" and len(ctx.unknown_rows()) == 1
+    assert served(ctx.request(3)) and ctx.calls() == 1
+
+
+@pytest.mark.real_process
 def test_the_latch_and_status_work_while_the_ledger_fails(ctx):
     assert ctx.start()
     assert served(ctx.request(0))
