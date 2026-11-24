@@ -1692,6 +1692,52 @@ queued work; lost acknowledgements can duplicate events. Explanations and
 ledger reads continue through an audit outage. `recent.json` is a projection,
 not a replacement for either verified ledger.
 
+**When the result is unknown: what can be checked, and what not to resend
+(#470).** Requests carry no identifier, so a resend cannot be told apart from a
+new request, and none is added: a resend is always a new operation. What each
+case allows:
+
+* *A `mio.remote.opt_in.set` reply that did not arrive* (EOF, timeout, dropped
+  connection), or one that says `unsettled`. Checkable: `mio.remote.opt_in.status`
+  (the state now, not the lost reply), and a `withdraw` that returns success
+  (the withdrawal record is committed; with `drained: true` also no sender on
+  the old generation is left). Do not resend the `set`: entryd may already
+  hold it (a received request is not cancelled when the caller stops waiting)
+  and process it later. Do not take `status` no longer reading `unsettled` as
+  closed. To be sure it is closed, `withdraw` until it succeeds.
+* *A `withdraw` refused with `ledger`* (the socket shows `verb_unavailable`).
+  The withdrawal may be committed although its record is not. Checkable:
+  `status`. Repeating `withdraw` is safe -- it narrows, and only moves the
+  generation on -- and its success is the confirmation.
+* *A daemon's audit write whose outcome is unknown* (requests refused with
+  `ledger`; the diagnostics above show the record owed). Checkable: those
+  diagnostics, and auditd's `audit.verify`. Do not resend an operation that
+  sends something out or widens a permission in the expectation that it is
+  deduplicated: once the outcome is settled a resend is a new request, judged
+  and recorded again.
+* *Audit forwarding duplicates (known limitation).* incident_explaind
+  forwards its audit records to auditd and, when a reply is lost (connection
+  failure, timeout, EOF, a malformed reply, `read_deadline`), sends the same
+  record again, up to three more times. auditd answers a resend from its
+  existing line only for the last 64 records it settled `present`, within the
+  process. Otherwise a lost acknowledgement leaves the same record twice in
+  the chain and spends the daily share and the rate token twice. Equal content
+  (`incident_id`, `occurred_at`) marks a candidate duplicate, not a proven
+  one: an operation repeated on purpose looks the same. Count raw records and
+  aggregated ones separately.
+* *Knowledge queries started from an observation.* The issuer's policy: when
+  it is not known whether a query was sent, it is not re-sent automatically,
+  and the local judgement goes on without that context (one missing check
+  does not stop it). Such a query is never recorded as `no_match` or as
+  answered: a failure after the send started is `unavailable`/`not_run`, a
+  verified answer whose record failed is `received`/`unrecorded` (sent and
+  verified, not adopted), and a refusal before the send is `refused`/`not_run`
+  (see [knowledge context consumer](knowledge-context-consumer.md)). Known
+  gap: the explainer remembers which (incident, techniques) it asked only in
+  memory, so after a restart, an eviction (4,096 pairs), an incident close or
+  an Edge reset it can ask the same again. Keeping that history across a
+  restart is a separate decision.
+
 ### Observe-baseline activation tooling (#206, P3)
 
 `az-activation` prepares the inputs the observe-baseline activation pass
