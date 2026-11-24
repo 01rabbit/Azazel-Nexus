@@ -339,8 +339,9 @@ lock, in the same exclusive section as the write (the way `confirm` does), so a
 `set` sent before a `withdraw` and handled after it is refused and writes no
 consent record. entryd also compares it before it writes its own lines for the
 `set` (the marker and `mio.remote.opt_in.set`), so a refusal there adds none of
-them. When the comparison under the lock is the one that fails, those two lines
-are already written, and entryd then tries to write
+them. Once entryd's early comparison has passed, those two lines are written
+before the store is called, so they stay whatever then refuses (the comparison
+under the lock, the ceiling, the lock itself), and entryd then tries to write
 `mio.remote.opt_in.not_committed`; it is recorded when that append succeeds
 (when it fails, the refusal detail is `ledger` instead).
 Through the socket the transport may in addition record its own
@@ -499,7 +500,7 @@ with the generation it wrote (sends are then closed by that withdrawn record);
 a refusal, including `ledger`, is not this ground, so repeat. Only then, as
 root with entryd stopped, remove `remote-consent/send.seal` from entryd's state
 leaf; start entryd and check that `status` reads `withdrawn` at that generation
-or above; then `set` the four prerequisites again, one at a time, each naming the generation `status` or the last reply reported. Before passing a reply's generation on, check that the reply still lists every prerequisite set so far and is not `withdrawn`: the reply is read after the write, so a `withdraw` that came in between shows there, and continuing from its generation would build on the withdrawn state. If it does not, stop and read `status`.
+or above; then `set` the four prerequisites again, one at a time, each naming the generation `status` or the last reply reported. Pass a reply's generation on only when it is exactly the premise sent plus one (plus two for the `set` that completes the four and opens the grant): the reply is read after the write, so a `withdraw` (and any `set` after it) that came in between shows only as a generation that jumped, even when the listed prerequisites look the same. If it jumped, stop, read `status`, and decide again as a new operation.
 Never remove the seal while a grant may be in force and unconfirmed. Statuses:
 `absent`, `incomplete`, `unconfirmed`, `granted`, `withdrawn`, `unavailable`,
 and `unsettled` (a reply of entryd only, never a stored status). A
