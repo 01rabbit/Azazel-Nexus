@@ -730,6 +730,21 @@ class MioEntryService:
         # the narrowing skips the drain, which would meet our own lock.
         held = {"drain": False} if self._unsettled is not None else {}
         was_unsettled = self._unsettled is not None
+        if not was_unsettled and self.guard is not None:
+            # A withdrawal already made and still owed its record is not made
+            # again by its resend (#467): the store reads exactly that
+            # withdrawal, so it is settled and answered, never committed twice.
+            owed_withdrawal = next(
+                (item for item in self.guard.owed if item.performed
+                 and item.event.get("event_type") == "mio.remote.opt_in.withdrawn"), None)
+            if owed_withdrawal is not None:
+                reading = self.consent.reading()
+                if (reading.status == "withdrawn"
+                        and reading.generation == owed_withdrawal.event.get("generation")):
+                    drained = owed_withdrawal.event.get("drained")
+                    if not self._settle_audit():
+                        raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger")
+                    return {**self._reading_reply(self.consent.reading()), "drained": drained}
         try:
             record, drained = self.consent.withdraw(reason, operator=operator, **held)
         except (ConsentRefused, OSError):
