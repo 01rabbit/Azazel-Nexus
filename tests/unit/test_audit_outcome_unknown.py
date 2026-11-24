@@ -420,23 +420,38 @@ def test_a_lost_predecessor_segment_is_a_break_for_an_absent_line_too(tmp_path, 
 
 
 def test_a_break_found_by_settling_stops_the_guard_until_a_restart(tmp_path, monkeypatch):
+    from azazel_nexus_runtime.chain_guard import Owed
     ledger = _two_segments(tmp_path)
     unknown = _unknown_in_second_segment(ledger, monkeypatch)
-    calls = []
+    calls, settles = [], []
+    inner = _segmented_settle(ledger)
+
+    def settle(entry, *, absent_head, path):
+        settles.append(entry.sequence)
+        return inner(entry, absent_head=absent_head, path=path)
     guard = ChainGuard(lambda e: calls.append(("append", e)) or ledger.append(e, day="2026-01-02"),
-                       _segmented_settle(ledger), sticky_break=False)
-    guard.owed.append(__import__("azazel_nexus_runtime.chain_guard", fromlist=["Owed"]).Owed(
-        unknown.entry.event, unknown.entry, unknown.absent_head, False, path=unknown.path))
-    (tmp_path / "2026-01-01.jsonl").unlink()
+                       settle, sticky_break=False)
+    guard.owed.append(Owed(unknown.entry.event, unknown.entry, unknown.absent_head, False,
+                           path=unknown.path))
+    first = tmp_path / "2026-01-01.jsonl"
+    saved = first.read_bytes()
+    first.unlink()
     assert not guard.settle_owed()
     assert guard.broken and guard.last_break
-    size = unknown.path.stat().st_size
-    # The damage is repaired on disk; the process still does not touch the ledger.
-    ledger.append  # noqa: B018
+    settled_before = list(settles)
+    snapshot = {p.name: p.read_bytes() for p in tmp_path.glob("*.jsonl")}
+    # The damage is repaired on disk (the lost segment is back, so a settle would now succeed)...
+    first.write_bytes(saved)
+    assert inner(unknown.entry, absent_head=unknown.absent_head, path=unknown.path) == "present"
+    snapshot = {p.name: p.read_bytes() for p in tmp_path.glob("*.jsonl")}
+    settles.clear()
+    # ...and the guard is still fixed: it refuses, settles nothing and touches nothing.
     with pytest.raises(AuditChainBroken):
         guard.append({"event_type": "later"})
     assert not guard.settle_owed()
-    assert calls == [] and unknown.path.stat().st_size == size
+    guard.record_refusal({"event_type": "r"})
+    assert settled_before and settles == [] and calls == []
+    assert {p.name: p.read_bytes() for p in tmp_path.glob("*.jsonl")} == snapshot
 
 
 def test_route_ledger_cannot_place_a_segment_at_or_before_the_retention_boundary(tmp_path):
