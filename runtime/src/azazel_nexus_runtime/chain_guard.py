@@ -175,9 +175,11 @@ class ChainGuard:
     def settle_owed(self) -> bool:
         """Settle what the ledger owes. Never raises; True when nothing is owed."""
         while self.owed:
-            if self._is_broken() or not self._settle_first(self.owed[0]):
+            first = self.owed[0]
+            if self._is_broken() or not self._settle_first(first):
                 return False
-            self.owed.pop(0)
+            # By identity: settling may have put a debt of its own in front.
+            self.owed = [item for item in self.owed if item is not first]
         return True
 
     def _resolved(self, owed: Owed) -> None:
@@ -226,11 +228,29 @@ class ChainGuard:
             self.reason = str(exc)
             return False
         except AuditOutcomeUnknown as exc:
-            owed.record_entry, owed.record_absent = exc.entry, exc.absent_head
-            owed.record_path = exc.path
+            if owed.record is not None and self._is_the_record(exc.entry, owed.record):
+                owed.record_entry, owed.record_absent = exc.entry, exc.absent_head
+                owed.record_path = exc.path
+            else:
+                # Another line came first (a carried record opening a new
+                # day): it is a debt of its own, settled before this one, and
+                # this one's record is written again after it (never dropped).
+                self.owed.insert(0, Owed(exc.entry.event, exc.entry, exc.absent_head, False,
+                                         path=exc.path))
             return False
         except AuditUnavailable:
             return False
+
+    @staticmethod
+    def _is_the_record(entry: AuditEntry, record: dict) -> bool:
+        """Whether `entry` is the settlement record being written (not some other line)."""
+        written = entry.event
+        if written.get("event_type") != record["event_type"]:
+            return False
+        if record["event_type"] == SETTLED:
+            return (written.get("settled_sequence") == record["settled_sequence"]
+                    and written.get("settled_event_hash") == record["settled_event_hash"])
+        return written.get("late_event") == record["late_event"]
 
     # -- writing ---------------------------------------------------------
 

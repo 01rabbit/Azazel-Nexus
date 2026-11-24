@@ -497,3 +497,43 @@ def _unknown_in_second_segment_third(ledger, monkeypatch):
     finally:
         monkeypatch.setattr(os, "fsync", real)
     return raised.value
+
+
+def test_a_boundary_that_cannot_be_read_leaves_the_outcome_unknown(tmp_path):
+    from azazel_nexus_runtime.mio_route_ledger import RouteLedger
+    ledger = RouteLedger(tmp_path / "state")
+    ledger.directory.mkdir(parents=True)
+    (ledger.directory / "retained-boundary.json").mkdir()       # reading it is an OSError
+    with pytest.raises(AuditUnavailable) as raised:
+        ledger._prior_head(ledger.directory / "2026-01-03.jsonl")
+    assert not isinstance(raised.value, AuditChainBroken)
+
+
+def test_a_carried_line_in_doubt_while_settling_is_its_own_debt_and_the_record_is_written_again(tmp_path):
+    """5.1-3: the line in doubt while writing the settlement record is not the record."""
+    flaky = Flaky(tmp_path / "l.jsonl")
+    guard = ChainGuard(flaky.append, flaky.settle)
+    flaky.mode = "sync"
+    with pytest.raises(AuditOutcomeUnknown):
+        guard.append({"event_type": "op"}, performed=True)
+    # Writing the settlement record, another line (a carried record) lands first and is in doubt.
+    real_internal = guard._internal
+    state = {"n": 0}
+
+    def internal(event):
+        state["n"] += 1
+        if state["n"] == 1:
+            carried = flaky.ledger.append({"event_type": "mio.capability.carried"}, sync=False)
+            raise AuditOutcomeUnknown("carried", entry=carried, path=flaky.ledger.path,
+                                      absent_head=(carried.sequence - 1, carried.previous_hash))
+        return real_internal(event)
+    guard._internal = internal
+    flaky.mode = None
+    assert not guard.settle_owed()                 # the carried line first
+    assert len(guard.owed) == 2 and guard.owed[0].event == {"event_type": "mio.capability.carried"}
+    assert guard.settle_owed()
+    kinds = [e["event_type"] for e in _events(flaky)]
+    assert kinds == ["op", "mio.capability.carried", "audit.outcome_settled", "audit.outcome_settled"], kinds
+    flaky.ledger.verify()
+    settled = [e for e in _events(flaky) if e["event_type"] == "audit.outcome_settled"]
+    assert {e["settled_sequence"] for e in settled} == {1, 2}

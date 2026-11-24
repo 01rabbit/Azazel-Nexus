@@ -159,7 +159,11 @@ class RouteLedger(DailySegments):
         A segment at or before the retention boundary cannot be placed, and
         that is an unknown outcome, never a presence.
         """
-        boundary = read_boundary(self.directory)
+        try:
+            boundary = read_boundary(self.directory)
+        except OSError as exc:
+            # A boundary that cannot be read places nothing: unknown, not a crash.
+            raise AuditUnavailable("M.I.O. route boundary cannot be read") from exc
         if boundary is not None and path.name <= boundary["retired"]:
             raise AuditUnavailable("M.I.O. route segment is outside the retained chain")
         for segment in reversed([s for s in self.chain.segments(boundary) if s.name < path.name]):
