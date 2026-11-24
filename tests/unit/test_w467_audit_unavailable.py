@@ -640,7 +640,8 @@ def test_auditd_resend_of_a_settled_line_returns_the_line_not_a_second_one():
         harness.cleanup()
 
 
-def test_knowledge_resend_of_a_sent_and_unrecorded_request_is_not_sent_again():
+def test_knowledge_resend_after_settling_is_a_new_request_sent_and_recorded_once():
+    """5.0 (d): sent once and unrecorded; after settling, the same request is a new one."""
     harness = Daemon("knowledge-contextd")
     try:
         assert harness.start()
@@ -650,16 +651,11 @@ def test_knowledge_resend_of_a_sent_and_unrecorded_request_is_not_sent_again():
         first = harness.ask(frame)
         assert first["reply"]["result"] == {"refusal": "unavailable", "stage": "unrecorded"}
         harness.arm("off")
-        again = harness.ask(frame)                                          # the same request
-        assert again["reply"]["result"] == {"refusal": "unavailable", "stage": "unrecorded"}
+        again = harness.ask(frame)                                          # settled, then new
+        assert "response" in again["reply"]["result"]
         sends = [line for line in harness.log_lines("ops.log")
                  if line["op"] == "send:knowledge-peer.request_context"]
-        assert len(sends) == 2                                              # warm-up, the faulted one
-        third = harness.ask(frame)                                          # the memory ended
-        assert "response" in third["reply"]["result"]
-        sends = [line for line in harness.log_lines("ops.log")
-                 if line["op"] == "send:knowledge-peer.request_context"]
-        assert len(sends) == 3
+        assert len(sends) == 3                                              # warm-up, faulted, resend
         final = harness.ledger()
         assert final["verify"] == "ok"
         kinds = [r["event_type"] for r in final["records"]]
@@ -667,6 +663,6 @@ def test_knowledge_resend_of_a_sent_and_unrecorded_request_is_not_sent_again():
         assert kinds.count("audit.late_record") == 1 and kinds.count("audit.outcome_settled") == 0
         verified = [r for r in final["records"] if r["event_type"] == "knowledge.context.completed"
                     and r.get("outcome") == "verified_advisory"]
-        assert len(verified) == 2     # warm-up and the third; the faulted one is the late record
+        assert len(verified) == 2     # warm-up and the resend; the faulted one is the late record
     finally:
         harness.cleanup()

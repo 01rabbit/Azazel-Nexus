@@ -353,19 +353,21 @@ def test_locald_stops_the_request_when_the_break_is_found_by_its_admission_refre
     assert touched == ["revoked"], touched
 
 
-def test_knowledge_contextd_does_not_send_again_for_a_resend_of_a_sent_and_unrecorded_request(
-        monkeypatch, tmp_path):
-    """#467: sent once and not recorded; the same request again is answered, not sent."""
+def test_knowledge_contextd_treats_a_resend_after_settling_as_a_new_request(monkeypatch, tmp_path):
+    """5.0 (d): sent once and not recorded; settled; the same request again is sent and recorded once."""
     served, sent, request = _broker(monkeypatch, tmp_path, answer={"authority": "advisory_only"})
     FakeLedger.unavailable_on = {"knowledge.context.completed"}
     first = served["handler"](request())
     assert len(sent) == 1 and first == {"refusal": "unavailable", "stage": "unrecorded"}
-    FakeLedger.unavailable_on = set()
-    # The same request, resent: not sent again, and the memory ends with it.
-    assert served["handler"](request()) == {"refusal": "unavailable", "stage": "unrecorded"}
+    # While it is still owed, nothing is sent.
+    FakeLedger.unavailable_on = {"knowledge.context.completed", "audit.late_record"}
+    assert served["handler"](request()) == {"refusal": "unavailable", "stage": "refused_before_send"}
     assert len(sent) == 1
-    assert "response" in served["handler"](request())
-    assert len(sent) == 2
+    FakeLedger.unavailable_on = set()
+    reply = served["handler"](request())          # settled first, then a new request
+    assert "response" in reply and len(sent) == 2
+    requested = [c for c in FakeLedger.calls if c == "knowledge.context.requested"]
+    assert len(requested) == 2                    # one record per request that was sent
 
 
 def test_locald_does_not_start_new_work_when_the_revocation_record_made_a_debt(monkeypatch, tmp_path):

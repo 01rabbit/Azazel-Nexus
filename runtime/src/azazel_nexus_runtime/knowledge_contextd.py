@@ -358,8 +358,6 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
     guard = ChainGuard(ledger.append, settle_single(ledger))
     #: Set when the record of a verified answer could not be written.
     unrecorded = [False]
-    #: The digest of the request last answered `unrecorded` (sent, not recorded).
-    resend: list = [None]
 
     def audit(event: dict) -> None:
         try:
@@ -389,19 +387,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
             # sent until the ledger says where it stands.
             guard.count_unrecorded()
             return {"refusal": "unavailable", "stage": "refused_before_send"}
-        digest = hashlib.sha256(json.dumps(
-            getattr(request, "payload", None), sort_keys=True, separators=(",", ":"),
-            default=str).encode("utf-8")).hexdigest()
-        if resend[0] == digest:
-            # The same request again after one that was sent and could not be
-            # recorded (#467): it was sent once, so it is not sent again. The
-            # answer is the same word, and the memory ends with this request.
-            resend[0] = None
-            guard.count_unrecorded()
-            return {"refusal": "unavailable", "stage": "unrecorded"}
         reply = broker.handle(request)
-        if reply.get("stage") == "unrecorded":
-            resend[0] = digest
         if not guard.broken:
             return reply
         # Found during this request. A refusal the broker already chose keeps
