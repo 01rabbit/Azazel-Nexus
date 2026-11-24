@@ -537,7 +537,7 @@ read, Knowledge peer authorisation.
 
 **A withdrawal committed and not recorded (#471).** `withdraw` commits to the
 store and only then writes `mio.remote.opt_in.withdrawn`. If entryd ends
-between the two, the withdrawal is in force (no new send starts after the commit; a sender that had read the old generation before it may still finish, as the drain describes, and the backfill does not change or record that) and the ledger has no
+between the two, the withdrawal is in force (a request that checks whether it may send after the commit is refused; one that read the old generation before the commit may still start its transport after it, as the drain describes, and the backfill does not change or record that) and the ledger has no
 row for it. `main()` calls `recover_withdrawal()` once the ledger is verified,
 prepared and `mio.entry.started` is written, and before the socket is served
 (`ready`). It records the row when it can show that the row is missing. The
@@ -593,7 +593,8 @@ reasoning, in order:
   each tick and each status read; `mio.remote.opt_in.status` then carries
   `audit.withdrawal_record` (`{"generation": N, "state": "owed"}`), a new
   `withdraw` is not held back by it (its own record becomes a debt behind it,
-  and the reply is the usual `ledger` refusal), and no new send starts. After the
+  and the reply is the usual `ledger` refusal), and a request that checks after the
+  commit is refused. After the
   ledger recovers the row is written once. A write of unknown outcome keeps the
   candidate line: a line found present adds nothing, one found absent is written
   again. This is the case after the start; entryd that cannot verify the ledger
