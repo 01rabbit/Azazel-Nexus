@@ -693,6 +693,9 @@ class AuditService:
             settle_segmented(self._prior_head),
             append_internal=self._append_internal,
             sticky_break=False, on_settled=self._on_settled)
+        # A break found by any entrance (start, a diagnostic's checkpoint, an
+        # append) stops the guard as well (#458, #467).
+        self.guard.owner_broken = lambda: self.break_reason is not None
         #: Requests (and summaries) whose line was of unknown outcome, by the
         #: bytes of the event: who wrote it and what it would count. Applied
         #: only when settling finds the line present.

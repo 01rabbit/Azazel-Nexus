@@ -301,6 +301,8 @@ class MioEntryService:
         # once per owner, never on the status/profile read path. Verification
         # and the scan are one pass over the retained segments only, so start
         # time is bounded by retention, not by the node's age.
+        if getattr(self.router.ledger, "guard", None) is not None:
+            self.router.ledger.guard.owner_broken = lambda: self.ledger_broken
         self.router.ledger.verify(self._restore)
         if hasattr(self.router.ledger, "on_new_segment"):
             self.router.ledger.on_new_segment = self._carry

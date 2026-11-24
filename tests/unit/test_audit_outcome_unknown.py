@@ -452,3 +452,21 @@ def test_route_ledger_cannot_place_a_segment_at_or_before_the_retention_boundary
     with pytest.raises(AuditUnavailable) as raised:
         ledger._prior_head(ledger.directory / "2026-01-02.jsonl")
     assert not isinstance(raised.value, AuditChainBroken)
+
+
+def test_the_owners_break_stops_the_guard_whatever_found_it(tmp_path):
+    flaky = Flaky(tmp_path / "l.jsonl")
+    guard = ChainGuard(flaky.append, flaky.settle)
+    flaky.mode = "sync"
+    with pytest.raises(AuditOutcomeUnknown):
+        guard.append({"event_type": "op"})
+    flaky.mode = None
+    broken = {"now": False}
+    guard.owner_broken = lambda: broken["now"]
+    broken["now"] = True                        # found by the owner's own diagnostic
+    calls = flaky.calls
+    assert not guard.settle_owed()
+    with pytest.raises(AuditChainBroken):
+        guard.append({"event_type": "later"})
+    guard.record_refusal({"event_type": "r"})
+    assert flaky.calls == calls and guard.state == "broken"

@@ -123,3 +123,27 @@ def test_an_incident_that_landed_counts_against_the_day(tmp_path, monkeypatch):
     assert not service._incidents_by_day.get(now[:10])
     assert service.guard.settle_owed()
     assert sum(service._incidents_by_day[now[:10]][902]) == 1
+
+
+def test_a_break_found_by_a_diagnostic_stops_the_tick_from_settling(tmp_path, monkeypatch):
+    """5.1-1: a break found at any entrance stops the guard; the tick writes nothing."""
+    from azazel_nexus.audit import AuditChainBroken
+    from test_runtime_auditd import OPERATOR
+
+    service = _service(tmp_path)
+    real = fail_next_fsync(monkeypatch)
+    with pytest.raises(RequestRefused):
+        _append(service, day="2026-09-20")
+    monkeypatch.setattr(os, "fsync", real)
+    internal = service.guard._internal
+    service.guard._internal = lambda event: (_ for _ in ()).throw(AuditUnavailable("down"))
+    monkeypatch.setattr(service.ledger, "checkpoint",
+                        lambda: (_ for _ in ()).throw(AuditChainBroken("found by the checkpoint")))
+    reply = service.handle(_request("audit.verify", {}, principal=OPERATOR))
+    assert reply["verified"] is False and service.guard.owed
+    service.guard._internal = internal
+    size = sum(p.stat().st_size for p in service.ledger.segments())
+    service.tick()
+    service.handle(_request("audit.verify", {}, principal=OPERATOR))
+    assert sum(p.stat().st_size for p in service.ledger.segments()) == size
+    assert service.guard.owed and kinds(service) == ["activation.unit_granted"]

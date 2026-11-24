@@ -130,13 +130,23 @@ class ChainGuard:
         #: Refusal records that were not written because the ledger could not take them.
         self.refusals_unrecorded = 0
         self.owed: list[Owed] = []
+        #: The owner's own judgement that the chain is broken (auditd's `verified`
+        #: after a break, entryd's `ledger_broken`), whatever found it: the
+        #: guard then settles nothing and appends nothing (#458).
+        self.owner_broken: Callable[[], bool] | None = None
         self.last_break: str | None = None
 
     # -- state -----------------------------------------------------------
 
+    def _is_broken(self) -> bool:
+        if not self.broken and self.owner_broken is not None and self.owner_broken():
+            self.broken = True
+            self.reason = self.reason or "chain broken (found by the owner)"
+        return self.broken
+
     @property
     def state(self) -> str:
-        return "broken" if self.broken else "owed" if self.owed else "ok"
+        return "broken" if self._is_broken() else "owed" if self.owed else "ok"
 
     def status(self) -> dict:
         """For a diagnostic verb: the state and the sequence not yet settled."""
@@ -157,7 +167,7 @@ class ChainGuard:
     def settle_owed(self) -> bool:
         """Settle what the ledger owes. Never raises; True when nothing is owed."""
         while self.owed:
-            if self.broken or not self._settle_first(self.owed[0]):
+            if self._is_broken() or not self._settle_first(self.owed[0]):
                 return False
             self.owed.pop(0)
         return True
@@ -224,10 +234,10 @@ class ChainGuard:
         precedes its operation (`performed=False`) that fails leaves nothing
         owed: the operation does not run.
         """
-        if self.broken:
+        if self._is_broken():
             raise AuditChainBroken(self.reason or "chain broken")
         if self.owed and not self.settle_owed():
-            if self.broken:
+            if self._is_broken():
                 raise AuditChainBroken(self.reason or "chain broken")
             if performed:
                 self.owed.append(Owed(event, None, None, True))
@@ -258,7 +268,7 @@ class ChainGuard:
         Never raises. A record that cannot be written is counted; a line of
         unknown outcome becomes a debt.
         """
-        if self.broken:
+        if self._is_broken():
             self.refusals_unrecorded += 1
             return
         try:
@@ -289,7 +299,7 @@ class ChainGuard:
         """
 
         def handle(request: Any) -> Any:
-            if self.broken:
+            if self._is_broken():
                 return refuse()
             if self.owed and not self.settle_owed():
                 return refuse()
