@@ -1560,8 +1560,13 @@ answer was verified, and the `completed` record of that answer could not be
 written (the answer is not used); and, when the send happened and then the peer
 or the client failed and the record of that failure could not be written
 either, the failure's own stage (`transport` and the like) unchanged, with the
-record owed and written once, late. In every one of these the send happened at
-most once and the request leaves one record. `ledger` is the detail the daemon
+record owed and written once, late. Two records are told apart here: the
+attempt (`requested`), which comes before the send, and the content of the
+completion (`completed`, the one that contract (c) counts once). If `requested`
+cannot be written nothing is sent, so there is no completion to record. If the
+send happened, its completion content is on the chain exactly once: as its own
+line, as one `audit.late_record`, or as the `late_event` of one
+`audit.outcome_settled`. The send itself happened at most once. `ledger` is the detail the daemon
 keeps for its own refusals; on the socket the caller sees only `verb_unavailable`. A refusal is still sent when its own
 record cannot be written (it is counted as unrecorded); diagnostics keep
 answering: auditd's `audit.verify` (with `unavailable: true` when the ledger
