@@ -21,6 +21,7 @@ from azazel_nexus_runtime.protocol import Refusal, RequestRefused
 class FakeLedger:
     broken = False
     break_on: set = set()
+    unavailable_on: set = set()
     calls: list = []
 
     def __init__(self, path):
@@ -33,10 +34,14 @@ class FakeLedger:
         FakeLedger.calls.append(event["event_type"])
         if FakeLedger.broken or event["event_type"] in FakeLedger.break_on:
             raise AuditChainBroken("fixture broken tail")
+        if event["event_type"] in FakeLedger.unavailable_on:
+            from azazel_nexus.audit import AuditUnavailable
+            raise AuditUnavailable("fixture write failure")
 
 
 def _serve(module, monkeypatch, tmp_path, **patches):
     FakeLedger.broken, FakeLedger.calls, FakeLedger.break_on = False, [], set()
+    FakeLedger.unavailable_on = set()
     monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
     for name in ("mio_local_state_dir", "mio_reference_state_dir",
                  "mio_contextobs_state_dir", "knowledge_context_state_dir"):
@@ -346,3 +351,18 @@ def test_locald_stops_the_request_when_the_break_is_found_by_its_admission_refre
     FakeLedger.break_on = {"mio.local.admission"}
     _refused(served["handler"])
     assert touched == ["revoked"], touched
+
+
+def test_knowledge_contextd_does_not_send_again_for_a_resend_of_a_sent_and_unrecorded_request(
+        monkeypatch, tmp_path):
+    """#467: sent once and not recorded; the same request again is answered, not sent."""
+    served, sent, request = _broker(monkeypatch, tmp_path, answer={"authority": "advisory_only"})
+    FakeLedger.unavailable_on = {"knowledge.context.completed"}
+    first = served["handler"](request())
+    assert len(sent) == 1 and first == {"refusal": "unavailable", "stage": "unrecorded"}
+    FakeLedger.unavailable_on = set()
+    # The same request, resent: not sent again, and the memory ends with it.
+    assert served["handler"](request()) == {"refusal": "unavailable", "stage": "unrecorded"}
+    assert len(sent) == 1
+    assert "response" in served["handler"](request())
+    assert len(sent) == 2
