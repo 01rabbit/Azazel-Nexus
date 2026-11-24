@@ -110,6 +110,14 @@ def _fault_append(service, kind: str, only=lambda event: True, flag: str | None 
     return fired
 
 
+def _owed(service) -> dict:
+    """What the guard owes now: debts, and of them the ones that hold a line of unknown outcome."""
+    owed = service.guard.owed
+    return {"count": len(owed),
+            "with_entry": sum(1 for item in owed if item.entry is not None),
+            "with_record_entry": sum(1 for item in owed if item.record_entry is not None)}
+
+
 def _is_withdrawn(event) -> bool:
     return event.get("event_type") == "mio.remote.opt_in.withdrawn"
 
@@ -165,21 +173,25 @@ def first(root: str, fifo: str, plan: dict) -> None:
             return real_record(event, **kw)
 
         service.router._record = record
+    fired = {}
     if plan.get("fault"):
-        fired = _fault_append(service, plan["fault"], only=_is_withdrawn)
+        fired["withdrawn"] = _fault_append(service, plan["fault"], only=_is_withdrawn)
     if plan.get("settle_unknown"):
         # The withdrawal's own line fails (unavailable); its late record is
         # then written, present, with an unknown outcome.
-        _fault_append(service, "unknown_present", only=_is_late_withdrawn)
+        fired["late"] = _fault_append(service, "unknown_present", only=_is_late_withdrawn)
     try:
         reply = {"returned": service.handle(SimpleNamespace(
             verb=entry.OPT_IN_WITHDRAW_VERB, principal=operator,
             arguments={"reason": "operator_request"}))}
     except entry.RequestRefused as exc:
         reply = {"refused": exc.detail}
+    owed_before = _owed(service)
     if plan.get("settle_unknown"):
         service.guard.settle_owed()
-    _post(fifo, {**base, "reply": reply})
+    _post(fifo, {**base, "reply": reply,
+                 "fired": {name: seen["n"] for name, seen in fired.items()},
+                 "owed_before_settle": owed_before, "owed_after_settle": _owed(service)})
     time.sleep(600)
 
 
@@ -194,9 +206,11 @@ def restart(root: str, plan: dict) -> None:
     service = entry.MioEntryService()
     flag = plan.get("flag")
     if plan.get("fault") == "unavailable_until":
-        _fault_append(service, "unavailable", flag=flag)
+        fired = _fault_append(service, "unavailable", flag=flag)
     elif plan.get("fault"):
-        _fault_append(service, plan["fault"], only=_is_late_withdrawn)
+        fired = _fault_append(service, plan["fault"], only=_is_late_withdrawn)
+    else:
+        fired = {"n": 0}
     if plan.get("advance_boundary"):
         # Retirement that moves on after the scan: the boundary now covers
         # every row the scan saw (written by hand; only its sequence matters
@@ -219,12 +233,13 @@ def restart(root: str, plan: dict) -> None:
         return sum(1 for item in service.router.ledger
                    if item.event.get("recovered_from") == "consent_store")
 
+    out["fired"], out["owed_before_settle"] = fired["n"], _owed(service)
     if plan.get("settle"):
         out["rows_before_settle"] = recovered_rows()
         out["settled"] = service.guard.settle_owed()
         out["rows_after_settle"] = recovered_rows()
     if plan.get("park"):
-        _post(plan["park"], {"parked": True})
+        _post(plan["park"], {"parked": True, "fired": fired["n"], "owed": _owed(service)})
         time.sleep(600)
     status = lambda: service.handle(SimpleNamespace(  # noqa: E731
         verb=entry.OPT_IN_STATUS_VERB, principal=operator, arguments={}))

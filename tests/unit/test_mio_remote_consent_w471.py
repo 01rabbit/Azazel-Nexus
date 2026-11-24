@@ -240,6 +240,7 @@ def park_restart(root, plan, tmp_path, tag):
     fifo = tmp_path / f"{tag}.fifo"
     os.mkfifo(fifo)
     rfd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+    parked = None
     child = subprocess.Popen(
         [sys.executable, str(CHILD), "restart", str(root),
          json.dumps({**plan, "park": str(fifo)})], env=w465._env(), stderr=subprocess.PIPE)
@@ -249,6 +250,7 @@ def park_restart(root, plan, tmp_path, tag):
             assert time.monotonic() < deadline and child.poll() is None, child.stderr.read()
             if select.select([rfd], [], [], 1)[0]:
                 buf += os.read(rfd, 4096)
+        parked = json.loads(buf.splitlines()[0])
         child.send_signal(signal.SIGKILL)
         child.wait(timeout=10)
     finally:
@@ -257,6 +259,7 @@ def park_restart(root, plan, tmp_path, tag):
             child.kill()
             child.wait(timeout=10)
         child.stderr.close()
+    return parked
 
 
 # -- the audit cannot be written ------------------------------------------
@@ -617,6 +620,12 @@ def test_overlap_i_the_owed_late_record_was_never_written(tmp_path):
 def test_overlap_ii_the_late_record_is_present_before_its_settlement(tmp_path):
     posted, root = run_first(tmp_path, {"fault": "unavailable", "settle_unknown": True})
     generation = store_view(root)["generation"]
+    # The faults fired: the withdrawal's line failed, and its late record was
+    # written and reported unknown, leaving a debt that holds that line.
+    assert posted["fired"]["withdrawn"] >= 1 and posted["fired"]["late"] == 1
+    assert posted["owed_before_settle"]["count"] == 1
+    assert posted["owed_before_settle"]["with_entry"] == 0
+    assert posted["owed_after_settle"]["with_record_entry"] == 1
     assert withdrawal_rows(root, generation) == {"original": 0, "late": 1, "recovered": 0,
                                                  "settled": 0}
     run_restart(root)
@@ -629,6 +638,9 @@ def test_overlap_ii_the_late_record_is_present_before_its_settlement(tmp_path):
 def test_overlap_ii_b_the_line_itself_is_present_with_an_unknown_outcome(tmp_path):
     posted, root = run_first(tmp_path, {"fault": "unknown_present"})
     generation = store_view(root)["generation"]
+    # The unknown outcome happened: one fault fired and the debt holds the line.
+    assert posted["fired"]["withdrawn"] == 1
+    assert posted["owed_before_settle"] == {"count": 1, "with_entry": 1, "with_record_entry": 0}
     assert withdrawal_rows(root, generation) == {"original": 1, "late": 0, "recovered": 0,
                                                  "settled": 0}
     run_restart(root)
@@ -646,6 +658,8 @@ def test_overlap_iii_unknown_outcome_of_the_recovery_row_is_settled_in_the_same_
     again, and either way there is one row."""
     posted, root, generation = killed(tmp_path, {})
     out = run_restart(root, {"fault": fault, "settle": True})
+    assert out["fired"] == 1  # the unknown outcome happened
+    assert out["owed_before_settle"] == {"count": 1, "with_entry": 0, "with_record_entry": 1}
     assert (out["rows_before_settle"], out["rows_after_settle"], out["settled"]) == (
         written, 1, True)
     assert withdrawal_rows(root, generation) == {"original": 0, "late": 0, "recovered": 1,
@@ -665,7 +679,9 @@ def test_overlap_iii_unknown_outcome_of_the_recovery_row_is_settled_in_the_same_
 def test_overlap_iii_unknown_outcome_then_stop_before_the_settling(
         tmp_path, fault, expected):
     posted, root, generation = killed(tmp_path, {})
-    park_restart(root, {"fault": fault}, tmp_path, "iii")
+    parked = park_restart(root, {"fault": fault}, tmp_path, "iii")
+    assert parked["fired"] == 1  # the unknown outcome happened before the stop
+    assert parked["owed"] == {"count": 1, "with_entry": 0, "with_record_entry": 1}
     assert withdrawal_rows(root, generation) == expected
     run_restart(root)
     assert withdrawal_rows(root, generation) == {"original": 0, "late": 0, "recovered": 1,
