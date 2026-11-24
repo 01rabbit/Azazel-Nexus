@@ -394,11 +394,24 @@ def test_only_unusable_rows_remain_so_nothing_is_written(tmp_path):
      "missing": ["privacy policy", "provider", "comms permission"], "withdrawn": None},
     {"event_type": "mio.remote.opt_in.withdrawn", "generation": 1, "operator": "uid:1001",
      "at": "2026-11-24T00:00:00Z", "reason": "operator_request"},
+    {"event_type": "mio.remote.opt_in.withdrawn", "generation": 1, "operator": "uid:1001",
+     "at": "2026-11-24T00:00:00Z", "reason": "not a reason", "drained": True,
+     "occurred_at": "2026-11-24T00:00:00Z"},
+    {"event_type": "mio.remote.opt_in", "generation": 1, "operator": "uid:1001",
+     "at": "2026-11-24T00:00:00Z", "occurred_at": "2026-11-24T00:00:00Z",
+     "granted": ["provider", "remote use", "privacy policy", "comms permission"],
+     "missing": [], "withdrawn": None, "opens_generation": 2},
+    {"event_type": "mio.remote.opt_in", "generation": "1", "operator": "uid:1001",
+     "at": "2026-11-24T00:00:00Z", "occurred_at": "2026-11-24T00:00:00Z",
+     "granted": sorted(["remote use", "privacy policy", "provider", "comms permission"]),
+     "missing": [], "withdrawn": None, "opens_generation": 2},
 ], ids=["set-without-fields", "set-with-a-list-prerequisite", "grant-without-lists",
         "set-with-an-unknown-prerequisite", "grant-without-withdrawn",
         "grant-with-an-unknown-prerequisite", "grant-not-a-partition",
         "grant-with-an-empty-withdrawn", "grant-with-a-wrong-opens-generation",
-        "grant-partial-without-opens", "withdrawn-row-without-drained"])
+        "grant-partial-without-opens", "withdrawn-row-without-drained",
+        "withdrawn-with-an-unknown-reason",
+        "grant-unsorted", "grant-with-a-text-generation"])
 def test_a_grant_row_of_the_wrong_shape_does_not_anchor(tmp_path, row):
     """Only rows of the shape entryd writes anchor the order argument: a positive
     generation alone does not prove an earlier grant was retained."""
@@ -725,3 +738,18 @@ def test_main_unknown_outcome_of_the_recovery_row_is_settled_once(tmp_path, entr
     entryd.stop()
     assert entryd.start(), entryd.exit_info()
     assert total(withdrawal_rows(root, generation)) == 1
+
+
+
+def test_an_anchor_is_exactly_a_row_entryd_writes():
+    """The router adds `occurred_at` to every row, so a row without it cannot come
+    from entryd and does not anchor; the same row with it does (#471)."""
+    from azazel_nexus_runtime import mio_entryd as entry_mod
+
+    written = {"event_type": "mio.remote.opt_in.withdrawn", "generation": 1,
+               "operator": "uid:1001", "at": "2026-11-24T00:00:00Z",
+               "reason": "operator_request", "drained": True,
+               "occurred_at": "2026-11-24T00:00:00Z"}
+    assert entry_mod._anchor_row(written) is True
+    assert entry_mod._anchor_row({k: v for k, v in written.items() if k != "occurred_at"}) is False
+    assert entry_mod._anchor_row({**written, "generation": "1"}) is False

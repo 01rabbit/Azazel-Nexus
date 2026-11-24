@@ -125,28 +125,40 @@ WITHDRAWN_EVENT = "mio.remote.opt_in.withdrawn"
 _PREREQUISITE_VALUES = frozenset(p.value for p in PREREQUISITES)
 
 
-def _consistent_grant_row(event) -> bool:
-    """Whether a `mio.remote.opt_in` row is one entryd could have written: the
-    granted and missing prerequisites partition the four, `withdrawn` is None or
-    a withdrawal of the written shape, and `opens_generation`, when present, is
-    the next generation (#471 anchors)."""
-    granted, missing = event.get("granted"), event.get("missing")
-    if (len(set(granted)) != len(granted) or len(set(missing)) != len(missing)
-            or set(granted) & set(missing)
-            or set(granted) | set(missing) != _PREREQUISITE_VALUES):
+def _anchor_row(event) -> bool:
+    """Whether `event` is exactly a row entryd writes that names an opt-in
+    generation, so its position can anchor the order argument (#471). The key
+    sets, value types and values are those of the writers; the router adds
+    `occurred_at`. Anything else -- an older shape included -- is not an anchor
+    (the gap is then left, and diagnosed, rather than filled on a guess)."""
+    kind, generation = event.get("event_type"), event.get("generation")
+    if type(generation) is not int or generation < 1:
         return False
-    withdrawn = event.get("withdrawn")
-    if withdrawn is not None and not (
-            type(withdrawn) is dict
-            and set(withdrawn) == {"event_type", "operator", "at", "reason"}
-            and withdrawn.get("event_type") == WITHDRAWN_EVENT
-            and all(type(withdrawn.get(k)) is str for k in ("operator", "at", "reason"))):
+    if type(event.get("occurred_at")) is not str or type(event.get("operator")) is not str:
         return False
-    # entryd writes this row only for the pending grant that completes the four:
-    # all four granted, none missing, not withdrawn, and the generation it opens.
-    opens = event.get("opens_generation", None)
-    return (set(granted) == _PREREQUISITE_VALUES and not missing and withdrawn is None
-            and type(opens) is int and opens == event.get("generation") + 1)
+    keys = set(event)
+    if kind == "mio.remote.opt_in.set":  # `_opt_in` before it commits a prerequisite
+        prerequisite = event.get("prerequisite")
+        return (keys == {"event_type", "operator", "prerequisite", "generation", "occurred_at"}
+                and type(prerequisite) is str and prerequisite in _PREREQUISITE_VALUES)
+    if kind == "mio.remote.opt_in":  # the pending grant that completes the four
+        opens = event.get("opens_generation")
+        return (keys == {"event_type", "operator", "at", "granted", "missing", "withdrawn",
+                         "generation", "opens_generation", "occurred_at"}
+                and type(event.get("at")) is str
+                and event.get("granted") == sorted(_PREREQUISITE_VALUES)
+                and event.get("missing") == [] and event.get("withdrawn") is None
+                and type(opens) is int and opens == generation + 1)
+    if kind == WITHDRAWN_EVENT:  # the operator's `withdraw`, after its commit
+        reason = event.get("reason")
+        return (keys == {"event_type", "operator", "at", "reason", "generation", "drained",
+                         "occurred_at"}
+                and type(event.get("at")) is str
+                and type(reason) is str and reason in WITHDRAWAL_REASONS
+                and type(event.get("drained")) is bool)
+    return False
+
+
 #: How long `set` waits for the send gate before it opens a grant. A sender
 #: inside a transport call holds it for up to a request deadline (60 s); entry's
 #: accept loop is single-threaded, so the wait is short. Not taken: the grant
@@ -473,37 +485,8 @@ class MioEntryService:
             self._malformed_candidates += 1
         if identity is not None:
             self._withdrawals_recorded.add(identity)
-        kind, generation = event.get("event_type"), event.get("generation")
-        if kind == WITHDRAWN_EVENT:
-            # The original row `withdraw` writes carries `drained`.
-            anchor = identity is not None and type(event.get("drained")) is bool
-        elif kind == "mio.remote.opt_in.set":
-            # Exactly the shape `_opt_in` writes: who set which (known) prerequisite.
-            # (the router adds `occurred_at` to every row it writes)
-            anchor = (set(event) == {"event_type", "operator", "prerequisite", "generation",
-                                     "occurred_at"}
-                      and type(event.get("occurred_at")) is str
-                      and type(event.get("operator")) is str
-                      and type(event.get("prerequisite")) is str
-                      and event.get("prerequisite") in _PREREQUISITE_VALUES)
-        elif kind == "mio.remote.opt_in":
-            # The shape `RemoteOptIn.as_event` writes, with the record's generation
-            # (and `opens_generation` on a completing grant) added.
-            lists = (event.get("granted"), event.get("missing"))
-            withdrawn = event.get("withdrawn")
-            anchor = ({"event_type", "operator", "at", "granted", "missing", "withdrawn",
-                       "generation", "occurred_at"} <= set(event)
-                      <= {"event_type", "operator", "at", "granted", "missing", "withdrawn",
-                          "generation", "opens_generation", "occurred_at"}
-                      and type(event.get("occurred_at")) is str
-                      and type(event.get("operator")) is str and type(event.get("at")) is str
-                      and all(type(v) is list
-                              and all(type(x) is str and x in _PREREQUISITE_VALUES for x in v)
-                              for v in lists)
-                      and _consistent_grant_row(event))
-        else:
-            anchor = False
-        if anchor and type(generation) is int and generation >= 1:
+        generation = event.get("generation")
+        if _anchor_row(event):
             self._anchors.append((generation, item.sequence))
 
     def _written(self, event) -> None:
