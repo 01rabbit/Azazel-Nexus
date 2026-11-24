@@ -1053,3 +1053,33 @@ def test_entryd_refuses_with_the_fixed_reason_when_the_share_cannot_be_judged(se
     assert refused.value.detail == "ledger"
     monkeypatch.undo()
     assert svc.handle(route_request(1001))["route"]            # alive, and served again
+
+
+def test_a_retention_failure_after_the_first_line_of_a_new_day_is_settled_not_a_break(
+        state, monkeypatch):
+    """The line opened today's segment (its predecessor is yesterday's last line)
+    and only the retention after it failed: settling finds it present, the chain
+    is sound, and nothing is taken for a lost predecessor (#467)."""
+    import errno
+    from azazel_nexus.audit import AuditOutcomeUnknown
+    clock = Clock()
+    route = ledger(state, clock)
+    route.append({"event_type": "a"})
+    clock.advance(86400)
+    real = route.retain
+    calls = {"n": 0}
+
+    def retain():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError(errno.EIO, "injected retention failure")
+        return real()
+    monkeypatch.setattr(route, "retain", retain)
+    with pytest.raises(AuditOutcomeUnknown):
+        route.append({"event_type": "b"})
+    assert len(list(route.directory.glob("*.jsonl"))) == 2   # b opened a new segment
+    assert route.guard.settle_owed() is True
+    assert not route.guard.broken
+    kinds = [e.event["event_type"] for e in RouteChain(route.directory)]
+    assert kinds == ["a", "b", "audit.outcome_settled"], kinds
+    RouteChain(route.directory).verify(require_terminated=True)

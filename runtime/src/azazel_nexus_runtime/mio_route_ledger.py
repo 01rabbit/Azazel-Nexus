@@ -428,10 +428,12 @@ class RouteLedger(DailySegments):
         except FileNotFoundError:
             opening = True
         head = self.chain.head()
+        first_in_file = opening
         if opening and self.on_new_segment is not None:
             for carried in self.on_new_segment():
                 written = self._write(path, carried, head, reserved=True)
                 head = (written.sequence, written.event_hash)
+                first_in_file = False
         entry = self._write(path, event, head, reserved=reserved)
         self.current = path
         try:
@@ -439,9 +441,14 @@ class RouteLedger(DailySegments):
         except (OSError, AuditUnavailable) as exc:
             # The line is in the segment; only what follows it failed (a read of
             # a retained segment fails as `AuditUnavailable`, without the entry).
+            # What the file shows without the line: an empty segment when the
+            # line opened it (its predecessor is in the previous segment, which
+            # the segmented settling checks), else the line before it here.
+            absent = ((0, GENESIS_HASH) if first_in_file
+                      else (entry.sequence - 1, entry.previous_hash))
             raise AuditOutcomeUnknown(
                 "M.I.O. route retention failed", entry=entry, path=path,
-                absent_head=(entry.sequence - 1, entry.previous_hash)) from exc
+                absent_head=absent) from exc
         return entry
 
     def _write(self, path: Path, event: Mapping[str, Any], head: tuple[int, str],

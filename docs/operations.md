@@ -1571,8 +1571,12 @@ and settled later like any other line. If the
 send happened, its completion content is on the chain at most once, and
 exactly once when the ledger recovers: as its own line, as one
 `audit.late_record`, or as the `late_event` of one `audit.outcome_settled`. If
-the chain is found broken instead (#458), the completion is never recorded and
-the reply stays `unrecorded`; nothing more is sent until a restart. The send itself happened at most once. `ledger` is the detail the daemon
+the chain is found broken instead (#458): found while writing the completion of
+a verified answer, the reply is `unrecorded` and that completion is not
+recorded; found while writing a peer or client failure, the reply keeps that
+stage (`transport` and the like) and the failure is not recorded; found only
+while settling a completion line that turned out `present`, that line is the
+record. In every case nothing more is sent until a restart. The send itself happened at most once. `ledger` is the detail the daemon
 keeps for its own refusals; on the socket the caller sees only `verb_unavailable`. A refusal is still sent when its own
 record cannot be written (it is counted as unrecorded); diagnostics keep
 answering: auditd's `audit.verify` (with `unavailable: true` when the ledger
