@@ -336,10 +336,15 @@ explainer's `mio-advise` listener -- with no free-text argument:
 there is no record yet), read from `status` or from the reply to the caller's
 last `set`. The store compares it with the record it reads under its write
 lock, in the same exclusive section as the write (the way `confirm` does), so a
-`set` sent before a `withdraw` and handled after it is refused and writes
-nothing; entryd also compares it before it writes the `set` ledger line, so a
-refused `set` adds no line there (a refusal at the lock, after that line, adds
-`mio.remote.opt_in.not_committed`). A request without the argument is refused
+`set` sent before a `withdraw` and handled after it is refused and writes no
+consent record. entryd also compares it before it writes its own lines for the
+`set` (the marker and `mio.remote.opt_in.set`), so a refusal there adds none of
+them. When the comparison under the lock is the one that fails, those two lines
+are already written, and `mio.remote.opt_in.not_committed` follows them.
+Through the socket the transport may in addition record its own
+`runtime.request_refused` line for any refusal (subject to its aggregation and
+to room in the ledger).
+A request without the argument is refused
 by the transport (`missing_argument`) from the first request of this version:
 the old form is not accepted, so there is no period in which a `set` without a
 premise can open a grant. The refusal is `verb_unavailable` on the socket, with
@@ -349,9 +354,16 @@ that the caller did not renew. A caller that reads `status` again and resends
 after every refusal gets past a withdrawal and opens the grant again; not
 resending a refused `set` on its own is the caller's rule, not something the
 product enforces. At the ceiling a withdrawal is written at the same
-generation, and a later `set` is refused as exhausted; a `set` that completes
-the four uses two generations (pending, then open), so it needs two below the
-ceiling.
+generation. The store checks the ceiling before it runs the comparison, so a
+`set` that passed entryd's early comparison at generation M-1 and meets a
+withdrawal that has written M (the ceiling) is refused as exhausted, not as
+stale: the detail inside entryd is `opt_in_store` (a stale premise is
+`opt_in_stale`), the socket says `verb_unavailable` either way, and
+`not_committed` is recorded. A `set` that completes the four needs two
+generations to open the grant (pending at N+1, open at N+2). With one
+generation left it can still write the pending record, but opening it is
+refused (the seal of N+2 is above the ceiling) and the record stays
+`unconfirmed`, closed; with two left the grant opens.
 
 Every change writes the next **generation**; nothing lowers it and there is no
 reset verb. After a withdrawal the four prerequisites must be set again. At
