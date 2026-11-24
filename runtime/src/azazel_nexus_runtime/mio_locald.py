@@ -657,6 +657,10 @@ def main(
         # answer is "not admitted", which grants nothing (#467).
         if (getattr(getattr(request, "verb", None), "name", None) == ADMISSION_VERB.name
                 and not guard.broken and guard.owed and not guard.settle_owed()):
+            if guard.broken:
+                # The settling itself found the chain broken: the fixed refusal
+                # of #458 from this request on, not "not admitted".
+                return ledger_refusal()
             return {"admitted": False}
         return guarded(request)
 

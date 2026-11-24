@@ -425,3 +425,47 @@ def test_knowledge_contextd_keeps_the_peers_stage_when_its_failure_cannot_be_rec
     served["handler"](request())
     assert FakeLedger.calls.count("audit.late_record") == 1           # recorded once, late
     assert len(sent) == 3                                             # the later two are their own sends
+
+
+def test_locald_admission_diagnostic_is_the_fixed_refusal_when_its_settling_finds_the_break(
+        monkeypatch, tmp_path):
+    """#467: a debt is owed; the admission diagnostic settles it, and the settling
+    finds the chain broken. That same request gets the fixed refusal of #458,
+    not "not admitted"."""
+    from azazel_nexus_runtime import model_admission_evidence as evidence
+
+    class Holder:
+        reading = SimpleNamespace(embedding=None)
+
+        def start(self, *, audit):
+            return self.reading
+
+        def refresh(self, *, withdraw, audit):
+            withdraw()
+            audit({"event_type": "mio.local.admission"})
+
+        def close(self):
+            pass
+
+    class Service:
+        def __init__(self, **kw):
+            self._retriever = object()
+
+        def set_playbooks(self, library):
+            pass
+
+        def handle(self, request, *, audit):
+            return {"outcome": "assessed"}
+
+    monkeypatch.setattr(evidence, "AdmissionHolder", Holder)
+    served = _serve(mio_locald, monkeypatch, tmp_path, PlaybookSelectionHolder=_selection(),
+                    LocalRuntimeService=Service)
+    FakeLedger.unavailable_on = {"mio.local.admission", "audit.late_record"}
+    _refused(served["handler"])                       # the revocation's record is owed
+    FakeLedger.unavailable_on = set()
+    FakeLedger.break_on = {"audit.late_record"}       # settling it finds the break
+    admission = SimpleNamespace(verb=SimpleNamespace(name=mio_locald.ADMISSION_VERB.name))
+    with pytest.raises(RequestRefused) as refused:
+        served["handler"](admission)
+    assert refused.value.refusal is Refusal.VERB_UNAVAILABLE
+    _refused(served["handler"])                       # and every request after it
