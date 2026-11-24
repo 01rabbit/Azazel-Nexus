@@ -334,7 +334,9 @@ explainer's `mio-advise` listener -- with no free-text argument:
 
 `set` names the generation the caller confirmed (`expected_generation`; 0 when
 there is no record yet), read from `status` or from the reply to the caller's
-last `set`. The store compares it with the record it reads under its write
+last `set` -- the latter only when that reply's generation is exactly the
+premise it sent plus one (plus two for the `set` that completed the four):
+any other value means something came in between, so stop and read `status`. The store compares it with the record it reads under its write
 lock, in the same exclusive section as the write (the way `confirm` does), so a
 `set` sent before a `withdraw` and handled after it is refused and writes no
 consent record. entryd also compares it before it writes its own lines for the

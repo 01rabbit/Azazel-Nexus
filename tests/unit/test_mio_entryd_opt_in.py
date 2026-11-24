@@ -147,10 +147,18 @@ def test_a_withdrawal_is_committed_even_when_the_ledger_then_fails(service, monk
 
 def test_a_grant_over_an_unreadable_store_is_refused_and_writes_nothing(service):
     grant(service)
+    # A premise that was valid before the damage, so the refusal is the
+    # unreadable store's (`opt_in_store`), not a malformed premise (#470).
+    premise = service.consent.reading().generation
     path = runtime_paths.mio_state_dir() / "remote-consent" / "opt-in.json"
     path.write_bytes(b"{")
-    with pytest.raises(RequestRefused):
-        opt_set(service, "remote use")
+    before = len(recorded(service))
+    with pytest.raises(RequestRefused) as refused:
+        verb(service, entry.OPT_IN_SET_VERB, prerequisite="remote use",
+             expected_generation=premise)
+    assert refused.value.detail == "opt_in_store"
+    # No marker, no `set` line: the store could not be read before anything was written.
+    assert len(recorded(service)) == before
     with pytest.raises(RequestRefused):
         verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="operator_request")
     assert path.read_bytes() == b"{"
