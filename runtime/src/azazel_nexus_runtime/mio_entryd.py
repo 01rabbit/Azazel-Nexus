@@ -131,7 +131,9 @@ _PREREQUISITE_VALUES = frozenset(p.value for p in PREREQUISITES)
 _ANCHOR_OPERATOR = re.compile(r"uid:(?:0|[1-9][0-9]{0,9})", re.ASCII)
 _STORE_TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", re.ASCII)
 _ROUTER_TIME = re.compile(
-    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{6})?\+00:00", re.ASCII)
+    # `isoformat()` leaves the fraction out when it is zero, so `.000000` never occurs.
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.(?!000000)[0-9]{6})?\+00:00",
+    re.ASCII)
 
 
 def _utc_iso(value) -> bool:
@@ -168,7 +170,10 @@ def _anchor_row(event) -> bool:
     # The writers' values: an operator is `uid:<uid>` as `_opt_in` formats an int,
     # `occurred_at` is the router's UTC ISO time, `at` is the store's UTC time.
     operator, occurred_at = event.get("operator"), event.get("occurred_at")
-    if type(operator) is not str or not _ANCHOR_OPERATOR.fullmatch(operator):
+    # SO_PEERCRED reads the uid as a signed 32-bit int and a negative one is refused,
+    # so `_opt_in` never writes one above 2**31 - 1 (at most ten digits: int() is cheap).
+    if (type(operator) is not str or not _ANCHOR_OPERATOR.fullmatch(operator)
+            or int(operator[4:]) > 2**31 - 1):
         return False
     if not _utc_iso(occurred_at):
         return False

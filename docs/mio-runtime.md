@@ -611,7 +611,9 @@ reasoning, in order:
   generation as the one before, so two within the same second have the same
   identity and one cannot be told from the other; nothing is claimed about the
   identity there), `no_earlier_anchor`, `ledger_broken` (the chain is
-  broken; nothing is written to it, as in #458), `store_unreadable`.
+  broken; nothing is written to it, as in #458), `ledger_unreadable` (the
+  retention boundary or a segment could not be read when the decision was
+  made), `store_unreadable`.
 * Why nothing is written when it cannot be shown. A row made from less than the
   store's record and the ledger's own rows would be a claim the ledger cannot
   support. Doubt is resolved toward not writing.

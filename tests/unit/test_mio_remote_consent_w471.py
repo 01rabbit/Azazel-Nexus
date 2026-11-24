@@ -768,12 +768,15 @@ def test_anchor_values_are_the_writers_formats():
                "reason": "operator_request", "drained": True,
                "occurred_at": "2026-11-24T00:00:00.123456+00:00"}
     assert entry_mod._anchor_row(written) is True
+    assert entry_mod._anchor_row({**written, "operator": "uid:2147483647",
+                                  "occurred_at": "2026-11-24T00:00:00+00:00"}) is True
     for key, value in (("operator", "uid:0001"), ("operator", "uid:²"),
                        ("at", "x"), ("at", "2026-11-24T00:00:00+00:00"),
                        ("occurred_at", "x"), ("occurred_at", "2026-11-24T00:00:00"),
                        ("at", "2026-1-2T3:4:5Z"), ("occurred_at", "2026-11-24T00:00:00Z"),
                        ("occurred_at", "2026-11-24 00:00:00+00:00"),
-                       ("operator", "uid:" + "1" * 4301)):
+                       ("operator", "uid:" + "1" * 4301), ("operator", "uid:2147483648"),
+                       ("occurred_at", "2026-11-24T00:00:00.000000+00:00")):
         assert entry_mod._anchor_row({**written, key: value}) is False, (key, value)
 
 
