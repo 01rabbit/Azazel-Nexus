@@ -437,6 +437,18 @@ def served(daemon: str, entry: str, reply: dict) -> bool:
     return True
 
 
+def permitted_fault_answer(daemon: str, entry: str, reply: dict) -> bool:
+    """The answers allowed while a request's record failed (nothing else)."""
+    if reply.get("transport") != "reply":
+        return False
+    body = reply["reply"]
+    if (daemon, entry) == ("knowledge-contextd", "context"):
+        return (body.get("ok") is True and body.get("result") in (
+            {"refusal": "unavailable", "stage": "refused_before_send"},
+            {"refusal": "unavailable", "stage": "unrecorded"}))
+    return body == {"ok": False, "refusal": "verb_unavailable"}
+
+
 def duplicated(events: list) -> list:
     """Request lines written more than once by one request."""
     counts = Counter(event for event in events if event not in SYSTEM)
@@ -506,12 +518,15 @@ def check(result: dict, *, clean: dict) -> None:
         # The sync that failed was the one of the planned line.
         if n <= len(clean_events):
             assert detail["event"] == clean_events[n - 1], (where, detail, clean_events)
-    # A request that needs its record is never answered with a result while the record failed.
+    # While the record failed, only the permitted answers: the fixed refusal on the socket
+    # (`verb_unavailable`; `ledger` stays inside the daemon), and for knowledge-contextd the
+    # in-band stage of how far it got. Never the result (an advisory, a reference, a line's
+    # sequence) as if it had been recorded.
     if (daemon, entry) in NEEDS_RECORD and fired:
-        assert not served(daemon, entry, result["fault_request"]), (where, result["fault_request"])
+        assert permitted_fault_answer(daemon, entry, result["fault_request"]), (where, result["fault_request"])
     if case == "persist" and (daemon, entry) in NEEDS_RECORD:
         second = result["second_request_during_fault"]
-        assert not served(daemon, entry, second), (where, second)
+        assert permitted_fault_answer(daemon, entry, second), (where, second)
     # No request line is written twice: each request, taken by itself, writes no more of
     # any kind of line than one request does (what the clean run wrote).
     per_request = Counter(e for e in clean_events if e not in SYSTEM)
