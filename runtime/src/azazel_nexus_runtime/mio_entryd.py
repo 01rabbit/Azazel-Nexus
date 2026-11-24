@@ -123,6 +123,28 @@ ENTRYD_ACTOR = "az-mio-entryd"
 WITHDRAWN_EVENT = "mio.remote.opt_in.withdrawn"
 #: The prerequisite values entryd writes into its opt-in rows (#471 anchors).
 _PREREQUISITE_VALUES = frozenset(p.value for p in PREREQUISITES)
+
+
+def _consistent_grant_row(event) -> bool:
+    """Whether a `mio.remote.opt_in` row is one entryd could have written: the
+    granted and missing prerequisites partition the four, `withdrawn` is None or
+    a withdrawal of the written shape, and `opens_generation`, when present, is
+    the next generation (#471 anchors)."""
+    granted, missing = event.get("granted"), event.get("missing")
+    if (len(set(granted)) != len(granted) or len(set(missing)) != len(missing)
+            or set(granted) & set(missing)
+            or set(granted) | set(missing) != _PREREQUISITE_VALUES):
+        return False
+    withdrawn = event.get("withdrawn")
+    if withdrawn is not None and not (
+            type(withdrawn) is dict
+            and set(withdrawn) == {"event_type", "operator", "at", "reason"}
+            and withdrawn.get("event_type") == WITHDRAWN_EVENT
+            and all(type(withdrawn.get(k)) is str for k in ("operator", "at", "reason"))):
+        return False
+    opens = event.get("opens_generation", None)
+    return "opens_generation" not in event or (
+        type(opens) is int and opens == event.get("generation") + 1)
 #: How long `set` waits for the send gate before it opens a grant. A sender
 #: inside a transport call holds it for up to a request deadline (60 s); entry's
 #: accept loop is single-threaded, so the wait is short. Not taken: the grant
@@ -475,7 +497,7 @@ class MioEntryService:
                       and all(type(v) is list
                               and all(type(x) is str and x in _PREREQUISITE_VALUES for x in v)
                               for v in lists)
-                      and (withdrawn is None or type(withdrawn) is dict))
+                      and _consistent_grant_row(event))
         else:
             anchor = False
         if anchor and type(generation) is int and generation >= 1:

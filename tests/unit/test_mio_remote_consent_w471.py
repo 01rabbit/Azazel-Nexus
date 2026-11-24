@@ -378,9 +378,21 @@ def test_only_unusable_rows_remain_so_nothing_is_written(tmp_path):
     {"event_type": "mio.remote.opt_in", "generation": 1, "operator": "uid:1001",
      "at": "2026-11-24T00:00:00Z", "granted": ["nothing known"], "missing": [],
      "withdrawn": None},
+    {"event_type": "mio.remote.opt_in", "generation": 1, "operator": "uid:1001",
+     "at": "2026-11-24T00:00:00Z", "granted": ["remote use"], "missing": ["remote use"],
+     "withdrawn": None},
+    {"event_type": "mio.remote.opt_in", "generation": 1, "operator": "uid:1001",
+     "at": "2026-11-24T00:00:00Z",
+     "granted": ["remote use", "privacy policy", "provider", "comms permission"],
+     "missing": [], "withdrawn": {}},
+    {"event_type": "mio.remote.opt_in", "generation": 1, "operator": "uid:1001",
+     "at": "2026-11-24T00:00:00Z",
+     "granted": ["remote use", "privacy policy", "provider", "comms permission"],
+     "missing": [], "withdrawn": None, "opens_generation": 7},
 ], ids=["set-without-fields", "set-with-a-list-prerequisite", "grant-without-lists",
         "set-with-an-unknown-prerequisite", "grant-without-withdrawn",
-        "grant-with-an-unknown-prerequisite"])
+        "grant-with-an-unknown-prerequisite", "grant-not-a-partition",
+        "grant-with-an-empty-withdrawn", "grant-with-a-wrong-opens-generation"])
 def test_a_grant_row_of_the_wrong_shape_does_not_anchor(tmp_path, row):
     """Only rows of the shape entryd writes anchor the order argument: a positive
     generation alone does not prove an earlier grant was retained."""

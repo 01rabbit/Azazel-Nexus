@@ -1582,12 +1582,14 @@ record cannot be written (it is counted as unrecorded); diagnostics keep
 answering: auditd's `audit.verify` (with `unavailable: true` when the ledger
 cannot be read), entryd's `mio.remote.opt_in.status` (an `audit` key; a
 record is owed -- an outcome still unknown, or an operation done whose record
-is not yet written -- when `audit.audit` reads `owed`. The key also carries
-`withdrawal_record`, the start's check of the latest record (#471): its
-`state` is `owed` (no reason), `unverifiable` with a reason, `not_applicable`
-when the latest record is not a withdrawal, and, when malformed candidates were
-counted, also `recorded` or `present`; `none` when the store holds no record.
-The key's presence alone does not mean a record is owed. While an opt-in grant is `unsettled` (#468) that reply keeps
+is not yet written -- when `audit.audit` reads `owed`. The key may also carry
+`withdrawal_record`, the start's check of the latest record (#471), when its
+`state` is `owed` (no reason), `unverifiable` (with a reason) or
+`not_applicable` (the latest record is not a withdrawal), or whatever the state
+when malformed candidates were counted (then `recorded`, `present` or `none`
+can show too). Either part may be absent: a record owed shows `audit.audit`
+without `withdrawal_record`, a settled start check shows nothing. The key's
+presence alone does not mean a record is owed. While an opt-in grant is `unsettled` (#468) that reply keeps
 its own shape, without the key), locald's `mio.local.admission`
 (`admitted: false` while a record is owed; on a chain found broken, the fixed
 refusal instead, as before). referenced, contextobsd and knowledge-contextd have no
