@@ -1576,8 +1576,10 @@ record cannot be written (it is counted as unrecorded); diagnostics keep
 answering: auditd's `audit.verify` (with `unavailable: true` when the ledger
 cannot be read), entryd's `mio.remote.opt_in.status` (an `audit` key, only
 while a record is owed: an outcome still unknown, or an operation done whose
-record is not yet written), locald's `mio.local.admission` (`admitted: false`
-while a record is owed). referenced, contextobsd and knowledge-contextd have no
+record is not yet written; while an opt-in grant is `unsettled` (#468) that
+reply keeps its own shape, without the key), locald's `mio.local.admission`
+(`admitted: false` while a record is owed; on a chain found broken, the fixed
+refusal instead, as before). referenced, contextobsd and knowledge-contextd have no
 diagnostic verb. Three cases are told apart:
 
 * Nothing was written (the open or the write failed, a partial line was cut
@@ -1585,12 +1587,16 @@ diagnostic verb. Three cases are told apart:
   writes normally. If the operation had already been done (a send, a
   withdrawal, an inference whose record comes after it), its record is owed:
   it is written once as `audit.late_record` before anything else that needs a
-  record (at the next such request, or at entryd's tick), and such a request is
-  refused while it cannot be written. A withdrawal is the exception, as
-  narrowing never waits on a record: it is committed, its own record is owed in
-  turn, and its reply is the fixed refusal while that cannot be written.
+  record. The daemon tries at each chance it has (a request, a diagnostic,
+  entryd's tick), and a request that needs a record is refused while it cannot
+  be written. Narrowing never waits on a record: entryd's withdrawal and
+  locald's revocation of an admission and release of resources are done, and
+  their own record is owed in turn; a withdrawal's reply is the fixed refusal
+  while that record cannot be written.
 * A complete line was written but could not be synced, or a partial line could
-  not be cut back: the outcome is *unknown*. Nothing that needs a record goes on
+  not be cut back, or (entryd's route ledger) the line was written and synced
+  but the new day's directory sync or the retention after it failed: the
+  outcome is *unknown*. Nothing that needs a record goes on
   -- no new append, no retry of the same line, no repeated operation -- until
   the daemon has settled it: it reads its ledger again and compares the
   sequence, previous hash and recomputed event hash with the line it wrote. The
