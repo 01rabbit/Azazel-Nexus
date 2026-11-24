@@ -1692,6 +1692,72 @@ queued work; lost acknowledgements can duplicate events. Explanations and
 ledger reads continue through an audit outage. `recent.json` is a projection,
 not a replacement for either verified ledger.
 
+**When the result is unknown: what can be checked, and what not to resend
+(#470).** Requests carry no identifier, so a resend cannot be told apart from a
+new request, and none is added: a resend is a new operation. The one exception
+is auditd's answer from an existing line (below). What each case allows:
+
+* *A `mio.remote.opt_in.set` reply that did not arrive* (EOF, timeout, dropped
+  connection), or one that says `unsettled`. Checkable: `mio.remote.opt_in.status`
+  (the state now, not the lost reply), and a `withdraw` that returns success
+  (the withdrawal record is committed; with `drained: true` also no sender on
+  the old generation is left). Do not resend the `set`: entryd may already
+  hold it (a received request is not cancelled when the caller stops waiting)
+  and process it later. Do not take `status` no longer reading `unsettled` as
+  closed. A `withdraw` that succeeds confirms the withdrawal is committed (and,
+  with `drained: true`, that no sender on the old generation is left). It does
+  not stop a `set` sent earlier: one that entryd processes after the
+  withdrawal is added to the state then, and if it completes the four
+  prerequisites with others the grant opens again. Read `status` after the
+  withdrawal, and do not resend a `set` whose reply you could not confirm.
+* *A `withdraw` refused with `ledger`* (the socket shows `verb_unavailable`).
+  The withdrawal may be committed although its record is not. Checkable:
+  `status`. Repeating `withdraw` is safe -- it narrows; it moves the generation
+  on, except at the generation ceiling, where it writes the same generation --
+  and its success is the confirmation.
+* *A daemon's audit write whose outcome is unknown* (requests refused with
+  `ledger`). Checkable, where the daemon has a diagnostic (listed above):
+  auditd's `audit.verify` (its own ledger only), entryd's `status` (an `audit`
+  key while a record is owed, not while an opt-in grant is `unsettled`), and
+  locald's `mio.local.admission` (`admitted: false`, no detail). referenced,
+  contextobsd and knowledge-contextd have none; their refusals are the only
+  sign. Do not resend an operation that
+  sends something out or widens a permission in the expectation that it is
+  deduplicated: once the outcome is settled a resend is a new request, judged
+  and recorded again.
+* *Audit forwarding duplicates (known limitation).* incident_explaind
+  forwards its audit records to auditd and, when a reply is lost (connection
+  failure, timeout, EOF, a malformed reply) or auditd refuses with
+  `read_deadline`, sends the same record again, up to three more times (four sends in all);
+  every other refusal, `verb_unavailable` included, is dropped, not resent. auditd answers a
+  resend from its existing line, with no new line and no further cost, when
+  it matches one of the last 64 records it settled `present` (same writer
+  uid, same canonical event, within the process, after the time checks that
+  run first). Otherwise, when the first line did land and the resend passes
+  the checks and is admitted too, it spends another rate token (taken at
+  admission); if its line is then written, or later settled `present`, the
+  same record is in the chain twice and the day's count is taken again. Equal content
+  (`incident_id`, `occurred_at`) marks a candidate duplicate, not a proven
+  one: an operation repeated on purpose looks the same. Count raw records and
+  aggregated ones separately.
+* *Knowledge queries started from an observation.* The issuer's policy: when
+  it is not known whether a query was sent, it is not re-sent automatically,
+  and the local judgement goes on without that context (one missing check
+  does not stop it). Such a query is never recorded as `no_match` or as
+  answered: a `transport` failure (which may come after the send started) is
+  `unavailable`/`not_run`; a response that fails verification is
+  `refused`/`failed`, one whose techniques fail it is `received`/`failed`, one
+  discarded at adoption is `received`/`withdrawn` (the grant marker changed,
+  or the adoption check failed, for example on expiry or clock health -- it
+  does not by itself mean the grant was withdrawn); a
+  verified answer whose record failed is `received`/`unrecorded` (sent and
+  verified, not adopted); and a refusal before the send is `refused`/`not_run`
+  (see [knowledge context consumer](knowledge-context-consumer.md)). Known
+  gap: the explainer remembers which (incident, techniques) it asked only in
+  memory, so after a restart, an eviction (4,096 pairs), an incident close or
+  an Edge reset it can ask the same again. Keeping that history across a
+  restart is a separate decision.
+
 ### Observe-baseline activation tooling (#206, P3)
 
 `az-activation` prepares the inputs the observe-baseline activation pass

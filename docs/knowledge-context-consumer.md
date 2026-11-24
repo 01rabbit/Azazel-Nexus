@@ -357,8 +357,9 @@ Axes of the record (`technique-knowledge/1`): `transport` (`received`,
 `withdrawn`, `unrecorded`; HTTP 422 counts as `failed`), per technique
 `coverage` (`found`, `no_match`, `stale`, `unavailable`) and `useful_content`
 (true exactly for `found`). The pairs in use are received/ok, received/failed
-(validator refusal), received/withdrawn (verified, not adopted because the grant
-marker changed), received/unrecorded (verified, not adopted because the broker
+(validator refusal), received/withdrawn (verified, not adopted: the grant marker changed, or the
+check at adoption failed, for example on expiry or clock health -- this value
+alone does not tell whether the grant was withdrawn), received/unrecorded (verified, not adopted because the broker
 could not record its completion: its audit chain broke, #458, or the record
 could not be written, #467 -- the send happened once and the daemon does not
 repeat it; the same frame asked again after the record is settled is a new
@@ -366,7 +367,10 @@ request, judged by the usual admission and, when admitted, sent and recorded
 once),
 refused/failed
 (signature, Fabric, 422), refused/not_run (refused before send),
-unavailable/not_run. A record that is not received/ok carries no techniques. `name` and `tactics` are
+unavailable/not_run. `unavailable/not_run` also covers a query whose send had
+started when it failed, so it does not say the query was not sent; the issuer
+does not re-send such a query automatically (operations, *When the result is
+unknown*, #470). A record that is not received/ok carries no techniques. `name` and `tactics` are
 display labels: they are not copied into observations, hypotheses, next checks,
 actions, the reasoning trace or unknowns. The UI shows them with `textContent`
 under 「未検証の ATT&CK ラベル（参考）」; the handoff copies fixed keys only.
