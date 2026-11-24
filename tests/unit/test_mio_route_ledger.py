@@ -1002,3 +1002,26 @@ def test_entryd_survives_a_listing_failure_while_owed(service, monkeypatch):
     monkeypatch.undo()
     assert svc._settle_audit() is True
     RouteChain(route.directory).verify()
+
+
+def test_a_retention_read_failure_after_the_settlement_record_is_not_written_twice(state, monkeypatch):
+    """The settlement record landed and only retention failed: it is settled, not appended again."""
+    clock = Clock()
+    route = ledger(state, clock)
+    route.append({"event_type": "a"})
+    _unknown_line(route, monkeypatch)
+    real = route.retain
+    state_ = {"n": 0}
+
+    def retain():
+        state_["n"] += 1
+        if state_["n"] == 1:
+            raise AuditUnavailable("a retained segment could not be read")   # not an OSError
+        return real()
+    monkeypatch.setattr(route, "retain", retain)
+    assert route.guard.settle_owed() is False
+    assert route.guard.owed and route.guard.owed[0].record_entry is not None
+    assert route.guard.settle_owed()
+    kinds = [e.event["event_type"] for e in RouteChain(route.directory)]
+    assert kinds == ["a", "b", "audit.outcome_settled"], kinds       # one settlement record
+    RouteChain(route.directory).verify()

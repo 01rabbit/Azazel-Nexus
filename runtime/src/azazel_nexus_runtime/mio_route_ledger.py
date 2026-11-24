@@ -428,8 +428,9 @@ class RouteLedger(DailySegments):
         self.current = path
         try:
             self.retain()
-        except OSError as exc:
-            # The line is in the segment; only what follows it failed.
+        except (OSError, AuditUnavailable) as exc:
+            # The line is in the segment; only what follows it failed (a read of
+            # a retained segment fails as `AuditUnavailable`, without the entry).
             raise AuditOutcomeUnknown(
                 "M.I.O. route retention failed", entry=entry, path=path,
                 absent_head=(entry.sequence - 1, entry.previous_hash)) from exc
