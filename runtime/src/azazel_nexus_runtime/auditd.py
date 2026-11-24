@@ -540,9 +540,14 @@ class SegmentedLedger:
         filesystem.
         """
 
-        if not self.root.is_dir():
-            return ()
-        return tuple(sorted(self.root.glob("*.jsonl")))
+        try:
+            if not self.root.is_dir():
+                return ()
+            return tuple(sorted(self.root.glob("*.jsonl")))
+        except OSError as exc:
+            # The directory cannot be listed: the chain is unavailable, which
+            # is not a crash of whoever asked (#467).
+            raise AuditUnavailable(f"{self.root} could not be listed: {exc}") from exc
 
     def current_segment(self, *, day: str) -> Path:
         if not day or len(day) != 10 or day.count("-") != 2:
@@ -1140,11 +1145,20 @@ class AuditService:
                 # The chain cannot be read now (#467): say so, keep answering.
                 unreadable = True
                 checkpoints = []
+            try:
+                capacity = self.ledger.capacity()
+            except AuditUnavailable:
+                # Listing failed as well: the same answer, and the size unknown.
+                unreadable = True
+                capacity = {"chain_bytes": None, "segments": None,
+                            "filesystem_free_bytes": None, "warning": False,
+                            "warn_chain_bytes": CAPACITY_WARN_CHAIN_BYTES,
+                            "warn_free_bytes": CAPACITY_WARN_FREE_BYTES}
             reply = {
                 "verified": self.verified,
                 "break": self.break_reason,
                 "checkpoints": checkpoints,
-                "capacity": self.ledger.capacity(),
+                "capacity": capacity,
                 "rate_limited": dict(sorted(self.rate_limited.items())),
                 "rate_limit_summaries_dropped": self.summaries_dropped,
             }
