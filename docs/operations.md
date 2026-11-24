@@ -1694,8 +1694,8 @@ not a replacement for either verified ledger.
 
 **When the result is unknown: what can be checked, and what not to resend
 (#470).** Requests carry no identifier, so a resend cannot be told apart from a
-new request, and none is added: a resend is always a new operation. What each
-case allows:
+new request, and none is added: a resend is a new operation. The one exception
+is auditd's answer from an existing line (below). What each case allows:
 
 * *A `mio.remote.opt_in.set` reply that did not arrive* (EOF, timeout, dropped
   connection), or one that says `unsettled`. Checkable: `mio.remote.opt_in.status`
@@ -1704,24 +1704,36 @@ case allows:
   the old generation is left). Do not resend the `set`: entryd may already
   hold it (a received request is not cancelled when the caller stops waiting)
   and process it later. Do not take `status` no longer reading `unsettled` as
-  closed. To be sure it is closed, `withdraw` until it succeeds.
+  closed. A `withdraw` that succeeds confirms the withdrawal is committed (and,
+  with `drained: true`, that no sender on the old generation is left). It does
+  not stop a `set` sent earlier: one that entryd processes after the
+  withdrawal is added to the state then, and if it completes the four
+  prerequisites with others the grant opens again. Read `status` after the
+  withdrawal, and send no `set` whose result you do not know.
 * *A `withdraw` refused with `ledger`* (the socket shows `verb_unavailable`).
   The withdrawal may be committed although its record is not. Checkable:
-  `status`. Repeating `withdraw` is safe -- it narrows, and only moves the
-  generation on -- and its success is the confirmation.
+  `status`. Repeating `withdraw` is safe -- it narrows; it moves the generation
+  on, except at the generation ceiling, where it writes the same generation --
+  and its success is the confirmation.
 * *A daemon's audit write whose outcome is unknown* (requests refused with
-  `ledger`; the diagnostics above show the record owed). Checkable: those
-  diagnostics, and auditd's `audit.verify`. Do not resend an operation that
+  `ledger`). Checkable: that daemon's own diagnostic, which shows that a
+  record is owed and, for an unknown write, its sequence (auditd's
+  `audit.verify` covers auditd's own ledger only). Do not resend an operation that
   sends something out or widens a permission in the expectation that it is
   deduplicated: once the outcome is settled a resend is a new request, judged
   and recorded again.
 * *Audit forwarding duplicates (known limitation).* incident_explaind
   forwards its audit records to auditd and, when a reply is lost (connection
   failure, timeout, EOF, a malformed reply, `read_deadline`), sends the same
-  record again, up to three more times. auditd answers a resend from its
-  existing line only for the last 64 records it settled `present`, within the
-  process. Otherwise a lost acknowledgement leaves the same record twice in
-  the chain and spends the daily share and the rate token twice. Equal content
+  record again, up to three more times (four sends in all); a refusal,
+  `verb_unavailable` included, is dropped, not resent. auditd answers a
+  resend from its existing line, with no new line and no further cost, when
+  it matches one of the last 64 records it settled `present` (same writer
+  uid, same canonical event, within the process, after the time checks that
+  run first). Otherwise, when the first line did land and the resend passes
+  the checks and is admitted too, the same record is in the chain twice: the
+  resend spends another rate token (taken at admission) and another day's
+  count (taken when a line is written or settled `present`). Equal content
   (`incident_id`, `occurred_at`) marks a candidate duplicate, not a proven
   one: an operation repeated on purpose looks the same. Count raw records and
   aggregated ones separately.
@@ -1729,9 +1741,12 @@ case allows:
   it is not known whether a query was sent, it is not re-sent automatically,
   and the local judgement goes on without that context (one missing check
   does not stop it). Such a query is never recorded as `no_match` or as
-  answered: a failure after the send started is `unavailable`/`not_run`, a
+  answered: a `transport` failure (which may come after the send started) is
+  `unavailable`/`not_run`; a response that fails verification is
+  `refused`/`failed`, one whose techniques fail it is `received`/`failed`, one
+  discarded because the grant was withdrawn is `received`/`withdrawn`; a
   verified answer whose record failed is `received`/`unrecorded` (sent and
-  verified, not adopted), and a refusal before the send is `refused`/`not_run`
+  verified, not adopted); and a refusal before the send is `refused`/`not_run`
   (see [knowledge context consumer](knowledge-context-consumer.md)). Known
   gap: the explainer remembers which (incident, techniques) it asked only in
   memory, so after a restart, an eviction (4,096 pairs), an incident close or
