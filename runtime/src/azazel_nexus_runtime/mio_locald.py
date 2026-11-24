@@ -45,7 +45,7 @@ from azazel_nexus.model_runtime import (
 )
 from azazel_nexus.reasoning_playbook import Library, technique_ids
 
-from .chain_guard import ChainGuard
+from .chain_guard import ChainGuard, settle_single
 from .knowledge_client import KnowledgeUnavailable, lookup_context
 from .knowledge_context_socket import FullNodeContextStatus
 from .mio_playbooks import PlaybookSelectionHolder
@@ -584,7 +584,7 @@ def main(
             pass
     except OSError as error:
         raise AuditUnavailable("M.I.O. local ledger unavailable") from error
-    guard = ChainGuard(ledger.append)
+    guard = ChainGuard(ledger.append, settle_single(ledger))
     selection = PlaybookSelectionHolder(config=mission_pack_config(), root=mission_pack_root())
     library = selection.refresh(audit=ledger.append)
     from .model_admission_evidence import (
@@ -635,14 +635,33 @@ def main(
             # (no playbook refresh, no assessment, no Knowledge Lite lookup).
             ledger_refusal()
         service.set_playbooks(selection.refresh(audit=guard.append))
-        return service.handle(request, audit=guard.append)
+        return service.handle(request, audit=request_audit)
 
+    #: Records made before anything is done for the request. Every other one
+    #: follows work already done (retrieval, inference), so one that cannot be
+    #: written is a debt (#467), and the result is not returned.
+    BEFORE_WORK = frozenset({"mio.local.request", "mio.local.refused", "mio.local.gated"})
+
+    def request_audit(event):
+        return guard.append(event, performed=event.get("event_type") not in BEFORE_WORK)
+
+    guarded = guard.guarded(handle, ledger_refusal)
+
+    def serve(request):
+        # The one diagnostic here: while a write's outcome is unknown the
+        # answer is "not admitted", which grants nothing (#467).
+        if (getattr(getattr(request, "verb", None), "name", None) == ADMISSION_VERB.name
+                and not guard.broken and guard.owed and not guard.settle_owed()):
+            return {"admitted": False}
+        return guarded(request)
+
+    serve.__self__ = getattr(guarded, "__self__", None)
     try:
         return serve_forever(
             path=socket_path(SOCKET_NAME), registry=REGISTRY,
             policy=PrincipalPolicy.resolve(service_accounts=("azmioentry",)),
             audit=guard.record_refusal,
-            handler=guard.guarded(handle, ledger_refusal),
+            handler=serve,
             stop=poll, ready=ready if ready is not None else runtime_ready_callback(),
         )
     finally:
