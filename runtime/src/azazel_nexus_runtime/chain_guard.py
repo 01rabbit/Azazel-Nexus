@@ -33,7 +33,7 @@ from azazel_nexus.audit import (
     AuditUnavailable,
 )
 
-__all__ = ["ChainGuard", "Owed", "settle_by_path", "settle_single"]
+__all__ = ["ChainGuard", "Owed", "settle_by_path", "settle_segmented", "settle_single"]
 
 SETTLED = "audit.outcome_settled"
 LATE = "audit.late_record"
@@ -63,10 +63,40 @@ def settle_single(ledger) -> Callable[..., str]:
 
 
 def settle_by_path(entry, *, absent_head, path) -> str:
-    """`settle` for a ledger split over files: the line is looked for in its own file."""
+    """`settle` for a ledger split over files: the line is looked for in its own file.
+
+    Only for a file whose predecessors do not matter; a chain split by day uses
+    `settle_segmented`.
+    """
     from azazel_nexus.audit import AuditLedger
 
     return AuditLedger(path).settle(entry, absent_head=absent_head)
+
+
+def settle_segmented(prior_head: Callable[[Any], tuple]) -> Callable[..., str]:
+    """`settle` for one chain split over daily files.
+
+    The line is looked for in its own file, and when it is (or would be) the
+    first line of that file, the head before the file is derived again the way
+    an append derives it (`prior_head(path)`) and must be the head the line
+    was written after. A predecessor that was lost shows as a break, and a
+    head that cannot be derived (a retention boundary, an unreadable file)
+    leaves the outcome unknown (`AuditUnavailable`).
+    """
+    from azazel_nexus.audit import GENESIS_HASH, AuditLedger
+
+    def settle(entry, *, absent_head, path) -> str:
+        ledger = AuditLedger(path)
+        before = tuple(prior_head(path))
+        outcome = ledger.settle(entry, absent_head=absent_head)
+        starts_file = (tuple(absent_head) == (0, GENESIS_HASH) if outcome == "absent"
+                       else ledger.first_sequence() == entry.sequence)
+        if starts_file and before != (entry.sequence - 1, entry.previous_hash):
+            raise AuditChainBroken(
+                f"{path} line {entry.sequence} does not follow the head before this file")
+        return outcome
+
+    return settle
 
 
 class ChainGuard:
@@ -162,7 +192,12 @@ class ChainGuard:
             self._internal(owed.record)
             return True
         except AuditChainBroken as exc:
+            # A break found by settling is the break found at start (#458),
+            # whatever the owner keeps for itself: no settling, no appending,
+            # nothing touches the ledger again until a restart verifies it.
             self._mark(exc)
+            self.broken = True
+            self.reason = str(exc)
             return False
         except AuditOutcomeUnknown as exc:
             owed.record_entry, owed.record_absent = exc.entry, exc.absent_head

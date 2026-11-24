@@ -113,7 +113,7 @@ from azazel_nexus.lite_bundle import Gate
 from azazel_nexus.lite_enrollment import ENROLLMENT_REFUSAL_CODES
 from azazel_nexus.lite_import import IMPORT_REFUSAL_CODES, REVOCATION_REFUSAL_CODES
 
-from .chain_guard import ChainGuard, settle_by_path
+from .chain_guard import ChainGuard, settle_segmented
 from .principal import PrincipalClass
 from .protocol import (
     Argument,
@@ -687,7 +687,8 @@ class AuditService:
         #: here is `verified=False`, kept by this service.
         self._day = None
         self.guard = ChainGuard(
-            lambda event: self.ledger.append(event, day=self._day), settle_by_path,
+            lambda event: self.ledger.append(event, day=self._day),
+            settle_segmented(self._prior_head),
             append_internal=lambda event: self.ledger.append(event, day=self._internal_day()),
             sticky_break=False)
         #: Who wrote the line whose outcome was unknown, by the event's bytes.
@@ -786,6 +787,14 @@ class AuditService:
                 counts[1 if _severe(entry.event) else 0] += 1
         except Exception:  # noqa: BLE001 - reported once by start()
             self._recount_failed = True
+
+    def _prior_head(self, path: Path) -> tuple:
+        """The head before `path`, derived as an append derives it."""
+        for segment in reversed([s for s in self.ledger.segments() if s.name < path.name]):
+            head = AuditLedger(segment).head()
+            if head != (0, GENESIS_HASH):
+                return head
+        return 0, GENESIS_HASH
 
     def _internal_day(self) -> str:
         """The segment the guard's own records go to: the latest, never a new one."""

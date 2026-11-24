@@ -364,3 +364,91 @@ def test_a_torn_file_is_also_refused_with_chain_from(tmp_path):
     ledger.path.write_bytes(ledger.path.read_bytes()[:-1])
     with pytest.raises(AuditChainBroken):
         ledger.append({"event_type": "second"}, chain_from=(1, first.event_hash))
+
+
+# -- a chain split over files, and a break found by settling (items 3, 5) -----
+
+def _two_segments(tmp_path):
+    from azazel_nexus_runtime.auditd import SegmentedLedger
+    ledger = SegmentedLedger(tmp_path)
+    ledger.append({"event_type": "a"}, day="2026-01-01")
+    return ledger
+
+
+def _unknown_in_second_segment(ledger, monkeypatch):
+    real = os.fsync
+    monkeypatch.setattr(os, "fsync", lambda fd: (_ for _ in ()).throw(OSError(errno.EIO, "x")))
+    try:
+        with pytest.raises(AuditOutcomeUnknown) as raised:
+            ledger.append({"event_type": "b"}, day="2026-01-02")
+    finally:
+        monkeypatch.setattr(os, "fsync", real)
+    return raised.value
+
+
+def _segmented_settle(ledger):
+    from azazel_nexus_runtime.chain_guard import settle_segmented
+
+    def prior(path):
+        for segment in reversed([s for s in ledger.segments() if s.name < path.name]):
+            head = AuditLedger(segment).head()
+            if head != (0, GENESIS_HASH):
+                return head
+        return 0, GENESIS_HASH
+    return settle_segmented(prior)
+
+
+def test_a_lost_predecessor_segment_is_a_break_not_a_presence(tmp_path, monkeypatch):
+    ledger = _two_segments(tmp_path)
+    unknown = _unknown_in_second_segment(ledger, monkeypatch)
+    settle = _segmented_settle(ledger)
+    assert settle(unknown.entry, absent_head=unknown.absent_head, path=unknown.path) == "present"
+    (tmp_path / "2026-01-01.jsonl").unlink()
+    with pytest.raises(AuditChainBroken):
+        settle(unknown.entry, absent_head=unknown.absent_head, path=unknown.path)
+
+
+def test_a_lost_predecessor_segment_is_a_break_for_an_absent_line_too(tmp_path, monkeypatch):
+    ledger = _two_segments(tmp_path)
+    unknown = _unknown_in_second_segment(ledger, monkeypatch)
+    unknown.path.unlink()
+    settle = _segmented_settle(ledger)
+    assert settle(unknown.entry, absent_head=unknown.absent_head, path=unknown.path) == "absent"
+    (tmp_path / "2026-01-01.jsonl").unlink()
+    with pytest.raises(AuditChainBroken):
+        settle(unknown.entry, absent_head=unknown.absent_head, path=unknown.path)
+
+
+def test_a_break_found_by_settling_stops_the_guard_until_a_restart(tmp_path, monkeypatch):
+    ledger = _two_segments(tmp_path)
+    unknown = _unknown_in_second_segment(ledger, monkeypatch)
+    calls = []
+    guard = ChainGuard(lambda e: calls.append(("append", e)) or ledger.append(e, day="2026-01-02"),
+                       _segmented_settle(ledger), sticky_break=False)
+    guard.owed.append(__import__("azazel_nexus_runtime.chain_guard", fromlist=["Owed"]).Owed(
+        unknown.entry.event, unknown.entry, unknown.absent_head, False, path=unknown.path))
+    (tmp_path / "2026-01-01.jsonl").unlink()
+    assert not guard.settle_owed()
+    assert guard.broken and guard.last_break
+    size = unknown.path.stat().st_size
+    # The damage is repaired on disk; the process still does not touch the ledger.
+    ledger.append  # noqa: B018
+    with pytest.raises(AuditChainBroken):
+        guard.append({"event_type": "later"})
+    assert not guard.settle_owed()
+    assert calls == [] and unknown.path.stat().st_size == size
+
+
+def test_route_ledger_cannot_place_a_segment_at_or_before_the_retention_boundary(tmp_path):
+    import json
+    from azazel_nexus_runtime.mio_route_ledger import RouteLedger
+    ledger = RouteLedger(tmp_path / "state")
+    ledger.directory.mkdir(parents=True)
+    (ledger.directory / "retained-boundary.json").write_text(json.dumps({
+        "sequence": 5, "hash": "a" * 64, "oldest": "2026-01-03.jsonl",
+        "retired": "2026-01-02.jsonl"}))
+    # Beyond the boundary the head is the boundary's anchor; at or before it, unknown.
+    assert ledger._prior_head(ledger.directory / "2026-01-03.jsonl") == (5, "a" * 64)
+    with pytest.raises(AuditUnavailable) as raised:
+        ledger._prior_head(ledger.directory / "2026-01-02.jsonl")
+    assert not isinstance(raised.value, AuditChainBroken)

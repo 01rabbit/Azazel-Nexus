@@ -143,15 +143,30 @@ class RouteLedger(DailySegments):
         #: memory of what it recorded follows the ledger exactly (#227).
         self.on_written: Callable[[Mapping[str, Any]], None] | None = None
         self._prepared = False
-        from .chain_guard import ChainGuard, settle_by_path
+        from .chain_guard import ChainGuard, settle_segmented
 
         self._reserved_now = False
         #: Debts of unknown outcomes, and the settling of them (#467).
         self.guard = ChainGuard(
             lambda event: self._append_once(event, reserved=self._reserved_now),
-            settle_by_path,
+            settle_segmented(self._prior_head),
             append_internal=lambda event: self._append_once(event, reserved=True),
             sticky_break=False)
+
+    def _prior_head(self, path: Path) -> tuple[int, str]:
+        """The head before `path`, as an append derives it from the retained chain.
+
+        A segment at or before the retention boundary cannot be placed, and
+        that is an unknown outcome, never a presence.
+        """
+        boundary = read_boundary(self.directory)
+        if boundary is not None and path.name <= boundary["retired"]:
+            raise AuditUnavailable("M.I.O. route segment is outside the retained chain")
+        for segment in reversed([s for s in self.chain.segments(boundary) if s.name < path.name]):
+            head = AuditLedger(segment).head()
+            if head != (0, GENESIS_HASH):
+                return head
+        return self.chain.anchor(boundary)
 
     # -- preparation -----------------------------------------------------
 
