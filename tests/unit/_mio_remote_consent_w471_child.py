@@ -130,6 +130,9 @@ def first(root: str, fifo: str, plan: dict) -> None:
             arguments={"prerequisite": prerequisite.value, "expected_generation": expected}))
     granted = service.consent.reading()
     base = {"granted_generation": granted.generation, "granted_status": granted.status}
+    if plan.get("no_withdraw"):
+        _post(fifo, base)
+        time.sleep(600)
     if plan.get("at_days_ago"):
         then = (datetime.now(UTC) - timedelta(days=plan["at_days_ago"])).strftime(
             "%Y-%m-%dT%H:%M:%SZ")
@@ -194,6 +197,20 @@ def restart(root: str, plan: dict) -> None:
         _fault_append(service, "unavailable", flag=flag)
     elif plan.get("fault"):
         _fault_append(service, plan["fault"], only=_is_late_withdrawn)
+    if plan.get("advance_boundary"):
+        # Retirement that moves on after the scan: the boundary now covers
+        # every row the scan saw (written by hand; only its sequence matters
+        # to the judgment).
+        head = service.router.ledger.head()
+        boundary = {"sequence": head[0], "hash": "0" * 63 + "1", "oldest": None,
+                    "retired": "2000-01-01.jsonl"}
+        (service.router.ledger.directory / "retained-boundary.json").write_text(
+            json.dumps(boundary))
+    if plan.get("tight_reserve"):
+        from azazel_nexus_runtime.mio_route_ledger import CONTROL
+
+        ledger = service.router.ledger
+        ledger.reserve = ledger.usage[CONTROL] + 1  # the control reserve has no room
     recover = getattr(service, "recover_withdrawal", None)
     out = {"has_recovery": recover is not None}
     if recover is not None:
@@ -221,6 +238,25 @@ def restart(root: str, plan: dict) -> None:
         except entry.RequestRefused as exc:
             out["new_withdraw"] = {"refused": exc.detail}
         out["store_after_new_withdraw"] = _view(service)
+    if plan.get("tight_reserve"):
+        from azazel_nexus.mio_profile import PREREQUISITES
+
+        def one_set():
+            try:
+                return {"returned": service.handle(SimpleNamespace(
+                    verb=entry.OPT_IN_SET_VERB, principal=operator,
+                    arguments={"prerequisite": PREREQUISITES[0].value,
+                               "expected_generation": out["store_1"]["generation"]}))}
+            except entry.RequestRefused as exc:
+                return {"refused": exc.detail}
+
+        out["owed_before_set"] = bool(service.guard.owed)
+        out["set_while_owed"] = one_set()
+        out["store_after_refused_set"] = _view(service)
+        service.router.ledger.reserve += 10_000_000  # the reserve has room again
+        out["set_after_recovery"] = one_set()
+        out["owed_after"] = bool(service.guard.owed)
+        out["store_after_set"] = _view(service)
     if plan.get("heal"):
         os.unlink(flag)
         service.guard.settle_owed()

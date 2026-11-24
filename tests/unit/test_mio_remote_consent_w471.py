@@ -337,6 +337,74 @@ def test_an_earlier_row_retained_after_a_boundary_means_the_withdrawal_row_would
     assert withdrawal_rows(root, generation)["recovered"] == 1
 
 
+def test_a_grant_that_is_running_says_what_was_observed_and_nothing_more(tmp_path):
+    posted, root = run_first(tmp_path, {"no_withdraw": True})
+    out = run_restart(root)
+    assert out["recovery"] == {"state": "not_applicable",
+                               "reason": "latest_record_not_a_withdrawal",
+                               "checked_generation": posted["granted_generation"]}
+
+
+def test_only_unusable_rows_remain_so_nothing_is_written(tmp_path):
+    """After retirement the only rows left are a withdrawal row of generation 0, a grant
+    row of generation 0 and a withdrawal row whose generation is not an int."""
+    posted, root, generation = killed(tmp_path, {})
+    retire_everything_before(root)
+    sample = {"operator": "uid:1001", "at": "2026-11-24T00:00:00Z",
+              "reason": "operator_request"}
+    rows = [{"event_type": "mio.remote.opt_in.withdrawn", "generation": 0, **sample},
+            {"event_type": "mio.remote.opt_in.set", "generation": 0, "operator": "uid:1001"},
+            {"event_type": "mio.remote.opt_in.withdrawn", "generation": [1], **sample}]
+    subprocess.run([sys.executable, str(CHILD), "plant", str(root), json.dumps(rows)],
+                   check=True, env=w465._env(), timeout=60)
+    out = run_restart(root)
+    assert out["recovery"]["reason"] == "no_earlier_anchor"
+    assert out["recovery"]["malformed_candidates"] == 1
+    assert total(withdrawal_rows(root, generation)) == 0
+
+
+def test_retirement_that_moves_after_the_scan_takes_the_anchor_away(tmp_path):
+    posted, root, generation = killed(tmp_path, {})
+    out = run_restart(root, {"advance_boundary": True})
+    assert out["recovery"] == {"generation": generation, "state": "unverifiable",
+                               "reason": "no_earlier_anchor"}
+    assert total(withdrawal_rows(root, generation)) == 0
+
+
+def test_a_valid_settlement_row_names_the_withdrawal_so_nothing_is_added(tmp_path):
+    posted, root, generation = killed(tmp_path, {})
+    operator, at, reason = ConsentStore(state_of(root)).latest_record().withdrawn
+    row = {"event_type": "audit.outcome_settled", "settled_sequence": 1,
+           "settled_event_hash": "0" * 64, "outcome": "absent", "performed": True,
+           "late_event": {"event_type": "mio.remote.opt_in.withdrawn", "operator": operator,
+                          "at": at, "reason": reason, "generation": generation}}
+    subprocess.run([sys.executable, str(CHILD), "plant", str(root), json.dumps([row])],
+                   check=True, env=w465._env(), timeout=60)
+    out = run_restart(root)
+    assert out["recovery"] == {"generation": generation, "state": "present"}
+    assert withdrawal_rows(root, generation) == {"original": 0, "late": 0, "recovered": 0,
+                                                 "settled": 1}
+
+
+def test_while_the_recovery_row_is_owed_a_set_is_refused_and_after_it_a_set_passes(tmp_path):
+    """Only the control reserve is short: the caller's share and the segment have room,
+    the start-up rows fit, the recovery row does not. The grant is held back (a
+    narrowing is not, see the main() test), the store is not touched, and once the
+    row can be written the same `set` goes through."""
+    posted, root, generation = killed(tmp_path, {})
+    out = run_restart(root, {"tight_reserve": True})
+    assert out["recovery"] == {"generation": generation, "state": "owed"}
+    assert out["owed_before_set"] is True
+    assert out["set_while_owed"] == {"refused": "ledger"}
+    assert out["store_after_refused_set"] == out["store_1"] == {
+        "generation": generation, "status": "withdrawn", "permits": False}
+    assert out["set_after_recovery"]["returned"]["generation"] == generation + 1
+    assert out["owed_after"] is False
+    assert withdrawal_rows(root, generation)["recovered"] == 1
+    dump("after-set-while-owed.json", {k: out[k] for k in (
+        "set_while_owed", "store_after_refused_set", "set_after_recovery", "store_after_set")})
+
+
 def test_the_ledger_writes_generations_in_order(tmp_path):
     """The premise of the anchor: every opt-in row precedes the commit it names, so
     rows are non-decreasing in generation along the chain."""
@@ -354,10 +422,10 @@ def test_a_later_generation_overwrote_the_store_nothing_is_made_up(tmp_path):
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout)["generation"] == generation + 1
     out = run_restart(root)
-    assert out["recovery"] == {"generation": generation + 1, "state": "unverifiable",
-                               "reason": "latest_record_not_a_withdrawal"}
-    assert out["status_1"]["audit"]["withdrawal_record"]["reason"] == \
-        "latest_record_not_a_withdrawal"
+    expected = {"state": "not_applicable", "reason": "latest_record_not_a_withdrawal",
+                "checked_generation": generation + 1}
+    assert out["recovery"] == expected
+    assert out["status_1"]["audit"]["withdrawal_record"] == expected
     assert total(withdrawal_rows(root, generation)) == 0
     dump("after-later-generation.json", {"restart": out["recovery"],
                                           "rows": withdrawal_rows(root, generation)})

@@ -312,8 +312,10 @@ class MioEntryService:
         self._withdrawals_recorded: set = set()
         #: Rows that look like a recorded withdrawal and are not well formed.
         self._malformed_candidates = 0
-        #: The lowest generation an opt-in row in the retained ledger names.
-        self._lowest_opt_in_generation: int | None = None
+        #: `(generation, sequence)` of each opt-in row that can anchor the
+        #: order argument (see `_retained_from`): a well-formed grant row
+        #: (generation 1 or more) or a well-formed withdrawal row.
+        self._anchors: list[tuple[int, int]] = []
         #: The start-up recovery of a withdrawal's record (#471); see
         #: `recover_withdrawal`. None until it ran.
         self._backfill: dict | None = None
@@ -373,7 +375,7 @@ class MioEntryService:
     def _restore(self, item) -> None:
         event = item.event
         kind = event.get("event_type")
-        self._note_withdrawal(event)
+        self._note_withdrawal(item)
         if kind not in CAPABILITY_EVENTS:
             return
         # A hash-valid but malformed record is a broken history, not a
@@ -436,22 +438,20 @@ class MioEntryService:
             return None, True
         return (generation, *texts), False
 
-    def _note_withdrawal(self, event) -> None:
+    def _note_withdrawal(self, item) -> None:
         """Remember, while the ledger is verified, which withdrawals it records (#471)
-        and the lowest generation any opt-in row names (the anchor: a row that
-        precedes every later one, so a retained anchor means later rows were
-        not retired)."""
+        and which rows can anchor the order argument of `_retained_from`."""
+        event = item.event
         identity, malformed = self._withdrawal_candidate(event)
         if malformed:
             self._malformed_candidates += 1
         if identity is not None:
             self._withdrawals_recorded.add(identity)
-        generation = event.get("generation")
-        if (str(event.get("event_type", "")).startswith("mio.remote.opt_in")
-                and type(generation) is int
-                and (self._lowest_opt_in_generation is None
-                     or generation < self._lowest_opt_in_generation)):
-            self._lowest_opt_in_generation = generation
+        kind, generation = event.get("event_type"), event.get("generation")
+        anchor = (kind in ("mio.remote.opt_in.set", "mio.remote.opt_in")
+                  or (kind == WITHDRAWN_EVENT and identity is not None))
+        if anchor and type(generation) is int and generation >= 1:
+            self._anchors.append((generation, item.sequence))
 
     def _written(self, event) -> None:
         """Remember a capability record the moment the ledger holds it.
@@ -700,11 +700,13 @@ class MioEntryService:
         """Why the ledger cannot show whether the withdrawal of `generation` was recorded.
 
         Retention retires the oldest segments first and the ledger only
-        appends, so a row that precedes the withdrawal and is still retained
-        means the withdrawal's own row was not retired. Entryd writes each
-        generation's opt-in row before that generation is committed, and a
-        withdrawal comes after the grant it ends, so a retained row naming a
-        lower generation is that earlier row. No clock is compared. A chain
+        appends. A withdrawal's own row is written after its commit, and an
+        anchor is a well-formed row written before that commit (a grant row of
+        a lower generation, or a withdrawal row of one). When an anchor is
+        still retained, the withdrawal's row, appended after it, was not
+        retired. Retained is judged now, against the boundary read now, not
+        against the scan: retirement may have moved since (the start-up
+        records are written after the scan). No clock is compared. A chain
         with no boundary has retired nothing and needs no anchor.
         """
         try:
@@ -715,8 +717,10 @@ class MioEntryService:
             return "ledger_unreadable"
         if boundary is None:
             return None
-        low = self._lowest_opt_in_generation
-        return None if low is not None and low < generation else "no_earlier_anchor"
+        retired_through = boundary["sequence"]
+        kept = any(low < generation and sequence > retired_through
+                   for low, sequence in self._anchors)
+        return None if kept else "no_earlier_anchor"
 
     def recover_withdrawal(self) -> dict | None:
         """At start, record an operator withdrawal the store holds and the ledger does not (#471).
@@ -750,8 +754,8 @@ class MioEntryService:
         if record.withdrawn is None:
             # A later generation may have replaced a withdrawal; the store keeps
             # one record, so there is nothing to match against.
-            return {**base, "state": "unverifiable",
-                    "reason": "latest_record_not_a_withdrawal"}
+            return {"state": "not_applicable", "reason": "latest_record_not_a_withdrawal",
+                    "checked_generation": record.generation}
         operator, at, reason = record.withdrawn
         if operator == ENTRYD_ACTOR or reason not in WITHDRAWAL_REASONS:
             return {**base, "state": "unverifiable", "reason": "not_operator_withdrawal"}
@@ -964,7 +968,8 @@ class MioEntryService:
                 if self.guard.owed:
                     reply["audit"] = self.guard.status()
             backfill = self.backfill_status()
-            if backfill is not None and (backfill["state"] in ("owed", "unverifiable")
+            if backfill is not None and (backfill["state"] in ("owed", "unverifiable",
+                                                                "not_applicable")
                                          or "malformed_candidates" in backfill):
                 # Which withdrawal and why, never the event itself (#471).
                 reply["audit"] = {**reply.get("audit", {"audit": self.guard.state}),
