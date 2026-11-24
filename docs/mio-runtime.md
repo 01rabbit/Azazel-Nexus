@@ -340,7 +340,9 @@ lock, in the same exclusive section as the write (the way `confirm` does), so a
 consent record. entryd also compares it before it writes its own lines for the
 `set` (the marker and `mio.remote.opt_in.set`), so a refusal there adds none of
 them. When the comparison under the lock is the one that fails, those two lines
-are already written, and `mio.remote.opt_in.not_committed` follows them.
+are already written, and entryd then tries to write
+`mio.remote.opt_in.not_committed`; it is recorded when the ledger has room for
+it (if it cannot be written, the refusal detail is `ledger` instead).
 Through the socket the transport may in addition record its own
 `runtime.request_refused` line for any refusal (subject to its aggregation and
 to room in the ledger).
@@ -358,8 +360,8 @@ generation. The store checks the ceiling before it runs the comparison, so a
 `set` that passed entryd's early comparison at generation M-1 and meets a
 withdrawal that has written M (the ceiling) is refused as exhausted, not as
 stale: the detail inside entryd is `opt_in_store` (a stale premise is
-`opt_in_stale`), the socket says `verb_unavailable` either way, and
-`not_committed` is recorded. A `set` that completes the four needs two
+`opt_in_stale`), the socket says `verb_unavailable` either way, and entryd
+tries to record `not_committed` (as above, recorded when the ledger has room). A `set` that completes the four needs two
 generations to open the grant (pending at N+1, open at N+2). With one
 generation left it can still write the pending record, but opening it is
 refused (the seal of N+2 is above the ceiling) and the record stays

@@ -233,7 +233,7 @@ def test_a_completing_set_with_two_generations_left_opens_the_grant(monkeypatch,
     assert service.consent.reading().permits is True
 
 
-def test_a_completing_set_with_one_generation_left_writes_pending_and_confirm_is_exhausted(
+def test_a_completing_set_with_one_generation_left_writes_pending_and_its_seal_is_refused(
         monkeypatch, service):
     """Pending (4) is written; opening it needs 5, which is above the ceiling.
     The refusal comes from the open path, not from the premise, and the grant
@@ -264,7 +264,8 @@ def test_a_completing_set_with_one_generation_left_writes_pending_and_confirm_is
     view = service.consent.reading()
     # The open path refused at the seal of generation 5, above the ceiling;
     # `confirm` was never reached, and the pending record at 4 stays closed.
-    assert [g for g, _ in seen["seal"]] == [5] and seen["confirm"] == []
+    assert seen["seal"] == [(5, "a seal names a bounded positive generation")]
+    assert seen["confirm"] == []
     assert view.permits is False and view.status == "unconfirmed" and view.generation == 4
 
 
