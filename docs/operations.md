@@ -1575,16 +1575,20 @@ keeps for its own refusals; on the socket the caller sees only `verb_unavailable
 record cannot be written (it is counted as unrecorded); diagnostics keep
 answering: auditd's `audit.verify` (with `unavailable: true` when the ledger
 cannot be read), entryd's `mio.remote.opt_in.status` (an `audit` key, only
-while an outcome is unknown), locald's `mio.local.admission` (`admitted:
-false` while unknown). referenced, contextobsd and knowledge-contextd have no
+while a record is owed: an outcome still unknown, or an operation done whose
+record is not yet written), locald's `mio.local.admission` (`admitted: false`
+while a record is owed). referenced, contextobsd and knowledge-contextd have no
 diagnostic verb. Three cases are told apart:
 
 * Nothing was written (the open or the write failed, a partial line was cut
   back). The request is refused. If nothing had been done yet, the next request
   writes normally. If the operation had already been done (a send, a
   withdrawal, an inference whose record comes after it), its record is owed:
-  the next request that needs a record first writes it once as
-  `audit.late_record`, and is refused while that cannot be written.
+  it is written once as `audit.late_record` before anything else that needs a
+  record (at the next such request, or at entryd's tick), and such a request is
+  refused while it cannot be written. A withdrawal is the exception, as
+  narrowing never waits on a record: it is committed, its own record is owed in
+  turn, and its reply is the fixed refusal while that cannot be written.
 * A complete line was written but could not be synced, or a partial line could
   not be cut back: the outcome is *unknown*. Nothing that needs a record goes on
   -- no new append, no retry of the same line, no repeated operation -- until

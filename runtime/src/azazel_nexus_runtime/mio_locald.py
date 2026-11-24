@@ -653,7 +653,7 @@ def main(
     guarded = guard.guarded(handle, ledger_refusal)
 
     def serve(request):
-        # The one diagnostic here: while a write's outcome is unknown the
+        # The one diagnostic here: while a record is owed (unknown or late) the
         # answer is "not admitted", which grants nothing (#467).
         if (getattr(getattr(request, "verb", None), "name", None) == ADMISSION_VERB.name
                 and not guard.broken and guard.owed and not guard.settle_owed()):
