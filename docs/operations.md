@@ -1568,9 +1568,11 @@ as a `completed` record with `reason_code: refused_before_send` (`stage` is a
 field of the reply, not of the record) -- a record of the refusal, not of a
 send. Like any record it may not be written, or its outcome may be unknown
 and settled later like any other line. If the
-send happened, its completion content is on the chain exactly once: as its own
-line, as one `audit.late_record`, or as the `late_event` of one
-`audit.outcome_settled`. The send itself happened at most once. `ledger` is the detail the daemon
+send happened, its completion content is on the chain at most once, and
+exactly once when the ledger recovers: as its own line, as one
+`audit.late_record`, or as the `late_event` of one `audit.outcome_settled`. If
+the chain is found broken instead (#458), the completion is never recorded and
+the reply stays `unrecorded`; nothing more is sent until a restart. The send itself happened at most once. `ledger` is the detail the daemon
 keeps for its own refusals; on the socket the caller sees only `verb_unavailable`. A refusal is still sent when its own
 record cannot be written (it is counted as unrecorded); diagnostics keep
 answering: auditd's `audit.verify` (with `unavailable: true` when the ledger
@@ -1608,8 +1610,9 @@ diagnostic verb. Three cases are told apart:
   way an append derives it, and a line that starts a file must follow it: a lost
   predecessor is a break, and a head that cannot be derived (a segment at or
   before entryd's retention boundary, an unreadable file) leaves the outcome
-  unknown. A break found while settling is the #458 state: nothing touches the
-  ledger again until a restart verifies it.
+  unknown. A break found while settling is the #458 state: no settling and no
+  append until a restart verifies it (diagnostics such as auditd's
+  `audit.verify` still read it).
   When the line is `present`, or `absent` and its operation was already
   performed, the daemon appends one record: `audit.outcome_settled` (the
   sequence, the event hash, the outcome and whether the operation had been
