@@ -17,6 +17,7 @@ from azazel_nexus_runtime import mio_remote_consent as mc
 from azazel_nexus_runtime.mio_remote_consent import (
     ConsentRecord,
     ConsentRefused,
+    ConsentStale,
     ConsentStore,
     decode_record,
     encode_record,
@@ -260,10 +261,11 @@ def test_a_grant_over_a_rolled_back_record_is_refused(directory):
     _grant_all(store)
     granted = _record_path(directory).read_bytes()
     store.withdraw("operator_request", operator=OPERATOR)
-    _corrupt(directory, granted)
-    with pytest.raises(ConsentRefused):
+    _corrupt(directory, granted)  # generation 5, the premise a caller read earlier
+    with pytest.raises(ConsentRefused, match="rolled back"):
         store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR,
-            expected_generation=store.reading().generation)
+                               expected_generation=5)
+    assert _record_path(directory).read_bytes() == granted
 
 
 def test_a_withdrawal_over_a_rolled_back_record_is_written_above_it(directory):
@@ -280,12 +282,15 @@ def test_a_withdrawal_over_a_rolled_back_record_is_written_above_it(directory):
 def test_no_write_over_a_record_that_cannot_be_read(directory):
     store = _store(directory)
     _grant_all(store)
+    valid = store.reading().generation  # a premise that was valid before the damage
+    assert valid == 5
     _corrupt(directory, b"{")
     with pytest.raises(ConsentRefused):
         store.withdraw("operator_request", operator=OPERATOR)
-    with pytest.raises(ConsentRefused):
+    with pytest.raises(ConsentRefused) as caught:
         store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR,
-            expected_generation=store.reading().generation)
+                               expected_generation=valid)
+    assert not isinstance(caught.value, ConsentStale)  # refused at the read, not the premise
     assert _record_path(directory).read_bytes() == b"{"
 
 
