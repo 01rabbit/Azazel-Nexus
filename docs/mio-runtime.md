@@ -334,9 +334,12 @@ explainer's `mio-advise` listener -- with no free-text argument:
 
 `set` names the generation the caller confirmed (`expected_generation`; 0 when
 there is no record yet), read from `status` or from the reply to the caller's
-last `set` -- the latter only when that reply's generation is exactly the
-premise it sent plus one (plus two for the `set` that completed the four):
-any other value means something came in between, so stop and read `status`. The store compares it with the record it reads under its write
+last `set` -- the latter only when the reply's status and generation are
+both what that `set` should produce: `incomplete` at the premise plus one for
+a `set` before the fourth, `granted` at the premise plus two for the `set`
+that completes the four. Anything else means something came in between, so
+stop and read `status`; an `unsettled` reply (the grant may be in force, see
+below) follows the procedure for `unsettled`, not this one. The store compares it with the record it reads under its write
 lock, in the same exclusive section as the write (the way `confirm` does), so a
 `set` sent before a `withdraw` and handled after it is refused and writes no
 consent record. entryd also compares it before it writes its own lines for the
@@ -502,7 +505,7 @@ with the generation it wrote (sends are then closed by that withdrawn record);
 a refusal, including `ledger`, is not this ground, so repeat. Only then, as
 root with entryd stopped, remove `remote-consent/send.seal` from entryd's state
 leaf; start entryd and check that `status` reads `withdrawn` at that generation
-or above; then `set` the four prerequisites again, one at a time, each naming the generation `status` or the last reply reported. Pass a reply's generation on only when it is exactly the premise sent plus one (plus two for the `set` that completes the four and opens the grant): the reply is read after the write, so a `withdraw` (and any `set` after it) that came in between shows only as a generation that jumped, even when the listed prerequisites look the same. If it jumped, stop, read `status`, and decide again as a new operation.
+or above; then `set` the four prerequisites again, one at a time, each naming the generation `status` or the last reply reported. Pass a reply's generation on only when its status and generation are what the `set` should produce (`incomplete` at the premise plus one before the fourth, `granted` at the premise plus two for the fourth): the reply is read after the write, so a `withdraw` (and any `set` after it) that came in between shows only as a generation that jumped, even when the listed prerequisites look the same. Otherwise stop, read `status`, and decide again as a new operation; an `unsettled` reply follows the `unsettled` procedure above.
 Never remove the seal while a grant may be in force and unconfirmed. Statuses:
 `absent`, `incomplete`, `unconfirmed`, `granted`, `withdrawn`, `unavailable`,
 and `unsettled` (a reply of entryd only, never a stored status). A
