@@ -753,3 +753,6 @@ def test_an_anchor_is_exactly_a_row_entryd_writes():
     assert entry_mod._anchor_row(written) is True
     assert entry_mod._anchor_row({k: v for k, v in written.items() if k != "occurred_at"}) is False
     assert entry_mod._anchor_row({**written, "generation": "1"}) is False
+    for key in ("operator", "at", "occurred_at"):
+        assert entry_mod._anchor_row({**written, key: ""}) is False, key
+    assert entry_mod._anchor_row({**written, "operator": "someone"}) is False
