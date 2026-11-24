@@ -44,10 +44,16 @@ def verb(service, verb, principal=OPERATOR, **arguments):
     return service.handle(SimpleNamespace(verb=verb, arguments=arguments, principal=principal))
 
 
+def opt_set(service, prerequisite):
+    """A `set` that names the generation the caller just read (#470)."""
+    return verb(service, entry.OPT_IN_SET_VERB, prerequisite=prerequisite,
+                expected_generation=service.consent.reading().generation)
+
+
 def grant(service):
     reply = None
     for prerequisite in PREREQUISITES:
-        reply = verb(service, entry.OPT_IN_SET_VERB, prerequisite=prerequisite.value)
+        reply = opt_set(service, prerequisite.value)
     return reply
 
 
@@ -69,7 +75,9 @@ def test_only_the_operator_class_may_call_the_opt_in_verbs():
     for v in (entry.OPT_IN_STATUS_VERB, entry.OPT_IN_SET_VERB, entry.OPT_IN_WITHDRAW_VERB):
         assert v.admits == {PrincipalClass.OPERATOR}
         assert not v.accepts_payload
-        assert all(a.kind is ArgumentKind.ENUM for a in v.arguments)
+        # `set` alone also takes the generation it was read at, an ordinal.
+        assert all(a.kind is ArgumentKind.ENUM or a.name == "expected_generation"
+                   for a in v.arguments)
         assert entry.REGISTRY.resolve(v.name, OPERATOR) == v
         for other in (SERVICE, Principal(0, 0, 1, frozenset({PrincipalClass.ROOT}))):
             with pytest.raises(RequestRefused):
@@ -81,7 +89,8 @@ def test_only_the_operator_class_may_call_the_opt_in_verbs():
 
 def test_the_handler_refuses_a_non_operator_even_past_the_registry(service):
     with pytest.raises(RequestRefused):
-        verb(service, entry.OPT_IN_SET_VERB, principal=SERVICE, prerequisite="remote use")
+        verb(service, entry.OPT_IN_SET_VERB, principal=SERVICE, prerequisite="remote use",
+             expected_generation=0)
     assert service.consent.reading().status == "absent"
 
 
@@ -116,7 +125,7 @@ def test_a_grant_is_recorded_before_it_is_committed(service, monkeypatch):
     original = service.consent.set_prerequisite
     monkeypatch.setattr(service.consent, "set_prerequisite",
                         lambda *a, **kw: (order.append("commit"), original(*a, **kw))[1])
-    verb(service, entry.OPT_IN_SET_VERB, prerequisite="remote use")
+    opt_set(service, "remote use")
     assert order.index("mio.remote.opt_in.set") < order.index("commit")
 
 
@@ -138,10 +147,18 @@ def test_a_withdrawal_is_committed_even_when_the_ledger_then_fails(service, monk
 
 def test_a_grant_over_an_unreadable_store_is_refused_and_writes_nothing(service):
     grant(service)
+    # A premise that was valid before the damage, so the refusal is the
+    # unreadable store's (`opt_in_store`), not a malformed premise (#470).
+    premise = service.consent.reading().generation
     path = runtime_paths.mio_state_dir() / "remote-consent" / "opt-in.json"
     path.write_bytes(b"{")
-    with pytest.raises(RequestRefused):
-        verb(service, entry.OPT_IN_SET_VERB, prerequisite="remote use")
+    before = len(recorded(service))
+    with pytest.raises(RequestRefused) as refused:
+        verb(service, entry.OPT_IN_SET_VERB, prerequisite="remote use",
+             expected_generation=premise)
+    assert refused.value.detail == "opt_in_store"
+    # No marker, no `set` line: the store could not be read before anything was written.
+    assert len(recorded(service)) == before
     with pytest.raises(RequestRefused):
         verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="operator_request")
     assert path.read_bytes() == b"{"
@@ -221,7 +238,7 @@ def test_a_store_that_cannot_be_believed_reads_as_no_opt_in(service, admissions,
     grant(service)
     path = runtime_paths.mio_state_dir() / "remote-consent" / "opt-in.json"
     older = path.read_bytes()
-    verb(service, entry.OPT_IN_SET_VERB, prerequisite="remote use")  # generation 5
+    opt_set(service, "remote use")  # generation 5
     service.handle(route())
     assert seen[-1].active()
     if damage == "corrupt":
@@ -262,7 +279,7 @@ def test_while_the_chain_is_broken_set_is_refused_and_withdraw_narrows_without_a
 
     prerequisites = list(PREREQUISITES)
     for prerequisite in prerequisites[:-1]:
-        verb(service, entry.OPT_IN_SET_VERB, prerequisite=prerequisite.value)
+        opt_set(service, prerequisite.value)
     service.ledger_broken = True
 
     def forbidden(*args, **kwargs):
@@ -272,7 +289,7 @@ def test_while_the_chain_is_broken_set_is_refused_and_withdraw_narrows_without_a
     monkeypatch.setattr(service, "_mark", forbidden)
     before = service.consent.reading()
     with pytest.raises(RequestRefused) as refused:
-        verb(service, entry.OPT_IN_SET_VERB, prerequisite=prerequisites[-1].value)
+        opt_set(service, prerequisites[-1].value)
     assert refused.value.refusal is Refusal.VERB_UNAVAILABLE
     after = service.consent.reading()
     assert (after.generation, after.status) == (before.generation, before.status)
@@ -315,7 +332,7 @@ def test_a_set_whose_record_fails_after_the_commit_withdraws_the_grant(
     from azazel_nexus_runtime.protocol import Refusal
 
     for prerequisite in list(PREREQUISITES)[:-1]:
-        verb(service, entry.OPT_IN_SET_VERB, prerequisite=prerequisite.value)
+        opt_set(service, prerequisite.value)
     real = service.router._record
 
     def record(event, **kw):
@@ -326,7 +343,7 @@ def test_a_set_whose_record_fails_after_the_commit_withdraws_the_grant(
 
     monkeypatch.setattr(service.router, "_record", record)
     with pytest.raises(RequestRefused) as refused:
-        verb(service, entry.OPT_IN_SET_VERB, prerequisite=list(PREREQUISITES)[-1].value)
+        opt_set(service, list(PREREQUISITES)[-1].value)
     assert refused.value.refusal is Refusal.VERB_UNAVAILABLE
     assert service.consent.reading().status == "withdrawn"
     assert not service.consent.reading().permits
@@ -355,11 +372,11 @@ def _separate_store():
 
 def _set_all_but_last(service):
     for prerequisite in list(PREREQUISITES)[:-1]:
-        verb(service, entry.OPT_IN_SET_VERB, prerequisite=prerequisite.value)
+        opt_set(service, prerequisite.value)
 
 
 def _set_last(service):
-    return verb(service, entry.OPT_IN_SET_VERB, prerequisite=list(PREREQUISITES)[-1].value)
+    return opt_set(service, list(PREREQUISITES)[-1].value)
 
 
 @pytest.mark.parametrize("withdraw_failure", ["oserror", "refused"])
@@ -559,7 +576,7 @@ def test_a_withdrawal_reaches_the_store_when_the_callers_share_is_spent(service,
     assert _separate_store().reading().status == "withdrawn"
     # A widening verb is still refused on a spent share.
     with pytest.raises(RequestRefused):
-        verb(service, entry.OPT_IN_SET_VERB, prerequisite=list(PREREQUISITES)[0].value)
+        opt_set(service, list(PREREQUISITES)[0].value)
 
 
 @pytest.mark.parametrize("fault", ["unavailable", "broken"])
@@ -601,7 +618,7 @@ def test_a_set_after_an_unconfirmed_grant_starts_from_the_empty_set(service, mon
     with pytest.raises(RequestRefused):
         _set_last(service)
     monkeypatch.undo()
-    reply = verb(service, entry.OPT_IN_SET_VERB, prerequisite=PREREQUISITES[0].value)
+    reply = opt_set(service, PREREQUISITES[0].value)
     assert reply["status"] == "incomplete"
     assert reply["granted"] == [PREREQUISITES[0].value]
 

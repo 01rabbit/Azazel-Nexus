@@ -329,8 +329,50 @@ explainer's `mio-advise` listener -- with no free-text argument:
 | verb | argument | effect |
 | --- | --- | --- |
 | `mio.remote.opt_in.status` | none | reads status, generation, granted and missing |
-| `mio.remote.opt_in.set` | `prerequisite` (one of the four `mio_profile.PREREQUISITES`) | records it; next generation |
+| `mio.remote.opt_in.set` | `prerequisite` (one of the four `mio_profile.PREREQUISITES`), `expected_generation` (required, an integer from 0 to 2^63-1) | records it if `expected_generation` is the generation in force; next generation |
 | `mio.remote.opt_in.withdraw` | `reason` (`operator_request`, `privacy_review`, `provider_change`, `incident_response`) | withdraws; next generation |
+
+`set` names the generation the caller confirmed (`expected_generation`; 0 when
+there is no record yet), read from `status` or from the reply to the caller's
+last `set` -- the latter only when the reply's status and generation are
+both what that `set` should produce: `incomplete` at the premise plus one for
+a `set` before the fourth, `granted` at the premise plus two for the `set`
+that completes the four. Anything else means something came in between, so
+stop and read `status`; an `unsettled` reply (the grant may be in force, see
+below) follows the procedure for `unsettled`, not this one. The store compares it with the record it reads under its write
+lock, in the same exclusive section as the write (the way `confirm` does), so a
+`set` sent before a `withdraw` and handled after it is refused and writes no
+consent record. entryd also compares it before it writes its own lines for the
+`set` (the marker and `mio.remote.opt_in.set`), so a refusal there adds none of
+them. Once entryd's early comparison has passed, those two lines are written
+before the store is called, so they stay whatever then refuses (the comparison
+under the lock, the ceiling, the lock itself), and entryd then tries to write
+`mio.remote.opt_in.not_committed`; it is recorded when that append succeeds
+(when it fails, the refusal detail is `ledger` instead).
+Through the socket the transport may in addition record its own
+`runtime.request_refused` line for any refusal (subject to its aggregation and
+to room in the ledger).
+A request without the argument is refused
+by the transport (`missing_argument`) from the first request of this version:
+the old form is not accepted, so there is no period in which a `set` without a
+premise can open a grant. A premise that does not match the generation in force
+is refused as `verb_unavailable` on the socket, with
+the detail `opt_in_stale` inside entryd, and it does not say which generation is
+in force. `withdraw` and `status` are unchanged. The premise refuses a request
+that the caller did not renew. A caller that reads `status` again and resends
+after every refusal gets past a withdrawal and opens the grant again; not
+resending a refused `set` on its own is the caller's rule, not something the
+product enforces. At the ceiling a withdrawal is written at the same
+generation. The store checks the ceiling before it runs the comparison, so a
+`set` that passed entryd's early comparison at generation M-1 and meets a
+withdrawal that has written M (the ceiling) is refused as exhausted, not as
+stale: the detail inside entryd is `opt_in_store` (a stale premise is
+`opt_in_stale`), the socket says `verb_unavailable` either way, and entryd
+tries to record `not_committed` (as above, recorded when the append succeeds). A `set` that completes the four needs two
+generations to open the grant (pending at N+1, open at N+2). With one
+generation left it can still write the pending record, but opening it is
+refused (the seal of N+2 is above the ceiling) and the record stays
+`unconfirmed`, closed; with two left the grant opens.
 
 Every change writes the next **generation**; nothing lowers it and there is no
 reset verb. After a withdrawal the four prerequisites must be set again. At
@@ -463,7 +505,7 @@ with the generation it wrote (sends are then closed by that withdrawn record);
 a refusal, including `ledger`, is not this ground, so repeat. Only then, as
 root with entryd stopped, remove `remote-consent/send.seal` from entryd's state
 leaf; start entryd and check that `status` reads `withdrawn` at that generation
-or above; then `set` the four prerequisites again.
+or above; then `set` the four prerequisites again, one at a time, each naming the generation `status` or the last reply reported. Pass a reply's generation on only when its status and generation are what the `set` should produce (`incomplete` at the premise plus one before the fourth, `granted` at the premise plus two for the fourth): the reply is read after the write, so a `withdraw` (and any `set` after it) that came in between shows only as a generation that jumped, even when the listed prerequisites look the same. Otherwise stop, read `status`, and decide again as a new operation; an `unsettled` reply follows the `unsettled` procedure above.
 Never remove the seal while a grant may be in force and unconfirmed. Statuses:
 `absent`, `incomplete`, `unconfirmed`, `granted`, `withdrawn`, `unavailable`,
 and `unsettled` (a reply of entryd only, never a stored status). A

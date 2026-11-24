@@ -64,7 +64,8 @@ def service(tmp_path, monkeypatch):
 def set_prerequisite(service, prerequisite):
     return service.handle(SimpleNamespace(
         verb=entry.OPT_IN_SET_VERB, principal=OPERATOR,
-        arguments={"prerequisite": prerequisite.value}))
+        arguments={"prerequisite": prerequisite.value,
+                   "expected_generation": service.consent.reading().generation}))
 
 
 def test_w9_2_after_the_record_and_the_withdrawal_both_fail_no_process_sends(

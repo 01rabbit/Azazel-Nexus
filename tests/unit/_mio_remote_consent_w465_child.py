@@ -87,10 +87,15 @@ def faultset(root: str, ready: str, mode: str) -> None:
     service = entry.MioEntryService()
     operator = Principal(1001, 1001, 1, frozenset({PrincipalClass.OPERATOR}))
 
+    sets_done = [0]
+
     def set_one(prerequisite):
+        # Each set names the generation the previous one made (#470).
+        expected, sets_done[0] = sets_done[0], sets_done[0] + 1
         return service.handle(SimpleNamespace(
             verb=entry.OPT_IN_SET_VERB, principal=operator,
-            arguments={"prerequisite": prerequisite.value}))
+            arguments={"prerequisite": prerequisite.value,
+                       "expected_generation": expected}))
 
     for prerequisite in list(PREREQUISITES)[:-1]:
         set_one(prerequisite)
@@ -195,10 +200,15 @@ def combo(root: str, fifo: str, mode: str, sock_fd: int = -1) -> None:
     service = entry.MioEntryService()
     operator = Principal(1001, 1001, 1, frozenset({PrincipalClass.OPERATOR}))
 
+    sets_done = [0]
+
     def set_one(prerequisite):
+        # Each set names the generation the previous one made (#470).
+        expected, sets_done[0] = sets_done[0], sets_done[0] + 1
         return service.handle(SimpleNamespace(
             verb=entry.OPT_IN_SET_VERB, principal=operator,
-            arguments={"prerequisite": prerequisite.value}))
+            arguments={"prerequisite": prerequisite.value,
+                       "expected_generation": expected}))
 
     for prerequisite in list(PREREQUISITES)[:-1]:
         set_one(prerequisite)

@@ -17,6 +17,7 @@ from azazel_nexus_runtime import mio_remote_consent as mc
 from azazel_nexus_runtime.mio_remote_consent import (
     ConsentRecord,
     ConsentRefused,
+    ConsentStale,
     ConsentStore,
     decode_record,
     encode_record,
@@ -40,7 +41,8 @@ def _store(directory, **kw) -> ConsentStore:
 def _grant_all(store: ConsentStore) -> ConsentRecord:
     record = None
     for prerequisite in PREREQUISITES:
-        record = store.set_prerequisite(prerequisite, operator=OPERATOR)
+        record = store.set_prerequisite(prerequisite, operator=OPERATOR,
+            expected_generation=store.reading().generation)
     return store.confirm(record.generation, operator=OPERATOR)
 
 
@@ -67,7 +69,8 @@ def test_each_prerequisite_is_explicit_and_each_change_is_a_generation(directory
     store = _store(directory)
     generations = []
     for index, prerequisite in enumerate(PREREQUISITES):
-        record = store.set_prerequisite(prerequisite, operator=OPERATOR)
+        record = store.set_prerequisite(prerequisite, operator=OPERATOR,
+            expected_generation=store.reading().generation)
         generations.append(record.generation)
         reading = store.reading()
         assert not reading.permits
@@ -82,8 +85,10 @@ def test_each_prerequisite_is_explicit_and_each_change_is_a_generation(directory
 
 def test_setting_the_same_prerequisite_again_still_moves_the_generation(directory):
     store = _store(directory)
-    store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR)
-    again = store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR)
+    store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR,
+            expected_generation=store.reading().generation)
+    again = store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR,
+            expected_generation=store.reading().generation)
     assert again.generation == 2 and again.granted == ("remote use",)
 
 
@@ -105,7 +110,8 @@ def test_a_regrant_starts_from_nothing_and_never_reuses_a_generation(directory):
     store = _store(directory)
     _grant_all(store)
     store.withdraw("operator_request", operator=OPERATOR)
-    record = store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR)
+    record = store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR,
+            expected_generation=store.reading().generation)
     assert record.generation == 7 and record.granted == ("remote use",)
     assert not store.reading().permits
     record = _grant_all(store)
@@ -117,7 +123,8 @@ def test_an_unknown_withdrawal_reason_or_prerequisite_is_refused(directory):
     with pytest.raises(ConsentRefused):
         store.withdraw("because", operator=OPERATOR)
     with pytest.raises(ConsentRefused):
-        store.set_prerequisite("remote use", operator=OPERATOR)
+        store.set_prerequisite("remote use", operator=OPERATOR,
+            expected_generation=store.reading().generation)
     assert store.reading().status == "absent"
 
 
@@ -254,9 +261,11 @@ def test_a_grant_over_a_rolled_back_record_is_refused(directory):
     _grant_all(store)
     granted = _record_path(directory).read_bytes()
     store.withdraw("operator_request", operator=OPERATOR)
-    _corrupt(directory, granted)
-    with pytest.raises(ConsentRefused):
-        store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR)
+    _corrupt(directory, granted)  # generation 5, the premise a caller read earlier
+    with pytest.raises(ConsentRefused, match="rolled back"):
+        store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR,
+                               expected_generation=5)
+    assert _record_path(directory).read_bytes() == granted
 
 
 def test_a_withdrawal_over_a_rolled_back_record_is_written_above_it(directory):
@@ -273,11 +282,15 @@ def test_a_withdrawal_over_a_rolled_back_record_is_written_above_it(directory):
 def test_no_write_over_a_record_that_cannot_be_read(directory):
     store = _store(directory)
     _grant_all(store)
+    valid = store.reading().generation  # a premise that was valid before the damage
+    assert valid == 5
     _corrupt(directory, b"{")
     with pytest.raises(ConsentRefused):
         store.withdraw("operator_request", operator=OPERATOR)
-    with pytest.raises(ConsentRefused):
-        store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR)
+    with pytest.raises(ConsentRefused) as caught:
+        store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR,
+                               expected_generation=valid)
+    assert not isinstance(caught.value, ConsentStale)  # refused at the read, not the premise
     assert _record_path(directory).read_bytes() == b"{"
 
 
@@ -368,7 +381,8 @@ def test_at_the_generation_ceiling_a_grant_is_refused_and_a_withdrawal_still_wor
     record = _grant_all(store)
     assert record.generation == 5 and store.reading().permits
     with pytest.raises(ConsentRefused):
-        store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR)
+        store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR,
+            expected_generation=store.reading().generation)
     record, drained = store.withdraw("incident_response", operator=OPERATOR)
     assert drained is True and record.generation == 5
     reading = store.reading()
@@ -378,7 +392,8 @@ def test_at_the_generation_ceiling_a_grant_is_refused_and_a_withdrawal_still_wor
     # A second withdrawal at the ceiling also stands; a grant stays refused.
     assert store.withdraw("operator_request", operator=OPERATOR)[0].generation == 5
     with pytest.raises(ConsentRefused):
-        store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR)
+        store.set_prerequisite(RemotePrerequisite.REMOTE_USE, operator=OPERATOR,
+            expected_generation=store.reading().generation)
     assert store.reading().status == "withdrawn"
 
 
@@ -388,7 +403,8 @@ def test_at_the_generation_ceiling_a_grant_is_refused_and_a_withdrawal_still_wor
 def _complete_pending(store):
     record = None
     for prerequisite in PREREQUISITES:
-        record = store.set_prerequisite(prerequisite, operator=OPERATOR)
+        record = store.set_prerequisite(prerequisite, operator=OPERATOR,
+            expected_generation=store.reading().generation)
     return record
 
 
@@ -406,7 +422,8 @@ def test_the_completing_set_is_pending_and_permits_nothing_to_any_reader(directo
 
 def test_an_incomplete_set_is_not_pending(directory):
     store = _store(directory)
-    record = store.set_prerequisite(PREREQUISITES[0], operator=OPERATOR)
+    record = store.set_prerequisite(PREREQUISITES[0], operator=OPERATOR,
+            expected_generation=store.reading().generation)
     assert not record.pending and store.reading().status == "incomplete"
     assert b"pending" not in _record_path(directory).read_bytes()
 
@@ -429,7 +446,8 @@ def test_confirm_refuses_anything_but_the_pending_generation_in_force(directory,
     if case == "absent":
         generation = 1
     elif case == "incomplete":
-        generation = store.set_prerequisite(PREREQUISITES[0], operator=OPERATOR).generation
+        generation = store.set_prerequisite(PREREQUISITES[0], operator=OPERATOR,
+            expected_generation=store.reading().generation).generation
     else:
         pending = _complete_pending(store)
         generation = pending.generation
@@ -468,7 +486,8 @@ def test_withdrawing_a_pending_grant_writes_a_record_without_pending(directory):
 def test_a_set_over_a_pending_record_starts_from_the_empty_set(directory):
     store = _store(directory)
     _complete_pending(store)
-    record = store.set_prerequisite(PREREQUISITES[1], operator=OPERATOR)
+    record = store.set_prerequisite(PREREQUISITES[1], operator=OPERATOR,
+            expected_generation=store.reading().generation)
     assert record.granted == (PREREQUISITES[1].value,) and not record.pending
     assert store.reading().status == "incomplete"
 

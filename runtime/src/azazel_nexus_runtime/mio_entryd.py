@@ -41,7 +41,9 @@ from .mio_locald import INFER_VERB
 from .mio_remote_consent import (
     WITHDRAWAL_REASONS,
     ConsentReading,
+    _MAX_GENERATION,
     ConsentRefused,
+    ConsentStale,
     ConsentStore,
 )
 from .mio_route_ledger import (
@@ -128,8 +130,13 @@ OPT_IN_STATUS_VERB = Verb(
 )
 OPT_IN_SET_VERB = Verb(
     "mio.remote.opt_in.set",
+    # `expected_generation` is required (#470): the generation the caller read
+    # and confirmed, 0 for no record. A request without it is refused by the
+    # transport's argument check, so no set without a premise reaches the store.
     arguments=(Argument("prerequisite", ArgumentKind.ENUM,
-                        choices=tuple(p.value for p in PREREQUISITES)),),
+                        choices=tuple(p.value for p in PREREQUISITES)),
+               Argument("expected_generation", ArgumentKind.ORDINAL,
+                        maximum=_MAX_GENERATION)),
     admits=frozenset({PrincipalClass.OPERATOR}),
 )
 OPT_IN_WITHDRAW_VERB = Verb(
@@ -703,6 +710,14 @@ class MioEntryService:
             before = self.consent.reading()
             if before.generation is None:
                 raise RequestRefused(Refusal.VERB_UNAVAILABLE, "opt_in_store")
+            expected = request.arguments["expected_generation"]
+            if before.generation != expected:
+                # An early refusal: no marker and no ledger line, so a stale
+                # set adds nothing to the audit trail. The same comparison is
+                # made again under the store's write lock (below), which is
+                # the one that decides; this one only saves the ledger line.
+                # The generation now in force is not in the reply.
+                raise RequestRefused(Refusal.VERB_UNAVAILABLE, "opt_in_stale")
             # Its records are charged to this caller's share, like a request's.
             self._mark(key)
             self.router._record({"event_type": "mio.remote.opt_in.set",
@@ -710,12 +725,14 @@ class MioEntryService:
                                  "prerequisite": prerequisite.value,
                                  "generation": before.generation + 1})
             try:
-                record = self.consent.set_prerequisite(prerequisite, operator=operator)
-            except (ConsentRefused, OSError):
+                record = self.consent.set_prerequisite(
+                    prerequisite, operator=operator, expected_generation=expected)
+            except (ConsentRefused, OSError) as failure:
                 self.router._record({"event_type": "mio.remote.opt_in.not_committed",
                                      "operator": operator,
                                      "prerequisite": prerequisite.value})
-                raise RequestRefused(Refusal.VERB_UNAVAILABLE, "opt_in_store") from None
+                detail = "opt_in_stale" if isinstance(failure, ConsentStale) else "opt_in_store"
+                raise RequestRefused(Refusal.VERB_UNAVAILABLE, detail) from None
             if record.pending:
                 # The completing set is committed but closed (`unconfirmed`):
                 # no sender can use it until its record is written and the

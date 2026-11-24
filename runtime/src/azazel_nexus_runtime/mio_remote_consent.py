@@ -185,6 +185,15 @@ class ConsentRefused(Exception):
     """The store is unavailable, malformed, rolled back, or busy."""
 
 
+class ConsentStale(ConsentRefused):
+    """A `set` named a generation that is no longer the one in force.
+
+    Raised inside the store's write lock, so nothing was written. Its text
+    never carries the generation now in force: a caller that wants it reads
+    `status` and decides again.
+    """
+
+
 def _utc_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -612,8 +621,15 @@ class ConsentStore:
             self._write_at(leaf, record)
             return record
 
-    def set_prerequisite(self, prerequisite: RemotePrerequisite, *, operator: str) -> ConsentRecord:
+    def set_prerequisite(self, prerequisite: RemotePrerequisite, *, operator: str,
+                         expected_generation: int) -> ConsentRecord:
         """Record one prerequisite the operator explicitly set; next generation.
+
+        `expected_generation` is the generation the caller read and confirmed
+        (0 for no record). It is compared with the record read under the write
+        lock, in the same exclusive section as the write (like `confirm`); a
+        different one is `ConsentStale` and nothing is written. A set sent
+        before a withdrawal and handled after it is refused this way.
 
         After a withdrawal the set starts empty again: a withdrawn opt-in is
         not resumed by setting one of its four prerequisites. The same holds
@@ -622,8 +638,13 @@ class ConsentStore:
         """
         if type(prerequisite) is not RemotePrerequisite:
             raise ConsentRefused("a known prerequisite is required")
+        if type(expected_generation) is not int or isinstance(expected_generation, bool) \
+                or expected_generation < 0:
+            raise ConsentRefused("an expected generation is required")
 
         def make(current, generation):
+            if (0 if current is None else current.generation) != expected_generation:
+                raise ConsentStale("opt-in generation is not the expected one")
             granted = set()
             if current is not None and current.withdrawn is None and not current.pending:
                 granted = set(current.granted)

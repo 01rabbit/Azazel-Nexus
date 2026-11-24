@@ -89,7 +89,7 @@ def advice_frame(variant: int) -> dict:
     return {**ADVICE_FRAME, "request_id": f"w467-unit-{variant}"}
 
 
-def request_for(daemon: str, entry: str, variant: int = 0) -> dict:
+def request_for(daemon: str, entry: str, variant: int = 0, expected: int | None = None) -> dict:
     """The frame one entry sends. `refusal` is the transport's refusal path."""
     if entry == "refusal":
         return {"verb": "w467.no.such.verb", "arguments": {}}
@@ -102,7 +102,11 @@ def request_for(daemon: str, entry: str, variant: int = 0) -> dict:
                     "arguments": {"reason": WITHDRAWAL_REASONS[0]}}
         index = 1 if entry == "opt_in_set_other" else 0
         return {"verb": "mio.remote.opt_in.set",
-                "arguments": {"prerequisite": list(PREREQUISITES)[index].value}}
+                # The warm-up (variant 0) sets on an empty store; every later set
+                # in these cases follows exactly one committed set (#470).
+                "arguments": {"prerequisite": list(PREREQUISITES)[index].value,
+                              "expected_generation": (expected if expected is not None
+                                                      else 0 if variant == 0 else 1)}}
     if entry == "verify":
         return {"verb": "audit.verify", "arguments": {}}
     if entry == "observe":
@@ -361,9 +365,13 @@ def measure(daemon: str, entry: str, case: str, n: int = 1) -> dict:
             result["settled_by_status"] = harness.ask({"verb": status, "arguments": {}})
         ops_mid = len(harness.log_lines("ops.log"))
         again = RECOVERY.get((daemon, entry), entry)
+        expected = None
+        if again == "opt_in_set" and harness.alive():
+            # A `set` names the generation in force (#470): read it, as a caller does.
+            expected = harness.ask({"verb": status, "arguments": {}})["reply"]["result"]["generation"]
         if harness.alive():
             result["recovery"] = {"via": "same process",
-                                  "reply": harness.ask(request_for(daemon, again, 2))}
+                                  "reply": harness.ask(request_for(daemon, again, 2, expected))}
         else:
             ok = harness.start()
             result["recovery"] = {"via": "restart (supervisor stand-in)", "restart_ok": ok,
