@@ -630,9 +630,11 @@ def main(
 
     def handle(request):
         admissions.refresh(withdraw=withdraw, audit=guard.best_effort)
-        if guard.broken:
+        if guard.broken or (guard.owed and not guard.settle_owed()):
             # Revocation and release are done; nothing else runs for this request
             # (no playbook refresh, no assessment, no Knowledge Lite lookup).
+            # A debt that arose just now (the revocation's own record) counts
+            # as much as one found at the entrance (#467).
             ledger_refusal()
         service.set_playbooks(selection.refresh(audit=guard.append))
         return service.handle(request, audit=request_audit)

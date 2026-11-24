@@ -366,3 +366,44 @@ def test_knowledge_contextd_does_not_send_again_for_a_resend_of_a_sent_and_unrec
     assert len(sent) == 1
     assert "response" in served["handler"](request())
     assert len(sent) == 2
+
+
+def test_locald_does_not_start_new_work_when_the_revocation_record_made_a_debt(monkeypatch, tmp_path):
+    """#467: the revocation done, its record unwritten: nothing new starts for the request."""
+    from azazel_nexus_runtime import model_admission_evidence as evidence
+
+    started = []
+
+    class Holder:
+        reading = SimpleNamespace(embedding=None)
+
+        def start(self, *, audit):
+            return self.reading
+
+        def refresh(self, *, withdraw, audit):
+            withdraw()
+            audit({"event_type": "mio.local.admission"})
+
+        def close(self):
+            pass
+
+    class Service:
+        def __init__(self, **kw):
+            self._retriever = object()
+
+        def set_playbooks(self, library):
+            pass
+
+        def handle(self, request, *, audit):
+            started.append(request)
+            return {"outcome": "assessed"}
+
+    monkeypatch.setattr(evidence, "AdmissionHolder", Holder)
+    served = _serve(mio_locald, monkeypatch, tmp_path, PlaybookSelectionHolder=_selection(),
+                    LocalRuntimeService=Service)
+    FakeLedger.unavailable_on = {"mio.local.admission", "audit.late_record"}
+    _refused(served["handler"])
+    assert started == []
+    FakeLedger.unavailable_on = set()
+    assert served["handler"](object()) == {"outcome": "assessed"}     # settled, then served
+    assert len(started) == 1
