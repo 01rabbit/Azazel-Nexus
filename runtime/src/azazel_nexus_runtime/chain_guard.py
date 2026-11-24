@@ -103,7 +103,8 @@ class ChainGuard:
     def __init__(self, append: Callable[[dict], Any],
                  settle: Callable[..., str] | None = None,
                  append_internal: Callable[[dict], Any] | None = None,
-                 sticky_break: bool = True) -> None:
+                 sticky_break: bool = True,
+                 on_settled: Callable[[dict, AuditEntry], None] | None = None) -> None:
         """`append(event)` writes one line.
 
         `settle(entry, absent_head=..., path=...)` looks the line up (see
@@ -116,6 +117,10 @@ class ChainGuard:
         #: False for a daemon that keeps its own broken state (entryd): a break
         #: still raises, and the owner decides what it means.
         self._sticky = sticky_break
+        #: Called once the settlement record of a line found present is written
+        #: (never before): `on_settled(event, entry)`. The owner updates what it
+        #: counts, and may answer a resend of that event with the line.
+        self._on_settled = on_settled
         self._append = append
         self._internal = append_internal or append
         self._settle = settle
@@ -126,9 +131,6 @@ class ChainGuard:
         self.refusals_unrecorded = 0
         self.owed: list[Owed] = []
         self.last_break: str | None = None
-        #: `(event, entry)` of a line settled as present, until the next append
-        #: of anything else: the one an identical resend may be answered with.
-        self.last_present: tuple | None = None
 
     # -- state -----------------------------------------------------------
 
@@ -160,6 +162,12 @@ class ChainGuard:
             self.owed.pop(0)
         return True
 
+    def _resolved(self, owed: Owed) -> None:
+        record = owed.record
+        if (self._on_settled is not None and owed.entry is not None and record is not None
+                and record.get("event_type") == SETTLED and record.get("outcome") == "present"):
+            self._on_settled(owed.event, owed.entry)
+
     def _settle_first(self, owed: Owed) -> bool:
         try:
             if owed.record_entry is not None:
@@ -169,6 +177,7 @@ class ChainGuard:
                                        path=owed.record_path)
                 owed.record_entry = None
                 if outcome == "present":
+                    self._resolved(owed)
                     return True
             if owed.record is None:
                 if owed.entry is None:
@@ -179,8 +188,6 @@ class ChainGuard:
                         return False
                     outcome = self._settle(owed.entry, absent_head=owed.absent_head,
                                        path=owed.path)
-                    if outcome == "present":
-                        self.last_present = (owed.event, owed.entry)
                     if outcome == "absent" and not owed.performed:
                         return True
                     owed.record = {"event_type": SETTLED,
@@ -190,6 +197,7 @@ class ChainGuard:
                     if outcome == "absent":
                         owed.record["late_event"] = owed.event
             self._internal(owed.record)
+            self._resolved(owed)
             return True
         except AuditChainBroken as exc:
             # A break found by settling is the break found at start (#458),
@@ -225,9 +233,7 @@ class ChainGuard:
                 self.owed.append(Owed(event, None, None, True))
             raise AuditUnavailable("audit outcome not settled")
         try:
-            entry = self._append(event)
-            self.last_present = None
-            return entry
+            return self._append(event)
         except AuditChainBroken as exc:
             self._mark(exc)
             raise

@@ -80,6 +80,7 @@ once and serving continues without the snapshot.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pwd
@@ -88,6 +89,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from collections import OrderedDict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Optional, Sequence
@@ -689,10 +691,17 @@ class AuditService:
         self.guard = ChainGuard(
             lambda event: self.ledger.append(event, day=self._day),
             settle_segmented(self._prior_head),
-            append_internal=lambda event: self.ledger.append(event, day=self._internal_day()),
-            sticky_break=False)
-        #: Who wrote the line whose outcome was unknown, by the event's bytes.
-        self._unknown_writer: dict = {}
+            append_internal=self._append_internal,
+            sticky_break=False, on_settled=self._on_settled)
+        #: Requests (and summaries) whose line was of unknown outcome, by the
+        #: bytes of the event: who wrote it and what it would count. Applied
+        #: only when settling finds the line present.
+        self._unknown_requests: OrderedDict = OrderedDict()
+        self._unknown_summaries: OrderedDict = OrderedDict()
+        #: Lines settled as present, by (writer, sha256 of the event's bytes):
+        #: a resend of the same event is answered with the line, whatever was
+        #: appended since. In memory only, newest 64 (a restart forgets them).
+        self._settled_lines: OrderedDict = OrderedDict()
         #: Where the operator-readable snapshot goes; `None` writes none.
         self.status_path = status_path
         #: The read-only UI's byte-identical copy (ADR-0007); `None` writes none.
@@ -795,6 +804,37 @@ class AuditService:
             if head != (0, GENESIS_HASH):
                 return head
         return 0, GENESIS_HASH
+
+    def _append_internal(self, event):
+        """The guard's own records: the latest segment, and the head follows."""
+        entry = self.ledger.append(event, day=self._internal_day())
+        self.head_sequence, self.head_hash = entry.sequence, entry.event_hash
+        return entry
+
+    def _on_settled(self, event, entry) -> None:
+        """A line of unknown outcome is settled as present, and its record is written."""
+        raw = canonical_event_bytes(event)
+        found = self._unknown_requests.pop(raw, None)
+        if found is not None:
+            writer, slot = found
+            self._settled_lines[(writer, hashlib.sha256(raw).hexdigest())] = (
+                entry.sequence, entry.event_hash)
+            while len(self._settled_lines) > SETTLED_LINES_KEPT:
+                self._settled_lines.popitem(last=False)
+            if slot is not None:
+                slot_day, uid, index = slot
+                self._incidents_by_day.setdefault(slot_day, {}).setdefault(uid, [0, 0])[index] += 1
+        summary = self._unknown_summaries.pop(raw, None)
+        if summary is not None:
+            key, count, day = summary
+            left = self._summary_pending.get(key, 0) - count
+            if left > 0:
+                self._summary_pending[key] = left
+            else:
+                self._summary_pending.pop(key, None)
+            self._summaries_by_day[day] = self._summaries_by_day.get(day, 0) + 1
+        if entry.sequence > self.head_sequence:
+            self.head_sequence, self.head_hash = entry.sequence, entry.event_hash
 
     def _internal_day(self) -> str:
         """The segment the guard's own records go to: the latest, never a new one."""
@@ -907,14 +947,14 @@ class AuditService:
                 self.break_reason = str(exc)
                 return
             except AuditOutcomeUnknown:
-                # Written or not is settled, not guessed: a summary that
-                # landed is not written again (the count would double).
-                present = self.guard.settle_owed() and self.guard.last_present is not None \
-                    and self.guard.last_present[0] == event
-                if not present:
-                    self._summary_last[key] = now
-                    continue
-                entry = self.guard.last_present[1]
+                # Written or not is settled, not guessed: a summary that landed
+                # is subtracted from the pending counts once settling finds it,
+                # and one that did not is written again after the window.
+                self._unknown_summaries[canonical_event_bytes(event)] = (key, count, day)
+                while len(self._unknown_summaries) > SETTLED_LINES_KEPT:
+                    self._unknown_summaries.popitem(last=False)
+                self._summary_last[key] = now
+                continue
             except Exception:  # noqa: BLE001 - never turn the caller's refusal into an error
                 # Keep the count; a later tick tries again after the window.
                 self._summary_last[key] = now
@@ -1140,18 +1180,21 @@ class AuditService:
         self._today()
         principal = getattr(request, "principal", None)
         writer = getattr(principal, "uid", None)
-        if self.guard.owed:
-            self._settle_audit()
+        if self.guard.owed and not self._settle_audit():
+            # A write's outcome is not settled (or the settling found a break):
+            # nothing is appended and no resend is answered from a line that is
+            # not yet recorded as settled (#467).
             if not self.verified:
                 raise RequestRefused(Refusal.ARGUMENT_RANGE, "chain")
-        # A resend of the very event whose line was just settled as present
-        # is answered with that line, never appended again (#467). Same bytes,
-        # same writer, nothing appended since.
-        settled = self.guard.last_present
-        if (settled is not None and canonical_event_bytes(settled[0]) == canonical_event_bytes(event)
-                and self._unknown_writer.get(canonical_event_bytes(event)) == writer):
-            entry = settled[1]
-            return {"sequence": entry.sequence, "event_hash": entry.event_hash}
+            raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger")
+        if not self.verified:
+            raise RequestRefused(Refusal.ARGUMENT_RANGE, "chain")
+        # A resend of an event whose line was settled as present is answered
+        # with that line, never appended again. Same bytes, same writer.
+        raw = canonical_event_bytes(event)
+        line = self._settled_lines.get((writer, hashlib.sha256(raw).hexdigest()))
+        if line is not None:
+            return {"sequence": line[0], "event_hash": line[1]}
         slot = self._admit(principal, event_type, event, day)
         self._day = day
         try:
@@ -1163,7 +1206,9 @@ class AuditService:
             self.break_reason = str(exc)
             raise RequestRefused(Refusal.ARGUMENT_RANGE, "chain") from None
         except AuditOutcomeUnknown:
-            self._unknown_writer = {canonical_event_bytes(event): writer}
+            self._unknown_requests[raw] = (writer, slot)
+            while len(self._unknown_requests) > SETTLED_LINES_KEPT:
+                self._unknown_requests.popitem(last=False)
             raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger") from None
         except AuditUnavailable:
             # Fail closed and stay up (#467): the caller is told it was not
@@ -1241,6 +1286,10 @@ def _bind_event(event_type: str, payload: Mapping) -> dict:
     event = {name: declared[name].coerce(payload[name]) for name in declared}
     event["event_type"] = event_type
     return event
+
+
+#: How many settled-present lines a resend can still be answered from.
+SETTLED_LINES_KEPT = 64
 
 
 class SecondWriterRefused(RuntimeError):
