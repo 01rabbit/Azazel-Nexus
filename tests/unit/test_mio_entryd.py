@@ -699,7 +699,9 @@ def test_when_the_post_commit_record_and_the_refusal_record_both_fail_the_loop_s
     monkeypatch.setattr(transport, "peer_supplementary_groups", lambda c: ())
     policy = PrincipalPolicy(os.getgid(), frozenset())
     for name in names[:-1]:
-        _serve_once(service, monkeypatch, "mio.remote.opt_in.set", {"prerequisite": name})
+        _serve_once(service, monkeypatch, "mio.remote.opt_in.set", {
+            "prerequisite": name,
+            "expected_generation": service.consent.reading().generation})
     real = service.router._record
 
     def record(event, **kw):
@@ -708,7 +710,9 @@ def test_when_the_post_commit_record_and_the_refusal_record_both_fail_the_loop_s
         return real(event, **kw)
 
     monkeypatch.setattr(service.router, "_record", record)
-    reply = _serve_once(service, monkeypatch, "mio.remote.opt_in.set", {"prerequisite": names[-1]})
+    reply = _serve_once(service, monkeypatch, "mio.remote.opt_in.set", {
+        "prerequisite": names[-1],
+        "expected_generation": service.consent.reading().generation})
     assert reply == {"ok": False, "refusal": "verb_unavailable"}
     assert service.consent.reading().status == "withdrawn"
     assert service.ledger_broken is False

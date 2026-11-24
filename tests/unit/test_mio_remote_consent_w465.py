@@ -110,7 +110,8 @@ def call(service, verb, **arguments):
 
 
 def set_prerequisite(service, prerequisite):
-    return call(service, entry.OPT_IN_SET_VERB, prerequisite=prerequisite.value)
+    return call(service, entry.OPT_IN_SET_VERB, prerequisite=prerequisite.value,
+                expected_generation=service.consent.reading().generation)
 
 
 def refusal_of(service, prerequisite):
@@ -283,7 +284,8 @@ def inject_publish_then_fail(service, monkeypatch, after_publish=None):
 
 def set_last_by_socket(service, monkeypatch):
     return serve_once(service, monkeypatch, "mio.remote.opt_in.set",
-                      {"prerequisite": LAST.value})
+                      {"prerequisite": LAST.value,
+                        "expected_generation": service.consent.reading().generation})
 
 
 def test_r1_confirm_published_then_fails_and_withdraw_fails_is_closed_by_the_seal(
@@ -331,7 +333,8 @@ def test_r1_unsettled_is_a_reading_on_the_socket_and_is_gated_then_settled(
     view = store_view(state)  # a fresh store: granted N+1, the seal is gone
     sent = send_in_new_process(state, 5)
     again = serve_once(service, monkeypatch, "mio.remote.opt_in.set",
-                       {"prerequisite": PREREQUISITES[0].value})
+                       {"prerequisite": PREREQUISITES[0].value,
+                        "expected_generation": 5})  # the generation that may be in force
     free_while_unsettled = gate_free(state)
 
     faults.update(withdraw=False, seal=False, eio=False)
@@ -482,7 +485,8 @@ def test_r2a_a_real_sender_held_after_its_read_times_the_gate_out(
         read_notice(reached, sender)
         # The sender holds the gate shared, having read generation 5 granted.
         response = serve_once(service, monkeypatch, "mio.remote.opt_in.set",
-                              {"prerequisite": PREREQUISITES[0].value})
+                              {"prerequisite": PREREQUISITES[0].value,
+                        "expected_generation": service.consent.reading().generation})
         view = store_view(state)
         new = send_in_new_process(state, 7)  # N+1 of the set that was refused
         write_release(release)
@@ -606,7 +610,8 @@ def test_control_normal_confirmed_set_is_sent_once(service, monkeypatch):
     for prerequisite in list(PREREQUISITES)[:-1]:
         set_prerequisite(service, prerequisite)
     reply = serve_once(service, monkeypatch, "mio.remote.opt_in.set",
-                       {"prerequisite": LAST.value})
+                       {"prerequisite": LAST.value,
+                        "expected_generation": service.consent.reading().generation})
     state = runtime_paths.mio_state_dir()
     sent = send_in_new_process(state, 5)
     dump("after4-controls.json", {"granted": {
@@ -686,7 +691,8 @@ def test_the_seal_closes_a_granted_record_at_or_below_it_for_every_reader(tmp_pa
     state.mkdir(mode=0o700)
     store = ConsentStore(state, owner=os.geteuid())
     for prerequisite in PREREQUISITES:
-        store.set_prerequisite(prerequisite, operator="uid:1")
+        store.set_prerequisite(prerequisite, operator="uid:1",
+            expected_generation=store.reading().generation)
     store.confirm(4, operator="uid:1")
     assert store.reading().permits
     store.seal(5)
@@ -709,7 +715,8 @@ def test_a_seal_that_exists_but_cannot_be_read_is_unavailable(tmp_path, damage):
     state.mkdir(mode=0o700)
     store = ConsentStore(state, owner=os.geteuid())
     for prerequisite in PREREQUISITES:
-        store.set_prerequisite(prerequisite, operator="uid:1")
+        store.set_prerequisite(prerequisite, operator="uid:1",
+            expected_generation=store.reading().generation)
     store.confirm(4, operator="uid:1")
     _seal_path(state).write_bytes(damage)
     _seal_path(state).chmod(0o600)
@@ -831,7 +838,8 @@ def test_a_failure_taking_the_gate_leaks_no_descriptor(tmp_path, monkeypatch):
     state = tmp_path / "s"
     state.mkdir(mode=0o700)
     store = ConsentStore(state, owner=os.geteuid())
-    store.set_prerequisite(PREREQUISITES[0], operator="uid:1")
+    store.set_prerequisite(PREREQUISITES[0], operator="uid:1",
+            expected_generation=store.reading().generation)
     before = len(os.listdir("/dev/fd"))
     real = store._gate_fd
 
@@ -856,7 +864,8 @@ def test_store_withdraw_without_a_drain_does_not_wait(tmp_path):
     state.mkdir(mode=0o700)
     store = ConsentStore(state, owner=os.geteuid(), drain_timeout_s=0.2)
     for prerequisite in PREREQUISITES:
-        store.set_prerequisite(prerequisite, operator="uid:1")
+        store.set_prerequisite(prerequisite, operator="uid:1",
+            expected_generation=store.reading().generation)
     store.confirm(4, operator="uid:1")
     hold = store.hold_gate_exclusive(0.2)
     assert store.withdraw("operator_request", operator="uid:1", drain=False)[1] is True
@@ -886,7 +895,8 @@ def _run_combo_child(tmp_path, mode):
     if mode == "e5":  # the client's socket: its EOF is measured after the kill
         client_end, server_end = _socket.socketpair()
         transport.send_frame(client_end, {"verb": "mio.remote.opt_in.set",
-                                          "arguments": {"prerequisite": LAST.value}})
+                                          "arguments": {"prerequisite": LAST.value,
+                                                        "expected_generation": 3}})
         client_end.shutdown(_socket.SHUT_WR)
         argv.append(str(server_end.fileno()))
         pass_fds = (server_end.fileno(),)

@@ -61,10 +61,11 @@ def writer(root: str, ready: str) -> None:
         return real(event, **kw)
 
     service.router._record = blocking
-    for prerequisite in PREREQUISITES:
+    for expected, prerequisite in enumerate(PREREQUISITES):
         service.handle(SimpleNamespace(
             verb=entry.OPT_IN_SET_VERB, principal=operator,
-            arguments={"prerequisite": prerequisite.value}))
+            arguments={"prerequisite": prerequisite.value,
+                       "expected_generation": expected}))
 
 
 if __name__ == "__main__":

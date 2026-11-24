@@ -970,7 +970,8 @@ def _real_store(tmp_path):
     store = ConsentStore(directory, owner=os.geteuid())
     record = None
     for prerequisite in PREREQUISITES:
-        record = store.set_prerequisite(prerequisite, operator="uid:1001")
+        record = store.set_prerequisite(prerequisite, operator="uid:1001",
+                                        expected_generation=store.reading().generation)
     record = store.confirm(record.generation, operator="uid:1001")
     return directory, store, record.generation
 
@@ -1052,7 +1053,9 @@ def test_after_a_restart_a_withdrawal_is_still_in_force(tmp_path):
     assert calls == [] and reply["refusal"] == "opt_in_not_granted"
     # A re-grant moves the generation again: the old envelope still fails.
     for prerequisite in PREREQUISITES:
-        pending = restarted.set_prerequisite(prerequisite, operator="uid:1001")
+        pending = restarted.set_prerequisite(
+            prerequisite, operator="uid:1001",
+            expected_generation=restarted.reading().generation)
     restarted.confirm(pending.generation, operator="uid:1001")
     reply = _service(transport=_spy_transport(calls), consent=restarted).handle(
         Request(frame=FRAME, envelope=_seal(nonce="r" * 48, opt_in_generation=generation)))
