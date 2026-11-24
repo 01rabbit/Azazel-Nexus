@@ -71,8 +71,8 @@ def _install_faults(daemon: str) -> None:
             return False
         return text.endswith(".jsonl") and any(text.startswith(root + os.sep) for root in roots)
 
-    def ledger_inodes() -> set:
-        found = set()
+    def ledger_inodes() -> dict:
+        found = {}
         for root in roots:
             for current, _, names in os.walk(root):
                 for name in names:
@@ -81,12 +81,21 @@ def _install_faults(daemon: str) -> None:
                             info = os.stat(os.path.join(current, name))
                         except OSError:
                             continue
-                        found.add((info.st_dev, info.st_ino))
+                        found[(info.st_dev, info.st_ino)] = os.path.join(current, name)
         return found
 
-    def eio(where: str, path) -> OSError:
+    def last_event(path) -> str | None:
+        """The event type of the line a failed sync was for (the file's last line)."""
+        try:
+            with _REAL["open"](path, "rb") as handle:
+                lines = [line for line in handle.read().splitlines() if line.strip()]
+            return json.loads(lines[-1])["event"].get("event_type")
+        except (OSError, ValueError, KeyError, IndexError):
+            return None
+
+    def eio(where: str, path, **extra) -> OSError:
         _log("faults.log", fault=where, path=os.path.basename(os.fsdecode(path)) if path else None,
-             mode=STATE["mode"])
+             mode=STATE["mode"], opens=STATE["opens"], fsyncs=STATE["fsyncs"], **extra)
         return OSError(errno.EIO, "injected EIO " + where)
 
     def check_open(path, write: bool) -> None:
@@ -114,11 +123,13 @@ def _install_faults(daemon: str) -> None:
 
     def hooked_fsync(fd):
         number = fd if isinstance(fd, int) else fd.fileno()
+        located = None
         try:
             info = os.fstat(number)
-            ledger = (info.st_dev, info.st_ino) in ledger_inodes()
+            located = ledger_inodes().get((info.st_dev, info.st_ino))
         except OSError:
-            ledger = False
+            pass
+        ledger = located is not None
         if ledger:
             _refresh()
             STATE["fsyncs"] += 1
@@ -127,7 +138,7 @@ def _install_faults(daemon: str) -> None:
                     STATE["mode"] == "fsync" and not STATE["fired"]
                     and STATE["fsyncs"] == STATE["n"]):
                 STATE["fired"] = True
-                raise eio("fsync", None)
+                raise eio("fsync", None, event=last_event(located))
         return real_fsync(fd)
 
     os.open, os.fsync, pathlib.Path.open = hooked_os_open, hooked_fsync, hooked_path_open

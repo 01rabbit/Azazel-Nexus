@@ -118,10 +118,10 @@ def request_for(daemon: str, entry: str, variant: int = 0) -> dict:
     if daemon == "mio-contextobsd":
         return {"verb": "mio.contextobs.observe", "arguments": {"deadline_ms": 320},
                 "event": _obs_frame()}
+    techniques = ["T1059", "T1059.001"] + (["T1110"] if variant >= 2 else [])
     return {"verb": "knowledge.context",
             "arguments": {"deadline_ms": 2000, "deadline_monotonic_ns": 2**62},
-            "event": {"frame": {"privacy_class": "P0-public",
-                                "techniques": ["T1059", "T1059.001"]}}}
+            "event": {"frame": {"privacy_class": "P0-public", "techniques": techniques}}}
 
 
 ENTRIES = {
@@ -322,6 +322,7 @@ def measure(daemon: str, entry: str, case: str, n: int = 1) -> dict:
         result["appends_seen"] = sum(1 for line in faults if line.get("seen") == "write-open")
         result["fsyncs_seen"] = sum(1 for line in faults if line.get("seen") == "ledger-fsync")
         result["faults_fired"] = [line["fault"] for line in faults if "fault" in line]
+        result["fault_details"] = [line for line in faults if "fault" in line]
         result["ops_during_fault_request"] = _count(
             harness.log_lines("ops.log")[ops_before:], "op")
         after = harness.ledger()
@@ -343,7 +344,8 @@ def measure(daemon: str, entry: str, case: str, n: int = 1) -> dict:
             result["status_verb"] = "daemon not running"
         # Fault removed; one legitimate request.
         harness.arm("off")
-        time.sleep(0.2)
+        # Long enough for the daemon with a tick (entryd) to settle on its own first.
+        time.sleep(1.0)
         ops_mid = len(harness.log_lines("ops.log"))
         again = RECOVERY.get((daemon, entry), entry)
         if harness.alive():
@@ -425,6 +427,26 @@ def duplicated(events: list) -> list:
     return [event for event, count in counts.items() if count > 1]
 
 
+#: Entries that never write to the ledger on success: a fault is not expected to fire for 1 and 2.
+NO_WRITE = {("mio-contextobsd", "observe"), ("auditd", "verify")}
+
+
+def expected_records(daemon: str, entry: str, case: str, n: int) -> tuple[int, int]:
+    """(settlement records, late records) the whole run must end with, exactly."""
+    if (daemon, entry) in NO_WRITE:
+        return 0, 0
+    if (daemon, entry) == ("mio-entryd", "opt_in_withdraw"):
+        # The withdrawal is made before its records: each request owes two (marker, withdrawn).
+        if case == "pre":
+            return 0, 1
+        if case == "persist":
+            # The resends are answered from the withdrawal in force, never made again.
+            return 0, 2
+    if (daemon, entry) == ("knowledge-contextd", "context") and case == "pre" and n == 2:
+        return 0, 1
+    return (1 if case == "fsync" else 0), 0
+
+
 def check(result: dict, *, clean: dict) -> None:
     daemon, entry, case, n = result["daemon"], result["entry"], result["case"], result["n"]
     where = f"{daemon}:{entry} {case} n={n}"
@@ -457,21 +479,39 @@ def check(result: dict, *, clean: dict) -> None:
         return
 
     fired = bool(result["faults_fired"])
+    # The planned fault really fired, at the planned place.
+    if (daemon, entry) not in NO_WRITE or (daemon, entry, case) == ("auditd", "verify", "persist"):
+        assert fired, (where, "the injected fault never fired")
+    clean_events = [e for e in clean["events_added_by_fault_request"]]
+    if fired and case == "pre":
+        assert result["fault_details"][0]["fault"] == "open" and result["fault_details"][0]["opens"] == n, (where, result["fault_details"])
+    if fired and case == "fsync":
+        detail = result["fault_details"][0]
+        assert detail["fault"] == "fsync" and detail["fsyncs"] == n, (where, detail)
+        # The sync that failed was the one of the planned line.
+        if n <= len(clean_events):
+            assert detail["event"] == clean_events[n - 1], (where, detail, clean_events)
     # A request that needs its record is never answered with a result while the record failed.
     if (daemon, entry) in NEEDS_RECORD and fired:
         assert not served(daemon, entry, result["fault_request"]), (where, result["fault_request"])
     if case == "persist" and (daemon, entry) in NEEDS_RECORD:
         second = result["second_request_during_fault"]
         assert not served(daemon, entry, second), (where, second)
-    # No request line is written twice by one request, and none twice overall by the retry.
-    assert not duplicated(result["events_added_by_fault_request"]), (where, result["events_added_by_fault_request"])
-    assert not duplicated(result["events_added_by_recovery"]), (where, result["events_added_by_recovery"])
+    # No request line is written twice: over the fault and the recovery together, each kind of
+    # line is at most as many as the requests that ran, times what one request writes.
     records = result["records_final"]
+    per_request = Counter(e for e in clean_events if e not in SYSTEM)
+    requests = ((1 if result.get("warmup") else 0) + (0 if entry == "tick" else 1)
+                + (1 if "second_request_during_fault" in result else 0) + 1)
+    totals = Counter(r["event_type"] for r in records if r["event_type"] not in SYSTEM)
+    for kind, count in totals.items():
+        assert count <= requests * max(per_request.get(kind, 1), 1), (where, kind, count, requests)
     settled = [r for r in records if r["event_type"] == "audit.outcome_settled"]
     late = [r for r in records if r["event_type"] == "audit.late_record"]
     # A line of unknown outcome is settled by its sequence and hash, once.
+    want_settled, want_late = expected_records(daemon, entry, case, n)
+    assert (len(settled), len(late)) == (want_settled, want_late), (where, len(settled), len(late))
     if case == "fsync" and fired:
-        assert settled, (where, [r["event_type"] for r in records])
         assert all(r["outcome"] == "present" for r in settled), (where, settled)
         assert len({r["settled_sequence"] for r in settled}) == len(settled), (where, settled)
     if case == "persist" and fired and entry != "tick":
@@ -487,7 +527,8 @@ def check(result: dict, *, clean: dict) -> None:
         sends = ops.get("send:knowledge-peer.request_context", 0)
         fault_sends = during.get("send:knowledge-peer.request_context", 0)
         # One send per request that got to send: warmup, (fault), recovery. Never a resend.
-        assert sends == 2 + fault_sends and fault_sends <= 1, (where, ops, during)
+        assert fault_sends == (1 if (n == 2 and case in ("pre", "fsync")) else 0), (where, during)
+        assert sends == 2 + fault_sends, (where, ops, during)
         # Record before send: every send has a `requested` line (a line without a send is fine).
         assert kinds.count("knowledge.context.requested") >= sends, (where, kinds)
         verified = [r for r in records if r["event_type"] == "knowledge.context.completed"
@@ -525,9 +566,10 @@ def check(result: dict, *, clean: dict) -> None:
         withdrawn = kinds.count("mio.remote.opt_in.withdrawn")
         withdrawn += sum(1 for r in late if r["late_event"].get("event_type") == "mio.remote.opt_in.withdrawn")
         withdrawn += sum(1 for r in settled if r.get("late_event", {}).get("event_type") == "mio.remote.opt_in.withdrawn")
-        # One withdrawal per request made (the fault request, a second one while the fault
-        # continues, the recovery); each is recorded exactly once.
-        made = 3 if case == "persist" else 2
+        # One withdrawal per request that commits: the fault request and the recovery. The second
+        # request while the fault continues (persist) is answered from the first, never committed
+        # again. Each withdrawal is recorded exactly once.
+        made = 2
         assert withdrawn == made, (where, kinds, late, settled)
     if daemon == "mio-entryd" and entry == "tick":
         assert kinds.count("mio.capability.transition") == 2, (where, kinds)
@@ -540,6 +582,8 @@ def check(result: dict, *, clean: dict) -> None:
         ordinals = Counter(r["ordinal"] for r in events)
         assert all(count == 1 for count in ordinals.values()), (where, ordinals)
         assert ordinals[3] == 1 and ordinals[1] == 1, (where, ordinals)
+        # The faulted event (ordinal 2) is on the chain at most once.
+        assert ordinals.get(2, 0) <= 1, (where, ordinals)
 
 
 @pytest.mark.parametrize("daemon,entry", CASES, ids=[f"{d}:{e}" for d, e in CASES])
@@ -575,16 +619,49 @@ def test_auditd_resend_of_a_settled_line_returns_the_line_not_a_second_one():
         assert refused["reply"] == {"ok": False, "refusal": "verb_unavailable"}
         harness.arm("off")
         again = harness.ask(frame)
-        assert again["reply"]["ok"] is True
-        mid = harness.ledger()
-        written = [r for r in mid["records"] if r["event_type"] == "commissioning.permanent_mac_read"]
-        assert [r["ordinal"] for r in written] == [1, 2], written
-        assert again["reply"]["result"]["sequence"] == 2
-        assert mid["verify"] == "ok"
-        # A third, identical resend is a new request: the answer-from-the-line applies once, right after settling.
+        assert again["reply"]["ok"] is True and again["reply"]["result"]["sequence"] == 2
+        # Another event goes in between; the resend is still answered with the same line.
+        other = harness.ask(request_for("auditd", "append", 2))
+        assert other["reply"]["result"]["sequence"] == 4
         third = harness.ask(frame)
-        assert third["reply"]["ok"] is True
+        assert third["reply"]["result"] == again["reply"]["result"]
         final = harness.ledger()
         assert final["verify"] == "ok" and harness.alive()
+        kinds = [r["event_type"] for r in final["records"]]
+        assert kinds == ["commissioning.permanent_mac_read", "commissioning.permanent_mac_read",
+                         "audit.outcome_settled", "commissioning.permanent_mac_read"], kinds
+        assert [r["ordinal"] for r in final["records"] if "ordinal" in r] == [1, 2, 3]
+    finally:
+        harness.cleanup()
+
+
+def test_knowledge_resend_of_a_sent_and_unrecorded_request_is_not_sent_again():
+    harness = Daemon("knowledge-contextd")
+    try:
+        assert harness.start()
+        harness.ask(request_for("knowledge-contextd", "context", 0))        # one send
+        harness.arm("pre", 2)                                               # the `completed` line fails
+        frame = request_for("knowledge-contextd", "context", 1)
+        first = harness.ask(frame)
+        assert first["reply"]["result"] == {"refusal": "unavailable", "stage": "unrecorded"}
+        harness.arm("off")
+        again = harness.ask(frame)                                          # the same request
+        assert again["reply"]["result"] == {"refusal": "unavailable", "stage": "unrecorded"}
+        sends = [line for line in harness.log_lines("ops.log")
+                 if line["op"] == "send:knowledge-peer.request_context"]
+        assert len(sends) == 2                                              # warm-up, the faulted one
+        third = harness.ask(frame)                                          # the memory ended
+        assert "response" in third["reply"]["result"]
+        sends = [line for line in harness.log_lines("ops.log")
+                 if line["op"] == "send:knowledge-peer.request_context"]
+        assert len(sends) == 3
+        final = harness.ledger()
+        assert final["verify"] == "ok"
+        kinds = [r["event_type"] for r in final["records"]]
+        assert kinds.count("knowledge.context.requested") == 3
+        assert kinds.count("audit.late_record") == 1 and kinds.count("audit.outcome_settled") == 0
+        verified = [r for r in final["records"] if r["event_type"] == "knowledge.context.completed"
+                    and r.get("outcome") == "verified_advisory"]
+        assert len(verified) == 2     # warm-up and the third; the faulted one is the late record
     finally:
         harness.cleanup()
