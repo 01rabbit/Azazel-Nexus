@@ -541,13 +541,17 @@ class SegmentedLedger:
         """
 
         try:
-            if not self.root.is_dir():
-                return ()
-            return tuple(sorted(self.root.glob("*.jsonl")))
+            # `os.scandir` reports a listing failure; `Path.glob` would swallow a
+            # `PermissionError` and read as an empty chain (#467).
+            with os.scandir(self.root) as entries:
+                names = sorted(entry.name for entry in entries if entry.name.endswith(".jsonl"))
+        except (FileNotFoundError, NotADirectoryError):
+            return ()
         except OSError as exc:
             # The directory cannot be listed: the chain is unavailable, which
-            # is not a crash of whoever asked (#467).
+            # is not a crash of whoever asked, and not an empty chain.
             raise AuditUnavailable(f"{self.root} could not be listed: {exc}") from exc
+        return tuple(self.root / name for name in names)
 
     def current_segment(self, *, day: str) -> Path:
         if not day or len(day) != 10 or day.count("-") != 2:

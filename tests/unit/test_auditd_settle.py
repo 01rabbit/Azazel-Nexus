@@ -192,25 +192,25 @@ def test_the_head_follows_a_settlement_record_whose_sync_failed_and_was_found_pr
 
 
 def test_audit_verify_answers_unavailable_when_the_segments_cannot_be_listed(tmp_path, monkeypatch):
-    """4: a real listing failure (the segment directory) is `unavailable: true`, never a raw OSError."""
-    from pathlib import Path
+    """4: a real listing failure (`os.scandir` of the segment directory) is `unavailable: true`,
+    never a raw OSError and never an empty chain."""
     from test_runtime_auditd import OPERATOR
 
     service = _service(tmp_path)
     _append(service, day="2026-09-20")
-    real = Path.glob
+    real = os.scandir
 
-    def glob(self, pattern):
-        if self == service.ledger.root:
+    def scandir(path="."):
+        if os.fspath(path) == os.fspath(service.ledger.root):
             raise PermissionError(errno.EACCES, "injected listing failure")
-        return real(self, pattern)
-    monkeypatch.setattr(Path, "glob", glob)
+        return real(path)
+    monkeypatch.setattr(os, "scandir", scandir)
     reply = service.handle(_request("audit.verify", {}, principal=OPERATOR))
     assert reply["unavailable"] is True and reply["capacity"]["segments"] is None
-    # An append is refused with the fixed reason (the chain cannot be listed), and the tick goes on.
+    # An append is refused (the chain cannot be listed), and the tick goes on.
     with pytest.raises((RequestRefused, AuditUnavailable)):
         _append(service, day="2026-09-20")
     service.tick()
-    monkeypatch.setattr(Path, "glob", real)
+    monkeypatch.setattr(os, "scandir", real)
     again = service.handle(_request("audit.verify", {}, principal=OPERATOR))
     assert again.get("unavailable") is None and again["capacity"]["segments"] == 1
