@@ -340,7 +340,9 @@ def measure(daemon: str, entry: str, case: str, n: int = 1) -> dict:
             # A second request while the fault continues.
             result["second_request_during_fault"] = harness.ask(request_for(daemon, entry, 3))
             result["process_after_second"] = harness.exit_info()
-            result["events_added_by_second"] = harness.ledger()["events"][after["last_sequence"]:]
+            second_ledger = harness.ledger()
+            result["events_added_by_second"] = second_ledger["events"][after["last_sequence"]:]
+            result["records_after_second"] = second_ledger["records"]
         if status is None:
             result["status_verb"] = "none (no diagnostic verb on this daemon)"
         elif harness.alive():
@@ -565,6 +567,53 @@ def check(result: dict, *, clean: dict) -> None:
             assert added.count("knowledge.context.completed") <= 1, (where, added)
         else:
             assert reply == {"refusal": "unavailable", "stage": "refused_before_send"}, (where, reply)
+    # The lines each request left, request by request (not totals): where the fault stopped the
+    # clean request's lines is known from the clean run's order.
+    landed_lines = (n - 1 if case == "pre" else n if case == "fsync" else 0)
+    before_count = len(result["records_before"])
+    fault_records = result["records_after_fault"][before_count:]
+    second_records = (result["records_after_second"][len(result["records_after_fault"]):]
+                      if "records_after_second" in result else [])
+    after_second = len(result["records_after_second"]) if "records_after_second" in result \
+        else len(result["records_after_fault"])
+    recovery_records = records[after_second:]
+    if daemon == "mio-entryd" and entry == "advise":
+        from azazel_nexus.local_advisory import request_event
+        digest = {v: request_event(advice_frame(v))["digest"] for v in (0, 1, 2, 3)}
+        want = {0: 1, 1: 1 if landed_lines >= 2 else 0, 3: 0, 2: 1}
+        for variant, expected in want.items():
+            own = [i for i, r in enumerate(records)
+                   if r["event_type"] == "mio.local.request" and r.get("digest") == digest[variant]]
+            assert len(own) == expected, (where, variant, len(own), expected)
+            for i in own:
+                # The request's record is preceded by the same request's marker, which no
+                # other request's line stands in for.
+                assert records[i - 1]["event_type"] == "mio.entry.request", (where, variant)
+    if daemon == "knowledge-contextd" and entry == "context":
+        def count(rows, kind, **match):
+            return sum(1 for r in rows if r["event_type"] == kind
+                       and all(r.get(k) == v for k, v in match.items()))
+        requested_landed = 1 if (case == "fsync" or (case == "pre" and n == 2)) else 0
+        assert count(result["records_before"], "knowledge.context.requested") == 1, where
+        assert count(fault_records, "knowledge.context.requested") == requested_landed, (where, fault_records)
+        assert count(second_records, "knowledge.context.requested") == 0, where
+        assert count(recovery_records, "knowledge.context.requested") == 1, (where, recovery_records)
+        sent_by = Counter(tuple(c["techniques"]) for c in result["peer_calls"] if c["op"].startswith("send:"))
+        fault_sent = 1 if (n == 2 and case in ("pre", "fsync")) else 0
+        expected_sent = {("T1059", "T1100"): 1, ("T1059", "T1101"): fault_sent,
+                         ("T1059", "T1103"): 0, ("T1059", "T1102"): 1}
+        assert {k: sent_by.get(k, 0) for k in expected_sent} == expected_sent, (where, sent_by)
+        # A send never outnumbers the `requested` lines of its own request's phase.
+        assert fault_sent <= count(fault_records, "knowledge.context.requested"), where
+        # Each send's verified outcome is on the chain exactly once: warm-up and recovery as
+        # their own lines; the faulted one as its line (fsync) or as one late record (pre).
+        verified = lambda rows: count(rows, "knowledge.context.completed", outcome="verified_advisory")
+        assert verified(result["records_before"]) == 1, where
+        assert verified(fault_records) == (1 if (case == "fsync" and n == 2) else 0), (where, fault_records)
+        assert verified(recovery_records) == 1, (where, recovery_records)
+        late_verified = [r for r in records if r["event_type"] == "audit.late_record"
+                         and r["late_event"].get("outcome") == "verified_advisory"]
+        assert len(late_verified) == (1 if (case == "pre" and n == 2) else 0), (where, late_verified)
     if daemon == "mio-entryd" and entry == "advise":
         markers = kinds.count("mio.entry.request")
         assess = ops.get("peer-call:locald.assess", 0)
