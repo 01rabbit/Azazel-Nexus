@@ -730,21 +730,6 @@ class MioEntryService:
         # the narrowing skips the drain, which would meet our own lock.
         held = {"drain": False} if self._unsettled is not None else {}
         was_unsettled = self._unsettled is not None
-        if not was_unsettled and self.guard is not None:
-            # A withdrawal already made and still owed its record is not made
-            # again by its resend (#467): the store reads exactly that
-            # withdrawal, so it is settled and answered, never committed twice.
-            owed_withdrawal = next(
-                (item for item in self.guard.owed if item.performed
-                 and item.event.get("event_type") == "mio.remote.opt_in.withdrawn"), None)
-            if owed_withdrawal is not None:
-                reading = self.consent.reading()
-                if (reading.status == "withdrawn"
-                        and reading.generation == owed_withdrawal.event.get("generation")):
-                    drained = owed_withdrawal.event.get("drained")
-                    if not self._settle_audit():
-                        raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger")
-                    return {**self._reading_reply(self.consent.reading()), "drained": drained}
         try:
             record, drained = self.consent.withdraw(reason, operator=operator, **held)
         except (ConsentRefused, OSError):
@@ -770,9 +755,12 @@ class MioEntryService:
         # The withdrawal stands whatever happens to its record. A record that
         # cannot be written is a debt of an act already done, and the caller
         # gets the fixed refusal (the withdrawal itself is in force).
+        # The marker only opens the request's own share of the budget; it is not
+        # the withdrawal, so a marker that cannot be written owes nothing: the
+        # withdrawal's record is the one line (or late record) per request.
         failed = False
         try:
-            self._mark(key, performed=True)
+            self._mark(key)
         except AuditUnavailable:
             failed = True
         try:

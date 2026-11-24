@@ -606,7 +606,7 @@ def test_a_set_after_an_unconfirmed_grant_starts_from_the_empty_set(service, mon
     assert reply["granted"] == [PREREQUISITES[0].value]
 
 
-# -- #467: a withdrawal owed its record is not committed twice by its resend ------
+# -- #467 (contract 5.0): a withdrawal is made whatever the ledger does, and recorded once ----
 
 def _ledger_down(service, monkeypatch):
     from azazel_nexus.audit import AuditUnavailable
@@ -616,7 +616,15 @@ def _ledger_down(service, monkeypatch):
     monkeypatch.setattr(service.router.ledger, "_append_once", down)
 
 
-def test_a_resent_withdrawal_owed_its_record_is_not_committed_again(service, monkeypatch):
+def _withdrawn(service):
+    events = recorded(service)
+    lines = [e for e in events if e["event_type"] == "mio.remote.opt_in.withdrawn"]
+    late = [e for e in events if e["event_type"] == "audit.late_record"
+            and e["late_event"]["event_type"] == "mio.remote.opt_in.withdrawn"]
+    return lines, late
+
+
+def test_a_withdrawal_while_the_ledger_is_down_is_committed_and_owes_one_late_record(service, monkeypatch):
     grant(service)
     real = service.router.ledger._append_once
     _ledger_down(service, monkeypatch)
@@ -625,41 +633,41 @@ def test_a_resent_withdrawal_owed_its_record_is_not_committed_again(service, mon
     assert refused.value.detail == "ledger"
     first = service.consent.reading()
     assert first.status == "withdrawn"
-    # The ledger is back: the resend is answered from the withdrawal in force.
-    monkeypatch.setattr(service.router.ledger, "_append_once", real)
-    reply = verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="incident_response")
-    assert reply["status"] == "withdrawn" and reply["generation"] == first.generation
-    assert service.consent.reading().generation == first.generation       # not committed twice
-    kinds = [event["event_type"] for event in recorded(service)]
-    assert kinds.count("mio.remote.opt_in.withdrawn") + kinds.count("audit.late_record") >= 1
-    late = [e for e in recorded(service) if e["event_type"] == "audit.late_record"]
-    withdrawn = [e for e in recorded(service) if e["event_type"] == "mio.remote.opt_in.withdrawn"]
-    # The withdrawal is on the chain exactly once (as its line or as a late record).
-    assert len(withdrawn) + sum(1 for e in late
-                                if e["late_event"]["event_type"] == "mio.remote.opt_in.withdrawn") == 1
-
-
-def test_a_resent_withdrawal_is_refused_while_its_record_cannot_be_settled(service, monkeypatch):
-    grant(service)
-    _ledger_down(service, monkeypatch)
+    # Still down: another withdrawal narrows again (it is never held back), one debt each.
     with pytest.raises(RequestRefused):
         verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="incident_response")
-    generation = service.consent.reading().generation
-    with pytest.raises(RequestRefused) as refused:
-        verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="incident_response")
-    assert refused.value.detail == "ledger"
-    assert service.consent.reading().generation == generation
+    assert service.consent.reading().generation == first.generation + 1
+    monkeypatch.setattr(service.router.ledger, "_append_once", real)
+    assert service.guard.settle_owed()
+    lines, late = _withdrawn(service)
+    assert len(lines) == 0 and len(late) == 2          # one late record per request
 
 
-def test_a_withdrawal_after_a_new_grant_is_still_committed(service, monkeypatch):
-    """Only the withdrawal that is owed is answered; a withdrawal of a later grant commits."""
+def test_a_resent_withdrawal_after_settling_is_a_new_request_recorded_once(service, monkeypatch):
+    """5.0 (d): after settling, the same request again is made again and recorded once."""
     grant(service)
     real = service.router.ledger._append_once
     _ledger_down(service, monkeypatch)
     with pytest.raises(RequestRefused):
         verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="incident_response")
     monkeypatch.setattr(service.router.ledger, "_append_once", real)
-    service.guard.settle_owed()
+    assert service.guard.settle_owed()
     before = service.consent.reading().generation
     verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="incident_response")
     assert service.consent.reading().generation == before + 1
+    lines, late = _withdrawn(service)
+    assert len(lines) == 1 and len(late) == 1
+    assert {e["generation"] for e in lines} != {e["late_event"]["generation"] for e in late}
+
+
+def test_a_withdrawal_by_another_operator_is_never_answered_from_a_earlier_one(service, monkeypatch):
+    grant(service)
+    _ledger_down(service, monkeypatch)
+    with pytest.raises(RequestRefused):
+        verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="incident_response")
+    other = SimpleNamespace(uid=4242, gid=4242, pid=1, classes=OPERATOR.classes)
+    generation = service.consent.reading().generation
+    with pytest.raises(RequestRefused):
+        verb(service, entry.OPT_IN_WITHDRAW_VERB, principal=other, reason="operator_request")
+    # It was made as its own request (a new generation, its own operator and reason).
+    assert service.consent.reading().generation == generation + 1
