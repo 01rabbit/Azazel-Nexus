@@ -581,6 +581,13 @@ def check(result: dict, *, clean: dict) -> None:
         from azazel_nexus.local_advisory import request_event
         digest = {v: request_event(advice_frame(v))["digest"] for v in (0, 1, 2, 3)}
         want = {0: 1, 1: 1 if landed_lines >= 2 else 0, 3: 0, 2: 1}
+        # One marker per request, request by request: exactly the requests that got that far.
+        def markers(rows):
+            return sum(1 for r in rows if r["event_type"] == "mio.entry.request")
+        assert markers(result["records_before"]) == 1, where
+        assert markers(fault_records) == (1 if landed_lines >= 1 else 0), (where, fault_records)
+        assert markers(second_records) == 0, (where, second_records)
+        assert markers(recovery_records) == 1, (where, recovery_records)
         for variant, expected in want.items():
             own = [i for i, r in enumerate(records)
                    if r["event_type"] == "mio.local.request" and r.get("digest") == digest[variant]]
@@ -611,6 +618,12 @@ def check(result: dict, *, clean: dict) -> None:
         assert verified(result["records_before"]) == 1, where
         assert verified(fault_records) == (1 if (case == "fsync" and n == 2) else 0), (where, fault_records)
         assert verified(recovery_records) == 1, (where, recovery_records)
+        # What a late record or a settlement carries for a send is that send's `completed`.
+        for r in records:
+            if r["event_type"] == "audit.late_record":
+                assert r["late_event"]["event_type"] == "knowledge.context.completed", (where, r)
+            if r["event_type"] == "audit.outcome_settled" and "late_event" in r:
+                assert r["late_event"]["event_type"] == "knowledge.context.completed", (where, r)
         late_verified = [r for r in records if r["event_type"] == "audit.late_record"
                          and r["late_event"].get("outcome") == "verified_advisory"]
         assert len(late_verified) == (1 if (case == "pre" and n == 2) else 0), (where, late_verified)
