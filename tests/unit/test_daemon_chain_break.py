@@ -30,6 +30,9 @@ class FakeLedger:
     def verify(self, **_kwargs):
         pass
 
+    def __iter__(self):
+        return iter(())
+
     def append(self, event):
         FakeLedger.calls.append(event["event_type"])
         if FakeLedger.broken or event["event_type"] in FakeLedger.break_on:

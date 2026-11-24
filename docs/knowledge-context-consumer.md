@@ -205,11 +205,55 @@ unchanged. Success and unclassified failures carry none.
 | `verification` | `unavailable` | A response arrived but failed signature, binding, lifetime or schema checks, or the broker rejected it (not an object, over 48 KiB) |
 | `late` | `timeout` | A verified response arrived after the deadline |
 | `withdrawn` | `unavailable` | The grant marker was missing at admission, or missing or replaced before the answer was adopted; nothing from the peer was adopted |
+| `restart_unconfirmed` | `unknown` | Written by a restarted broker for a `requested` line no result refers to. It does not say whether the request was sent, not sent, or answered |
 
 A missing `reason_code` on a record written before this field existed reads as
 "not recorded"; on a record written after, it reads as "unclassified". Neither
 is inferred. Events never contain exception text, the question or any response
 fragment.
+
+### Requests that left no result after a restart (#472)
+
+A broker that stops between `knowledge.context.requested` and its result cannot
+tell, on the next start, whether the peer was called: the ledger is the same
+whether it stopped just before the call or just after it. It does not resend and
+does not write a result that claims either. It writes one line, once:
+`knowledge.context.completed` with `outcome: "unknown"` and
+`reason_code: "restart_unconfirmed"`. No reader may show that line as "sent",
+"not sent" or "answered".
+
+* A `requested` line of the current form carries `"format": 2`. Every result
+  that follows it (`completed`, the `late_event` inside `audit.late_record` and
+  `audit.outcome_settled`, and the recovery line) carries `requested_sequence`
+  and `requested_hash`, the sequence and hash of that line. Nothing is matched
+  by position. A refusal before any `requested` line carries no reference. When
+  the `requested` write itself had an unknown outcome the refusal waits until
+  the line is settled: it refers to the line when it is `present` and carries no
+  reference when it is `absent`.
+* At start, after taking the writer lock, the broker verifies the whole ledger,
+  reads every reference, and writes one recovery line for each `requested` line
+  of the current form that no reference names. It does not use the in-memory
+  record of the previous process or of `settle`. A stop right after a recovery
+  line adds nothing more at the next start.
+* A `requested` line without `format` is never matched or filled in. Their number
+  is `legacy_unreferenced` in the status (all of them, including those that did
+  finish; it is not a count of lost requests).
+* The writer lock is `context.jsonl.lock` in the state directory, taken before
+  `commissioning` is appended and before the socket is bound. A second broker
+  exits with a message and touches neither the ledger nor the socket.
+* Egress opens only when the ledger verified, `commissioning` is recorded and
+  no recovery is pending. Until then (also after a failed start-up append) the
+  broker serves with egress closed: the observation latch and
+  `knowledge.context.status` work, a technique query is refused as
+  `refused_before_send` after the observation gate and before any peer call,
+  and the broker tries again every two seconds. A chain that does not verify is
+  never completed; the status says `ledger_broken` until a restart.
+
+`knowledge.context.status` (operator group, the SERVICE account and root; no
+arguments) answers `egress` (`open` or `closed`), `reason` (`ledger_broken`,
+`audit_unavailable` or none), `audit` (`ok`, `owed`, `broken`), `unresolved`,
+`legacy_unreferenced`, `recovered` (lines written by this process) and
+`observation` (`open` or `latched`).
 
 ### The explainer's request: `mio.context.observe` and `mio.contextobs.observe`
 
