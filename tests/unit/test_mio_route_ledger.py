@@ -882,3 +882,28 @@ def test_boundary_keeps_the_legacy_record_across_retention(state):
     assert boundary["legacy"]["sequence"] == 1
     assert verify_archive(route.directory) == head
     route.verify()
+
+
+def test_a_line_found_after_a_failed_sync_is_spent_from_the_budget(state, monkeypatch):
+    """#467: the line is in the segment, so its bytes count against its owner's share."""
+    import errno
+    import os
+    clock = Clock()
+    route = ledger(state, clock)
+    route.owner = "uid:1001"
+    route.append({"event_type": "a"})
+    spent = route.usage["uid:1001"]
+    monkeypatch.setattr(os, "fsync", lambda fd: (_ for _ in ()).throw(OSError(errno.EIO, "x")))
+    with pytest.raises(AuditUnavailable):
+        route.append({"event_type": "b"})
+    monkeypatch.undo()
+    assert route.usage["uid:1001"] > spent
+    route.guard.settle_owed()
+    from azazel_nexus.route_ledger import RouteChain
+    chain = RouteChain(route.directory)
+    chain.verify()
+    # The settlement record is charged to the control reserve, not to the owner.
+    assert route.usage["uid:1001"] == sum(len(json.dumps(
+        {"sequence": e.sequence, "previous_hash": e.previous_hash, "event_hash": e.event_hash,
+         "event": e.event}, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()) + 1
+        for e in chain if e.event["event_type"] in {"a", "b"})

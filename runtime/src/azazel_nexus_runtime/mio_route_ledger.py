@@ -453,8 +453,14 @@ class RouteLedger(DailySegments):
                 raise broken from failure
             except (OSError, AuditUnavailable):
                 landed = False
-            if landed and self.on_written is not None:
-                self.on_written(event)
+            if landed:
+                # The line is in the segment, so it is spent from the budget
+                # (#467), as the line of a write that was reported would be.
+                self.usage[key] += line_bytes(AuditEntry(
+                    sequence=expected.sequence, previous_hash=expected.previous_hash,
+                    event_hash=expected.recomputed(), event=dict(event)))
+                if self.on_written is not None:
+                    self.on_written(event)
             raise
         self.usage[key] += line_bytes(entry)
         if self.on_written is not None:
