@@ -1727,8 +1727,8 @@ is auditd's answer from an existing line (below). What each case allows:
   and recorded again.
 * *Audit forwarding duplicates (known limitation).* incident_explaind
   forwards its audit records to auditd and, when a reply is lost (connection
-  failure, timeout, EOF, a malformed reply, or the refusal `read_deadline`),
-  sends the same record again, up to three more times (four sends in all);
+  failure, timeout, EOF, a malformed reply) or auditd refuses with
+  `read_deadline`, sends the same record again, up to three more times (four sends in all);
   every other refusal, `verb_unavailable` included, is dropped, not resent. auditd answers a
   resend from its existing line, with no new line and no further cost, when
   it matches one of the last 64 records it settled `present` (same writer

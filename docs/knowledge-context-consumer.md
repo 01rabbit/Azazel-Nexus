@@ -357,8 +357,9 @@ Axes of the record (`technique-knowledge/1`): `transport` (`received`,
 `withdrawn`, `unrecorded`; HTTP 422 counts as `failed`), per technique
 `coverage` (`found`, `no_match`, `stale`, `unavailable`) and `useful_content`
 (true exactly for `found`). The pairs in use are received/ok, received/failed
-(validator refusal), received/withdrawn (verified, not adopted because the grant
-marker changed), received/unrecorded (verified, not adopted because the broker
+(validator refusal), received/withdrawn (verified, not adopted: the grant marker changed, or the
+check at adoption failed, for example on expiry or clock health -- this value
+alone does not tell whether the grant was withdrawn), received/unrecorded (verified, not adopted because the broker
 could not record its completion: its audit chain broke, #458, or the record
 could not be written, #467 -- the send happened once and the daemon does not
 repeat it; the same frame asked again after the record is settled is a new
