@@ -552,3 +552,31 @@ def test_a_carried_line_in_doubt_while_settling_is_its_own_debt_and_the_record_i
     flaky.ledger.verify()
     settled = [e for e in _events(flaky) if e["event_type"] == "audit.outcome_settled"]
     assert {e["settled_sequence"] for e in settled} == {1, 2}
+
+
+def test_one_operation_is_recorded_by_one_thing(tmp_path):
+    """The record forms of the contract: present, absent and performed, nothing written, absent and not performed."""
+    def run(name, mode, performed, lose_line):
+        flaky = Flaky(tmp_path / f"{name}.jsonl")
+        guard = ChainGuard(flaky.append, flaky.settle)
+        flaky.mode = mode
+        with pytest.raises(AuditUnavailable):
+            guard.append({"event_type": "op"}, performed=performed)
+        if lose_line:
+            flaky.ledger.path.write_text("")
+        flaky.mode = None
+        assert guard.settle_owed() and guard.state == "ok"
+        flaky.ledger.verify()
+        return _events(flaky)
+
+    present = run("present", "sync", True, False)
+    assert [e["event_type"] for e in present] == ["op", "audit.outcome_settled"]
+    assert present[1]["outcome"] == "present" and "late_event" not in present[1]
+    absent = run("absent", "sync", True, True)
+    assert [e["event_type"] for e in absent] == ["audit.outcome_settled"]
+    assert absent[0]["outcome"] == "absent" and absent[0]["late_event"] == {"event_type": "op"}
+    nothing = run("nothing", "down", True, False)
+    assert [e["event_type"] for e in nothing] == ["audit.late_record"]
+    assert nothing[0]["late_event"] == {"event_type": "op"}
+    not_performed = run("notperf", "sync", False, True)
+    assert not_performed == []

@@ -1597,11 +1597,23 @@ one. The contract is therefore:
   ledger is not appended to, and nothing new is done). Work that narrows
   (entryd's withdrawal, a revocation, a release) is not stopped: it is done, and
   its record is owed.
-* The daemon never redoes an operation or rewrites a line by itself: it settles
-  first, and a performed operation whose line is absent gets one
-  `audit.late_record`.
-* One request leaves one record: its line, its settlement record, or its late
-  record.
+* The daemon does not redo an operation or rewrite a line by itself as part of
+  settling the audit: it settles first, then goes on. (This is about the audit
+  settling only. entryd's retry that closes a grant it could not confirm closed
+  -- `_close_durably`, #468 -- is a separate, existing safety behaviour that
+  narrows; it is not an audit retry and is unchanged.)
+* One operation is recorded by one thing, by what the settling found:
+  * the line is `present`: the line itself is the record. The
+    `audit.outcome_settled` that follows only names it (sequence, hash,
+    `performed`); it is metadata about that line, not a second record of the
+    operation;
+  * the line is `absent` and the operation had been performed: an
+    `audit.outcome_settled` that carries the event as `late_event` (it is the
+    record);
+  * nothing could be written at all (not even a line of unknown outcome) for an
+    operation already performed: one `audit.late_record`;
+  * the line is `absent` and the operation was never performed: no record, and
+    nothing owed.
 * After settling, the same request again is a new request: it is done again and
   recorded once. The reply says what happened, so that the caller can decide
   whether to ask again: `unrecorded` (knowledge-contextd) means the send
@@ -1611,8 +1623,10 @@ one. The contract is therefore:
 * An idempotency key in the frame would close this, and it changes the frame; it
   is proposed as a separate issue and is not done here.
 
-Two best-effort helps, neither of them a guarantee. auditd keeps the lines it
-settled as `present` by caller and by the bytes of the event, and answers a
+Two best-effort helps, neither of them a guarantee. The first is an exception
+to "a resend after settling is a new request", and only auditd has it: auditd
+is the ledger's own writer and its callers retry, so it answers a resend from
+what it already settled. auditd keeps the lines it settled as `present` by caller and by the bytes of the event, and answers a
 resend of that event with the line (sequence, event hash) instead of appending
 it again. The table holds the newest 64 only and lives in the process: a
 restart empties it, and an older entry is dropped first. It does not apply when
