@@ -363,6 +363,18 @@ def test_egress_stays_closed_until_commissioning_and_the_recovery_row_are_writte
 
 
 @pytest.mark.real_process
+def test_egress_stays_closed_while_commissioning_is_not_recorded(ctx):
+    ctx.arm("pre", 2)             # nothing is pending; only `commissioning` fails
+    assert ctx.start()
+    assert ctx.faults() == 1
+    status = ctx.status()
+    assert status["egress"] == "closed" and status["unresolved"] == 0
+    assert status["reason"] == "audit_unavailable" and ctx.calls() == 0
+    assert ctx.wait_status("egress", "open")["egress"] == "open"
+    assert ctx.kinds().count("knowledge.context.commissioning") == 1
+
+
+@pytest.mark.real_process
 def test_the_latch_and_status_work_while_the_ledger_fails(ctx):
     assert ctx.start()
     assert served(ctx.request(0))
