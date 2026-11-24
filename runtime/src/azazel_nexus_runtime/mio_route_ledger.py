@@ -319,8 +319,11 @@ class RouteLedger(DailySegments):
         return iter(self.chain)
 
     def head(self) -> tuple[int, str]:
-        self._ensure()
-        return self.chain.head()
+        try:
+            self._ensure()
+            return self.chain.head()
+        except OSError as exc:
+            raise AuditUnavailable("M.I.O. route ledger could not be read") from exc
 
     def verify(self, visit: Callable[[AuditEntry], None] | None = None) -> tuple[int, str]:
         """Verify the retained chain once; bounded by `RETENTION_BYTES`."""
@@ -353,15 +356,20 @@ class RouteLedger(DailySegments):
         budget.
         """
 
-        self._ensure()
-        path = self._target()
         try:
-            size = path.stat().st_size
-        except FileNotFoundError:
-            size = 0
-        return (size + REQUEST_HEADROOM <= self.segment_bytes
-                and self._fits(self._usage_for(path.name), key or UNATTRIBUTED,
-                               REQUEST_HEADROOM))
+            self._ensure()
+            path = self._target()
+            try:
+                size = path.stat().st_size
+            except FileNotFoundError:
+                size = 0
+            return (size + REQUEST_HEADROOM <= self.segment_bytes
+                    and self._fits(self._usage_for(path.name), key or UNATTRIBUTED,
+                                   REQUEST_HEADROOM))
+        except OSError as exc:
+            # The share is judged before anything is written: a failure of the
+            # chain's own reading is "unavailable", not a crash (#467).
+            raise AuditUnavailable("M.I.O. route ledger could not be read") from exc
 
     def rebuild_usage(self, attribute: Callable[[Mapping[str, Any]], str]) -> None:
         """Recount today's budgets from today's segment (one bounded read).

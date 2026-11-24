@@ -1549,8 +1549,14 @@ stale one.
 **Audit write failures while running (#467).** An I/O fault on a daemon's own
 ledger (`AuditUnavailable`: the file cannot be opened, written, synced or read)
 no longer ends auditd, entryd, locald, referenced, contextobsd or
-knowledge-contextd. A request whose record cannot be written is refused with
-the fixed `VERB_UNAVAILABLE` (`ledger`); a refusal is still sent when its own
+knowledge-contextd. A request whose record cannot be written is answered as
+follows, per daemon: auditd, entryd, locald and referenced refuse it with the
+fixed `VERB_UNAVAILABLE` (`ledger`) (entryd also when the chain cannot be read
+before the append, for example when the retained segments cannot be listed);
+contextobsd writes nothing for a request that succeeds; knowledge-contextd
+answers in-band with a `stage`: `refused_before_send` when the record before the
+send failed (nothing was sent), `unrecorded` when the send happened and its
+record failed (the answer is not used). A refusal is still sent when its own
 record cannot be written (it is counted as unrecorded); diagnostics keep
 answering: auditd's `audit.verify` (with `unavailable: true` when the ledger
 cannot be read), entryd's `mio.remote.opt_in.status` (an `audit` key, only

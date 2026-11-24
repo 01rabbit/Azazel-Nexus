@@ -1025,3 +1025,31 @@ def test_a_retention_read_failure_after_the_settlement_record_is_not_written_twi
     kinds = [e.event["event_type"] for e in RouteChain(route.directory)]
     assert kinds == ["a", "b", "audit.outcome_settled"], kinds       # one settlement record
     RouteChain(route.directory).verify()
+
+
+def test_entryd_refuses_with_the_fixed_reason_when_the_share_cannot_be_judged(service, monkeypatch):
+    """B: the listing and the boundary are read before the append; their failure is a fixed refusal."""
+    import errno
+    from pathlib import Path
+    svc, clock = service
+    svc.handle(route_request(1001))
+    route = svc.router.ledger
+    _fail_listing(monkeypatch, route.directory)
+    with pytest.raises(RequestRefused) as refused:
+        svc.handle(route_request(1001))
+    assert refused.value.detail == "ledger"
+    monkeypatch.undo()
+    (route.directory / BOUNDARY).write_text(json.dumps({
+        "sequence": 0, "hash": "0" * 64, "oldest": None, "retired": "2000-01-01.jsonl"}))
+    real = Path.read_bytes
+
+    def read_bytes(self):
+        if self.name == BOUNDARY:
+            raise OSError(errno.EIO, "injected boundary read failure")
+        return real(self)
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    with pytest.raises(RequestRefused) as refused:
+        svc.handle(route_request(1001))
+    assert refused.value.detail == "ledger"
+    monkeypatch.undo()
+    assert svc.handle(route_request(1001))["route"]            # alive, and served again
