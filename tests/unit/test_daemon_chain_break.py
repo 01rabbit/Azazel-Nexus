@@ -409,3 +409,19 @@ def test_locald_does_not_start_new_work_when_the_revocation_record_made_a_debt(m
     FakeLedger.unavailable_on = set()
     assert served["handler"](object()) == {"outcome": "assessed"}     # settled, then served
     assert len(started) == 1
+
+
+def test_knowledge_contextd_keeps_the_peers_stage_when_its_failure_cannot_be_recorded_and_records_it_once(
+        monkeypatch, tmp_path):
+    """The send happened once and failed; the record of the failure is owed: one late record, stage unchanged."""
+    served, sent, request = _broker(monkeypatch, tmp_path)           # the client raises: stage `transport`
+    FakeLedger.unavailable_on = {"knowledge.context.completed"}
+    reply = served["handler"](request())
+    assert len(sent) == 1
+    assert reply == {"refusal": "unavailable", "stage": "transport"}   # not rewritten to `unrecorded`
+    assert FakeLedger.calls.count("knowledge.context.requested") == 1
+    FakeLedger.unavailable_on = set()
+    served["handler"](request())                                      # a new request: settles first
+    served["handler"](request())
+    assert FakeLedger.calls.count("audit.late_record") == 1           # recorded once, late
+    assert len(sent) == 3                                             # the later two are their own sends

@@ -1555,8 +1555,14 @@ fixed `VERB_UNAVAILABLE` (`ledger`) (entryd also when the chain cannot be read
 before the append, for example when the retained segments cannot be listed);
 contextobsd writes nothing for a request that succeeds; knowledge-contextd
 answers in-band with a `stage`: `refused_before_send` when the record before the
-send failed (nothing was sent), `unrecorded` when the send happened and its
-record failed (the answer is not used). A refusal is still sent when its own
+send failed (nothing was sent); `unrecorded` only when the send happened, its
+answer was verified, and the `completed` record of that answer could not be
+written (the answer is not used); and, when the send happened and then the peer
+or the client failed and the record of that failure could not be written
+either, the failure's own stage (`transport` and the like) unchanged, with the
+record owed and written once, late. In every one of these the send happened at
+most once and the request leaves one record. `ledger` is the detail the daemon
+keeps for its own refusals; on the socket the caller sees only `verb_unavailable`. A refusal is still sent when its own
 record cannot be written (it is counted as unrecorded); diagnostics keep
 answering: auditd's `audit.verify` (with `unavailable: true` when the ledger
 cannot be read), entryd's `mio.remote.opt_in.status` (an `audit` key, only
@@ -1623,7 +1629,7 @@ one. The contract is therefore:
 * After settling, the same request again is a new request: it is done again and
   recorded once. The reply says what happened, so that the caller can decide
   whether to ask again: `unrecorded` (knowledge-contextd) means the send
-  happened; `ledger` for a withdrawal means that the withdrawal may be in force
+  happened; the refusal of a withdrawal (`verb_unavailable` on the socket, `ledger` inside the daemon) means that the withdrawal may be in force
   (read `mio.remote.opt_in.status`). Such a result is not returned as if it were
   recorded: locald and referenced return no result.
 * An idempotency key in the frame would close this, and it changes the frame; it
