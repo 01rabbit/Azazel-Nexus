@@ -1545,6 +1545,147 @@ that auditd found it broken while running (#458); either way appends are
 refused until a restart whose full verification succeeds. `audit: unknown` means no readable snapshot (auditd not
 running, or install.sh not re-run after the upgrade that added the leaf) or a
 stale one.
+
+**Audit write failures while running (#467).** An I/O fault on a daemon's own
+ledger (`AuditUnavailable`: the file cannot be opened, written, synced or read)
+no longer ends auditd, entryd, locald, referenced, contextobsd or
+knowledge-contextd. A request whose record cannot be written is answered as
+follows, per daemon: auditd, entryd, locald and referenced refuse it with the
+fixed `VERB_UNAVAILABLE` (`ledger`) (entryd also when the chain cannot be read
+before the append, for example when the retained segments cannot be listed);
+contextobsd writes nothing for a request that succeeds; knowledge-contextd
+answers in-band with a `stage`: `refused_before_send` when the record before the
+send failed (nothing was sent); `unrecorded` only when the send happened, its
+answer was verified, and the `completed` record of that answer could not be
+written (the answer is not used); and, when the send happened and then the peer
+or the client failed and the record of that failure could not be written
+either, the failure's own stage (`transport` and the like) unchanged, with the
+record owed and written once, late. Two records are told apart here: the
+attempt (`requested`), which comes before the send, and the content of the
+completion (`completed`, the one that contract (c) counts once). If `requested`
+cannot be written nothing is sent; the daemon then tries to record that refusal
+as a `completed` record with `reason_code: refused_before_send` (`stage` is a
+field of the reply, not of the record) -- a record of the refusal, not of a
+send. Like any record it may not be written, or its outcome may be unknown
+and settled later like any other line. If the
+send happened, its completion content is on the chain at most once, and
+exactly once when the ledger recovers: as its own line, as one
+`audit.late_record`, or as the `late_event` of one `audit.outcome_settled`. If
+the chain is found broken instead (#458): found while writing the completion of
+a verified answer, the reply is `unrecorded` and that completion is not
+recorded; found while writing a peer or client failure, the reply keeps that
+stage (`transport` and the like) and the failure is not recorded; found only
+while settling a completion line that turned out `present`, that line is the
+record. In every case nothing more is sent until a restart. The send itself happened at most once. `ledger` is the detail the daemon
+keeps for its own refusals; on the socket the caller sees only `verb_unavailable`. A refusal is still sent when its own
+record cannot be written (it is counted as unrecorded); diagnostics keep
+answering: auditd's `audit.verify` (with `unavailable: true` when the ledger
+cannot be read), entryd's `mio.remote.opt_in.status` (an `audit` key, only
+while a record is owed: an outcome still unknown, or an operation done whose
+record is not yet written; while an opt-in grant is `unsettled` (#468) that
+reply keeps its own shape, without the key), locald's `mio.local.admission`
+(`admitted: false` while a record is owed; on a chain found broken, the fixed
+refusal instead, as before). referenced, contextobsd and knowledge-contextd have no
+diagnostic verb. Three cases are told apart:
+
+* Nothing was written (the open or the write failed, a partial line was cut
+  back). The request is refused. If nothing had been done yet, the next request
+  writes normally. If the operation had already been done (a send, a
+  withdrawal, an inference whose record comes after it), its record is owed:
+  it is written once as `audit.late_record` before anything else that needs a
+  record. The daemon tries at each chance it has (a request, a diagnostic,
+  entryd's tick), and a request that needs a record is refused while it cannot
+  be written. Narrowing never waits on a record: entryd's withdrawal and
+  locald's revocation of an admission and release of resources are done, and
+  their own record is owed in turn; a withdrawal's reply is the fixed refusal
+  while that record cannot be written.
+* A complete line was written but could not be synced, or a partial line could
+  not be cut back, or (entryd's route ledger) the line was written and synced
+  but the new day's directory sync or the retention after it failed: the
+  outcome is *unknown*. Nothing that needs a record goes on
+  -- no new append, no retry of the same line, no repeated operation -- until
+  the daemon has settled it: it reads its ledger again and compares the
+  sequence, previous hash and recomputed event hash with the line it wrote. The
+  line is `present` (it is the last record and the file ends at a line
+  boundary) or `absent` (the last record is the one before it); anything else
+  is a broken chain, as is a last line without its newline. A tail that merely
+  moved on is never taken as this daemon's line. For a ledger split by day
+  (auditd, entryd's route ledger) the head before the file is derived again the
+  way an append derives it, and a line that starts a file must follow it: a lost
+  predecessor is a break, and a head that cannot be derived (a segment at or
+  before entryd's retention boundary, an unreadable file) leaves the outcome
+  unknown. A break found while settling is the #458 state: no settling and no
+  append until a restart verifies it (diagnostics such as auditd's
+  `audit.verify` still read it).
+  When the line is `present`, or `absent` and its operation was already
+  performed, the daemon appends one record: `audit.outcome_settled` (the
+  sequence, the event hash, the outcome and whether the operation had been
+  performed; an `absent` one carries the event as `late_event`). A line that is
+  `absent` for an operation that was never performed owes nothing, and no
+  record is written. A settlement record that was written and synced is
+  complete; it is read back as the head only when its own outcome is unknown.
+  Only then are records served again.
+* The fault persists and the ledger cannot be read: the outcome stays unknown,
+  requests that need a record are refused, diagnostics say so. If the ledger
+  cannot be read at start (`AuditUnavailable`), the daemon does not start; that
+  is the supervisor's to retry, and no diagnostic socket is up.
+
+**What the daemons do, and what they cannot.** A request carries no
+identifier that says "this is the same request again", so a request that
+arrives after the ledger has been settled cannot be told from a new, legitimate
+one. The contract is therefore:
+
+* While an outcome is unknown, a request that needs a record is stopped (the
+  ledger is not appended to, and nothing new is done). Work that narrows
+  (entryd's withdrawal, a revocation, a release) is not stopped: it is done, and
+  its record is owed.
+* The daemon does not redo an operation or rewrite a line by itself as part of
+  settling the audit: it settles first, then goes on. (This is about the audit
+  settling only. entryd's retry that closes a grant it could not confirm closed
+  -- `_close_durably`, #468 -- is a separate, existing safety behaviour that
+  narrows; it is not an audit retry and is unchanged.)
+* One operation is recorded by one thing, by what the settling found:
+  * the line is `present`: the line itself is the record. The
+    `audit.outcome_settled` that follows only names it (sequence, hash,
+    `performed`); it is metadata about that line, not a second record of the
+    operation;
+  * the line is `absent` and the operation had been performed: an
+    `audit.outcome_settled` that carries the event as `late_event` (it is the
+    record);
+  * nothing could be written at all (not even a line of unknown outcome) for an
+    operation already performed: one `audit.late_record`;
+  * the line is `absent` and the operation was never performed: no record, and
+    nothing owed.
+* After settling, the same request again is a new request: it is done again and
+  recorded once. The reply says what happened, so that the caller can decide
+  whether to ask again: `unrecorded` (knowledge-contextd) means the send
+  happened; the refusal of a withdrawal (`verb_unavailable` on the socket, `ledger` inside the daemon) means that the withdrawal may be in force
+  (read `mio.remote.opt_in.status`). Such a result is not returned as if it were
+  recorded: locald and referenced return no result.
+* An idempotency key in the frame would close this, and it changes the frame; it
+  is proposed as a separate issue and is not done here.
+
+Two best-effort helps, neither of them a guarantee. The first is an exception
+to "a resend after settling is a new request", and only auditd has it: auditd
+is the ledger's own writer and its callers retry, so it answers a resend from
+what it already settled. auditd keeps the lines it settled as `present` by caller and by the bytes of the event, and answers a
+resend of that event with the line (sequence, event hash) instead of appending
+it again. The table holds the newest 64 only and lives in the process: a
+restart empties it, and an older entry is dropped first. It does not apply when
+the `occurred_at` check refuses the resend first (a new day's segment, or past
+the clock tolerance). That is the same standing as the existing "lost
+acknowledgements can duplicate events". A playbook selection is recorded before
+it is used: if its line is of unknown outcome it is held aside, adopted without
+a second line when settling finds it, and recorded again when it is absent.
+
+What the settlement proves, and what not: the line was found, by its
+sequence and hash, in the file it was written to, and its record was written
+and synced. That a line is visible after a failed sync does not prove it
+reached the disk (on Linux a later fsync need not report the lost pages). If a
+power loss then drops the settled line but keeps later ones, the next start's
+full verification finds the gap and refuses (`AuditChainBroken`) when it can
+read the ledger: a detected break, not a silent loss. Not tested on real power
+loss.
 Queue overflow, exhausted retries and clean-shutdown abandonment count as
 audit drops (`audit_forward_dropped`). Crashes can lose
 queued work; lost acknowledgements can duplicate events. Explanations and

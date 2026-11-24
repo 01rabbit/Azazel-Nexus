@@ -38,6 +38,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from azazel_nexus.audit import AuditUnavailable
+
 from .principal import (
     Principal,
     SocketMisconfigured,
@@ -194,6 +196,8 @@ class SocketServer:
         self.policy = policy
         self.audit = audit
         self.deadline = deadline
+        #: Refusal records the ledger could not take (never sent to a caller).
+        self.audit_unavailable = 0
 
     def serve_connection(
         self, connection, handler: Callable[[Request], Any]
@@ -217,6 +221,14 @@ class SocketServer:
         try:
             result = handler(request)
         except RequestRefused as refused:
+            self._record_refusal(refused, principal, raw, verb=request.verb.name)
+            self._reply_refusal(connection, refused)
+            return
+        except AuditUnavailable:
+            # A net under the daemons' own handling (#467): a ledger that
+            # cannot take a record is a fixed refusal, never the end of the
+            # process. Nothing is claimed about the request.
+            refused = RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger")
             self._record_refusal(refused, principal, raw, verb=request.verb.name)
             self._reply_refusal(connection, refused)
             return
@@ -287,7 +299,11 @@ class SocketServer:
             event["argument"] = refused.detail
         if principal is not None:
             event.update(principal.as_audit_fields())
-        self.audit(event)
+        try:
+            self.audit(event)
+        except AuditUnavailable:
+            # The refusal is already decided and must still be sent.
+            self.audit_unavailable += 1
 
     @staticmethod
     def _reply_refusal(connection, refused: RequestRefused) -> None:

@@ -129,8 +129,10 @@ def test_a_withdrawal_is_committed_even_when_the_ledger_then_fails(service, monk
         raise AuditUnavailable("ledger down")
 
     monkeypatch.setattr(service.router, "_record", fail)
-    with pytest.raises(AuditUnavailable):
+    # #467: the caller gets the fixed refusal (the withdrawal is in force).
+    with pytest.raises(RequestRefused) as refused:
         verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="incident_response")
+    assert refused.value.detail == "ledger"
     assert service.consent.reading().status == "withdrawn"
 
 
@@ -602,3 +604,77 @@ def test_a_set_after_an_unconfirmed_grant_starts_from_the_empty_set(service, mon
     reply = verb(service, entry.OPT_IN_SET_VERB, prerequisite=PREREQUISITES[0].value)
     assert reply["status"] == "incomplete"
     assert reply["granted"] == [PREREQUISITES[0].value]
+
+
+# -- #467 (contract 5.0): a withdrawal is made whatever the ledger does, and recorded once ----
+
+def _ledger_down(service, monkeypatch):
+    from azazel_nexus.audit import AuditUnavailable
+
+    def down(event, **kw):
+        raise AuditUnavailable("down")
+    monkeypatch.setattr(service.router.ledger, "_append_once", down)
+
+
+def _withdrawn(service):
+    events = recorded(service)
+    lines = [e for e in events if e["event_type"] == "mio.remote.opt_in.withdrawn"]
+    late = [e for e in events if e["event_type"] == "audit.late_record"
+            and e["late_event"]["event_type"] == "mio.remote.opt_in.withdrawn"]
+    return lines, late
+
+
+def test_a_withdrawal_while_the_ledger_is_down_is_committed_and_owes_one_late_record(service, monkeypatch):
+    grant(service)
+    real = service.router.ledger._append_once
+    _ledger_down(service, monkeypatch)
+    with pytest.raises(RequestRefused) as refused:
+        verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="incident_response")
+    assert refused.value.detail == "ledger"
+    first = service.consent.reading()
+    assert first.status == "withdrawn"
+    # Still down: another withdrawal narrows again (it is never held back), one debt each.
+    with pytest.raises(RequestRefused):
+        verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="incident_response")
+    assert service.consent.reading().generation == first.generation + 1
+    monkeypatch.setattr(service.router.ledger, "_append_once", real)
+    assert service.guard.settle_owed()
+    lines, late = _withdrawn(service)
+    assert len(lines) == 0 and len(late) == 2          # one late record per request
+
+
+def test_a_resent_withdrawal_after_settling_is_a_new_request_recorded_once(service, monkeypatch):
+    """5.0 (d): after settling, the same request again is made again and recorded once."""
+    grant(service)
+    real = service.router.ledger._append_once
+    _ledger_down(service, monkeypatch)
+    with pytest.raises(RequestRefused):
+        verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="incident_response")
+    monkeypatch.setattr(service.router.ledger, "_append_once", real)
+    assert service.guard.settle_owed()
+    before = service.consent.reading().generation
+    verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="incident_response")
+    assert service.consent.reading().generation == before + 1
+    lines, late = _withdrawn(service)
+    assert len(lines) == 1 and len(late) == 1
+    assert {e["generation"] for e in lines} != {e["late_event"]["generation"] for e in late}
+
+
+def test_a_withdrawal_by_another_operator_is_never_answered_from_a_earlier_one(service, monkeypatch):
+    grant(service)
+    _ledger_down(service, monkeypatch)
+    with pytest.raises(RequestRefused):
+        verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="incident_response")
+    other = SimpleNamespace(uid=4242, gid=4242, pid=1, classes=OPERATOR.classes)
+    generation = service.consent.reading().generation
+    with pytest.raises(RequestRefused):
+        verb(service, entry.OPT_IN_WITHDRAW_VERB, principal=other, reason="operator_request")
+    # It was made as its own request (a new generation, its own operator and reason).
+    assert service.consent.reading().generation == generation + 1
+
+
+def test_the_status_read_answers_before_the_route_share_is_judged(service, monkeypatch):
+    grant(service)
+    monkeypatch.setattr(service.router.ledger, "room", lambda key: False, raising=False)
+    reply = verb(service, entry.OPT_IN_STATUS_VERB)
+    assert reply["generation"] >= 1 and "granted" in reply

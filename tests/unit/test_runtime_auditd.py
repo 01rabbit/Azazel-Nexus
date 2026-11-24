@@ -166,8 +166,11 @@ def test_restart_refuses_backward_day_without_mutating_segments_or_head(tmp_path
     before_head = restarted.ledger.head()
     assert (restarted.head_sequence, restarted.head_hash) == before_head
 
-    with pytest.raises(AuditUnavailable, match="precedes the latest audit segment"):
+    # #467: the ledger refuses an append that would reorder the chain, and the
+    # service turns that into the fixed refusal instead of ending the process.
+    with pytest.raises(RequestRefused) as refused:
         _append(restarted, day="2026-09-20")
+    assert refused.value.detail == "ledger"
 
     assert {
         segment.name: segment.read_bytes()

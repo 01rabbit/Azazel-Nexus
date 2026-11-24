@@ -301,6 +301,8 @@ class MioEntryService:
         # once per owner, never on the status/profile read path. Verification
         # and the scan are one pass over the retained segments only, so start
         # time is bounded by retention, not by the node's age.
+        if getattr(self.router.ledger, "guard", None) is not None:
+            self.router.ledger.guard.owner_broken = lambda: self.ledger_broken
         self.router.ledger.verify(self._restore)
         if hasattr(self.router.ledger, "on_new_segment"):
             self.router.ledger.on_new_segment = self._carry
@@ -593,12 +595,39 @@ class MioEntryService:
                         and verb_name != CONTEXT_OBSERVE_VERB.name)
         if self.ledger_broken and needs_record:
             raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger")
+        guard = self.guard
+        if guard is not None and guard.owed:
+            # A write's outcome is unknown (#467): look it up before anything
+            # that needs a record. A withdrawal and the status read go on (the
+            # status read looks the line up itself).
+            settles = verb_name not in (OPT_IN_WITHDRAW_VERB.name, OPT_IN_STATUS_VERB.name,
+                                        CONTEXT_OBSERVE_VERB.name)
+            if settles and not self._settle_audit():
+                raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger")
         try:
             return self._handle_request(request)
         except AuditChainBroken as exc:
             self.ledger_broken = True
             self.ledger_break_reason = str(exc)
             raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger") from None
+        except AuditUnavailable:
+            # Not recorded, so not served; whatever was already looked up is
+            # not adopted. The process goes on (#467).
+            raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger") from None
+
+    @property
+    def guard(self):
+        """The route ledger's debt-keeping guard (None for a ledger without one)."""
+        return getattr(self.router.ledger, "guard", None)
+
+    def _settle_audit(self) -> bool:
+        """Settle what the ledger owes; a break found on the way is the daemon's break."""
+        guard = self.guard
+        settled = guard.settle_owed()
+        if guard.last_break is not None and not self.ledger_broken:
+            self.ledger_broken = True
+            self.ledger_break_reason = guard.last_break
+        return settled
 
     def _handle_request(self, request) -> dict:
         # Before anything is written: a refused request leaves only the
@@ -616,7 +645,11 @@ class MioEntryService:
         # keep a grant in force, so it is skipped for that verb only.
         withdrawing = (getattr(getattr(request, "verb", None), "name", None)
                        == OPT_IN_WITHDRAW_VERB.name)
-        if room is not None and not withdrawing and not room(key):
+        # The status read is a diagnostic: it answers before the share is judged,
+        # so a spent share or a damaged boundary never hides the state (#467).
+        diagnostic = (getattr(getattr(request, "verb", None), "name", None)
+                      == OPT_IN_STATUS_VERB.name)
+        if room is not None and not withdrawing and not diagnostic and not room(key):
             # This caller's share of today's segment is spent; no other
             # caller's share is touched.
             self.rate_limited["route_budget"] += 1
@@ -725,9 +758,25 @@ class MioEntryService:
         # ledger is not touched, and the caller still gets the fixed refusal.
         if self.ledger_broken:
             raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger")
-        self._mark(key)
-        self.router._record({**record.opt_in().withdrawn.as_event(),
-                             "generation": record.generation, "drained": drained})
+        # The withdrawal stands whatever happens to its record. A record that
+        # cannot be written is a debt of an act already done, and the caller
+        # gets the fixed refusal (the withdrawal itself is in force).
+        # The marker only opens the request's own share of the budget; it is not
+        # the withdrawal, so a marker that cannot be written owes nothing: the
+        # withdrawal's record is the one line (or late record) per request.
+        failed = False
+        try:
+            self._mark(key)
+        except AuditUnavailable:
+            failed = True
+        try:
+            self.router._record({**record.opt_in().withdrawn.as_event(),
+                                 "generation": record.generation, "drained": drained},
+                                performed=True)
+        except AuditUnavailable:
+            failed = True
+        if failed:
+            raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger")
         return {**self._reading_reply(self.consent.reading()), "drained": drained}
 
     def _status_reply(self) -> dict:
@@ -742,7 +791,13 @@ class MioEntryService:
         """
         reading = self.consent.reading()
         if self._unsettled is None:
-            return self._reading_reply(reading)
+            reply = self._reading_reply(reading)
+            if self.guard is not None and self.guard.owed:
+                # Only while a write's outcome is unknown; nothing of the event.
+                self._settle_audit()
+                if self.guard.owed:
+                    reply["audit"] = self.guard.status()
+            return reply
         return {"status": "unsettled", "generation": reading.generation,
                 "granted": [], "missing": [p.value for p in PREREQUISITES],
                 "may_be_in_force_generation": self._unsettled[0]}
@@ -1041,9 +1096,10 @@ class MioEntryService:
         }
         return reply
 
-    def _mark(self, key: str) -> None:
+    def _mark(self, key: str, *, performed: bool = False) -> None:
         if hasattr(self.router.ledger, "rebuild_usage"):
-            self.router._record({"event_type": REQUEST_MARKER, "caller": key})
+            self.router._record({"event_type": REQUEST_MARKER, "caller": key},
+                                performed=performed)
 
     def _handle(self, request, principal, key) -> dict:
         if request.arguments["deadline_ms"] == 0:
@@ -1286,12 +1342,19 @@ def main(
         if stop():
             return True
         service.settle_opt_in()
+        if service.guard is not None and service.guard.owed:
+            service._settle_audit()
         if not service.ledger_broken:
             try:
                 service.reconcile_capability()
             except AuditChainBroken as exc:
                 service.ledger_broken = True
                 service.ledger_break_reason = str(exc)
+            except (AuditUnavailable, OSError):
+                # Not an end of the process (#467). The capability reading
+                # stays as it was, marked uncertain where it must be, and the
+                # next tick tries again.
+                pass
         # A recorded change reaches the snapshot at once, not an interval later.
         if recorded() != written[0]:
             written[0] = recorded()

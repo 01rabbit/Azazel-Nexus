@@ -41,6 +41,7 @@ from azazel_nexus.audit import (
     AuditChainBroken,
     AuditEntry,
     AuditLedger,
+    AuditOutcomeUnknown,
     AuditUnavailable,
     canonical_event_bytes,
 )
@@ -142,6 +143,36 @@ class RouteLedger(DailySegments):
         #: memory of what it recorded follows the ledger exactly (#227).
         self.on_written: Callable[[Mapping[str, Any]], None] | None = None
         self._prepared = False
+        from .chain_guard import ChainGuard, settle_segmented
+
+        self._reserved_now = False
+        #: Debts of unknown outcomes, and the settling of them (#467).
+        self.guard = ChainGuard(
+            lambda event: self._append_once(event, reserved=self._reserved_now),
+            settle_segmented(self._prior_head),
+            append_internal=lambda event: self._append_once(event, reserved=True),
+            sticky_break=False)
+
+    def _prior_head(self, path: Path) -> tuple[int, str]:
+        """The head before `path`, as an append derives it from the retained chain.
+
+        A segment at or before the retention boundary cannot be placed, and
+        that is an unknown outcome, never a presence.
+        """
+        try:
+            boundary = read_boundary(self.directory)
+            if boundary is not None and path.name <= boundary["retired"]:
+                raise AuditUnavailable("M.I.O. route segment is outside the retained chain")
+            earlier = [s for s in self.chain.segments(boundary) if s.name < path.name]
+        except OSError as exc:
+            # A boundary or a listing that cannot be read places nothing:
+            # unknown, not a crash.
+            raise AuditUnavailable("M.I.O. route chain cannot be read") from exc
+        for segment in reversed(earlier):
+            head = AuditLedger(segment).head()
+            if head != (0, GENESIS_HASH):
+                return head
+        return self.chain.anchor(boundary)
 
     # -- preparation -----------------------------------------------------
 
@@ -288,14 +319,17 @@ class RouteLedger(DailySegments):
         return iter(self.chain)
 
     def head(self) -> tuple[int, str]:
-        self._ensure()
-        return self.chain.head()
+        try:
+            self._ensure()
+            return self.chain.head()
+        except OSError as exc:
+            raise AuditUnavailable("M.I.O. route ledger could not be read") from exc
 
     def verify(self, visit: Callable[[AuditEntry], None] | None = None) -> tuple[int, str]:
         """Verify the retained chain once; bounded by `RETENTION_BYTES`."""
 
         self._ensure()
-        return self.chain.verify(visit)
+        return self.chain.verify(visit, require_terminated=True)
 
     def _usage_for(self, name: str) -> Counter:
         return self.usage if self.usage_segment == name else Counter()
@@ -322,15 +356,20 @@ class RouteLedger(DailySegments):
         budget.
         """
 
-        self._ensure()
-        path = self._target()
         try:
-            size = path.stat().st_size
-        except FileNotFoundError:
-            size = 0
-        return (size + REQUEST_HEADROOM <= self.segment_bytes
-                and self._fits(self._usage_for(path.name), key or UNATTRIBUTED,
-                               REQUEST_HEADROOM))
+            self._ensure()
+            path = self._target()
+            try:
+                size = path.stat().st_size
+            except FileNotFoundError:
+                size = 0
+            return (size + REQUEST_HEADROOM <= self.segment_bytes
+                    and self._fits(self._usage_for(path.name), key or UNATTRIBUTED,
+                                   REQUEST_HEADROOM))
+        except OSError as exc:
+            # The share is judged before anything is written: a failure of the
+            # chain's own reading is "unavailable", not a crash (#467).
+            raise AuditUnavailable("M.I.O. route ledger could not be read") from exc
 
     def rebuild_usage(self, attribute: Callable[[Mapping[str, Any]], str]) -> None:
         """Recount today's budgets from today's segment (one bounded read).
@@ -348,7 +387,31 @@ class RouteLedger(DailySegments):
 
     # -- writing ---------------------------------------------------------
 
-    def append(self, event: Mapping[str, Any], *, reserved: bool = False) -> AuditEntry:
+    def append(self, event: Mapping[str, Any], *, reserved: bool = False,
+               performed: bool = False) -> AuditEntry:
+        """`_append_once` under the daemon's ledger guard (#467).
+
+        A line whose outcome is unknown is settled by its sequence and hash,
+        in its own segment, before anything else is appended; `performed`
+        says the operation this record belongs to was already done.
+        """
+
+        self._reserved_now = reserved
+        return self.guard.append(dict(event), performed=performed)
+
+    def _append_once(self, event: Mapping[str, Any], *, reserved: bool = False) -> AuditEntry:
+        """`_append_inner`, with an I/O failure of the chain's own reading as `AuditUnavailable`.
+
+        Listing the segments and reading the boundary again can fail with a raw
+        `OSError`; nothing was written then, and the ledger is unavailable
+        (#467), not a crash of whoever called.
+        """
+        try:
+            return self._append_inner(event, reserved=reserved)
+        except OSError as exc:
+            raise AuditUnavailable("M.I.O. route ledger could not be read") from exc
+
+    def _append_inner(self, event: Mapping[str, Any], *, reserved: bool = False) -> AuditEntry:
         """Add one entry at the chain head, or add nothing and raise.
 
         `reserved` charges the record to `CONTROL_RESERVE` (start and
@@ -365,16 +428,27 @@ class RouteLedger(DailySegments):
         except FileNotFoundError:
             opening = True
         head = self.chain.head()
+        first_in_file = opening
         if opening and self.on_new_segment is not None:
             for carried in self.on_new_segment():
                 written = self._write(path, carried, head, reserved=True)
                 head = (written.sequence, written.event_hash)
+                first_in_file = False
         entry = self._write(path, event, head, reserved=reserved)
         self.current = path
         try:
             self.retain()
-        except OSError as exc:
-            raise AuditUnavailable("M.I.O. route retention failed") from exc
+        except (OSError, AuditUnavailable) as exc:
+            # The line is in the segment; only what follows it failed (a read of
+            # a retained segment fails as `AuditUnavailable`, without the entry).
+            # What the file shows without the line: an empty segment when the
+            # line opened it (its predecessor is in the previous segment, which
+            # the segmented settling checks), else the line before it here.
+            absent = ((0, GENESIS_HASH) if first_in_file
+                      else (entry.sequence - 1, entry.previous_hash))
+            raise AuditOutcomeUnknown(
+                "M.I.O. route retention failed", entry=entry, path=path,
+                absent_head=absent) from exc
         return entry
 
     def _write(self, path: Path, event: Mapping[str, Any], head: tuple[int, str],
@@ -413,8 +487,14 @@ class RouteLedger(DailySegments):
                 raise broken from failure
             except (OSError, AuditUnavailable):
                 landed = False
-            if landed and self.on_written is not None:
-                self.on_written(event)
+            if landed:
+                # The line is in the segment, so it is spent from the budget
+                # (#467), as the line of a write that was reported would be.
+                self.usage[key] += line_bytes(AuditEntry(
+                    sequence=expected.sequence, previous_hash=expected.previous_hash,
+                    event_hash=expected.recomputed(), event=dict(event)))
+                if self.on_written is not None:
+                    self.on_written(event)
             raise
         self.usage[key] += line_bytes(entry)
         if self.on_written is not None:
@@ -423,5 +503,7 @@ class RouteLedger(DailySegments):
             try:
                 fsync_directory(self.directory)
             except OSError as exc:
-                raise AuditUnavailable("M.I.O. route segment not durable") from exc
+                raise AuditOutcomeUnknown(
+                    "M.I.O. route segment not durable", entry=entry, path=path,
+                    absent_head=(0, GENESIS_HASH)) from exc
         return entry

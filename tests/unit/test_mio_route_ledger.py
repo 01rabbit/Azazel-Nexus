@@ -882,3 +882,204 @@ def test_boundary_keeps_the_legacy_record_across_retention(state):
     assert boundary["legacy"]["sequence"] == 1
     assert verify_archive(route.directory) == head
     route.verify()
+
+
+def test_a_line_found_after_a_failed_sync_is_spent_from_the_budget(state, monkeypatch):
+    """#467: the line is in the segment, so its bytes count against its owner's share."""
+    import errno
+    import os
+    clock = Clock()
+    route = ledger(state, clock)
+    route.owner = "uid:1001"
+    route.append({"event_type": "a"})
+    spent = route.usage["uid:1001"]
+    monkeypatch.setattr(os, "fsync", lambda fd: (_ for _ in ()).throw(OSError(errno.EIO, "x")))
+    with pytest.raises(AuditUnavailable):
+        route.append({"event_type": "b"})
+    monkeypatch.undo()
+    assert route.usage["uid:1001"] > spent
+    route.guard.settle_owed()
+    from azazel_nexus.route_ledger import RouteChain
+    chain = RouteChain(route.directory)
+    chain.verify()
+    # The settlement record is charged to the control reserve, not to the owner.
+    assert route.usage["uid:1001"] == sum(len(json.dumps(
+        {"sequence": e.sequence, "previous_hash": e.previous_hash, "event_hash": e.event_hash,
+         "event": e.event}, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()) + 1
+        for e in chain if e.event["event_type"] in {"a", "b"})
+
+
+# -- #467 review 3: a failure of the chain's own reading is "unknown", never a raw OSError ----
+
+def _unknown_line(route, monkeypatch):
+    import errno
+    from azazel_nexus.audit import AuditOutcomeUnknown
+    monkeypatch.setattr(os, "fsync", lambda fd: (_ for _ in ()).throw(OSError(errno.EIO, "x")))
+    try:
+        with pytest.raises(AuditOutcomeUnknown):
+            route.append({"event_type": "b"})
+    finally:
+        monkeypatch.undo()
+
+
+def _fail_listing(monkeypatch, directory):
+    import errno
+    from pathlib import Path
+    real = Path.iterdir
+
+    def iterdir(self):
+        if self == directory:
+            raise PermissionError(errno.EACCES, "injected listing failure")
+        return real(self)
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+
+
+def test_a_listing_failure_while_settling_leaves_the_outcome_unknown_and_recovers(state, monkeypatch):
+    clock = Clock()
+    route = ledger(state, clock)
+    route.append({"event_type": "a"})
+    _unknown_line(route, monkeypatch)
+    assert route.guard.owed
+    _fail_listing(monkeypatch, route.directory)
+    assert route.guard.settle_owed() is False                 # no raw OSError
+    with pytest.raises(AuditUnavailable):
+        route.append({"event_type": "c"})
+    monkeypatch.undo()
+    assert route.guard.settle_owed()
+    kinds = [e.event["event_type"] for e in RouteChain(route.directory)]
+    assert kinds == ["a", "b", "audit.outcome_settled"]
+    RouteChain(route.directory).verify()
+
+
+def test_a_boundary_reread_failure_while_writing_the_settlement_record_stays_a_debt(state, monkeypatch):
+    import errno
+    from pathlib import Path
+    clock = Clock()
+    route = ledger(state, clock)
+    route.append({"event_type": "a"})
+    _unknown_line(route, monkeypatch)
+    # A boundary exists (nothing retired yet that matters); its second read fails.
+    head = route.head()
+    (route.directory / BOUNDARY).write_text(json.dumps({
+        "sequence": 0, "hash": "0" * 64, "oldest": None, "retired": "2000-01-01.jsonl"}))
+    real, reads = Path.read_bytes, {"n": 0}
+
+    def read_bytes(self):
+        if self.name == BOUNDARY:
+            reads["n"] += 1
+            if reads["n"] == 2:
+                raise OSError(errno.EIO, "injected boundary reread failure")
+        return real(self)
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    assert route.guard.settle_owed() is False                 # the record could not be written
+    assert route.guard.owed
+    monkeypatch.undo()
+    assert route.guard.settle_owed()
+    assert [e.event["event_type"] for e in RouteChain(route.directory)][-1] == "audit.outcome_settled"
+    assert head[0] == 2
+
+
+def test_entryd_survives_a_listing_failure_while_owed(service, monkeypatch):
+    svc, clock = service
+    svc.handle(route_request(1001))
+    route = svc.router.ledger
+    import errno
+    from azazel_nexus.audit import AuditOutcomeUnknown
+    monkeypatch.setattr(os, "fsync", lambda fd: (_ for _ in ()).throw(OSError(errno.EIO, "x")))
+    with pytest.raises(RequestRefused):
+        svc.handle(route_request(1001))
+    monkeypatch.undo()
+    assert route.guard.owed
+    _fail_listing(monkeypatch, route.directory)
+    with pytest.raises(RequestRefused) as refused:            # a fixed refusal, not an OSError
+        svc.handle(route_request(1001))
+    assert refused.value.detail == "ledger"
+    assert svc._settle_audit() is False
+    # What the tick does: a capability record (a raw OSError would end the loop).
+    with pytest.raises(AuditUnavailable):
+        svc.router._record({"event_type": "mio.capability.transition", "from": None,
+                            "to": "CORE", "reasons": {}}, reserved=True)
+    monkeypatch.undo()
+    assert svc._settle_audit() is True
+    RouteChain(route.directory).verify()
+
+
+def test_a_retention_read_failure_after_the_settlement_record_is_not_written_twice(state, monkeypatch):
+    """The settlement record landed and only retention failed: it is settled, not appended again."""
+    clock = Clock()
+    route = ledger(state, clock)
+    route.append({"event_type": "a"})
+    _unknown_line(route, monkeypatch)
+    real = route.retain
+    state_ = {"n": 0}
+
+    def retain():
+        state_["n"] += 1
+        if state_["n"] == 1:
+            raise AuditUnavailable("a retained segment could not be read")   # not an OSError
+        return real()
+    monkeypatch.setattr(route, "retain", retain)
+    assert route.guard.settle_owed() is False
+    assert route.guard.owed and route.guard.owed[0].record_entry is not None
+    assert route.guard.settle_owed()
+    kinds = [e.event["event_type"] for e in RouteChain(route.directory)]
+    assert kinds == ["a", "b", "audit.outcome_settled"], kinds       # one settlement record
+    RouteChain(route.directory).verify()
+
+
+def test_entryd_refuses_with_the_fixed_reason_when_the_share_cannot_be_judged(service, monkeypatch):
+    """B: the listing and the boundary are read before the append; their failure is a fixed refusal."""
+    import errno
+    from pathlib import Path
+    svc, clock = service
+    svc.handle(route_request(1001))
+    route = svc.router.ledger
+    _fail_listing(monkeypatch, route.directory)
+    with pytest.raises(RequestRefused) as refused:
+        svc.handle(route_request(1001))
+    assert refused.value.detail == "ledger"
+    monkeypatch.undo()
+    (route.directory / BOUNDARY).write_text(json.dumps({
+        "sequence": 0, "hash": "0" * 64, "oldest": None, "retired": "2000-01-01.jsonl"}))
+    real = Path.read_bytes
+
+    def read_bytes(self):
+        if self.name == BOUNDARY:
+            raise OSError(errno.EIO, "injected boundary read failure")
+        return real(self)
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    with pytest.raises(RequestRefused) as refused:
+        svc.handle(route_request(1001))
+    assert refused.value.detail == "ledger"
+    monkeypatch.undo()
+    assert svc.handle(route_request(1001))["route"]            # alive, and served again
+
+
+def test_a_retention_failure_after_the_first_line_of_a_new_day_is_settled_not_a_break(
+        state, monkeypatch):
+    """The line opened today's segment (its predecessor is yesterday's last line)
+    and only the retention after it failed: settling finds it present, the chain
+    is sound, and nothing is taken for a lost predecessor (#467)."""
+    import errno
+    from azazel_nexus.audit import AuditOutcomeUnknown
+    clock = Clock()
+    route = ledger(state, clock)
+    route.append({"event_type": "a"})
+    clock.advance(86400)
+    real = route.retain
+    calls = {"n": 0}
+
+    def retain():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError(errno.EIO, "injected retention failure")
+        return real()
+    monkeypatch.setattr(route, "retain", retain)
+    with pytest.raises(AuditOutcomeUnknown):
+        route.append({"event_type": "b"})
+    assert len(list(route.directory.glob("*.jsonl"))) == 2   # b opened a new segment
+    assert route.guard.settle_owed() is True
+    assert not route.guard.broken
+    kinds = [e.event["event_type"] for e in RouteChain(route.directory)]
+    assert kinds == ["a", "b", "audit.outcome_settled"], kinds
+    RouteChain(route.directory).verify(require_terminated=True)

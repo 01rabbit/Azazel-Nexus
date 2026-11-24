@@ -317,7 +317,7 @@ def test_main_reads_the_rule_once_and_records_loaded_only_when_present(env, monk
         def __init__(self, path):
             self.path = path
 
-        def verify(self): pass
+        def verify(self, **_kwargs): pass
         def append(self, event): seen.append(event)
 
     class Path:

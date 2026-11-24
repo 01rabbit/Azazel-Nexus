@@ -80,6 +80,7 @@ once and serving continues without the snapshot.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pwd
@@ -88,6 +89,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from collections import OrderedDict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Iterator, Mapping, Optional, Sequence
@@ -95,9 +97,11 @@ from typing import Callable, Iterator, Mapping, Optional, Sequence
 from azazel_nexus.audit import (
     GENESIS_HASH,
     AuditChainBroken,
+    AuditOutcomeUnknown,
     AuditEntry,
     AuditLedger,
     AuditUnavailable,
+    canonical_event_bytes,
 )
 from azazel_nexus.audit_status import (
     RATE_LIMITED_KEYS,
@@ -111,6 +115,7 @@ from azazel_nexus.lite_bundle import Gate
 from azazel_nexus.lite_enrollment import ENROLLMENT_REFUSAL_CODES
 from azazel_nexus.lite_import import IMPORT_REFUSAL_CODES, REVOCATION_REFUSAL_CODES
 
+from .chain_guard import ChainGuard, settle_segmented
 from .principal import PrincipalClass
 from .protocol import (
     Argument,
@@ -535,9 +540,19 @@ class SegmentedLedger:
         filesystem.
         """
 
-        if not self.root.is_dir():
+        try:
+            # `os.scandir` reports a listing failure; `Path.glob` would swallow a
+            # `PermissionError` and read as an empty chain (#467).
+            with os.scandir(self.root) as entries:
+                names = sorted(entry.name for entry in entries if entry.name.endswith(".jsonl"))
+        except FileNotFoundError:
+            # No ledger directory yet: a chain that has not started.
             return ()
-        return tuple(sorted(self.root.glob("*.jsonl")))
+        except OSError as exc:
+            # The directory cannot be listed: the chain is unavailable, which
+            # is not a crash of whoever asked, and not an empty chain.
+            raise AuditUnavailable(f"{self.root} could not be listed: {exc}") from exc
+        return tuple(self.root / name for name in names)
 
     def current_segment(self, *, day: str) -> Path:
         if not day or len(day) != 10 or day.count("-") != 2:
@@ -578,6 +593,8 @@ class SegmentedLedger:
 
         expected_sequence, expected_hash = 0, GENESIS_HASH
         for segment in self.segments():
+            # A torn last line (no newline) is a break here too (#467).
+            AuditLedger(segment)._check_terminated()
             for entry in AuditLedger(segment):
                 if entry.sequence != expected_sequence + 1:
                     raise AuditChainBroken(
@@ -680,6 +697,27 @@ class AuditService:
                  ui_status_path: Optional[Path] = None,
                  ) -> None:
         self.ledger = ledger
+        #: Debts of unknown outcomes and their settling (#467). A break found
+        #: here is `verified=False`, kept by this service.
+        self._day = None
+        self.guard = ChainGuard(
+            lambda event: self.ledger.append(event, day=self._day),
+            settle_segmented(self._prior_head),
+            append_internal=self._append_internal,
+            sticky_break=False, on_settled=self._on_settled,
+            on_record_settled=self._on_record_settled)
+        # A break found by any entrance (start, a diagnostic's checkpoint, an
+        # append) stops the guard as well (#458, #467).
+        self.guard.owner_broken = lambda: self.break_reason is not None
+        #: Requests (and summaries) whose line was of unknown outcome, by the
+        #: bytes of the event: who wrote it and what it would count. Applied
+        #: only when settling finds the line present.
+        self._unknown_requests: OrderedDict = OrderedDict()
+        self._unknown_summaries: OrderedDict = OrderedDict()
+        #: Lines settled as present, by (writer, sha256 of the event's bytes):
+        #: a resend of the same event is answered with the line, whatever was
+        #: appended since. In memory only, newest 64 (a restart forgets them).
+        self._settled_lines: OrderedDict = OrderedDict()
         #: Where the operator-readable snapshot goes; `None` writes none.
         self.status_path = status_path
         #: The read-only UI's byte-identical copy (ADR-0007); `None` writes none.
@@ -775,6 +813,63 @@ class AuditService:
         except Exception:  # noqa: BLE001 - reported once by start()
             self._recount_failed = True
 
+    def _prior_head(self, path: Path) -> tuple:
+        """The head before `path`, derived as an append derives it."""
+        for segment in reversed([s for s in self.ledger.segments() if s.name < path.name]):
+            head = AuditLedger(segment).head()
+            if head != (0, GENESIS_HASH):
+                return head
+        return 0, GENESIS_HASH
+
+    def _append_internal(self, event):
+        """The guard's own records: the latest segment, and the head follows."""
+        entry = self.ledger.append(event, day=self._internal_day())
+        self.head_sequence, self.head_hash = entry.sequence, entry.event_hash
+        return entry
+
+    def _on_record_settled(self, entry) -> None:
+        """A settlement record whose sync failed is found present: the head is there."""
+        if entry.sequence > self.head_sequence:
+            self.head_sequence, self.head_hash = entry.sequence, entry.event_hash
+
+    def _on_settled(self, event, entry) -> None:
+        """A line of unknown outcome is settled as present, and its record is written."""
+        raw = canonical_event_bytes(event)
+        found = self._unknown_requests.pop(raw, None)
+        if found is not None:
+            writer, slot = found
+            self._settled_lines[(writer, hashlib.sha256(raw).hexdigest())] = (
+                entry.sequence, entry.event_hash)
+            while len(self._settled_lines) > SETTLED_LINES_KEPT:
+                self._settled_lines.popitem(last=False)
+            if slot is not None:
+                slot_day, uid, index = slot
+                self._incidents_by_day.setdefault(slot_day, {}).setdefault(uid, [0, 0])[index] += 1
+        summary = self._unknown_summaries.pop(raw, None)
+        if summary is not None:
+            key, count, day = summary
+            left = self._summary_pending.get(key, 0) - count
+            if left > 0:
+                self._summary_pending[key] = left
+            else:
+                self._summary_pending.pop(key, None)
+            self._summaries_by_day[day] = self._summaries_by_day.get(day, 0) + 1
+        if entry.sequence > self.head_sequence:
+            self.head_sequence, self.head_hash = entry.sequence, entry.event_hash
+
+    def _internal_day(self) -> str:
+        """The segment the guard's own records go to: the latest, never a new one."""
+        segments = self.ledger.segments()
+        return segments[-1].stem if segments else self._today()
+
+    def _settle_audit(self) -> bool:
+        """Settle what the chain owes; a break found on the way is this service's break."""
+        settled = self.guard.settle_owed()
+        if self.guard.last_break is not None and self.verified:
+            self.verified = False
+            self.break_reason = self.guard.last_break
+        return settled
+
     def _today(self) -> str:
         """auditd's current UTC day. Drops counts for days before yesterday.
 
@@ -848,6 +943,8 @@ class AuditService:
         now = self.monotonic()
         keys = (only,) if only is not None else tuple(self._summary_pending)
         for key in keys:
+            if self.guard.owed and not self._settle_audit():
+                return          # what is pending may already be in the chain (#467)
             count = self._summary_pending.get(key, 0)
             if not count or now - self._summary_last.get(key, float("-inf")) < SUMMARY_WINDOW_S:
                 continue
@@ -865,12 +962,22 @@ class AuditService:
                     "refused_event_type": event_type, "tier": tier, "limit": limit,
                     "refused": count, "occurred_at": occurred_at,
                 })
-                entry = self.ledger.append(event, day=day)
+                self._day = day
+                entry = self.guard.append(event)
             except AuditChainBroken as exc:
                 # A break found here is the break found at start.
                 self.verified = False
                 self.break_reason = str(exc)
                 return
+            except AuditOutcomeUnknown:
+                # Written or not is settled, not guessed: a summary that landed
+                # is subtracted from the pending counts once settling finds it,
+                # and one that did not is written again after the window.
+                self._unknown_summaries[canonical_event_bytes(event)] = (key, count, day)
+                while len(self._unknown_summaries) > SETTLED_LINES_KEPT:
+                    self._unknown_summaries.popitem(last=False)
+                self._summary_last[key] = now
+                continue
             except Exception:  # noqa: BLE001 - never turn the caller's refusal into an error
                 # Keep the count; a later tick tries again after the window.
                 self._summary_last[key] = now
@@ -890,7 +997,10 @@ class AuditService:
         """
 
         try:
-            self._summarize()
+            # Settling first: a line of unknown outcome is decided (and what it
+            # counted is taken off) before anything is built from the counts.
+            if not self.guard.owed or self._settle_audit():
+                self._summarize()
             now = self.monotonic()
             if now - self._status_written >= STATUS_INTERVAL_S:
                 self.write_status()
@@ -1027,6 +1137,9 @@ class AuditService:
                 "head_hash": self.head_hash,
             }
         if request.verb.name == "audit.verify":
+            if self.guard.owed:
+                self._settle_audit()
+            unreadable = False
             try:
                 checkpoints = [c.__dict__ for c in self.ledger.checkpoint()]
             except AuditChainBroken as exc:
@@ -1035,14 +1148,31 @@ class AuditService:
                 self.verified = False
                 self.break_reason = str(exc)
                 checkpoints = []
-            return {
+            except AuditUnavailable:
+                # The chain cannot be read now (#467): say so, keep answering.
+                unreadable = True
+                checkpoints = []
+            try:
+                capacity = self.ledger.capacity()
+            except AuditUnavailable:
+                # Listing failed as well: the same answer, and the size unknown.
+                unreadable = True
+                capacity = {"chain_bytes": None, "segments": None,
+                            "filesystem_free_bytes": None, "warning": False,
+                            "warn_chain_bytes": CAPACITY_WARN_CHAIN_BYTES,
+                            "warn_free_bytes": CAPACITY_WARN_FREE_BYTES}
+            reply = {
                 "verified": self.verified,
                 "break": self.break_reason,
                 "checkpoints": checkpoints,
-                "capacity": self.ledger.capacity(),
+                "capacity": capacity,
                 "rate_limited": dict(sorted(self.rate_limited.items())),
                 "rate_limit_summaries_dropped": self.summaries_dropped,
             }
+            if unreadable or self.guard.owed:
+                reply["unavailable"] = unreadable
+                reply["audit"] = self.guard.status()
+            return reply
         return self._append(request)
 
     def _append(self, request) -> dict:
@@ -1081,19 +1211,43 @@ class AuditService:
         # Last, so only a record that would otherwise be appended spends a
         # token or a place in the day. The day is the segment it lands in.
         self._today()
-        slot = self._admit(getattr(request, "principal", None), event_type, event, day)
+        principal = getattr(request, "principal", None)
+        writer = getattr(principal, "uid", None)
+        if self.guard.owed and not self._settle_audit():
+            # A write's outcome is not settled (or the settling found a break):
+            # nothing is appended and no resend is answered from a line that is
+            # not yet recorded as settled (#467).
+            if not self.verified:
+                raise RequestRefused(Refusal.ARGUMENT_RANGE, "chain")
+            raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger")
+        if not self.verified:
+            raise RequestRefused(Refusal.ARGUMENT_RANGE, "chain")
+        # A resend of an event whose line was settled as present is answered
+        # with that line, never appended again. Same bytes, same writer.
+        raw = canonical_event_bytes(event)
+        line = self._settled_lines.get((writer, hashlib.sha256(raw).hexdigest()))
+        if line is not None:
+            return {"sequence": line[0], "event_hash": line[1]}
+        slot = self._admit(principal, event_type, event, day)
+        self._day = day
         try:
-            entry = self.ledger.append(event, day=day)
+            entry = self.guard.append(event)
         except AuditChainBroken as exc:
             # Same state as a break found at start: no further append, the
             # diagnostics keep answering, and nothing clears it but a restart.
             self.verified = False
             self.break_reason = str(exc)
             raise RequestRefused(Refusal.ARGUMENT_RANGE, "chain") from None
+        except AuditOutcomeUnknown:
+            self._unknown_requests[raw] = (writer, slot)
+            while len(self._unknown_requests) > SETTLED_LINES_KEPT:
+                self._unknown_requests.popitem(last=False)
+            raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger") from None
         except AuditUnavailable:
-            # Fail closed. Telling a caller the event is recorded when it is
-            # not would make the next entry's hash depend on that claim.
-            raise
+            # Fail closed and stay up (#467): the caller is told it was not
+            # recorded, which is true (nothing was written); the transport
+            # and the diagnostics go on.
+            raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger") from None
         if slot is not None:
             slot_day, uid, index = slot
             self._incidents_by_day.setdefault(slot_day, {}).setdefault(uid, [0, 0])[index] += 1
@@ -1165,6 +1319,10 @@ def _bind_event(event_type: str, payload: Mapping) -> dict:
     event = {name: declared[name].coerce(payload[name]) for name in declared}
     event["event_type"] = event_type
     return event
+
+
+#: How many settled-present lines a resend can still be answered from.
+SETTLED_LINES_KEPT = 64
 
 
 class SecondWriterRefused(RuntimeError):

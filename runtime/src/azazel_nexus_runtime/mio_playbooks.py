@@ -11,7 +11,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
-from azazel_nexus.audit import AuditUnavailable
+from azazel_nexus.audit import AuditOutcomeUnknown, AuditUnavailable
 from azazel_nexus.playbook_selection import (
     PlaybookSelection,
     active_playbooks,
@@ -39,6 +39,9 @@ class PlaybookSelectionHolder:
         self._revision = None
         self._watch_paths = ()
         self._audited = False
+        #: A selection whose record is of unknown outcome: `(event, selection,
+        #: watch paths, revision)`. Adopted when settling finds the line present.
+        self._pending = None
 
     def _fingerprint(self, watch_paths):
         result = []
@@ -51,6 +54,15 @@ class PlaybookSelectionHolder:
             except OSError as error:
                 result.append((type(error).__name__, error.errno))
         return tuple(result)
+
+    def settled_present(self, event: dict) -> None:
+        """Settling found the line of `event` in the ledger: that selection is the recorded one."""
+        pending = self._pending
+        if pending is not None and pending[0] == event:
+            _, selection, watch_paths, revision = pending
+            self._audited = True
+            self._pending = None
+            self.selection, self._watch_paths, self._revision = selection, watch_paths, revision
 
     def refresh(self, *, audit: Callable[[dict], None]) -> Library | None:
         now = self.clock()
@@ -83,10 +95,21 @@ class PlaybookSelectionHolder:
         # also cover config/pointer changes during discovery or config reads.
         stable = (revision == self._fingerprint(self._watch_paths)
                   and (before is None or before == after))
+        revision_now = after if stable else None
+        if not self._audited or selection != previous or revision_now is None:
+            # Recorded before it is used (#467): when the record cannot be
+            # written, the selection in use stays the one that was recorded,
+            # and the next call looks again and tries the record again.
+            try:
+                audit(selection.as_event())
+            except AuditOutcomeUnknown:
+                # The line may be in the ledger: kept aside, and adopted without
+                # a second line if settling finds it (`settled_present`).
+                self._pending = (selection.as_event(), selection, watch_paths, revision_now)
+                raise
+            self._audited = True
+        self._pending = None
         self.selection = selection
         self._watch_paths = watch_paths
-        self._revision = after if stable else None
-        if not self._audited or selection != previous or self._revision is None:
-            audit(selection.as_event())
-            self._audited = True
+        self._revision = revision_now
         return selection.library

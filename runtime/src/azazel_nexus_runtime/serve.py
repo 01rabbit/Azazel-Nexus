@@ -21,6 +21,8 @@ import socket
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from azazel_nexus.audit import AuditUnavailable
+
 from .principal import PrincipalPolicy
 from .protocol import VerbRegistry
 from .transport import SocketServer, bind_socket
@@ -66,11 +68,22 @@ def serve_forever(
         # A bounded refusal log (#211) writes a flood's summary when its
         # window ends, even if no further refusal arrives to carry it.
         flush_due = getattr(audit, "flush_due", None)
+
+        def stopped() -> bool:
+            # A ledger that cannot be written (#467) is not a reason to stop.
+            try:
+                return stop()
+            except AuditUnavailable:
+                return False
+
         if ready is not None:
             ready()
-        while not stop():
+        while not stopped():
             if callable(flush_due):
-                flush_due()
+                try:
+                    flush_due()
+                except AuditUnavailable:
+                    pass
             try:
                 active = listener
                 if additional_sockets:
@@ -97,6 +110,8 @@ def serve_forever(
                 except OSError:
                     # A peer that vanished mid-exchange is not this daemon's
                     # failure, and the refusal (if any) is already recorded.
+                    continue
+                except AuditUnavailable:
                     continue
     finally:
         for bound_path, bound_listener, _ in listeners:

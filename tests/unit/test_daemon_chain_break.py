@@ -21,22 +21,27 @@ from azazel_nexus_runtime.protocol import Refusal, RequestRefused
 class FakeLedger:
     broken = False
     break_on: set = set()
+    unavailable_on: set = set()
     calls: list = []
 
     def __init__(self, path):
         self.path = SimpleNamespace(open=lambda *a, **k: open("/dev/null", *a, **k))
 
-    def verify(self):
+    def verify(self, **_kwargs):
         pass
 
     def append(self, event):
         FakeLedger.calls.append(event["event_type"])
         if FakeLedger.broken or event["event_type"] in FakeLedger.break_on:
             raise AuditChainBroken("fixture broken tail")
+        if event["event_type"] in FakeLedger.unavailable_on:
+            from azazel_nexus.audit import AuditUnavailable
+            raise AuditUnavailable("fixture write failure")
 
 
 def _serve(module, monkeypatch, tmp_path, **patches):
     FakeLedger.broken, FakeLedger.calls, FakeLedger.break_on = False, [], set()
+    FakeLedger.unavailable_on = set()
     monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
     for name in ("mio_local_state_dir", "mio_reference_state_dir",
                  "mio_contextobs_state_dir", "knowledge_context_state_dir"):
@@ -346,3 +351,121 @@ def test_locald_stops_the_request_when_the_break_is_found_by_its_admission_refre
     FakeLedger.break_on = {"mio.local.admission"}
     _refused(served["handler"])
     assert touched == ["revoked"], touched
+
+
+def test_knowledge_contextd_treats_a_resend_after_settling_as_a_new_request(monkeypatch, tmp_path):
+    """5.0 (d): sent once and not recorded; settled; the same request again is sent and recorded once."""
+    served, sent, request = _broker(monkeypatch, tmp_path, answer={"authority": "advisory_only"})
+    FakeLedger.unavailable_on = {"knowledge.context.completed"}
+    first = served["handler"](request())
+    assert len(sent) == 1 and first == {"refusal": "unavailable", "stage": "unrecorded"}
+    # While it is still owed, nothing is sent.
+    FakeLedger.unavailable_on = {"knowledge.context.completed", "audit.late_record"}
+    assert served["handler"](request()) == {"refusal": "unavailable", "stage": "refused_before_send"}
+    assert len(sent) == 1
+    FakeLedger.unavailable_on = set()
+    reply = served["handler"](request())          # settled first, then a new request
+    assert "response" in reply and len(sent) == 2
+    requested = [c for c in FakeLedger.calls if c == "knowledge.context.requested"]
+    assert len(requested) == 2                    # one record per request that was sent
+
+
+def test_locald_does_not_start_new_work_when_the_revocation_record_made_a_debt(monkeypatch, tmp_path):
+    """#467: the revocation done, its record unwritten: nothing new starts for the request."""
+    from azazel_nexus_runtime import model_admission_evidence as evidence
+
+    started = []
+
+    class Holder:
+        reading = SimpleNamespace(embedding=None)
+
+        def start(self, *, audit):
+            return self.reading
+
+        def refresh(self, *, withdraw, audit):
+            withdraw()
+            audit({"event_type": "mio.local.admission"})
+
+        def close(self):
+            pass
+
+    class Service:
+        def __init__(self, **kw):
+            self._retriever = object()
+
+        def set_playbooks(self, library):
+            pass
+
+        def handle(self, request, *, audit):
+            started.append(request)
+            return {"outcome": "assessed"}
+
+    monkeypatch.setattr(evidence, "AdmissionHolder", Holder)
+    served = _serve(mio_locald, monkeypatch, tmp_path, PlaybookSelectionHolder=_selection(),
+                    LocalRuntimeService=Service)
+    FakeLedger.unavailable_on = {"mio.local.admission", "audit.late_record"}
+    _refused(served["handler"])
+    assert started == []
+    FakeLedger.unavailable_on = set()
+    assert served["handler"](object()) == {"outcome": "assessed"}     # settled, then served
+    assert len(started) == 1
+
+
+def test_knowledge_contextd_keeps_the_peers_stage_when_its_failure_cannot_be_recorded_and_records_it_once(
+        monkeypatch, tmp_path):
+    """The send happened once and failed; the record of the failure is owed: one late record, stage unchanged."""
+    served, sent, request = _broker(monkeypatch, tmp_path)           # the client raises: stage `transport`
+    FakeLedger.unavailable_on = {"knowledge.context.completed"}
+    reply = served["handler"](request())
+    assert len(sent) == 1
+    assert reply == {"refusal": "unavailable", "stage": "transport"}   # not rewritten to `unrecorded`
+    assert FakeLedger.calls.count("knowledge.context.requested") == 1
+    FakeLedger.unavailable_on = set()
+    served["handler"](request())                                      # a new request: settles first
+    served["handler"](request())
+    assert FakeLedger.calls.count("audit.late_record") == 1           # recorded once, late
+    assert len(sent) == 3                                             # the later two are their own sends
+
+
+def test_locald_admission_diagnostic_is_the_fixed_refusal_when_its_settling_finds_the_break(
+        monkeypatch, tmp_path):
+    """#467: a debt is owed; the admission diagnostic settles it, and the settling
+    finds the chain broken. That same request gets the fixed refusal of #458,
+    not "not admitted"."""
+    from azazel_nexus_runtime import model_admission_evidence as evidence
+
+    class Holder:
+        reading = SimpleNamespace(embedding=None)
+
+        def start(self, *, audit):
+            return self.reading
+
+        def refresh(self, *, withdraw, audit):
+            withdraw()
+            audit({"event_type": "mio.local.admission"})
+
+        def close(self):
+            pass
+
+    class Service:
+        def __init__(self, **kw):
+            self._retriever = object()
+
+        def set_playbooks(self, library):
+            pass
+
+        def handle(self, request, *, audit):
+            return {"outcome": "assessed"}
+
+    monkeypatch.setattr(evidence, "AdmissionHolder", Holder)
+    served = _serve(mio_locald, monkeypatch, tmp_path, PlaybookSelectionHolder=_selection(),
+                    LocalRuntimeService=Service)
+    FakeLedger.unavailable_on = {"mio.local.admission", "audit.late_record"}
+    _refused(served["handler"])                       # the revocation's record is owed
+    FakeLedger.unavailable_on = set()
+    FakeLedger.break_on = {"audit.late_record"}       # settling it finds the break
+    admission = SimpleNamespace(verb=SimpleNamespace(name=mio_locald.ADMISSION_VERB.name))
+    with pytest.raises(RequestRefused) as refused:
+        served["handler"](admission)
+    assert refused.value.refusal is Refusal.VERB_UNAVAILABLE
+    _refused(served["handler"])                       # and every request after it
