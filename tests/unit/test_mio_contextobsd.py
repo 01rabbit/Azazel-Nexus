@@ -149,7 +149,7 @@ def _served_policy(main, monkeypatch):
         def __init__(self, path):
             self.path = SimpleNamespace(open=lambda *a, **k: open(os.devnull, *a, **k))
 
-        def verify(self):
+        def verify(self, **_kwargs):
             pass
 
         def append(self, event):

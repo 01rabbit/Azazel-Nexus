@@ -362,7 +362,8 @@ marker changed), received/unrecorded (verified, not adopted because the broker
 could not record its completion: its audit chain broke, #458, or the record
 could not be written, #467 -- the send happened once and the daemon does not
 repeat it; the same frame asked again after the record is settled is a new
-request, sent and recorded once),
+request, judged by the usual admission and, when admitted, sent and recorded
+once),
 refused/failed
 (signature, Fabric, 422), refused/not_run (refused before send),
 unavailable/not_run. A record that is not received/ok carries no techniques. `name` and `tactics` are

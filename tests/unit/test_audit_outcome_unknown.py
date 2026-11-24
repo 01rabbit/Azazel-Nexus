@@ -628,3 +628,36 @@ def test_present_is_not_answered_when_the_line_it_followed_in_the_same_file_is_g
     path.write_bytes(lines[1])  # the first line is lost
     with pytest.raises(AuditChainBroken):
         ledger.settle(second, absent_head=(1, second.previous_hash))
+
+
+
+def test_every_start_verification_refuses_a_last_line_without_its_newline(tmp_path):
+    """The start verification of every ledger kind refuses the torn last line
+    that `settle` and `append` refuse, so a restart does not reopen it (#458)."""
+    from azazel_nexus.audit import AuditChainBroken, AuditLedger
+    from azazel_nexus_runtime.auditd import SegmentedLedger
+
+    plain = tmp_path / "plain.jsonl"
+    AuditLedger(plain).append({"n": 1})
+    plain.write_bytes(plain.read_bytes().rstrip(b"\n"))
+    AuditLedger(plain).verify()  # a reader accepts it
+    with pytest.raises(AuditChainBroken):
+        AuditLedger(plain).verify(require_terminated=True)
+
+    root = tmp_path / "segments"
+    root.mkdir()
+    day = root / "2026-09-20.jsonl"
+    AuditLedger(day).append({"n": 1})
+    day.write_bytes(day.read_bytes().rstrip(b"\n"))
+    with pytest.raises(AuditChainBroken):
+        SegmentedLedger(root).verify()
+
+    from azazel_nexus.route_ledger import RouteChain
+    route = tmp_path / "route"
+    route.mkdir()
+    first = route / "2026-09-20.jsonl"
+    AuditLedger(first).append({"n": 1})
+    first.write_bytes(first.read_bytes().rstrip(b"\n"))
+    RouteChain(route).verify()  # the status reader accepts it
+    with pytest.raises(AuditChainBroken):
+        RouteChain(route).verify(require_terminated=True)  # entryd's start does not

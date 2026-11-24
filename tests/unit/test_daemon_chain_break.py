@@ -27,7 +27,7 @@ class FakeLedger:
     def __init__(self, path):
         self.path = SimpleNamespace(open=lambda *a, **k: open("/dev/null", *a, **k))
 
-    def verify(self):
+    def verify(self, **_kwargs):
         pass
 
     def append(self, event):

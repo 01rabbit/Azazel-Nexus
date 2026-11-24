@@ -329,7 +329,7 @@ class RouteLedger(DailySegments):
         """Verify the retained chain once; bounded by `RETENTION_BYTES`."""
 
         self._ensure()
-        return self.chain.verify(visit)
+        return self.chain.verify(visit, require_terminated=True)
 
     def _usage_for(self, name: str) -> Counter:
         return self.usage if self.usage_segment == name else Counter()

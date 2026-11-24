@@ -214,7 +214,7 @@ def main(
         )
     ledger = AuditLedger(mio_contextobs_state_dir() / "contextobs.jsonl")
     try:
-        ledger.verify()
+        ledger.verify(require_terminated=True)
         with ledger.path.open("a", encoding="utf-8"):
             pass
     except OSError as error:

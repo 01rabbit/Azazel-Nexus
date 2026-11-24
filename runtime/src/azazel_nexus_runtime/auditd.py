@@ -593,6 +593,8 @@ class SegmentedLedger:
 
         expected_sequence, expected_hash = 0, GENESIS_HASH
         for segment in self.segments():
+            # A torn last line (no newline) is a break here too (#467).
+            AuditLedger(segment)._check_terminated()
             for entry in AuditLedger(segment):
                 if entry.sequence != expected_sequence + 1:
                     raise AuditChainBroken(

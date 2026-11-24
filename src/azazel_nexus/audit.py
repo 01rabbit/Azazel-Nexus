@@ -358,7 +358,7 @@ class AuditLedger:
             raise AuditChainBroken(f"{self.path} {where} has a field of the wrong type")
         return entry
 
-    def verify(self) -> None:
+    def verify(self, *, require_terminated: bool = False) -> None:
         """Walk the chain. Raise on the first link that does not hold.
 
         Checks both halves of each link: that the recorded hash is what the
@@ -368,6 +368,11 @@ class AuditLedger:
         edited event whose neighbours were re-linked around it.
         """
 
+        # A reader accepts a valid last record without its newline. A writer's
+        # start verification (`require_terminated`) refuses it, as `settle` and
+        # `append` do: the next append would join onto it (#467).
+        if require_terminated:
+            self._check_terminated()
         expected_sequence, expected_previous = 1, GENESIS_HASH
         for entry in self:
             if entry.sequence != expected_sequence:

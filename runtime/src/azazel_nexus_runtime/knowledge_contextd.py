@@ -335,7 +335,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
         raise SystemExit("az-knowledge-contextd takes no arguments")
     ledger = AuditLedger(knowledge_context_state_dir() / "context.jsonl")
     try:
-        ledger.verify()
+        ledger.verify(require_terminated=True)
         with ledger.path.open("a", encoding="utf-8"):
             pass
     except OSError as exc:

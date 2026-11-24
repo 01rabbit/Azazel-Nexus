@@ -173,7 +173,7 @@ def main(
         )
     ledger = AuditLedger(mio_reference_state_dir() / "reference.jsonl")
     try:
-        ledger.verify()
+        ledger.verify(require_terminated=True)
         with ledger.path.open("a", encoding="utf-8"):
             pass
     except OSError as error:

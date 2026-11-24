@@ -139,7 +139,8 @@ class RouteChain:
                 return head
         return self.anchor(boundary)
 
-    def verify(self, visit: Callable[[AuditEntry], None] | None = None) -> tuple[int, str]:
+    def verify(self, visit: Callable[[AuditEntry], None] | None = None, *,
+               require_terminated: bool = False) -> tuple[int, str]:
         """Walk every retained segment from the boundary; return the head.
 
         `visit` sees each verified entry in order, so a caller that needs to
@@ -153,6 +154,10 @@ class RouteChain:
             raise AuditChainBroken("route boundary does not match the oldest segment")
         expected_sequence, expected_hash = self.anchor(boundary)
         for segment in segments:
+            # The writer's start verification refuses a torn last line (no
+            # newline), as `settle` and `append` do; a reader accepts it (#467).
+            if require_terminated:
+                AuditLedger(segment)._check_terminated()
             for entry in AuditLedger(segment):
                 if entry.sequence != expected_sequence + 1:
                     raise AuditChainBroken(
