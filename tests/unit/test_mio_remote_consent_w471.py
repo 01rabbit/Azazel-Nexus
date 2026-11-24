@@ -607,6 +607,9 @@ def test_overlap_i_the_owed_late_record_was_never_written(tmp_path):
     posted, root = run_first(tmp_path, {"fault": "unavailable"})
     generation = store_view(root)["generation"]
     assert posted["reply"] == {"refused": "ledger"}
+    # The withdrawal's record became a debt holding no written line (nothing was
+    # written), and the process stopped before writing its late record.
+    assert posted["owed_before_settle"] == {"count": 1, "with_entry": 0, "with_record_entry": 0}
     assert total(withdrawal_rows(root, generation)) == 0
     run_restart(root)
     assert withdrawal_rows(root, generation) == {"original": 0, "late": 0, "recovered": 1,
