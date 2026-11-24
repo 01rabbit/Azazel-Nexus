@@ -1588,30 +1588,39 @@ diagnostic verb. Three cases are told apart:
   cannot be read at start (`AuditUnavailable`), the daemon does not start; that
   is the supervisor's to retry, and no diagnostic socket is up.
 
-An operation already performed when its record failed (entryd's withdrawal,
-which narrows and is committed first; knowledge-contextd's send; locald's
-inference) is never repeated: when the line turns out absent, or nothing was
-written, the settlement (or `audit.late_record`) records it once, late. Such a
-result is not returned as if it were recorded: knowledge-contextd answers the
-send as `unrecorded` (not "refused before send"), locald and referenced return
-no result. Resends:
+**What the daemons do, and what they cannot.** A request carries no
+identifier that says "this is the same request again", so a request that
+arrives after the ledger has been settled cannot be told from a new, legitimate
+one. The contract is therefore:
 
-* auditd, which callers retry, keeps the lines it settled as `present`, by
-  caller and the bytes of the event (the newest 64, in memory). Once the
-  settlement record is written, a resend of the same event from the same caller
-  is answered with that line (sequence, event hash), whatever was appended in
-  between, and is never appended twice. A restart forgets them: a resend after
-  a restart can be appended twice.
-* entryd's withdrawal that is still owed its record is not committed again by
-  its resend: the store already reads that withdrawal, so the resend settles
-  the record and answers with that withdrawal (`drained` as first reported).
-* knowledge-contextd, after a request it sent and could not record, answers the
-  next identical request (same frame) `unrecorded` without sending again, and
-  forgets it with that answer. No caller retries by itself (the client makes
-  one call per request); an explainer asking the same question again later gets
-  that one answer first.
-* A playbook selection is recorded before it is used: if its record fails, the
-  previous selection stays in use and the next request records it.
+* While an outcome is unknown, a request that needs a record is stopped (the
+  ledger is not appended to, and nothing new is done). Work that narrows
+  (entryd's withdrawal, a revocation, a release) is not stopped: it is done, and
+  its record is owed.
+* The daemon never redoes an operation or rewrites a line by itself: it settles
+  first, and a performed operation whose line is absent gets one
+  `audit.late_record`.
+* One request leaves one record: its line, its settlement record, or its late
+  record.
+* After settling, the same request again is a new request: it is done again and
+  recorded once. The reply says what happened, so that the caller can decide
+  whether to ask again: `unrecorded` (knowledge-contextd) means the send
+  happened; `ledger` for a withdrawal means that the withdrawal may be in force
+  (read `mio.remote.opt_in.status`). Such a result is not returned as if it were
+  recorded: locald and referenced return no result.
+* An idempotency key in the frame would close this, and it changes the frame; it
+  is proposed as a separate issue and is not done here.
+
+Two best-effort helps, neither of them a guarantee. auditd keeps the lines it
+settled as `present` by caller and by the bytes of the event, and answers a
+resend of that event with the line (sequence, event hash) instead of appending
+it again. The table holds the newest 64 only and lives in the process: a
+restart empties it, and an older entry is dropped first. It does not apply when
+the `occurred_at` check refuses the resend first (a new day's segment, or past
+the clock tolerance). That is the same standing as the existing "lost
+acknowledgements can duplicate events". A playbook selection is recorded before
+it is used: if its line is of unknown outcome it is held aside, adopted without
+a second line when settling finds it, and recorded again when it is absent.
 
 What the settlement proves, and what not: the line was found, by its
 sequence and hash, in the file it was written to, and its record was written
