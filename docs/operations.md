@@ -1564,8 +1564,10 @@ record owed and written once, late. Two records are told apart here: the
 attempt (`requested`), which comes before the send, and the content of the
 completion (`completed`, the one that contract (c) counts once). If `requested`
 cannot be written nothing is sent; the daemon then tries to record that refusal
-as a `completed` with stage `refused_before_send` -- a record of the refusal,
-not of a send, and lost too if the ledger is still failing. If the
+as a `completed` record with `reason_code: refused_before_send` (`stage` is a
+field of the reply, not of the record) -- a record of the refusal, not of a
+send. Like any record it may not be written, or its outcome may be unknown
+and settled later like any other line. If the
 send happened, its completion content is on the chain exactly once: as its own
 line, as one `audit.late_record`, or as the `late_event` of one
 `audit.outcome_settled`. The send itself happened at most once. `ledger` is the detail the daemon
@@ -1578,7 +1580,11 @@ false` while unknown). referenced, contextobsd and knowledge-contextd have no
 diagnostic verb. Three cases are told apart:
 
 * Nothing was written (the open or the write failed, a partial line was cut
-  back). The request is refused; the next request writes normally.
+  back). The request is refused. If nothing had been done yet, the next request
+  writes normally. If the operation had already been done (a send, a
+  withdrawal, an inference whose record comes after it), its record is owed:
+  the next request that needs a record first writes it once as
+  `audit.late_record`, and is refused while that cannot be written.
 * A complete line was written but could not be synced, or a partial line could
   not be cut back: the outcome is *unknown*. Nothing that needs a record goes on
   -- no new append, no retry of the same line, no repeated operation -- until
