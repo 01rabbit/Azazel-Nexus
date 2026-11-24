@@ -470,3 +470,30 @@ def test_the_owners_break_stops_the_guard_whatever_found_it(tmp_path):
         guard.append({"event_type": "later"})
     guard.record_refusal({"event_type": "r"})
     assert flaky.calls == calls and guard.state == "broken"
+
+
+def test_a_lost_predecessor_is_a_break_when_the_line_in_doubt_is_not_the_first_of_its_file(
+        tmp_path, monkeypatch):
+    """5.1-2: N in yesterday's file, N+1 first today, N+2 in doubt; yesterday's file is gone."""
+    from azazel_nexus_runtime.auditd import SegmentedLedger
+    ledger = SegmentedLedger(tmp_path)
+    ledger.append({"event_type": "a"}, day="2026-01-01")
+    ledger.append({"event_type": "b"}, day="2026-01-02")
+    unknown = _unknown_in_second_segment_third(ledger, monkeypatch)
+    settle = _segmented_settle(ledger)
+    assert unknown.entry.sequence == 3
+    assert settle(unknown.entry, absent_head=unknown.absent_head, path=unknown.path) == "present"
+    (tmp_path / "2026-01-01.jsonl").unlink()
+    with pytest.raises(AuditChainBroken):
+        settle(unknown.entry, absent_head=unknown.absent_head, path=unknown.path)
+
+
+def _unknown_in_second_segment_third(ledger, monkeypatch):
+    real = os.fsync
+    monkeypatch.setattr(os, "fsync", lambda fd: (_ for _ in ()).throw(OSError(errno.EIO, "x")))
+    try:
+        with pytest.raises(AuditOutcomeUnknown) as raised:
+            ledger.append({"event_type": "c"}, day="2026-01-02")
+    finally:
+        monkeypatch.setattr(os, "fsync", real)
+    return raised.value

@@ -254,11 +254,16 @@ class AuditLedger:
         if last != b"\n":
             raise AuditChainBroken(f"{self.path} does not end at a line boundary (torn last line)")
 
+    def first_entry(self) -> Optional[AuditEntry]:
+        """The file's first record (None for an empty file)."""
+        for entry in self:
+            return entry
+        return None
+
     def first_sequence(self) -> Optional[int]:
         """The sequence of the file's first record (None for an empty file)."""
-        for entry in self:
-            return entry.sequence
-        return None
+        first = self.first_entry()
+        return None if first is None else first.sequence
 
     def settle(self, entry: AuditEntry, *, absent_head: tuple[int, str]) -> str:
         """Whether `entry` is in this file: `"present"` or `"absent"`.

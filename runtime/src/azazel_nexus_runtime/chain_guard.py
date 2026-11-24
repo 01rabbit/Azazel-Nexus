@@ -89,11 +89,19 @@ def settle_segmented(prior_head: Callable[[Any], tuple]) -> Callable[..., str]:
         ledger = AuditLedger(path)
         before = tuple(prior_head(path))
         outcome = ledger.settle(entry, absent_head=absent_head)
-        starts_file = (tuple(absent_head) == (0, GENESIS_HASH) if outcome == "absent"
-                       else ledger.first_sequence() == entry.sequence)
-        if starts_file and before != (entry.sequence - 1, entry.previous_hash):
+        # Wherever the line sits in its file, the file's first line must follow
+        # the head before the file (the way an append derives it): a lost
+        # predecessor is a break even when the line in doubt is the third.
+        first = ledger.first_entry()
+        if first is not None:
+            follows = (first.sequence - 1, first.previous_hash)
+        elif tuple(absent_head) == (0, GENESIS_HASH):
+            follows = (entry.sequence - 1, entry.previous_hash)
+        else:
+            follows = None
+        if follows is not None and before != follows:
             raise AuditChainBroken(
-                f"{path} line {entry.sequence} does not follow the head before this file")
+                f"{path} does not follow the head before this file")
         return outcome
 
     return settle
