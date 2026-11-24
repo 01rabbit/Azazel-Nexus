@@ -318,6 +318,11 @@ class AuditLedger:
                 if prior.sequence != entry.sequence - 1 or prior.event_hash != entry.previous_hash:
                     raise AuditChainBroken(
                         f"{self.path} line {entry.sequence} does not follow the line before it")
+            elif tuple(absent_head) != (0, GENESIS_HASH):
+                # The line it followed was in this file (`absent_head` names it)
+                # and is gone: a lost predecessor, not a settled write.
+                raise AuditChainBroken(
+                    f"{self.path} line {entry.sequence} has lost the line it followed")
             return "present"
         if head == tuple(absent_head):
             return "absent"

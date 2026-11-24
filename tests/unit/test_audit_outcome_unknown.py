@@ -612,3 +612,19 @@ def test_the_line_before_is_found_across_a_chunk_boundary(tmp_path, monkeypatch)
     for kind in "abcd":
         last = ledger.append({"event_type": kind})
     assert ledger.settle(last, absent_head=(3, last.previous_hash)) == "present"
+
+
+
+def test_present_is_not_answered_when_the_line_it_followed_in_the_same_file_is_gone(tmp_path):
+    """The line in doubt is in the file but the line before it (in the same
+    file, named by `absent_head`) was lost: a broken chain, not `present`."""
+    from azazel_nexus.audit import AuditChainBroken, AuditLedger
+
+    path = tmp_path / "ledger.jsonl"
+    ledger = AuditLedger(path)
+    ledger.append({"n": 1})
+    second = ledger.append({"n": 2})
+    lines = path.read_bytes().splitlines(keepends=True)
+    path.write_bytes(lines[1])  # the first line is lost
+    with pytest.raises(AuditChainBroken):
+        ledger.settle(second, absent_head=(1, second.previous_hash))

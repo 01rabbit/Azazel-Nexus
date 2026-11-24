@@ -1563,7 +1563,9 @@ either, the failure's own stage (`transport` and the like) unchanged, with the
 record owed and written once, late. Two records are told apart here: the
 attempt (`requested`), which comes before the send, and the content of the
 completion (`completed`, the one that contract (c) counts once). If `requested`
-cannot be written nothing is sent, so there is no completion to record. If the
+cannot be written nothing is sent; the daemon then tries to record that refusal
+as a `completed` with stage `refused_before_send` -- a record of the refusal,
+not of a send, and lost too if the ledger is still failing. If the
 send happened, its completion content is on the chain exactly once: as its own
 line, as one `audit.late_record`, or as the `late_event` of one
 `audit.outcome_settled`. The send itself happened at most once. `ledger` is the detail the daemon

@@ -191,9 +191,15 @@ def test_the_head_follows_a_settlement_record_whose_sync_failed_and_was_found_pr
     assert (service.head_sequence, service.head_hash) == service.ledger.head()
 
 
-def test_audit_verify_answers_unavailable_when_the_segments_cannot_be_listed(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure", [
+    PermissionError(errno.EACCES, "injected listing failure"),
+    NotADirectoryError(errno.ENOTDIR, "injected listing failure"),
+], ids=["EACCES", "ENOTDIR"])
+def test_audit_verify_answers_unavailable_when_the_segments_cannot_be_listed(
+        tmp_path, monkeypatch, failure):
     """4: a real listing failure (`os.scandir` of the segment directory) is `unavailable: true`,
-    never a raw OSError and never an empty chain."""
+    never a raw OSError and never an empty chain. Only a missing directory is an
+    empty chain; ENOTDIR is not."""
     from test_runtime_auditd import OPERATOR
 
     service = _service(tmp_path)
@@ -202,7 +208,7 @@ def test_audit_verify_answers_unavailable_when_the_segments_cannot_be_listed(tmp
 
     def scandir(path="."):
         if os.fspath(path) == os.fspath(service.ledger.root):
-            raise PermissionError(errno.EACCES, "injected listing failure")
+            raise failure
         return real(path)
     monkeypatch.setattr(os, "scandir", scandir)
     reply = service.handle(_request("audit.verify", {}, principal=OPERATOR))

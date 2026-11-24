@@ -545,7 +545,8 @@ class SegmentedLedger:
             # `PermissionError` and read as an empty chain (#467).
             with os.scandir(self.root) as entries:
                 names = sorted(entry.name for entry in entries if entry.name.endswith(".jsonl"))
-        except (FileNotFoundError, NotADirectoryError):
+        except FileNotFoundError:
+            # No ledger directory yet: a chain that has not started.
             return ()
         except OSError as exc:
             # The directory cannot be listed: the chain is unavailable, which
