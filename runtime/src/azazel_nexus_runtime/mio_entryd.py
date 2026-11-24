@@ -125,6 +125,28 @@ WITHDRAWN_EVENT = "mio.remote.opt_in.withdrawn"
 _PREREQUISITE_VALUES = frozenset(p.value for p in PREREQUISITES)
 
 
+def _utc_iso(value) -> bool:
+    """The router's `occurred_at`: an ISO time with a UTC offset."""
+    if type(value) is not str or not value.isascii():
+        return False
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return parsed.utcoffset() is not None and parsed.utcoffset().total_seconds() == 0
+
+
+def _store_time(value) -> bool:
+    """The consent store's time: `YYYY-MM-DDTHH:MM:SSZ` in UTC."""
+    if type(value) is not str or not value.isascii():
+        return False
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return False
+    return True
+
+
 def _anchor_row(event) -> bool:
     """Whether `event` is exactly a row entryd writes that names an opt-in
     generation, so its position can anchor the order argument (#471). The key
@@ -134,10 +156,14 @@ def _anchor_row(event) -> bool:
     kind, generation = event.get("event_type"), event.get("generation")
     if type(generation) is not int or generation < 1:
         return False
-    # The writers' values: an operator is `uid:<uid>` (`_opt_in`), times are never empty.
+    # The writers' values: an operator is `uid:<uid>` as `_opt_in` formats an int,
+    # `occurred_at` is the router's UTC ISO time, `at` is the store's UTC time.
     operator, occurred_at = event.get("operator"), event.get("occurred_at")
-    if (type(occurred_at) is not str or not occurred_at or type(operator) is not str
-            or not operator.startswith("uid:") or not operator[4:].isdigit()):
+    if not (type(operator) is str and operator.startswith("uid:")
+            and operator[4:].isascii() and operator[4:].isdigit()
+            and str(int(operator[4:])) == operator[4:]):
+        return False
+    if not _utc_iso(occurred_at):
         return False
     keys = set(event)
     if kind == "mio.remote.opt_in.set":  # `_opt_in` before it commits a prerequisite
@@ -148,7 +174,7 @@ def _anchor_row(event) -> bool:
         opens = event.get("opens_generation")
         return (keys == {"event_type", "operator", "at", "granted", "missing", "withdrawn",
                          "generation", "opens_generation", "occurred_at"}
-                and type(event.get("at")) is str and bool(event.get("at"))
+                and _store_time(event.get("at"))
                 and event.get("granted") == sorted(_PREREQUISITE_VALUES)
                 and event.get("missing") == [] and event.get("withdrawn") is None
                 and type(opens) is int and opens == generation + 1)
@@ -156,7 +182,7 @@ def _anchor_row(event) -> bool:
         reason = event.get("reason")
         return (keys == {"event_type", "operator", "at", "reason", "generation", "drained",
                          "occurred_at"}
-                and type(event.get("at")) is str and bool(event.get("at"))
+                and _store_time(event.get("at"))
                 and type(reason) is str and reason in WITHDRAWAL_REASONS
                 and type(event.get("drained")) is bool)
     return False
@@ -210,7 +236,10 @@ REFUSAL_RECORD_INTERVAL_SECONDS = 60
 MAX_TRACKED_PRINCIPALS = 64
 CAPABILITY_EVENTS = frozenset({"mio.capability.transition", "mio.capability.carried"})
 #: Records charged to the control reserve rather than to a caller.
-CONTROL_EVENTS = CAPABILITY_EVENTS | {"mio.entry.started"}
+#: The settlement and late records (#467, #471) are written to the control
+#: reserve too, so a restart's recount must charge them there as well.
+CONTROL_EVENTS = CAPABILITY_EVENTS | {"mio.entry.started", "audit.outcome_settled",
+                                      "audit.late_record"}
 #: Opens each request's records and names whose share they are charged to,
 #: so a restart can recount today's shares from today's segment.
 REQUEST_MARKER = "mio.entry.request"

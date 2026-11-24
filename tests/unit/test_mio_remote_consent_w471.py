@@ -756,3 +756,33 @@ def test_an_anchor_is_exactly_a_row_entryd_writes():
     for key in ("operator", "at", "occurred_at"):
         assert entry_mod._anchor_row({**written, key: ""}) is False, key
     assert entry_mod._anchor_row({**written, "operator": "someone"}) is False
+
+
+def test_anchor_values_are_the_writers_formats():
+    """`uid:` and a canonical decimal uid, the store's UTC time for `at`, the
+    router's UTC ISO time for `occurred_at` (#471)."""
+    from azazel_nexus_runtime import mio_entryd as entry_mod
+
+    written = {"event_type": "mio.remote.opt_in.withdrawn", "generation": 1,
+               "operator": "uid:1001", "at": "2026-11-24T00:00:00Z",
+               "reason": "operator_request", "drained": True,
+               "occurred_at": "2026-11-24T00:00:00.123456+00:00"}
+    assert entry_mod._anchor_row(written) is True
+    for key, value in (("operator", "uid:0001"), ("operator", "uid:²"),
+                       ("at", "x"), ("at", "2026-11-24T00:00:00+00:00"),
+                       ("occurred_at", "x"), ("occurred_at", "2026-11-24T00:00:00")):
+        assert entry_mod._anchor_row({**written, key: value}) is False, (key, value)
+
+
+def test_settlement_and_late_records_are_recounted_to_the_control_reserve(tmp_path, monkeypatch):
+    """They are written to the control reserve; a restart's recount charges them
+    there too, not to the caller of the request before them (#467, #471)."""
+    from azazel_nexus_runtime import mio_entryd as entry_mod
+    from azazel_nexus_runtime import runtime_paths
+
+    monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
+    runtime_paths.mio_state_dir().mkdir(parents=True, exist_ok=True)
+    attribute = entry_mod.MioEntryService()._attribution()
+    assert attribute({"event_type": entry_mod.REQUEST_MARKER, "caller": "uid:1001"}) == "uid:1001"
+    for kind in ("audit.outcome_settled", "audit.late_record"):
+        assert attribute({"event_type": kind}) == entry_mod.CONTROL
