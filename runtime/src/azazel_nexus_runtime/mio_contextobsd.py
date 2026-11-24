@@ -44,7 +44,7 @@ from .knowledge_context_socket import (
 )
 from .mio_fast_degraded import fast_assessment_degraded
 from .principal import PrincipalClass, PrincipalPolicy
-from .chain_guard import ChainGuard
+from .chain_guard import ChainGuard, settle_single
 from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
 from .runtime_paths import mio_contextobs_state_dir, socket_path
 from .serve import serve_forever
@@ -226,7 +226,7 @@ def main(
         pass
     service = ContextObservationService()
     # No request here needs a record; a broken chain only stops refusal records.
-    guard = ChainGuard(ledger.append)
+    guard = ChainGuard(ledger.append, settle_single(ledger))
     return serve_forever(
         path=socket_path(SOCKET_NAME), registry=REGISTRY,
         # The socket's own group; the entry account is the one SERVICE
