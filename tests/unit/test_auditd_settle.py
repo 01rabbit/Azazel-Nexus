@@ -169,3 +169,23 @@ def test_a_tick_after_a_failed_settling_does_not_summarize_counts_already_in_the
     service.tick()
     assert kinds(service) == ["audit.rate_limited", "audit.outcome_settled"]
     assert key not in service._summary_pending
+
+
+def test_the_head_follows_a_settlement_record_whose_sync_failed_and_was_found_present(tmp_path, monkeypatch):
+    """5.1-8: the settlement record itself is of unknown outcome; settling it moves the head to it."""
+    service = _service(tmp_path)
+    state = {"n": 0}
+    real = os.fsync
+
+    def fsync(fd):
+        state["n"] += 1
+        if state["n"] in (1, 2):         # the line, then the settlement record
+            raise OSError(errno.EIO, "injected")
+        return real(fd)
+    monkeypatch.setattr(os, "fsync", fsync)
+    with pytest.raises(RequestRefused):
+        _append(service, day="2026-09-20")
+    assert not service.guard.settle_owed()          # the record is itself in doubt
+    assert service.guard.settle_owed()              # found present
+    assert kinds(service) == ["activation.unit_granted", "audit.outcome_settled"]
+    assert (service.head_sequence, service.head_hash) == service.ledger.head()

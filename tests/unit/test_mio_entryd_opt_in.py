@@ -671,3 +671,10 @@ def test_a_withdrawal_by_another_operator_is_never_answered_from_a_earlier_one(s
         verb(service, entry.OPT_IN_WITHDRAW_VERB, principal=other, reason="operator_request")
     # It was made as its own request (a new generation, its own operator and reason).
     assert service.consent.reading().generation == generation + 1
+
+
+def test_the_status_read_answers_before_the_route_share_is_judged(service, monkeypatch):
+    grant(service)
+    monkeypatch.setattr(service.router.ledger, "room", lambda key: False, raising=False)
+    reply = verb(service, entry.OPT_IN_STATUS_VERB)
+    assert reply["generation"] >= 1 and "granted" in reply

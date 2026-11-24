@@ -112,7 +112,8 @@ class ChainGuard:
                  settle: Callable[..., str] | None = None,
                  append_internal: Callable[[dict], Any] | None = None,
                  sticky_break: bool = True,
-                 on_settled: Callable[[dict, AuditEntry], None] | None = None) -> None:
+                 on_settled: Callable[[dict, AuditEntry], None] | None = None,
+                 on_record_settled: Callable[[AuditEntry], None] | None = None) -> None:
         """`append(event)` writes one line.
 
         `settle(entry, absent_head=..., path=...)` looks the line up (see
@@ -129,6 +130,9 @@ class ChainGuard:
         #: (never before): `on_settled(event, entry)`. The owner updates what it
         #: counts, and may answer a resend of that event with the line.
         self._on_settled = on_settled
+        #: Called with a settlement record's own line once settling found it
+        #: present after its sync had failed (the owner moves its head there).
+        self._on_record_settled = on_record_settled
         self._append = append
         self._internal = append_internal or append
         self._settle = settle
@@ -195,8 +199,10 @@ class ChainGuard:
                     return False
                 outcome = self._settle(owed.record_entry, absent_head=owed.record_absent,
                                        path=owed.record_path)
-                owed.record_entry = None
+                landed, owed.record_entry = owed.record_entry, None
                 if outcome == "present":
+                    if self._on_record_settled is not None:
+                        self._on_record_settled(landed)
                     self._resolved(owed)
                     return True
             if owed.record is None:

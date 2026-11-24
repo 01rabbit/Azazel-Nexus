@@ -645,7 +645,11 @@ class MioEntryService:
         # keep a grant in force, so it is skipped for that verb only.
         withdrawing = (getattr(getattr(request, "verb", None), "name", None)
                        == OPT_IN_WITHDRAW_VERB.name)
-        if room is not None and not withdrawing and not room(key):
+        # The status read is a diagnostic: it answers before the share is judged,
+        # so a spent share or a damaged boundary never hides the state (#467).
+        diagnostic = (getattr(getattr(request, "verb", None), "name", None)
+                      == OPT_IN_STATUS_VERB.name)
+        if room is not None and not withdrawing and not diagnostic and not room(key):
             # This caller's share of today's segment is spent; no other
             # caller's share is touched.
             self.rate_limited["route_budget"] += 1

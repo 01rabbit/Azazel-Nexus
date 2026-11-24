@@ -692,7 +692,8 @@ class AuditService:
             lambda event: self.ledger.append(event, day=self._day),
             settle_segmented(self._prior_head),
             append_internal=self._append_internal,
-            sticky_break=False, on_settled=self._on_settled)
+            sticky_break=False, on_settled=self._on_settled,
+            on_record_settled=self._on_record_settled)
         # A break found by any entrance (start, a diagnostic's checkpoint, an
         # append) stops the guard as well (#458, #467).
         self.guard.owner_broken = lambda: self.break_reason is not None
@@ -813,6 +814,11 @@ class AuditService:
         entry = self.ledger.append(event, day=self._internal_day())
         self.head_sequence, self.head_hash = entry.sequence, entry.event_hash
         return entry
+
+    def _on_record_settled(self, entry) -> None:
+        """A settlement record whose sync failed is found present: the head is there."""
+        if entry.sequence > self.head_sequence:
+            self.head_sequence, self.head_hash = entry.sequence, entry.event_hash
 
     def _on_settled(self, event, entry) -> None:
         """A line of unknown outcome is settled as present, and its record is written."""
