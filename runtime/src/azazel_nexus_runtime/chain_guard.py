@@ -72,7 +72,8 @@ def settle_by_path(entry, *, absent_head, path) -> str:
 class ChainGuard:
     def __init__(self, append: Callable[[dict], Any],
                  settle: Callable[..., str] | None = None,
-                 append_internal: Callable[[dict], Any] | None = None) -> None:
+                 append_internal: Callable[[dict], Any] | None = None,
+                 sticky_break: bool = True) -> None:
         """`append(event)` writes one line.
 
         `settle(entry, absent_head=..., path=...)` looks the line up (see
@@ -82,6 +83,9 @@ class ChainGuard:
         settlement records (a daemon with budgets charges them to its control
         reserve); it defaults to `append`.
         """
+        #: False for a daemon that keeps its own broken state (entryd): a break
+        #: still raises, and the owner decides what it means.
+        self._sticky = sticky_break
         self._append = append
         self._internal = append_internal or append
         self._settle = settle
@@ -91,6 +95,7 @@ class ChainGuard:
         #: Refusal records that were not written because the ledger could not take them.
         self.refusals_unrecorded = 0
         self.owed: list[Owed] = []
+        self.last_break: str | None = None
 
     # -- state -----------------------------------------------------------
 
@@ -105,6 +110,10 @@ class ChainGuard:
         return {"audit": self.state, "unsettled_sequence": sequence}
 
     def _mark(self, exc: BaseException) -> None:
+        #: The latest break found, whether or not this guard keeps it.
+        self.last_break = str(exc)
+        if not self._sticky:
+            return
         self.broken = True
         self.reason = str(exc)
 

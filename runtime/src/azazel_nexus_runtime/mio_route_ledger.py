@@ -150,7 +150,8 @@ class RouteLedger(DailySegments):
         self.guard = ChainGuard(
             lambda event: self._append_once(event, reserved=self._reserved_now),
             settle_by_path,
-            append_internal=lambda event: self._append_once(event, reserved=True))
+            append_internal=lambda event: self._append_once(event, reserved=True),
+            sticky_break=False)
 
     # -- preparation -----------------------------------------------------
 

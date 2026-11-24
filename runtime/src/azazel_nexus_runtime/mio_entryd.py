@@ -622,9 +622,9 @@ class MioEntryService:
         """Settle what the ledger owes; a break found on the way is the daemon's break."""
         guard = self.guard
         settled = guard.settle_owed()
-        if guard.broken and not self.ledger_broken:
+        if guard.last_break is not None and not self.ledger_broken:
             self.ledger_broken = True
-            self.ledger_break_reason = guard.reason
+            self.ledger_break_reason = guard.last_break
         return settled
 
     def _handle_request(self, request) -> dict:
