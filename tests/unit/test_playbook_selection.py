@@ -331,3 +331,34 @@ def test_published_selection_remains_group_readable(selection_node):
     for path in directory.rglob('*'):
         assert stat.S_IMODE(path.stat().st_mode) & 0o777 == (0o750 if path.is_dir() else 0o640)
     assert stat.S_IMODE((ctx.root / 'current').stat().st_mode) == 0o640
+
+
+def test_a_selection_whose_record_cannot_be_written_is_not_used(selection_node, monkeypatch):
+    """#467: recorded before it is used; the next call looks again and records it."""
+    from azazel_nexus.audit import AuditUnavailable
+    from azazel_nexus_runtime import mio_playbooks
+
+    ctx = activate(selection_node)
+    _, doc, media, add, baseline = selection_node
+    config = ctx.root.parent / 'config.json'
+    config.write_text('{}')
+    monkeypatch.setattr(mio_playbooks, 'selection_context', lambda *args: ctx)
+    holder = mio_playbooks.PlaybookSelectionHolder(config=config, root=ctx.root, clock=lambda: NOW)
+    events = []
+    first = holder.refresh(audit=events.append)
+    assert first is not None and len(events) == 1
+    service = mp.MissionPack(ctx)
+    doc.update(pack_version='2.0.0', rollback_predecessor=service.status(now=NOW)['pack_digest'])
+    add(dict(baseline, layer='site', library_id='disable-all', entries=[],
+             disable=[baseline['entries'][0]['id']]), 'disable-all')
+    stage_activate(service, media(doc))
+
+    def down(event):
+        raise AuditUnavailable('down')
+    with pytest.raises(AuditUnavailable):
+        holder.refresh(audit=down)
+    # The selection in use is still the recorded one, and the next call records the new one.
+    assert holder.selection.library is first
+    second = holder.refresh(audit=events.append)
+    assert second is not first and second.entries == ()
+    assert len(events) == 2 and events[-1]['ids'][-1] == 'disable-all'

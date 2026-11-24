@@ -83,10 +83,14 @@ class PlaybookSelectionHolder:
         # also cover config/pointer changes during discovery or config reads.
         stable = (revision == self._fingerprint(self._watch_paths)
                   and (before is None or before == after))
-        self.selection = selection
-        self._watch_paths = watch_paths
-        self._revision = after if stable else None
-        if not self._audited or selection != previous or self._revision is None:
+        revision_now = after if stable else None
+        if not self._audited or selection != previous or revision_now is None:
+            # Recorded before it is used (#467): when the record cannot be
+            # written, the selection in use stays the one that was recorded,
+            # and the next call looks again and tries the record again.
             audit(selection.as_event())
             self._audited = True
+        self.selection = selection
+        self._watch_paths = watch_paths
+        self._revision = revision_now
         return selection.library
