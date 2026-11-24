@@ -225,28 +225,69 @@ def test_a_withdrawal_at_the_ceiling_writes_the_same_generation_and_a_later_set_
     assert store.reading().status == "withdrawn" and not store.reading().permits
 
 
-def test_the_completing_set_needs_two_generations(monkeypatch, tmp_path, service):
-    """A set that completes the four writes pending at N+1 and opens at N+2."""
-    for ceiling, expect in ((6, "granted"), (5, "closed")):
-        directory = tmp_path / f"c{ceiling}"
-        directory.mkdir(mode=0o700)
-        monkeypatch.setattr(mc, "_MAX_GENERATION", ceiling)
-        svc = entry.MioEntryService()
-        svc.consent = ConsentStore(directory, owner=os.geteuid())
-        # three sets: generation 3; the fourth is pending at 4, opens at 5
-        # (ceiling 6: room) or has no room for its confirm when the ceiling is 5.
-        for expected, prerequisite in enumerate(list(PREREQUISITES)[:-1]):
-            svc.consent.set_prerequisite(prerequisite, operator="uid:1",
-                                         expected_generation=expected)
-        monkeypatch.setattr(mc, "_MAX_GENERATION", ceiling if ceiling == 6 else 4)
+def test_a_completing_set_with_two_generations_left_opens_the_grant(monkeypatch, service):
+    monkeypatch.setattr(mc, "_MAX_GENERATION", 5)
+    set_first_three(service)
+    reply = set_one(service, LAST, 3)  # pending at 4, opens at 5: exactly the room left
+    assert reply["status"] == "granted" and reply["generation"] == 5
+    assert service.consent.reading().permits is True
+
+
+def test_a_completing_set_with_one_generation_left_writes_pending_and_confirm_is_exhausted(
+        monkeypatch, service):
+    """Pending (4) is written; opening it needs 5, which is above the ceiling.
+    The refusal comes from the open path, not from the premise, and the grant
+    is not in force."""
+    monkeypatch.setattr(mc, "_MAX_GENERATION", 4)
+    set_first_three(service)
+    seen = {"seal": [], "confirm": []}
+    real_seal, real_confirm = service.consent.seal, service.consent.confirm
+
+    def seal(generation):
         try:
-            reply = set_one(svc, LAST, 3)
-            outcome = reply["status"]
-        except entry.RequestRefused:
-            outcome = "closed"
-        view = svc.consent.reading()
-        assert outcome == expect, (ceiling, outcome)
-        assert view.permits == (expect == "granted")
+            return real_seal(generation)
+        except (mc.ConsentRefused, OSError) as exc:
+            seen["seal"].append((generation, str(exc)))
+            raise
+
+    def confirm(generation, **kw):
+        seen["confirm"].append(generation)
+        return real_confirm(generation, **kw)
+
+    monkeypatch.setattr(service.consent, "seal", seal)
+    monkeypatch.setattr(service.consent, "confirm", confirm)
+    with pytest.raises(entry.RequestRefused) as caught:
+        set_one(service, LAST, 3)
+    assert caught.value.detail == "opt_in_store"  # not `opt_in_stale`
+    events = ledger_events(service)
+    assert "mio.remote.opt_in" in events  # the pending record was written and recorded
+    view = service.consent.reading()
+    # The open path refused at the seal of generation 5, above the ceiling;
+    # `confirm` was never reached, and the pending record at 4 stays closed.
+    assert [g for g, _ in seen["seal"]] == [5] and seen["confirm"] == []
+    assert view.permits is False and view.status == "unconfirmed" and view.generation == 4
+
+
+def test_a_withdrawal_that_takes_the_last_generation_after_the_early_comparison_is_exhausted_not_stale(
+        monkeypatch, service):
+    """Early comparison passes at M-1 (3); a withdrawal then writes M (4, the
+    ceiling). The store refuses as exhausted before `make`: detail `opt_in_store`,
+    and `not_committed` is recorded."""
+    monkeypatch.setattr(mc, "_MAX_GENERATION", 4)
+    set_first_three(service)
+    real = service.consent.set_prerequisite
+
+    def moved(*a, **kw):
+        service.consent.withdraw("privacy_review", operator="uid:1001")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(service.consent, "set_prerequisite", moved)
+    with pytest.raises(entry.RequestRefused) as caught:
+        set_one(service, LAST, 3)
+    assert caught.value.detail == "opt_in_store"
+    assert w465.store_view(runtime_paths.mio_state_dir()) == {
+        "generation": 4, "status": "withdrawn", "permits": False}
+    assert ledger_events(service)[-2:] == [SET, "mio.remote.opt_in.not_committed"]
 
 
 # -- real processes: a set stalled before the comparison ------------------
@@ -306,6 +347,12 @@ def test_a_set_stalled_before_the_comparison_is_refused_after_the_withdrawal(
         assert result["events"] == ["mio.entry.request", SET,
                                     "mio.remote.opt_in.not_committed"]
         assert events.count(SET) == 3 + 1  # three earlier sets, and this one's line
+        # The persisted not_committed line: one, from this operator, for this prerequisite.
+        chain = RouteChain(service.router.ledger.directory)
+        lines = [i.event for i in chain
+                 if i.event["event_type"] == "mio.remote.opt_in.not_committed"]
+        assert len(lines) == 1
+        assert lines[0]["operator"] == "uid:1001" and lines[0]["prerequisite"] == LAST.value
 
 
 def test_control_after_the_withdrawal_four_explicit_sets_open_the_grant_and_one_send_goes(
