@@ -102,6 +102,9 @@ class KnowledgeContextBroker:
         #: Reads the identity of the grant marker (None: no grant). Taken when
         #: a request is accepted and again before the answer is adopted.
         self._grant_marker = grant_marker
+        #: True once this request called the peer (set just before the call, so
+        #: a record written after it belongs to an operation already done).
+        self.sent = False
         self._slot = BoundedSemaphore(1)
         self._adoption_lock = threading.Lock()
         # (rule, identity) read once at start-up, or None. Closed for good once
@@ -164,6 +167,7 @@ class KnowledgeContextBroker:
     def handle(self, request) -> dict:
         if getattr(getattr(request, "verb", None), "name", None) != CONTEXT_VERB.name:
             return {"refusal": "unavailable", "stage": "refused_before_send"}
+        self.sent = False
         start = self._monotonic()
         deadline_ms = request.arguments["deadline_ms"]
         deadline_monotonic = request.arguments["deadline_monotonic_ns"] / 1_000_000_000
@@ -217,6 +221,7 @@ class KnowledgeContextBroker:
                 self._audit({"event_type": "knowledge.context.requested",
                              "outcome": "attempted"})
                 phase = "client"
+                self.sent = True
                 verified = self._client.request_context(
                     frame=frame,
                     privacy_class=PrivacyClass.P0_PUBLIC,
@@ -275,10 +280,17 @@ class KnowledgeContextBroker:
                 else:
                     check_grant()
                 phase = "verified"
-                self._audit({"event_type": "knowledge.context.completed",
-                             "outcome": "verified_advisory",
-                             "response_bytes": len(encoded),
-                             "elapsed_ms": min(10_000, int((self._monotonic() - start) * 1000))})
+                try:
+                    self._audit({"event_type": "knowledge.context.completed",
+                                 "outcome": "verified_advisory",
+                                 "response_bytes": len(encoded),
+                                 "elapsed_ms": min(10_000, int((self._monotonic() - start) * 1000))})
+                except AuditUnavailable:
+                    # The peer was called and its answer verified, and the
+                    # record could not be written (#467). The answer is not
+                    # adopted and no second `completed` is written: the guard
+                    # owes this one, and says so with the word for it.
+                    return {"refusal": "unavailable", "stage": "unrecorded"}
                 return result
         except TimeoutError:
             outcome = "timeout"
@@ -342,13 +354,15 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
         # records exactly what it recorded before.
         event["observation_rule"] = "loaded"
     ledger.append(event)
-    guard = ChainGuard(ledger.append)
+    guard = ChainGuard(ledger.append, ledger.settle)
     #: Set when the record of a verified answer could not be written.
     unrecorded = [False]
 
     def audit(event: dict) -> None:
         try:
-            guard.append(event)
+            # Once the peer was called, a record that cannot be written is a
+            # debt of the operation already done, not of one that never ran.
+            guard.append(event, performed=broker.sent)
         except AuditChainBroken:
             if (event["event_type"] == "knowledge.context.completed"
                     and event.get("outcome") == "verified_advisory"):
@@ -367,7 +381,9 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
     def handle(request):
         """Record before send; on a broken chain nothing is sent to Knowledge."""
         unrecorded[0] = False
-        if guard.broken:
+        if guard.broken or (guard.owed and not guard.settle_owed()):
+            # Broken, or a write's outcome is still unknown (#467): nothing is
+            # sent until the ledger says where it stands.
             guard.count_unrecorded()
             return {"refusal": "unavailable", "stage": "refused_before_send"}
         reply = broker.handle(request)
