@@ -148,7 +148,7 @@ def _anchor_row(event) -> bool:
         opens = event.get("opens_generation")
         return (keys == {"event_type", "operator", "at", "granted", "missing", "withdrawn",
                          "generation", "opens_generation", "occurred_at"}
-                and type(event.get("at")) is str and event.get("at")
+                and type(event.get("at")) is str and bool(event.get("at"))
                 and event.get("granted") == sorted(_PREREQUISITE_VALUES)
                 and event.get("missing") == [] and event.get("withdrawn") is None
                 and type(opens) is int and opens == generation + 1)
@@ -156,7 +156,7 @@ def _anchor_row(event) -> bool:
         reason = event.get("reason")
         return (keys == {"event_type", "operator", "at", "reason", "generation", "drained",
                          "occurred_at"}
-                and type(event.get("at")) is str and event.get("at")
+                and type(event.get("at")) is str and bool(event.get("at"))
                 and type(reason) is str and reason in WITHDRAWAL_REASONS
                 and type(event.get("drained")) is bool)
     return False
