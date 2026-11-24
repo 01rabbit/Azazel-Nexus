@@ -235,6 +235,31 @@ class AuditLedger:
             )
         return entry.sequence, entry.event_hash
 
+    def _check_terminated(self) -> None:
+        """A non-empty file must end at a line boundary, or its last line is torn.
+
+        A line missing only its newline still parses and hashes, so it would be
+        taken for a whole record, and the next append would join onto it.
+        """
+        try:
+            with self.path.open("rb") as handle:
+                if handle.seek(0, os.SEEK_END) == 0:
+                    return
+                handle.seek(-1, os.SEEK_END)
+                last = handle.read(1)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise AuditUnavailable(f"{self.path} could not be read: {exc}") from exc
+        if last != b"\n":
+            raise AuditChainBroken(f"{self.path} does not end at a line boundary (torn last line)")
+
+    def first_sequence(self) -> Optional[int]:
+        """The sequence of the file's first record (None for an empty file)."""
+        for entry in self:
+            return entry.sequence
+        return None
+
     def settle(self, entry: AuditEntry, *, absent_head: tuple[int, str]) -> str:
         """Whether `entry` is in this file: `"present"` or `"absent"`.
 
@@ -249,6 +274,7 @@ class AuditLedger:
         cannot be read raises `AuditUnavailable`: the outcome stays unknown.
         """
 
+        self._check_terminated()
         head = self.head()
         if head == (entry.sequence, entry.recomputed()):
             tail = self._parse(self._tail_line(), "last record")
@@ -383,6 +409,7 @@ class AuditLedger:
             ensure_ascii=False,
         )
 
+        self._check_terminated()
         # What a failure means depends on how far the write got.
         offset = 0
         written = 0

@@ -341,3 +341,26 @@ def test_transport_turns_audit_unavailable_into_a_fixed_refusal():
     request = SimpleNamespace(verb=SimpleNamespace(name="v"))
     server._record_refusal(RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger"), None, b"", verb="v")
     assert server.audit_unavailable == 1 and refusals
+
+
+# -- a torn last line (#467, review 1 item 4) ---------------------------------
+
+def test_a_line_missing_only_its_newline_is_not_present_and_is_not_appended_to(tmp_path):
+    ledger = AuditLedger(tmp_path / "l.jsonl")
+    ledger.append({"event_type": "first"})
+    second = ledger.append({"event_type": "second"})
+    path = ledger.path
+    path.write_bytes(path.read_bytes()[:-1])     # the last byte (the newline) is missing
+    with pytest.raises(AuditChainBroken):
+        ledger.settle(second, absent_head=(1, second.previous_hash))
+    with pytest.raises(AuditChainBroken):
+        ledger.append({"event_type": "third"})
+    assert not path.read_bytes().endswith(b"\n")     # nothing was joined onto it
+
+
+def test_a_torn_file_is_also_refused_with_chain_from(tmp_path):
+    ledger = AuditLedger(tmp_path / "l.jsonl")
+    first = ledger.append({"event_type": "first"})
+    ledger.path.write_bytes(ledger.path.read_bytes()[:-1])
+    with pytest.raises(AuditChainBroken):
+        ledger.append({"event_type": "second"}, chain_from=(1, first.event_hash))
