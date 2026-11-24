@@ -142,9 +142,11 @@ def _consistent_grant_row(event) -> bool:
             and withdrawn.get("event_type") == WITHDRAWN_EVENT
             and all(type(withdrawn.get(k)) is str for k in ("operator", "at", "reason"))):
         return False
+    # entryd writes this row only for the pending grant that completes the four:
+    # all four granted, none missing, not withdrawn, and the generation it opens.
     opens = event.get("opens_generation", None)
-    return "opens_generation" not in event or (
-        type(opens) is int and opens == event.get("generation") + 1)
+    return (set(granted) == _PREREQUISITE_VALUES and not missing and withdrawn is None
+            and type(opens) is int and opens == event.get("generation") + 1)
 #: How long `set` waits for the send gate before it opens a grant. A sender
 #: inside a transport call holds it for up to a request deadline (60 s); entry's
 #: accept loop is single-threaded, so the wait is short. Not taken: the grant
@@ -473,7 +475,8 @@ class MioEntryService:
             self._withdrawals_recorded.add(identity)
         kind, generation = event.get("event_type"), event.get("generation")
         if kind == WITHDRAWN_EVENT:
-            anchor = identity is not None
+            # The original row `withdraw` writes carries `drained`.
+            anchor = identity is not None and type(event.get("drained")) is bool
         elif kind == "mio.remote.opt_in.set":
             # Exactly the shape `_opt_in` writes: who set which (known) prerequisite.
             # (the router adds `occurred_at` to every row it writes)

@@ -1587,8 +1587,10 @@ is not yet written -- when `audit.audit` reads `owed`. The key may also carry
 `state` is `owed` (no reason), `unverifiable` (with a reason) or
 `not_applicable` (the latest record is not a withdrawal), or whatever the state
 when malformed candidates were counted (then `recorded`, `present` or `none`
-can show too). Either part may be absent: a record owed shows `audit.audit`
-without `withdrawal_record`, a settled start check shows nothing. The key's
+can show too). `withdrawal_record` is left out when the start check found the withdrawal
+`recorded`, `present` or `none` and counted no malformed candidates; when it is
+there, `audit.audit` is there too. A record owed with no such start result shows
+`audit.audit` alone. The key's
 presence alone does not mean a record is owed. While an opt-in grant is `unsettled` (#468) that reply keeps
 its own shape, without the key), locald's `mio.local.admission`
 (`admitted: false` while a record is owed; on a chain found broken, the fixed
