@@ -535,9 +535,100 @@ in this build nothing holds the gate. This store is consent to route a
 sanitised question to an online AI provider only; it is not, and does not
 read, Knowledge peer authorisation.
 
+**A withdrawal committed and not recorded (#471).** `withdraw` commits to the
+store and only then writes `mio.remote.opt_in.withdrawn`. If entryd ends
+between the two, the withdrawal is in force (a request that checks whether it may send after the commit is refused; one that read the old generation before the commit may still start its transport after it, as the drain describes, and the backfill does not change or record that) and the ledger has no
+row for it. `main()` calls `recover_withdrawal()` once the ledger is verified,
+prepared and `mio.entry.started` is written, and before the socket is served
+(`ready`). It records the row when it can show that the row is missing. The
+reasoning, in order:
+
+* Ground. The store's latest record holds an explicit withdrawal (operator,
+  time, reason), and the retained ledger, scanned once while it is verified,
+  has no row for the same withdrawal. A withdrawal is identified by
+  `(generation, operator, at, reason)`. Any one of these counts as "recorded"
+  and nothing is written: the original `mio.remote.opt_in.withdrawn` row, an
+  `audit.late_record` whose `late_event` names it, or an `audit.outcome_settled`
+  whose `late_event` names it. A row counts only if it has one of those three
+  shapes and its generation is an int and its operator, time and reason are
+  strings; a row that looks like a candidate and is not well formed is not used
+  and is counted (`malformed_candidates` in the status), and never stops the
+  start. So a restart after the row was written, after a late record of the
+  running process (#467) was written but not yet settled, or after this
+  recovery itself, adds nothing.
+* Retention is decided by order, not by a clock. The ledger only appends and
+  retention retires the oldest segments first. A withdrawal's own row is written
+  after its commit; an anchor is a well-formed row written before that commit,
+  so it is appended before the withdrawal's row. The anchors are the grant rows
+  (`mio.remote.opt_in.set`, `mio.remote.opt_in`) and the withdrawal rows that
+  pass the shape check, each with an int generation of 1 or more, and one
+  counts for a withdrawal when its generation is below the withdrawal's. A row
+  counted as malformed, or of generation 0, is never an anchor. While the ledger
+  is scanned entryd remembers each anchor's sequence; the judgment is made
+  later, against the boundary read then (the start-up records are written
+  after the scan and retention may have moved), and an anchor counts only if its
+  sequence is above the boundary's. If one still stands, the withdrawal's row
+  was not retired. A ledger with no boundary has retired nothing and needs no
+  anchor. Without an anchor nothing is written (`no_earlier_anchor`). The
+  store's `at` and the segment's date are not compared: the ledger takes its
+  segment from a corrected clock, which can differ from the store's.
+* The row. An `audit.late_record` with `performed: true`, `late_event` (the
+  withdrawal's `event_type`, `operator`, `at`, `reason`, `generation`) and
+  `recovered_from: "consent_store"`. The last field tells it from the late record
+  a running entryd writes for a debt of its own (#467). `drained` is not in it:
+  after a restart nobody knows whether the senders were drained, and a value
+  would be a guess, so a reader must not read it as `drained: true` or `false`.
+  It is written to the control reserve like the other late records.
+* The recovery does not change the store's authority state: the store is read
+  and never written, the read does not move the store's rollback floor
+  (`latest_record` compares and does not remember), and the withdrawal stands
+  whether the row is written or not. It does hold back the next grant while it
+  is owed: a `set` needs the audit, and the guard's rule (#467) is that while a
+  debt is open nothing that needs a record runs, whereas a narrowing (`withdraw`)
+  does. This includes the case where only the control reserve is short for the
+  recovery row. The `set` is refused before it reads or writes the store (the
+  request is stopped while the debt cannot be settled), and goes through once
+  the row is written. When the row's write
+  fails after the start succeeded, it is a debt of the same guard, retried on
+  each tick and each status read; `mio.remote.opt_in.status` then carries
+  `audit.withdrawal_record` (`{"generation": N, "state": "owed"}`), a new
+  `withdraw` is not held back by it (its own record becomes a debt behind it,
+  and the reply is the usual `ledger` refusal), and a request that checks after the
+  commit is refused. After the
+  ledger recovers the row is written once. A write of unknown outcome keeps the
+  candidate line: a line found present adds nothing, one found absent is written
+  again. This is the case after the start; entryd that cannot verify the ledger
+  or write `mio.entry.started` does not start (#467), so it never reaches the
+  recovery.
+* Out of scope, with the reason in `audit.withdrawal_record.reason`:
+  `latest_record_not_a_withdrawal` (reported as `{"state": "not_applicable",
+  "reason": ..., "checked_generation": N}`: it is an observation of generation
+  N at start, not a finding. The store keeps one record, so whether an earlier
+  withdrawal was replaced by a later generation cannot be told, and nothing is
+  made up; an ordinary running grant shows this too),
+  `not_operator_withdrawal` (entryd's own `opt_in_not_confirmed` and
+  `audit_record_failed` have their own events), `ceiling_ambiguous` (checked before any
+  matching: at the highest generation a withdrawal is written at the same
+  generation as the one before, so two within the same second have the same
+  identity and one cannot be told from the other; nothing is claimed about the
+  identity there), `no_earlier_anchor`, `ledger_broken` (the chain is
+  broken; nothing is written to it, as in #458), `ledger_unreadable` (the
+  retention boundary could not be read when the decision was made), `store_unreadable`.
+* Why nothing is written when it cannot be shown. A row made from less than the
+  store's record and the ledger's own rows would be a claim the ledger cannot
+  support. Doubt is resolved toward not writing.
+
+This holds for the one case it was measured for: SIGKILL of entryd (kernel
+running) after the store commit of an operator `withdraw` and before its
+record, in a real `main()` process for the start-up call and the tick. It is
+not a general guarantee about other operations, and it is not evidence about a
+power loss.
+
 Tests: `tests/unit/test_mio_remote_consent.py`,
 `tests/unit/test_mio_entryd_opt_in.py`, `tests/unit/test_mio_remoted.py`
-(threads and real `flock` in temporary directories).
+(threads and real `flock` in temporary directories);
+`tests/unit/test_mio_remote_consent_w471.py` (real processes, SIGKILL between
+the store commit and the record, #471).
 
 ### Metadata-only entry daemon
 

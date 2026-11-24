@@ -552,6 +552,22 @@ class ConsentStore:
             return _UNAVAILABLE
         return _ABSENT if record is None else _reading_of(record, sealed)
 
+    def latest_record(self) -> Optional[ConsentRecord]:
+        """The one record the store holds, or None when there is none.
+
+        A read only, for an audit: it never writes, takes no gate and does not
+        move `_seen`. The rollback rule is applied as a comparison (a record
+        below a generation this process saw is refused), but what this read
+        observed is not remembered, so it cannot change what a later
+        `reading`, `set` or `withdraw` decides. Unlike `reading` it raises
+        (`ConsentRefused`, `OSError`) when the store cannot be read.
+        """
+        with self._lock, self._leaf(create=False) as leaf:
+            record = None if leaf is None else self._read_at(leaf)
+            if record is not None and record.generation < self._seen:
+                raise ConsentRefused("opt-in generation rolled back")
+            return record
+
     @contextmanager
     def send_gate(self) -> Iterator[ConsentReading]:
         """Hold the gate shared from the check until the transport returns.
