@@ -147,3 +147,25 @@ def test_a_break_found_by_a_diagnostic_stops_the_tick_from_settling(tmp_path, mo
     service.handle(_request("audit.verify", {}, principal=OPERATOR))
     assert sum(p.stat().st_size for p in service.ledger.segments()) == size
     assert service.guard.owed and kinds(service) == ["activation.unit_granted"]
+
+
+def test_a_tick_after_a_failed_settling_does_not_summarize_counts_already_in_the_chain(tmp_path, monkeypatch):
+    """5.1-5: the tick settles first; the counts a landed summary carried are not carried again."""
+    service = _service(tmp_path)
+    key = (900, "service", "activation.unit_granted", "service", "rate")
+    service._summary_pending[key] = 3
+    real = fail_next_fsync(monkeypatch)
+    service._summarize(only=key)
+    monkeypatch.setattr(os, "fsync", real)
+    assert service.guard.owed and service._summary_pending[key] == 3
+    # The window has passed. Settling cannot write its record yet: nothing is summarized.
+    service.monotonic = lambda: 10_000_000.0
+    internal = service.guard._internal
+    service.guard._internal = lambda event: (_ for _ in ()).throw(AuditUnavailable("down"))
+    service.tick()
+    assert kinds(service) == ["audit.rate_limited"]
+    # Back: the tick settles first (the 3 are taken off), then has nothing to summarize.
+    service.guard._internal = internal
+    service.tick()
+    assert kinds(service) == ["audit.rate_limited", "audit.outcome_settled"]
+    assert key not in service._summary_pending

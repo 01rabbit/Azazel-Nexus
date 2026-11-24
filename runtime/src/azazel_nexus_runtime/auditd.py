@@ -925,6 +925,8 @@ class AuditService:
         now = self.monotonic()
         keys = (only,) if only is not None else tuple(self._summary_pending)
         for key in keys:
+            if self.guard.owed and not self._settle_audit():
+                return          # what is pending may already be in the chain (#467)
             count = self._summary_pending.get(key, 0)
             if not count or now - self._summary_last.get(key, float("-inf")) < SUMMARY_WINDOW_S:
                 continue
@@ -977,9 +979,10 @@ class AuditService:
         """
 
         try:
-            if self.guard.owed:
-                self._settle_audit()
-            self._summarize()
+            # Settling first: a line of unknown outcome is decided (and what it
+            # counted is taken off) before anything is built from the counts.
+            if not self.guard.owed or self._settle_audit():
+                self._summarize()
             now = self.monotonic()
             if now - self._status_written >= STATUS_INTERVAL_S:
                 self.write_status()
