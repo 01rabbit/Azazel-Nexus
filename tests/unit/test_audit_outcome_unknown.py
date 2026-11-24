@@ -580,3 +580,35 @@ def test_one_operation_is_recorded_by_one_thing(tmp_path):
     assert nothing[0]["late_event"] == {"event_type": "op"}
     not_performed = run("notperf", "sync", False, True)
     assert not_performed == []
+
+
+def test_present_requires_the_line_before_to_be_the_one_it_followed(tmp_path):
+    """Review 6: a line that is not first in its file follows the line before it."""
+    import json
+    ledger = AuditLedger(tmp_path / "l.jsonl")
+    ledger.append({"event_type": "a"})
+    ledger.append({"event_type": "b"})
+    third = ledger.append({"event_type": "c"})
+    assert ledger.settle(third, absent_head=(2, third.previous_hash)) == "present"
+    lines = ledger.path.read_text().splitlines()
+    # The line before is replaced by another valid-looking record (same sequence, other hash).
+    other = json.loads(lines[1])
+    other["event_hash"] = "f" * 64
+    ledger.path.write_text("\n".join([lines[0], json.dumps(other, sort_keys=True), lines[2]]) + "\n")
+    with pytest.raises(AuditChainBroken):
+        ledger.settle(third, absent_head=(2, third.previous_hash))
+    # A gap in the sequence is a break as well.
+    gap = json.loads(lines[1])
+    gap["sequence"] = 7
+    ledger.path.write_text("\n".join([lines[0], json.dumps(gap, sort_keys=True), lines[2]]) + "\n")
+    with pytest.raises(AuditChainBroken):
+        ledger.settle(third, absent_head=(2, third.previous_hash))
+
+
+def test_the_line_before_is_found_across_a_chunk_boundary(tmp_path, monkeypatch):
+    from azazel_nexus import audit
+    monkeypatch.setattr(audit, "_TAIL_CHUNK", 16)         # smaller than a line
+    ledger = AuditLedger(tmp_path / "l.jsonl")
+    for kind in "abcd":
+        last = ledger.append({"event_type": kind})
+    assert ledger.settle(last, absent_head=(3, last.previous_hash)) == "present"

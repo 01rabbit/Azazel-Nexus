@@ -254,6 +254,29 @@ class AuditLedger:
         if last != b"\n":
             raise AuditChainBroken(f"{self.path} does not end at a line boundary (torn last line)")
 
+    def _previous_line(self) -> Optional[str]:
+        """The non-blank line before the last one (None when the last is the only one)."""
+        try:
+            with self.path.open("rb") as handle:
+                position = handle.seek(0, os.SEEK_END)
+                data = b""
+                while position > 0 and data.rstrip().count(b"\n") < 2:
+                    step = min(_TAIL_CHUNK, position)
+                    position -= step
+                    handle.seek(position)
+                    data = handle.read(step) + data
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise AuditUnavailable(f"{self.path} could not be read: {exc}") from exc
+        lines = [line for line in data.split(b"\n") if line.strip()]
+        if len(lines) < 2:
+            return None
+        try:
+            return lines[-2].decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise AuditChainBroken(f"{self.path} previous record is not UTF-8: {exc}") from exc
+
     def first_entry(self) -> Optional[AuditEntry]:
         """The file's first record (None for an empty file)."""
         for entry in self:
@@ -287,6 +310,14 @@ class AuditLedger:
                 raise AuditChainBroken(
                     f"{self.path} line {entry.sequence} does not follow the head it was written after"
                 )
+            # Not the file's first line: the line before it is the one it was
+            # written after, with the sequence before its own.
+            before = self._previous_line()
+            if before is not None:
+                prior = self._parse(before, "previous record")
+                if prior.sequence != entry.sequence - 1 or prior.event_hash != entry.previous_hash:
+                    raise AuditChainBroken(
+                        f"{self.path} line {entry.sequence} does not follow the line before it")
             return "present"
         if head == tuple(absent_head):
             return "absent"
