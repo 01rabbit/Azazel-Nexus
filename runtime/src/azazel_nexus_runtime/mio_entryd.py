@@ -121,6 +121,8 @@ CONTEXT_OBSERVE_VERB = Verb(
 #: The stored actor of a withdrawal entryd makes by itself.
 ENTRYD_ACTOR = "az-mio-entryd"
 WITHDRAWN_EVENT = "mio.remote.opt_in.withdrawn"
+#: The prerequisite values entryd writes into its opt-in rows (#471 anchors).
+_PREREQUISITE_VALUES = frozenset(p.value for p in PREREQUISITES)
 #: How long `set` waits for the send gate before it opens a grant. A sender
 #: inside a transport call holds it for up to a request deadline (60 s); entry's
 #: accept loop is single-threaded, so the wait is short. Not taken: the grant
@@ -451,15 +453,29 @@ class MioEntryService:
         if kind == WITHDRAWN_EVENT:
             anchor = identity is not None
         elif kind == "mio.remote.opt_in.set":
-            # The shape `_opt_in` writes: who set which prerequisite.
-            anchor = (type(event.get("operator")) is str
-                      and type(event.get("prerequisite")) is str)
+            # Exactly the shape `_opt_in` writes: who set which (known) prerequisite.
+            # (the router adds `occurred_at` to every row it writes)
+            anchor = (set(event) == {"event_type", "operator", "prerequisite", "generation",
+                                     "occurred_at"}
+                      and type(event.get("occurred_at")) is str
+                      and type(event.get("operator")) is str
+                      and type(event.get("prerequisite")) is str
+                      and event.get("prerequisite") in _PREREQUISITE_VALUES)
         elif kind == "mio.remote.opt_in":
-            # The shape `RemoteOptIn.as_event` writes, with the generation added.
+            # The shape `RemoteOptIn.as_event` writes, with the record's generation
+            # (and `opens_generation` on a completing grant) added.
             lists = (event.get("granted"), event.get("missing"))
-            anchor = (type(event.get("operator")) is str and type(event.get("at")) is str
-                      and all(type(v) is list and all(type(x) is str for x in v)
-                              for v in lists))
+            withdrawn = event.get("withdrawn")
+            anchor = ({"event_type", "operator", "at", "granted", "missing", "withdrawn",
+                       "generation", "occurred_at"} <= set(event)
+                      <= {"event_type", "operator", "at", "granted", "missing", "withdrawn",
+                          "generation", "opens_generation", "occurred_at"}
+                      and type(event.get("occurred_at")) is str
+                      and type(event.get("operator")) is str and type(event.get("at")) is str
+                      and all(type(v) is list
+                              and all(type(x) is str and x in _PREREQUISITE_VALUES for x in v)
+                              for v in lists)
+                      and (withdrawn is None or type(withdrawn) is dict))
         else:
             anchor = False
         if anchor and type(generation) is int and generation >= 1:

@@ -586,8 +586,10 @@ reasoning, in order:
   is owed: a `set` needs the audit, and the guard's rule (#467) is that while a
   debt is open nothing that needs a record runs, whereas a narrowing (`withdraw`)
   does. This includes the case where only the control reserve is short for the
-  recovery row. The `set` is refused before the store is touched, and goes
-  through once the row is written. When the row's write
+  recovery row. The `set` still reads the store (its reading and the premise
+  check, which, like any read, may move the rollback floor) but never writes it:
+  it is refused when its audit append meets the open debt, and goes through
+  once the row is written. When the row's write
   fails after the start succeeded, it is a debt of the same guard, retried on
   each tick and each status read; `mio.remote.opt_in.status` then carries
   `audit.withdrawal_record` (`{"generation": N, "state": "owed"}`), a new
