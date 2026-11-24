@@ -26,6 +26,8 @@ start-up recovery of the withdrawal record and prints JSON. `plan` keys:
 `oldrows <root>`: one row of a process; the parent renames its segment
 to a day 20 days ago and runs it again (retention keeps 14 days).
 
+`plant <root> <events-json>`: rows of any shape written through the ledger.
+
 `setonly <root> <expected>`: one `set` naming `expected` (a later generation).
 """
 
@@ -90,6 +92,16 @@ def _fault_append(service, kind: str, only=lambda event: True, flag: str | None 
             raise AuditOutcomeUnknown(
                 "injected", entry=entry, path=ledger._target(),
                 absent_head=(entry.sequence - 1, entry.previous_hash))
+        if kind == "unknown_absent" and fired["n"] == 1:
+            # A complete line that is not in the file: the outcome is unknown
+            # and a settling finds the head where it would have been.
+            from azazel_nexus.audit import AuditEntry
+
+            head = ledger.head()
+            draft = AuditEntry(head[0] + 1, head[1], "", event)
+            entry = AuditEntry(draft.sequence, draft.previous_hash, draft.recomputed(), event)
+            raise AuditOutcomeUnknown("injected", entry=entry, path=ledger._target(),
+                                      absent_head=head)
         raise AuditUnavailable("injected")
 
     ledger._append_once = append
@@ -199,6 +211,9 @@ def restart(root: str, plan: dict) -> None:
         except entry.RequestRefused as exc:
             out["new_withdraw"] = {"refused": exc.detail}
         out["store_after_new_withdraw"] = _view(service)
+    if plan.get("settle"):
+        out["settled"] = service.guard.settle_owed()
+        out["status_settled"] = status()
     if plan.get("heal"):
         os.unlink(flag)
         service.guard.settle_owed()
@@ -213,6 +228,15 @@ def oldrows(root: str) -> None:
     service = entry.MioEntryService()
     service.router.ledger.prepare()
     service.router._record({"event_type": "mio.entry.started"}, reserved=True)
+
+
+def plant(root: str, events: list) -> None:
+    """Hash-valid rows of any shape, written through the ledger (not by hand)."""
+    entry, _ = _compose(root)
+    service = entry.MioEntryService()
+    service.router.ledger.prepare()
+    for event in events:
+        service.router._record(event, reserved=True)
 
 
 def setonly(root: str, expected: int) -> None:
@@ -231,6 +255,8 @@ if __name__ == "__main__":
         first(sys.argv[2], sys.argv[3], json.loads(sys.argv[4]))
     elif sys.argv[1] == "restart":
         restart(sys.argv[2], json.loads(sys.argv[3]))
+    elif sys.argv[1] == "plant":
+        plant(sys.argv[2], json.loads(sys.argv[3]))
     elif sys.argv[1] == "oldrows":
         oldrows(sys.argv[2])
     else:

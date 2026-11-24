@@ -120,6 +120,7 @@ CONTEXT_OBSERVE_VERB = Verb(
 #: explainer), not the advice listener -- and no argument is free text.
 #: The stored actor of a withdrawal entryd makes by itself.
 ENTRYD_ACTOR = "az-mio-entryd"
+WITHDRAWN_EVENT = "mio.remote.opt_in.withdrawn"
 #: How long `set` waits for the send gate before it opens a grant. A sender
 #: inside a transport call holds it for up to a request deadline (60 s); entry's
 #: accept loop is single-threaded, so the wait is short. Not taken: the grant
@@ -309,6 +310,10 @@ class MioEntryService:
         #: withdrawals the retained ledger already records, read while it is
         #: verified (an original row, a late record or a settlement record).
         self._withdrawals_recorded: set = set()
+        #: Rows that look like a recorded withdrawal and are not well formed.
+        self._malformed_candidates = 0
+        #: The lowest generation an opt-in row in the retained ledger names.
+        self._lowest_opt_in_generation: int | None = None
         #: The start-up recovery of a withdrawal's record (#471); see
         #: `recover_withdrawal`. None until it ran.
         self._backfill: dict | None = None
@@ -403,24 +408,50 @@ class MioEntryService:
         self._next_capability_check = self._clock() + remaining
 
     @staticmethod
-    def _withdrawal_identity(event) -> tuple | None:
-        if (type(event) is not dict
-                or event.get("event_type") != "mio.remote.opt_in.withdrawn"):
-            return None
-        identity = tuple(event.get(key) for key in ("generation", "operator", "at", "reason"))
-        return identity if None not in identity else None
+    def _withdrawal_candidate(event) -> tuple[tuple | None, bool]:
+        """`(identity, malformed)` of the withdrawal a ledger row names.
+
+        Only three shapes count: the original `mio.remote.opt_in.withdrawn`,
+        and an `audit.late_record` or `audit.outcome_settled` whose
+        `late_event` is such a row. An unrelated row is not a candidate. A
+        candidate whose fields are not an int generation and three strings is
+        malformed: it is counted, never used to match.
+        """
+        kind = event.get("event_type")
+        if kind == WITHDRAWN_EVENT:
+            candidate = event
+        elif kind in ("audit.late_record", "audit.outcome_settled"):
+            if "late_event" not in event:
+                return None, False
+            candidate = event["late_event"]
+            if type(candidate) is not dict:
+                return None, True
+            if candidate.get("event_type") != WITHDRAWN_EVENT:
+                return None, False
+        else:
+            return None, False
+        generation = candidate.get("generation")
+        texts = tuple(candidate.get(key) for key in ("operator", "at", "reason"))
+        if type(generation) is not int or any(type(text) is not str for text in texts):
+            return None, True
+        return (generation, *texts), False
 
     def _note_withdrawal(self, event) -> None:
-        """Remember which withdrawals the ledger records (#471).
-
-        An original row, and the `late_event` of a late record or of a
-        settlement record, name a withdrawal the same way.
-        """
-        identity = self._withdrawal_identity(event)
-        if identity is None:
-            identity = self._withdrawal_identity(event.get("late_event"))
+        """Remember, while the ledger is verified, which withdrawals it records (#471)
+        and the lowest generation any opt-in row names (the anchor: a row that
+        precedes every later one, so a retained anchor means later rows were
+        not retired)."""
+        identity, malformed = self._withdrawal_candidate(event)
+        if malformed:
+            self._malformed_candidates += 1
         if identity is not None:
             self._withdrawals_recorded.add(identity)
+        generation = event.get("generation")
+        if (str(event.get("event_type", "")).startswith("mio.remote.opt_in")
+                and type(generation) is int
+                and (self._lowest_opt_in_generation is None
+                     or generation < self._lowest_opt_in_generation)):
+            self._lowest_opt_in_generation = generation
 
     def _written(self, event) -> None:
         """Remember a capability record the moment the ledger holds it.
@@ -665,17 +696,17 @@ class MioEntryService:
             self.ledger_break_reason = guard.last_break
         return settled
 
-    def _retained_from(self, at: str) -> str | None:
-        """Why the ledger cannot show whether a withdrawal made at `at` was recorded.
+    def _retained_from(self, generation: int) -> str | None:
+        """Why the ledger cannot show whether the withdrawal of `generation` was recorded.
 
-        None when the retained chain covers that day: it starts at genesis, or
-        the retired segments are all of an earlier day. A boundary that names
-        the migrated legacy file covers nothing that can be checked here.
+        Retention retires the oldest segments first and the ledger only
+        appends, so a row that precedes the withdrawal and is still retained
+        means the withdrawal's own row was not retired. Entryd writes each
+        generation's opt-in row before that generation is committed, and a
+        withdrawal comes after the grant it ends, so a retained row naming a
+        lower generation is that earlier row. No clock is compared. A chain
+        with no boundary has retired nothing and needs no anchor.
         """
-        try:
-            day = datetime.fromisoformat(at.replace("Z", "+00:00")).date().isoformat()
-        except ValueError:
-            return "at_unreadable"
         try:
             boundary = self.router.ledger.chain.boundary()
         except AuditChainBroken:
@@ -684,10 +715,8 @@ class MioEntryService:
             return "ledger_unreadable"
         if boundary is None:
             return None
-        retired = boundary["retired"]
-        if not retired.endswith(".jsonl") or retired[:10] != retired.removesuffix(".jsonl"):
-            return "retention_passed"
-        return None if day > retired[:10] else "retention_passed"
+        low = self._lowest_opt_in_generation
+        return None if low is not None and low < generation else "no_earlier_anchor"
 
     def recover_withdrawal(self) -> dict | None:
         """At start, record an operator withdrawal the store holds and the ledger does not (#471).
@@ -715,36 +744,46 @@ class MioEntryService:
             record = self.consent.latest_record()
         except (ConsentRefused, OSError):
             return {"state": "unverifiable", "reason": "store_unreadable"}
-        if record is None or record.withdrawn is None:
+        if record is None:
             return {"state": "none"}
-        operator, at, reason = record.withdrawn
         base = {"generation": record.generation}
+        if record.withdrawn is None:
+            # A later generation may have replaced a withdrawal; the store keeps
+            # one record, so there is nothing to match against.
+            return {**base, "state": "unverifiable",
+                    "reason": "latest_record_not_a_withdrawal"}
+        operator, at, reason = record.withdrawn
         if operator == ENTRYD_ACTOR or reason not in WITHDRAWAL_REASONS:
             return {**base, "state": "unverifiable", "reason": "not_operator_withdrawal"}
         if self.ledger_broken or guard._is_broken():
             return {**base, "state": "unverifiable", "reason": "ledger_broken"}
+        if record.generation >= _MAX_GENERATION:
+            # At the ceiling a withdrawal is written at the same generation as
+            # the one before, so two within a second are the same identity.
+            return {**base, "state": "unverifiable", "reason": "ceiling_ambiguous"}
         if (record.generation, operator, at, reason) in self._withdrawals_recorded:
             return {**base, "state": "present"}
-        reason_unknown = self._retained_from(at)
+        reason_unknown = self._retained_from(record.generation)
         if reason_unknown is not None:
             return {**base, "state": "unverifiable", "reason": reason_unknown}
-        late = {"event_type": "mio.remote.opt_in.withdrawn", "operator": operator,
+        late = {"event_type": WITHDRAWN_EVENT, "operator": operator,
                 "at": at, "reason": reason, "generation": record.generation}
         owed = Owed(late, None, None, True, extra={"recovered_from": "consent_store"})
         guard.owed.append(owed)
         return {**base, "state": "queued", "owed": owed}
 
     def backfill_status(self) -> dict | None:
-        """What start-up recovery found; None before it ran or when there was nothing."""
+        """What start-up recovery found; None before it ran or when there is nothing to say."""
         found = self._backfill
-        if found is None or found["state"] == "none":
+        if found is None:
             return None
         shown = {key: value for key, value in found.items() if key != "owed"}
         if found["state"] == "queued":
-            guard = self.guard
-            pending = any(item is found["owed"] for item in guard.owed)
+            pending = any(item is found["owed"] for item in self.guard.owed)
             shown["state"] = "owed" if pending else "recorded"
-        return shown
+        if self._malformed_candidates:
+            shown["malformed_candidates"] = self._malformed_candidates
+        return None if shown["state"] == "none" and not self._malformed_candidates else shown
 
     def _handle_request(self, request) -> dict:
         # Before anything is written: a refused request leaves only the
@@ -925,7 +964,8 @@ class MioEntryService:
                 if self.guard.owed:
                     reply["audit"] = self.guard.status()
             backfill = self.backfill_status()
-            if backfill is not None and backfill["state"] in ("owed", "unverifiable"):
+            if backfill is not None and (backfill["state"] in ("owed", "unverifiable")
+                                         or "malformed_candidates" in backfill):
                 # Which withdrawal and why, never the event itself (#471).
                 reply["audit"] = {**reply.get("audit", {"audit": self.guard.state}),
                                   "withdrawal_record": backfill}

@@ -296,27 +296,55 @@ def test_a_failing_audit_leaves_the_withdrawal_in_force_unresolved_then_one_row(
 # -- what cannot be shown --------------------------------------------------
 
 
-def test_retention_passed_writes_nothing_and_says_why(tmp_path):
-    posted, root = run_first(tmp_path, {"stop": "before_record", "old_ledger": True,
-                                        "at_days_ago": 25})
-    generation = store_view(root)["generation"]
-    boundary = json.loads((state_of(root) / "route/retained-boundary.json").read_text())
+def retire_everything_before(root):
+    """Date the chain's segment 20 days back and start a process today: retention
+    retires that segment, and with it every row written so far."""
+    from datetime import UTC, datetime, timedelta
+
+    route = state_of(root) / "route"
+    (today,) = route.glob("????-??-??.jsonl")
+    old = (datetime.now(UTC) - timedelta(days=20)).strftime("%Y-%m-%d")
+    today.rename(route / f"{old}.jsonl")
+    # `oldrows` composes, prepares (retention runs) and records a start row. The
+    # first process opens today's segment; the second sees both and retires the old.
+    for _ in range(2):
+        subprocess.run([sys.executable, str(CHILD), "oldrows", str(root)], check=True,
+                       env=w465._env(), timeout=60)
+    return json.loads((route / "retained-boundary.json").read_text())
+
+
+def test_no_earlier_row_retained_writes_nothing_and_says_why_even_with_a_later_date(tmp_path):
+    """The withdrawal's own date is today, after the retired segment's date. A clock
+    comparison would call the row missing; the order does not: no opt-in row of an
+    earlier generation is left, so nothing shows the withdrawal's row was kept."""
+    posted, root, generation = killed(tmp_path, {})
+    boundary = retire_everything_before(root)
     out = run_restart(root)
     assert out["recovery"] == {"generation": generation, "state": "unverifiable",
-                               "reason": "retention_passed"}
+                               "reason": "no_earlier_anchor"}
     assert total(withdrawal_rows(root, generation)) == 0
-    assert out["status_1"]["audit"]["withdrawal_record"]["reason"] == "retention_passed"
+    assert out["status_1"]["audit"]["withdrawal_record"]["reason"] == "no_earlier_anchor"
     assert zero_sends(sends(root, posted, generation))
-    dump("after-retention-passed.json", {"boundary": boundary, "recovery": out["recovery"],
-                                          "status": out["status_1"]})
+    dump("after-no-earlier-anchor.json", {"boundary": boundary, "recovery": out["recovery"],
+                                           "status": out["status_1"]})
 
 
-def test_a_retained_day_after_the_boundary_is_still_recovered(tmp_path):
+def test_an_earlier_row_retained_after_a_boundary_means_the_withdrawal_row_would_be(tmp_path):
     posted, root = run_first(tmp_path, {"stop": "before_record", "old_ledger": True})
     generation = store_view(root)["generation"]
     assert (state_of(root) / "route/retained-boundary.json").exists()
     assert run_restart(root)["recovery"] == {"generation": generation, "state": "recorded"}
     assert withdrawal_rows(root, generation)["recovered"] == 1
+
+
+def test_the_ledger_writes_generations_in_order(tmp_path):
+    """The premise of the anchor: every opt-in row precedes the commit it names, so
+    rows are non-decreasing in generation along the chain."""
+    posted, root = run_first(tmp_path, {})
+    seen = [item.event["generation"] for item in RouteChain(state_of(root) / "route")
+            if str(item.event.get("event_type", "")).startswith("mio.remote.opt_in")
+            and "generation" in item.event]
+    assert seen and seen == sorted(seen)
 
 
 def test_a_later_generation_overwrote_the_store_nothing_is_made_up(tmp_path):
@@ -326,7 +354,10 @@ def test_a_later_generation_overwrote_the_store_nothing_is_made_up(tmp_path):
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout)["generation"] == generation + 1
     out = run_restart(root)
-    assert out["recovery"] is None
+    assert out["recovery"] == {"generation": generation + 1, "state": "unverifiable",
+                               "reason": "latest_record_not_a_withdrawal"}
+    assert out["status_1"]["audit"]["withdrawal_record"]["reason"] == \
+        "latest_record_not_a_withdrawal"
     assert total(withdrawal_rows(root, generation)) == 0
     dump("after-later-generation.json", {"restart": out["recovery"],
                                           "rows": withdrawal_rows(root, generation)})
@@ -342,7 +373,7 @@ def test_an_internal_withdrawal_is_not_recovered_and_says_why(tmp_path):
     dump("after-internal.json", {"restart": out["recovery"]})
 
 
-def test_same_generation_at_the_limit_is_told_apart_by_its_time(tmp_path):
+def test_the_ceiling_generation_is_never_recovered_because_two_withdrawals_collide(tmp_path):
     from azazel_nexus_runtime.mio_remote_consent import _MAX_GENERATION
 
     posted, root, generation = killed(tmp_path, {"max_two": True})
@@ -351,13 +382,71 @@ def test_same_generation_at_the_limit_is_told_apart_by_its_time(tmp_path):
     assert total(withdrawal_rows(root, generation, first_at)) == 1
     assert total(withdrawal_rows(root, generation, second_at)) == 0
     out = run_restart(root)
-    assert out["recovery"] == {"generation": generation, "state": "recorded"}
-    assert withdrawal_rows(root, generation, second_at)["recovered"] == 1
-    assert withdrawal_rows(root, generation, first_at) == {
-        "original": 1, "late": 0, "recovered": 0, "settled": 0}
-    dump("after-limit-generation.json", {
-        "first": withdrawal_rows(root, generation, first_at),
-        "second": withdrawal_rows(root, generation, second_at)})
+    assert out["recovery"] == {"generation": generation, "state": "unverifiable",
+                               "reason": "ceiling_ambiguous"}
+    assert total(withdrawal_rows(root, generation, second_at)) == 0
+    assert withdrawal_rows(root, generation, first_at)["original"] == 1
+    dump("after-ceiling.json", {"recovery": out["recovery"],
+                                "second": withdrawal_rows(root, generation, second_at)})
+
+
+def test_malformed_and_unrelated_rows_do_not_match_do_not_crash_and_are_counted(tmp_path):
+    posted, root, generation = killed(tmp_path, {})
+    sample = {"operator": "uid:1001", "reason": "operator_request"}
+    at = ConsentStore(state_of(root)).latest_record().withdrawn[1]
+    rows = [
+        # Well-formed shape, wrong outer type: not a candidate.
+        {"event_type": "mio.route", "at": at, "generation": generation, **sample},
+        # A late record of something else: not a candidate.
+        {"event_type": "audit.late_record", "performed": True,
+         "late_event": {"event_type": "mio.route", "at": at, "generation": generation, **sample}},
+        # Candidates with the wrong types: counted, never matched, never a crash.
+        {"event_type": "mio.remote.opt_in.withdrawn", "at": at, "generation": [generation],
+         **sample},
+        {"event_type": "mio.remote.opt_in.withdrawn", "at": at, "generation": True, **sample},
+        {"event_type": "audit.late_record", "performed": True, "late_event": "withdrawn"},
+        {"event_type": "audit.outcome_settled", "outcome": "absent",
+         "late_event": {"event_type": "mio.remote.opt_in.withdrawn", "generation": generation,
+                        "operator": {"x": 1}, "at": at, "reason": "operator_request"}},
+    ]
+    subprocess.run([sys.executable, str(CHILD), "plant", str(root), json.dumps(rows)],
+                   check=True, env=w465._env(), timeout=60)
+    out = run_restart(root)
+    assert out["recovery"] == {"generation": generation, "state": "recorded",
+                               "malformed_candidates": 4}
+    assert out["status_1"]["audit"]["withdrawal_record"]["malformed_candidates"] == 4
+    assert withdrawal_rows(root, generation)["recovered"] == 1
+    dump("after-malformed.json", {"recovery": out["recovery"]})
+
+
+def test_the_audit_read_does_not_move_the_rollback_floor(tmp_path):
+    """`latest_record` compares with what the process saw but never raises it: a store
+    that is rolled back after the audit read is judged by `reading` as before."""
+    import shutil
+
+    from azazel_nexus.mio_profile import PREREQUISITES
+
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    store = ConsentStore(state)
+    store.set_prerequisite(PREREQUISITES[0], operator="uid:1", expected_generation=0)
+    leaf = state / "remote-consent"
+    old = (leaf / "opt-in.json").read_bytes()
+    store.set_prerequisite(PREREQUISITES[1], operator="uid:1", expected_generation=1)
+
+    audited = ConsentStore(state)
+    assert audited.latest_record().generation == 2
+    (leaf / "opt-in.json").write_bytes(old)  # rolled back to generation 1
+    shutil.copymode(leaf, leaf)
+    assert audited._seen == 0
+    assert audited.reading().generation == 1  # not `unavailable`
+
+    reading_first = ConsentStore(state)
+    # (the file is generation 1 again)
+    reading_first._seen = 2
+    assert reading_first.reading().status == "unavailable"  # the floor still works when read
+    with pytest.raises(Exception):
+        reading_first.latest_record()  # and the audit read honours it as a comparison
 
 
 # -- overlap with the owed of #469 -----------------------------------------
