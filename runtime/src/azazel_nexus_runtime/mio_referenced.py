@@ -47,7 +47,7 @@ from azazel_nexus.reasoning_playbook import Library, match
 
 from .mio_playbooks import PlaybookSelectionHolder
 from .principal import PrincipalClass, PrincipalPolicy
-from .chain_guard import ChainGuard
+from .chain_guard import ChainGuard, settle_single
 from .protocol import Argument, ArgumentKind, Refusal, RequestRefused, Verb, VerbRegistry
 from .runtime_paths import (
     mio_reference_state_dir,
@@ -180,7 +180,7 @@ def main(
         raise AuditUnavailable("M.I.O. reference ledger unavailable") from error
     selection = PlaybookSelectionHolder(config=mission_pack_config(), root=mission_pack_root())
     service = ReferenceService()
-    guard = ChainGuard(ledger.append)
+    guard = ChainGuard(ledger.append, settle_single(ledger))
 
     def ledger_refusal():
         raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger")
