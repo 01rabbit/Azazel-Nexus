@@ -125,9 +125,11 @@ def test_audit_failure_never_advances_comparison_basis_or_dispatches(owner, monk
     def fail(event, **kwargs):
         raise AuditUnavailable("full")
     monkeypatch.setattr(service.router, "_record", fail)
-    with pytest.raises(AuditUnavailable):
+    # #467: not recorded, so refused with the fixed reason (the process goes on).
+    with pytest.raises(RequestRefused) as refused:
         service.handle(SimpleNamespace(arguments={"deadline_ms": 1000,
                                                   "privacy_class": "P0-public"}))
+    assert refused.value.detail == "ledger"
     assert service._last_capability is None
     monkeypatch.setattr(service.router, "_record", original)
     service.reconcile_capability()
