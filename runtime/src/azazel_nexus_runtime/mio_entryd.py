@@ -35,6 +35,7 @@ from azazel_nexus.remote_trust import remote_admission, unchecked_reading
 from azazel_nexus.routing import Route
 from azazel_nexus.sanitizer import PrivacyClass
 
+from .chain_guard import Owed
 from .mio_capability import read_capability
 from .mio_commissioning import commissioned_profile
 from .mio_locald import INFER_VERB
@@ -304,6 +305,13 @@ class MioEntryService:
         self._unsettled = None
         #: Why; kept in memory only. The status snapshot has a fixed shape.
         self.ledger_break_reason: str | None = None
+        #: Identities `(generation, operator, at, reason)` of the operator
+        #: withdrawals the retained ledger already records, read while it is
+        #: verified (an original row, a late record or a settlement record).
+        self._withdrawals_recorded: set = set()
+        #: The start-up recovery of a withdrawal's record (#471); see
+        #: `recover_withdrawal`. None until it ran.
+        self._backfill: dict | None = None
         # Verify before trusting a historical comparison basis. This happens
         # once per owner, never on the status/profile read path. Verification
         # and the scan are one pass over the retained segments only, so start
@@ -360,6 +368,7 @@ class MioEntryService:
     def _restore(self, item) -> None:
         event = item.event
         kind = event.get("event_type")
+        self._note_withdrawal(event)
         if kind not in CAPABILITY_EVENTS:
             return
         # A hash-valid but malformed record is a broken history, not a
@@ -392,6 +401,26 @@ class MioEntryService:
         remaining = max(0, min(CAPABILITY_INTERVAL_SECONDS,
                                stamp + CAPABILITY_INTERVAL_SECONDS - self._wall_clock()))
         self._next_capability_check = self._clock() + remaining
+
+    @staticmethod
+    def _withdrawal_identity(event) -> tuple | None:
+        if (type(event) is not dict
+                or event.get("event_type") != "mio.remote.opt_in.withdrawn"):
+            return None
+        identity = tuple(event.get(key) for key in ("generation", "operator", "at", "reason"))
+        return identity if None not in identity else None
+
+    def _note_withdrawal(self, event) -> None:
+        """Remember which withdrawals the ledger records (#471).
+
+        An original row, and the `late_event` of a late record or of a
+        settlement record, name a withdrawal the same way.
+        """
+        identity = self._withdrawal_identity(event)
+        if identity is None:
+            identity = self._withdrawal_identity(event.get("late_event"))
+        if identity is not None:
+            self._withdrawals_recorded.add(identity)
 
     def _written(self, event) -> None:
         """Remember a capability record the moment the ledger holds it.
@@ -636,6 +665,87 @@ class MioEntryService:
             self.ledger_break_reason = guard.last_break
         return settled
 
+    def _retained_from(self, at: str) -> str | None:
+        """Why the ledger cannot show whether a withdrawal made at `at` was recorded.
+
+        None when the retained chain covers that day: it starts at genesis, or
+        the retired segments are all of an earlier day. A boundary that names
+        the migrated legacy file covers nothing that can be checked here.
+        """
+        try:
+            day = datetime.fromisoformat(at.replace("Z", "+00:00")).date().isoformat()
+        except ValueError:
+            return "at_unreadable"
+        try:
+            boundary = self.router.ledger.chain.boundary()
+        except AuditChainBroken:
+            return "ledger_broken"
+        except OSError:
+            return "ledger_unreadable"
+        if boundary is None:
+            return None
+        retired = boundary["retired"]
+        if not retired.endswith(".jsonl") or retired[:10] != retired.removesuffix(".jsonl"):
+            return "retention_passed"
+        return None if day > retired[:10] else "retention_passed"
+
+    def recover_withdrawal(self) -> dict | None:
+        """At start, record an operator withdrawal the store holds and the ledger does not (#471).
+
+        `withdraw` commits to the store and then records. A stop between the
+        two leaves a withdrawal in force with no row. The store keeps only its
+        latest record, so only that one can be recovered, and only when the
+        retained ledger shows it was never recorded. The row is a late record
+        with `recovered_from`; `drained` is not in it (a restart cannot know).
+
+        Audit only: the store is read and never written, so the withdrawal
+        stands whatever happens here. A row that cannot be written is a debt
+        the guard settles on the tick, once.
+        """
+        self._backfill = self._plan_backfill()
+        if self._backfill.get("owed") is not None and self.guard is not None:
+            self._settle_audit()
+        return self.backfill_status()
+
+    def _plan_backfill(self) -> dict:
+        guard = self.guard
+        if guard is None:
+            return {"state": "none"}
+        try:
+            record = self.consent.latest_record()
+        except (ConsentRefused, OSError):
+            return {"state": "unverifiable", "reason": "store_unreadable"}
+        if record is None or record.withdrawn is None:
+            return {"state": "none"}
+        operator, at, reason = record.withdrawn
+        base = {"generation": record.generation}
+        if operator == ENTRYD_ACTOR or reason not in WITHDRAWAL_REASONS:
+            return {**base, "state": "unverifiable", "reason": "not_operator_withdrawal"}
+        if self.ledger_broken or guard._is_broken():
+            return {**base, "state": "unverifiable", "reason": "ledger_broken"}
+        if (record.generation, operator, at, reason) in self._withdrawals_recorded:
+            return {**base, "state": "present"}
+        reason_unknown = self._retained_from(at)
+        if reason_unknown is not None:
+            return {**base, "state": "unverifiable", "reason": reason_unknown}
+        late = {"event_type": "mio.remote.opt_in.withdrawn", "operator": operator,
+                "at": at, "reason": reason, "generation": record.generation}
+        owed = Owed(late, None, None, True, extra={"recovered_from": "consent_store"})
+        guard.owed.append(owed)
+        return {**base, "state": "queued", "owed": owed}
+
+    def backfill_status(self) -> dict | None:
+        """What start-up recovery found; None before it ran or when there was nothing."""
+        found = self._backfill
+        if found is None or found["state"] == "none":
+            return None
+        shown = {key: value for key, value in found.items() if key != "owed"}
+        if found["state"] == "queued":
+            guard = self.guard
+            pending = any(item is found["owed"] for item in guard.owed)
+            shown["state"] = "owed" if pending else "recorded"
+        return shown
+
     def _handle_request(self, request) -> dict:
         # Before anything is written: a refused request leaves only the
         # transport's (aggregated) refusal record.
@@ -814,6 +924,11 @@ class MioEntryService:
                 self._settle_audit()
                 if self.guard.owed:
                     reply["audit"] = self.guard.status()
+            backfill = self.backfill_status()
+            if backfill is not None and backfill["state"] in ("owed", "unverifiable"):
+                # Which withdrawal and why, never the event itself (#471).
+                reply["audit"] = {**reply.get("audit", {"audit": self.guard.state}),
+                                  "withdrawal_record": backfill}
             return reply
         return {"status": "unsettled", "generation": reading.generation,
                 "granted": [], "missing": [p.value for p in PREREQUISITES],
@@ -1342,6 +1457,7 @@ def main(
         service.router.ledger.prepare()
         service.router._record({"event_type": "mio.entry.started"}, reserved=True)
         service.reconcile_capability()
+        service.recover_withdrawal()
     except OSError as error:
         raise AuditUnavailable("M.I.O. route ledger unavailable") from error
     snapshot = SnapshotWriter(mio_status_path(), service.status_snapshot, limit=MIO_BYTES,

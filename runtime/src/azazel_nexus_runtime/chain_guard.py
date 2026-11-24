@@ -55,6 +55,9 @@ class Owed:
     record_absent: Optional[tuple] = None
     path: Any = None
     record_path: Any = None
+    #: Fields added to the late record of an operation whose line was never
+    #: written (e.g. `recovered_from`); never to a settlement record.
+    extra: Optional[dict] = None
 
 
 def settle_single(ledger) -> Callable[..., str]:
@@ -208,7 +211,7 @@ class ChainGuard:
             if owed.record is None:
                 if owed.entry is None:
                     owed.record = {"event_type": LATE, "late_event": owed.event,
-                                   "performed": True}
+                                   "performed": True, **(owed.extra or {})}
                 else:
                     if self._settle is None:
                         return False

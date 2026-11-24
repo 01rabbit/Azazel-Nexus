@@ -535,9 +535,65 @@ in this build nothing holds the gate. This store is consent to route a
 sanitised question to an online AI provider only; it is not, and does not
 read, Knowledge peer authorisation.
 
+**A withdrawal committed and not recorded (#471).** `withdraw` commits to the
+store and only then writes `mio.remote.opt_in.withdrawn`. If entryd ends
+between the two, the withdrawal is in force (sends are 0) and the ledger has no
+row for it. At start, after the ledger is verified and before requests are
+served, entryd looks for that case and, when it can show the row is missing,
+records it. The reasoning, in order:
+
+* Ground. The store's latest record holds an explicit withdrawal (operator,
+  time, reason), and the retained ledger, scanned once while it is verified,
+  has no row for the same withdrawal. A withdrawal is identified by
+  `(generation, operator, at, reason)`; the time is part of it because at the
+  highest generation a withdrawal is written at the same generation as the
+  one before. Any one of these counts as "recorded" and nothing is written: the
+  original `mio.remote.opt_in.withdrawn` row, an `audit.late_record` whose
+  `late_event` names it, or an `audit.outcome_settled` whose `late_event` names
+  it. So a restart after the row was written, after a late record of the
+  running process (#467) was written but not yet settled, or after this
+  recovery itself, adds nothing.
+* The row. An `audit.late_record` with `performed: true`, `late_event` (the
+  withdrawal's `event_type`, `operator`, `at`, `reason`, `generation`) and
+  `recovered_from: "consent_store"`. The last field tells it from the late record
+  a running entryd writes for a debt of its own (#467). `drained` is not in it:
+  after a restart nobody knows whether the senders were drained, and a value
+  would be a guess. It is written to the control reserve like the other late
+  records.
+* Audit only. The store is read and never written; the withdrawal stands
+  whether the row is written or not. While the row cannot be written (the
+  ledger is unavailable) it is a debt of the same guard, retried on each tick
+  and each status read; `mio.remote.opt_in.status` then carries
+  `audit.withdrawal_record` (`{"generation": N, "state": "owed"}`), a new
+  `withdraw` is not held back by it (its own record becomes a debt behind it,
+  and the reply is the usual `ledger` refusal), and sends stay at 0. After the
+  ledger recovers the row is written once.
+* Out of scope. The store keeps one record, so a withdrawal that a later `set`
+  replaced cannot be recovered, and nothing is made up for it. Withdrawals
+  entryd made itself (`opt_in_not_confirmed`, `audit_record_failed`) are not
+  recovered: they have their own events. A withdrawal whose day is no longer in
+  the retained ledger cannot be shown missing.
+* Why nothing is written when it cannot be shown. The status says why, with
+  the generation and no event: `retention_passed` (the segment of the day of
+  the withdrawal was retired, or the boundary is the migrated legacy file),
+  `not_operator_withdrawal`, `ledger_broken` (the chain is broken; nothing is
+  written to it, as in #458), `store_unreadable`, `at_unreadable`. A row made
+  from less than the store's record and the ledger's own rows would be a claim
+  the ledger cannot support.
+* `drained` is not inferred. Whether the old generation's senders had finished
+  is not known after a restart, so a reader of the recovered row must not read
+  it as `drained: true` or `false`.
+
+This holds for the one case it was measured for: SIGKILL of entryd (kernel
+running) after the store commit of an operator `withdraw` and before its
+record. It is not a general guarantee about other operations, and it is not
+evidence about a power loss.
+
 Tests: `tests/unit/test_mio_remote_consent.py`,
 `tests/unit/test_mio_entryd_opt_in.py`, `tests/unit/test_mio_remoted.py`
-(threads and real `flock` in temporary directories).
+(threads and real `flock` in temporary directories);
+`tests/unit/test_mio_remote_consent_w471.py` (real processes, SIGKILL between
+the store commit and the record, #471).
 
 ### Metadata-only entry daemon
 

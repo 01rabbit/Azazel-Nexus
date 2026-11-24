@@ -1,0 +1,416 @@
+"""#471: the audit row of an operator withdrawal that was committed to the store
+but never recorded (entryd stopped between the two).
+
+Real processes. One entryd process (`first`) is stopped with SIGKILL between
+the store commit and the ledger record; a second one composes on the same
+state; the sender is a third. Order is made with FIFOs; nothing is timed.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import select
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
+from azazel_nexus_runtime.mio_remote_consent import ConsentStore
+
+from azazel_nexus.route_ledger import RouteChain
+
+import test_mio_remote_consent_w465 as w465
+
+pytestmark = pytest.mark.real_process
+
+HERE = Path(__file__).resolve().parent
+CHILD = HERE / "_mio_remote_consent_w471_child.py"
+OUT = Path(os.environ["W471_OUT"]) if os.environ.get("W471_OUT") else None
+
+
+def dump(name, data):
+    if OUT is not None:
+        OUT.mkdir(parents=True, exist_ok=True)
+        (OUT / name).write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+
+def age_ledger(root):
+    """A route chain whose first segment is 20 days old and whose second is today's.
+
+    The chain does not depend on a segment's date, so the first process's
+    segment is renamed; the next process then retires it (retention: 14 days)
+    and writes the boundary.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    for _ in range(2):
+        subprocess.run([sys.executable, str(CHILD), "oldrows", str(root)], check=True,
+                       env=w465._env(), timeout=60)
+        if _ == 0:
+            route = state_of(root) / "route"
+            (today,) = route.glob("????-??-??.jsonl")
+            old = (datetime.now(UTC) - timedelta(days=20)).strftime("%Y-%m-%d")
+            today.rename(route / f"{old}.jsonl")
+
+
+def run_first(tmp_path, plan, tag="first"):
+    """Run `first` until it posts, SIGKILL it, and return what it posted."""
+    root, fifo = tmp_path / "root", tmp_path / f"{tag}.fifo"
+    root.mkdir(exist_ok=True)
+    if plan.get("old_ledger"):
+        age_ledger(root)
+    os.mkfifo(fifo)
+    rfd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+    child = subprocess.Popen(
+        [sys.executable, str(CHILD), "first", str(root), str(fifo), json.dumps(plan)],
+        env=w465._env(), stderr=subprocess.PIPE)
+    try:
+        buf, deadline = b"", time.monotonic() + 60
+        while b"\n" not in buf:
+            left = deadline - time.monotonic()
+            if left <= 0 or child.poll() is not None:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=10)
+                raise AssertionError(child.stderr.read().decode() or "no sync point")
+            ready, _, _ = select.select([rfd], [], [], min(left, 1))
+            if ready:
+                buf += os.read(rfd, 65536)
+        posted = json.loads(buf.splitlines()[0])
+        child.send_signal(signal.SIGKILL)
+        child.wait(timeout=10)
+    finally:
+        os.close(rfd)
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
+        child.stderr.close()
+    assert child.returncode == -signal.SIGKILL
+    return posted, root
+
+
+def run_restart(root, plan=None):
+    done = subprocess.run(
+        [sys.executable, str(CHILD), "restart", str(root), json.dumps(plan or {})],
+        capture_output=True, text=True, timeout=120, env=w465._env())
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout.strip().splitlines()[-1])
+
+
+def state_of(root):
+    return Path(root) / "var/lib/azazel/state/mio"
+
+
+def withdrawal_rows(root, generation, at=None):
+    """Rows that record the withdrawal of `generation` (made at `at`), by kind."""
+    chain = RouteChain(state_of(root) / "route")
+    found = {"original": 0, "late": 0, "recovered": 0, "settled": 0}
+    for item in chain:
+        event = item.event
+        if event.get("event_type") == "mio.remote.opt_in.withdrawn":
+            if event.get("generation") == generation and at in (None, event.get("at")):
+                found["original"] += 1
+            continue
+        late = event.get("late_event")
+        if (isinstance(late, dict) and late.get("event_type") == "mio.remote.opt_in.withdrawn"
+                and late.get("generation") == generation and at in (None, late.get("at"))):
+            if event["event_type"] == "audit.late_record":
+                found["recovered" if event.get("recovered_from") else "late"] += 1
+            else:
+                found["settled"] += 1
+    return found
+
+
+def total(found):
+    return sum(found.values())
+
+
+def store_view(root):
+    return w465.store_view(state_of(root))
+
+
+def store_bytes(root):
+    """Every byte the opt-in store holds (record, seal, gate): to show it was not touched."""
+    found = {}
+    base = state_of(root)
+    for path in sorted(base.rglob("*")):
+        if path.is_file() and "route" not in path.relative_to(base).parts:
+            found[str(path.relative_to(base))] = path.read_bytes().hex()
+    return found
+
+
+def killed(tmp_path, plan):
+    """A withdrawal committed to the store and not recorded (SIGKILL at the record)."""
+    posted, root = run_first(tmp_path, {"stop": "before_record", **plan})
+    return posted, root, store_view(root)["generation"]
+
+
+def sends(root, posted, generation):
+    return {"on_granted_generation": w465.send_in_new_process(
+                state_of(root), posted["granted_generation"]),
+            "on_withdrawal_generation": w465.send_in_new_process(
+                state_of(root), generation)}
+
+
+def zero_sends(sent):
+    return all(one["calls"] == 0 and one["refusal"] == "opt_in_not_granted"
+               for one in sent.values())
+
+
+RECORDED = "audit.late_record"
+
+
+def recovered_event(root, generation):
+    for item in RouteChain(state_of(root) / "route"):
+        if (item.event.get("event_type") == RECORDED
+                and item.event.get("recovered_from")
+                and item.event["late_event"]["generation"] == generation):
+            return item.event
+    return None
+
+
+# -- before and after ------------------------------------------------------
+
+
+def test_a_missing_row_is_recovered_once_and_the_store_is_not_touched(tmp_path):
+    posted, root, generation = killed(tmp_path, {})
+    before = {"store": store_view(root), "bytes": store_bytes(root),
+              "rows": withdrawal_rows(root, generation)}
+    assert before["store"] == {"generation": 6, "status": "withdrawn", "permits": False}
+    assert total(before["rows"]) == 0
+    first = run_restart(root)
+    assert first["has_recovery"] and first["recovery"] == {"generation": 6, "state": "recorded"}
+    after = withdrawal_rows(root, generation)
+    assert after == {"original": 0, "late": 0, "recovered": 1, "settled": 0}
+    assert store_bytes(root) == before["bytes"]
+    event = recovered_event(root, generation)
+    assert event["performed"] is True and event["recovered_from"] == "consent_store"
+    assert set(event["late_event"]) == {"event_type", "operator", "at", "reason", "generation"}
+    assert "drained" not in event["late_event"] and "drained" not in event
+    # A second start, and a third, add nothing.
+    second = run_restart(root)
+    assert second["recovery"] == {"generation": 6, "state": "present"}
+    run_restart(root)
+    assert withdrawal_rows(root, generation) == after
+    sent = sends(root, posted, generation)
+    assert zero_sends(sent)
+    assert store_bytes(root) == before["bytes"]
+    dump("after-recovered-once.json", {
+        "before": before["rows"], "after_first_restart": after,
+        "after_third_restart": withdrawal_rows(root, generation),
+        "recovered_row": event, "status_after_first_restart": first["status_1"],
+        "store_unchanged": True, "sends": sent})
+
+
+def test_an_original_row_means_no_recovery(tmp_path):
+    posted, root = run_first(tmp_path, {})
+    generation = store_view(root)["generation"]
+    assert withdrawal_rows(root, generation) == {"original": 1, "late": 0, "recovered": 0,
+                                                 "settled": 0}
+    restarted = run_restart(root)
+    assert restarted["recovery"] == {"generation": generation, "state": "present"}
+    assert withdrawal_rows(root, generation) == {"original": 1, "late": 0, "recovered": 0,
+                                                 "settled": 0}
+    dump("after-original-present.json", {"restart": restarted["recovery"]})
+
+
+def test_a_stop_right_after_the_recovery_adds_nothing(tmp_path):
+    posted, root, generation = killed(tmp_path, {})
+    park_restart(root, {}, tmp_path, "park")
+    mid = withdrawal_rows(root, generation)
+    assert mid == {"original": 0, "late": 0, "recovered": 1, "settled": 0}
+    run_restart(root)
+    assert withdrawal_rows(root, generation) == mid
+    dump("after-stop-right-after-recovery.json", {
+        "after_kill_of_the_recovering_process": mid,
+        "after_next_start": withdrawal_rows(root, generation)})
+
+
+
+
+def park_restart(root, plan, tmp_path, tag):
+    """A restart that is SIGKILLed right after its recovery."""
+    fifo = tmp_path / f"{tag}.fifo"
+    os.mkfifo(fifo)
+    rfd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+    child = subprocess.Popen(
+        [sys.executable, str(CHILD), "restart", str(root),
+         json.dumps({**plan, "park": str(fifo)})], env=w465._env(), stderr=subprocess.PIPE)
+    try:
+        deadline, buf = time.monotonic() + 60, b""
+        while b"\n" not in buf:
+            assert time.monotonic() < deadline and child.poll() is None, child.stderr.read()
+            if select.select([rfd], [], [], 1)[0]:
+                buf += os.read(rfd, 4096)
+        child.send_signal(signal.SIGKILL)
+        child.wait(timeout=10)
+    finally:
+        os.close(rfd)
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=10)
+        child.stderr.close()
+
+
+# -- the audit cannot be written ------------------------------------------
+
+
+def test_a_failing_audit_leaves_the_withdrawal_in_force_unresolved_then_one_row(tmp_path):
+    posted, root, generation = killed(tmp_path, {})
+    flag = tmp_path / "fail"
+    flag.write_text("x")
+    bytes_before = store_bytes(root)
+    out = run_restart(root, {"fault": "unavailable_until", "flag": str(flag),
+                             "then": "withdraw", "heal": True})
+    assert out["recovery"] == {"generation": generation, "state": "owed"}
+    shown = out["status_1"]
+    assert shown["status"] == "withdrawn" and shown["audit"]["audit"] == "owed"
+    assert shown["audit"]["withdrawal_record"] == {"generation": generation, "state": "owed"}
+    assert out["store_1"]["permits"] is False
+    # A new withdrawal is not held back by the open debt: the store moves on.
+    assert out["new_withdraw"] == {"refused": "ledger"}
+    assert out["store_after_new_withdraw"] == {"generation": generation + 1,
+                                               "status": "withdrawn", "permits": False}
+    assert "withdrawal_record" not in out["status_2"].get("audit", {})
+    assert withdrawal_rows(root, generation) == {"original": 0, "late": 0, "recovered": 1,
+                                                 "settled": 0}
+    assert withdrawal_rows(root, generation + 1) == {"original": 0, "late": 1, "recovered": 0,
+                                                     "settled": 0}
+    assert zero_sends(sends(root, posted, generation + 1))
+    run_restart(root)
+    assert withdrawal_rows(root, generation)["recovered"] == 1
+    assert withdrawal_rows(root, generation + 1) == {"original": 0, "late": 1, "recovered": 0,
+                                                     "settled": 0}
+    assert store_bytes(root) != bytes_before  # only the new withdrawal moved it
+    dump("after-audit-failure.json", {
+        "status_while_failing": shown, "new_withdraw": out["new_withdraw"],
+        "store_after_new_withdraw": out["store_after_new_withdraw"],
+        "rows_after_recovery_of_audit": {
+            "recovered_generation": withdrawal_rows(root, generation),
+            "new_generation": withdrawal_rows(root, generation + 1)}})
+
+
+# -- what cannot be shown --------------------------------------------------
+
+
+def test_retention_passed_writes_nothing_and_says_why(tmp_path):
+    posted, root = run_first(tmp_path, {"stop": "before_record", "old_ledger": True,
+                                        "at_days_ago": 25})
+    generation = store_view(root)["generation"]
+    boundary = json.loads((state_of(root) / "route/retained-boundary.json").read_text())
+    out = run_restart(root)
+    assert out["recovery"] == {"generation": generation, "state": "unverifiable",
+                               "reason": "retention_passed"}
+    assert total(withdrawal_rows(root, generation)) == 0
+    assert out["status_1"]["audit"]["withdrawal_record"]["reason"] == "retention_passed"
+    assert zero_sends(sends(root, posted, generation))
+    dump("after-retention-passed.json", {"boundary": boundary, "recovery": out["recovery"],
+                                          "status": out["status_1"]})
+
+
+def test_a_retained_day_after_the_boundary_is_still_recovered(tmp_path):
+    posted, root = run_first(tmp_path, {"stop": "before_record", "old_ledger": True})
+    generation = store_view(root)["generation"]
+    assert (state_of(root) / "route/retained-boundary.json").exists()
+    assert run_restart(root)["recovery"] == {"generation": generation, "state": "recorded"}
+    assert withdrawal_rows(root, generation)["recovered"] == 1
+
+
+def test_a_later_generation_overwrote_the_store_nothing_is_made_up(tmp_path):
+    posted, root, generation = killed(tmp_path, {})
+    done = subprocess.run([sys.executable, str(CHILD), "setonly", str(root), str(generation)],
+                          capture_output=True, text=True, env=w465._env(), timeout=60)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout)["generation"] == generation + 1
+    out = run_restart(root)
+    assert out["recovery"] is None
+    assert total(withdrawal_rows(root, generation)) == 0
+    dump("after-later-generation.json", {"restart": out["recovery"],
+                                          "rows": withdrawal_rows(root, generation)})
+
+
+def test_an_internal_withdrawal_is_not_recovered_and_says_why(tmp_path):
+    posted, root = run_first(tmp_path, {"internal": True})
+    generation = store_view(root)["generation"]
+    out = run_restart(root)
+    assert out["recovery"] == {"generation": generation, "state": "unverifiable",
+                               "reason": "not_operator_withdrawal"}
+    assert total(withdrawal_rows(root, generation)) == 0
+    dump("after-internal.json", {"restart": out["recovery"]})
+
+
+def test_same_generation_at_the_limit_is_told_apart_by_its_time(tmp_path):
+    from azazel_nexus_runtime.mio_remote_consent import _MAX_GENERATION
+
+    posted, root, generation = killed(tmp_path, {"max_two": True})
+    assert generation == _MAX_GENERATION
+    first_at, second_at = "2026-11-24T10:00:00Z", "2026-11-24T10:00:05Z"
+    assert total(withdrawal_rows(root, generation, first_at)) == 1
+    assert total(withdrawal_rows(root, generation, second_at)) == 0
+    out = run_restart(root)
+    assert out["recovery"] == {"generation": generation, "state": "recorded"}
+    assert withdrawal_rows(root, generation, second_at)["recovered"] == 1
+    assert withdrawal_rows(root, generation, first_at) == {
+        "original": 1, "late": 0, "recovered": 0, "settled": 0}
+    dump("after-limit-generation.json", {
+        "first": withdrawal_rows(root, generation, first_at),
+        "second": withdrawal_rows(root, generation, second_at)})
+
+
+# -- overlap with the owed of #469 -----------------------------------------
+
+
+def test_overlap_i_the_owed_late_record_was_never_written(tmp_path):
+    posted, root = run_first(tmp_path, {"fault": "unavailable"})
+    generation = store_view(root)["generation"]
+    assert posted["reply"] == {"refused": "ledger"}
+    assert total(withdrawal_rows(root, generation)) == 0
+    run_restart(root)
+    assert withdrawal_rows(root, generation) == {"original": 0, "late": 0, "recovered": 1,
+                                                 "settled": 0}
+    run_restart(root)
+    assert total(withdrawal_rows(root, generation)) == 1
+    dump("after-overlap-i.json", {"rows": withdrawal_rows(root, generation)})
+
+
+def test_overlap_ii_the_late_record_is_present_before_its_settlement(tmp_path):
+    posted, root = run_first(tmp_path, {"fault": "unavailable", "settle_unknown": True})
+    generation = store_view(root)["generation"]
+    assert withdrawal_rows(root, generation) == {"original": 0, "late": 1, "recovered": 0,
+                                                 "settled": 0}
+    run_restart(root)
+    assert withdrawal_rows(root, generation) == {"original": 0, "late": 1, "recovered": 0,
+                                                 "settled": 0}
+    dump("after-overlap-ii.json", {"rows": withdrawal_rows(root, generation)})
+
+
+def test_overlap_ii_b_the_line_itself_is_present_with_an_unknown_outcome(tmp_path):
+    posted, root = run_first(tmp_path, {"fault": "unknown_present"})
+    generation = store_view(root)["generation"]
+    assert withdrawal_rows(root, generation) == {"original": 1, "late": 0, "recovered": 0,
+                                                 "settled": 0}
+    run_restart(root)
+    assert withdrawal_rows(root, generation) == {"original": 1, "late": 0, "recovered": 0,
+                                                 "settled": 0}
+    dump("after-overlap-ii-b.json", {"rows": withdrawal_rows(root, generation)})
+
+
+@pytest.mark.parametrize("fault, expected", [
+    ("unknown_present", {"original": 0, "late": 0, "recovered": 1, "settled": 0}),
+    ("unavailable", {"original": 0, "late": 0, "recovered": 0, "settled": 0}),
+])
+def test_overlap_iii_the_recovery_row_has_an_unknown_outcome_then_stop(
+        tmp_path, fault, expected):
+    posted, root, generation = killed(tmp_path, {})
+    park_restart(root, {"fault": fault}, tmp_path, "iii")
+    assert withdrawal_rows(root, generation) == expected
+    run_restart(root)
+    assert withdrawal_rows(root, generation) == {"original": 0, "late": 0, "recovered": 1,
+                                                 "settled": 0}
+    run_restart(root)
+    assert total(withdrawal_rows(root, generation)) == 1
+    dump(f"after-overlap-iii-{fault}.json", {
+        "after_stop": expected, "after_restart": withdrawal_rows(root, generation)})

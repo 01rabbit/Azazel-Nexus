@@ -552,6 +552,16 @@ class ConsentStore:
             return _UNAVAILABLE
         return _ABSENT if record is None else _reading_of(record, sealed)
 
+    def latest_record(self) -> Optional[ConsentRecord]:
+        """The one record the store holds, or None when there is none.
+
+        A read only: it never writes, takes no gate and moves nothing. Unlike
+        `reading` it raises (`ConsentRefused`, `OSError`) when the store cannot
+        be read, so a caller that must tell "no record" from "unreadable" can.
+        """
+        with self._lock, self._leaf(create=False) as leaf:
+            return None if leaf is None else self._checked(self._read_at(leaf))
+
     @contextmanager
     def send_gate(self) -> Iterator[ConsentReading]:
         """Hold the gate shared from the check until the transport returns.
