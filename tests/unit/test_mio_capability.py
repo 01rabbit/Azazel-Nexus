@@ -7,6 +7,7 @@ import pytest
 from azazel_nexus_runtime.mio_entryd import MioEntryService
 from azazel_nexus_runtime.mio_capability import read_capability
 from azazel_nexus_runtime.mio_router import MioRouter
+from azazel_nexus_runtime.protocol import RequestRefused
 
 from azazel_nexus import model_admission
 from azazel_nexus.audit import AuditChainBroken, AuditUnavailable
