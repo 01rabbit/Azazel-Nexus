@@ -1580,10 +1580,14 @@ record. In every case nothing more is sent until a restart. The send itself happ
 keeps for its own refusals; on the socket the caller sees only `verb_unavailable`. A refusal is still sent when its own
 record cannot be written (it is counted as unrecorded); diagnostics keep
 answering: auditd's `audit.verify` (with `unavailable: true` when the ledger
-cannot be read), entryd's `mio.remote.opt_in.status` (an `audit` key, only
-while a record is owed: an outcome still unknown, or an operation done whose
-record is not yet written; while an opt-in grant is `unsettled` (#468) that
-reply keeps its own shape, without the key), locald's `mio.local.admission`
+cannot be read), entryd's `mio.remote.opt_in.status` (an `audit` key; a
+record is owed -- an outcome still unknown, or an operation done whose record
+is not yet written -- when `audit.audit` reads `owed`. The key also carries
+`withdrawal_record`, the start's check of the latest withdrawal (#471): its
+`state` is `owed` or `unverifiable` with a reason, or `not_applicable` when the
+latest record is not a withdrawal; the key's presence alone does not mean a
+record is owed. While an opt-in grant is `unsettled` (#468) that reply keeps
+its own shape, without the key), locald's `mio.local.admission`
 (`admitted: false` while a record is owed; on a chain found broken, the fixed
 refusal instead, as before). referenced, contextobsd and knowledge-contextd have no
 diagnostic verb. Three cases are told apart:

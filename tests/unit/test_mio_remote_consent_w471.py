@@ -366,6 +366,24 @@ def test_only_unusable_rows_remain_so_nothing_is_written(tmp_path):
     assert total(withdrawal_rows(root, generation)) == 0
 
 
+@pytest.mark.parametrize("row", [
+    {"event_type": "mio.remote.opt_in.set", "generation": 1},  # no operator, no prerequisite
+    {"event_type": "mio.remote.opt_in.set", "generation": 1, "operator": "uid:1001",
+     "prerequisite": ["remote use"]},
+    {"event_type": "mio.remote.opt_in", "generation": 1, "operator": "uid:1001"},
+], ids=["set-without-fields", "set-with-a-list-prerequisite", "grant-without-lists"])
+def test_a_grant_row_of_the_wrong_shape_does_not_anchor(tmp_path, row):
+    """Only rows of the shape entryd writes anchor the order argument: a positive
+    generation alone does not prove an earlier grant was retained."""
+    posted, root, generation = killed(tmp_path, {})
+    retire_everything_before(root)
+    subprocess.run([sys.executable, str(CHILD), "plant", str(root), json.dumps([row])],
+                   check=True, env=w465._env(), timeout=60)
+    out = run_restart(root)
+    assert out["recovery"]["reason"] == "no_earlier_anchor"
+    assert total(withdrawal_rows(root, generation)) == 0
+
+
 def test_retirement_that_moves_after_the_scan_takes_the_anchor_away(tmp_path):
     posted, root, generation = killed(tmp_path, {})
     out = run_restart(root, {"advance_boundary": True})

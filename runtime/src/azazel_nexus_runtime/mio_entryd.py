@@ -448,8 +448,20 @@ class MioEntryService:
         if identity is not None:
             self._withdrawals_recorded.add(identity)
         kind, generation = event.get("event_type"), event.get("generation")
-        anchor = (kind in ("mio.remote.opt_in.set", "mio.remote.opt_in")
-                  or (kind == WITHDRAWN_EVENT and identity is not None))
+        if kind == WITHDRAWN_EVENT:
+            anchor = identity is not None
+        elif kind == "mio.remote.opt_in.set":
+            # The shape `_opt_in` writes: who set which prerequisite.
+            anchor = (type(event.get("operator")) is str
+                      and type(event.get("prerequisite")) is str)
+        elif kind == "mio.remote.opt_in":
+            # The shape `RemoteOptIn.as_event` writes, with the generation added.
+            lists = (event.get("granted"), event.get("missing"))
+            anchor = (type(event.get("operator")) is str and type(event.get("at")) is str
+                      and all(type(v) is list and all(type(x) is str for x in v)
+                              for v in lists))
+        else:
+            anchor = False
         if anchor and type(generation) is int and generation >= 1:
             self._anchors.append((generation, item.sequence))
 
