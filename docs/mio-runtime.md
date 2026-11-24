@@ -557,15 +557,21 @@ reasoning, in order:
   running process (#467) was written but not yet settled, or after this
   recovery itself, adds nothing.
 * Retention is decided by order, not by a clock. The ledger only appends and
-  retention retires the oldest segments first, so when a row written before the
-  withdrawal is still retained, the withdrawal's own row was not retired. The
-  anchor is an opt-in row (`mio.remote.opt_in*`) naming a generation below the
-  withdrawal's; entryd records each generation's row before committing that
-  generation, and a withdrawal comes after the grant it ends. A ledger with no
-  retention boundary has retired nothing and needs no anchor. Without an anchor
-  nothing is written (`no_earlier_anchor`). The store's `at` and the segment's
-  date are not compared: the ledger takes its segment from a corrected clock,
-  which can differ from the store's.
+  retention retires the oldest segments first. A withdrawal's own row is written
+  after its commit; an anchor is a well-formed row written before that commit,
+  so it is appended before the withdrawal's row. The anchors are the grant rows
+  (`mio.remote.opt_in.set`, `mio.remote.opt_in`) and the withdrawal rows that
+  pass the shape check, each with an int generation of 1 or more, and one
+  counts for a withdrawal when its generation is below the withdrawal's. A row
+  counted as malformed, or of generation 0, is never an anchor. While the ledger
+  is scanned entryd remembers each anchor's sequence; the judgment is made
+  later, against the boundary read then (the start-up records are written
+  after the scan and retention may have moved), and an anchor counts only if its
+  sequence is above the boundary's. If one still stands, the withdrawal's row
+  was not retired. A ledger with no boundary has retired nothing and needs no
+  anchor. Without an anchor nothing is written (`no_earlier_anchor`). The
+  store's `at` and the segment's date are not compared: the ledger takes its
+  segment from a corrected clock, which can differ from the store's.
 * The row. An `audit.late_record` with `performed: true`, `late_event` (the
   withdrawal's `event_type`, `operator`, `at`, `reason`, `generation`) and
   `recovered_from: "consent_store"`. The last field tells it from the late record
@@ -573,9 +579,15 @@ reasoning, in order:
   after a restart nobody knows whether the senders were drained, and a value
   would be a guess, so a reader must not read it as `drained: true` or `false`.
   It is written to the control reserve like the other late records.
-* Audit only. The store is read and never written, and the read does not move
-  the store's rollback floor (`latest_record` compares and does not remember).
-  The withdrawal stands whether the row is written or not. When the row's write
+* The recovery does not change the store's authority state: the store is read
+  and never written, the read does not move the store's rollback floor
+  (`latest_record` compares and does not remember), and the withdrawal stands
+  whether the row is written or not. It does hold back the next grant while it
+  is owed: a `set` needs the audit, and the guard's rule (#467) is that while a
+  debt is open nothing that needs a record runs, whereas a narrowing (`withdraw`)
+  does. This includes the case where only the control reserve is short for the
+  recovery row. The `set` is refused before the store is touched, and goes
+  through once the row is written. When the row's write
   fails after the start succeeded, it is a debt of the same guard, retried on
   each tick and each status read; `mio.remote.opt_in.status` then carries
   `audit.withdrawal_record` (`{"generation": N, "state": "owed"}`), a new
@@ -587,14 +599,17 @@ reasoning, in order:
   or write `mio.entry.started` does not start (#467), so it never reaches the
   recovery.
 * Out of scope, with the reason in `audit.withdrawal_record.reason`:
-  `latest_record_not_a_withdrawal` (the latest record is not a withdrawal: a
-  later generation may have replaced one, and the store keeps one record, so
-  nothing is made up; this is also what an ordinary running grant shows),
+  `latest_record_not_a_withdrawal` (reported as `{"state": "not_applicable",
+  "reason": ..., "checked_generation": N}`: it is an observation of generation
+  N at start, not a finding. The store keeps one record, so whether an earlier
+  withdrawal was replaced by a later generation cannot be told, and nothing is
+  made up; an ordinary running grant shows this too),
   `not_operator_withdrawal` (entryd's own `opt_in_not_confirmed` and
-  `audit_record_failed` have their own events), `ceiling_ambiguous` (at the
-  highest generation a withdrawal is written at the same generation as the one
-  before, so two within the same second have the same identity and one cannot be
-  told from the other), `no_earlier_anchor`, `ledger_broken` (the chain is
+  `audit_record_failed` have their own events), `ceiling_ambiguous` (checked before any
+  matching: at the highest generation a withdrawal is written at the same
+  generation as the one before, so two within the same second have the same
+  identity and one cannot be told from the other; nothing is claimed about the
+  identity there), `no_earlier_anchor`, `ledger_broken` (the chain is
   broken; nothing is written to it, as in #458), `store_unreadable`.
 * Why nothing is written when it cannot be shown. A row made from less than the
   store's record and the ledger's own rows would be a claim the ledger cannot

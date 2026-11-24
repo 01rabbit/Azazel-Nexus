@@ -354,12 +354,15 @@ def test_only_unusable_rows_remain_so_nothing_is_written(tmp_path):
               "reason": "operator_request"}
     rows = [{"event_type": "mio.remote.opt_in.withdrawn", "generation": 0, **sample},
             {"event_type": "mio.remote.opt_in.set", "generation": 0, "operator": "uid:1001"},
-            {"event_type": "mio.remote.opt_in.withdrawn", "generation": [1], **sample}]
+            {"event_type": "mio.remote.opt_in.withdrawn", "generation": [1], **sample},
+            # An int generation below the withdrawal's, but a field that is not text.
+            {"event_type": "mio.remote.opt_in.withdrawn", "generation": 1,
+             **{**sample, "operator": {"x": 1}}}]
     subprocess.run([sys.executable, str(CHILD), "plant", str(root), json.dumps(rows)],
                    check=True, env=w465._env(), timeout=60)
     out = run_restart(root)
     assert out["recovery"]["reason"] == "no_earlier_anchor"
-    assert out["recovery"]["malformed_candidates"] == 1
+    assert out["recovery"]["malformed_candidates"] == 2
     assert total(withdrawal_rows(root, generation)) == 0
 
 
