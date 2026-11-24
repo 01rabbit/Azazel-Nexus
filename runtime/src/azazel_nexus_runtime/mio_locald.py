@@ -584,7 +584,10 @@ def main(
             pass
     except OSError as error:
         raise AuditUnavailable("M.I.O. local ledger unavailable") from error
-    guard = ChainGuard(ledger.append, settle_single(ledger))
+    # A selection record of unknown outcome is adopted, not written again, when
+    # settling finds its line (`selection` is the holder made just below).
+    guard = ChainGuard(ledger.append, settle_single(ledger),
+                       on_settled=lambda event, entry: selection.settled_present(event))
     selection = PlaybookSelectionHolder(config=mission_pack_config(), root=mission_pack_root())
     library = selection.refresh(audit=ledger.append)
     from .model_admission_evidence import (

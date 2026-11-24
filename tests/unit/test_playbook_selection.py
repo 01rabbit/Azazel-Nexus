@@ -362,3 +362,59 @@ def test_a_selection_whose_record_cannot_be_written_is_not_used(selection_node, 
     second = holder.refresh(audit=events.append)
     assert second is not first and second.entries == ()
     assert len(events) == 2 and events[-1]['ids'][-1] == 'disable-all'
+
+
+def test_a_selection_line_that_landed_is_adopted_without_a_second_line(selection_node, monkeypatch, tmp_path):
+    """5.1-4: the fsync of the selection's line fails, settling finds it, no second line follows."""
+    import errno
+    import os
+    from azazel_nexus.audit import AuditLedger, AuditOutcomeUnknown
+    from azazel_nexus_runtime import mio_playbooks
+    from azazel_nexus_runtime.chain_guard import ChainGuard, settle_single
+
+    ctx = activate(selection_node)
+    config = ctx.root.parent / 'config.json'
+    config.write_text('{}')
+    monkeypatch.setattr(mio_playbooks, 'selection_context', lambda *args: ctx)
+    holder = mio_playbooks.PlaybookSelectionHolder(config=config, root=ctx.root, clock=lambda: NOW)
+    ledger = AuditLedger(tmp_path / 'sel.jsonl')
+    guard = ChainGuard(ledger.append, settle_single(ledger),
+                       on_settled=lambda event, entry: holder.settled_present(event))
+    real = os.fsync
+    monkeypatch.setattr(os, 'fsync', lambda fd: (_ for _ in ()).throw(OSError(errno.EIO, 'x')))
+    with pytest.raises(AuditOutcomeUnknown):
+        holder.refresh(audit=guard.append)
+    monkeypatch.setattr(os, 'fsync', real)
+    assert holder.selection.library is None and holder._pending is not None    # not in use yet
+    assert guard.settle_owed()
+    library = holder.refresh(audit=guard.append)
+    assert library is not None and holder.selection.library is library          # adopted
+    kinds = [e.event['event_type'] for e in ledger]
+    assert kinds == ['mio.local.playbook_selection', 'audit.outcome_settled'], kinds
+    ledger.verify()
+
+
+def test_a_selection_line_that_did_not_land_is_recorded_again(selection_node, monkeypatch, tmp_path):
+    import errno
+    import os
+    from azazel_nexus.audit import AuditLedger, AuditOutcomeUnknown
+    from azazel_nexus_runtime import mio_playbooks
+    from azazel_nexus_runtime.chain_guard import ChainGuard, settle_single
+
+    ctx = activate(selection_node)
+    config = ctx.root.parent / 'config.json'
+    config.write_text('{}')
+    monkeypatch.setattr(mio_playbooks, 'selection_context', lambda *args: ctx)
+    holder = mio_playbooks.PlaybookSelectionHolder(config=config, root=ctx.root, clock=lambda: NOW)
+    ledger = AuditLedger(tmp_path / 'sel.jsonl')
+    guard = ChainGuard(ledger.append, settle_single(ledger),
+                       on_settled=lambda event, entry: holder.settled_present(event))
+    real = os.fsync
+    monkeypatch.setattr(os, 'fsync', lambda fd: (_ for _ in ()).throw(OSError(errno.EIO, 'x')))
+    with pytest.raises(AuditOutcomeUnknown):
+        holder.refresh(audit=guard.append)
+    monkeypatch.setattr(os, 'fsync', real)
+    ledger.path.write_text('')            # the line was lost (a power cut after the failed sync)
+    assert guard.settle_owed()            # absent, nothing was performed: nothing owed
+    assert holder.refresh(audit=guard.append) is not None
+    assert [e.event['event_type'] for e in ledger] == ['mio.local.playbook_selection']

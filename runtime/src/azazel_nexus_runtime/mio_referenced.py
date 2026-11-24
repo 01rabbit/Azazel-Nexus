@@ -180,7 +180,8 @@ def main(
         raise AuditUnavailable("M.I.O. reference ledger unavailable") from error
     selection = PlaybookSelectionHolder(config=mission_pack_config(), root=mission_pack_root())
     service = ReferenceService()
-    guard = ChainGuard(ledger.append, settle_single(ledger))
+    guard = ChainGuard(ledger.append, settle_single(ledger),
+                       on_settled=lambda event, entry: selection.settled_present(event))
 
     def ledger_refusal():
         raise RequestRefused(Refusal.VERB_UNAVAILABLE, "ledger")
