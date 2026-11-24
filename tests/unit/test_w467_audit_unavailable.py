@@ -344,8 +344,13 @@ def measure(daemon: str, entry: str, case: str, n: int = 1) -> dict:
             result["status_verb"] = "daemon not running"
         # Fault removed; one legitimate request.
         harness.arm("off")
-        # Long enough for the daemon with a tick (entryd) to settle on its own first.
-        time.sleep(1.0)
+        # entryd also settles on its tick, so which of the tick and the next
+        # request settles first would depend on timing. Its status verb settles
+        # first, deterministically (`_status_reply` calls `_settle_audit`), so the
+        # recovery request always meets a settled ledger. The other daemons
+        # settle at their next request.
+        if daemon == "mio-entryd" and status is not None and harness.alive():
+            result["settled_by_status"] = harness.ask({"verb": status, "arguments": {}})
         ops_mid = len(harness.log_lines("ops.log"))
         again = RECOVERY.get((daemon, entry), entry)
         if harness.alive():
