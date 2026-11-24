@@ -426,9 +426,12 @@ def test_one_resent_set_alone_adds_one_prerequisite_and_does_not_reopen(
     assert service.consent.reading().permits is False
 
 
-def test_no_shipped_client_sends_or_resends_the_set_verb():
-    """Nexus has no operator client: the verb name is built into no module that
-    could send it, so no shipped code resends it on a refusal."""
+def test_the_set_verb_is_named_only_by_entryd_and_the_store_docs():
+    """Only entryd (which declares and serves the verb) and the store's docstring
+    name `mio.remote.opt_in.set` in shipped code: no other module is a client of
+    it. This is a file-level check; it does not prove that entryd itself never
+    sends the verb (that rests on reading entryd: it serves the verb, it does
+    not connect to its own socket)."""
     root = HERE.parents[1]
     hits = []
     for base in (root / "src", root / "runtime" / "src", root / "tools", root / "scripts",
