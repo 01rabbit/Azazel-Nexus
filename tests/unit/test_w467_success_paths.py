@@ -132,4 +132,8 @@ def test_an_entry_whose_last_record_failed_does_not_return_the_reference(
     assert kinds.count("audit.outcome_settled") == 1
     # The handoff of the faulted request landed once; the retry is a new request with its own.
     assert kinds.count("mio.entry.handoff") == sent_before + 2
+    # One marker per request (the clean one, the faulted one, the retry): the retry is a new
+    # request (5.0 d), recorded once, and the faulted one's lines were not written twice.
+    assert kinds.count("mio.entry.request") == 3
+    assert kinds.count("mio.route.selected") == 3
     RouteChain(runtime_paths.mio_state_dir() / "route").verify()

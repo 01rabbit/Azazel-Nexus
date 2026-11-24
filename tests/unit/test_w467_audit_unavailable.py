@@ -335,6 +335,7 @@ def measure(daemon: str, entry: str, case: str, n: int = 1) -> dict:
             # A second request while the fault continues.
             result["second_request_during_fault"] = harness.ask(request_for(daemon, entry, 1))
             result["process_after_second"] = harness.exit_info()
+            result["events_added_by_second"] = harness.ledger()["events"][after["last_sequence"]:]
         if status is None:
             result["status_verb"] = "none (no diagnostic verb on this daemon)"
         elif harness.alive():
@@ -378,7 +379,10 @@ def measure(daemon: str, entry: str, case: str, n: int = 1) -> dict:
                                   ("lines", "last_sequence", "last_event", "verify")}
         result["records_final"] = final["records"]
         result["records_after_fault"] = after["records"]
-        result["events_added_by_recovery"] = final["events"][after["last_sequence"]:]
+        result["events_added_by_recovery"] = final["events"][
+            after["last_sequence"] + len(result.get("events_added_by_second", [])):]
+        result["peer_markers"] = [line.get("markers") for line in harness.log_lines("ops.log")
+                                  if line["op"] == "peer-call:locald.assess"]
         result["ops_recovery"] = _count(harness.log_lines("ops.log")[ops_mid:], "op")
         result["ops_total"] = _count(harness.log_lines("ops.log"), "op")
         result["alive_end"] = harness.alive()
@@ -441,12 +445,11 @@ def expected_records(daemon: str, entry: str, case: str, n: int) -> tuple[int, i
     if (daemon, entry) in NO_WRITE:
         return 0, 0
     if (daemon, entry) == ("mio-entryd", "opt_in_withdraw"):
-        # The withdrawal is made before its records: each request owes two (marker, withdrawn).
+        # The withdrawal is made first and its record follows; its marker owes nothing.
         if case == "pre":
-            return 0, 1
+            return (0, 1) if n == 2 else (0, 0)
         if case == "persist":
-            # The resends are answered from the withdrawal in force, never made again.
-            return 0, 2
+            return 0, 2          # one late record for each request made while the fault lasted
     if (daemon, entry) == ("knowledge-contextd", "context") and case == "pre" and n == 2:
         return 0, 1
     return (1 if case == "fsync" else 0), 0
@@ -502,15 +505,14 @@ def check(result: dict, *, clean: dict) -> None:
     if case == "persist" and (daemon, entry) in NEEDS_RECORD:
         second = result["second_request_during_fault"]
         assert not served(daemon, entry, second), (where, second)
-    # No request line is written twice: over the fault and the recovery together, each kind of
-    # line is at most as many as the requests that ran, times what one request writes.
-    records = result["records_final"]
+    # No request line is written twice: each request, taken by itself, writes no more of
+    # any kind of line than one request does (what the clean run wrote).
     per_request = Counter(e for e in clean_events if e not in SYSTEM)
-    requests = ((1 if result.get("warmup") else 0) + (0 if entry == "tick" else 1)
-                + (1 if "second_request_during_fault" in result else 0) + 1)
-    totals = Counter(r["event_type"] for r in records if r["event_type"] not in SYSTEM)
-    for kind, count in totals.items():
-        assert count <= requests * max(per_request.get(kind, 1), 1), (where, kind, count, requests)
+    records = result["records_final"]
+    for phase in ("events_added_by_fault_request", "events_added_by_second", "events_added_by_recovery"):
+        counts = Counter(e for e in result.get(phase, []) if e not in SYSTEM)
+        for kind, count in counts.items():
+            assert count <= max(per_request.get(kind, 1), 1), (where, phase, kind, count)
     settled = [r for r in records if r["event_type"] == "audit.outcome_settled"]
     late = [r for r in records if r["event_type"] == "audit.late_record"]
     # A line of unknown outcome is settled by its sequence and hash, once.
@@ -556,6 +558,9 @@ def check(result: dict, *, clean: dict) -> None:
         reference = ops.get("peer-call:referenced.reference", 0)
         # Each peer call follows its request's own marker line, once.
         assert assess <= markers and reference <= assess, (where, ops, markers)
+        # Each peer call follows a marker of its own request: no two calls share one.
+        seen = result["peer_markers"]
+        assert seen == sorted(set(seen)) and all(m >= 1 for m in seen), (where, seen)
         assert assess == 2 + (1 if during.get("peer-call:locald.assess") else 0), (where, ops, during)
         if case == "persist" or n == 1:
             assert not during, (where, during)
@@ -571,10 +576,10 @@ def check(result: dict, *, clean: dict) -> None:
         withdrawn = kinds.count("mio.remote.opt_in.withdrawn")
         withdrawn += sum(1 for r in late if r["late_event"].get("event_type") == "mio.remote.opt_in.withdrawn")
         withdrawn += sum(1 for r in settled if r.get("late_event", {}).get("event_type") == "mio.remote.opt_in.withdrawn")
-        # One withdrawal per request that commits: the fault request and the recovery. The second
-        # request while the fault continues (persist) is answered from the first, never committed
-        # again. Each withdrawal is recorded exactly once.
-        made = 2
+        # A withdrawal narrows whatever the ledger does, so each request commits (the fault
+        # request, the second one while the fault continues, the recovery), and each is
+        # recorded exactly once: as its line or as one late record.
+        made = 3 if case == "persist" else 2
         assert withdrawn == made, (where, kinds, late, settled)
     if daemon == "mio-entryd" and entry == "tick":
         assert kinds.count("mio.capability.transition") == 2, (where, kinds)

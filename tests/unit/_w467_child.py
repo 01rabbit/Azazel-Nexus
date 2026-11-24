@@ -43,8 +43,24 @@ def _log(name: str, **fields) -> None:
         handle.write(json.dumps({"t": round(time.monotonic(), 4), **fields}) + "\n")
 
 
+def _markers() -> int:
+    """How many request markers (`mio.entry.request`) the entry ledger holds now."""
+    count = 0
+    for current, _, names in os.walk("r/var/lib/azazel/state/mio"):
+        for name in names:
+            if name.endswith(".jsonl"):
+                try:
+                    with _REAL["open"](os.path.join(current, name), "rb") as handle:
+                        count += handle.read().count(b'"event_type":"mio.entry.request"')
+                except OSError:
+                    pass
+    return count
+
+
 def op(kind: str, **fields) -> None:
     """One operation (a peer call, a send) the daemon performed."""
+    if kind.startswith("peer-call:"):
+        fields["markers"] = _markers()      # the request markers on the ledger at the call
     _log("ops.log", op=kind, **fields)
 
 
