@@ -84,6 +84,11 @@ def _obs_frame() -> dict:
     return obs_frame()
 
 
+def advice_frame(variant: int) -> dict:
+    """An advice frame of its own per request: its digest is on that request's record."""
+    return {**ADVICE_FRAME, "request_id": f"w467-unit-{variant}"}
+
+
 def request_for(daemon: str, entry: str, variant: int = 0) -> dict:
     """The frame one entry sends. `refusal` is the transport's refusal path."""
     if entry == "refusal":
@@ -109,16 +114,16 @@ def request_for(daemon: str, entry: str, variant: int = 0) -> dict:
                 "event": {"ordinal": 1 + variant, "snapshot": "sha256:" + "a" * 64, "readable": True,
                           "occurred_at": _now_z(), "actor": "w467"}}
     if daemon == "mio-entryd":
-        return {"verb": "mio.advise", "arguments": {"deadline_ms": 3000}, "event": ADVICE_FRAME}
+        return {"verb": "mio.advise", "arguments": {"deadline_ms": 3000}, "event": advice_frame(variant)}
     if daemon == "mio-locald":
         return {"verb": "mio.local.infer", "arguments": {"deadline_ms": 3000},
-                "event": ADVICE_FRAME}
+                "event": advice_frame(variant)}
     if daemon == "mio-referenced":
-        return {"verb": "mio.reference", "arguments": {"deadline_ms": 300}, "event": ADVICE_FRAME}
+        return {"verb": "mio.reference", "arguments": {"deadline_ms": 300}, "event": advice_frame(variant)}
     if daemon == "mio-contextobsd":
         return {"verb": "mio.contextobs.observe", "arguments": {"deadline_ms": 320},
                 "event": _obs_frame()}
-    techniques = ["T1059", "T1059.001"] + (["T1110"] if variant >= 2 else [])
+    techniques = ["T1059", f"T{1100 + variant}"]          # its own set per request
     return {"verb": "knowledge.context",
             "arguments": {"deadline_ms": 2000, "deadline_monotonic_ns": 2**62},
             "event": {"frame": {"privacy_class": "P0-public", "techniques": techniques}}}
@@ -333,7 +338,7 @@ def measure(daemon: str, entry: str, case: str, n: int = 1) -> dict:
         status = harness.spec["status"]
         if case == "persist" and harness.alive():
             # A second request while the fault continues.
-            result["second_request_during_fault"] = harness.ask(request_for(daemon, entry, 1))
+            result["second_request_during_fault"] = harness.ask(request_for(daemon, entry, 3))
             result["process_after_second"] = harness.exit_info()
             result["events_added_by_second"] = harness.ledger()["events"][after["last_sequence"]:]
         if status is None:
@@ -381,8 +386,8 @@ def measure(daemon: str, entry: str, case: str, n: int = 1) -> dict:
         result["records_after_fault"] = after["records"]
         result["events_added_by_recovery"] = final["events"][
             after["last_sequence"] + len(result.get("events_added_by_second", [])):]
-        result["peer_markers"] = [line.get("markers") for line in harness.log_lines("ops.log")
-                                  if line["op"] == "peer-call:locald.assess"]
+        result["peer_calls"] = [line for line in harness.log_lines("ops.log")
+                                if line["op"].startswith(("peer-call:", "send:"))]
         result["ops_recovery"] = _count(harness.log_lines("ops.log")[ops_mid:], "op")
         result["ops_total"] = _count(harness.log_lines("ops.log"), "op")
         result["alive_end"] = harness.alive()
@@ -536,6 +541,14 @@ def check(result: dict, *, clean: dict) -> None:
         # One send per request that got to send: warmup, (fault), recovery. Never a resend.
         assert fault_sends == (1 if (n == 2 and case in ("pre", "fsync")) else 0), (where, during)
         assert sends == 2 + fault_sends, (where, ops, during)
+        # Record before send, per request: the line written just before each send is a
+        # `requested` line, and no two sends follow the same one (a `requested` line left by a
+        # request that was refused does not stand in for another's).
+        sent = [c for c in result["peer_calls"] if c["op"].startswith("send:")]
+        assert all(c["last_event"] == "knowledge.context.requested" for c in sent), (where, sent)
+        lines = [c["last_sequence"] for c in sent]
+        assert len(lines) == len(set(lines)) and lines == sorted(lines), (where, lines)
+        assert len({tuple(c["techniques"]) for c in sent}) == len(sent), (where, sent)
         # Record before send: every send has a `requested` line (a line without a send is fine).
         assert kinds.count("knowledge.context.requested") >= sends, (where, kinds)
         verified = [r for r in records if r["event_type"] == "knowledge.context.completed"
@@ -558,9 +571,13 @@ def check(result: dict, *, clean: dict) -> None:
         reference = ops.get("peer-call:referenced.reference", 0)
         # Each peer call follows its request's own marker line, once.
         assert assess <= markers and reference <= assess, (where, ops, markers)
-        # Each peer call follows a marker of its own request: no two calls share one.
-        seen = result["peer_markers"]
-        assert seen == sorted(set(seen)) and all(m >= 1 for m in seen), (where, seen)
+        # Each peer call is made after its own request's record (found by that request's frame
+        # digest on the ledger at the call), and no two calls belong to one request.
+        for name in ("peer-call:locald.assess", "peer-call:referenced.reference"):
+            calls = [c for c in result["peer_calls"] if c["op"] == name]
+            assert all(c["recorded"] for c in calls), (where, name, calls)
+            ids = [c["request_id"] for c in calls]
+            assert len(ids) == len(set(ids)), (where, name, ids)
         assert assess == 2 + (1 if during.get("peer-call:locald.assess") else 0), (where, ops, during)
         if case == "persist" or n == 1:
             assert not during, (where, during)
@@ -573,14 +590,17 @@ def check(result: dict, *, clean: dict) -> None:
     if daemon == "mio-entryd" and entry == "opt_in_withdraw":
         after = result["status_verb"]["reply"]["result"]
         assert after["status"] == "withdrawn", (where, after)
-        withdrawn = kinds.count("mio.remote.opt_in.withdrawn")
-        withdrawn += sum(1 for r in late if r["late_event"].get("event_type") == "mio.remote.opt_in.withdrawn")
-        withdrawn += sum(1 for r in settled if r.get("late_event", {}).get("event_type") == "mio.remote.opt_in.withdrawn")
         # A withdrawal narrows whatever the ledger does, so each request commits (the fault
-        # request, the second one while the fault continues, the recovery), and each is
-        # recorded exactly once: as its line or as one late record.
+        # request, the second one while the fault continues, the recovery). Each generation
+        # it made is recorded exactly once: as its line, or as one late record or settlement.
+        generations = [r["generation"] for r in records
+                       if r["event_type"] == "mio.remote.opt_in.withdrawn"]
+        generations += [r["late_event"]["generation"] for r in late
+                        if r["late_event"].get("event_type") == "mio.remote.opt_in.withdrawn"]
+        generations += [r["late_event"]["generation"] for r in settled
+                        if r.get("late_event", {}).get("event_type") == "mio.remote.opt_in.withdrawn"]
         made = 3 if case == "persist" else 2
-        assert withdrawn == made, (where, kinds, late, settled)
+        assert sorted(generations) == list(range(2, 2 + made)), (where, generations, kinds)
     if daemon == "mio-entryd" and entry == "tick":
         assert kinds.count("mio.capability.transition") == 2, (where, kinds)
     if daemon == "mio-contextobsd" and entry == "observe":

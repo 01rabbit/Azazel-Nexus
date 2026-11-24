@@ -43,24 +43,38 @@ def _log(name: str, **fields) -> None:
         handle.write(json.dumps({"t": round(time.monotonic(), 4), **fields}) + "\n")
 
 
-def _markers() -> int:
-    """How many request markers (`mio.entry.request`) the entry ledger holds now."""
-    count = 0
-    for current, _, names in os.walk("r/var/lib/azazel/state/mio"):
-        for name in names:
+def _ledger_lines(root: str) -> list:
+    """Every record under `root`, in order of file and line: (sequence, event)."""
+    found = []
+    for current, _, names in sorted(os.walk(root)):
+        for name in sorted(names):
             if name.endswith(".jsonl"):
                 try:
                     with _REAL["open"](os.path.join(current, name), "rb") as handle:
-                        count += handle.read().count(b'"event_type":"mio.entry.request"')
-                except OSError:
+                        for line in handle.read().splitlines():
+                            if line.strip():
+                                record = json.loads(line)
+                                found.append((record["sequence"], record["event"]))
+                except (OSError, ValueError, KeyError):
                     pass
-    return count
+    return found
 
 
 def op(kind: str, **fields) -> None:
-    """One operation (a peer call, a send) the daemon performed."""
-    if kind.startswith("peer-call:"):
-        fields["markers"] = _markers()      # the request markers on the ledger at the call
+    """One operation (a peer call, a send) the daemon performed.
+
+    For a peer call the ledger as it is at that moment is looked at: whether this
+    very request's own record (by the frame's digest, or the line just before the
+    send) is already there. Taken inside the daemon, before the call goes out.
+    """
+    root = fields.pop("root", None)
+    if root is not None:
+        lines = _ledger_lines(root)
+        digest = fields.pop("digest", None)
+        if digest is not None:
+            fields["recorded"] = any(e.get("digest") == digest for _, e in lines)
+        if lines:
+            fields["last_sequence"], fields["last_event"] = lines[-1][0], lines[-1][1].get("event_type")
     _log("ops.log", op=kind, **fields)
 
 
@@ -197,11 +211,15 @@ def _entryd() -> None:
         original(self, *args, **kwargs)
 
         def assess(frame, *, deadline_s, **kw):
-            op("peer-call:locald.assess")
+            from azazel_nexus.local_advisory import request_event
+            op("peer-call:locald.assess", root="r/var/lib/azazel/state/mio",
+               request_id=frame.get("request_id"), digest=request_event(frame)["digest"])
             return fast_assessment_degraded("unavailable")
 
         def reference(frame, *, deadline_at):
-            op("peer-call:referenced.reference")
+            from azazel_nexus.local_advisory import request_event
+            op("peer-call:referenced.reference", root="r/var/lib/azazel/state/mio",
+               request_id=frame.get("request_id"), digest=request_event(frame)["digest"])
             return None, "reference_service_unavailable"
 
         def observe(*, deadline_s=0.05):
@@ -227,7 +245,8 @@ def _knowledge() -> None:
 
     class Peer:
         def request_context(self, **kw):
-            op("send:knowledge-peer.request_context")
+            op("send:knowledge-peer.request_context", root="r/var/lib/azazel/state/knowledge-context",
+               techniques=list(kw.get("frame", {}).get("techniques", [])))
             return {"authority": "advisory_only"}
 
     commissioning = SimpleNamespace(status="commissioned", reason_code=None,
