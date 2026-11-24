@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pwd
+import re
 import sys
 import threading
 import time
@@ -125,20 +126,28 @@ WITHDRAWN_EVENT = "mio.remote.opt_in.withdrawn"
 _PREREQUISITE_VALUES = frozenset(p.value for p in PREREQUISITES)
 
 
+#: The writers' exact formats (#471 anchors): `_opt_in` writes `uid:<int>`, the
+#: store `YYYY-MM-DDTHH:MM:SSZ`, the router `datetime.now(UTC).isoformat()`.
+_ANCHOR_OPERATOR = re.compile(r"uid:(?:0|[1-9][0-9]{0,9})", re.ASCII)
+_STORE_TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", re.ASCII)
+_ROUTER_TIME = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{6})?\+00:00", re.ASCII)
+
+
 def _utc_iso(value) -> bool:
-    """The router's `occurred_at`: an ISO time with a UTC offset."""
-    if type(value) is not str or not value.isascii():
+    """The router's `occurred_at`, exactly as `isoformat()` writes a UTC time."""
+    if type(value) is not str or not _ROUTER_TIME.fullmatch(value):
         return False
     try:
-        parsed = datetime.fromisoformat(value)
+        datetime.fromisoformat(value)
     except ValueError:
         return False
-    return parsed.utcoffset() is not None and parsed.utcoffset().total_seconds() == 0
+    return True
 
 
 def _store_time(value) -> bool:
-    """The consent store's time: `YYYY-MM-DDTHH:MM:SSZ` in UTC."""
-    if type(value) is not str or not value.isascii():
+    """The consent store's time, exactly `YYYY-MM-DDTHH:MM:SSZ` in UTC."""
+    if type(value) is not str or not _STORE_TIME.fullmatch(value):
         return False
     try:
         datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
@@ -159,9 +168,7 @@ def _anchor_row(event) -> bool:
     # The writers' values: an operator is `uid:<uid>` as `_opt_in` formats an int,
     # `occurred_at` is the router's UTC ISO time, `at` is the store's UTC time.
     operator, occurred_at = event.get("operator"), event.get("occurred_at")
-    if not (type(operator) is str and operator.startswith("uid:")
-            and operator[4:].isascii() and operator[4:].isdigit()
-            and str(int(operator[4:])) == operator[4:]):
+    if type(operator) is not str or not _ANCHOR_OPERATOR.fullmatch(operator):
         return False
     if not _utc_iso(occurred_at):
         return False
