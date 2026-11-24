@@ -87,6 +87,8 @@ def _fault_append(service, kind: str, only=lambda event: True, flag: str | None 
         if not only(event) or (flag is not None and not os.path.exists(flag)):
             return real(event, **kw)
         fired["n"] += 1
+        if kind.startswith("unknown") and fired["n"] > 1:
+            return real(event, **kw)
         if kind == "unknown_present" and fired["n"] == 1:
             entry = real(event, **kw)
             raise AuditOutcomeUnknown(
@@ -196,6 +198,14 @@ def restart(root: str, plan: dict) -> None:
     out = {"has_recovery": recover is not None}
     if recover is not None:
         out["recovery"] = recover()
+    def recovered_rows() -> int:
+        return sum(1 for item in service.router.ledger
+                   if item.event.get("recovered_from") == "consent_store")
+
+    if plan.get("settle"):
+        out["rows_before_settle"] = recovered_rows()
+        out["settled"] = service.guard.settle_owed()
+        out["rows_after_settle"] = recovered_rows()
     if plan.get("park"):
         _post(plan["park"], {"parked": True})
         time.sleep(600)
@@ -211,9 +221,6 @@ def restart(root: str, plan: dict) -> None:
         except entry.RequestRefused as exc:
             out["new_withdraw"] = {"refused": exc.detail}
         out["store_after_new_withdraw"] = _view(service)
-    if plan.get("settle"):
-        out["settled"] = service.guard.settle_owed()
-        out["status_settled"] = status()
     if plan.get("heal"):
         os.unlink(flag)
         service.guard.settle_owed()

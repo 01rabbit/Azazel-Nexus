@@ -58,8 +58,8 @@ def age_ledger(root):
 
 def run_first(tmp_path, plan, tag="first"):
     """Run `first` until it posts, SIGKILL it, and return what it posted."""
-    root, fifo = tmp_path / "root", tmp_path / f"{tag}.fifo"
-    root.mkdir(exist_ok=True)
+    root, fifo = plan.pop("root", None) or tmp_path / "root", tmp_path / f"{tag}.fifo"
+    root.mkdir(parents=True, exist_ok=True)
     if plan.get("old_ledger"):
         age_ledger(root)
     os.mkfifo(fifo)
@@ -487,11 +487,30 @@ def test_overlap_ii_b_the_line_itself_is_present_with_an_unknown_outcome(tmp_pat
     dump("after-overlap-ii-b.json", {"rows": withdrawal_rows(root, generation)})
 
 
+@pytest.mark.parametrize("fault, written", [("unknown_present", 1), ("unknown_absent", 0)])
+def test_overlap_iii_unknown_outcome_of_the_recovery_row_is_settled_in_the_same_process(
+        tmp_path, fault, written):
+    """The row's write raises `AuditOutcomeUnknown` with the candidate line. The same
+    process then settles: a line found present adds nothing, one found absent is written
+    again, and either way there is one row."""
+    posted, root, generation = killed(tmp_path, {})
+    out = run_restart(root, {"fault": fault, "settle": True})
+    assert (out["rows_before_settle"], out["rows_after_settle"], out["settled"]) == (
+        written, 1, True)
+    assert withdrawal_rows(root, generation) == {"original": 0, "late": 0, "recovered": 1,
+                                                 "settled": 0}
+    run_restart(root)
+    assert total(withdrawal_rows(root, generation)) == 1
+    dump(f"after-overlap-iii-settle-{fault}.json", {
+        "before_settle": out["rows_before_settle"], "after_settle": out["rows_after_settle"],
+        "after_next_start": withdrawal_rows(root, generation)})
+
+
 @pytest.mark.parametrize("fault, expected", [
     ("unknown_present", {"original": 0, "late": 0, "recovered": 1, "settled": 0}),
-    ("unavailable", {"original": 0, "late": 0, "recovered": 0, "settled": 0}),
+    ("unknown_absent", {"original": 0, "late": 0, "recovered": 0, "settled": 0}),
 ])
-def test_overlap_iii_the_recovery_row_has_an_unknown_outcome_then_stop(
+def test_overlap_iii_unknown_outcome_then_stop_before_the_settling(
         tmp_path, fault, expected):
     posted, root, generation = killed(tmp_path, {})
     park_restart(root, {"fault": fault}, tmp_path, "iii")
@@ -503,3 +522,90 @@ def test_overlap_iii_the_recovery_row_has_an_unknown_outcome_then_stop(
     assert total(withdrawal_rows(root, generation)) == 1
     dump(f"after-overlap-iii-{fault}.json", {
         "after_stop": expected, "after_restart": withdrawal_rows(root, generation)})
+
+
+# -- the real main() ---------------------------------------------------------
+
+MAIN_CHILD = HERE / "_mio_remote_consent_w471_main_child.py"
+
+
+@pytest.fixture
+def entryd(monkeypatch):
+    import test_w467_audit_unavailable as w467
+
+    monkeypatch.setattr(w467, "CHILD", MAIN_CHILD)
+    monkeypatch.setattr(w467, "_shrink", lambda value, depth=0: value)
+    daemon = w467.Daemon("mio-entryd")
+    yield daemon
+    daemon.cleanup()
+
+
+STATUS = {"verb": "mio.remote.opt_in.status", "arguments": {}}
+WITHDRAW = {"verb": "mio.remote.opt_in.withdraw", "arguments": {"reason": "operator_request"}}
+
+
+def until(condition, what, timeout=40):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if condition():
+            return
+        time.sleep(0.1)
+    raise AssertionError("timed out: " + what)
+
+
+def main_log(daemon):
+    return daemon.log_lines("main.log")
+
+
+def test_main_recovers_before_serving_retries_on_the_tick_and_sends_stay_zero(
+        tmp_path, entryd):
+    root = entryd.run / "r"
+    posted, _ = run_first(tmp_path, {"stop": "before_record", "root": root})
+    generation = store_view(root)["generation"]
+    (entryd.run / "fault").write_text("unavailable")
+    assert entryd.start(), entryd.exit_info()
+    log = main_log(entryd)
+    # Called by `main()`, with the socket not yet announced as ready.
+    assert log[0] == {"event": "recover_withdrawal", "ready_file_exists": False}
+    assert log[1]["result"] == {"generation": generation, "state": "owed"}
+    shown = entryd.ask(STATUS)["reply"]["result"]
+    assert shown["audit"]["withdrawal_record"] == {"generation": generation, "state": "owed"}
+    # While the fault lasts, in another process: the generation allowed before the
+    # withdrawal and the withdrawal's own.
+    during = sends(root, posted, generation)
+    assert zero_sends(during)
+    # A new withdrawal is not held back; its record is a debt behind the first.
+    reply = entryd.ask(WITHDRAW)
+    assert reply["reply"] == {"ok": False, "refusal": "verb_unavailable"}
+    assert store_view(root) == {"generation": generation + 1, "status": "withdrawn",
+                                "permits": False}
+    during_after = sends(root, posted, generation + 1)
+    assert zero_sends(during_after)
+    assert total(withdrawal_rows(root, generation)) == 0
+    # The fault ends; only the tick (nothing else is asked of entryd) writes the rows.
+    (entryd.run / "fault").unlink()
+    until(lambda: withdrawal_rows(root, generation)["recovered"] == 1
+          and withdrawal_rows(root, generation + 1)["late"] == 1, "the tick settles the debts")
+    after = (withdrawal_rows(root, generation), withdrawal_rows(root, generation + 1))
+    entryd.stop()
+    assert entryd.start(), entryd.exit_info()
+    assert (withdrawal_rows(root, generation), withdrawal_rows(root, generation + 1)) == after
+    dump("after-main-audit-failure.json", {
+        "main_log": log, "status_during_fault": shown, "sends_during_fault": [during, during_after],
+        "rows_after_tick": {"recovered_generation": after[0], "new_generation": after[1]}})
+
+
+@pytest.mark.parametrize("fault", ["unknown_present", "unknown_absent"])
+def test_main_unknown_outcome_of_the_recovery_row_is_settled_once(tmp_path, entryd, fault):
+    root = entryd.run / "r"
+    posted, _ = run_first(tmp_path, {"stop": "before_record", "root": root})
+    generation = store_view(root)["generation"]
+    (entryd.run / "fault").write_text(fault)
+    assert entryd.start(), entryd.exit_info()
+    until(lambda: "withdrawal_record" not in entryd.ask(STATUS)["reply"]["result"].get("audit", {})
+          and withdrawal_rows(root, generation)["recovered"] == 1, "settled")
+    assert withdrawal_rows(root, generation) == {"original": 0, "late": 0, "recovered": 1,
+                                                 "settled": 0}
+    entryd.stop()
+    assert entryd.start(), entryd.exit_info()
+    assert total(withdrawal_rows(root, generation)) == 1
