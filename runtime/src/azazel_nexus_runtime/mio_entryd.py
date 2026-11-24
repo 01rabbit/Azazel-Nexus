@@ -158,6 +158,12 @@ def _store_time(value) -> bool:
     return True
 
 
+def _consent_max_generation() -> int:
+    from . import mio_remote_consent
+
+    return mio_remote_consent._MAX_GENERATION
+
+
 def _anchor_row(event) -> bool:
     """Whether `event` is exactly a row entryd writes that names an opt-in
     generation, so its position can anchor the order argument (#471). The key
@@ -165,7 +171,7 @@ def _anchor_row(event) -> bool:
     `occurred_at`. Anything else -- an older shape included -- is not an anchor
     (the gap is then left, and diagnosed, rather than filled on a guess)."""
     kind, generation = event.get("event_type"), event.get("generation")
-    if type(generation) is not int or generation < 1:
+    if type(generation) is not int or not 1 <= generation <= _consent_max_generation():
         return False
     # The writers' values: an operator is `uid:<uid>` as `_opt_in` formats an int,
     # `occurred_at` is the router's UTC ISO time, `at` is the store's UTC time.
@@ -183,6 +189,10 @@ def _anchor_row(event) -> bool:
         return (keys == {"event_type", "operator", "prerequisite", "generation", "occurred_at"}
                 and type(prerequisite) is str and prerequisite in _PREREQUISITE_VALUES)
     if kind == "mio.remote.opt_in":  # the pending grant that completes the four
+        # From an empty store each `set` adds one prerequisite and one generation,
+        # so the pending grant of four is written at generation 4 at the earliest.
+        if generation < len(_PREREQUISITE_VALUES):
+            return False
         opens = event.get("opens_generation")
         return (keys == {"event_type", "operator", "at", "granted", "missing", "withdrawn",
                          "generation", "opens_generation", "occurred_at"}

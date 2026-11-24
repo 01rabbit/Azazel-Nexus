@@ -24,7 +24,8 @@ from azazel_nexus.route_ledger import RouteChain
 
 import test_mio_remote_consent_w465 as w465
 
-pytestmark = pytest.mark.real_process
+# The tests that start a process carry `real_process` one by one (#114): the
+# direct function checks at the end of this file are not process evidence.
 
 HERE = Path(__file__).resolve().parent
 CHILD = HERE / "_mio_remote_consent_w471_child.py"
@@ -175,6 +176,7 @@ def recovered_event(root, generation):
 # -- before and after ------------------------------------------------------
 
 
+@pytest.mark.real_process
 def test_a_missing_row_is_recovered_once_and_the_store_is_not_touched(tmp_path):
     posted, root, generation = killed(tmp_path, {})
     before = {"store": store_view(root), "bytes": store_bytes(root),
@@ -205,6 +207,7 @@ def test_a_missing_row_is_recovered_once_and_the_store_is_not_touched(tmp_path):
         "store_unchanged": True, "sends": sent})
 
 
+@pytest.mark.real_process
 def test_an_original_row_means_no_recovery(tmp_path):
     posted, root = run_first(tmp_path, {})
     generation = store_view(root)["generation"]
@@ -217,6 +220,7 @@ def test_an_original_row_means_no_recovery(tmp_path):
     dump("after-original-present.json", {"restart": restarted["recovery"]})
 
 
+@pytest.mark.real_process
 def test_a_stop_right_after_the_recovery_adds_nothing(tmp_path):
     posted, root, generation = killed(tmp_path, {})
     park_restart(root, {}, tmp_path, "park")
@@ -258,6 +262,7 @@ def park_restart(root, plan, tmp_path, tag):
 # -- the audit cannot be written ------------------------------------------
 
 
+@pytest.mark.real_process
 def test_a_failing_audit_leaves_the_withdrawal_in_force_unresolved_then_one_row(tmp_path):
     posted, root, generation = killed(tmp_path, {})
     flag = tmp_path / "fail"
@@ -313,6 +318,7 @@ def retire_everything_before(root):
     return json.loads((route / "retained-boundary.json").read_text())
 
 
+@pytest.mark.real_process
 def test_no_earlier_row_retained_writes_nothing_and_says_why_even_with_a_later_date(tmp_path):
     """The withdrawal's own date is today, after the retired segment's date. A clock
     comparison would call the row missing; the order does not: no opt-in row of an
@@ -329,6 +335,7 @@ def test_no_earlier_row_retained_writes_nothing_and_says_why_even_with_a_later_d
                                            "status": out["status_1"]})
 
 
+@pytest.mark.real_process
 def test_an_earlier_row_retained_after_a_boundary_means_the_withdrawal_row_would_be(tmp_path):
     posted, root = run_first(tmp_path, {"stop": "before_record", "old_ledger": True})
     generation = store_view(root)["generation"]
@@ -337,6 +344,7 @@ def test_an_earlier_row_retained_after_a_boundary_means_the_withdrawal_row_would
     assert withdrawal_rows(root, generation)["recovered"] == 1
 
 
+@pytest.mark.real_process
 def test_a_grant_that_is_running_says_what_was_observed_and_nothing_more(tmp_path):
     posted, root = run_first(tmp_path, {"no_withdraw": True})
     out = run_restart(root)
@@ -345,6 +353,7 @@ def test_a_grant_that_is_running_says_what_was_observed_and_nothing_more(tmp_pat
                                "checked_generation": posted["granted_generation"]}
 
 
+@pytest.mark.real_process
 def test_only_unusable_rows_remain_so_nothing_is_written(tmp_path):
     """After retirement the only rows left are a withdrawal row of generation 0, a grant
     row of generation 0 and a withdrawal row whose generation is not an int."""
@@ -366,6 +375,7 @@ def test_only_unusable_rows_remain_so_nothing_is_written(tmp_path):
     assert total(withdrawal_rows(root, generation)) == 0
 
 
+@pytest.mark.real_process
 @pytest.mark.parametrize("row", [
     {"event_type": "mio.remote.opt_in.set", "generation": 1},  # no operator, no prerequisite
     {"event_type": "mio.remote.opt_in.set", "generation": 1, "operator": "uid:1001",
@@ -424,6 +434,7 @@ def test_a_grant_row_of_the_wrong_shape_does_not_anchor(tmp_path, row):
     assert total(withdrawal_rows(root, generation)) == 0
 
 
+@pytest.mark.real_process
 def test_retirement_that_moves_after_the_scan_takes_the_anchor_away(tmp_path):
     posted, root, generation = killed(tmp_path, {})
     out = run_restart(root, {"advance_boundary": True})
@@ -432,6 +443,7 @@ def test_retirement_that_moves_after_the_scan_takes_the_anchor_away(tmp_path):
     assert total(withdrawal_rows(root, generation)) == 0
 
 
+@pytest.mark.real_process
 def test_a_valid_settlement_row_names_the_withdrawal_so_nothing_is_added(tmp_path):
     posted, root, generation = killed(tmp_path, {})
     operator, at, reason = ConsentStore(state_of(root)).latest_record().withdrawn
@@ -447,6 +459,7 @@ def test_a_valid_settlement_row_names_the_withdrawal_so_nothing_is_added(tmp_pat
                                                  "settled": 1}
 
 
+@pytest.mark.real_process
 def test_while_the_recovery_row_is_owed_a_set_is_refused_and_after_it_a_set_passes(tmp_path):
     """Only the control reserve is short: the caller's share and the segment have room,
     the start-up rows fit, the recovery row does not. The grant is held back (a
@@ -466,6 +479,7 @@ def test_while_the_recovery_row_is_owed_a_set_is_refused_and_after_it_a_set_pass
         "set_while_owed", "store_after_refused_set", "set_after_recovery", "store_after_set")})
 
 
+@pytest.mark.real_process
 def test_the_ledger_writes_generations_in_order(tmp_path):
     """The premise of the anchor: every opt-in row precedes the commit it names, so
     rows are non-decreasing in generation along the chain."""
@@ -476,6 +490,7 @@ def test_the_ledger_writes_generations_in_order(tmp_path):
     assert seen and seen == sorted(seen)
 
 
+@pytest.mark.real_process
 def test_a_later_generation_overwrote_the_store_nothing_is_made_up(tmp_path):
     posted, root, generation = killed(tmp_path, {})
     done = subprocess.run([sys.executable, str(CHILD), "setonly", str(root), str(generation)],
@@ -492,6 +507,7 @@ def test_a_later_generation_overwrote_the_store_nothing_is_made_up(tmp_path):
                                           "rows": withdrawal_rows(root, generation)})
 
 
+@pytest.mark.real_process
 def test_an_internal_withdrawal_is_not_recovered_and_says_why(tmp_path):
     posted, root = run_first(tmp_path, {"internal": True})
     generation = store_view(root)["generation"]
@@ -502,6 +518,7 @@ def test_an_internal_withdrawal_is_not_recovered_and_says_why(tmp_path):
     dump("after-internal.json", {"restart": out["recovery"]})
 
 
+@pytest.mark.real_process
 def test_the_ceiling_generation_is_never_recovered_because_two_withdrawals_collide(tmp_path):
     from azazel_nexus_runtime.mio_remote_consent import _MAX_GENERATION
 
@@ -519,6 +536,7 @@ def test_the_ceiling_generation_is_never_recovered_because_two_withdrawals_colli
                                 "second": withdrawal_rows(root, generation, second_at)})
 
 
+@pytest.mark.real_process
 def test_malformed_and_unrelated_rows_do_not_match_do_not_crash_and_are_counted(tmp_path):
     posted, root, generation = killed(tmp_path, {})
     sample = {"operator": "uid:1001", "reason": "operator_request"}
@@ -581,6 +599,7 @@ def test_the_audit_read_does_not_move_the_rollback_floor(tmp_path):
 # -- overlap with the owed of #469 -----------------------------------------
 
 
+@pytest.mark.real_process
 def test_overlap_i_the_owed_late_record_was_never_written(tmp_path):
     posted, root = run_first(tmp_path, {"fault": "unavailable"})
     generation = store_view(root)["generation"]
@@ -594,6 +613,7 @@ def test_overlap_i_the_owed_late_record_was_never_written(tmp_path):
     dump("after-overlap-i.json", {"rows": withdrawal_rows(root, generation)})
 
 
+@pytest.mark.real_process
 def test_overlap_ii_the_late_record_is_present_before_its_settlement(tmp_path):
     posted, root = run_first(tmp_path, {"fault": "unavailable", "settle_unknown": True})
     generation = store_view(root)["generation"]
@@ -605,6 +625,7 @@ def test_overlap_ii_the_late_record_is_present_before_its_settlement(tmp_path):
     dump("after-overlap-ii.json", {"rows": withdrawal_rows(root, generation)})
 
 
+@pytest.mark.real_process
 def test_overlap_ii_b_the_line_itself_is_present_with_an_unknown_outcome(tmp_path):
     posted, root = run_first(tmp_path, {"fault": "unknown_present"})
     generation = store_view(root)["generation"]
@@ -616,6 +637,7 @@ def test_overlap_ii_b_the_line_itself_is_present_with_an_unknown_outcome(tmp_pat
     dump("after-overlap-ii-b.json", {"rows": withdrawal_rows(root, generation)})
 
 
+@pytest.mark.real_process
 @pytest.mark.parametrize("fault, written", [("unknown_present", 1), ("unknown_absent", 0)])
 def test_overlap_iii_unknown_outcome_of_the_recovery_row_is_settled_in_the_same_process(
         tmp_path, fault, written):
@@ -635,6 +657,7 @@ def test_overlap_iii_unknown_outcome_of_the_recovery_row_is_settled_in_the_same_
         "after_next_start": withdrawal_rows(root, generation)})
 
 
+@pytest.mark.real_process
 @pytest.mark.parametrize("fault, expected", [
     ("unknown_present", {"original": 0, "late": 0, "recovered": 1, "settled": 0}),
     ("unknown_absent", {"original": 0, "late": 0, "recovered": 0, "settled": 0}),
@@ -686,6 +709,7 @@ def main_log(daemon):
     return daemon.log_lines("main.log")
 
 
+@pytest.mark.real_process
 def test_main_recovers_before_serving_retries_on_the_tick_and_sends_stay_zero(
         tmp_path, entryd):
     root = entryd.run / "r"
@@ -724,6 +748,7 @@ def test_main_recovers_before_serving_retries_on_the_tick_and_sends_stay_zero(
         "rows_after_tick": {"recovered_generation": after[0], "new_generation": after[1]}})
 
 
+@pytest.mark.real_process
 @pytest.mark.parametrize("fault", ["unknown_present", "unknown_absent"])
 def test_main_unknown_outcome_of_the_recovery_row_is_settled_once(tmp_path, entryd, fault):
     root = entryd.run / "r"
@@ -731,6 +756,11 @@ def test_main_unknown_outcome_of_the_recovery_row_is_settled_once(tmp_path, entr
     generation = store_view(root)["generation"]
     (entryd.run / "fault").write_text(fault)
     assert entryd.start(), entryd.exit_info()
+    first = [line for line in main_log(entryd) if line.get("event") == "recovered"]
+    # The injected unknown outcome did fire on the recovery row, and the start's
+    # result was a debt (owed), not a row written at the first try.
+    assert first and first[0]["fired"] == 1, first
+    assert first[0]["result"]["state"] == "owed", first
     until(lambda: "withdrawal_record" not in entryd.ask(STATUS)["reply"]["result"].get("audit", {})
           and withdrawal_rows(root, generation)["recovered"] == 1, "settled")
     assert withdrawal_rows(root, generation) == {"original": 0, "late": 0, "recovered": 1,
@@ -753,6 +783,14 @@ def test_an_anchor_is_exactly_a_row_entryd_writes():
     assert entry_mod._anchor_row(written) is True
     assert entry_mod._anchor_row({k: v for k, v in written.items() if k != "occurred_at"}) is False
     assert entry_mod._anchor_row({**written, "generation": "1"}) is False
+    assert entry_mod._anchor_row({**written, "generation": 2**63}) is False
+    grant = {"event_type": "mio.remote.opt_in", "operator": "uid:1001",
+             "at": "2026-11-24T00:00:00Z", "occurred_at": "2026-11-24T00:00:00+00:00",
+             "granted": sorted(["remote use", "privacy policy", "provider", "comms permission"]),
+             "missing": [], "withdrawn": None}
+    assert entry_mod._anchor_row({**grant, "generation": 4, "opens_generation": 5}) is True
+    # Four prerequisites take four generations from an empty store.
+    assert entry_mod._anchor_row({**grant, "generation": 1, "opens_generation": 2}) is False
     for key in ("operator", "at", "occurred_at"):
         assert entry_mod._anchor_row({**written, key: ""}) is False, key
     assert entry_mod._anchor_row({**written, "operator": "someone"}) is False

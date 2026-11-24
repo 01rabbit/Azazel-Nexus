@@ -71,7 +71,7 @@ def main() -> None:
 
         ledger._append_once = append
         found = real_recover(self)
-        log(event="recovered", result=found)
+        log(event="recovered", result=found, fired=fired["n"])
         return found
 
     entry.MioEntryService.recover_withdrawal = recover
