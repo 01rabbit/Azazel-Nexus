@@ -33,7 +33,7 @@ from azazel_nexus.audit import (
     AuditUnavailable,
 )
 
-__all__ = ["ChainGuard", "Owed"]
+__all__ = ["ChainGuard", "Owed", "settle_by_path", "settle_single"]
 
 SETTLED = "audit.outcome_settled"
 LATE = "audit.late_record"
@@ -53,16 +53,37 @@ class Owed:
     record: Optional[dict] = None
     record_entry: Optional[AuditEntry] = None
     record_absent: Optional[tuple] = None
+    path: Any = None
+    record_path: Any = None
+
+
+def settle_single(ledger) -> Callable[..., str]:
+    """`settle` for a daemon with one ledger file."""
+    return lambda entry, *, absent_head, path=None: ledger.settle(entry, absent_head=absent_head)
+
+
+def settle_by_path(entry, *, absent_head, path) -> str:
+    """`settle` for a ledger split over files: the line is looked for in its own file."""
+    from azazel_nexus.audit import AuditLedger
+
+    return AuditLedger(path).settle(entry, absent_head=absent_head)
 
 
 class ChainGuard:
     def __init__(self, append: Callable[[dict], Any],
-                 settle: Callable[..., str] | None = None) -> None:
-        """`append(event)` writes one line. `settle(entry, absent_head=...)` is the
-        ledger's `settle`; without it a line of unknown outcome can never be
-        settled and the guard stays owed (it refuses, which is the safe side).
+                 settle: Callable[..., str] | None = None,
+                 append_internal: Callable[[dict], Any] | None = None) -> None:
+        """`append(event)` writes one line.
+
+        `settle(entry, absent_head=..., path=...)` looks the line up (see
+        `settle_single` and `settle_by_path`); without it a line of unknown
+        outcome can never be settled and the guard stays owed (it refuses,
+        which is the safe side). `append_internal` writes the guard's own
+        settlement records (a daemon with budgets charges them to its control
+        reserve); it defaults to `append`.
         """
         self._append = append
+        self._internal = append_internal or append
         self._settle = settle
         self.broken = False
         #: Memory only; never sent to a caller.
@@ -102,7 +123,8 @@ class ChainGuard:
             if owed.record_entry is not None:
                 if self._settle is None:
                     return False
-                outcome = self._settle(owed.record_entry, absent_head=owed.record_absent)
+                outcome = self._settle(owed.record_entry, absent_head=owed.record_absent,
+                                       path=owed.record_path)
                 owed.record_entry = None
                 if outcome == "present":
                     return True
@@ -113,7 +135,8 @@ class ChainGuard:
                 else:
                     if self._settle is None:
                         return False
-                    outcome = self._settle(owed.entry, absent_head=owed.absent_head)
+                    outcome = self._settle(owed.entry, absent_head=owed.absent_head,
+                                       path=owed.path)
                     if outcome == "absent" and not owed.performed:
                         return True
                     owed.record = {"event_type": SETTLED,
@@ -122,13 +145,14 @@ class ChainGuard:
                                    "outcome": outcome, "performed": owed.performed}
                     if outcome == "absent":
                         owed.record["late_event"] = owed.event
-            self._append(owed.record)
+            self._internal(owed.record)
             return True
         except AuditChainBroken as exc:
             self._mark(exc)
             return False
         except AuditOutcomeUnknown as exc:
             owed.record_entry, owed.record_absent = exc.entry, exc.absent_head
+            owed.record_path = exc.path
             return False
         except AuditUnavailable:
             return False
@@ -157,7 +181,14 @@ class ChainGuard:
             self._mark(exc)
             raise
         except AuditOutcomeUnknown as exc:
-            self.owed.append(Owed(event, exc.entry, exc.absent_head, performed))
+            written = exc.entry.event
+            same = written == dict(event)
+            self.owed.append(Owed(written, exc.entry, exc.absent_head,
+                                  performed and same, path=exc.path))
+            if performed and not same:
+                # The line in doubt is another one (a carried record); this
+                # event was never written either.
+                self.owed.append(Owed(event, None, None, True))
             raise
         except AuditUnavailable:
             if performed:

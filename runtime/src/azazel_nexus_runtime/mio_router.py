@@ -134,14 +134,17 @@ class MioRouter:
         self._monotonic = monotonic
 
     def _record(self, event: dict, *, reserved: bool = False,
-                occurred_at: str | None = None) -> None:
+                occurred_at: str | None = None, performed: bool = False) -> None:
         dated = {**event, "occurred_at": occurred_at if occurred_at is not None else self._clock()}
+        # `performed`: the operation this record belongs to was already done,
+        # so a record that cannot be written is a debt (#467).
+        extra = {"performed": True} if performed else {}
         if reserved:
             # Start, capability and refusal records may use the segment's
             # control reserve; request records may not.
-            self.ledger.append(dated, reserved=True)
+            self.ledger.append(dated, reserved=True, **extra)
         else:
-            self.ledger.append(dated)
+            self.ledger.append(dated, **extra)
 
     def monotonic(self) -> float:
         """The clock every deadline of a request is measured on."""

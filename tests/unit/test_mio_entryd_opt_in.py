@@ -129,8 +129,10 @@ def test_a_withdrawal_is_committed_even_when_the_ledger_then_fails(service, monk
         raise AuditUnavailable("ledger down")
 
     monkeypatch.setattr(service.router, "_record", fail)
-    with pytest.raises(AuditUnavailable):
+    # #467: the caller gets the fixed refusal (the withdrawal is in force).
+    with pytest.raises(RequestRefused) as refused:
         verb(service, entry.OPT_IN_WITHDRAW_VERB, reason="incident_response")
+    assert refused.value.detail == "ledger"
     assert service.consent.reading().status == "withdrawn"
 
 

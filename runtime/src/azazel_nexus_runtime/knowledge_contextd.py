@@ -30,7 +30,7 @@ from .knowledge_context_socket import MAX_CONTEXT_FRAME_BYTES, read_context_fram
 from .knowledge_context_config import (
     load_commissioning, load_observation_rule, observation_rule_identity)
 from .principal import PrincipalClass, PrincipalPolicy
-from .chain_guard import ChainGuard
+from .chain_guard import ChainGuard, settle_single
 from .protocol import Argument, ArgumentKind, Verb, VerbRegistry
 from .runtime_paths import (
     knowledge_context_observation_rule_path, knowledge_context_state_dir, socket_path,
@@ -354,7 +354,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
         # records exactly what it recorded before.
         event["observation_rule"] = "loaded"
     ledger.append(event)
-    guard = ChainGuard(ledger.append, ledger.settle)
+    guard = ChainGuard(ledger.append, settle_single(ledger))
     #: Set when the record of a verified answer could not be written.
     unrecorded = [False]
 

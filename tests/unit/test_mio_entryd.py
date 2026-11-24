@@ -158,8 +158,10 @@ def test_selection_audit_failure_propagates(service, monkeypatch):
         return original(event, **kwargs)
 
     monkeypatch.setattr(service.router.ledger, "append", append)
-    with pytest.raises(AuditUnavailable):
+    # #467: not recorded, so not served: a fixed refusal, and the process goes on.
+    with pytest.raises(RequestRefused) as refused:
         service.handle(request())
+    assert refused.value.detail == "ledger"
     assert not any(e["event_type"] == "mio.route.terminal" for e in recorded(service))
 
 

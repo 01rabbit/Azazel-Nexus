@@ -41,6 +41,7 @@ from azazel_nexus.audit import (
     AuditChainBroken,
     AuditEntry,
     AuditLedger,
+    AuditOutcomeUnknown,
     AuditUnavailable,
     canonical_event_bytes,
 )
@@ -142,6 +143,14 @@ class RouteLedger(DailySegments):
         #: memory of what it recorded follows the ledger exactly (#227).
         self.on_written: Callable[[Mapping[str, Any]], None] | None = None
         self._prepared = False
+        from .chain_guard import ChainGuard, settle_by_path
+
+        self._reserved_now = False
+        #: Debts of unknown outcomes, and the settling of them (#467).
+        self.guard = ChainGuard(
+            lambda event: self._append_once(event, reserved=self._reserved_now),
+            settle_by_path,
+            append_internal=lambda event: self._append_once(event, reserved=True))
 
     # -- preparation -----------------------------------------------------
 
@@ -348,7 +357,19 @@ class RouteLedger(DailySegments):
 
     # -- writing ---------------------------------------------------------
 
-    def append(self, event: Mapping[str, Any], *, reserved: bool = False) -> AuditEntry:
+    def append(self, event: Mapping[str, Any], *, reserved: bool = False,
+               performed: bool = False) -> AuditEntry:
+        """`_append_once` under the daemon's ledger guard (#467).
+
+        A line whose outcome is unknown is settled by its sequence and hash,
+        in its own segment, before anything else is appended; `performed`
+        says the operation this record belongs to was already done.
+        """
+
+        self._reserved_now = reserved
+        return self.guard.append(dict(event), performed=performed)
+
+    def _append_once(self, event: Mapping[str, Any], *, reserved: bool = False) -> AuditEntry:
         """Add one entry at the chain head, or add nothing and raise.
 
         `reserved` charges the record to `CONTROL_RESERVE` (start and
@@ -374,7 +395,10 @@ class RouteLedger(DailySegments):
         try:
             self.retain()
         except OSError as exc:
-            raise AuditUnavailable("M.I.O. route retention failed") from exc
+            # The line is in the segment; only what follows it failed.
+            raise AuditOutcomeUnknown(
+                "M.I.O. route retention failed", entry=entry, path=path,
+                absent_head=(entry.sequence - 1, entry.previous_hash)) from exc
         return entry
 
     def _write(self, path: Path, event: Mapping[str, Any], head: tuple[int, str],
@@ -423,5 +447,7 @@ class RouteLedger(DailySegments):
             try:
                 fsync_directory(self.directory)
             except OSError as exc:
-                raise AuditUnavailable("M.I.O. route segment not durable") from exc
+                raise AuditOutcomeUnknown(
+                    "M.I.O. route segment not durable", entry=entry, path=path,
+                    absent_head=(0, GENESIS_HASH)) from exc
         return entry

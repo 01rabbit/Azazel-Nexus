@@ -175,7 +175,7 @@ class Flaky:
                                       absent_head=(entry.sequence - 1, entry.previous_hash))
         return self.ledger.append(event)
 
-    def settle(self, entry, *, absent_head):
+    def settle(self, entry, *, absent_head, path=None):
         if self.mode == "down":
             raise AuditUnavailable("down")
         return self.ledger.settle(entry, absent_head=absent_head)
