@@ -1563,15 +1563,30 @@ diagnostic verb. Three cases are told apart:
 * A complete line was written but could not be synced, or a partial line could
   not be cut back: the outcome is *unknown*. Nothing that needs a record goes on
   -- no new append, no retry of the same line, no repeated operation -- until
-  the daemon has settled it: it reads its ledger's last record and compares the
+  the daemon has settled it: it reads its ledger again and compares the
   sequence, previous hash and recomputed event hash with the line it wrote. The
-  line is `present` (it is the last record) or `absent` (the last record is the
-  one before it); anything else is a broken chain (#458). A tail that merely
-  moved on is never taken as this daemon's line. The daemon then appends one
-  `audit.outcome_settled` record (sequence, event hash, outcome, and whether the
-  operation had been performed), and only then serves records again.
+  line is `present` (it is the last record and the file ends at a line
+  boundary) or `absent` (the last record is the one before it); anything else
+  is a broken chain, as is a last line without its newline. A tail that merely
+  moved on is never taken as this daemon's line. For a ledger split by day
+  (auditd, entryd's route ledger) the head before the file is derived again the
+  way an append derives it, and a line that starts a file must follow it: a lost
+  predecessor is a break, and a head that cannot be derived (a segment at or
+  before entryd's retention boundary, an unreadable file) leaves the outcome
+  unknown. A break found while settling is the #458 state: nothing touches the
+  ledger again until a restart verifies it.
+  When the line is `present`, or `absent` and its operation was already
+  performed, the daemon appends one record: `audit.outcome_settled` (the
+  sequence, the event hash, the outcome and whether the operation had been
+  performed; an `absent` one carries the event as `late_event`). A line that is
+  `absent` for an operation that was never performed owes nothing, and no
+  record is written. A settlement record that was written and synced is
+  complete; it is read back as the head only when its own outcome is unknown.
+  Only then are records served again.
 * The fault persists and the ledger cannot be read: the outcome stays unknown,
-  requests that need a record are refused, diagnostics say so.
+  requests that need a record are refused, diagnostics say so. If the ledger
+  cannot be read at start (`AuditUnavailable`), the daemon does not start; that
+  is the supervisor's to retry, and no diagnostic socket is up.
 
 An operation already performed when its record failed (entryd's withdrawal,
 which narrows and is committed first; knowledge-contextd's send; locald's
@@ -1579,17 +1594,33 @@ inference) is never repeated: when the line turns out absent, or nothing was
 written, the settlement (or `audit.late_record`) records it once, late. Such a
 result is not returned as if it were recorded: knowledge-contextd answers the
 send as `unrecorded` (not "refused before send"), locald and referenced return
-no result. auditd, which callers retry, answers an identical event from the
-same caller right after it settled `present` with the existing sequence instead
-of appending it twice.
+no result. Resends:
 
-What the settlement proves, and what not: the settlement record was written,
-synced and read back as the head, chained onto the settled line or the one
-before it. That a line is visible after a failed sync does not prove it
+* auditd, which callers retry, keeps the lines it settled as `present`, by
+  caller and the bytes of the event (the newest 64, in memory). Once the
+  settlement record is written, a resend of the same event from the same caller
+  is answered with that line (sequence, event hash), whatever was appended in
+  between, and is never appended twice. A restart forgets them: a resend after
+  a restart can be appended twice.
+* entryd's withdrawal that is still owed its record is not committed again by
+  its resend: the store already reads that withdrawal, so the resend settles
+  the record and answers with that withdrawal (`drained` as first reported).
+* knowledge-contextd, after a request it sent and could not record, answers the
+  next identical request (same frame) `unrecorded` without sending again, and
+  forgets it with that answer. No caller retries by itself (the client makes
+  one call per request); an explainer asking the same question again later gets
+  that one answer first.
+* A playbook selection is recorded before it is used: if its record fails, the
+  previous selection stays in use and the next request records it.
+
+What the settlement proves, and what not: the line was found, by its
+sequence and hash, in the file it was written to, and its record was written
+and synced. That a line is visible after a failed sync does not prove it
 reached the disk (on Linux a later fsync need not report the lost pages). If a
 power loss then drops the settled line but keeps later ones, the next start's
-full verification finds the gap and refuses (`AuditChainBroken`): a detected
-break, not a silent loss. Not tested on real power loss.
+full verification finds the gap and refuses (`AuditChainBroken`) when it can
+read the ledger: a detected break, not a silent loss. Not tested on real power
+loss.
 Queue overflow, exhausted retries and clean-shutdown abandonment count as
 audit drops (`audit_forward_dropped`). Crashes can lose
 queued work; lost acknowledgements can duplicate events. Explanations and
