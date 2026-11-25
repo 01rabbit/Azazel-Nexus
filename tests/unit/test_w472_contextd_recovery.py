@@ -313,6 +313,7 @@ def test_a_second_start_ends_without_touching_the_first(ctx):
     sock = ctx.run / "r/var/lib/azazel/run/knowledge-context/knowledge-context.sock"
     ident = (sock.stat().st_ino, sock.stat().st_dev)
     rows = ctx.rows()
+    ledger_bytes = (ctx.run / LEDGER).read_bytes()
     env = {**os.environ, "AZAZEL_ROOT": "r", "PYTHONDONTWRITEBYTECODE": "1"}
     second = subprocess.run([sys.executable, str(CHILD)], cwd=ctx.run, env=env, timeout=30,
                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -320,6 +321,7 @@ def test_a_second_start_ends_without_touching_the_first(ctx):
     assert (sock.stat().st_ino, sock.stat().st_dev) == ident
     assert ctx.alive() and ctx.status()["egress"] == "open"
     assert ctx.rows() == rows                       # the second one appended nothing
+    assert (ctx.run / LEDGER).read_bytes() == ledger_bytes   # nor touched the file at all
     assert served(ctx.request(1))    # the first still serves
     note("second start", observed_sends=ctx.calls(),
          ledger="lock held by the first; second exits with rc!=0; socket inode unchanged",
