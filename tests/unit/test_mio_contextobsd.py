@@ -152,6 +152,9 @@ def _served_policy(main, monkeypatch):
         def verify(self, **_kwargs):
             pass
 
+        def __iter__(self):
+            return iter(())
+
         def append(self, event):
             captured.setdefault("ledger", []).append(event)
 
@@ -195,6 +198,10 @@ def test_the_broker_admits_azmioctx_only(accounts, monkeypatch):
                         lambda: SimpleNamespace(status="absent", reason_code=None,
                                                 registry_version=None))
     monkeypatch.setattr(knowledge_contextd, "load_observation_rule", lambda: None)
+    # The ledger here is a stand-in; so is the writer lock (the real one lives in the
+    # broker's state directory, which this test does not create).
+    monkeypatch.setattr(knowledge_contextd, "_take_writer_lock",
+                        lambda directory: os.open(os.devnull, os.O_RDONLY))
     served = _served_policy(knowledge_contextd.main, monkeypatch)
     policy, registry = served["policy"], served["registry"]
     verb = knowledge_contextd.CONTEXT_VERB.name
