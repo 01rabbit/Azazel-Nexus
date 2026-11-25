@@ -233,8 +233,9 @@ does not write a result that claims either. It writes one line, once:
 * At start, after taking the writer lock, the broker verifies the whole ledger,
   reads every reference, and writes one recovery line for each `requested` line
   of the current form that no reference names. It does not use the in-memory
-  record of the previous process or of `settle`. A stop right after a recovery
-  line adds nothing more at the next start.
+  record of the previous process or of `settle`. After a stop right after a
+  recovery line the next start adds one `commissioning` line, as every start
+  does, and no second `unknown` for the same request.
 * A `requested` line without `format` is never matched or filled in. Their number
   is `legacy_unreferenced` in the status (all of them, including those that did
   finish; it is not a count of lost requests).
@@ -807,8 +808,8 @@ is the only durable state; an empty ledger starts. (Observed on the version befo
 ledger is read as broken: the daemon binds and serves with egress closed, the status
 says `ledger_broken`, requests are refused and the ledger bytes do not change. The
 Linux c4 run, which needs its own runner, now asserts that; it was not run for this
-change. `tests/unit/test_w472_contextd_recovery.py` checks the same three ledgers
-(broken JSON, a torn line, a lone surrogate) with a real process.) These show the broker keeps no state across a
+change. `tests/unit/test_w472_contextd_recovery.py` checks broken JSON, a torn line, a lone surrogate and deeply nested JSON with a real
+process; the c4 run covers a broken line, a torn line and an empty ledger.) These show the broker keeps no state across a
 restart, not a protection specific to restarts. locald and entryd keep no
 state either, so restarting them changes nothing for this property.
 

@@ -754,7 +754,7 @@ def test_c3_concurrent_requests_are_not_cross_adopted(stack: Stack):
 
 
 def test_c4_audit_ledger_state_fail_closed():
-    """Corrupt / torn / missing durable state stops the real daemon before it serves."""
+    """A corrupt or torn ledger leaves the daemon serving with egress closed (#472); an empty one starts."""
     import shutil
     import tempfile
     base = Path(tempfile.mkdtemp(prefix="u29c4-", dir="/tmp"))
@@ -773,6 +773,7 @@ def test_c4_audit_ledger_state_fail_closed():
         for name in ("ca.pem", "nexus.pem", "nexus.key"):
             (s.pki / name).write_text("x")
         s.service_root = base / "service-root"
+        s.env = {**os.environ, "AZAZEL_ROOT": str(s.service_root)}   # Stack.call() reads it
         s._layout()
         state = s.service_root / "var/lib/azazel/state/knowledge-context"
         ledger = state / "context.jsonl"
@@ -808,17 +809,20 @@ def test_c4_audit_ledger_state_fail_closed():
                 # #472: serving is not enough. Ask what it serves, and check that
                 # it did not touch the ledger.
                 observed = {}
-                status = {"verb": "knowledge.context.status", "arguments": {}}
-                for _ in range(20):
-                    try:
-                        observed["status"] = s.call(s.ctx, (s.ctx_gid,), status)["reply"]["result"]
-                        break
-                    except Exception:  # noqa: BLE001 - the socket may not be bound yet
-                        time.sleep(0.25)
-                observed["refusal"] = _refused(s.call(s.ctx, (s.ctx_gid,), _doc()))
-                observed["bytes_unchanged"] = ledger.read_bytes() == (
-                    content if label != "empty" else b"")
-                process.kill(); process.wait(timeout=5)
+                try:
+                    status = {"verb": "knowledge.context.status", "arguments": {}}
+                    for _ in range(20):
+                        try:
+                            observed["status"] = s.call(s.ctx, (s.ctx_gid,), status)["reply"]["result"]
+                            break
+                        except Exception:  # noqa: BLE001 - the socket may not be bound yet
+                            time.sleep(0.25)
+                    assert "status" in observed, "the status verb never answered"
+                    observed["refusal"] = _refused(s.call(s.ctx, (s.ctx_gid,), _doc()))
+                    observed["bytes_unchanged"] = ledger.read_bytes() == (
+                        content if label != "empty" else b"")
+                finally:
+                    process.kill(); process.wait(timeout=5)
             for stream in (process.stdout, process.stderr):
                 stream.close()
             sock = s.service_root / "var/lib/azazel/run/knowledge-context/knowledge-context.sock"

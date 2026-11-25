@@ -316,6 +316,8 @@ def _surrogate() -> bytes:
     ("broken json", b"{not json\n"),
     ("torn line", b'{"sequence":1,"event'),
     ("lone surrogate", None),
+    ("deeply nested json", b'{"sequence":1,"previous_hash":"0","event_hash":"0","event":'
+     + b"[" * 30000 + b"]" * 30000 + b"}\n"),
 ])
 def test_a_ledger_that_cannot_be_read_is_broken_not_a_reason_to_exit(ctx, label, content):
     path = ctx.run / LEDGER

@@ -544,10 +544,10 @@ class _Recovery:
                 self.recovered += 1
                 self.unresolved -= 1
             self.reason = None
-        except (AuditChainBroken, ValueError) as exc:
+        except (AuditChainBroken, ValueError, RecursionError) as exc:
             # A line the chain cannot be recomputed or read from (a lone surrogate,
-            # broken JSON, a cut line) is a break, not a reason to end before bind.
-            # UnicodeError is a ValueError.
+            # broken JSON, a cut line, JSON nested past the parser's depth) is a
+            # break, not a reason to end before bind. UnicodeError is a ValueError.
             self.verified = False
             self.reason = "ledger_broken"
             if not self.guard.broken:
