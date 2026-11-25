@@ -223,9 +223,12 @@ does not write a result that claims either. It writes one line, once:
 "not sent" or "answered".
 
 * A `requested` line of the current form carries `"format": 2`. Every result
-  that follows it (`completed`, the `late_event` inside `audit.late_record` and
-  `audit.outcome_settled`, and the recovery line) carries `requested_sequence`
-  and `requested_hash`, the sequence and hash of that line. Nothing is matched
+  that follows it carries `requested_sequence` and `requested_hash`, the
+  sequence and hash of that line: the `completed` line, the recovery line, and
+  the `late_event` inside an `audit.late_record` or an absent
+  `audit.outcome_settled`. A present `audit.outcome_settled` has no `late_event`;
+  the reference is on the original `completed` line the ledger already holds.
+  Nothing is matched
   by position. A refusal before any `requested` line carries no reference. When
   the `requested` write itself had an unknown outcome the refusal waits until
   the line is settled: it refers to the line when it is `present` and carries no
@@ -250,7 +253,11 @@ does not write a result that claims either. It writes one line, once:
   there would have created the file; an older writer, which takes no lock, is
   removed by the switch-over procedure (stop the old unit, `populated 0`), not by
   this check. A lock file that exists but cannot be opened ends the start, since
-  it says nothing about who holds it.
+  it says nothing about who holds it. Separately, every start takes a lock in the
+  socket's own directory (`knowledge-context.lock`, 0600, in the directory the
+  unit already may write) before binding, whether or not the ledger lock could be
+  taken; a start that cannot take it, or finds it held, ends before the socket
+  path (which `bind` would replace) is touched.
 * Egress opens only when the ledger verified, `commissioning` is recorded and
   no recovery is pending. Until then (also after a failed start-up append) the
   broker serves with egress closed: the observation latch and
@@ -272,7 +279,9 @@ does not write a result that claims either. It writes one line, once:
   and the status still work then. The refusal's own `completed` line is a
   different matter: it is appended whenever the debt can be settled, and dropped
   (counted as unrecorded) when it cannot. The latch's own record is best effort
-  in the same way.
+  in the same way and is counted the same way. Every dropped line is counted in
+  `unrecorded` of the status, except that a chain found broken is counted once per
+  request.
 * Until the ledger is verified and `commissioning` is recorded, the broker's
   own records are not appended: the latch's record and the transport's refusal
   records are dropped (counted as unrecorded), not held back and not written
@@ -288,7 +297,7 @@ does not write a result that claims either. It writes one line, once:
 `knowledge.context.status` (operator group, the SERVICE account and root; no
 arguments) answers `egress` (`open` or `closed`), `reason` (`ledger_broken`,
 `audit_unavailable` or none), `audit` (`ok`, `owed`, `broken`), `unresolved`,
-`legacy_unreferenced`, `recovered` (lines written by this process) and
+`legacy_unreferenced`, `recovered` (lines written by this process), `unrecorded` (lines dropped for a ledger that could not take them) and
 `observation` (`open` or `latched`).
 
 ### The explainer's request: `mio.context.observe` and `mio.contextobs.observe`

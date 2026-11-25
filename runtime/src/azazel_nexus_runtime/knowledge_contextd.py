@@ -119,6 +119,7 @@ class KnowledgeContextBroker:
         grant_marker: Callable[[], Any] = _production_grant_marker,
         send_allowed: Callable[[], bool] = lambda: True,
         request_settled: Callable[[Any], str] = lambda entry: "present",
+        dropped: Callable[[], None] = lambda: None,
     ) -> None:
         if type(enabled) is not bool:
             raise ValueError("Knowledge Context enablement must be explicit")
@@ -138,6 +139,8 @@ class KnowledgeContextBroker:
         #: `present`, `absent` or `unknown` for a `requested` line whose write
         #: had an unknown outcome; decides whether its refusal carries a reference.
         self._request_settled = request_settled
+        #: Called when a latch record or a refusal's own line could not be written.
+        self._dropped = dropped
         #: Refusals held back until the line they would refer to is settled:
         #: (event, the `requested` entry in doubt).
         self.deferred: list = []
@@ -180,7 +183,7 @@ class KnowledgeContextBroker:
             self._audit({"event_type": "knowledge.context.observation_latched",
                          "outcome": "latched", "reason_code": cause})
         except Exception:
-            pass
+            self._dropped()
 
     def _observation_gate(self, now: float) -> str | None:
         """None to proceed (and count the request), else the reason_code."""
@@ -414,7 +417,7 @@ class KnowledgeContextBroker:
             try:
                 self._audit({**event, **refs})
             except Exception:
-                pass
+                self._dropped()
         # Every accepted request is a technique query (#439), so every refusal
         # (including the two early returns above) carries how far it got, as a
         # fixed word from _STAGES: the caller can keep transport
@@ -460,7 +463,7 @@ class WriterBusy(Exception):
     """Another process already holds the ledger's writer lock."""
 
 
-def _take_writer_lock(directory):
+def _flock_file(lock):
     """The one writer of this ledger, before anything is appended or bound (#472).
 
     A lock file beside the ledger, held for the life of the process (the kernel
@@ -474,7 +477,7 @@ def _take_writer_lock(directory):
     caller serves with the ledger closed. A lock file that exists but cannot be
     opened proves nothing about who holds it, and ends the start.
     """
-    lock = directory / "context.jsonl.lock"
+    directory = lock.parent
     flags = os.O_CLOEXEC | os.O_NOFOLLOW
     try:
         fd = os.open(lock, os.O_RDONLY | flags)
@@ -493,6 +496,26 @@ def _take_writer_lock(directory):
         if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
             raise WriterBusy("another az-knowledge-contextd holds the ledger") from None
         raise SystemExit(f"az-knowledge-contextd cannot lock its ledger: {exc.strerror}")
+    return fd
+
+
+def _take_writer_lock(directory):
+    """The ledger's writer lock (see `_flock_file`); `None` when it cannot be created."""
+    return _flock_file(directory / "context.jsonl.lock")
+
+
+def _take_socket_lock(path):
+    """The right to bind `path`, taken before `bind_socket` removes what is there (#472).
+
+    Held in the socket's own directory (a ReadWritePaths of the unit, owned by the
+    broker's user, mode 2710: the lock file is 0600 and adds no access). It is taken
+    on every start, whether or not the ledger lock could be taken, so a start with a
+    closed ledger cannot replace a running broker's socket. If it cannot be taken or
+    created the socket cannot be bound either, and the start ends.
+    """
+    fd = _flock_file(path.parent / (path.stem + ".lock"))
+    if fd is None:
+        raise SystemExit("az-knowledge-contextd cannot lock its socket directory")
     return fd
 
 
@@ -642,6 +665,7 @@ class _Recovery:
                 "audit": self.guard.state, "unresolved": self.unresolved,
                 "legacy_unreferenced": self.legacy_unreferenced,
                 "recovered": self.recovered,
+                "unrecorded": self.guard.refusals_unrecorded,
                 "observation": "latched" if broker._latched else "open"}
 
 
@@ -656,6 +680,8 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
     # First, before any append and before the socket is touched.
     try:
         lock_fd = _take_writer_lock(state_dir)
+        sock_path = socket_path(SOCKET_NAME)
+        socket_lock = _take_socket_lock(sock_path)
     except WriterBusy as exc:
         raise SystemExit(str(exc))
     # Enablement comes only from the root-owned commissioning bundle; any
@@ -685,7 +711,6 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
             # Nothing but the start-up's own lines may be the first (#472): a
             # latch or refusal record before `commissioning` is dropped, the
             # latch itself is not.
-            guard.count_unrecorded()
             raise AuditUnavailable("start-up not finished")
         try:
             # Once the peer was called, a record that cannot be written is a
@@ -702,12 +727,15 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
         if guard.broken:
             return False
         if guard.owed and not guard.settle_owed():
-            if not guard.broken:
-                guard.count_unrecorded()
             return False
         if not recovery.open:
             recovery.attempt()
         return recovery.open and not guard.broken
+
+    def dropped() -> None:
+        """A line the ledger could not take is counted; a break is counted once per request."""
+        if not guard.broken:
+            guard.count_unrecorded()
 
     # The start-up appends are the first ones this process makes; a failure of
     # any of them leaves egress closed and the daemon serving.
@@ -719,10 +747,12 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
             enabled=True, audit=audit,
             observation_rule=observation,
             send_allowed=send_allowed, request_settled=recovery.request_verdict,
+            dropped=dropped,
         )
     else:
         broker = KnowledgeContextBroker(
-            audit=audit, send_allowed=send_allowed, request_settled=recovery.request_verdict)
+            audit=audit, send_allowed=send_allowed, request_settled=recovery.request_verdict,
+            dropped=dropped)
 
     def handle(request):
         """Record before send; on a broken chain nothing is sent to Knowledge."""
@@ -767,7 +797,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
     handle.__self__ = broker
     try:
         return serve_forever(
-            path=socket_path(SOCKET_NAME), registry=REGISTRY,
+            path=sock_path, registry=REGISTRY,
             policy=PrincipalPolicy.resolve(
                 operator_group="azknowledge-context-client",
                 # The one SERVICE principal (#439, docs/adr/0010-context-observation-unit.md):
@@ -783,6 +813,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
     finally:
         if recovery.lock_fd is not None:
             os.close(recovery.lock_fd)
+        os.close(socket_lock)
 
 
 if __name__ == "__main__":  # pragma: no cover

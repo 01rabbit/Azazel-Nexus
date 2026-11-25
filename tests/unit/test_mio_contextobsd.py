@@ -202,6 +202,8 @@ def test_the_broker_admits_azmioctx_only(accounts, monkeypatch):
     # broker's state directory, which this test does not create).
     monkeypatch.setattr(knowledge_contextd, "_take_writer_lock",
                         lambda directory: os.open(os.devnull, os.O_RDONLY))
+    monkeypatch.setattr(knowledge_contextd, "_take_socket_lock",
+                        lambda path: os.open(os.devnull, os.O_RDONLY))
     served = _served_policy(knowledge_contextd.main, monkeypatch)
     policy, registry = served["policy"], served["registry"]
     verb = knowledge_contextd.CONTEXT_VERB.name

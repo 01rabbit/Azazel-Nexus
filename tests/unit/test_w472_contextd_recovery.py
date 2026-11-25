@@ -544,6 +544,40 @@ def test_a_read_only_state_directory_starts_closed_and_writes_nothing(ctx):
 
 
 @pytest.mark.real_process
+def test_a_second_start_with_the_ledger_closed_does_not_replace_the_first_socket(ctx):
+    state = ctx.run / STATE / "knowledge-context"
+    state.chmod(0o500)                               # no ledger lock can be created
+    try:
+        assert ctx.start()
+        assert ctx.status()["reason"] == "audit_unavailable"
+        sock = ctx.run / "r/var/lib/azazel/run/knowledge-context/knowledge-context.sock"
+        ident = (sock.stat().st_ino, sock.stat().st_dev)
+        env = {**os.environ, "AZAZEL_ROOT": "r", "PYTHONDONTWRITEBYTECODE": "1"}
+        second = subprocess.run([sys.executable, str(CHILD)], cwd=ctx.run, env=env, timeout=30,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        assert second.returncode != 0 and b"another az-knowledge-contextd" in second.stderr
+        assert (sock.stat().st_ino, sock.stat().st_dev) == ident
+        assert ctx.alive() and ctx.status()["egress"] == "closed"    # the first still answers
+    finally:
+        state.chmod(0o700)
+
+
+@pytest.mark.real_process
+def test_lines_dropped_for_an_unsettled_debt_are_counted_as_unrecorded(ctx):
+    assert ctx.start()
+    assert served(ctx.request(0))
+    ctx.arm("fsync", 2)
+    assert ctx.request(1)["reply"]["result"]["stage"] == "unrecorded"
+    ctx.arm("persist")                               # the debt cannot be settled
+    before = ctx.status()["unrecorded"]
+    (ctx.run / RULE).unlink()
+    assert ctx.request(2)["reply"]["result"]["stage"] == "refused_before_send"
+    after = ctx.status()
+    assert after["observation"] == "latched"
+    assert after["unrecorded"] == before + 2         # the latch's line and the refusal's line
+
+
+@pytest.mark.real_process
 def test_a_lock_held_by_another_refuses_the_start_and_changes_nothing(ctx):
     import fcntl
 
@@ -704,7 +738,8 @@ def test_a_latch_record_dropped_before_start_up_is_counted_as_unrecorded(monkeyp
     monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
     runtime_paths.knowledge_context_state_dir().mkdir(parents=True)
     path = runtime_paths.knowledge_context_state_dir() / "context.jsonl"
-    path.write_bytes(b"{not json\n")                       # start-up cannot finish
+    path.write_bytes(b"{not json\n")
+    path.chmod(0)                                    # unreadable, not broken: start-up cannot finish
     captured = {}
     monkeypatch.setattr(kc, "serve_forever", lambda **kw: captured.update(kw) or 0)
     monkeypatch.setattr(kc.PrincipalPolicy, "resolve", lambda **kw: "policy")
@@ -713,6 +748,7 @@ def test_a_latch_record_dropped_before_start_up_is_counted_as_unrecorded(monkeyp
     broker = captured["handler"].__self__
     before = guard.refusals_unrecorded
     broker._record_latch("missing")
+    path.chmod(0o600)
     assert guard.refusals_unrecorded == before + 1 and path.read_bytes() == b"{not json\n"
 
 
