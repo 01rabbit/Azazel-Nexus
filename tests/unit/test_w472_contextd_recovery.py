@@ -598,6 +598,23 @@ def test_a_missing_socket_directory_ends_the_start_and_is_not_created(ctx):
 
 
 @pytest.mark.real_process
+def test_an_existing_lock_and_a_ledger_that_can_be_appended_start_normally_in_a_read_only_directory(ctx):
+    state = ctx.run / STATE / "knowledge-context"
+    AuditLedger(state / "context.jsonl").append(
+        {"event_type": "knowledge.context.commissioning", "outcome": "commissioned"})
+    (state / "context.jsonl.lock").write_bytes(b"")
+    state.chmod(0o500)                               # the directory cannot be written, the files can
+    try:
+        assert ctx.start(), ctx.exit_info()
+        status = ctx.status()
+        assert status["egress"] == "open" and status["reason"] is None
+        assert served(ctx.request(1)) and ctx.calls() == 1
+        assert "knowledge.context.commissioning" in ctx.kinds()[1:]    # this start recorded itself
+    finally:
+        state.chmod(0o700)
+
+
+@pytest.mark.real_process
 def test_a_start_that_cannot_bind_writes_nothing_to_the_ledger(ctx):
     state = ctx.run / STATE / "knowledge-context"
     run_dir = ctx.run / "r/var/lib/azazel/run/knowledge-context"
@@ -933,3 +950,55 @@ def test_a_requested_line_with_a_refusal_waiting_gets_one_result_only(tmp_path):
     recovery.attempt()
     results = [r for r in ledger if r.event["event_type"] == COMPLETED]
     assert len(results) == 1 and recovery.unresolved == 0 and recovery.open
+
+
+def test_a_refusal_that_cannot_be_written_is_held_and_nothing_is_sent_meanwhile():
+    from azazel_nexus.audit import AuditUnavailable
+
+    clock, state, events, sent = [100.0], {"fail": True}, [], []
+
+    def audit(event):
+        if event["event_type"] == REQUESTED:
+            if state["fail"]:
+                clock[0] = 200.0                     # the deadline passes right after it
+            return _entry(5, event)
+        if state["fail"]:
+            raise AuditUnavailable("x")
+        events.append(event)
+
+    broker = _broker(audit, monotonic=lambda: clock[0])
+    broker._client.request_context = lambda **kw: sent.append(kw) or {"x": 1}
+    assert broker.handle(_request_far())["refusal"] == "timeout"
+    assert len(broker.deferred) == 1 and events == []         # `requested` has no result yet
+    clock[0] = 100.0
+    broker.handle(_request_far())                             # the next request: not sent
+    assert sent == []
+    state["fail"] = False
+    broker.flush_deferred()
+    assert len(events) == 1 and events[0]["requested_sequence"] == 5 and broker.deferred == []
+    broker.handle(_request_far())
+    assert len(sent) == 1                                     # open again, one result written
+
+
+def test_a_refusal_held_after_present_is_settled_still_blocks_a_send_until_written():
+    from azazel_nexus.audit import AuditUnavailable
+
+    state, events, sent = {"fail": True}, [], []
+
+    def audit(event):
+        if event["event_type"] == REQUESTED:
+            raise AuditOutcomeUnknown("x", entry=_entry(7, event), path=Path("p"),
+                                      absent_head=(6, "0" * 64))
+        if state["fail"]:
+            raise AuditUnavailable("x")
+        events.append(event)
+
+    broker = _broker(audit, request_settled=lambda entry: "present")
+    broker._client.request_context = lambda **kw: sent.append(kw)
+    broker.handle(_request_far())
+    assert len(broker.deferred) == 1 and sent == []
+    broker.handle(_request_far())
+    assert sent == []                                         # still held: closed
+    state["fail"] = False
+    broker.flush_deferred()
+    assert len(events) == 1 and events[0]["requested_sequence"] == 7

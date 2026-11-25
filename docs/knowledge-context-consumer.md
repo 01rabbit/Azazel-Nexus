@@ -251,13 +251,18 @@ does not write a result that claims either. It writes one line, once:
   installer creates and the unit may write; the broker never creates that
   directory. A second broker exits with a message and touches neither the ledger
   nor the socket.
-* The start ends (and nothing is written or replaced) when any of these holds:
-  another process holds the ledger lock; the ledger lock file exists but cannot be
-  opened (that says nothing about who holds it); the state directory is missing
-  (it is never created, so an empty ledger is not made); the socket directory is missing
-  or not writable, or the socket lock file cannot be created there, or the socket
-  cannot be bound; another process holds the socket lock; the state directory cannot be searched at all
-  (whether the ledger lock exists is then unknowable).
+* The start ends when any of these holds: another process holds the ledger lock;
+  the ledger lock file exists but cannot be opened (that says nothing about who
+  holds it); the state directory is missing (it is never created, so an empty
+  ledger is not made); the state directory cannot be searched at all (whether the
+  ledger lock exists is then unknowable); the socket directory is missing or not
+  writable, or the socket lock file cannot be created there; another process holds
+  the socket lock; the socket cannot be bound. For every one of these the ledger is
+  untouched. The socket path is untouched for all of them except the last: the
+  transport removes an existing path before it binds, so a bind that then fails has
+  already removed it. That is safe only because both locks were taken first (no
+  other broker of this version is running; an older one is removed by the
+  switch-over procedure).
 * The state directory decides which of three things happens (the socket lock and
   the socket bind come first in every case; nothing is appended to the ledger
   before the socket is bound, so a start that fails before the bind writes

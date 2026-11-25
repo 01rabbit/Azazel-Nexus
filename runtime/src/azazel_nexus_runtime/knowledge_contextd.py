@@ -210,6 +210,11 @@ class KnowledgeContextBroker:
             self._counted.append(now)
             return None
 
+    def _hold_written(self, written: dict, line, exc: BaseException) -> None:
+        doubt = exc.entry if isinstance(exc, AuditOutcomeUnknown) else None
+        self.deferred.append({"event": written, "line": line, "written": written,
+                              "doubt": doubt})
+
     def held_requests(self) -> set:
         """(sequence, hash) of the `requested` lines whose refusal this process will still write."""
         return {(item["line"].sequence, item["line"].event_hash) for item in self.deferred}
@@ -301,6 +306,7 @@ class KnowledgeContextBroker:
         phase = "frame"
         refs: dict = {}
         in_doubt = None
+        requested_entry = None
         try:
             # The grant this request is accepted under. A broker whose grant
             # was withdrawn (marker removed) accepts nothing, even in the
@@ -335,7 +341,7 @@ class KnowledgeContextBroker:
             phase = "frame"
             # After the gate (a latch and its record still happen while the
             # ledger is unwell) and before the slot, the record and the client.
-            if not self._send_allowed():
+            if not self._send_allowed() or self.deferred:
                 reason = "refused_before_send"
                 # The check may have taken the rest of the time: that is a timeout.
                 if self._monotonic() >= deadline:
@@ -359,6 +365,7 @@ class KnowledgeContextBroker:
                     in_doubt = exc.entry
                     raise
                 refs = _reference(written)
+                requested_entry = written if refs else None
                 # The record may have taken time too: the client gets what is left.
                 deadline_s = deadline - self._monotonic()
                 if deadline_s <= 0:
@@ -460,7 +467,13 @@ class KnowledgeContextBroker:
             try:
                 self._audit({**event, **refs})
             except Exception as exc:
-                self._lost(exc)
+                if (requested_entry is not None and not self.sent
+                        and isinstance(exc, AuditUnavailable)):
+                    # The `requested` line is on the ledger and its result is not: this
+                    # refusal is held and written again, and nothing is sent meanwhile.
+                    self._hold_written({**event, **refs}, requested_entry, exc)
+                else:
+                    self._lost(exc)
         # Every accepted request is a technique query (#439), so every refusal
         # (including the two early returns above) carries how far it got, as a
         # fixed word from _STAGES: the caller can keep transport
@@ -633,7 +646,7 @@ class _Recovery:
     @property
     def open(self) -> bool:
         return (self.verified and self.commissioned and self.unresolved == 0
-                and not self.guard.broken and not self.guard.owed)
+                and not self.guard.broken and not self.guard.owed and not self._held())
 
     def on_settled(self, event, entry) -> None:
         self.present.add((entry.sequence, entry.event_hash))
