@@ -252,19 +252,23 @@ does not write a result that claims either. It writes one line, once:
   another process holds the ledger lock; the ledger lock file exists but cannot be
   opened (that says nothing about who holds it); the state directory is missing
   (it is never created, so an empty ledger is not made); the socket directory is missing
-  or not writable, or the socket lock file cannot be created there; another
-  process holds the socket lock; the state directory cannot be searched at all
+  or not writable, or the socket lock file cannot be created there, or the socket
+  cannot be bound; another process holds the socket lock; the state directory cannot be searched at all
   (whether the ledger lock exists is then unknowable).
-* The start does not end, and the broker serves with egress closed and writes
-  nothing to the ledger (status reason `audit_unavailable`), when the state
-  directory can be searched but the ledger lock file does not exist and cannot be
-  created (read-only directory, no permission) while the socket lock is taken.
-  The ledger lock is tried again later. An existing lock file is opened without
-  creating it, so a read-only state directory with the file present is fine.
-  This is safe because a broker of this version that had run there would have
-  created the lock file and would still hold the socket lock; an older writer,
-  which takes no lock, is removed by the switch-over procedure (stop the old
-  unit, `populated 0`), not by these checks.
+* The state directory decides which of three things happens (the socket lock and
+  the socket bind come first in every case; nothing is appended to the ledger
+  before the socket is bound, so a start that fails there writes nothing):
+  1. The state directory cannot be searched: the start ends (the b2 case below).
+  2. It can be searched, but the ledger lock file does not exist and cannot be
+     created (read-only directory, no permission): the broker starts with egress
+     closed and writes nothing to the ledger (status reason `audit_unavailable`),
+     and tries the lock again later. This is safe because a broker of this
+     version that had run there would have created the file and still hold the
+     socket lock; an older writer, which takes no lock, is removed by the
+     switch-over procedure (stop the old unit, `populated 0`), not by these checks.
+  3. The lock file exists and can be opened, and the ledger file can be appended
+     to: the broker starts normally, even if the directory itself is not
+     writable (an existing lock file is opened without creating it).
 * Egress opens only when the ledger verified, `commissioning` is recorded and
   no recovery is pending. Until then (also after a failed start-up append) the
   broker serves with egress closed: the observation latch and
@@ -305,7 +309,9 @@ does not write a result that claims either. It writes one line, once:
   settled: `present` removes it, `absent` writes it again.
 
 `knowledge.context.status` (operator group, the SERVICE account and root; no
-arguments) answers `egress` (`open` or `closed`), `reason` (`ledger_broken`,
+arguments) answers `egress` (`open` or `closed`; `open` is the ledger side's verdict only:
+a real request is also judged by the broker's readiness (commissioning) and the
+observation gate), `reason` (`ledger_broken`,
 `audit_unavailable` or none), `audit` (`ok`, `owed`, `broken`), `unresolved`,
 `legacy_unreferenced`, `recovered` (lines written by this process), `unrecorded` (lines dropped for a ledger that could not take them) and
 `observation` (`open` or `latched`).

@@ -807,9 +807,10 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
         if not guard.broken:
             guard.count_unrecorded()
 
-    # The start-up appends are the first ones this process makes; a failure of
-    # any of them leaves egress closed and the daemon serving.
-    recovery.attempt()
+    # The start-up appends are the first ones this process makes, and come after the
+    # socket is bound (below, in `ready`): a start that cannot bind writes nothing.
+    # Until they are done egress is closed; a failure of any leaves it closed and the
+    # daemon serving.
     if commissioning.status == "commissioned":
         broker = KnowledgeContextBroker(
             client=commissioning.client, policy=commissioning.policy,
@@ -866,6 +867,12 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
                 guard.settle_refusals(recovery.request_verdict)
         return stop()
 
+    base_ready = ready if ready is not None else runtime_ready_callback()
+
+    def ready_after_bind() -> None:
+        recovery.attempt()
+        base_ready()
+
     handle.__self__ = broker
     try:
         return serve_forever(
@@ -880,7 +887,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
             audit=record_refusal,
             handler=handle,
             stop=poll,
-            ready=ready if ready is not None else runtime_ready_callback(),
+            ready=ready_after_bind,
         )
     finally:
         if recovery.lock_fd is not None:

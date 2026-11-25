@@ -330,12 +330,13 @@ def test_main_reads_the_rule_once_and_records_loaded_only_when_present(env, monk
     runtime_paths.knowledge_context_state_dir().mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(kc, "AuditLedger", lambda p: type("L", (Ledger,), {})(Path()))
     captured = {}
-    monkeypatch.setattr(kc, "serve_forever", lambda **kw: captured.setdefault("h", kw) and 0)
+    monkeypatch.setattr(kc, "serve_forever", lambda **kw: captured.__setitem__("h", kw) or 0)
     for rule_present in (False, True):
         seen.clear()
         if rule_present:
             write_rule(env, 3)
-        assert kc.main([]) == 0
+        assert kc.main([], ready=lambda: None) == 0
+        captured["h"]["ready"]()      # the socket is bound; the start-up records are written now
         commissioning = seen[0]
         if rule_present:
             assert commissioning["observation_rule"] == "loaded"

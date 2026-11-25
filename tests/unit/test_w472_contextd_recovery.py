@@ -598,6 +598,23 @@ def test_a_missing_socket_directory_ends_the_start_and_is_not_created(ctx):
 
 
 @pytest.mark.real_process
+def test_a_start_that_cannot_bind_writes_nothing_to_the_ledger(ctx):
+    state = ctx.run / STATE / "knowledge-context"
+    run_dir = ctx.run / "r/var/lib/azazel/run/knowledge-context"
+    ledger = AuditLedger(state / "context.jsonl")
+    ledger.append({"event_type": "knowledge.context.commissioning", "outcome": "commissioned"})
+    (run_dir / "knowledge-context.lock").write_bytes(b"")     # exists, so it can be opened
+    before = (state / "context.jsonl").read_bytes()
+    run_dir.chmod(0o500)                                      # but nothing can be bound there
+    try:
+        assert ctx.start() is False
+        assert ctx.proc.wait(timeout=10) != 0
+        assert (state / "context.jsonl").read_bytes() == before   # no commissioning, no recovery
+    finally:
+        run_dir.chmod(0o700)
+
+
+@pytest.mark.real_process
 def test_a_lock_held_by_another_refuses_the_start_and_changes_nothing(ctx):
     import fcntl
 
