@@ -272,10 +272,9 @@ does not write a result that claims either. It writes one line, once:
 * The state directory decides which of three things happens (the socket lock and
   the socket bind come first in every case; nothing is appended to the ledger
   before the socket is bound, so a start that fails before the bind writes
-  nothing to the ledger. `bind` itself removes an existing socket path; that is
-  safe here because a broker that had held the writer lock and the socket lock
-  would still hold them, so once both are taken no other broker of this version
-  is running, and an older one is removed by the switch-over procedure):
+  nothing to the ledger. What keeps a second broker off the same socket before `bind`
+  removes the old path is the socket lock, which every start takes; see the list
+  above for what the ledger lock adds):
   1. The state directory cannot be searched: the start ends (the b2 case below).
   2. It can be searched, but the ledger lock file does not exist and cannot be
      created (read-only directory, no permission): the broker starts with egress
