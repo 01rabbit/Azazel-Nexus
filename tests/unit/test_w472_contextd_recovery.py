@@ -550,11 +550,17 @@ from test_knowledge_contextd import OPEN_GATE, _policy, _request  # noqa: E402
 def _duties(tmp_path, commissioning=None):
     ledger = AuditLedger(tmp_path / "context.jsonl")
     holder: list = []
-    guard = ChainGuard(ledger.append, settle_single(ledger),
-                       on_settled=lambda e, entry: holder[0].on_settled(e, entry))
+    guard = kc._Guard(ledger.append, settle_single(ledger),
+                      on_settled=lambda e, entry: holder[0].on_settled(e, entry))
     duties = kc._Duties(ledger, guard, commissioning or COMMISSIONED)
     holder.append(duties)
     return ledger, guard, duties
+
+
+def _step(duties):
+    """One step as a request of its own: the mark is clear at its entrance."""
+    duties.guard.new_request()
+    duties.step()
 
 
 def _row(ledger, event):
@@ -631,10 +637,10 @@ def test_a_line_of_unknown_outcome_is_settled_before_the_next_append(tmp_path, m
         return real_fsync(fd)
 
     monkeypatch.setattr("azazel_nexus.audit.os.fsync", fsync)
-    duties.step()                                   # commissioning: written, sync failed
+    _step(duties)                                   # commissioning: written, sync failed
     assert len(calls) == 1                          # the injection fired
     assert guard.owed and duties.queue == [COMMISSIONED]
-    duties.step()                                   # settles first; found present
+    _step(duties)                                   # settles first; found present
     assert [row.event["event_type"] for row in ledger] == [
         "knowledge.context.commissioning", "audit.outcome_settled"]
     assert duties.queue == [] and duties.commissioned and duties.open
@@ -650,7 +656,7 @@ def test_each_step_is_one_unit_and_a_held_result_keeps_egress_closed(tmp_path):
     assert len(duties.queue) == 3 and not duties.open
     for expected in (1, 2, 3):
         before = len(list(ledger))
-        duties.step()
+        _step(duties)
         assert len(list(ledger)) == before + 1       # exactly one line per step
         assert len(duties.queue) == 3 - expected
     assert duties.open
@@ -893,12 +899,12 @@ def test_a_step_is_a_reconciliation_or_an_append_never_both(tmp_path):
 
     audit_module.os.fsync = fsync
     try:
-        duties.step()                                 # commissioning: unknown
+        _step(duties)                                 # commissioning: unknown
     finally:
         audit_module.os.fsync = real_fsync
     duties.hold({"event_type": COMPLETED, "outcome": "timeout"})
     before = len(list(ledger))
-    duties.step()                                     # reconciles; the held row waits
+    _step(duties)                                     # reconciles; the held row waits
     kinds = [row.event["event_type"] for row in ledger][before:]
     assert kinds == ["audit.outcome_settled"] and len(duties.queue) == 1
 
@@ -914,7 +920,7 @@ def test_a_held_result_refers_to_its_request_only_if_that_line_was_found_present
             duties.present.add((9, "abc"))
         event = {"event_type": COMPLETED, "outcome": "unavailable"}
         duties.hold(event, line)
-        duties.step()
+        _step(duties)
         row = list(ledger)[-1].event
         assert ("requested_sequence" in row) is refers
         path = tmp_path / "context.jsonl"
@@ -951,3 +957,87 @@ def test_status_says_closed_when_the_broker_cannot_send(tmp_path, monkeypatch):
     status = served_["handler"](SimpleNamespace(verb=kc.STATUS_VERB))
     assert status["egress"] == "closed" and status["reason"] == "broker_disabled"
     assert status["audit"] == "ok" and status["unresolved"] == 0
+
+
+# ---- #477 review 2 -------------------------------------------------------------
+
+_REAL_BROKER = kc.KnowledgeContextBroker
+
+
+def _boot_enabled(tmp_path, monkeypatch, ledger_cls, *, rule=True, grant=granted_marker, sent=None):
+    from azazel_nexus_runtime import runtime_paths
+
+    class Client:
+        def request_context(self, **kw):
+            if sent is not None:
+                sent.append(1)
+            return {"authority": "advisory_only"}
+
+    real = _REAL_BROKER
+
+    def broker(**kw):
+        return real(**{**kw, **(OPEN_GATE if rule else {}), "grant_marker": grant})
+
+    monkeypatch.setattr(kc, "KnowledgeContextBroker", broker)
+    monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
+    runtime_paths.knowledge_context_state_dir().mkdir(parents=True)
+    runtime_paths.socket_path("knowledge-context").parent.mkdir(parents=True)
+    captured = {}
+    monkeypatch.setattr(kc, "AuditLedger", ledger_cls)
+    monkeypatch.setattr(kc, "serve_forever", lambda **kw: captured.update(kw) or 0)
+    monkeypatch.setattr(kc.PrincipalPolicy, "resolve", lambda **kw: "policy")
+    monkeypatch.setattr(kc, "runtime_ready_callback", lambda: None)
+    monkeypatch.setattr(kc, "load_commissioning", lambda: SimpleNamespace(
+        status="commissioned", reason_code=None, registry_version=None, client=Client(),
+        policy=_policy(), mission="lab", alias_key=b"x" * 32))
+    monkeypatch.setattr(kc, "load_observation_rule", lambda: None)
+    assert kc.main([]) == 0
+    captured["ready"]()
+    return captured
+
+
+def test_a_request_that_finished_the_waiting_work_does_not_reconcile_its_own_unknown_requested(
+        tmp_path, monkeypatch):
+    class Ledger(AuditLedger):
+        calls, settles, sent_at = 0, 0, []
+
+        def append(self, event, **kw):
+            Ledger.calls += 1
+            if Ledger.calls == 1:                       # the start-up `commissioning` fails
+                raise AuditUnavailable("down")
+            entry = super().append(event, **kw)
+            if event["event_type"] == REQUESTED:        # this request's own line: unknown
+                raise AuditOutcomeUnknown("x", entry=entry, path=self.path,
+                                          absent_head=(entry.sequence - 1, entry.previous_hash))
+            return entry
+
+        def settle(self, entry, *, absent_head):
+            Ledger.settles += 1
+            return super().settle(entry, absent_head=absent_head)
+
+    sent = []
+    served_ = _boot_enabled(tmp_path, monkeypatch, Ledger, sent=sent)
+    handler = served_["handler"]
+    assert Ledger.calls == 1 and handler(SimpleNamespace(verb=kc.STATUS_VERB))["unresolved"] == 1
+    reply = handler(_request())                         # step (commissioning), then its own requested
+    assert reply["refusal"] == "unavailable" and sent == []
+    assert Ledger.settles == 0                          # no second unit in this request
+    status = handler(SimpleNamespace(verb=kc.STATUS_VERB))
+    assert status["egress"] == "closed" and status["reason"] == "audit_owed"
+    assert status["unresolved"] >= 2                    # the debt and the waiting result
+    handler(_request())                                 # the next request's one step: reconcile
+    assert Ledger.settles == 1 and sent == []
+
+
+def test_status_says_closed_when_the_gate_or_the_grant_would_refuse(tmp_path, monkeypatch):
+    status = lambda captured: captured["handler"](SimpleNamespace(verb=kc.STATUS_VERB))  # noqa: E731
+    open_ = _boot_enabled(tmp_path / "a", monkeypatch, AuditLedger)
+    assert status(open_)["egress"] == "open" and status(open_)["reason"] is None
+    missing = _boot_enabled(tmp_path / "b", monkeypatch, AuditLedger, rule=False)
+    assert (status(missing)["egress"], status(missing)["reason"]) == (
+        "closed", "observation_rule_missing")
+    withdrawn = _boot_enabled(tmp_path / "c", monkeypatch, AuditLedger, grant=lambda: None)
+    assert (status(withdrawn)["egress"], status(withdrawn)["reason"]) == (
+        "closed", "grant_withdrawn")
+    # What status says is what a request meets.
+    assert withdrawn["handler"](_request())["refusal"] == "unavailable"

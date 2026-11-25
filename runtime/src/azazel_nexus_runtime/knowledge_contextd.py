@@ -202,6 +202,30 @@ class KnowledgeContextBroker:
             self._counted.append(now)
             return None
 
+    def closed_reason(self) -> str | None:
+        """Why a request would be refused before any record, judged as `handle` judges it.
+
+        Reads only; it latches nothing and writes nothing. None: nothing here
+        refuses (the ledger's side and the rate window are not asked).
+        """
+        if not self._ready:
+            return "broker_disabled"
+        if self._observation is None:
+            return "observation_rule_missing"
+        if self._latched:
+            return "observation_latched"
+        rule, identity = self._observation
+        path = self._observation_path or knowledge_context_observation_rule_path()
+        if self._latch_cause(path, identity) is not None:
+            return "observation_rule_changed"
+        try:
+            admitted = self._grant_marker()
+        except Exception:
+            admitted = None
+        if admitted is None:
+            return "grant_withdrawn"
+        return None
+
     def handle(self, request) -> dict:
         if getattr(getattr(request, "verb", None), "name", None) != CONTEXT_VERB.name:
             return {"refusal": "unavailable", "stage": "refused_before_send"}
@@ -427,9 +451,11 @@ def _take_writer_lock(directory):
 
 
 class _Guard(ChainGuard):
-    """A guard that reconciles at most once for each request (#472).
+    """A guard that spends at most one ledger step on each request (#472).
 
-    One reconciliation is one step: it is the look at the ledger and, when the
+    The mark `_reconciled` is the request's one step, whether it was an append
+    of a waiting row (`_Duties.step`) or a reconciliation; the two are counted
+    together. One reconciliation is one step: it is the look at the ledger and, when the
     line is found, the `audit.outcome_settled` / `audit.late_record` it writes
     (the #469 contract). Whatever asks for a second one in the same request (the
     latch record, the refusal's record, the step) gets "still owed" without any
@@ -451,6 +477,10 @@ class _Guard(ChainGuard):
             return False
         self._reconciled = True
         return super().settle_owed()
+
+    def spend(self) -> None:
+        """The request's one step was an append."""
+        self._reconciled = True
 
 
 class _Duties:
@@ -574,6 +604,7 @@ class _Duties:
         key = self._awaiting.pop(id(event), None)
         if key is not None and key in self.present:
             event.update({"requested_sequence": key[0], "requested_hash": key[1]})
+        self.guard.spend()
         try:
             self.guard.append(event, performed=False)
         except (AuditChainBroken, AuditUnavailable):
@@ -611,10 +642,8 @@ class _Duties:
 
     def status(self, broker) -> dict:
         reason = self.why_closed()
-        if reason is None and not broker._ready:
-            reason = "broker_disabled"        # not commissioned: nothing can be sent
-        if reason is None and broker._latched:
-            reason = "observation_latched"
+        if reason is None:
+            reason = broker.closed_reason()   # the broker's own judgement, not a copy
         audit = self.guard.state
         if audit == "ok" and not self.verified:
             audit = "unverified"

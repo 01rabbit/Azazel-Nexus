@@ -549,7 +549,10 @@ never sends it again. It records that the outcome is unknown, once.
   process's own is still waiting for its result. The observation latch and
   `knowledge.context.status` work in the meantime.
 - After the observation gate, a request does at most one ledger step: settle what
-  is owed, or append the next waiting row. A reconciliation (the #469 settle) is
+  is owed, or append the next waiting row. The two share one mark: a request that
+  appended a waiting row does not reconcile in the same request. If its own
+  `requested` then ends with an unknown outcome, the result waits and egress
+  stays closed; reconciling is the next request's step. A reconciliation (the #469 settle) is
   one step including the `audit.outcome_settled` / `audit.late_record` it writes;
   that is the #469 contract, a self-contained operation. A reconciliation that
   failed is not tried again in the same request, whoever asks (the latch record,
@@ -578,7 +581,10 @@ Admitted for root, the operator group and the service account. It returns
 `egress` (`open` or `closed`), `reason` (null while open; otherwise one of
 `ledger_broken`, `ledger_unreadable`, `audit_owed`, `commissioning_pending`,
 `result_pending`, `broker_disabled` (not commissioned, nothing can be sent),
-`observation_latched`). `egress` is `open` only when a request can actually
+`observation_rule_missing`, `observation_rule_changed`, `observation_latched`,
+`grant_withdrawn`). The last five are the broker's own judgement, read without
+latching or writing anything (`closed_reason`, the same checks `handle` makes before any
+record); the rate window is not asked. `egress` is `open` only when a request can actually
 be sent, `audit` (`ok`, `owed`, `broken`,
 `unverified`), `unresolved` (rows still to write plus debts owed),
 `legacy_unreferenced` and `recovered` (recovery rows written by this process).
