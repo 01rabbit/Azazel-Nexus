@@ -260,9 +260,15 @@ does not write a result that claims either. It writes one line, once:
   the socket lock; the socket cannot be bound. For every one of these the ledger is
   untouched. The socket path is untouched for all of them except the last: the
   transport removes an existing path before it binds, so a bind that then fails has
-  already removed it. That is safe only because both locks were taken first (no
-  other broker of this version is running; an older one is removed by the
-  switch-over procedure).
+  already removed it. Why that is safe depends on which locks were taken:
+  * With both locks (the usual start), no other broker of this version is running,
+    since each holds both for its life.
+  * With the socket lock only (the ledger lock file does not exist and cannot be
+    created: the degraded start below), the socket lock is what keeps a second
+    broker off the same socket: it is taken on every start, and a running broker
+    holds it. The ledger lock is not what guards the socket.
+  * In both cases an older broker, which takes no lock, is removed by the
+    switch-over procedure (stop the old unit, `populated 0`), not by these checks.
 * The state directory decides which of three things happens (the socket lock and
   the socket bind come first in every case; nothing is appended to the ledger
   before the socket is bound, so a start that fails before the bind writes

@@ -53,8 +53,17 @@ def _serve(module, monkeypatch, tmp_path, **patches):
     runtime_paths.socket_path("knowledge-context").parent.mkdir(parents=True, exist_ok=True)
     captured = {}
     monkeypatch.setattr(module, "AuditLedger", FakeLedger)
-    monkeypatch.setattr(module, "serve_forever", lambda **kw: captured.update(kw) or 0)
+    def serve(**kw):
+        captured.update(kw)
+        if module is knowledge_contextd:
+            # bind has happened; the start-up records are written in `ready` (#472).
+            kw["ready"]()
+        return 0
+
+    monkeypatch.setattr(module, "serve_forever", serve)
     monkeypatch.setattr(module.PrincipalPolicy, "resolve", lambda **kw: "policy")
+    if module is knowledge_contextd:
+        monkeypatch.setattr(module, "runtime_ready_callback", lambda: None)
     for name, value in patches.items():
         monkeypatch.setattr(module, name, value)
     assert module.main([]) == 0
@@ -236,6 +245,11 @@ def _broker(monkeypatch, tmp_path, answer=None):
 
     served = _serve(knowledge_contextd, monkeypatch, tmp_path, KnowledgeContextBroker=broker,
                     load_commissioning=lambda: commissioning, load_observation_rule=lambda: None)
+    # It started normally before anything is broken: `commissioning` is written and
+    # egress is open. Otherwise the tests below would pass for the wrong reason.
+    assert "knowledge.context.commissioning" in FakeLedger.calls
+    status = served["handler"](SimpleNamespace(verb=knowledge_contextd.STATUS_VERB))
+    assert status["egress"] == "open" and status["reason"] is None
     return served, sent, _request
 
 
