@@ -1621,7 +1621,11 @@ referenced and contextobsd have no diagnostic verb. Three cases are told apart:
   entryd's tick), and a request that needs a record is refused while it cannot
   be written. knowledge-contextd is the exception: its `knowledge.context.status`
   only reads and does not advance the retry, which one request at a time makes (after
-  the observation gate, one step each). Narrowing never waits on a record: entryd's withdrawal and
+  the observation gate, one step each). One exception to "after the gate", as in the
+  base (#469): a record made before the gate (a latch, a transport refusal, or a refusal
+  the broker makes before the gate, such as a withdrawn grant or a bad frame) goes
+  through the same guard, so it may run the #469 settle once for that request; it never
+  opens sending for the refused request. Narrowing never waits on a record: entryd's withdrawal and
   locald's revocation of an admission and release of resources are done, and
   their own record is owed in turn; a withdrawal's reply is the fixed refusal
   while that record cannot be written.
