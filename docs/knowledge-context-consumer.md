@@ -524,6 +524,104 @@ facts of those incidents can be read neither in the ui nor with the CLI, because
 it cannot read the new records either. The ledger keeps the original records and
 the conversion leaves no record of itself.
 
+## Requests that left no result after a restart (#472)
+
+A restarted knowledge-contextd cannot tell "stopped before the call" from
+"stopped after the call, before the result was recorded": the ledger is the same
+in both. The product therefore never says the request was or was not sent, and
+never sends it again. It records that the outcome is unknown, once.
+
+### Contract
+
+- A new-format `requested` row carries `"format": 2`. The result rows of that
+  request (`completed`, the recovery row, and the `late_event` inside
+  `audit.late_record` and inside an `audit.outcome_settled` of outcome `absent`)
+  refer to it by `requested_sequence` and `requested_hash`. Nothing is matched by
+  position. An `audit.outcome_settled` of outcome `present` points at the `completed`
+  row already on the ledger; the restart scan uses that `completed` row's own
+  reference, and `late_event` only for `late_record` and an `absent` settlement.
+- At start-up, after the writer lock and the bind, one scan of the whole
+  ledger (the one byte read to check the final newline is not counted separately)
+  verifies the chain and lists the new-format `requested` rows that no result
+  refers to. After `commissioning`, each gets one `completed` row with
+  `outcome: "unknown"` and `reason_code: "restart_unconfirmed"` and its
+  reference. A restart right after that adds no second row.
+- Old-format `requested` rows (no `format`) are never matched or completed. They
+  are counted as `legacy_unreferenced`.
+- Egress stays closed until the ledger is verified, `commissioning` is written,
+  every recovery row is written, nothing is owed (#467, #469), and no row of this
+  process's own is still waiting for its result. The observation latch and
+  `knowledge.context.status` work in the meantime.
+- After the observation gate, a request does at most one ledger step: settle what
+  is owed, or append the next waiting row. The two share one mark: a request that
+  appended a waiting row does not reconcile in the same request. If its own
+  `requested` then ends with an unknown outcome, the result waits and egress
+  stays closed; reconciling is the next request's step.
+- The look at the grant and the gate just before the send also latches the
+  observation rule when the rule file cannot be confirmed (same as the gate; the
+  latch record is the accepted exception). `knowledge.context.status` only reads. A reconciliation (the #469 settle) is
+  one step including the `audit.outcome_settled` / `audit.late_record` it writes;
+  that is the #469 contract, a self-contained operation. A reconciliation that
+  failed is not tried again in the same request, whoever asks (the latch record,
+  the refusal's record, the step); the mark is cleared at the entrance of every
+  request and of every transport refusal's record, so it never carries over.
+  Records that can reach a reconciliation before the observation gate are the latch
+  record, a transport refusal's record, and the refusals the broker makes before the
+  gate (a withdrawn grant, a bad frame). The base reconciled before the broker was
+  entered, so this is the same contract (#469). Each request is still limited to
+  one reconciliation, and none of them opens egress for the refused request. A request that finds egress open does
+  no extra step. Between requests the daemon does not touch the ledger.
+- A `requested` row whose write had an unknown outcome: the result of that
+  request refers to it only if the reconciliation finds it present. Found absent,
+  the result refers to nothing. Not yet known, the result waits (and is written
+  without or with the reference once it is known).
+- The remaining time is checked after `requested` is written and just before the
+  call; a request whose time is gone sends nothing.
+- A ledger that cannot be verified at start (broken chain, torn line, not
+  readable) no longer ends the start. With the lock held, the daemon binds with
+  egress closed, appends nothing, and says why in the status. A broken chain is
+  not completed (`ledger_broken`). This replaces the earlier contract that such
+  a ledger stopped the daemon before it served.
+
+### Diagnostics: `knowledge.context.status`
+
+Admitted for root, the operator group and the service account. It returns
+`egress` (`open` or `closed`), `reason` (null while open; otherwise one of
+`ledger_broken`, `ledger_unreadable`, `audit_owed`, `commissioning_pending`,
+`result_pending`, `broker_disabled` (not commissioned, nothing can be sent),
+`observation_rule_missing`, `observation_rule_changed`, `observation_latched`,
+`grant_withdrawn`). The last five are the broker's own judgement, read without
+latching or writing anything (`closed_reason`, the same checks `handle` makes before any
+record). `egress` shows the ledger's side and the broker's state (rule, latch, grant);
+it does not check the rate window, so `open` does not promise that the next request
+is admitted. `audit` (`ok`, `owed`, `broken`,
+`unverified`), `unresolved` (rows still to write plus debts owed),
+`legacy_unreferenced` and `recovered` (recovery rows written by this process).
+It is a count of what the ledger says, not a claim about what was sent.
+
+### Switching from the old version
+
+Stop `azazel-knowledge-contextd.service`, confirm that its cgroup is empty
+(`populated 0`), then start the new version (see operations.md). The old version
+does not take the lock, so only this order keeps one writer, and `populated 0`
+is the evidence that it has stopped. "another one holds the ledger" shows only a
+lock conflict; it is not evidence about the old version, and appears as well when
+the new version is started twice. Do not remove the lock file.
+
+### Left to later issues
+
+- A degraded start (start without the writer lock).
+- Retrying a ledger that was unreadable at start, or retrying between requests.
+- Moving audit I/O to its own thread.
+- Per-request I/O budgets finer than one step, and a mark for a failed
+  reconciliation that carries over from one request to the next (as #476 had).
+  What is in this change is different: one mark, within a single request, that
+  keeps a reconciliation or a step from being repeated; it is cleared at the
+  entrance of every request.
+- Local embedding search and remote inference (the same question, other paths).
+
+Not verified: a real systemd unit, and loss of power (only SIGKILL was tried).
+
 ## Process boundary
 
 Ordinary `mio.local.assess` requests still arrive at `azazel-mio-locald` over
@@ -720,7 +818,9 @@ the fixed refusal from the uncommissioned factory, `principal_denied` in the
 daemon's own ledger, `setuid(0)` and `chown` failing with `EPERM`, a write
 outside the state area failing with `EACCES` (ordinary file permissions, not
 `ProtectSystem`), and the daemon refusing to start when its state area is not
-writable or its ledger is corrupt or torn (no socket is bound). **Not
+writable or its ledger is corrupt or torn (no socket is bound; observed with the
+version before #472, which stopped there; see the start-up contract under #472
+for the present behaviour, checked by c4). **Not
 effective in that environment:** `ProtectSystem`/`ReadWritePaths` (mount
 namespace), `PrivateTmp`, `PrivateDevices`, `Protect*`, `RestrictNamespaces`,
 `RestrictAddressFamilies` and `SystemCallFilter` (seccomp),
@@ -746,8 +846,9 @@ request then succeeds, so there is no permanent refusal. A producer restart
 with the same key and port needs no broker restart; a producer restart with a
 different key (Knowledge's fixture default) is refused (recovery presumably needs an operator registry key update; not exercised here, and an open commissioning step). Six
 concurrent callers: every served answer belongs to its own request and none is served twice, and the rest receive `timeout` or `unavailable`. The audit ledger
-is the only durable state; an empty ledger starts, a corrupt or torn one stops
-the daemon before it binds. These show the broker keeps no state across a
+is the only durable state; an empty ledger starts; a corrupt or torn one stopped
+the daemon before it bound (observed with the version before #472; since #472 it
+starts with egress closed). These show the broker keeps no state across a
 restart, not a protection specific to restarts. locald and entryd keep no
 state either, so restarting them changes nothing for this property.
 

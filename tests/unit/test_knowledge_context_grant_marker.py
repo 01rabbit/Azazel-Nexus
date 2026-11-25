@@ -256,8 +256,9 @@ def test_the_recheck_is_the_last_step_before_the_record(root):
     broker = KnowledgeContextBroker(**OPEN_GATE, client=peer, policy=_policy(), mission="lab", alias_key=b"x" * 32,
         enabled=True, audit=audit, grant_marker=grant_marker)
     assert broker.handle(_request()) == {"response": ANSWER}
-    # read once before the `requested` record, once after it and before `completed`
-    assert reads == [0, 1]
+    # read once before the `requested` record, once after it (the read-only look
+    # just before the send, #472), and once more before `completed`
+    assert reads == [0, 1, 1]
     assert marker.exists()
 
 
@@ -300,13 +301,19 @@ def test_removing_the_admission_check_is_caught(root):
     broker = mutant(**OPEN_GATE, client=peer, policy=_policy(), mission="lab", alias_key=b"x" * 32,
                     enabled=True, audit=events.append,
                     grant_marker=lambda: inspect_grant_marker(CTX, root))
-    # no marker at all: the mutant still asks the peer (admitted is None, then
-    # the recheck sees None == None), which the real broker never does
-    result = broker.handle(_request())
-    assert peer.calls == 1
-    real = broker_for(root, Peer(), [])
+    # no marker at all: without the admission check the request gets past the
+    # entrance (admitted is None, then the recheck sees None == None) and the
+    # `requested` line is written. Since #472 the look just before the send stops
+    # the call as well (a second defence), so the peer is not reached either.
+    broker.handle(_request())
+    assert peer.calls == 0
+    assert [e["event_type"] for e in events][:1] == ["knowledge.context.requested"]
+    real_events = []
+    real = broker_for(root, Peer(), real_events)
     # refused before the frame is read, so no technique stage is reported
     assert real.handle(_request()) == {"refusal": "unavailable", "stage": "refused_before_send"}
+    # what tells the real broker from the mutant: it writes no `requested` line
+    assert "knowledge.context.requested" not in [e["event_type"] for e in real_events]
 
 
 # -- the unit's stop profile ---------------------------------------------------------------

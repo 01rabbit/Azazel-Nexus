@@ -30,6 +30,9 @@ class FakeLedger:
     def verify(self, **_kwargs):
         pass
 
+    def __iter__(self):
+        return iter(())
+
     def append(self, event):
         FakeLedger.calls.append(event["event_type"])
         if FakeLedger.broken or event["event_type"] in FakeLedger.break_on:
@@ -46,10 +49,21 @@ def _serve(module, monkeypatch, tmp_path, **patches):
     for name in ("mio_local_state_dir", "mio_reference_state_dir",
                  "mio_contextobs_state_dir", "knowledge_context_state_dir"):
         getattr(runtime_paths, name)().mkdir(parents=True, exist_ok=True)
+    # The installer creates the socket directories; the broker only locks inside one.
+    runtime_paths.socket_path("knowledge-context").parent.mkdir(parents=True, exist_ok=True)
     captured = {}
     monkeypatch.setattr(module, "AuditLedger", FakeLedger)
-    monkeypatch.setattr(module, "serve_forever", lambda **kw: captured.update(kw) or 0)
+    def serve(**kw):
+        captured.update(kw)
+        if module is knowledge_contextd:
+            # bind has happened; the start-up records are written in `ready` (#472).
+            kw["ready"]()
+        return 0
+
+    monkeypatch.setattr(module, "serve_forever", serve)
     monkeypatch.setattr(module.PrincipalPolicy, "resolve", lambda **kw: "policy")
+    if module is knowledge_contextd:
+        monkeypatch.setattr(module, "runtime_ready_callback", lambda: None)
     for name, value in patches.items():
         monkeypatch.setattr(module, name, value)
     assert module.main([]) == 0
@@ -231,6 +245,11 @@ def _broker(monkeypatch, tmp_path, answer=None):
 
     served = _serve(knowledge_contextd, monkeypatch, tmp_path, KnowledgeContextBroker=broker,
                     load_commissioning=lambda: commissioning, load_observation_rule=lambda: None)
+    # It started normally before anything is broken: `commissioning` is written and
+    # egress is open. Otherwise the tests below would pass for the wrong reason.
+    assert "knowledge.context.commissioning" in FakeLedger.calls
+    status = served["handler"](SimpleNamespace(verb=knowledge_contextd.STATUS_VERB))
+    assert status["egress"] == "open" and status["reason"] is None
     return served, sent, _request
 
 
@@ -249,20 +268,18 @@ def test_knowledge_contextd_sends_nothing_once_the_chain_is_broken(monkeypatch, 
     _transport_refusal_does_not_end_or_touch(served)
 
 
-def test_knowledge_contextd_does_not_enter_the_broker_once_the_chain_is_broken(monkeypatch, tmp_path):
-    # Once the break is known, the request is refused at the entrance: the
-    # broker (its rate window, grant marker and observation records) is not
-    # entered at all, not merely refused again by the pre-send record.
+def test_knowledge_contextd_writes_no_requested_and_sends_nothing_once_the_chain_is_broken(
+        monkeypatch, tmp_path):
+    # Once the break is known the request still reaches the broker, so that the
+    # observation gate (its latch) is judged (#472); what must hold is the
+    # intent of #458: no `requested` line, no peer call, the ledger not touched.
     served, sent, request = _broker(monkeypatch, tmp_path)
-    broker = served["handler"].__self__
     FakeLedger.broken = True
     served["handler"](request())
     FakeLedger.broken = False
-    entered = []
-    real_handle = broker.handle
-    broker.handle = lambda req: entered.append(req) or real_handle(req)
+    attempted = list(FakeLedger.calls)
     assert served["handler"](request()) == {"refusal": "unavailable", "stage": "refused_before_send"}
-    assert entered == [] and sent == []
+    assert FakeLedger.calls == attempted and sent == []
 
 
 def test_knowledge_contextd_reports_the_stage_reached_when_the_completion_record_breaks(
