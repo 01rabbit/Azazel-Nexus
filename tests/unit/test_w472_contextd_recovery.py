@@ -222,7 +222,7 @@ def test_a_finished_request_is_not_recovered(ctx):
     assert ctx.unknown_rows() == []
     assert ctx.calls() == sends                     # recovery sent nothing
     note("normal result already recorded", observed_sends=sends,
-         ledger="requested and its result refer to each other", added_rows=1,
+         ledger="the completed row refers to its requested row (sequence and hash)", added_rows=1,
          added_sends=ctx.calls() - sends)
 
 
@@ -254,10 +254,10 @@ def test_a_result_recorded_by_the_469_settlement_is_not_recovered(ctx, fault, re
     if record == "audit.late_record":
         late = [row.event for row in ctx.rows() if row.event["event_type"] == record][0]
         assert late["late_event"]["requested_sequence"] and late["late_event"]["requested_hash"]
-    how = ("the completed row inside the late_record (its late_event) carries the reference"
+    how = ("the completed row inside the late_record (its late_event) refers to the requested row"
            if record == "audit.late_record" else
            "the outcome_settled (present) points at the completed row already on the ledger; "
-           "the scan uses that completed row's own reference")
+           "that completed row refers to the requested row, and the scan uses that reference")
     note(f"result recorded by #469 ({record})", observed_sends=sends, ledger=how,
          added_rows=1, added_sends=ctx.calls() - sends)
 
@@ -595,7 +595,7 @@ def test_a_result_inside_a_469_record_closes_its_request(tmp_path):
     one = _row(ledger, {"event_type": REQUESTED, "outcome": "attempted", "format": 2})
     two = _row(ledger, {"event_type": REQUESTED, "outcome": "attempted", "format": 2})
     for kind, request in (("audit.late_record", one), ("audit.outcome_settled", two)):
-        _row(ledger, {"event_type": kind, "performed": True, "late_event": {
+        _row(ledger, {"event_type": kind, "performed": True, "outcome": "absent", "late_event": {
             "event_type": COMPLETED, "outcome": "unavailable",
             "requested_sequence": request.sequence, "requested_hash": request.event_hash}})
     duties.scan()
@@ -1095,3 +1095,42 @@ def test_a_refusal_before_the_gate_reconciles_at_most_once_and_opens_nothing(
         assert handler(request)["refusal"] == "unavailable"
         assert Ledger.settles == base + count        # the record of the refusal looked once
     assert sent == []
+
+
+# ---- #477 review 4 -------------------------------------------------------------
+
+def test_a_grant_withdrawn_while_the_audit_step_runs_stops_the_send(tmp_path, monkeypatch):
+    marker = {"on": True}
+
+    def grant():
+        return granted_marker() if marker["on"] else None
+
+    class Ledger(AuditLedger):
+        calls = 0
+
+        def append(self, event, **kw):
+            Ledger.calls += 1
+            if Ledger.calls == 1:                       # the start-up `commissioning` fails
+                raise AuditUnavailable("down")
+            if Ledger.calls == 2:
+                marker["on"] = False                    # gone while the step is writing
+            return super().append(event, **kw)
+
+    sent = []
+    served_ = _boot_enabled(tmp_path, monkeypatch, Ledger, grant=grant, sent=sent)
+    reply = served_["handler"](_request())
+    assert Ledger.calls >= 2 and marker["on"] is False   # the injection fired
+    assert reply == {"refusal": "unavailable", "stage": "refused_before_send"}
+    assert sent == []
+
+
+def test_a_settled_present_late_event_is_not_a_result(tmp_path):
+    ledger, _, duties = _duties(tmp_path)
+    request = _row(ledger, {"event_type": REQUESTED, "outcome": "attempted", "format": 2})
+    _row(ledger, {"event_type": "audit.outcome_settled", "outcome": "present",
+                  "settled_sequence": request.sequence, "settled_event_hash": request.event_hash,
+                  "late_event": {"event_type": COMPLETED, "outcome": "unavailable",
+                                 "requested_sequence": request.sequence,
+                                 "requested_hash": request.event_hash}})
+    duties.scan()
+    assert duties.queue == [COMMISSIONED, _unknown_for(request)]   # still unreferenced

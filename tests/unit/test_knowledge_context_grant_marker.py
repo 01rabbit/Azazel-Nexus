@@ -256,8 +256,9 @@ def test_the_recheck_is_the_last_step_before_the_record(root):
     broker = KnowledgeContextBroker(**OPEN_GATE, client=peer, policy=_policy(), mission="lab", alias_key=b"x" * 32,
         enabled=True, audit=audit, grant_marker=grant_marker)
     assert broker.handle(_request()) == {"response": ANSWER}
-    # read once before the `requested` record, once after it and before `completed`
-    assert reads == [0, 1]
+    # read once before the `requested` record, once after it (the read-only look
+    # just before the send, #472), and once more before `completed`
+    assert reads == [0, 1, 1]
     assert marker.exists()
 
 
@@ -300,10 +301,11 @@ def test_removing_the_admission_check_is_caught(root):
     broker = mutant(**OPEN_GATE, client=peer, policy=_policy(), mission="lab", alias_key=b"x" * 32,
                     enabled=True, audit=events.append,
                     grant_marker=lambda: inspect_grant_marker(CTX, root))
-    # no marker at all: the mutant still asks the peer (admitted is None, then
-    # the recheck sees None == None), which the real broker never does
+    # no marker at all: without the admission check the request would reach the
+    # peer (admitted is None, then the recheck sees None == None). Since #472 the
+    # look just before the send stops it as well; the real broker never asks.
     result = broker.handle(_request())
-    assert peer.calls == 1
+    assert peer.calls == 0
     real = broker_for(root, Peer(), [])
     # refused before the frame is read, so no technique stage is reported
     assert real.handle(_request()) == {"refusal": "unavailable", "stage": "refused_before_send"}

@@ -299,6 +299,11 @@ class KnowledgeContextBroker:
                 remaining = deadline - self._monotonic()
                 if remaining <= 0:
                     raise TimeoutError
+                # The grant and the gate are looked at again, read-only (not a
+                # ledger step): the audit step above may have taken long enough
+                # for the marker to go.
+                if self.closed_reason() is not None:
+                    raise ValueError
                 deadline_s = remaining
                 phase = "client"
                 self.sent = True
@@ -527,8 +532,16 @@ class _Duties:
         def see(entry) -> None:
             event = entry.event
             kind = event.get("event_type")
-            holder = event.get("late_event") if kind in (
-                "audit.late_record", "audit.outcome_settled") else event
+            # A `late_event` is a result only inside a late record or an `absent`
+            # settlement; a `present` one points at a row already on the ledger,
+            # which is judged by its own reference.
+            if kind == "audit.late_record" or (
+                    kind == "audit.outcome_settled" and event.get("outcome") == "absent"):
+                holder = event.get("late_event")
+            elif kind == "audit.outcome_settled":
+                holder = None
+            else:
+                holder = event
             if kind == _REQUESTED:
                 if event.get("format") == REQUEST_FORMAT:
                     requested[(entry.sequence, entry.event_hash)] = True
