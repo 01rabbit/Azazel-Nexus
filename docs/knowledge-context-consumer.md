@@ -297,15 +297,18 @@ does not write a result that claims either. It writes one line, once:
 * The same closing applies while serving: a chain found broken, or a debt of
   unknown outcome that cannot be settled, closes the technique query after the
   observation gate and before the `requested` record and any peer call. The latch
-  and the status still work then. The refusal's own `completed` line is a
-  different matter: it is appended whenever the debt can be settled, and dropped
-  (counted as unrecorded) when it cannot. The latch's own record is best effort
-  in the same way. `unrecorded` of the status counts a latch line or a refusal's
-  own line only when it is certain that the line is not on the ledger and no
-  late record will carry it: the write failed outright for an operation not
-  done, or its write of unknown outcome was settled `absent` and is not written
-  again. A write settled `present` is not counted. A chain found broken is not
-  counted line by line but once per request.
+  and the status still work then. What happens to a line the ledger cannot take
+  depends on the line:
+  * Held and written again: a refusal whose own `requested` write had an unknown
+    outcome, and a refusal before the send for a `requested` line that is on the
+    ledger and whose own append failed. While any such line is held, every later
+    external send stays closed too (and the status does not say `egress: open`).
+  * Dropped: a line that is not held for a result, such as the latch's record. A
+    dropped line is counted in `unrecorded` of the status only when it is certain
+    that it is not on the ledger and no late record will carry it: the write failed
+    outright for an operation not done, or its write of unknown outcome was settled
+    `absent` and is not written again. A write settled `present` is not counted. A
+    chain found broken is not counted line by line but once per request.
 * Until the ledger is verified and `commissioning` is recorded, the broker's
   own records are not appended: the latch's record and the transport's refusal
   records are dropped (counted as unrecorded), not held back and not written
@@ -314,6 +317,15 @@ does not write a result that claims either. It writes one line, once:
   itself was of unknown outcome, the next attempt first settles it and writes
   `audit.outcome_settled` (or nothing, when the line was absent), before
   anything else is appended.
+* Known limit: the daemon serves from one thread, and the retry between requests
+  (settling a debt, verifying the ledger, handling held lines; `poll()`) runs in that
+  thread. A slow retry delays the requests that arrive meanwhile and the status
+  reply, and a request whose deadline passes in the wait is answered `timeout`
+  before it reaches the observation gate. An external send never happens without
+  the gate: the next request that is accepted passes the gate before the send is
+  judged. The base `main` also settled debts inside the request path, in front of
+  the gate, so being made to wait did not start with this change. Removing it needs
+  the listener and the audit retry on separate threads, which is separate work.
 * A refusal that waited for its `requested` line to be settled and whose own
   write then has an unknown outcome is not written again until that line is
   settled: `present` removes it, `absent` writes it again.
