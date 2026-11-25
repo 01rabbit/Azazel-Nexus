@@ -205,11 +205,177 @@ unchanged. Success and unclassified failures carry none.
 | `verification` | `unavailable` | A response arrived but failed signature, binding, lifetime or schema checks, or the broker rejected it (not an object, over 48 KiB) |
 | `late` | `timeout` | A verified response arrived after the deadline |
 | `withdrawn` | `unavailable` | The grant marker was missing at admission, or missing or replaced before the answer was adopted; nothing from the peer was adopted |
+| `restart_unconfirmed` | `unknown` | Written by a restarted broker for a `requested` line no result refers to. It does not say whether the request was sent, not sent, or answered |
 
 A missing `reason_code` on a record written before this field existed reads as
 "not recorded"; on a record written after, it reads as "unclassified". Neither
 is inferred. Events never contain exception text, the question or any response
 fragment.
+
+### Requests that left no result after a restart (#472)
+
+A broker that stops between `knowledge.context.requested` and its result cannot
+tell, on the next start, whether the peer was called: the ledger is the same
+whether it stopped just before the call or just after it. It does not resend and
+does not write a result that claims either. It writes one line, once:
+`knowledge.context.completed` with `outcome: "unknown"` and
+`reason_code: "restart_unconfirmed"`. No reader may show that line as "sent",
+"not sent" or "answered".
+
+* A `requested` line of the current form carries `"format": 2`. Every result
+  that follows it carries `requested_sequence` and `requested_hash`, the
+  sequence and hash of that line: the `completed` line, the recovery line, and
+  the `late_event` inside an `audit.late_record` or an absent
+  `audit.outcome_settled`. A present `audit.outcome_settled` has no `late_event`;
+  the reference is on the original `completed` line the ledger already holds.
+  Nothing is matched
+  by position. A refusal before any `requested` line carries no reference. When
+  the `requested` write itself had an unknown outcome the refusal waits until
+  the line is settled: it refers to the line when it is `present` and carries no
+  reference when it is `absent`.
+* At start, after taking the writer lock, the broker verifies the whole ledger,
+  reads every reference, and writes one recovery line for each `requested` line
+  of the current form that no reference names. It does not use the in-memory
+  record of the previous process or of `settle`. After a stop right after a
+  recovery line the next start adds one `commissioning` line, as every start
+  does, and no second `unknown` for the same request.
+* One `requested` line gets one result. A line whose refusal is still waiting in this
+  process is left out of the start-up scan: that refusal is its result, and egress
+  stays closed until it is written and referenced. A refusal waits in two cases: the
+  `requested` write had an unknown outcome, or the refusal before the send, for a
+  `requested` line that is on the ledger, failed to be appended for certain. The scan
+  counts such a line as unresolved and writes no recovery line for it.
+* A `requested` line without `format` is never matched or filled in. Their number
+  is `legacy_unreferenced` in the status (all of them, including those that did
+  finish; it is not a count of lost requests).
+* The start runs in this order. Nothing is appended to the ledger until step 4,
+  and the installer creates the directories (the broker never creates one).
+  1. The ledger's writer lock, `context.jsonl.lock` in the state directory. The
+     start ends if the state directory is missing, or cannot be searched at all
+     (whether the lock exists is then unknowable), or the lock file exists but cannot
+     be opened (that says nothing about who holds it), or another process holds it.
+     If the file does not exist and cannot be created (a read-only directory, no
+     permission), the start goes on without this lock (the degraded start, below).
+     An existing lock file is opened without creating it, so a read-only directory
+     with the file present is fine.
+  2. The socket lock, `knowledge-context.lock` (0600) in the socket's own directory
+     (which the unit may write). The start ends if that directory is missing, the
+     lock file cannot be created there, or another process holds it. It is taken
+     on every start, whether or not step 1 produced a lock.
+  3. The socket is bound. The transport removes an existing socket path before it
+     binds, so a bind that then fails has already removed it; the start ends. This
+     is safe because step 2 already showed that no other broker of this version is
+     running (each holds the socket lock for its life), also in the degraded start,
+     where the socket lock alone keeps a second broker off the socket. An older
+     broker, which takes no lock, is removed by the switch-over procedure (stop the
+     old unit, `populated 0`), not by these checks.
+  4. Only now, as the first thing after the bind (in the ready call), the ledger is
+     verified and scanned, `commissioning` is recorded and the recovery lines are
+     written (when step 1 produced the lock). A start that ended before this wrote
+     nothing to the ledger.
+* Which of three things happens for the state directory:
+  1. It cannot be searched: the start ends in step 1 (the b2 case below).
+  2. It can be searched, but the ledger lock file does not exist and cannot be
+     created: the broker starts with egress closed and writes nothing to the
+     ledger (status reason `audit_unavailable`), and tries the lock again in the next request that passes the observation gate.
+     This is safe because a broker of this version that had run there would have
+     created the file, and the socket lock (step 2) is what keeps a second one off.
+  3. The lock file exists and can be opened, and the ledger file can be appended to:
+     the broker starts normally, even if the directory itself is not writable.
+* Egress opens only when the ledger verified, `commissioning` is recorded and
+  no recovery is pending. Until then (also after a failed start-up append) the
+  broker serves with egress closed: the observation latch and
+  `knowledge.context.status` work, a technique query is refused as
+  `refused_before_send` after the observation gate and before any peer call,
+  and the broker tries again in the next request that passes the observation gate (not
+  on a timer, and not for a status request). A chain that does not verify is
+  never completed; the status says `ledger_broken` until a restart.
+* A request whose deadline has passed by the time the ledger was checked or the
+  `requested` line written is not sent; it is answered `timeout`, and the client
+  gets the time that is left, not the time at arrival.
+* A line the chain cannot be read from while a debt is being settled (a parse
+  failure, a lone surrogate, deep nesting) is read as `ledger_broken` there too;
+  the serve loop keeps running.
+* `recovered` counts a recovery line written by this process, including one whose
+  write had an unknown outcome and was then settled `present` (counted once).
+* The same closing applies while serving: a chain found broken, or a debt of
+  unknown outcome that cannot be settled, closes the technique query after the
+  observation gate and before the `requested` record and any peer call. The latch
+  and the status still work then. What happens to a line the ledger cannot take
+  depends on the line:
+  * Held and written again: a refusal whose own `requested` write had an unknown
+    outcome, and a refusal before the send for a `requested` line that is on the
+    ledger and whose own append failed. While any such line is held, every later
+    external send stays closed too (and the status does not say `egress: open`).
+  * Dropped: a line that is not held for a result, such as the latch's record. A
+    dropped line is counted in `unrecorded` of the status only when it is certain
+    that it is not on the ledger and no late record will carry it: the write failed
+    outright for an operation not done, or its write of unknown outcome was settled
+    `absent` and is not written again. A write settled `present` is not counted. A
+    chain found broken is not counted line by line but once per request.
+* Until the ledger is verified and `commissioning` is recorded, the broker's
+  own records are not appended: the latch's record and the transport's refusal
+  records are dropped (counted as unrecorded), not held back and not written
+  later. The latch itself is still set. This is separate from the settlement of
+  a line whose write had an unknown outcome (#469): if the `commissioning` write
+  itself was of unknown outcome, the next attempt first settles it and writes
+  `audit.outcome_settled` (or nothing, when the line was absent), before
+  anything else is appended.
+* Order of work, as in the base: a request is accepted, the observation gate is judged,
+  and only then does the broker touch the ledger. Between requests the daemon does not
+  touch the ledger at all (the loop only checks whether to stop), and a status request
+  only reports the state it has, without retrying. Every retry of the audit (writing a
+  held line, settling a debt of unknown outcome, verifying and scanning the ledger,
+  `commissioning` and the recovery lines) is done in the request path, after the
+  gate and before the send is judged. So after a fault is repaired, the ledger is
+  recovered by the next request that passes the gate, and that request is the first
+  one served; there is no timer. A request that arrives while a retry runs waits for
+  it, as in the base, where a debt was settled inside the request path.
+* Two exceptions to "after the gate", both from the #469 contract and both present in
+  the base (which settled before entering the broker): the transport's refusal record
+  and the latch's record go through the guard's append, which first settles an
+  existing debt of unknown outcome (a look at the tail of the ledger). That look can
+  therefore run in a request that the gate then refuses, or before the gate has been
+  judged. It can write a settlement line (`audit.outcome_settled`, for example when
+  an earlier refusal line of unknown outcome turned out `present`); it writes no line
+  for the refused request itself, and it never opens a send.
+* The audit I/O one request may cause has a fixed limit. Appends: the request's own
+  line, plus at most one more, which is a held line, a recovery line or a settlement
+  line (`audit.outcome_settled`) written by the #469 look, and `commissioning` counts
+  as one; the rest waits for the next request, with egress closed meanwhile (status
+  reason `recovery_pending`). Looks: the #469 settlement look at the tail of the
+  ledger, nothing more, and a look that failed is not tried again in the same
+  request (the line that follows is then held or dropped by the usual rules). Reads of
+  the whole ledger: once, at start. The one exception: when the writer lock was not
+  available at start and is taken later, the whole ledger is verified and scanned
+  again under the lock, once per request at most, and egress stays closed until that
+  succeeds (the head of the ledger is not compared instead: the chain can be broken
+  in the middle with the same tail). Start-up itself has no limit.
+* Without the writer lock (the degraded start) the ledger is still read once at start
+  (reading needs no lock) so the status can say what it knows. Nothing from that read is
+  trusted for writing: when the lock is taken, the verification is done again under
+  it, as the switch-over procedure says (verify under the lock, then append); an
+  older writer, which takes no lock, is removed by that procedure.
+* The chain is verified and the references are collected in one read of the ledger, so
+  the two succeed or fail together (no state with a verified chain and a scan still to
+  do). This is done once, when start-up succeeds in doing so;
+  the list of recovery lines still to write is kept in memory. A retry afterwards only
+  appends what is left (as heavy as one append), judged by what this process has
+  itself written, with a write of unknown outcome decided by the look at the tail. The
+  whole ledger is read again only while the first verification has not succeeded
+  (the ledger cannot be read): the base ended the start in that case, with no socket
+  and no status, so reading again there is no worse than the base.
+* A refusal that waited for its `requested` line to be settled and whose own
+  write then has an unknown outcome is not written again until that line is
+  settled: `present` removes it, `absent` writes it again.
+
+`knowledge.context.status` (operator group, the SERVICE account and root; no
+arguments) answers `egress` (`open` or `closed`; `open` is the ledger side's verdict only:
+a real request is also judged by the broker's readiness (commissioning) and the
+observation gate), `reason` (`ledger_broken`,
+`audit_unavailable`, `recovery_pending` or none), `audit` (`ok`, `owed`, `broken`), `unresolved`,
+`legacy_unreferenced`, `recovered` (lines written by this process), `unrecorded` (lines dropped for a ledger that could not take them) and
+`observation` (`open` or `latched`).
 
 ### The explainer's request: `mio.context.observe` and `mio.contextobs.observe`
 
@@ -719,8 +885,17 @@ capability set and umask 0027, and shows: the socket and ledger attributes,
 the fixed refusal from the uncommissioned factory, `principal_denied` in the
 daemon's own ledger, `setuid(0)` and `chown` failing with `EPERM`, a write
 outside the state area failing with `EACCES` (ordinary file permissions, not
-`ProtectSystem`), and the daemon refusing to start when its state area is not
-writable or its ledger is corrupt or torn (no socket is bound). **Not
+`ProtectSystem`), and, in the state-area case, the daemon refusing to start with no socket bound. That case
+was tested with a state directory owned by root, mode 0500, which the service uid cannot
+even search; the broker then ends the start (since whether the writer lock exists
+cannot be known). It is the only state-area condition that test covers. The other
+two (below) are covered by unit tests, not by this run: a state directory that can
+be searched but where the lock file does not exist and cannot be created starts
+with egress closed and writes nothing; and when an existing lock file can be opened
+and the ledger file can be appended to, the broker starts normally even if the
+directory itself is not writable. The version before #472 also ended the start on a
+corrupt or torn ledger; since #472 that no longer ends the start (see "Replay across
+restarts" below). **Not
 effective in that environment:** `ProtectSystem`/`ReadWritePaths` (mount
 namespace), `PrivateTmp`, `PrivateDevices`, `Protect*`, `RestrictNamespaces`,
 `RestrictAddressFamilies` and `SystemCallFilter` (seccomp),
@@ -746,8 +921,13 @@ request then succeeds, so there is no permanent refusal. A producer restart
 with the same key and port needs no broker restart; a producer restart with a
 different key (Knowledge's fixture default) is refused (recovery presumably needs an operator registry key update; not exercised here, and an open commissioning step). Six
 concurrent callers: every served answer belongs to its own request and none is served twice, and the rest receive `timeout` or `unavailable`. The audit ledger
-is the only durable state; an empty ledger starts, a corrupt or torn one stops
-the daemon before it binds. These show the broker keeps no state across a
+is the only durable state; an empty ledger starts. (Observed on the version before
+#472: a corrupt or torn one stopped the daemon before it bound. Since #472 such a
+ledger is read as broken: the daemon binds and serves with egress closed, the status
+says `ledger_broken`, requests are refused and the ledger bytes do not change. The
+Linux c4 run, which needs its own runner, now asserts that; at 63142ca the runner
+(`run-docker.sh`, restricted with `TEST_TARGETS` to c4 only) ran it: 1 passed. `tests/unit/test_w472_contextd_recovery.py` checks broken JSON, a torn line, a lone surrogate and deeply nested JSON with a real
+process; the c4 run covers a broken line, a torn line and an empty ledger.) These show the broker keeps no state across a
 restart, not a protection specific to restarts. locald and entryd keep no
 state either, so restarting them changes nothing for this property.
 

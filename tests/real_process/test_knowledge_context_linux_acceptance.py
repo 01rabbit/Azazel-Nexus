@@ -754,7 +754,7 @@ def test_c3_concurrent_requests_are_not_cross_adopted(stack: Stack):
 
 
 def test_c4_audit_ledger_state_fail_closed():
-    """Corrupt / torn / missing durable state stops the real daemon before it serves."""
+    """A corrupt or torn ledger leaves the daemon serving with egress closed (#472); an empty one starts."""
     import shutil
     import tempfile
     base = Path(tempfile.mkdtemp(prefix="u29c4-", dir="/tmp"))
@@ -773,6 +773,7 @@ def test_c4_audit_ledger_state_fail_closed():
         for name in ("ca.pem", "nexus.pem", "nexus.key"):
             (s.pki / name).write_text("x")
         s.service_root = base / "service-root"
+        s.env = {**os.environ, "AZAZEL_ROOT": str(s.service_root)}   # Stack.call() reads it
         s._layout()
         state = s.service_root / "var/lib/azazel/state/knowledge-context"
         ledger = state / "context.jsonl"
@@ -799,21 +800,46 @@ def test_c4_audit_ledger_state_fail_closed():
                 cwd=ROOT, env={**os.environ, "AZAZEL_ROOT": str(s.service_root)},
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, preexec_fn=s.credentials(s.egress))
+            observed = None
             try:
                 code = process.wait(timeout=6)
                 served = False
             except subprocess.TimeoutExpired:
                 code, served = None, True
-                process.kill(); process.wait(timeout=5)
+                # #472: serving is not enough. Ask what it serves, and check that
+                # it did not touch the ledger.
+                observed = {}
+                try:
+                    status = {"verb": "knowledge.context.status", "arguments": {}}
+                    for _ in range(20):
+                        try:
+                            observed["status"] = s.call(s.ctx, (s.ctx_gid,), status)["reply"]["result"]
+                            break
+                        except Exception:  # noqa: BLE001 - the socket may not be bound yet
+                            time.sleep(0.25)
+                    assert "status" in observed, "the status verb never answered"
+                    observed["refusal"] = _refused(s.call(s.ctx, (s.ctx_gid,), _doc()))
+                    observed["bytes_unchanged"] = ledger.read_bytes() == (
+                        content if label != "empty" else b"")
+                finally:
+                    process.kill(); process.wait(timeout=5)
             for stream in (process.stdout, process.stderr):
                 stream.close()
             sock = s.service_root / "var/lib/azazel/run/knowledge-context/knowledge-context.sock"
-            results[label] = {"exit": code, "served": served, "socket": sock.exists()}
+            results[label] = {"exit": code, "served": served, "socket": sock.exists(),
+                              "observed": observed}
             if sock.exists():
                 sock.unlink()
         print("U29-OBS c4", json.dumps(results, sort_keys=True))
-        assert results["garbage"]["served"] is False and results["garbage"]["exit"] not in (0, None)
-        assert results["torn_tail"]["served"] is False and results["torn_tail"]["exit"] not in (0, None)
+        # #472: a ledger that does not verify no longer ends the broker; it serves
+        # with egress closed (status says `ledger_broken`) and appends nothing.
+        for label in ("garbage", "torn_tail"):
+            seen = results[label]
+            assert seen["served"] is True and seen["socket"] is True, (label, seen)
+            assert seen["observed"]["status"]["reason"] == "ledger_broken", (label, seen)
+            assert seen["observed"]["status"]["egress"] == "closed", (label, seen)
+            assert seen["observed"]["refusal"] == "unavailable", (label, seen)
+            assert seen["observed"]["bytes_unchanged"] is True, (label, seen)
         assert results["empty"]["served"] is True  # an empty ledger is a fresh start
     finally:
         shutil.rmtree(base, ignore_errors=True)
@@ -1069,7 +1095,10 @@ def test_b2_real_daemon_under_setpriv_attributes_is_an_approximation(stack: Stac
         finally:
             again.kill(); again.wait(timeout=5)
             again.stdout.close(); again.stderr.close()
-        # Fail-closed when the state area is not writable: no socket is ever bound.
+        # Fail-closed when the state area cannot even be searched (root-owned 0500, the
+        # service uid is "other"): whether the writer lock exists is then unknowable,
+        # so the start ends and no socket is bound (#472). A state directory that can be
+        # searched but not written starts with egress closed instead (unit test).
         state = s.service_root / "var/lib/azazel/state/knowledge-context"
         for item in state.iterdir():
             item.unlink()

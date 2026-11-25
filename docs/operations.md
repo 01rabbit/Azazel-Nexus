@@ -1546,6 +1546,18 @@ refused until a restart whose full verification succeeds. `audit: unknown` means
 running, or install.sh not re-run after the upgrade that added the leaf) or a
 stale one.
 
+**Switching knowledge-contextd to the version with the writer lock (#472).**
+The new version takes an exclusive lock (`context.jsonl.lock` beside the
+ledger) before its first append; the old version does not know it. The two must
+never write together, so the old one is stopped first: stop
+`azazel-knowledge-contextd.service`, confirm its cgroup is empty
+(`populated 0` in `cgroup.events` of the unit's cgroup, the file the stop
+contract's `contextd_cgroup` check reads), and only then start the new version. The
+new version verifies the whole ledger after taking the lock and before its first
+append. A second start of the new version while one is running ends at the lock
+and leaves the running one and its socket alone. Nothing here was exercised on
+a real systemd unit.
+
 **Audit write failures while running (#467).** An I/O fault on a daemon's own
 ledger (`AuditUnavailable`: the file cannot be opened, written, synced or read)
 no longer ends auditd, entryd, locald, referenced, contextobsd or
@@ -1594,8 +1606,9 @@ there, `audit.audit` is there too. A record owed with no such start result shows
 presence alone does not mean a record is owed. While an opt-in grant is `unsettled` (#468) that reply keeps
 its own shape, without the key), locald's `mio.local.admission`
 (`admitted: false` while a record is owed; on a chain found broken, the fixed
-refusal instead, as before). referenced, contextobsd and knowledge-contextd have no
-diagnostic verb. Three cases are told apart:
+refusal instead, as before), knowledge-contextd's `knowledge.context.status` (#472, see
+[Requests that left no result](knowledge-context-consumer.md#requests-that-left-no-result-after-a-restart-472)).
+referenced and contextobsd have no diagnostic verb. Three cases are told apart:
 
 * Nothing was written (the open or the write failed, a partial line was cut
   back). The request is refused. If nothing had been done yet, the next request
@@ -1604,7 +1617,11 @@ diagnostic verb. Three cases are told apart:
   it is written once as `audit.late_record` before anything else that needs a
   record. The daemon tries at each chance it has (a request, a diagnostic,
   entryd's tick), and a request that needs a record is refused while it cannot
-  be written. Narrowing never waits on a record: entryd's withdrawal and
+  be written. knowledge-contextd is the exception for the refusal before a send:
+  when the `requested` line is on the ledger and the refusal's own append fails for
+  certain, nothing was done, so nothing is owed, but the refusal line is held and
+  appended again in a later request (after the observation gate; never on a timer).
+  Until it is written, the next request's external send is refused too. Narrowing never waits on a record: entryd's withdrawal and
   locald's revocation of an admission and release of resources are done, and
   their own record is owed in turn; a withdrawal's reply is the fixed refusal
   while that record cannot be written.
@@ -1636,8 +1653,17 @@ diagnostic verb. Three cases are told apart:
   Only then are records served again.
 * The fault persists and the ledger cannot be read: the outcome stays unknown,
   requests that need a record are refused, diagnostics say so. If the ledger
-  cannot be read at start (`AuditUnavailable`), the daemon does not start; that
-  is the supervisor's to retry, and no diagnostic socket is up.
+  cannot be read at start (`AuditUnavailable`), auditd, entryd, locald,
+  referenced and contextobsd as before do not start; that is the supervisor's to
+  retry, and no diagnostic socket is up. knowledge-contextd is the exception since
+  #472: when it holds its writer lock and its socket lock it starts anyway, with
+  egress closed, and answers `knowledge.context.status` (and the observation
+  latch) while the ledger cannot be read or does not verify. It still ends the
+  start when another process holds the ledger lock or the socket lock, when the
+  ledger lock file exists but cannot be opened, when the state directory cannot be
+  searched, or when the socket directory is missing or not writable. A state directory that can be searched but not written
+  to (no ledger lock file, none can be created) starts with egress closed, as
+  long as the socket lock is taken.
 
 **What the daemons do, and what they cannot.** A request carries no
 identifier that says "this is the same request again", so a request that
@@ -1728,9 +1754,10 @@ is auditd's answer from an existing line (below). What each case allows:
   `ledger`). Checkable, where the daemon has a diagnostic (listed above):
   auditd's `audit.verify` (its own ledger only), entryd's `status` (an `audit`
   key while a record is owed, not while an opt-in grant is `unsettled`), and
-  locald's `mio.local.admission` (`admitted: false`, no detail). referenced,
-  contextobsd and knowledge-contextd have none; their refusals are the only
-  sign. Do not resend an operation that
+  locald's `mio.local.admission` (`admitted: false`, no detail), and
+  knowledge-contextd's `knowledge.context.status` (`egress`, `reason`, `audit`,
+  `unresolved`, `legacy_unreferenced`). referenced and contextobsd have none;
+  their refusals are the only sign. Do not resend an operation that
   sends something out or widens a permission in the expectation that it is
   deduplicated: once the outcome is settled a resend is a new request, judged
   and recorded again.
