@@ -1113,13 +1113,12 @@ def test_b2_real_daemon_under_setpriv_attributes_is_an_approximation(stack: Stac
             stderr=subprocess.PIPE, text=True)
         try:
             seen = None
-            for _ in range(40):
-                try:
-                    seen = s.call(s.ctx, (s.ctx_gid,),
-                                  {"verb": "knowledge.context.status", "arguments": {}})
+            for _ in range(80):
+                seen = s.call(s.ctx, (s.ctx_gid,),
+                              {"verb": "knowledge.context.status", "arguments": {}})
+                if seen["connect"] == "ok":
                     break
-                except Exception:  # noqa: BLE001 - not bound yet
-                    time.sleep(0.25)
+                time.sleep(0.25)
             if closed.poll() is not None or not sock.exists():
                 closed.kill(); closed.wait(timeout=5)
                 raise AssertionError(("it should serve, closed", closed.returncode,
