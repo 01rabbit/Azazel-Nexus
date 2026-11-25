@@ -556,7 +556,10 @@ never sends it again. It records that the outcome is unknown, once.
   is owed, or append the next waiting row. The two share one mark: a request that
   appended a waiting row does not reconcile in the same request. If its own
   `requested` then ends with an unknown outcome, the result waits and egress
-  stays closed; reconciling is the next request's step. A reconciliation (the #469 settle) is
+  stays closed; reconciling is the next request's step.
+- The look at the grant and the gate just before the send also latches the
+  observation rule when the rule file cannot be confirmed (same as the gate; the
+  latch record is the accepted exception). `knowledge.context.status` only reads. A reconciliation (the #469 settle) is
   one step including the `audit.outcome_settled` / `audit.late_record` it writes;
   that is the #469 contract, a self-contained operation. A reconciliation that
   failed is not tried again in the same request, whoever asks (the latch record,
@@ -610,8 +613,11 @@ the new version is started twice. Do not remove the lock file.
 - A degraded start (start without the writer lock).
 - Retrying a ledger that was unreadable at start, or retrying between requests.
 - Moving audit I/O to its own thread.
-- Per-request I/O budgets finer than one step; a mark for a failed
-  reconciliation.
+- Per-request I/O budgets finer than one step, and a mark for a failed
+  reconciliation that carries over from one request to the next (as #476 had).
+  What is in this change is different: one mark, within a single request, that
+  keeps a reconciliation or a step from being repeated; it is cleared at the
+  entrance of every request.
 - Local embedding search and remote inference (the same question, other paths).
 
 Not verified: a real systemd unit, and loss of power (only SIGKILL was tried).

@@ -181,18 +181,23 @@ class KnowledgeContextBroker:
         except Exception:
             pass
 
+    def _latch_if_unsound(self) -> None:
+        """Latch for good when the rule file cannot be confirmed (caller holds the lock)."""
+        if self._latched or self._observation is None:
+            return
+        path = self._observation_path or knowledge_context_observation_rule_path()
+        cause = self._latch_cause(path, self._observation[1])
+        if cause is not None:
+            self._latched = True
+            self._record_latch(cause)
+
     def _observation_gate(self, now: float) -> str | None:
         """None to proceed (and count the request), else the reason_code."""
         with self._observation_lock:
             if self._observation is None:
                 return "refused_before_send"
             rule, identity = self._observation
-            if not self._latched:
-                path = self._observation_path or knowledge_context_observation_rule_path()
-                cause = self._latch_cause(path, identity)
-                if cause is not None:
-                    self._latched = True
-                    self._record_latch(cause)
+            self._latch_if_unsound()
             if self._latched:
                 return "refused_before_send"
             while self._counted and now - self._counted[0] >= _RATE_WINDOW_S:
@@ -299,6 +304,10 @@ class KnowledgeContextBroker:
                 # looked at again, read-only (not a ledger step; the audit step above
                 # may have taken long enough for the marker to go), and only then is
                 # the time left worked out, so the look itself is not free time.
+                with self._observation_lock:
+                    # Found unsound here, the rule closes the gate for good, as at
+                    # the gate itself: a read that fails once is not retried.
+                    self._latch_if_unsound()
                 if self.closed_reason() is not None:
                     raise ValueError
                 remaining = deadline - self._monotonic()

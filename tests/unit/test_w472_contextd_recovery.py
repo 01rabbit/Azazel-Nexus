@@ -1149,3 +1149,25 @@ def test_the_time_left_is_worked_out_after_the_look_at_the_grant_and_the_gate():
     assert broker.handle(_request(deadline_ms=2000, deadline_monotonic_ns=2**62)) == {
         "refusal": "timeout", "stage": "refused_before_send"}
     assert calls == [] and len(reads) == 2 and clock[0] == 5.0   # it fired; nothing was sent
+
+
+def test_a_rule_found_unsound_just_before_the_send_latches_for_good(tmp_path, monkeypatch):
+    reads = []
+    real = kc.observation_rule_identity
+
+    def identity(path):
+        reads.append(1)
+        if len(reads) == 2:                       # the gate reads it; the look before the send fails
+            return None
+        return real(path)
+
+    monkeypatch.setattr(kc, "observation_rule_identity", identity)
+    broker, events, calls = _broker()
+    assert broker.handle(_request())["refusal"] == "unavailable"
+    assert len(reads) >= 2 and calls == []         # the injection fired; nothing was sent
+    assert broker._latched is True
+    assert [e for e in events if e["event_type"] == "knowledge.context.observation_latched"]
+    # The next request reads the file fine, and is refused all the same.
+    assert broker.handle(_request())["refusal"] == "unavailable" and calls == []
+    status_view = broker.closed_reason()           # reading only
+    assert status_view == "observation_latched"
