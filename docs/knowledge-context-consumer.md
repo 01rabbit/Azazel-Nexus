@@ -241,7 +241,16 @@ does not write a result that claims either. It writes one line, once:
   finish; it is not a count of lost requests).
 * The writer lock is `context.jsonl.lock` in the state directory, taken before
   `commissioning` is appended and before the socket is bound. A second broker
-  exits with a message and touches neither the ledger nor the socket.
+  exits with a message and touches neither the ledger nor the socket. An existing
+  lock file is opened without creating it, so a read-only state directory is
+  fine. If the file does not exist and cannot be created (a read-only
+  directory, no permission), the broker starts with egress closed and writes
+  nothing to the ledger (status reason `audit_unavailable`), and takes the lock
+  later if it can. That is safe because a broker of this version that had run
+  there would have created the file; an older writer, which takes no lock, is
+  removed by the switch-over procedure (stop the old unit, `populated 0`), not by
+  this check. A lock file that exists but cannot be opened ends the start, since
+  it says nothing about who holds it.
 * Egress opens only when the ledger verified, `commissioning` is recorded and
   no recovery is pending. Until then (also after a failed start-up append) the
   broker serves with egress closed: the observation latch and
@@ -258,10 +267,12 @@ does not write a result that claims either. It writes one line, once:
 * `recovered` counts a recovery line written by this process, including one whose
   write had an unknown outcome and was then settled `present` (counted once).
 * The same closing applies while serving: a chain found broken, or a debt of
-  unknown outcome that cannot be settled, refuses the technique query after the
-  observation gate and before any record or peer call. The latch and the status
-  still work then (the latch's own record is best effort and is not written when
-  the ledger cannot take it).
+  unknown outcome that cannot be settled, closes the technique query after the
+  observation gate and before the `requested` record and any peer call. The latch
+  and the status still work then. The refusal's own `completed` line is a
+  different matter: it is appended whenever the debt can be settled, and dropped
+  (counted as unrecorded) when it cannot. The latch's own record is best effort
+  in the same way.
 * Until the ledger is verified and `commissioning` is recorded, the broker's
   own records are not appended: the latch's record and the transport's refusal
   records are dropped (counted as unrecorded), not held back and not written

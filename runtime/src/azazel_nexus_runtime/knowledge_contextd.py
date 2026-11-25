@@ -10,6 +10,7 @@ commissioned client and synthetic trust material.
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import hashlib
 import json
@@ -431,41 +432,67 @@ class KnowledgeContextBroker:
         return {"refusal": outcome, "stage": stage}
 
 
-def _settle(guard) -> bool:
-    """`guard.settle_owed()` that reads an unparseable ledger as a break (#472).
+class _ContextGuard(ChainGuard):
+    """The one entrance to the ledger for every writer of this daemon (#472).
 
-    The same error types as the start-up scan: a line the chain cannot be read
-    from is `ledger_broken`, never an exception out of the serve loop.
+    A line the chain cannot be read from (a lone surrogate, broken JSON, nesting
+    past the parser's depth) is a break, whichever path met it: an append, a
+    settlement, a transport refusal record or the between-requests retry. It is
+    marked `ledger_broken`; nothing leaves this class but the guard's own errors.
     """
-    try:
-        return guard.settle_owed()
-    except (ValueError, RecursionError) as exc:
-        guard._mark(exc)
-        return False
+
+    def settle_owed(self) -> bool:
+        try:
+            return super().settle_owed()
+        except (ValueError, RecursionError) as exc:
+            self._mark(exc)
+            return False
+
+    def append(self, event: dict, *, performed: bool = False):
+        try:
+            return super().append(event, performed=performed)
+        except (ValueError, RecursionError) as exc:
+            self._mark(exc)
+            raise AuditChainBroken(type(exc).__name__) from exc
 
 
 class WriterBusy(Exception):
     """Another process already holds the ledger's writer lock."""
 
 
-def _take_writer_lock(directory) -> int:
+def _take_writer_lock(directory):
     """The one writer of this ledger, before anything is appended or bound (#472).
 
     A lock file beside the ledger, held for the life of the process (the kernel
     drops it when the process dies, however it dies). A second daemon stops here,
     so it never reaches the socket path `bind_socket` would replace.
+
+    An existing lock file is opened without creating it (read-only is enough for
+    `flock`), so a read-only state directory does not matter. When the file does
+    not exist and cannot be created, `None` is returned: no daemon of this
+    version has ever held it here (it would have created the file), and the
+    caller serves with the ledger closed. A lock file that exists but cannot be
+    opened proves nothing about who holds it, and ends the start.
     """
     lock = directory / "context.jsonl.lock"
+    flags = os.O_CLOEXEC | os.O_NOFOLLOW
     try:
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+        fd = os.open(lock, os.O_RDONLY | flags)
+    except FileNotFoundError:
+        try:
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            fd = os.open(lock, os.O_RDWR | os.O_CREAT | flags, 0o600)
+        except OSError:
+            return None
     except OSError as exc:
         raise SystemExit(f"az-knowledge-contextd cannot open its writer lock: {exc.strerror}")
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    except OSError as exc:
         os.close(fd)
-        raise WriterBusy("another az-knowledge-contextd holds the ledger") from None
+        if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+            raise WriterBusy("another az-knowledge-contextd holds the ledger") from None
+        raise SystemExit(f"az-knowledge-contextd cannot lock its ledger: {exc.strerror}")
     return fd
 
 
@@ -479,8 +506,12 @@ class _Recovery:
     what the ledger holds: the whole ledger is read again each attempt.
     """
 
-    def __init__(self, ledger, guard, commissioning_event: dict) -> None:
+    def __init__(self, ledger, guard, commissioning_event: dict, state_dir=None,
+                 lock_fd=None) -> None:
         self.ledger, self.guard = ledger, guard
+        #: The writer lock; None while this process could not create it, and then
+        #: it writes nothing (and tries to take it again at each attempt).
+        self.state_dir, self.lock_fd = state_dir, lock_fd
         self._commissioning = commissioning_event
         self.verified = False
         self.commissioned = False
@@ -511,19 +542,32 @@ class _Recovery:
         """`present`, `absent` or `unknown` for a `requested` line of unknown outcome."""
         if self.guard.broken:
             return "unknown"
-        if self.guard.owed and not _settle(self.guard):
+        if self.guard.owed and not self.guard.settle_owed():
             return "unknown"
         if self.guard.broken:
             return "unknown"
         return "present" if (entry.sequence, entry.event_hash) in self.present else "absent"
+
+    def _lock(self) -> bool:
+        """Take the writer lock now, if it can be taken; never writes, never raises."""
+        if self.state_dir is None:
+            return False
+        try:
+            self.lock_fd = _take_writer_lock(self.state_dir)
+        except (WriterBusy, SystemExit):
+            return False
+        return self.lock_fd is not None
 
     def attempt(self) -> None:
         """Verify, scan, record commissioning and the missing results. Never raises."""
         if self.guard.broken:
             self.reason = "ledger_broken"
             return
+        if self.lock_fd is None and not self._lock():
+            self.reason = "audit_unavailable"
+            return
         try:
-            if self.guard.owed and not _settle(self.guard):
+            if self.guard.owed and not self.guard.settle_owed():
                 self.reason = "ledger_broken" if self.guard.broken else "audit_unavailable"
                 return
             for doubt in list(self._row_doubts):
@@ -629,9 +673,9 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
         # records exactly what it recorded before.
         event["observation_rule"] = "loaded"
     recovery_ref: list = []
-    guard = ChainGuard(ledger.append, settle_single(ledger),
-                       on_settled=lambda e, entry: recovery_ref[0].on_settled(e, entry))
-    recovery = _Recovery(ledger, guard, event)
+    guard = _ContextGuard(ledger.append, settle_single(ledger),
+                          on_settled=lambda e, entry: recovery_ref[0].on_settled(e, entry))
+    recovery = _Recovery(ledger, guard, event, state_dir, lock_fd)
     recovery_ref.append(recovery)
     #: Set when the record of a verified answer could not be written.
     unrecorded = [False]
@@ -657,7 +701,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
         """A debt of unknown outcome is settled first (#467); then the whole of #472."""
         if guard.broken:
             return False
-        if guard.owed and not _settle(guard):
+        if guard.owed and not guard.settle_owed():
             if not guard.broken:
                 guard.count_unrecorded()
             return False
@@ -714,7 +758,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
             last_retry[0] = now
             if not guard.broken:
                 if guard.owed:
-                    _settle(guard)
+                    guard.settle_owed()
                 if not recovery.open:
                     recovery.attempt()
                 broker.flush_deferred()
@@ -737,7 +781,8 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
             ready=ready if ready is not None else runtime_ready_callback(),
         )
     finally:
-        os.close(lock_fd)
+        if recovery.lock_fd is not None:
+            os.close(recovery.lock_fd)
 
 
 if __name__ == "__main__":  # pragma: no cover

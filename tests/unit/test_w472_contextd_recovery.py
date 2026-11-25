@@ -508,6 +508,62 @@ def test_a_parse_failure_while_settling_is_ledger_broken_and_the_latch_still_wor
 
 
 @pytest.mark.real_process
+def test_a_transport_refusal_met_by_an_unreadable_ledger_ends_nothing(ctx):
+    assert ctx.start()
+    assert served(ctx.request(0))
+    ctx.arm("fsync", 2)
+    assert ctx.request(1)["reply"]["result"]["stage"] == "unrecorded"
+    sends = ctx.calls()
+    with (ctx.run / LEDGER).open("ab") as handle:
+        handle.write(b'{"event":' + b"[" * 30000 + b"]" * 30000 + b"}\n")
+    # At once, before the between-requests retry: the transport's own refusal record
+    # meets the debt and the unreadable tail.
+    ctx.ask({"verb": "w467.no.such.verb", "arguments": {}})
+    assert ctx.alive()
+    status = ctx.status()
+    assert status["audit"] == "broken" and status["reason"] == "ledger_broken"
+    (ctx.run / RULE).unlink()
+    assert ctx.request(2)["reply"]["result"]["stage"] == "refused_before_send"
+    assert ctx.status()["observation"] == "latched" and ctx.calls() == sends
+
+
+@pytest.mark.real_process
+def test_a_read_only_state_directory_starts_closed_and_writes_nothing(ctx):
+    state = ctx.run / STATE / "knowledge-context"
+    state.chmod(0o500)                               # not widened: narrowed, for the owner
+    try:
+        assert ctx.start(), ctx.exit_info()
+        status = ctx.status()
+        assert status["egress"] == "closed" and status["reason"] == "audit_unavailable"
+        assert sorted(item.name for item in state.iterdir()) == []   # nothing was created
+        (ctx.run / RULE).unlink()
+        assert ctx.request(1)["reply"]["result"]["stage"] == "refused_before_send"
+        assert ctx.status()["observation"] == "latched" and ctx.calls() == 0
+    finally:
+        state.chmod(0o700)
+
+
+@pytest.mark.real_process
+def test_a_lock_held_by_another_refuses_the_start_and_changes_nothing(ctx):
+    import fcntl
+
+    state = ctx.run / STATE / "knowledge-context"
+    ledger = AuditLedger(state / "context.jsonl")
+    ledger.append({"event_type": "knowledge.context.commissioning", "outcome": "commissioned"})
+    sock = ctx.run / "r/var/lib/azazel/run/knowledge-context/knowledge-context.sock"
+    sock.write_bytes(b"the first writer's socket")
+    before = ((state / "context.jsonl").read_bytes(), sock.read_bytes(), sock.stat().st_ino)
+    with open(state / "context.jsonl.lock", "wb") as holder:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert ctx.start() is False
+        ctx.wait_exit = ctx.proc.wait(timeout=10)
+        assert ctx.proc.returncode != 0
+        assert b"another az-knowledge-contextd" in ctx.stderr_path.read_bytes()
+    assert ((state / "context.jsonl").read_bytes(), sock.read_bytes(),
+            sock.stat().st_ino) == before
+
+
+@pytest.mark.real_process
 def test_a_recovery_line_settled_present_is_counted_once(ctx):
     assert ctx.start()
     ctx.stopat("a")
