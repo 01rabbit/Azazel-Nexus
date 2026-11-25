@@ -333,6 +333,9 @@ class KnowledgeContextBroker:
             # ledger is unwell) and before the slot, the record and the client.
             if not self._send_allowed():
                 reason = "refused_before_send"
+                # The check may have taken the rest of the time: that is a timeout.
+                if self._monotonic() >= deadline:
+                    raise TimeoutError
                 raise ValueError
             # The check above may have verified and written for a while.
             if self._monotonic() >= deadline:
@@ -482,6 +485,33 @@ class _ContextGuard(ChainGuard):
         except (ValueError, RecursionError) as exc:
             self._mark(exc)
             return False
+
+    #: Transport refusal lines whose write had an unknown outcome, until settled.
+    pending_refusals: list
+
+    def record_refusal(self, event: dict) -> None:
+        """As the guard's, but a line of unknown outcome is not counted before it is settled."""
+        if not hasattr(self, "pending_refusals"):
+            self.pending_refusals = []
+        if self._is_broken():
+            self.refusals_unrecorded += 1
+            return
+        try:
+            self.append(event)
+        except AuditOutcomeUnknown as exc:
+            self.pending_refusals.append(exc.entry)
+        except (AuditChainBroken, AuditUnavailable):
+            self.refusals_unrecorded += 1
+
+    def settle_refusals(self, verdict) -> None:
+        """Count a held refusal line only once it is settled `absent`; `present` is not counted."""
+        for entry in list(getattr(self, "pending_refusals", [])):
+            result = verdict(entry)
+            if result not in ("present", "absent"):
+                continue
+            self.pending_refusals.remove(entry)
+            if result == "absent":
+                self.refusals_unrecorded += 1
 
     def append(self, event: dict, *, performed: bool = False):
         try:
@@ -794,6 +824,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
         if getattr(getattr(request, "verb", None), "name", None) == STATUS_VERB.name:
             return recovery.status(broker)
         broker.flush_deferred()
+        guard.settle_refusals(recovery.request_verdict)
         reply = broker.handle(request)
         if not guard.broken:
             return reply
@@ -826,6 +857,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
                 if not recovery.open:
                     recovery.attempt()
                 broker.flush_deferred()
+                guard.settle_refusals(recovery.request_verdict)
         return stop()
 
     handle.__self__ = broker

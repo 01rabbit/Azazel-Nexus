@@ -1095,7 +1095,9 @@ def test_b2_real_daemon_under_setpriv_attributes_is_an_approximation(stack: Stac
         finally:
             again.kill(); again.wait(timeout=5)
             again.stdout.close(); again.stderr.close()
-        # Fail-closed when the state area is not writable: no socket is ever bound.
+        # Fail-closed when the state area is not writable (#472): the broker still
+        # serves, with egress closed, and writes nothing there. (Before #472 it ended
+        # without binding.)
         state = s.service_root / "var/lib/azazel/state/knowledge-context"
         for item in state.iterdir():
             item.unlink()
@@ -1103,12 +1105,28 @@ def test_b2_real_daemon_under_setpriv_attributes_is_an_approximation(stack: Stac
         state.chmod(0o500)  # root-owned, not writable by the service uid
         if sock.exists():
             sock.unlink()
-        blocked = subprocess.run(
+        closed = subprocess.Popen(
             ["setpriv", f"--reuid={egress.pw_uid}", f"--regid={egress.pw_gid}", "--clear-groups",
              "--no-new-privs", "--inh-caps=-all", sys.executable, "-B", "-c",
              "from azazel_nexus_runtime.knowledge_contextd import main; raise SystemExit(main())"],
-            cwd=ROOT, env=s.env, capture_output=True, text=True, timeout=10)
-        assert blocked.returncode != 0 and not sock.exists()
+            cwd=ROOT, env=s.env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True)
+        try:
+            seen = None
+            for _ in range(40):
+                try:
+                    seen = s.call(s.ctx, (s.ctx_gid,),
+                                  {"verb": "knowledge.context.status", "arguments": {}})
+                    break
+                except Exception:  # noqa: BLE001 - not bound yet
+                    time.sleep(0.25)
+            assert closed.poll() is None and sock.exists(), "it should serve, closed"
+            status = seen["reply"]["result"]
+            assert status["egress"] == "closed" and status["reason"] == "audit_unavailable"
+            assert list(state.iterdir()) == []              # nothing was written there
+        finally:
+            closed.kill(); closed.wait(timeout=5)
+            closed.stdout.close(); closed.stderr.close()
         state.chmod(0o700)
     finally:
         shutil.rmtree(base, ignore_errors=True)

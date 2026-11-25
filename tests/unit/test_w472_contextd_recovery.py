@@ -824,3 +824,30 @@ def test_a_dropped_line_that_failed_outright_is_counted_once():
     broker._record_latch("missing")
     broker.flush_deferred()
     assert len(drops) == 1
+
+
+@pytest.mark.parametrize("verdict, counted", [("present", 0), ("absent", 1)])
+def test_a_transport_refusal_line_of_unknown_outcome_is_counted_only_when_absent(verdict, counted):
+    from azazel_nexus_runtime.knowledge_contextd import _ContextGuard
+
+    def append(event):
+        raise AuditOutcomeUnknown("x", entry=_entry(4, event), path=Path("p"),
+                                  absent_head=(3, "0" * 64))
+
+    guard = _ContextGuard(append)
+    guard.record_refusal({"event_type": "runtime.request_refused"})
+    assert guard.refusals_unrecorded == 0            # not counted before it is settled
+    guard.settle_refusals(lambda entry: "unknown")
+    assert guard.refusals_unrecorded == 0
+    guard.settle_refusals(lambda entry: verdict)
+    guard.settle_refusals(lambda entry: verdict)
+    assert guard.refusals_unrecorded == counted
+
+
+def test_a_check_that_fails_after_the_deadline_answers_timeout():
+    clock = [100.0]
+    broker = _broker(lambda event: None,
+                     send_allowed=lambda: clock.__setitem__(0, 200.0) or False,
+                     monotonic=lambda: clock[0])
+    reply = broker.handle(_request_far())
+    assert reply == {"refusal": "timeout", "stage": "refused_before_send"}

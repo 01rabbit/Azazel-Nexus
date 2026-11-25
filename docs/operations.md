@@ -1655,8 +1655,11 @@ referenced and contextobsd have no diagnostic verb. Three cases are told apart:
   #472: when it holds its writer lock and its socket lock it starts anyway, with
   egress closed, and answers `knowledge.context.status` (and the observation
   latch) while the ledger cannot be read or does not verify. It still ends the
-  start when another process holds either lock, when its socket directory is
-  missing or not writable, or when a lock file exists but cannot be opened.
+  start when another process holds the ledger lock or the socket lock, when the
+  ledger lock file exists but cannot be opened, or when the socket directory is
+  missing or not writable. A state directory that can be searched but not written
+  to (no ledger lock file, none can be created) starts with egress closed, as
+  long as the socket lock is taken.
 
 **What the daemons do, and what they cannot.** A request carries no
 identifier that says "this is the same request again", so a request that

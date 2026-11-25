@@ -242,22 +242,27 @@ does not write a result that claims either. It writes one line, once:
 * A `requested` line without `format` is never matched or filled in. Their number
   is `legacy_unreferenced` in the status (all of them, including those that did
   finish; it is not a count of lost requests).
-* The writer lock is `context.jsonl.lock` in the state directory, taken before
-  `commissioning` is appended and before the socket is bound. A second broker
-  exits with a message and touches neither the ledger nor the socket. An existing
-  lock file is opened without creating it, so a read-only state directory is
-  fine. If the file does not exist and cannot be created (a read-only
-  directory, no permission), the broker starts with egress closed and writes
-  nothing to the ledger (status reason `audit_unavailable`), and takes the lock
-  later if it can. That is safe because a broker of this version that had run
-  there would have created the file; an older writer, which takes no lock, is
-  removed by the switch-over procedure (stop the old unit, `populated 0`), not by
-  this check. A lock file that exists but cannot be opened ends the start, since
-  it says nothing about who holds it. Separately, every start takes a lock in the
-  socket's own directory (`knowledge-context.lock`, 0600, in the directory the
-  unit already may write) before binding, whether or not the ledger lock could be
-  taken; a start that cannot take it, or finds it held, ends before the socket
-  path (which `bind` would replace) is touched.
+* Two locks are taken before anything is appended or bound. The ledger's writer
+  lock is `context.jsonl.lock` in the state directory. The socket lock is
+  `knowledge-context.lock` (0600) in the socket's own directory, which the
+  installer creates and the unit may write; the broker never creates that
+  directory. A second broker exits with a message and touches neither the ledger
+  nor the socket.
+* The start ends (and nothing is written or replaced) when any of these holds:
+  another process holds the ledger lock; the ledger lock file exists but cannot be
+  opened (that says nothing about who holds it); the socket directory is missing
+  or not writable, or the socket lock file cannot be created there; another
+  process holds the socket lock.
+* The start does not end, and the broker serves with egress closed and writes
+  nothing to the ledger (status reason `audit_unavailable`), when the state
+  directory can be searched but the ledger lock file does not exist and cannot be
+  created (read-only directory, no permission) while the socket lock is taken.
+  The ledger lock is tried again later. An existing lock file is opened without
+  creating it, so a read-only state directory with the file present is fine.
+  This is safe because a broker of this version that had run there would have
+  created the lock file and would still hold the socket lock; an older writer,
+  which takes no lock, is removed by the switch-over procedure (stop the old
+  unit, `populated 0`), not by these checks.
 * Egress opens only when the ledger verified, `commissioning` is recorded and
   no recovery is pending. Until then (also after a failed start-up append) the
   broker serves with egress closed: the observation latch and
@@ -813,7 +818,9 @@ daemon's own ledger, `setuid(0)` and `chown` failing with `EPERM`, a write
 outside the state area failing with `EACCES` (ordinary file permissions, not
 `ProtectSystem`), and the daemon refusing to start when its state area is not
 writable or (as observed on the version before #472) its ledger is corrupt or
-torn, when no socket was bound; since #472 a corrupt or torn ledger no longer ends
+torn, when no socket was bound (since #472 the start ends for the locks listed under
+"Requests that left no result after a restart", and a state area that cannot be
+written to starts with egress closed when the socket lock is taken); since #472 a corrupt or torn ledger no longer ends
 the start (see Replay across restarts below). **Not
 effective in that environment:** `ProtectSystem`/`ReadWritePaths` (mount
 namespace), `PrivateTmp`, `PrivateDevices`, `Protect*`, `RestrictNamespaces`,
