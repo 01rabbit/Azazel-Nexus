@@ -871,7 +871,8 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
 
     def ready_after_bind() -> None:
         recovery.attempt()
-        base_ready()
+        if base_ready is not None:      # a relocated harness has none
+            base_ready()
 
     handle.__self__ = broker
     try:
