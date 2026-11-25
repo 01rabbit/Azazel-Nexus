@@ -578,6 +578,16 @@ def test_lines_dropped_for_an_unsettled_debt_are_counted_as_unrecorded(ctx):
 
 
 @pytest.mark.real_process
+def test_a_missing_socket_directory_ends_the_start_and_is_not_created(ctx):
+    run_dir = ctx.run / "r/var/lib/azazel/run/knowledge-context"
+    shutil.rmtree(run_dir)
+    assert ctx.start() is False
+    assert ctx.proc.wait(timeout=10) != 0
+    assert b"socket directory" in ctx.stderr_path.read_bytes()
+    assert not run_dir.exists()                      # the installer's to create, not the broker's
+
+
+@pytest.mark.real_process
 def test_a_lock_held_by_another_refuses_the_start_and_changes_nothing(ctx):
     import fcntl
 
@@ -737,6 +747,7 @@ def test_a_latch_record_dropped_before_start_up_is_counted_as_unrecorded(monkeyp
 
     monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
     runtime_paths.knowledge_context_state_dir().mkdir(parents=True)
+    runtime_paths.socket_path("knowledge-context").parent.mkdir(parents=True)
     path = runtime_paths.knowledge_context_state_dir() / "context.jsonl"
     path.write_bytes(b"{not json\n")
     path.chmod(0)                                    # unreadable, not broken: start-up cannot finish
@@ -780,3 +791,36 @@ def test_the_client_gets_the_time_that_is_left_after_the_record():
     broker._client.request_context = lambda **kw: got.append(kw["deadline_s"]) or {"x": 1}
     broker.handle(_request_far())
     assert got and got[0] < 0.2 + 1e-9               # the request's 0.5 s minus the 0.3 s spent
+
+
+@pytest.mark.parametrize("verdict, counted", [("present", 0), ("absent", 1)])
+def test_a_dropped_line_of_unknown_outcome_is_counted_only_when_absent(verdict, counted):
+    drops, state = [], {"verdict": "unknown"}
+
+    def audit(event):
+        raise AuditOutcomeUnknown("x", entry=_entry(9, event), path=Path("p"),
+                                  absent_head=(8, "0" * 64))
+
+    broker = _broker(audit, request_settled=lambda entry: state["verdict"],
+                     dropped=lambda: drops.append(1))
+    broker._record_latch("missing")
+    broker.flush_deferred()
+    assert drops == []                               # not known yet: not counted
+    state["verdict"] = verdict
+    broker.flush_deferred()
+    broker.flush_deferred()
+    assert len(drops) == counted                     # once at most, and only if absent
+
+
+def test_a_dropped_line_that_failed_outright_is_counted_once():
+    from azazel_nexus.audit import AuditUnavailable
+
+    drops = []
+
+    def audit(event):
+        raise AuditUnavailable("x")
+
+    broker = _broker(audit, dropped=lambda: drops.append(1))
+    broker._record_latch("missing")
+    broker.flush_deferred()
+    assert len(drops) == 1

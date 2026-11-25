@@ -279,9 +279,12 @@ does not write a result that claims either. It writes one line, once:
   and the status still work then. The refusal's own `completed` line is a
   different matter: it is appended whenever the debt can be settled, and dropped
   (counted as unrecorded) when it cannot. The latch's own record is best effort
-  in the same way and is counted the same way. Every dropped line is counted in
-  `unrecorded` of the status, except that a chain found broken is counted once per
-  request.
+  in the same way. `unrecorded` of the status counts a latch line or a refusal's
+  own line only when it is certain that the line is not on the ledger and no
+  late record will carry it: the write failed outright for an operation not
+  done, or its write of unknown outcome was settled `absent` and is not written
+  again. A write settled `present` is not counted. A chain found broken is not
+  counted line by line but once per request.
 * Until the ledger is verified and `commissioning` is recorded, the broker's
   own records are not appended: the latch's record and the transport's refusal
   records are dropped (counted as unrecorded), not held back and not written
@@ -809,7 +812,9 @@ the fixed refusal from the uncommissioned factory, `principal_denied` in the
 daemon's own ledger, `setuid(0)` and `chown` failing with `EPERM`, a write
 outside the state area failing with `EACCES` (ordinary file permissions, not
 `ProtectSystem`), and the daemon refusing to start when its state area is not
-writable or its ledger is corrupt or torn (no socket is bound). **Not
+writable or (as observed on the version before #472) its ledger is corrupt or
+torn, when no socket was bound; since #472 a corrupt or torn ledger no longer ends
+the start (see Replay across restarts below). **Not
 effective in that environment:** `ProtectSystem`/`ReadWritePaths` (mount
 namespace), `PrivateTmp`, `PrivateDevices`, `Protect*`, `RestrictNamespaces`,
 `RestrictAddressFamilies` and `SystemCallFilter` (seccomp),

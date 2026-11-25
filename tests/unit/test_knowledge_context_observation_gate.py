@@ -325,6 +325,8 @@ def test_main_reads_the_rule_once_and_records_loaded_only_when_present(env, monk
         def open(self, *a, **k):
             import io
             return io.StringIO()
+    from azazel_nexus_runtime import runtime_paths
+    runtime_paths.socket_path("knowledge-context").parent.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(kc, "AuditLedger", lambda p: type("L", (Ledger,), {})(Path()))
     captured = {}
     monkeypatch.setattr(kc, "serve_forever", lambda **kw: captured.setdefault("h", kw) and 0)

@@ -1649,8 +1649,14 @@ referenced and contextobsd have no diagnostic verb. Three cases are told apart:
   Only then are records served again.
 * The fault persists and the ledger cannot be read: the outcome stays unknown,
   requests that need a record are refused, diagnostics say so. If the ledger
-  cannot be read at start (`AuditUnavailable`), the daemon does not start; that
-  is the supervisor's to retry, and no diagnostic socket is up.
+  cannot be read at start (`AuditUnavailable`), auditd, entryd, locald,
+  referenced and contextobsd as before do not start; that is the supervisor's to
+  retry, and no diagnostic socket is up. knowledge-contextd is the exception since
+  #472: when it holds its writer lock and its socket lock it starts anyway, with
+  egress closed, and answers `knowledge.context.status` (and the observation
+  latch) while the ledger cannot be read or does not verify. It still ends the
+  start when another process holds either lock, when its socket directory is
+  missing or not writable, or when a lock file exists but cannot be opened.
 
 **What the daemons do, and what they cannot.** A request carries no
 identifier that says "this is the same request again", so a request that

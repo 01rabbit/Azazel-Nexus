@@ -141,6 +141,10 @@ class KnowledgeContextBroker:
         self._request_settled = request_settled
         #: Called when a latch record or a refusal's own line could not be written.
         self._dropped = dropped
+        #: Latch and refusal lines whose write had an unknown outcome: (entry,
+        #: whether the operation was already done). Counted as dropped only once
+        #: settled `absent` and not carried by a late record.
+        self._pending_drops: list = []
         #: Refusals held back until the line they would refer to is settled:
         #: (event, the `requested` entry in doubt).
         self.deferred: list = []
@@ -182,8 +186,8 @@ class KnowledgeContextBroker:
         try:
             self._audit({"event_type": "knowledge.context.observation_latched",
                          "outcome": "latched", "reason_code": cause})
-        except Exception:
-            self._dropped()
+        except Exception as exc:
+            self._lost(exc)
 
     def _observation_gate(self, now: float) -> str | None:
         """None to proceed (and count the request), else the reason_code."""
@@ -206,6 +210,33 @@ class KnowledgeContextBroker:
             self._counted.append(now)
             return None
 
+    def _lost(self, exc: BaseException) -> None:
+        """A latch or refusal line the ledger did not take.
+
+        Counted when it is certain the line is not on the ledger: the write failed
+        outright, and no late record will carry it (the operation was not done).
+        A write of unknown outcome waits for its settlement. A break is counted
+        once per request by the daemon.
+        """
+        performed = self.sent
+        if isinstance(exc, AuditOutcomeUnknown):
+            self._pending_drops.append((exc.entry, performed))
+        elif isinstance(exc, AuditUnavailable) and not performed:
+            self._dropped()
+
+    def _settle_drops(self) -> None:
+        for item in list(self._pending_drops):
+            entry, performed = item
+            try:
+                verdict = self._request_settled(entry)
+            except Exception:
+                return
+            if verdict not in ("present", "absent"):
+                continue
+            self._pending_drops.remove(item)
+            if verdict == "absent" and not performed:
+                self._dropped()
+
     def _write_refusal(self, event: dict, in_doubt) -> None:
         """A refusal of a request whose `requested` line is in doubt (#472).
 
@@ -222,6 +253,7 @@ class KnowledgeContextBroker:
         A refusal whose own write had an unknown outcome is not written again
         until that line is settled: `present` removes it, `absent` writes it again.
         """
+        self._settle_drops()
         self.sent = False  # these are refusals of requests that never sent
         while self.deferred:
             item = self.deferred[0]
@@ -416,8 +448,8 @@ class KnowledgeContextBroker:
         else:
             try:
                 self._audit({**event, **refs})
-            except Exception:
-                self._dropped()
+            except Exception as exc:
+                self._lost(exc)
         # Every accepted request is a technique query (#439), so every refusal
         # (including the two early returns above) carries how far it got, as a
         # fixed word from _STAGES: the caller can keep transport
@@ -463,7 +495,7 @@ class WriterBusy(Exception):
     """Another process already holds the ledger's writer lock."""
 
 
-def _flock_file(lock):
+def _flock_file(lock, *, make_directory: bool = True):
     """The one writer of this ledger, before anything is appended or bound (#472).
 
     A lock file beside the ledger, held for the life of the process (the kernel
@@ -483,7 +515,8 @@ def _flock_file(lock):
         fd = os.open(lock, os.O_RDONLY | flags)
     except FileNotFoundError:
         try:
-            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if make_directory:
+                directory.mkdir(mode=0o700, parents=True, exist_ok=True)
             fd = os.open(lock, os.O_RDWR | os.O_CREAT | flags, 0o600)
         except OSError:
             return None
@@ -511,9 +544,10 @@ def _take_socket_lock(path):
     broker's user, mode 2710: the lock file is 0600 and adds no access). It is taken
     on every start, whether or not the ledger lock could be taken, so a start with a
     closed ledger cannot replace a running broker's socket. If it cannot be taken or
-    created the socket cannot be bound either, and the start ends.
+    created the socket cannot be bound either, and the start ends. The directory is
+    the installer's to create; it is never created here.
     """
-    fd = _flock_file(path.parent / (path.stem + ".lock"))
+    fd = _flock_file(path.parent / (path.stem + ".lock"), make_directory=False)
     if fd is None:
         raise SystemExit("az-knowledge-contextd cannot lock its socket directory")
     return fd

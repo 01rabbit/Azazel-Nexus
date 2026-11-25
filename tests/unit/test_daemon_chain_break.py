@@ -49,6 +49,8 @@ def _serve(module, monkeypatch, tmp_path, **patches):
     for name in ("mio_local_state_dir", "mio_reference_state_dir",
                  "mio_contextobs_state_dir", "knowledge_context_state_dir"):
         getattr(runtime_paths, name)().mkdir(parents=True, exist_ok=True)
+    # The installer creates the socket directories; the broker only locks inside one.
+    runtime_paths.socket_path("knowledge-context").parent.mkdir(parents=True, exist_ok=True)
     captured = {}
     monkeypatch.setattr(module, "AuditLedger", FakeLedger)
     monkeypatch.setattr(module, "serve_forever", lambda **kw: captured.update(kw) or 0)
