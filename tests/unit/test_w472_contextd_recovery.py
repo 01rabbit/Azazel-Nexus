@@ -468,18 +468,26 @@ def test_each_request_does_one_ledger_step_and_sends_nothing_until_start_up_is_c
     assert ctx.faults() == 1                         # the injection fired
     status = ctx.status()
     assert status["egress"] == "closed" and status["unresolved"] == 3     # commissioning + 2 rows
-    base = len(ctx.rows())
-    steps = []
+    # One step is one reconciliation (with the record it writes under #469) or one
+    # append of a waiting row. The request that finishes the work goes on to its own
+    # `requested` / `completed` and the send, which are not steps.
+    before, sends_before = len(ctx.rows()), ctx.calls()
+    deltas, sends = [], []
     for variant in (1, 2, 3):
         reply = ctx.request(variant)
-        steps.append(len(ctx.rows()) - base)
-        assert not served(reply) or variant == 3
-        base = len(ctx.rows())
-    assert steps[:2] == [1, 1]                       # one append each, and no send
-    assert ctx.calls() == 1 and len(ctx.unknown_rows()) == 2
+        rows = len(ctx.rows())
+        deltas.append(rows - before)
+        sends.append(ctx.calls() - sends_before)
+        before, sends_before = rows, ctx.calls()
+        assert served(reply) == (variant == 3)
+    assert deltas == [1, 1, 3]            # step, step, then step + requested + completed
+    assert sends == [0, 0, 1]
+    assert len(ctx.unknown_rows()) == 2
     assert ctx.status()["egress"] == "open" and ctx.status()["recovered"] == 2
-    note("control: one step per request", observed_sends=0,
-         ledger="3 steps owed after a failed start-up append", added_rows=3, added_sends=0)
+    note("control: one step per request", observed_sends=sum(sends),
+         ledger="3 steps owed after a failed start-up append; requests 1-2 do one step each "
+                "and send nothing; request 3 does the last step, then its own 2 rows and a send",
+         added_rows=sum(deltas), added_sends=sum(sends))
 
 
 @pytest.mark.real_process
@@ -681,21 +689,6 @@ def test_requested_carries_the_format_and_every_result_refers_to_it():
     assert len(calls) == 1
 
 
-def test_a_refusal_after_a_requested_line_of_unknown_outcome_refers_to_that_line():
-    seen = []
-
-    def audit(event):
-        seen.append(event)
-        if event["event_type"] == REQUESTED:
-            raise AuditOutcomeUnknown("x", entry=SimpleNamespace(
-                sequence=7, event_hash="abc", event=event), path="p", absent_head=(6, "z"))
-
-    broker, _, calls = _broker(audit=audit)
-    assert broker.handle(_request())["refusal"] == "unavailable"
-    assert calls == []                                       # nothing was sent
-    assert seen[-1]["requested_sequence"] == 7 and seen[-1]["requested_hash"] == "abc"
-
-
 def test_the_deadline_is_judged_just_before_the_call_after_the_record():
     clock = [0.0]
     seen = []
@@ -772,3 +765,189 @@ def test_the_writer_lock_is_exclusive_and_nothing_is_made_for_it(tmp_path):
     finally:
         os.close(first)
     os.close(kc._take_writer_lock(state))            # released with the descriptor
+
+
+# ---- #477 review 1 -------------------------------------------------------------
+
+from azazel_nexus_runtime.chain_guard import Owed  # noqa: E402
+
+
+class _Flaky:
+    """A ledger stand-in: an append can end unknown, and every settle is counted."""
+
+    def __init__(self):
+        self.path = Path("x")
+        self.rows = []
+        self.unknown_next = False
+        self.settles = 0
+        self.settle_ok = False
+
+    def append(self, event):
+        entry = SimpleNamespace(sequence=len(self.rows) + 1, event_hash=f"h{len(self.rows) + 1}",
+                                event=dict(event))
+        if self.unknown_next:
+            self.unknown_next = False
+            raise AuditOutcomeUnknown("x", entry=entry, path=self.path, absent_head=(0, "g"))
+        self.rows.append(entry)
+        return entry
+
+    def settle(self, entry, *, absent_head):
+        self.settles += 1
+        if not self.settle_ok:
+            raise AuditUnavailable("down")
+        return "absent"
+
+
+def _owed_guard():
+    ledger = _Flaky()
+    guard = kc._Guard(ledger.append, lambda entry, *, absent_head, path=None: ledger.settle(
+        entry, absent_head=absent_head))
+    ledger.unknown_next = True
+    with pytest.raises(AuditOutcomeUnknown):
+        guard.append({"event_type": "x"})
+    assert guard.owed
+    return ledger, guard
+
+
+def test_a_failed_reconciliation_is_not_repeated_in_the_same_request():
+    ledger, guard = _owed_guard()
+    guard.new_request()
+    for event in ({"event_type": "latch"}, {"event_type": "completed"}):
+        with pytest.raises(AuditUnavailable):
+            guard.append(event)
+    assert guard.settle_owed() is False
+    assert ledger.settles == 1                       # one look, however many audits asked
+    guard.new_request()                              # the next request looks again
+    with pytest.raises(AuditUnavailable):
+        guard.append({"event_type": "completed"})
+    assert ledger.settles == 2
+
+
+def _boot(tmp_path, monkeypatch, ledger_cls):
+    from azazel_nexus_runtime import runtime_paths
+
+    monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
+    runtime_paths.knowledge_context_state_dir().mkdir(parents=True)
+    runtime_paths.socket_path("knowledge-context").parent.mkdir(parents=True)
+    captured = {}
+    monkeypatch.setattr(kc, "AuditLedger", ledger_cls)
+    monkeypatch.setattr(kc, "serve_forever", lambda **kw: captured.update(kw) or 0)
+    monkeypatch.setattr(kc.PrincipalPolicy, "resolve", lambda **kw: "policy")
+    monkeypatch.setattr(kc, "runtime_ready_callback", lambda: None)
+    monkeypatch.setattr(kc, "load_commissioning", lambda: SimpleNamespace(
+        status="absent", reason_code=None, registry_version=None))
+    monkeypatch.setattr(kc, "load_observation_rule", lambda: None)
+    assert kc.main([]) == 0
+    captured["ready"]()
+    return captured
+
+
+def test_the_failure_mark_does_not_carry_over_to_the_next_request_or_transport_refusal(
+        tmp_path, monkeypatch):
+    class Ledger(AuditLedger):
+        unknown_next, settles = False, 0
+
+        def append(self, event, **kw):
+            entry = super().append(event, **kw)
+            if Ledger.unknown_next:
+                Ledger.unknown_next = False
+                raise AuditOutcomeUnknown("x", entry=entry, path=self.path,
+                                          absent_head=(entry.sequence - 1, entry.previous_hash))
+            return entry
+
+        def settle(self, entry, *, absent_head):
+            Ledger.settles += 1
+            raise AuditUnavailable("down")
+
+    served_ = _boot(tmp_path, monkeypatch, Ledger)
+    record, handler = served_["audit"], served_["handler"]
+    Ledger.unknown_next = True
+    record({"event_type": "x"})                       # a debt of unknown outcome
+    assert record.__self__.owed
+    base = Ledger.settles
+    record({"event_type": "y"})
+    record({"event_type": "y"})
+    assert Ledger.settles == base + 2                 # each transport refusal looks once
+    handler(_request())
+    assert Ledger.settles == base + 3                 # and so does a request
+    handler(_request())
+    assert Ledger.settles == base + 4
+    status = handler(SimpleNamespace(verb=kc.STATUS_VERB))
+    assert status["egress"] == "closed" and status["audit"] == "owed"
+    assert Ledger.settles == base + 4                 # status touches nothing
+
+
+def test_a_step_is_a_reconciliation_or_an_append_never_both(tmp_path):
+    ledger, guard, duties = _duties(tmp_path)
+    duties.scan()
+    real_fsync = os.fsync
+    import azazel_nexus.audit as audit_module
+
+    fails = [True]
+
+    def fsync(fd):
+        if fails[0]:
+            fails[0] = False
+            raise OSError("injected")
+        return real_fsync(fd)
+
+    audit_module.os.fsync = fsync
+    try:
+        duties.step()                                 # commissioning: unknown
+    finally:
+        audit_module.os.fsync = real_fsync
+    duties.hold({"event_type": COMPLETED, "outcome": "timeout"})
+    before = len(list(ledger))
+    duties.step()                                     # reconciles; the held row waits
+    kinds = [row.event["event_type"] for row in ledger][before:]
+    assert kinds == ["audit.outcome_settled"] and len(duties.queue) == 1
+
+
+def test_a_held_result_refers_to_its_request_only_if_that_line_was_found_present(tmp_path):
+    for found, refers in ((True, True), (False, False)):
+        ledger, guard, duties = _duties(tmp_path / str(found) if False else tmp_path)
+        duties.scan()
+        duties.queue.clear()
+        duties.commissioned = True
+        line = SimpleNamespace(sequence=9, event_hash="abc")
+        if found:
+            duties.present.add((9, "abc"))
+        event = {"event_type": COMPLETED, "outcome": "unavailable"}
+        duties.hold(event, line)
+        duties.step()
+        row = list(ledger)[-1].event
+        assert ("requested_sequence" in row) is refers
+        path = tmp_path / "context.jsonl"
+        path.unlink()
+
+
+@pytest.mark.parametrize("verdict, refers, held", [("present", True, False),
+                                                   ("absent", False, False),
+                                                   ("unknown", False, True)])
+def test_a_refusal_after_a_requested_line_of_unknown_outcome_follows_the_reconciliation(
+        verdict, refers, held):
+    seen, hold = [], []
+
+    def audit(event):
+        seen.append(event)
+        if event["event_type"] == REQUESTED:
+            raise AuditOutcomeUnknown("x", entry=SimpleNamespace(
+                sequence=7, event_hash="abc", event=event), path="p", absent_head=(6, "z"))
+
+    broker, _, calls = _broker(audit=audit, request_settled=lambda entry: verdict,
+                               hold=lambda event, awaiting=None: hold.append((event, awaiting)))
+    broker.handle(_request())
+    assert calls == []
+    completed = [e for e in seen if e["event_type"] == COMPLETED]
+    if held:
+        assert completed == [] and len(hold) == 1 and hold[0][1].sequence == 7
+        assert "requested_sequence" not in hold[0][0]
+    else:
+        assert ("requested_sequence" in completed[0]) is refers and hold == []
+
+
+def test_status_says_closed_when_the_broker_cannot_send(tmp_path, monkeypatch):
+    served_ = _boot(tmp_path, monkeypatch, AuditLedger)       # uncommissioned: `absent`
+    status = served_["handler"](SimpleNamespace(verb=kc.STATUS_VERB))
+    assert status["egress"] == "closed" and status["reason"] == "broker_disabled"
+    assert status["audit"] == "ok" and status["unresolved"] == 0

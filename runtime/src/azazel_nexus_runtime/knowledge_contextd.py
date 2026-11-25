@@ -116,7 +116,8 @@ class KnowledgeContextBroker:
         observation_rule_path: Any = None,
         grant_marker: Callable[[], Any] = _production_grant_marker,
         send_allowed: Callable[[], bool] = lambda: True,
-        hold: Callable[[dict], None] = lambda event: None,
+        hold: Callable[..., None] = lambda event, awaiting=None: None,
+        request_settled: Callable[[Any], str] = lambda entry: "present",
     ) -> None:
         if type(enabled) is not bool:
             raise ValueError("Knowledge Context enablement must be explicit")
@@ -136,6 +137,9 @@ class KnowledgeContextBroker:
         #: A result row that could not be written although the operation was
         #: never sent; the owner writes it later.
         self._hold = hold
+        #: `present`, `absent` or `unknown` for a `requested` line whose write had
+        #: an unknown outcome. The reference to it is kept only when present.
+        self._request_settled = request_settled
         #: True once this request called the peer (set just before the call, so
         #: a record written after it belongs to an operation already done).
         self.sent = False
@@ -214,6 +218,7 @@ class KnowledgeContextBroker:
         reason = None
         phase = "frame"
         ref: dict = {}
+        doubtful = None
         try:
             # The grant this request is accepted under. A broker whose grant
             # was withdrawn (marker removed) accepts nothing, even in the
@@ -264,7 +269,7 @@ class KnowledgeContextBroker:
                 except AuditOutcomeUnknown as exc:
                     # The line may be there: whatever this request records
                     # next refers to it, whether or not it turns out to be.
-                    ref = _reference(exc.entry)
+                    doubtful = exc.entry
                     raise
                 # The time left is judged just before the call, after the record.
                 remaining = deadline - self._monotonic()
@@ -357,13 +362,27 @@ class KnowledgeContextBroker:
                  "elapsed_ms": min(10_000, int((self._monotonic() - start) * 1000)), **ref}
         if reason is not None:
             event["reason_code"] = reason
+        if doubtful is not None:
+            # The `requested` line may or may not be on the ledger. The result
+            # refers to it only once it is found present; found absent, it
+            # refers to nothing; not yet known, it waits (with the line it waits for).
+            verdict = self._request_settled(doubtful)
+            if verdict == "present":
+                event.update(_reference(doubtful))
+            elif verdict != "absent":
+                self._hold(event, doubtful)
+                return self._refusal(outcome, phase, reason)
         try:
             self._audit(event)
         except Exception:
-            if ref and not self.sent:
+            if (ref or doubtful is not None) and not self.sent:
                 # Nothing was sent, so the guard owes nothing; the line that
                 # stands without a result is written when the ledger allows.
                 self._hold(event)
+        return self._refusal(outcome, phase, reason)
+
+    @staticmethod
+    def _refusal(outcome, phase, reason) -> dict:
         # Every accepted request is a technique query (#439), so every refusal
         # (including the two early returns above) carries how far it got, as a
         # fixed word from _STAGES: the caller can keep transport
@@ -407,6 +426,33 @@ def _take_writer_lock(directory):
     return fd
 
 
+class _Guard(ChainGuard):
+    """A guard that reconciles at most once for each request (#472).
+
+    One reconciliation is one step: it is the look at the ledger and, when the
+    line is found, the `audit.outcome_settled` / `audit.late_record` it writes
+    (the #469 contract). Whatever asks for a second one in the same request (the
+    latch record, the refusal's record, the step) gets "still owed" without any
+    I/O. `new_request` clears the mark, at the entrance of a request and of a
+    transport refusal's record, so a failure never carries over to the next one.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._reconciled = False
+
+    def new_request(self) -> None:
+        self._reconciled = False
+
+    def settle_owed(self) -> bool:
+        if not self.owed:
+            return True
+        if self._reconciled:
+            return False
+        self._reconciled = True
+        return super().settle_owed()
+
+
 class _Duties:
     """What the ledger still needs before egress may open (#472).
 
@@ -427,6 +473,10 @@ class _Duties:
         self.queue: list[dict] = []
         self.legacy_unreferenced = 0
         self.recovered = 0
+        #: (sequence, hash) of lines found present after an unknown outcome.
+        self.present: set = set()
+        #: id of a held event -> the `requested` line whose fate it waits for.
+        self._awaiting: dict = {}
 
     @property
     def started(self) -> bool:
@@ -478,9 +528,21 @@ class _Duties:
              "requested_sequence": sequence, "requested_hash": digest}
             for (sequence, digest) in requested if (sequence, digest) not in referenced]
 
-    def hold(self, event: dict) -> None:
-        """A result row the broker could not write (nothing was sent): written later."""
+    def hold(self, event: dict, awaiting=None) -> None:
+        """A result row the broker could not write (nothing was sent): written later.
+
+        `awaiting` is a `requested` line of unknown outcome: the row refers to it
+        only if it turns out to be present.
+        """
         self.queue.append(event)
+        if awaiting is not None:
+            self._awaiting[id(event)] = (awaiting.sequence, awaiting.event_hash)
+
+    def request_settled(self, entry) -> str:
+        """`present`, `absent` or `unknown` for a `requested` line of unknown outcome."""
+        if self.guard.broken or (self.guard.owed and not self.guard.settle_owed()):
+            return "unknown"
+        return "present" if (entry.sequence, entry.event_hash) in self.present else "absent"
 
     def _done(self, event: dict) -> None:
         for index, item in enumerate(self.queue):
@@ -496,6 +558,7 @@ class _Duties:
 
     def on_settled(self, event, entry) -> None:
         """A line of unknown outcome was found present: it was written."""
+        self.present.add((entry.sequence, entry.event_hash))
         self._done(event)
 
     def step(self) -> None:
@@ -508,6 +571,9 @@ class _Duties:
         if not self.queue:
             return
         event = self.queue[0]
+        key = self._awaiting.pop(id(event), None)
+        if key is not None and key in self.present:
+            event.update({"requested_sequence": key[0], "requested_hash": key[1]})
         try:
             self.guard.append(event, performed=False)
         except (AuditChainBroken, AuditUnavailable):
@@ -521,6 +587,7 @@ class _Duties:
             if not self.queue and not self.guard.owed:
                 break
             before = (len(self.queue), len(self.guard.owed))
+            self.guard.new_request()
             self.step()
             if (len(self.queue), len(self.guard.owed)) == before:
                 break     # no progress: the rest waits for the next requests
@@ -544,6 +611,8 @@ class _Duties:
 
     def status(self, broker) -> dict:
         reason = self.why_closed()
+        if reason is None and not broker._ready:
+            reason = "broker_disabled"        # not commissioned: nothing can be sent
         if reason is None and broker._latched:
             reason = "observation_latched"
         audit = self.guard.state
@@ -584,7 +653,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
         # records exactly what it recorded before.
         event["observation_rule"] = "loaded"
     duties_ref: list = []
-    guard = ChainGuard(ledger.append, settle_single(ledger),
+    guard = _Guard(ledger.append, settle_single(ledger),
                        on_settled=lambda e, entry: duties_ref[0].on_settled(e, entry))
     duties = _Duties(ledger, guard, event)
     duties_ref.append(duties)
@@ -623,13 +692,16 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
             enabled=True, audit=audit,
             observation_rule=observation,
             send_allowed=send_allowed, hold=duties.hold,
+            request_settled=duties.request_settled,
         )
     else:
-        broker = KnowledgeContextBroker(audit=audit, send_allowed=send_allowed, hold=duties.hold)
+        broker = KnowledgeContextBroker(audit=audit, send_allowed=send_allowed, hold=duties.hold,
+                                    request_settled=duties.request_settled)
 
     def handle(request):
         """Record before send; on a broken chain nothing is sent to Knowledge."""
         unrecorded[0] = False
+        guard.new_request()
         if getattr(getattr(request, "verb", None), "name", None) == STATUS_VERB.name:
             return duties.status(broker)
         reply = broker.handle(request)
@@ -645,6 +717,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
 
     def record_refusal(event: dict) -> None:
         """The transport's refusal record: counted, not written, until start-up is done."""
+        guard.new_request()
         if duties.started:
             guard.record_refusal(event)
         else:
