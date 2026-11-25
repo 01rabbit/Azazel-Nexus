@@ -245,47 +245,40 @@ does not write a result that claims either. It writes one line, once:
 * A `requested` line without `format` is never matched or filled in. Their number
   is `legacy_unreferenced` in the status (all of them, including those that did
   finish; it is not a count of lost requests).
-* Two locks are taken before anything is appended or bound. The ledger's writer
-  lock is `context.jsonl.lock` in the state directory. The socket lock is
-  `knowledge-context.lock` (0600) in the socket's own directory, which the
-  installer creates and the unit may write; the broker never creates that
-  directory. A second broker exits with a message and touches neither the ledger
-  nor the socket.
-* The start ends when any of these holds: another process holds the ledger lock;
-  the ledger lock file exists but cannot be opened (that says nothing about who
-  holds it); the state directory is missing (it is never created, so an empty
-  ledger is not made); the state directory cannot be searched at all (whether the
-  ledger lock exists is then unknowable); the socket directory is missing or not
-  writable, or the socket lock file cannot be created there; another process holds
-  the socket lock; the socket cannot be bound. For every one of these the ledger is
-  untouched. The socket path is untouched for all of them except the last: the
-  transport removes an existing path before it binds, so a bind that then fails has
-  already removed it. Why that is safe depends on which locks were taken:
-  * With both locks (the usual start), no other broker of this version is running,
-    since each holds both for its life.
-  * With the socket lock only (the ledger lock file does not exist and cannot be
-    created: the degraded start below), the socket lock is what keeps a second
-    broker off the same socket: it is taken on every start, and a running broker
-    holds it. The ledger lock is not what guards the socket.
-  * In both cases an older broker, which takes no lock, is removed by the
-    switch-over procedure (stop the old unit, `populated 0`), not by these checks.
-* The state directory decides which of three things happens (the socket lock and
-  the socket bind come first in every case; nothing is appended to the ledger
-  before the socket is bound, so a start that fails before the bind writes
-  nothing to the ledger. What keeps a second broker off the same socket before `bind`
-  removes the old path is the socket lock, which every start takes; see the list
-  above for what the ledger lock adds):
-  1. The state directory cannot be searched: the start ends (the b2 case below).
+* The start runs in this order. Nothing is appended to the ledger until step 4,
+  and the installer creates the directories (the broker never creates one).
+  1. The ledger's writer lock, `context.jsonl.lock` in the state directory. The
+     start ends if the state directory is missing, or cannot be searched at all
+     (whether the lock exists is then unknowable), or the lock file exists but cannot
+     be opened (that says nothing about who holds it), or another process holds it.
+     If the file does not exist and cannot be created (a read-only directory, no
+     permission), the start goes on without this lock (the degraded start, below).
+     An existing lock file is opened without creating it, so a read-only directory
+     with the file present is fine.
+  2. The socket lock, `knowledge-context.lock` (0600) in the socket's own directory
+     (which the unit may write). The start ends if that directory is missing, the
+     lock file cannot be created there, or another process holds it. It is taken
+     on every start, whether or not step 1 produced a lock.
+  3. The socket is bound. The transport removes an existing socket path before it
+     binds, so a bind that then fails has already removed it; the start ends. This
+     is safe because step 2 already showed that no other broker of this version is
+     running (each holds the socket lock for its life), also in the degraded start,
+     where the socket lock alone keeps a second broker off the socket. An older
+     broker, which takes no lock, is removed by the switch-over procedure (stop the
+     old unit, `populated 0`), not by these checks.
+  4. Only now, as the first thing after the bind (in the ready call), the ledger is
+     verified and scanned, `commissioning` is recorded and the recovery lines are
+     written (when step 1 produced the lock). A start that ended before this wrote
+     nothing to the ledger.
+* Which of three things happens for the state directory:
+  1. It cannot be searched: the start ends in step 1 (the b2 case below).
   2. It can be searched, but the ledger lock file does not exist and cannot be
-     created (read-only directory, no permission): the broker starts with egress
-     closed and writes nothing to the ledger (status reason `audit_unavailable`),
-     and tries the lock again later. This is safe because a broker of this
-     version that had run there would have created the file and still hold the
-     socket lock; an older writer, which takes no lock, is removed by the
-     switch-over procedure (stop the old unit, `populated 0`), not by these checks.
-  3. The lock file exists and can be opened, and the ledger file can be appended
-     to: the broker starts normally, even if the directory itself is not
-     writable (an existing lock file is opened without creating it).
+     created: the broker starts with egress closed and writes nothing to the
+     ledger (status reason `audit_unavailable`), and tries the lock again later.
+     This is safe because a broker of this version that had run there would have
+     created the file, and the socket lock (step 2) is what keeps a second one off.
+  3. The lock file exists and can be opened, and the ledger file can be appended to:
+     the broker starts normally, even if the directory itself is not writable.
 * Egress opens only when the ledger verified, `commissioning` is recorded and
   no recovery is pending. Until then (also after a failed start-up append) the
   broker serves with egress closed: the observation latch and
