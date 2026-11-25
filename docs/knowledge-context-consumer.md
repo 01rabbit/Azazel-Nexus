@@ -250,7 +250,8 @@ does not write a result that claims either. It writes one line, once:
   nor the socket.
 * The start ends (and nothing is written or replaced) when any of these holds:
   another process holds the ledger lock; the ledger lock file exists but cannot be
-  opened (that says nothing about who holds it); the socket directory is missing
+  opened (that says nothing about who holds it); the state directory is missing
+  (it is never created, so an empty ledger is not made); the socket directory is missing
   or not writable, or the socket lock file cannot be created there; another
   process holds the socket lock; the state directory cannot be searched at all
   (whether the ledger lock exists is then unknowable).
@@ -817,13 +818,13 @@ capability set and umask 0027, and shows: the socket and ledger attributes,
 the fixed refusal from the uncommissioned factory, `principal_denied` in the
 daemon's own ledger, `setuid(0)` and `chown` failing with `EPERM`, a write
 outside the state area failing with `EACCES` (ordinary file permissions, not
-`ProtectSystem`), and the daemon refusing to start when its state area is not
-writable or (as observed on the version before #472) its ledger is corrupt or
-torn, when no socket was bound (since #472 the start ends for the conditions listed
-under "Requests that left no result after a restart", which include a state area
-that cannot be searched; a corrupt or torn ledger, or a state area that can be
-searched but not written, starts with egress closed); since #472 a corrupt or torn ledger no longer ends
-the start (see Replay across restarts below). **Not
+`ProtectSystem`), and, in the state-area case, the daemon refusing to start with no socket bound. That case
+was tested with a state directory owned by root, mode 0500, which the service uid cannot
+even search; the broker then ends the start (since whether the writer lock exists
+cannot be known). It is the only state-area condition that test covers. The version before
+#472 also ended the start on a corrupt or torn ledger; since #472 that no longer ends the
+start (see "Replay across restarts" below), and a state directory that can be searched
+but not written starts with egress closed (unit test, not this run). **Not
 effective in that environment:** `ProtectSystem`/`ReadWritePaths` (mount
 namespace), `PrivateTmp`, `PrivateDevices`, `Protect*`, `RestrictNamespaces`,
 `RestrictAddressFamilies` and `SystemCallFilter` (seccomp),

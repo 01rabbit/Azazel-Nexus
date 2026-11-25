@@ -578,12 +578,22 @@ def test_lines_dropped_for_an_unsettled_debt_are_counted_as_unrecorded(ctx):
 
 
 @pytest.mark.real_process
+def test_a_missing_state_directory_ends_the_start_and_makes_nothing(ctx):
+    state = ctx.run / STATE / "knowledge-context"
+    shutil.rmtree(state)
+    assert ctx.start() is False
+    assert ctx.proc.wait(timeout=10) != 0
+    assert b"does not exist" in ctx.stderr_path.read_bytes()
+    assert not state.exists()                        # no directory, so no ledger, no lock
+
+
+@pytest.mark.real_process
 def test_a_missing_socket_directory_ends_the_start_and_is_not_created(ctx):
     run_dir = ctx.run / "r/var/lib/azazel/run/knowledge-context"
     shutil.rmtree(run_dir)
     assert ctx.start() is False
     assert ctx.proc.wait(timeout=10) != 0
-    assert b"socket directory" in ctx.stderr_path.read_bytes()
+    assert b"does not exist" in ctx.stderr_path.read_bytes()
     assert not run_dir.exists()                      # the installer's to create, not the broker's
 
 
@@ -851,3 +861,18 @@ def test_a_check_that_fails_after_the_deadline_answers_timeout():
                      monotonic=lambda: clock[0])
     reply = broker.handle(_request_far())
     assert reply == {"refusal": "timeout", "stage": "refused_before_send"}
+
+
+def test_a_record_of_unknown_outcome_that_took_the_rest_of_the_time_answers_timeout():
+    clock, held = [100.0], []
+
+    def audit(event):
+        if event["event_type"] == REQUESTED:
+            clock[0] = 200.0
+            raise AuditOutcomeUnknown("x", entry=_entry(7, event), path=Path("p"),
+                                      absent_head=(6, "0" * 64))
+
+    broker = _broker(audit, request_settled=lambda entry: "unknown", monotonic=lambda: clock[0])
+    reply = broker.handle(_request_far())
+    assert reply == {"refusal": "timeout", "stage": "refused_before_send"}
+    assert len(broker.deferred) == 1                 # the line in doubt is still settled later

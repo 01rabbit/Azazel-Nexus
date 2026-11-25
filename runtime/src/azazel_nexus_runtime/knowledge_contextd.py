@@ -439,6 +439,10 @@ class KnowledgeContextBroker:
             outcome = "unavailable"
             if phase in ("frame", "audit"):
                 reason = "refused_before_send"
+                # A record that took the rest of the time (an unknown outcome included)
+                # is a timeout; the line in doubt is still settled as before.
+                if phase == "audit" and self._monotonic() >= deadline:
+                    outcome = "timeout"
             elif phase == "client":
                 stage = getattr(exc, "stage", None)
                 reason = stage if type(stage) is str and stage in _CLIENT_STAGES else None
@@ -525,7 +529,7 @@ class WriterBusy(Exception):
     """Another process already holds the ledger's writer lock."""
 
 
-def _flock_file(lock, *, make_directory: bool = True):
+def _flock_file(lock):
     """The one writer of this ledger, before anything is appended or bound (#472).
 
     A lock file beside the ledger, held for the life of the process (the kernel
@@ -544,9 +548,11 @@ def _flock_file(lock, *, make_directory: bool = True):
     try:
         fd = os.open(lock, os.O_RDONLY | flags)
     except FileNotFoundError:
+        if not directory.is_dir():
+            # The installer creates these directories; nothing here does (as before #472,
+            # a missing state directory ends the start, so an empty ledger is never made).
+            raise SystemExit(f"az-knowledge-contextd: {directory} does not exist")
         try:
-            if make_directory:
-                directory.mkdir(mode=0o700, parents=True, exist_ok=True)
             fd = os.open(lock, os.O_RDWR | os.O_CREAT | flags, 0o600)
         except OSError:
             return None
@@ -577,7 +583,7 @@ def _take_socket_lock(path):
     created the socket cannot be bound either, and the start ends. The directory is
     the installer's to create; it is never created here.
     """
-    fd = _flock_file(path.parent / (path.stem + ".lock"), make_directory=False)
+    fd = _flock_file(path.parent / (path.stem + ".lock"))
     if fd is None:
         raise SystemExit("az-knowledge-contextd cannot lock its socket directory")
     return fd
