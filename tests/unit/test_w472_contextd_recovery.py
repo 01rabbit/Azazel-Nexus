@@ -488,6 +488,42 @@ def test_nothing_is_appended_before_start_up_is_done_and_the_latch_still_closes(
     assert "knowledge.context.observation_latched" not in kinds   # dropped, not delayed
 
 
+@pytest.mark.real_process
+def test_a_parse_failure_while_settling_is_ledger_broken_and_the_latch_still_works(ctx):
+    assert ctx.start()
+    assert served(ctx.request(0))
+    ctx.arm("fsync", 2)                              # the result is written, its sync fails
+    assert ctx.request(1)["reply"]["result"]["stage"] == "unrecorded"
+    assert ctx.status()["audit"] == "owed"
+    sends = ctx.calls()
+    with (ctx.run / LEDGER).open("ab") as handle:    # the tail becomes unreadable
+        handle.write(b'{"event":' + b"[" * 30000 + b"]" * 30000 + b"}\n")
+    time.sleep(3.0)                                  # the between-requests retry settles it
+    assert ctx.alive()                               # the loop did not end
+    status = ctx.status()
+    assert status["audit"] == "broken" and status["reason"] == "ledger_broken"
+    (ctx.run / RULE).unlink()
+    assert ctx.request(2)["reply"]["result"]["stage"] == "refused_before_send"
+    assert ctx.status()["observation"] == "latched" and ctx.calls() == sends
+
+
+@pytest.mark.real_process
+def test_a_recovery_line_settled_present_is_counted_once(ctx):
+    assert ctx.start()
+    ctx.stopat("a")
+    assert ctx.request(1)["transport"] == "no_reply"
+    ctx.wait_dead()
+    ctx.stopat("")
+    ctx.arm("fsync", 2)                              # start-up: 1 commissioning, 2 the recovery line
+    assert ctx.start()
+    assert ctx.faults() == 1
+    status = ctx.wait_status("egress", "open")
+    assert status["egress"] == "open" and status["unresolved"] == 0
+    assert len(ctx.unknown_rows()) == 1
+    assert status["recovered"] == 1                  # settled `present`, counted once
+    assert "audit.outcome_settled" in ctx.kinds()
+
+
 # -- in-process: the references and the held refusal ---------------------------
 
 def _broker(audit, **kw):
@@ -622,3 +658,33 @@ def test_a_latch_record_dropped_before_start_up_is_counted_as_unrecorded(monkeyp
     before = guard.refusals_unrecorded
     broker._record_latch("missing")
     assert guard.refusals_unrecorded == before + 1 and path.read_bytes() == b"{not json\n"
+
+
+def _request_far():
+    from test_knowledge_contextd import _request
+
+    return _request(payload={"frame": {"privacy_class": "P0-public", "techniques": ["T1059"]}},
+                    deadline_monotonic_ns=2**62)
+
+
+@pytest.mark.parametrize("when", ["after_gate", "after_record"])
+def test_a_request_whose_deadline_passed_while_the_ledger_was_checked_sends_nothing(when):
+    clock, sent, events = [100.0], [], []
+    broker = _broker(lambda event: events.append(event) or (
+        clock.__setitem__(0, 200.0) if when == "after_record"
+        and event["event_type"] == REQUESTED else None),
+        send_allowed=lambda: clock.__setitem__(0, 200.0) or True if when == "after_gate" else True,
+        monotonic=lambda: clock[0])
+    broker._client.request_context = lambda **kw: sent.append(kw)
+    reply = broker.handle(_request_far())
+    assert sent == [] and reply["refusal"] == "timeout"
+    assert [e["event_type"] for e in events][-1] == COMPLETED
+
+
+def test_the_client_gets_the_time_that_is_left_after_the_record():
+    clock, got = [100.0], []
+    broker = _broker(lambda event: clock.__setitem__(0, 100.3) if event["event_type"] == REQUESTED
+                     else None, monotonic=lambda: clock[0])
+    broker._client.request_context = lambda **kw: got.append(kw["deadline_s"]) or {"x": 1}
+    broker.handle(_request_far())
+    assert got and got[0] < 0.2 + 1e-9               # the request's 0.5 s minus the 0.3 s spent

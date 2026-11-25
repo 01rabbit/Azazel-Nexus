@@ -298,6 +298,10 @@ class KnowledgeContextBroker:
             if not self._send_allowed():
                 reason = "refused_before_send"
                 raise ValueError
+            # The check above may have verified and written for a while.
+            if self._monotonic() >= deadline:
+                reason = "refused_before_send"
+                raise TimeoutError
             if not self._slot.acquire(blocking=False):
                 reason = "busy"
                 raise TimeoutError
@@ -312,6 +316,11 @@ class KnowledgeContextBroker:
                     in_doubt = exc.entry
                     raise
                 refs = _reference(written)
+                # The record may have taken time too: the client gets what is left.
+                deadline_s = deadline - self._monotonic()
+                if deadline_s <= 0:
+                    reason = "refused_before_send"
+                    raise TimeoutError
                 phase = "client"
                 self.sent = True
                 verified = self._client.request_context(
@@ -422,6 +431,19 @@ class KnowledgeContextBroker:
         return {"refusal": outcome, "stage": stage}
 
 
+def _settle(guard) -> bool:
+    """`guard.settle_owed()` that reads an unparseable ledger as a break (#472).
+
+    The same error types as the start-up scan: a line the chain cannot be read
+    from is `ledger_broken`, never an exception out of the serve loop.
+    """
+    try:
+        return guard.settle_owed()
+    except (ValueError, RecursionError) as exc:
+        guard._mark(exc)
+        return False
+
+
 class WriterBusy(Exception):
     """Another process already holds the ledger's writer lock."""
 
@@ -466,6 +488,8 @@ class _Recovery:
         self.unresolved = 0
         self.legacy_unreferenced = 0
         self.recovered = 0
+        #: Recovery lines whose write had an unknown outcome, until settled.
+        self._row_doubts: list = []
         self.reason: str | None = "audit_unavailable"
         #: (sequence, hash) of lines found present after an unknown outcome.
         self.present: set = set()
@@ -487,7 +511,7 @@ class _Recovery:
         """`present`, `absent` or `unknown` for a `requested` line of unknown outcome."""
         if self.guard.broken:
             return "unknown"
-        if self.guard.owed and not self.guard.settle_owed():
+        if self.guard.owed and not _settle(self.guard):
             return "unknown"
         if self.guard.broken:
             return "unknown"
@@ -499,9 +523,15 @@ class _Recovery:
             self.reason = "ledger_broken"
             return
         try:
-            if self.guard.owed and not self.guard.settle_owed():
+            if self.guard.owed and not _settle(self.guard):
                 self.reason = "ledger_broken" if self.guard.broken else "audit_unavailable"
                 return
+            for doubt in list(self._row_doubts):
+                # Settled by now (nothing is owed): a line found `present` is a recovery
+                # line written; one found `absent` is written again by the scan below.
+                if (doubt.sequence, doubt.event_hash) in self.present:
+                    self.recovered += 1
+                self._row_doubts.remove(doubt)
             self.ledger.verify(require_terminated=True)
             with self.ledger.path.open("a", encoding="utf-8"):
                 pass
@@ -537,10 +567,14 @@ class _Recovery:
                         raise
                     self.commissioned = True
             for sequence, digest in missing:
-                self.guard.append({"event_type": _COMPLETED, "outcome": UNKNOWN_OUTCOME,
-                                   "reason_code": RESTART_UNCONFIRMED,
-                                   "requested_sequence": sequence, "requested_hash": digest},
-                                  performed=False)
+                try:
+                    self.guard.append({"event_type": _COMPLETED, "outcome": UNKNOWN_OUTCOME,
+                                       "reason_code": RESTART_UNCONFIRMED,
+                                       "requested_sequence": sequence,
+                                       "requested_hash": digest}, performed=False)
+                except AuditOutcomeUnknown as exc:
+                    self._row_doubts.append(exc.entry)
+                    raise
                 self.recovered += 1
                 self.unresolved -= 1
             self.reason = None
@@ -623,7 +657,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
         """A debt of unknown outcome is settled first (#467); then the whole of #472."""
         if guard.broken:
             return False
-        if guard.owed and not guard.settle_owed():
+        if guard.owed and not _settle(guard):
             if not guard.broken:
                 guard.count_unrecorded()
             return False
@@ -680,7 +714,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
             last_retry[0] = now
             if not guard.broken:
                 if guard.owed:
-                    guard.settle_owed()
+                    _settle(guard)
                 if not recovery.open:
                     recovery.attempt()
                 broker.flush_deferred()

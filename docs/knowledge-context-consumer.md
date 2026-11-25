@@ -249,15 +249,27 @@ does not write a result that claims either. It writes one line, once:
   `refused_before_send` after the observation gate and before any peer call,
   and the broker tries again every two seconds. A chain that does not verify is
   never completed; the status says `ledger_broken` until a restart.
+* A request whose deadline has passed by the time the ledger was checked or the
+  `requested` line written is not sent; it is answered `timeout`, and the client
+  gets the time that is left, not the time at arrival.
+* A line the chain cannot be read from while a debt is being settled (a parse
+  failure, a lone surrogate, deep nesting) is read as `ledger_broken` there too;
+  the serve loop keeps running.
+* `recovered` counts a recovery line written by this process, including one whose
+  write had an unknown outcome and was then settled `present` (counted once).
 * The same closing applies while serving: a chain found broken, or a debt of
   unknown outcome that cannot be settled, refuses the technique query after the
   observation gate and before any record or peer call. The latch and the status
   still work then (the latch's own record is best effort and is not written when
   the ledger cannot take it).
-* Until the ledger is verified and `commissioning` is recorded, no other line is
-  appended. The latch is still set, but its record and the transport's refusal
+* Until the ledger is verified and `commissioning` is recorded, the broker's
+  own records are not appended: the latch's record and the transport's refusal
   records are dropped (counted as unrecorded), not held back and not written
-  later.
+  later. The latch itself is still set. This is separate from the settlement of
+  a line whose write had an unknown outcome (#469): if the `commissioning` write
+  itself was of unknown outcome, the next attempt first settles it and writes
+  `audit.outcome_settled` (or nothing, when the line was absent), before
+  anything else is appended.
 * A refusal that waited for its `requested` line to be settled and whose own
   write then has an unknown outcome is not written again until that line is
   settled: `present` removes it, `absent` writes it again.
@@ -807,8 +819,8 @@ is the only durable state; an empty ledger starts. (Observed on the version befo
 #472: a corrupt or torn one stopped the daemon before it bound. Since #472 such a
 ledger is read as broken: the daemon binds and serves with egress closed, the status
 says `ledger_broken`, requests are refused and the ledger bytes do not change. The
-Linux c4 run, which needs its own runner, now asserts that; it was not run for this
-change. `tests/unit/test_w472_contextd_recovery.py` checks broken JSON, a torn line, a lone surrogate and deeply nested JSON with a real
+Linux c4 run, which needs its own runner, now asserts that; at 63142ca the runner
+(`run-docker.sh`, restricted with `TEST_TARGETS` to c4 only) ran it: 1 passed. `tests/unit/test_w472_contextd_recovery.py` checks broken JSON, a torn line, a lone surrogate and deeply nested JSON with a real
 process; the c4 run covers a broken line, a torn line and an empty ledger.) These show the broker keeps no state across a
 restart, not a protection specific to restarts. locald and entryd keep no
 state either, so restarting them changes nothing for this property.
