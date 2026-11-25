@@ -611,7 +611,11 @@ class _Recovery:
     is recorded, and no `requested` line without a result is left unresolved.
     Until then the daemon answers (status, observation latch) and refuses to
     send. Nothing here uses the guard's in-memory `settle` information to decide
-    what the ledger holds: the whole ledger is read again each attempt.
+    what the ledger holds. The whole ledger is verified and scanned once, when that
+    succeeds; a retry after that keeps the list of recovery lines still to write in
+    memory and only appends them (as heavy as one append). The whole ledger is read
+    again only while the verification itself has not succeeded: the base ended the
+    start there, with no socket and no status, so a re-read cannot be worse.
     """
 
     def __init__(self, ledger, guard, commissioning_event: dict, state_dir=None,
@@ -627,14 +631,24 @@ class _Recovery:
         self.verified = False
         self.commissioned = False
         self._commission_doubt = None
-        self.unresolved = 0
+        #: The result of the one successful verify-and-scan: recovery lines still to
+        #: write, and `requested` lines waiting for a refusal this process holds.
+        self.scanned = False
+        self._todo: list = []
+        self._waiting: set = set()
         self.legacy_unreferenced = 0
         self.recovered = 0
-        #: Recovery lines whose write had an unknown outcome, until settled.
+        #: Recovery lines whose write had an unknown outcome, until settled: (entry, key).
         self._row_doubts: list = []
         self.reason: str | None = "audit_unavailable"
         #: (sequence, hash) of lines found present after an unknown outcome.
         self.present: set = set()
+
+    @property
+    def unresolved(self) -> int:
+        """Lines with no result yet: still to write, in doubt, or waiting for a held refusal."""
+        return (len(self._todo) + len(self._row_doubts)
+                + len(self._waiting & self._held()))
 
     @property
     def started(self) -> bool:
@@ -649,9 +663,9 @@ class _Recovery:
         refusals and debts of unknown outcome do not need it: they are written and
         settled by a tail append and a tail look, which is as heavy as one append.
         """
-        if not (self.verified and self.commissioned):
+        if not (self.scanned and self.commissioned):
             return True
-        return self.unresolved > 0 and not self._held()
+        return bool(self._todo) or bool(self._row_doubts)
 
     @property
     def open(self) -> bool:
@@ -681,6 +695,33 @@ class _Recovery:
             return False
         return self.lock_fd is not None
 
+    def _scan(self) -> None:
+        """Verify the whole ledger and list what has no result: done once, when it succeeds."""
+        self.ledger.verify(require_terminated=True)
+        with self.ledger.path.open("a", encoding="utf-8"):
+            pass
+        self.verified = True
+        requested, referenced, legacy = {}, set(), 0
+        for entry in self.ledger:
+            event = entry.event
+            kind = event.get("event_type")
+            holder = event.get("late_event") if kind in (
+                "audit.late_record", "audit.outcome_settled") else event
+            if kind == _REQUESTED:
+                if event.get("format") == REQUEST_FORMAT:
+                    requested[(entry.sequence, entry.event_hash)] = entry
+                else:
+                    legacy += 1
+            if isinstance(holder, dict) and holder.get("event_type") == _COMPLETED:
+                ref = (holder.get("requested_sequence"), holder.get("requested_hash"))
+                if type(ref[0]) is int and type(ref[1]) is str:
+                    referenced.add(ref)
+        self.legacy_unreferenced = legacy
+        held = self._held()
+        self._waiting = {key for key in requested if key not in referenced and key in held}
+        self._todo = [key for key in requested if key not in referenced and key not in held]
+        self.scanned = True
+
     def attempt(self) -> None:
         """Verify, scan, record commissioning and the missing results. Never raises."""
         if self.guard.broken:
@@ -693,36 +734,16 @@ class _Recovery:
             if self.guard.owed and not self.guard.settle_owed():
                 self.reason = "ledger_broken" if self.guard.broken else "audit_unavailable"
                 return
-            for doubt in list(self._row_doubts):
-                # Settled by now (nothing is owed): a line found `present` is a recovery
-                # line written; one found `absent` is written again by the scan below.
+            for doubt, key in list(self._row_doubts):
+                # Settled by now (nothing is owed): `present` is a recovery line written;
+                # `absent` is to be written again.
+                self._row_doubts.remove((doubt, key))
                 if (doubt.sequence, doubt.event_hash) in self.present:
                     self.recovered += 1
-                self._row_doubts.remove(doubt)
-            self.ledger.verify(require_terminated=True)
-            with self.ledger.path.open("a", encoding="utf-8"):
-                pass
-            self.verified = True
-            requested, referenced, legacy = {}, set(), 0
-            for entry in self.ledger:
-                event = entry.event
-                kind = event.get("event_type")
-                holder = event.get("late_event") if kind in (
-                    "audit.late_record", "audit.outcome_settled") else event
-                if kind == _REQUESTED:
-                    if event.get("format") == REQUEST_FORMAT:
-                        requested[(entry.sequence, entry.event_hash)] = entry
-                    else:
-                        legacy += 1
-                if isinstance(holder, dict) and holder.get("event_type") == _COMPLETED:
-                    ref = (holder.get("requested_sequence"), holder.get("requested_hash"))
-                    if type(ref[0]) is int and type(ref[1]) is str:
-                        referenced.add(ref)
-            self.legacy_unreferenced = legacy
-            held = self._held()
-            waiting = [key for key in requested if key not in referenced and key in held]
-            missing = [key for key in requested if key not in referenced and key not in held]
-            self.unresolved = len(missing) + len(waiting)
+                else:
+                    self._todo.append(key)
+            if not self.scanned:
+                self._scan()
             if not self.commissioned:
                 if self._commission_doubt is not None:
                     key = (self._commission_doubt.sequence, self._commission_doubt.event_hash)
@@ -735,23 +756,28 @@ class _Recovery:
                         self._commission_doubt = exc.entry
                         raise
                     self.commissioned = True
-            for sequence, digest in missing:
+            for key in list(self._todo):
+                sequence, digest = key
+                self._todo.remove(key)
                 try:
                     self.guard.append({"event_type": _COMPLETED, "outcome": UNKNOWN_OUTCOME,
                                        "reason_code": RESTART_UNCONFIRMED,
                                        "requested_sequence": sequence,
                                        "requested_hash": digest}, performed=False)
                 except AuditOutcomeUnknown as exc:
-                    self._row_doubts.append(exc.entry)
+                    self._row_doubts.append((exc.entry, key))
+                    raise
+                except BaseException:
+                    self._todo.append(key)          # not written: still to do
                     raise
                 self.recovered += 1
-                self.unresolved -= 1
             self.reason = None
         except (AuditChainBroken, ValueError, RecursionError) as exc:
             # A line the chain cannot be recomputed or read from (a lone surrogate,
             # broken JSON, a cut line, JSON nested past the parser's depth) is a
             # break, not a reason to end before bind. UnicodeError is a ValueError.
             self.verified = False
+            self.scanned = False
             self.reason = "ledger_broken"
             if not self.guard.broken:
                 self.guard._mark(exc)

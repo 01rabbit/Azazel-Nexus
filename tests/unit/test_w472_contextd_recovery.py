@@ -656,6 +656,37 @@ def test_a_held_refusal_is_written_by_the_retry_in_the_next_request_after_the_ga
 
 
 @pytest.mark.real_process
+def test_a_retry_that_only_appends_a_recovery_line_does_not_read_the_whole_ledger(ctx, monkeypatch):
+    import threading
+
+    monkeypatch.chdir(ctx.run)                       # two threads ask; the cwd is the same for both
+    assert ctx.start()
+    ctx.stopat("a")
+    assert ctx.request(1)["transport"] == "no_reply"
+    ctx.wait_dead()
+    ctx.stopat("")
+    ctx.arm("pre", 3)                                # start-up: the recovery line alone fails
+    assert ctx.start()
+    assert ctx.faults() == 1 and ctx.status()["egress"] == "closed"
+    sends = ctx.calls()
+    (ctx.run / "slowverify").write_text("1")         # a read of the whole ledger would take 3 s
+    first = {}
+    thread = threading.Thread(target=lambda: first.update(
+        reply=ctx.request(2)))                       # A: its retry appends the recovery line
+    thread.start()
+    time.sleep(0.3)
+    (ctx.run / RULE).unlink()
+    started = time.monotonic()
+    _near_deadline(ctx, 3)                           # B: 1 s to live, the rule file is gone
+    thread.join(10)
+    assert time.monotonic() - started < 2.5
+    assert ctx.status()["observation"] == "latched"  # B reached the gate in time
+    assert not (ctx.run / "verifying").exists()      # and no retry read the whole ledger
+    assert len(ctx.unknown_rows()) == 1 and ctx.status()["unresolved"] == 0
+    assert ctx.calls() <= sends + 1                  # only A may have been sent
+
+
+@pytest.mark.real_process
 def test_a_missing_state_directory_ends_the_start_and_makes_nothing(ctx):
     state = ctx.run / STATE / "knowledge-context"
     shutil.rmtree(state)

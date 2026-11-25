@@ -331,6 +331,20 @@ does not write a result that claims either. It writes one line, once:
   recovered by the next request that passes the gate, and that request is the first
   one served; there is no timer. A request that arrives while a retry runs waits for
   it, as in the base, where a debt was settled inside the request path.
+* Two exceptions to "after the gate", both from the #469 contract and both present in
+  the base (which settled before entering the broker): the transport's refusal record
+  and the latch's record go through the guard's append, which first settles an
+  existing debt of unknown outcome (a look at the tail of the ledger, nothing more).
+  That look can therefore run in a request that the gate then refuses, or before the
+  gate has been judged. It never writes a line for a request that is refused, and it
+  never opens a send.
+* The whole ledger is verified and scanned once, when start-up succeeds in doing so;
+  the list of recovery lines still to write is kept in memory. A retry afterwards only
+  appends what is left (as heavy as one append), judged by what this process has
+  itself written, with a write of unknown outcome decided by the look at the tail. The
+  whole ledger is read again only while the first verification has not succeeded
+  (the ledger cannot be read): the base ended the start in that case, with no socket
+  and no status, so reading again there is no worse than the base.
 * A refusal that waited for its `requested` line to be settled and whose own
   write then has an unknown outcome is not written again until that line is
   settled: `present` removes it, `absent` writes it again.
