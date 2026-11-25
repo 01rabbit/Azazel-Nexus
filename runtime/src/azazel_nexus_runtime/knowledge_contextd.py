@@ -10,6 +10,8 @@ commissioned client and synthetic trust material.
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -22,7 +24,8 @@ from collections.abc import Callable, Mapping, Sequence
 from threading import BoundedSemaphore
 from typing import Any
 
-from azazel_nexus.audit import AuditChainBroken, AuditLedger, AuditUnavailable
+from azazel_nexus.audit import (
+    AuditChainBroken, AuditLedger, AuditOutcomeUnknown, AuditUnavailable)
 from azazel_nexus.sanitizer import PrivacyClass, SanitizerPolicy
 from azazel_nexus.technique_knowledge import request_ids
 
@@ -39,7 +42,7 @@ from .runtime_paths import (
 from .serve import serve_forever
 from .systemd_notify import runtime_ready_callback
 
-__all__ = ["CONTEXT_VERB", "KnowledgeContextBroker", "main"]
+__all__ = ["CONTEXT_VERB", "STATUS_VERB", "KnowledgeContextBroker", "main"]
 
 SOCKET_NAME = "knowledge-context"
 MAX_RESPONSE_BYTES = 48 * 1024
@@ -54,7 +57,20 @@ CONTEXT_VERB = Verb(
     accepts_payload=True,
     payload_contract="bounded frame; broker constructs a P0-public request",
 )
-REGISTRY = VerbRegistry([CONTEXT_VERB])
+#: Read-only diagnostic (#472). It answers while the ledger cannot be written,
+#: with fixed words and counts only.
+STATUS_VERB = Verb(
+    "knowledge.context.status",
+    admits=frozenset({PrincipalClass.ROOT, PrincipalClass.OPERATOR, PrincipalClass.SERVICE}),
+)
+REGISTRY = VerbRegistry([CONTEXT_VERB, STATUS_VERB])
+#: Marks a `requested` row of the form that results refer back to (#472). A row
+#: without it is the old form and is never matched to a result by guessing.
+REQUEST_FORMAT = 2
+UNKNOWN_OUTCOME = "unknown"
+RESTART_UNCONFIRMED = "restart_unconfirmed"
+_REQUESTED = "knowledge.context.requested"
+_COMPLETED = "knowledge.context.completed"
 _RATE_WINDOW_S = 60.0
 # Fixed request sections a client may name on the refusal it raises.
 _CLIENT_STAGES = frozenset({"refused_before_send", "transport", "verification",
@@ -67,6 +83,15 @@ _CLIENT_STAGES = frozenset({"refused_before_send", "transport", "verification",
 _STAGES = _CLIENT_STAGES | {"withdrawn", "unrecorded"}
 #: The unit whose grant marker admits a request (the broker's own unit).
 _UNIT = "azazel-knowledge-contextd.service"
+
+
+def _reference(entry) -> dict:
+    """The fields that tie a result to the `requested` line it belongs to."""
+    sequence = getattr(entry, "sequence", None)
+    digest = getattr(entry, "event_hash", None)
+    if type(sequence) is not int or type(digest) is not str:
+        return {}
+    return {"requested_sequence": sequence, "requested_hash": digest}
 
 
 def _production_grant_marker():
@@ -90,6 +115,8 @@ class KnowledgeContextBroker:
         observation_rule: tuple | None = None,
         observation_rule_path: Any = None,
         grant_marker: Callable[[], Any] = _production_grant_marker,
+        send_allowed: Callable[[], bool] = lambda: True,
+        hold: Callable[[dict], None] = lambda event: None,
     ) -> None:
         if type(enabled) is not bool:
             raise ValueError("Knowledge Context enablement must be explicit")
@@ -103,6 +130,12 @@ class KnowledgeContextBroker:
         #: Reads the identity of the grant marker (None: no grant). Taken when
         #: a request is accepted and again before the answer is adopted.
         self._grant_marker = grant_marker
+        #: Asked after the observation gate and before anything is recorded or
+        #: sent: False while the ledger still has work owed (#472).
+        self._send_allowed = send_allowed
+        #: A result row that could not be written although the operation was
+        #: never sent; the owner writes it later.
+        self._hold = hold
         #: True once this request called the peer (set just before the call, so
         #: a record written after it belongs to an operation already done).
         self.sent = False
@@ -180,6 +213,7 @@ class KnowledgeContextBroker:
             return {"refusal": "timeout", "stage": "refused_before_send"}
         reason = None
         phase = "frame"
+        ref: dict = {}
         try:
             # The grant this request is accepted under. A broker whose grant
             # was withdrawn (marker removed) accepts nothing, even in the
@@ -212,6 +246,10 @@ class KnowledgeContextBroker:
             if reason is not None:
                 raise ValueError
             phase = "frame"
+            if not self._send_allowed():
+                # Judged after the gate, so a latch still closes. The owner has
+                # spent this request's one ledger step; no row of its own.
+                return {"refusal": "unavailable", "stage": "refused_before_send"}
             if not self._slot.acquire(blocking=False):
                 reason = "busy"
                 raise TimeoutError
@@ -219,8 +257,20 @@ class KnowledgeContextBroker:
                 # Record the sanitized request attempt before any egress. A
                 # failed audit sink must keep the optional network path closed.
                 phase = "audit"
-                self._audit({"event_type": "knowledge.context.requested",
-                             "outcome": "attempted"})
+                try:
+                    ref = _reference(self._audit({
+                        "event_type": _REQUESTED, "outcome": "attempted",
+                        "format": REQUEST_FORMAT}))
+                except AuditOutcomeUnknown as exc:
+                    # The line may be there: whatever this request records
+                    # next refers to it, whether or not it turns out to be.
+                    ref = _reference(exc.entry)
+                    raise
+                # The time left is judged just before the call, after the record.
+                remaining = deadline - self._monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                deadline_s = remaining
                 phase = "client"
                 self.sent = True
                 verified = self._client.request_context(
@@ -282,10 +332,11 @@ class KnowledgeContextBroker:
                     check_grant()
                 phase = "verified"
                 try:
-                    self._audit({"event_type": "knowledge.context.completed",
+                    self._audit({"event_type": _COMPLETED,
                                  "outcome": "verified_advisory",
                                  "response_bytes": len(encoded),
-                                 "elapsed_ms": min(10_000, int((self._monotonic() - start) * 1000))})
+                                 "elapsed_ms": min(10_000, int((self._monotonic() - start) * 1000)),
+                                 **ref})
                 except AuditUnavailable:
                     # The peer was called and its answer verified, and the
                     # record could not be written (#467). The answer is not
@@ -302,14 +353,17 @@ class KnowledgeContextBroker:
             elif phase == "client":
                 stage = getattr(exc, "stage", None)
                 reason = stage if type(stage) is str and stage in _CLIENT_STAGES else None
-        event = {"event_type": "knowledge.context.completed", "outcome": outcome,
-                 "elapsed_ms": min(10_000, int((self._monotonic() - start) * 1000))}
+        event = {"event_type": _COMPLETED, "outcome": outcome,
+                 "elapsed_ms": min(10_000, int((self._monotonic() - start) * 1000)), **ref}
         if reason is not None:
             event["reason_code"] = reason
         try:
             self._audit(event)
         except Exception:
-            pass
+            if ref and not self.sent:
+                # Nothing was sent, so the guard owes nothing; the line that
+                # stands without a result is written when the ledger allows.
+                self._hold(event)
         # Every accepted request is a technique query (#439), so every refusal
         # (including the two early returns above) carries how far it got, as a
         # fixed word from _STAGES: the caller can keep transport
@@ -327,19 +381,191 @@ class KnowledgeContextBroker:
         return {"refusal": outcome, "stage": stage}
 
 
+def _take_writer_lock(directory):
+    """The one writer of this ledger, taken before the socket is bound or a line appended (#472).
+
+    A lock file beside the ledger, held for the life of the process (the kernel
+    drops it when the process dies, however it dies). A second daemon ends here,
+    so it never reaches the socket path `bind_socket` would replace. A missing
+    state directory, a lock that cannot be created and a lock held by another
+    all end the start; nothing is created but the lock file itself.
+    """
+    if not directory.is_dir():
+        raise SystemExit(f"az-knowledge-contextd: {directory} does not exist")
+    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        fd = os.open(directory / "context.jsonl.lock", flags, 0o600)
+    except OSError as exc:
+        raise SystemExit(f"az-knowledge-contextd cannot open its writer lock: {exc.strerror}")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(fd)
+        if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+            raise SystemExit("az-knowledge-contextd: another one holds the ledger")
+        raise SystemExit(f"az-knowledge-contextd cannot lock its ledger: {exc.strerror}")
+    return fd
+
+
+class _Duties:
+    """What the ledger still needs before egress may open (#472).
+
+    Egress is open only when the ledger verified, nothing waits in `queue`
+    (`commissioning`, the `unknown` rows for requests with no result, and any
+    result row this process could not write) and the guard owes nothing. Each
+    request after the observation gate does at most one step: settle what is
+    owed, or append the head of the queue. Between requests nothing is read or
+    written.
+    """
+
+    def __init__(self, ledger, guard, commissioning_event: dict) -> None:
+        self.ledger, self.guard = ledger, guard
+        self.verified = False
+        self.reason: str | None = "ledger_unverified"
+        self.commissioned = False
+        self._commissioning = commissioning_event
+        self.queue: list[dict] = []
+        self.legacy_unreferenced = 0
+        self.recovered = 0
+
+    @property
+    def started(self) -> bool:
+        """The ledger verified and `commissioning` is recorded: other lines may follow."""
+        return self.verified and self.commissioned
+
+    @property
+    def open(self) -> bool:
+        return (self.started and not self.queue and not self.guard.broken
+                and not self.guard.owed)
+
+    def scan(self) -> None:
+        """Verify the chain and list the `requested` lines without a result, in ONE read."""
+        requested: dict = {}
+        referenced: set = set()
+        legacy = [0]
+
+        def see(entry) -> None:
+            event = entry.event
+            kind = event.get("event_type")
+            holder = event.get("late_event") if kind in (
+                "audit.late_record", "audit.outcome_settled") else event
+            if kind == _REQUESTED:
+                if event.get("format") == REQUEST_FORMAT:
+                    requested[(entry.sequence, entry.event_hash)] = True
+                else:
+                    legacy[0] += 1
+            if isinstance(holder, dict) and holder.get("event_type") == _COMPLETED:
+                ref = (holder.get("requested_sequence"), holder.get("requested_hash"))
+                if type(ref[0]) is int and type(ref[1]) is str:
+                    referenced.add(ref)
+
+        try:
+            self.ledger.verify(require_terminated=True, on_entry=see)
+        except (AuditChainBroken, ValueError, RecursionError) as exc:
+            # A line that cannot be recomputed or read (broken JSON, a cut
+            # line, a lone surrogate) is a break; nothing is completed on top.
+            self.guard._mark(exc)
+            self.reason = "ledger_broken"
+            return
+        except (AuditUnavailable, OSError):
+            self.reason = "ledger_unreadable"
+            return
+        self.verified, self.reason = True, None
+        self.legacy_unreferenced = legacy[0]
+        self.queue = [self._commissioning] + [
+            {"event_type": _COMPLETED, "outcome": UNKNOWN_OUTCOME,
+             "reason_code": RESTART_UNCONFIRMED,
+             "requested_sequence": sequence, "requested_hash": digest}
+            for (sequence, digest) in requested if (sequence, digest) not in referenced]
+
+    def hold(self, event: dict) -> None:
+        """A result row the broker could not write (nothing was sent): written later."""
+        self.queue.append(event)
+
+    def _done(self, event: dict) -> None:
+        for index, item in enumerate(self.queue):
+            if item == event:
+                del self.queue[index]
+                break
+        else:
+            return
+        if event is self._commissioning or event == self._commissioning:
+            self.commissioned = True
+        elif event.get("reason_code") == RESTART_UNCONFIRMED:
+            self.recovered += 1
+
+    def on_settled(self, event, entry) -> None:
+        """A line of unknown outcome was found present: it was written."""
+        self._done(event)
+
+    def step(self) -> None:
+        """One ledger unit: settle what is owed, or append the head of the queue."""
+        if self.guard.broken or not self.verified:
+            return
+        if self.guard.owed:
+            self.guard.settle_owed()
+            return
+        if not self.queue:
+            return
+        event = self.queue[0]
+        try:
+            self.guard.append(event, performed=False)
+        except (AuditChainBroken, AuditUnavailable):
+            return    # an unknown outcome is owed to the guard and settled next
+        self._done(event)
+
+    def start(self) -> None:
+        """At start-up, after bind: verify, scan, then write what is owed, as far as it goes."""
+        self.scan()
+        for _ in range(3 * len(self.queue) + 3):
+            if not self.queue and not self.guard.owed:
+                break
+            self.step()
+
+    @property
+    def unresolved(self) -> int:
+        return len(self.queue) + len(self.guard.owed)
+
+    def why_closed(self) -> str | None:
+        if self.guard.broken:
+            return "ledger_broken"
+        if not self.verified:
+            return self.reason
+        if self.guard.owed:
+            return "audit_owed"
+        if not self.commissioned:
+            return "commissioning_pending"
+        if self.queue:
+            return "result_pending"
+        return None
+
+    def status(self, broker) -> dict:
+        reason = self.why_closed()
+        if reason is None and broker._latched:
+            reason = "observation_latched"
+        audit = self.guard.state
+        if audit == "ok" and not self.verified:
+            audit = "unverified"
+        return {"egress": "open" if reason is None else "closed", "reason": reason,
+                "audit": audit, "unresolved": self.unresolved,
+                "legacy_unreferenced": self.legacy_unreferenced,
+                "recovered": self.recovered}
+
+
 def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -> int:
     """Run the disabled-by-default local endpoint; takes no command-line config."""
     if argv is None:
         argv = sys.argv[1:]
     if argv:
         raise SystemExit("az-knowledge-contextd takes no arguments")
-    ledger = AuditLedger(knowledge_context_state_dir() / "context.jsonl")
-    try:
-        ledger.verify(require_terminated=True)
-        with ledger.path.open("a", encoding="utf-8"):
-            pass
-    except OSError as exc:
-        raise AuditUnavailable("Knowledge Context ledger unavailable") from exc
+    state_dir = knowledge_context_state_dir()
+    sock_path = socket_path(SOCKET_NAME)
+    # First: the writer lock, before the socket is bound and before any line is
+    # appended. Neither directory is made here; the installer owns them.
+    lock_fd = _take_writer_lock(state_dir)   # held until the process ends
+    if not sock_path.parent.is_dir():
+        raise SystemExit(f"az-knowledge-contextd: {sock_path.parent} does not exist")
+    ledger = AuditLedger(state_dir / "context.jsonl")
     # Enablement comes only from the root-owned commissioning bundle; any
     # absence or defect leaves the closed broker. Load performs no I/O to peers.
     commissioning = load_commissioning()
@@ -354,21 +580,38 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
         # Written only when a rule was read, so a node without the rule file
         # records exactly what it recorded before.
         event["observation_rule"] = "loaded"
-    ledger.append(event)
-    guard = ChainGuard(ledger.append, settle_single(ledger))
+    duties_ref: list = []
+    guard = ChainGuard(ledger.append, settle_single(ledger),
+                       on_settled=lambda e, entry: duties_ref[0].on_settled(e, entry))
+    duties = _Duties(ledger, guard, event)
+    duties_ref.append(duties)
     #: Set when the record of a verified answer could not be written.
     unrecorded = [False]
 
-    def audit(event: dict) -> None:
+    def audit(event: dict) -> Any:
+        if not duties.started:
+            # Nothing but the start-up's own lines may come first.
+            raise AuditUnavailable("start-up not finished")
         try:
             # Once the peer was called, a record that cannot be written is a
             # debt of the operation already done, not of one that never ran.
-            guard.append(event, performed=broker.sent)
+            return guard.append(event, performed=broker.sent)
         except AuditChainBroken:
             if (event["event_type"] == "knowledge.context.completed"
                     and event.get("outcome") == "verified_advisory"):
                 unrecorded[0] = True
             raise
+
+    def send_allowed() -> bool:
+        """Asked after the gate. Open: no ledger access. Closed: one step, then judged again."""
+        if duties.open:
+            return True
+        duties.step()
+        if duties.open:
+            return True
+        if not guard.broken:
+            guard.count_unrecorded()   # (a break is counted once by `handle`)
+        return False
 
     if commissioning.status == "commissioned":
         broker = KnowledgeContextBroker(
@@ -376,17 +619,16 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
             mission=commissioning.mission, alias_key=commissioning.alias_key,
             enabled=True, audit=audit,
             observation_rule=observation,
+            send_allowed=send_allowed, hold=duties.hold,
         )
     else:
-        broker = KnowledgeContextBroker(audit=audit)
+        broker = KnowledgeContextBroker(audit=audit, send_allowed=send_allowed, hold=duties.hold)
+
     def handle(request):
         """Record before send; on a broken chain nothing is sent to Knowledge."""
         unrecorded[0] = False
-        if guard.broken or (guard.owed and not guard.settle_owed()):
-            # Broken, or a write's outcome is still unknown (#467): nothing is
-            # sent until the ledger says where it stands.
-            guard.count_unrecorded()
-            return {"refusal": "unavailable", "stage": "refused_before_send"}
+        if getattr(getattr(request, "verb", None), "name", None) == STATUS_VERB.name:
+            return duties.status(broker)
         reply = broker.handle(request)
         if not guard.broken:
             return reply
@@ -398,21 +640,40 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
             return {"refusal": "unavailable", "stage": "unrecorded"}
         return reply
 
+    def record_refusal(event: dict) -> None:
+        """The transport's refusal record: counted, not written, until start-up is done."""
+        if duties.started:
+            guard.record_refusal(event)
+        else:
+            guard.count_unrecorded()
+
+    notify = ready if ready is not None else runtime_ready_callback()
+
+    def started() -> None:
+        # The socket is bound; only now does this process touch the ledger.
+        duties.start()
+        if notify is not None:
+            notify()
+
     handle.__self__ = broker
-    return serve_forever(
-        path=socket_path(SOCKET_NAME), registry=REGISTRY,
-        policy=PrincipalPolicy.resolve(
-            operator_group="azknowledge-context-client",
-            # The one SERVICE principal (#439, docs/adr/0010-context-observation-unit.md):
-            # the model-free context observation service. Never the model host
-            # (`azmio`) and never entry (`azmioentry`); root is no SERVICE.
-            service_accounts=("azmioctx",),
-        ),
-        audit=guard.record_refusal,
-        handler=handle,
-        stop=stop,
-        ready=ready if ready is not None else runtime_ready_callback(),
-    )
+    record_refusal.__self__ = guard
+    try:
+        return serve_forever(
+            path=sock_path, registry=REGISTRY,
+            policy=PrincipalPolicy.resolve(
+                operator_group="azknowledge-context-client",
+                # The one SERVICE principal (#439, docs/adr/0010-context-observation-unit.md):
+                # the model-free context observation service. Never the model host
+                # (`azmio`) and never entry (`azmioentry`); root is no SERVICE.
+                service_accounts=("azmioctx",),
+            ),
+            audit=record_refusal,
+            handler=handle,
+            stop=stop,
+            ready=started,
+        )
+    finally:
+        os.close(lock_fd)
 
 
 if __name__ == "__main__":  # pragma: no cover

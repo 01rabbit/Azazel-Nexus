@@ -33,7 +33,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Optional
+from typing import Any, Callable, Iterator, Mapping, Optional
 
 __all__ = [
     "GENESIS_HASH",
@@ -358,8 +358,12 @@ class AuditLedger:
             raise AuditChainBroken(f"{self.path} {where} has a field of the wrong type")
         return entry
 
-    def verify(self, *, require_terminated: bool = False) -> None:
+    def verify(self, *, require_terminated: bool = False,
+               on_entry: Optional[Callable[["AuditEntry"], None]] = None) -> None:
         """Walk the chain. Raise on the first link that does not hold.
+
+        `on_entry` sees each entry once its link has been checked, so a caller
+        that needs the lines as well as the chain reads the file once.
 
         Checks both halves of each link: that the recorded hash is what the
         event actually hashes to, and that the next entry chains onto it. A
@@ -391,6 +395,8 @@ class AuditLedger:
                     f"but its event hashes to {recomputed!r}"
                 )
             expected_sequence, expected_previous = entry.sequence + 1, entry.event_hash
+            if on_entry is not None:
+                on_entry(entry)
 
     # -- writing ---------------------------------------------------------
 
