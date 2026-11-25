@@ -447,6 +447,18 @@ def test_start_up_reads_the_ledger_once_and_between_requests_nothing_is_touched(
 
 
 @pytest.mark.real_process
+def test_work_still_waiting_is_not_touched_between_requests(ctx):
+    _seed(ctx, COMMISSIONED, {"event_type": REQUESTED, "outcome": "attempted", "format": 2})
+    ctx.arm("pre", 1)                                # the first append of start-up fails
+    assert ctx.start()
+    assert ctx.faults() == 1 and ctx.status()["unresolved"] == 2
+    rows, reads = len(ctx.rows()), ctx.reads()
+    time.sleep(1.5)                                  # six accept timeouts, no request
+    assert (len(ctx.rows()), ctx.reads()) == (rows, reads)
+    assert ctx.status()["unresolved"] == 2
+
+
+@pytest.mark.real_process
 def test_each_request_does_one_ledger_step_and_sends_nothing_until_start_up_is_complete(ctx):
     _seed(ctx, COMMISSIONED,
           {"event_type": REQUESTED, "outcome": "attempted", "format": 2},

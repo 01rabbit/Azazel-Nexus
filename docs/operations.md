@@ -1546,6 +1546,20 @@ refused until a restart whose full verification succeeds. `audit: unknown` means
 running, or install.sh not re-run after the upgrade that added the leaf) or a
 stale one.
 
+**Switching knowledge-contextd to the version with the writer lock (#472).**
+The new version takes an exclusive lock (`context.jsonl.lock` beside the
+ledger) before it binds the socket and before its first append; the old version
+does not know the lock. The two must never write together, so the old one is
+stopped first: stop `azazel-knowledge-contextd.service`, confirm that its cgroup
+is empty (`populated 0` in the unit's `cgroup.events`, the file the stop
+contract's `contextd_cgroup` check reads), and only then start the new version.
+After the bind it reads the whole ledger once (chain and references together),
+writes `commissioning`, and then writes one `unknown` / `restart_unconfirmed`
+row for each new-format `requested` line that has no result. A second start
+while one is running ends at the lock and leaves the running daemon, its socket
+and the ledger alone. Nothing here was exercised on a real systemd unit or after
+a power loss.
+
 **Audit write failures while running (#467).** An I/O fault on a daemon's own
 ledger (`AuditUnavailable`: the file cannot be opened, written, synced or read)
 no longer ends auditd, entryd, locald, referenced, contextobsd or
@@ -1594,8 +1608,9 @@ there, `audit.audit` is there too. A record owed with no such start result shows
 presence alone does not mean a record is owed. While an opt-in grant is `unsettled` (#468) that reply keeps
 its own shape, without the key), locald's `mio.local.admission`
 (`admitted: false` while a record is owed; on a chain found broken, the fixed
-refusal instead, as before). referenced, contextobsd and knowledge-contextd have no
-diagnostic verb. Three cases are told apart:
+refusal instead, as before), and knowledge-contextd's `knowledge.context.status`
+(#472, see [Requests that left no result](knowledge-context-consumer.md#requests-that-left-no-result-after-a-restart-472)).
+referenced and contextobsd have no diagnostic verb. Three cases are told apart:
 
 * Nothing was written (the open or the write failed, a partial line was cut
   back). The request is refused. If nothing had been done yet, the next request
@@ -1636,8 +1651,16 @@ diagnostic verb. Three cases are told apart:
   Only then are records served again.
 * The fault persists and the ledger cannot be read: the outcome stays unknown,
   requests that need a record are refused, diagnostics say so. If the ledger
-  cannot be read at start (`AuditUnavailable`), the daemon does not start; that
-  is the supervisor's to retry, and no diagnostic socket is up.
+  cannot be read at start (`AuditUnavailable`), auditd, entryd, locald,
+  referenced and contextobsd do not start; that is the supervisor's to retry,
+  and no diagnostic socket is up. knowledge-contextd is the exception since #472:
+  once it holds its writer lock it binds and starts with egress closed, and
+  answers `knowledge.context.status` and the observation latch while the ledger
+  cannot be read or does not verify (`reason`: `ledger_unreadable` or
+  `ledger_broken`). It does not retry the read before a restart. It still ends
+  the start when another process holds the lock, when the lock file cannot be
+  created, or when the state or socket directory does not exist (it creates
+  neither).
 
 **What the daemons do, and what they cannot.** A request carries no
 identifier that says "this is the same request again", so a request that
@@ -1728,9 +1751,10 @@ is auditd's answer from an existing line (below). What each case allows:
   `ledger`). Checkable, where the daemon has a diagnostic (listed above):
   auditd's `audit.verify` (its own ledger only), entryd's `status` (an `audit`
   key while a record is owed, not while an opt-in grant is `unsettled`), and
-  locald's `mio.local.admission` (`admitted: false`, no detail). referenced,
-  contextobsd and knowledge-contextd have none; their refusals are the only
-  sign. Do not resend an operation that
+  locald's `mio.local.admission` (`admitted: false`, no detail), and
+  knowledge-contextd's `knowledge.context.status` (`egress`, `reason`, `audit`,
+  `unresolved`, `legacy_unreferenced`, `recovered`). referenced and contextobsd
+  have none; their refusals are the only sign. Do not resend an operation that
   sends something out or widens a permission in the expectation that it is
   deduplicated: once the outcome is settled a resend is a new request, judged
   and recorded again.

@@ -524,6 +524,70 @@ facts of those incidents can be read neither in the ui nor with the CLI, because
 it cannot read the new records either. The ledger keeps the original records and
 the conversion leaves no record of itself.
 
+## Requests that left no result after a restart (#472)
+
+A restarted knowledge-contextd cannot tell "stopped before the call" from
+"stopped after the call, before the result was recorded": the ledger is the same
+in both. The product therefore never says the request was or was not sent, and
+never sends it again. It records that the outcome is unknown, once.
+
+### Contract
+
+- A new-format `requested` row carries `"format": 2`. The result rows of that
+  request (`completed`, the `late_event` inside `audit.late_record` and
+  `audit.outcome_settled` from #469, and the recovery row) refer to it by
+  `requested_sequence` and `requested_hash`. Nothing is matched by position.
+- At start-up, after the writer lock and the bind, one read of the ledger
+  verifies the chain and lists the new-format `requested` rows that no result
+  refers to. After `commissioning`, each gets one `completed` row with
+  `outcome: "unknown"` and `reason_code: "restart_unconfirmed"` and its
+  reference. A restart right after that adds no second row.
+- Old-format `requested` rows (no `format`) are never matched or completed. They
+  are counted as `legacy_unreferenced`.
+- Egress stays closed until the ledger is verified, `commissioning` is written,
+  every recovery row is written, nothing is owed (#467, #469), and no row of this
+  process's own is still waiting for its result. The observation latch and
+  `knowledge.context.status` work in the meantime.
+- After the observation gate, a request does at most one ledger step: settle what
+  is owed, or append the next waiting row. A request that finds egress open does
+  no extra step. Between requests the daemon does not touch the ledger.
+- The remaining time is checked after `requested` is written and just before the
+  call; a request whose time is gone sends nothing.
+- A ledger that cannot be verified at start (broken chain, torn line, not
+  readable) no longer ends the start. With the lock held, the daemon binds with
+  egress closed, appends nothing, and says why in the status. A broken chain is
+  not completed (`ledger_broken`). This replaces the earlier contract that such
+  a ledger stopped the daemon before it served.
+
+### Diagnostics: `knowledge.context.status`
+
+Admitted for root, the operator group and the service account. It returns
+`egress` (`open` or `closed`), `reason` (null while open; otherwise one of
+`ledger_broken`, `ledger_unreadable`, `audit_owed`, `commissioning_pending`,
+`result_pending`, `observation_latched`), `audit` (`ok`, `owed`, `broken`,
+`unverified`), `unresolved` (rows still to write plus debts owed),
+`legacy_unreferenced` and `recovered` (recovery rows written by this process).
+It is a count of what the ledger says, not a claim about what was sent.
+
+### Switching from the old version
+
+Stop `azazel-knowledge-contextd.service`, confirm that its cgroup is empty
+(`populated 0`), then start the new version (see operations.md). The old version
+does not take the lock, so only this order keeps one writer. If the new
+daemon's start ends with "another one holds the ledger", the old one is still
+running; do not remove the lock file.
+
+### Left to later issues
+
+- A degraded start (start without the writer lock).
+- Retrying a ledger that was unreadable at start, or retrying between requests.
+- Moving audit I/O to its own thread.
+- Per-request I/O budgets finer than one step; a mark for a failed
+  reconciliation.
+- Local embedding search and remote inference (the same question, other paths).
+
+Not verified: a real systemd unit, and loss of power (only SIGKILL was tried).
+
 ## Process boundary
 
 Ordinary `mio.local.assess` requests still arrive at `azazel-mio-locald` over
