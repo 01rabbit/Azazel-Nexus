@@ -239,6 +239,9 @@ does not write a result that claims either. It writes one line, once:
   record of the previous process or of `settle`. After a stop right after a
   recovery line the next start adds one `commissioning` line, as every start
   does, and no second `unknown` for the same request.
+* One `requested` line gets one result. A line whose refusal is still waiting in this
+  process (its write was of unknown outcome) is left out of the start-up scan: that
+  refusal is its result, and egress stays closed until it is written and referenced.
 * A `requested` line without `format` is never matched or filled in. Their number
   is `legacy_unreferenced` in the status (all of them, including those that did
   finish; it is not a count of lost requests).
@@ -257,7 +260,11 @@ does not write a result that claims either. It writes one line, once:
   (whether the ledger lock exists is then unknowable).
 * The state directory decides which of three things happens (the socket lock and
   the socket bind come first in every case; nothing is appended to the ledger
-  before the socket is bound, so a start that fails there writes nothing):
+  before the socket is bound, so a start that fails before the bind writes
+  nothing to the ledger. `bind` itself removes an existing socket path; that is
+  safe here because a broker that had held the writer lock and the socket lock
+  would still hold them, so once both are taken no other broker of this version
+  is running, and an older one is removed by the switch-over procedure):
   1. The state directory cannot be searched: the start ends (the b2 case below).
   2. It can be searched, but the ledger lock file does not exist and cannot be
      created (read-only directory, no permission): the broker starts with egress
@@ -827,10 +834,14 @@ outside the state area failing with `EACCES` (ordinary file permissions, not
 `ProtectSystem`), and, in the state-area case, the daemon refusing to start with no socket bound. That case
 was tested with a state directory owned by root, mode 0500, which the service uid cannot
 even search; the broker then ends the start (since whether the writer lock exists
-cannot be known). It is the only state-area condition that test covers. The version before
-#472 also ended the start on a corrupt or torn ledger; since #472 that no longer ends the
-start (see "Replay across restarts" below), and a state directory that can be searched
-but not written starts with egress closed (unit test, not this run). **Not
+cannot be known). It is the only state-area condition that test covers. The other
+two (below) are covered by unit tests, not by this run: a state directory that can
+be searched but where the lock file does not exist and cannot be created starts
+with egress closed and writes nothing; and when an existing lock file can be opened
+and the ledger file can be appended to, the broker starts normally even if the
+directory itself is not writable. The version before #472 also ended the start on a
+corrupt or torn ledger; since #472 that no longer ends the start (see "Replay across
+restarts" below). **Not
 effective in that environment:** `ProtectSystem`/`ReadWritePaths` (mount
 namespace), `PrivateTmp`, `PrivateDevices`, `Protect*`, `RestrictNamespaces`,
 `RestrictAddressFamilies` and `SystemCallFilter` (seccomp),

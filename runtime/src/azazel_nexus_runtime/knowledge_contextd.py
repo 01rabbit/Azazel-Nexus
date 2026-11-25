@@ -210,6 +210,10 @@ class KnowledgeContextBroker:
             self._counted.append(now)
             return None
 
+    def held_requests(self) -> set:
+        """(sequence, hash) of the `requested` lines whose refusal this process will still write."""
+        return {(item["line"].sequence, item["line"].event_hash) for item in self.deferred}
+
     def _lost(self, exc: BaseException) -> None:
         """A latch or refusal line the ledger did not take.
 
@@ -600,7 +604,10 @@ class _Recovery:
     """
 
     def __init__(self, ledger, guard, commissioning_event: dict, state_dir=None,
-                 lock_fd=None) -> None:
+                 lock_fd=None, held=lambda: set()) -> None:
+        #: `requested` lines that already have a refusal waiting in this process: that
+        #: refusal is their one result, so the scan must not write a second.
+        self._held = held
         self.ledger, self.guard = ledger, guard
         #: The writer lock; None while this process could not create it, and then
         #: it writes nothing (and tries to take it again at each attempt).
@@ -689,8 +696,10 @@ class _Recovery:
                     if type(ref[0]) is int and type(ref[1]) is str:
                         referenced.add(ref)
             self.legacy_unreferenced = legacy
-            missing = [key for key in requested if key not in referenced]
-            self.unresolved = len(missing)
+            held = self._held()
+            waiting = [key for key in requested if key not in referenced and key in held]
+            missing = [key for key in requested if key not in referenced and key not in held]
+            self.unresolved = len(missing) + len(waiting)
             if not self.commissioned:
                 if self._commission_doubt is not None:
                     key = (self._commission_doubt.sequence, self._commission_doubt.event_hash)
@@ -771,7 +780,8 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
     recovery_ref: list = []
     guard = _ContextGuard(ledger.append, settle_single(ledger),
                           on_settled=lambda e, entry: recovery_ref[0].on_settled(e, entry))
-    recovery = _Recovery(ledger, guard, event, state_dir, lock_fd)
+    recovery = _Recovery(ledger, guard, event, state_dir, lock_fd,
+                         held=lambda: broker.held_requests())
     recovery_ref.append(recovery)
     #: Set when the record of a verified answer could not be written.
     unrecorded = [False]

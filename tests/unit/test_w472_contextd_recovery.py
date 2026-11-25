@@ -909,3 +909,27 @@ def test_a_relocated_harness_without_a_ready_notification_still_starts(monkeypat
     assert kc.main([]) == 0
     state = runtime_paths.knowledge_context_state_dir()
     assert "knowledge.context.commissioning" in (state / "context.jsonl").read_text()
+
+
+def test_a_requested_line_with_a_refusal_waiting_gets_one_result_only(tmp_path):
+    """The scan does not write `restart_unconfirmed` for a line whose refusal is still to be written."""
+    from azazel_nexus_runtime.chain_guard import settle_single
+    from azazel_nexus_runtime.knowledge_contextd import _ContextGuard, _Recovery
+
+    ledger = AuditLedger(tmp_path / "context.jsonl")
+    row = ledger.append({"event_type": REQUESTED, "outcome": "attempted", "format": 2})
+    key, held = (row.sequence, row.event_hash), {(row.sequence, row.event_hash)}
+    guard = _ContextGuard(ledger.append, settle_single(ledger))
+    recovery = _Recovery(ledger, guard, {"event_type": "knowledge.context.commissioning",
+                                         "outcome": "absent"}, lock_fd=-1, held=lambda: held)
+    recovery.attempt()
+    unknown = [r for r in ledger if r.event.get("outcome") == "unknown"]
+    assert unknown == [] and recovery.unresolved == 1 and not recovery.open   # waits for its refusal
+    # The refusal is written by its own path, with the reference.
+    ledger.append({"event_type": COMPLETED, "outcome": "unavailable",
+                   "reason_code": "refused_before_send",
+                   "requested_sequence": key[0], "requested_hash": key[1]})
+    held.clear()
+    recovery.attempt()
+    results = [r for r in ledger if r.event["event_type"] == COMPLETED]
+    assert len(results) == 1 and recovery.unresolved == 0 and recovery.open
