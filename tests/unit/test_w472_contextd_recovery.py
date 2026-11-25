@@ -254,8 +254,11 @@ def test_a_result_recorded_by_the_469_settlement_is_not_recovered(ctx, fault, re
     if record == "audit.late_record":
         late = [row.event for row in ctx.rows() if row.event["event_type"] == record][0]
         assert late["late_event"]["requested_sequence"] and late["late_event"]["requested_hash"]
-    note(f"result recorded by #469 ({record})", observed_sends=sends,
-         ledger="result found through the settlement record's own reference",
+    how = ("the completed row inside the late_record (its late_event) carries the reference"
+           if record == "audit.late_record" else
+           "the outcome_settled (present) points at the completed row already on the ledger; "
+           "the scan uses that completed row's own reference")
+    note(f"result recorded by #469 ({record})", observed_sends=sends, ledger=how,
          added_rows=1, added_sends=ctx.calls() - sends)
 
 
@@ -1041,3 +1044,54 @@ def test_status_says_closed_when_the_gate_or_the_grant_would_refuse(tmp_path, mo
         "closed", "grant_withdrawn")
     # What status says is what a request meets.
     assert withdrawn["handler"](_request())["refusal"] == "unavailable"
+
+
+# ---- #477 review 3 -------------------------------------------------------------
+
+def test_without_a_reconciliation_to_ask_the_result_waits_and_refers_to_nothing():
+    seen, held = [], []
+
+    def audit(event):
+        seen.append(event)
+        if event["event_type"] == REQUESTED:
+            raise AuditOutcomeUnknown("x", entry=SimpleNamespace(
+                sequence=7, event_hash="abc", event=event), path="p", absent_head=(6, "z"))
+
+    broker, _, calls = _broker(audit=audit, hold=lambda event, awaiting=None: held.append(event))
+    broker.handle(_request())                        # `request_settled` left at its default
+    assert calls == [] and len(held) == 1 and "requested_sequence" not in held[0]
+    assert [e["event_type"] for e in seen] == [REQUESTED]
+
+
+@pytest.mark.parametrize("kind", ["grant", "frame"])
+def test_a_refusal_before_the_gate_reconciles_at_most_once_and_opens_nothing(
+        tmp_path, monkeypatch, kind):
+    class Ledger(AuditLedger):
+        unknown_next, settles = False, 0
+
+        def append(self, event, **kw):
+            entry = super().append(event, **kw)
+            if Ledger.unknown_next:
+                Ledger.unknown_next = False
+                raise AuditOutcomeUnknown("x", entry=entry, path=self.path,
+                                          absent_head=(entry.sequence - 1, entry.previous_hash))
+            return entry
+
+        def settle(self, entry, *, absent_head):
+            Ledger.settles += 1
+            raise AuditUnavailable("down")
+
+    sent = []
+    served_ = _boot_enabled(tmp_path, monkeypatch, Ledger, sent=sent,
+                            grant=(lambda: None) if kind == "grant" else granted_marker)
+    handler, guard = served_["handler"], served_["audit"].__self__
+    Ledger.unknown_next = True
+    served_["audit"]({"event_type": "x"})            # a debt of unknown outcome
+    assert guard.owed
+    request = _request(payload={"frame": {"privacy_class": "P0-public", "bad": 1}}
+                       ) if kind == "frame" else _request()
+    base = Ledger.settles
+    for count in (1, 2):
+        assert handler(request)["refusal"] == "unavailable"
+        assert Ledger.settles == base + count        # the record of the refusal looked once
+    assert sent == []

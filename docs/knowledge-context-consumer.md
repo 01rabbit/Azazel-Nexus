@@ -534,9 +534,12 @@ never sends it again. It records that the outcome is unknown, once.
 ### Contract
 
 - A new-format `requested` row carries `"format": 2`. The result rows of that
-  request (`completed`, the `late_event` inside `audit.late_record` and
-  `audit.outcome_settled` from #469, and the recovery row) refer to it by
-  `requested_sequence` and `requested_hash`. Nothing is matched by position.
+  request (`completed`, the recovery row, and the `late_event` inside
+  `audit.late_record` and inside an `audit.outcome_settled` of outcome `absent`)
+  refer to it by `requested_sequence` and `requested_hash`. Nothing is matched by
+  position. An `audit.outcome_settled` of outcome `present` points at the `completed`
+  row already on the ledger; the restart scan uses that `completed` row's own
+  reference, and `late_event` only for `late_record` and an `absent` settlement.
 - At start-up, after the writer lock and the bind, one read of the ledger
   verifies the chain and lists the new-format `requested` rows that no result
   refers to. After `commissioning`, each gets one `completed` row with
@@ -558,10 +561,11 @@ never sends it again. It records that the outcome is unknown, once.
   failed is not tried again in the same request, whoever asks (the latch record,
   the refusal's record, the step); the mark is cleared at the entrance of every
   request and of every transport refusal's record, so it never carries over.
-  The latch record and a transport refusal's record reach a reconciliation
-  without passing the observation gate (as in the base, which reconciled before
-  the broker was entered); that is accepted, and each is still limited to one
-  reconciliation per request. A request that finds egress open does
+  Records that can reach a reconciliation before the observation gate are the latch
+  record, a transport refusal's record, and the refusals the broker makes before the
+  gate (a withdrawn grant, a bad frame). The base reconciled before the broker was
+  entered, so this is the same contract (#469). Each request is still limited to
+  one reconciliation, and none of them opens egress for the refused request. A request that finds egress open does
   no extra step. Between requests the daemon does not touch the ledger.
 - A `requested` row whose write had an unknown outcome: the result of that
   request refers to it only if the reconciliation finds it present. Found absent,
@@ -584,8 +588,9 @@ Admitted for root, the operator group and the service account. It returns
 `observation_rule_missing`, `observation_rule_changed`, `observation_latched`,
 `grant_withdrawn`). The last five are the broker's own judgement, read without
 latching or writing anything (`closed_reason`, the same checks `handle` makes before any
-record); the rate window is not asked. `egress` is `open` only when a request can actually
-be sent, `audit` (`ok`, `owed`, `broken`,
+record). `egress` shows the ledger's side and the broker's state (rule, latch, grant);
+it does not check the rate window, so `open` does not promise that the next request
+is admitted. `audit` (`ok`, `owed`, `broken`,
 `unverified`), `unresolved` (rows still to write plus debts owed),
 `legacy_unreferenced` and `recovered` (recovery rows written by this process).
 It is a count of what the ledger says, not a claim about what was sent.

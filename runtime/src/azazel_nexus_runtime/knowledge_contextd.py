@@ -117,7 +117,7 @@ class KnowledgeContextBroker:
         grant_marker: Callable[[], Any] = _production_grant_marker,
         send_allowed: Callable[[], bool] = lambda: True,
         hold: Callable[..., None] = lambda event, awaiting=None: None,
-        request_settled: Callable[[Any], str] = lambda entry: "present",
+        request_settled: Callable[[Any], str] = lambda entry: "unknown",
     ) -> None:
         if type(enabled) is not bool:
             raise ValueError("Knowledge Context enablement must be explicit")
