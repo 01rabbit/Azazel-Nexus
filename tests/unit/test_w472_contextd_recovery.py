@@ -893,3 +893,19 @@ def test_a_record_of_unknown_outcome_that_took_the_rest_of_the_time_answers_time
     reply = broker.handle(_request_far())
     assert reply == {"refusal": "timeout", "stage": "refused_before_send"}
     assert len(broker.deferred) == 1                 # the line in doubt is still settled later
+
+
+def test_a_relocated_harness_without_a_ready_notification_still_starts(monkeypatch, tmp_path):
+    """`runtime_ready_callback()` is None off the real root; the start-up records still run."""
+    from azazel_nexus_runtime import knowledge_contextd as kc
+    from azazel_nexus_runtime import runtime_paths
+
+    monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
+    runtime_paths.knowledge_context_state_dir().mkdir(parents=True)
+    runtime_paths.socket_path("knowledge-context").parent.mkdir(parents=True)
+    monkeypatch.setattr(kc, "runtime_ready_callback", lambda: None)
+    monkeypatch.setattr(kc, "serve_forever", lambda **kw: kw["ready"]() or 0)
+    monkeypatch.setattr(kc.PrincipalPolicy, "resolve", lambda **kw: "policy")
+    assert kc.main([]) == 0
+    state = runtime_paths.knowledge_context_state_dir()
+    assert "knowledge.context.commissioning" in (state / "context.jsonl").read_text()
