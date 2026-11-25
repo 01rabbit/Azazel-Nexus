@@ -506,14 +506,26 @@ def test_the_latch_and_status_work_while_the_ledger_fails_and_nothing_is_sent(ct
     faults = ctx.faults()
     assert ctx.request(2)["reply"]["result"]["stage"] == "refused_before_send"
     assert ctx.faults() > faults                     # the failure was met
+    rule_bytes = (ctx.run / RULE).read_bytes()
+    rows_before = len(ctx.rows())
     (ctx.run / RULE).unlink()                        # the observation rule is removed meanwhile
     assert ctx.request(3)["reply"]["result"]["stage"] == "refused_before_send"
     status = ctx.status()
     assert status["egress"] == "closed" and status["audit"] == "owed"
     assert ctx.calls() == sends                      # nothing was sent while it failed
+    (ctx.run / RULE).write_bytes(rule_bytes)         # the rule is back (a new file, as an edit would leave it)
     ctx.arm("off")
     assert ctx.request(4)["reply"]["result"]["stage"] == "refused_before_send"
+    # The debt is settled (by the record of that refusal), so the ledger side is no
+    # longer what closes egress; what does is the latch, which stays until a restart.
+    status = ctx.status()
+    assert status["audit"] == "ok" and status["egress"] == "closed"
+    assert status["reason"] == "observation_latched"
+    assert ctx.request(5)["reply"]["result"]["stage"] == "refused_before_send"
+    assert ctx.status()["reason"] == "observation_latched"
     assert ctx.calls() == sends                      # the latch held after the ledger came back
+    # Without the latch the later requests would have gone on to write `requested`.
+    assert REQUESTED not in [row.event["event_type"] for row in ctx.rows()[rows_before:]]
     note("control: audit failure, latch and status", observed_sends=ctx.calls() - sends,
          ledger="owed result; status answered; latch closed the gate; 0 sends during the fault",
          added_rows=0, added_sends=0)
