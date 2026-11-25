@@ -252,20 +252,18 @@ def test_knowledge_contextd_sends_nothing_once_the_chain_is_broken(monkeypatch, 
     _transport_refusal_does_not_end_or_touch(served)
 
 
-def test_knowledge_contextd_does_not_enter_the_broker_once_the_chain_is_broken(monkeypatch, tmp_path):
-    # Once the break is known, the request is refused at the entrance: the
-    # broker (its rate window, grant marker and observation records) is not
-    # entered at all, not merely refused again by the pre-send record.
+def test_knowledge_contextd_writes_no_requested_and_sends_nothing_once_the_chain_is_broken(
+        monkeypatch, tmp_path):
+    # Once the break is known the request still reaches the broker, so that the
+    # observation gate (its latch) is judged (#472); what must hold is the
+    # intent of #458: no `requested` line, no peer call, the ledger not touched.
     served, sent, request = _broker(monkeypatch, tmp_path)
-    broker = served["handler"].__self__
     FakeLedger.broken = True
     served["handler"](request())
     FakeLedger.broken = False
-    entered = []
-    real_handle = broker.handle
-    broker.handle = lambda req: entered.append(req) or real_handle(req)
+    attempted = list(FakeLedger.calls)
     assert served["handler"](request()) == {"refusal": "unavailable", "stage": "refused_before_send"}
-    assert entered == [] and sent == []
+    assert FakeLedger.calls == attempted and sent == []
 
 
 def test_knowledge_contextd_reports_the_stage_reached_when_the_completion_record_breaks(

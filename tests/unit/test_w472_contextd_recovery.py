@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -76,7 +77,8 @@ class Ctx(Daemon):
         self.proc.wait(timeout=10)
 
     def wait_dead(self, timeout: float = 10.0) -> None:
-        self.proc.wait(timeout=timeout)
+        """The process ended, and by the SIGKILL the stop point sent, for no other reason."""
+        assert self.proc.wait(timeout=timeout) == -signal.SIGKILL
 
     def rows(self) -> list[AuditEntry]:
         return list(AuditLedger(self.run / LEDGER))
@@ -198,6 +200,7 @@ def test_a_finished_request_is_not_recovered(ctx):
     status = ctx.status()
     assert status["unresolved"] == 0 and status["recovered"] == 0 and status["egress"] == "open"
     assert ctx.unknown_rows() == []
+    assert ctx.calls() == sends                     # recovery sent nothing
     note("normal result already recorded", observed_sends=sends,
          ledger="requested and its result refer to each other", added_rows=1,
          added_sends=ctx.calls() - sends)
@@ -227,6 +230,7 @@ def test_a_result_recorded_by_the_469_settlement_is_not_recovered(ctx, fault, re
     added = ctx.rows()[rows_before:]
     assert [row.event["event_type"] for row in added] == ["knowledge.context.commissioning"]
     assert ctx.unknown_rows() == []
+    assert ctx.calls() == sends                     # recovery sent nothing
     if record == "audit.late_record":
         late = [row.event for row in ctx.rows() if row.event["event_type"] == record][0]
         assert late["late_event"]["requested_sequence"] and late["late_event"]["requested_hash"]
@@ -397,6 +401,58 @@ def test_the_latch_and_status_work_while_the_ledger_fails(ctx):
          added_sends=0)
 
 
+@pytest.mark.real_process
+def test_the_latch_and_status_work_after_the_chain_breaks_while_serving(ctx):
+    assert ctx.start()
+    assert served(ctx.request(0))
+    with (ctx.run / LEDGER).open("ab") as handle:
+        handle.write(b"not a ledger line\n")       # the chain breaks under the running broker
+    broken = ctx.request(1)["reply"]["result"]      # this request finds it
+    assert broken["refusal"] == "unavailable" and ctx.status()["audit"] == "broken"
+    size, sends = (ctx.run / LEDGER).stat().st_size, ctx.calls()
+    (ctx.run / RULE).unlink()
+    assert ctx.request(2)["reply"]["result"]["stage"] == "refused_before_send"
+    status = ctx.status()
+    assert status["observation"] == "latched" and status["egress"] == "closed"
+    assert status["reason"] == "ledger_broken"
+    assert (ctx.run / LEDGER).stat().st_size == size and ctx.calls() == sends   # nothing written or sent
+    note("control: latch after a break while serving", observed_sends=sends,
+         ledger="latch set, status answered, nothing written", added_rows=0, added_sends=0)
+
+
+@pytest.mark.real_process
+def test_the_latch_and_status_work_while_a_debt_cannot_be_settled(ctx):
+    assert ctx.start()
+    assert served(ctx.request(0))
+    ctx.arm("fsync", 2)                              # the result is written, its sync fails
+    assert ctx.request(1)["reply"]["result"]["stage"] == "unrecorded"
+    ctx.arm("persist")                               # and the ledger cannot be read to settle it
+    assert ctx.status()["audit"] == "owed"
+    sends = ctx.calls()
+    (ctx.run / RULE).unlink()
+    assert ctx.request(2)["reply"]["result"]["stage"] == "refused_before_send"
+    status = ctx.status()
+    assert status["observation"] == "latched" and status["audit"] == "owed"
+    assert status["egress"] == "closed" and ctx.faults() >= 2 and ctx.calls() == sends
+
+
+@pytest.mark.real_process
+def test_nothing_is_appended_before_start_up_is_done_and_the_latch_still_closes(ctx):
+    ctx.arm("persist")
+    assert ctx.start()                               # start-up fails: not verified, no commissioning
+    ctx.arm("off")                                   # the ledger works again, start-up has not run again
+    ctx.ask({"verb": "w467.no.such.verb", "arguments": {}})   # the transport's refusal record
+    assert ctx.rows() == []                          # not written before `commissioning`
+    (ctx.run / RULE).unlink()
+    assert ctx.request(1)["reply"]["result"]["stage"] == "refused_before_send"
+    assert ctx.status()["observation"] == "latched"  # the latch is set though its record is dropped
+    assert ctx.rows() == []                          # the latch record was not written first
+    assert ctx.wait_status("egress", "open")["egress"] == "open"   # the retry starts the ledger
+    kinds = ctx.kinds()
+    assert kinds[0] == "knowledge.context.commissioning"
+    assert "knowledge.context.observation_latched" not in kinds   # dropped, not delayed
+
+
 # -- in-process: the references and the held refusal ---------------------------
 
 def _broker(audit, **kw):
@@ -486,3 +542,28 @@ def test_a_closed_ledger_refuses_after_the_gate_and_before_the_client():
     reply = broker.handle(_request())
     assert order == ["gate", "closed"] and reply["stage"] == "refused_before_send"
     assert [event["event_type"] for event in events] == [COMPLETED]   # no `requested`
+
+
+@pytest.mark.parametrize("verdict, writes", [("present", 1), ("absent", 2)])
+def test_a_held_refusal_whose_own_write_is_unknown_is_written_again_only_when_absent(verdict, writes):
+    events, verdicts = [], {7: "present", 8: "unknown"}
+
+    def audit(event):
+        if event["event_type"] == REQUESTED:
+            raise AuditOutcomeUnknown("x", entry=_entry(7, event), path=Path("p"),
+                                      absent_head=(6, "0" * 64))
+        events.append(event)
+        if len(events) == 1:                       # the refusal's own write is of unknown outcome
+            raise AuditOutcomeUnknown("x", entry=_entry(8, event), path=Path("p"),
+                                      absent_head=(7, "0" * 64))
+
+    broker = _broker(audit, request_settled=lambda entry: verdicts[entry.sequence])
+    broker.handle(_request())
+    assert len(events) == 1 and len(broker.deferred) == 1       # written once, held for its verdict
+    broker.flush_deferred()
+    assert len(events) == 1                                     # still unknown: not written again
+    verdicts[8] = verdict
+    broker.flush_deferred()
+    broker.flush_deferred()
+    assert len(events) == writes and broker.deferred == []
+    assert all(event["requested_sequence"] == 7 for event in events)

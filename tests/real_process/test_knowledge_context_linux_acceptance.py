@@ -812,8 +812,10 @@ def test_c4_audit_ledger_state_fail_closed():
             if sock.exists():
                 sock.unlink()
         print("U29-OBS c4", json.dumps(results, sort_keys=True))
-        assert results["garbage"]["served"] is False and results["garbage"]["exit"] not in (0, None)
-        assert results["torn_tail"]["served"] is False and results["torn_tail"]["exit"] not in (0, None)
+        # #472: a ledger that does not verify no longer ends the broker; it serves
+        # with egress closed (status says `ledger_broken`) and appends nothing.
+        assert results["garbage"]["served"] is True and results["garbage"]["socket"] is True
+        assert results["torn_tail"]["served"] is True and results["torn_tail"]["socket"] is True
         assert results["empty"]["served"] is True  # an empty ledger is a fresh start
     finally:
         shutil.rmtree(base, ignore_errors=True)

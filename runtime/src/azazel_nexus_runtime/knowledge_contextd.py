@@ -209,24 +209,37 @@ class KnowledgeContextBroker:
         never written, so there is nothing to refer to; unsettled, the refusal
         waits (`flush_deferred`) and is never written without knowing.
         """
-        self.deferred.append((event, in_doubt))
+        self.deferred.append({"event": event, "line": in_doubt, "written": None, "doubt": None})
         self.flush_deferred()
 
     def flush_deferred(self) -> None:
-        """Write the refusals that waited, once their line is settled. Never raises."""
+        """Write the refusals that waited, once their line is settled. Never raises.
+
+        A refusal whose own write had an unknown outcome is not written again
+        until that line is settled: `present` removes it, `absent` writes it again.
+        """
         self.sent = False  # these are refusals of requests that never sent
         while self.deferred:
-            event, in_doubt = self.deferred[0]
+            item = self.deferred[0]
             try:
-                verdict = self._request_settled(in_doubt)
-            except Exception:
+                if item["doubt"] is not None:
+                    verdict = self._request_settled(item["doubt"])
+                    if verdict == "present":
+                        self.deferred.pop(0)
+                        continue
+                    if verdict != "absent":
+                        return
+                    item["doubt"] = None
+                if item["written"] is None:
+                    verdict = self._request_settled(item["line"])
+                    if verdict not in ("present", "absent"):
+                        return
+                    item["written"] = ({**item["event"], **_reference(item["line"])}
+                                       if verdict == "present" else item["event"])
+                self._audit(item["written"])
+            except AuditOutcomeUnknown as exc:
+                item["doubt"] = exc.entry
                 return
-            if verdict not in ("present", "absent"):
-                return
-            if verdict == "present":
-                event = {**event, **_reference(in_doubt)}
-            try:
-                self._audit(event)
             except Exception:
                 return
             self.deferred.pop(0)
@@ -453,12 +466,14 @@ class _Recovery:
         self.unresolved = 0
         self.legacy_unreferenced = 0
         self.recovered = 0
-        #: Egress has been open in this process: from then on a break or a debt
-        #: found while serving keeps the #458/#467 entrance refusal.
-        self.ever_open = False
         self.reason: str | None = "audit_unavailable"
         #: (sequence, hash) of lines found present after an unknown outcome.
         self.present: set = set()
+
+    @property
+    def started(self) -> bool:
+        """The ledger verified and `commissioning` is recorded: other lines may follow."""
+        return self.verified and self.commissioned
 
     @property
     def open(self) -> bool:
@@ -538,7 +553,6 @@ class _Recovery:
             self.reason = "ledger_broken" if self.guard.broken else "audit_unavailable"
         if self.reason is None and not self.open:
             self.reason = "audit_unavailable"
-        self.ever_open = self.ever_open or self.open
 
     def status(self, broker) -> dict:
         reason = None if self.open else (
@@ -586,6 +600,11 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
     unrecorded = [False]
 
     def audit(event: dict) -> None:
+        if not recovery.started:
+            # Nothing but the start-up's own lines may be the first (#472): a
+            # latch or refusal record before `commissioning` is dropped, the
+            # latch itself is not.
+            raise AuditUnavailable("start-up not finished")
         try:
             # Once the peer was called, a record that cannot be written is a
             # debt of the operation already done, not of one that never ran.
@@ -598,7 +617,11 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
 
     def send_allowed() -> bool:
         """A debt of unknown outcome is settled first (#467); then the whole of #472."""
-        if guard.broken or (guard.owed and not guard.settle_owed()):
+        if guard.broken:
+            return False
+        if guard.owed and not guard.settle_owed():
+            if not guard.broken:
+                guard.count_unrecorded()
             return False
         if not recovery.open:
             recovery.attempt()
@@ -624,10 +647,6 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
         unrecorded[0] = False
         if getattr(getattr(request, "verb", None), "name", None) == STATUS_VERB.name:
             return recovery.status(broker)
-        if recovery.ever_open and (guard.broken or (guard.owed and not guard.settle_owed())):
-            # Found while serving (#458, #467): refused at the entrance, as before.
-            guard.count_unrecorded()
-            return {"refusal": "unavailable", "stage": "refused_before_send"}
         broker.flush_deferred()
         reply = broker.handle(request)
         if not guard.broken:
@@ -640,6 +659,14 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
             return {"refusal": "unavailable", "stage": "unrecorded"}
         return reply
 
+    def record_refusal(event: dict) -> None:
+        """The transport's refusal record: counted, not written, until start-up is done."""
+        if recovery.started:
+            guard.record_refusal(event)
+        else:
+            guard.count_unrecorded()
+
+    record_refusal.__self__ = guard
     last_retry = [time.monotonic()]
 
     def poll() -> bool:
@@ -666,7 +693,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
                 # (`azmio`) and never entry (`azmioentry`); root is no SERVICE.
                 service_accounts=("azmioctx",),
             ),
-            audit=guard.record_refusal,
+            audit=record_refusal,
             handler=handle,
             stop=poll,
             ready=ready if ready is not None else runtime_ready_callback(),

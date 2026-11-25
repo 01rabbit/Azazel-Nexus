@@ -248,6 +248,18 @@ does not write a result that claims either. It writes one line, once:
   `refused_before_send` after the observation gate and before any peer call,
   and the broker tries again every two seconds. A chain that does not verify is
   never completed; the status says `ledger_broken` until a restart.
+* The same closing applies while serving: a chain found broken, or a debt of
+  unknown outcome that cannot be settled, refuses the technique query after the
+  observation gate and before any record or peer call. The latch and the status
+  still work then (the latch's own record is best effort and is not written when
+  the ledger cannot take it).
+* Until the ledger is verified and `commissioning` is recorded, no other line is
+  appended. The latch is still set, but its record and the transport's refusal
+  records are dropped (counted as unrecorded), not held back and not written
+  later.
+* A refusal that waited for its `requested` line to be settled and whose own
+  write then has an unknown outcome is not written again until that line is
+  settled: `present` removes it, `absent` writes it again.
 
 `knowledge.context.status` (operator group, the SERVICE account and root; no
 arguments) answers `egress` (`open` or `closed`), `reason` (`ledger_broken`,
