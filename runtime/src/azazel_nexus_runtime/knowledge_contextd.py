@@ -643,6 +643,18 @@ class _Recovery:
         """The ledger verified and `commissioning` is recorded: other lines may follow."""
         return self.verified and self.commissioned
 
+    def needs_attempt(self) -> bool:
+        """Whether the whole ledger must be verified and scanned (again).
+
+        Only while start-up is not complete (not verified, `commissioning` not
+        recorded, or lines still to write with nothing of ours waiting). Held
+        refusals and debts of unknown outcome do not need it: they are written and
+        settled by a tail append and a tail look, which is as heavy as one append.
+        """
+        if not (self.verified and self.commissioned):
+            return True
+        return self.unresolved > 0 and not self._held()
+
     @property
     def open(self) -> bool:
         return (self.verified and self.commissioned and self.unresolved == 0
@@ -823,7 +835,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
             return False
         if guard.owed and not guard.settle_owed():
             return False
-        if not recovery.open:
+        if recovery.needs_attempt():
             recovery.attempt()
         return recovery.open and not guard.broken
 
@@ -886,7 +898,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
             if not guard.broken:
                 if guard.owed:
                     guard.settle_owed()
-                if not recovery.open:
+                if recovery.needs_attempt():
                     recovery.attempt()
                 broker.flush_deferred()
                 guard.settle_refusals(recovery.request_verdict)

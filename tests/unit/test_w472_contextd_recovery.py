@@ -607,6 +607,33 @@ def test_a_slow_look_at_held_lines_does_not_keep_the_gate_from_running(ctx):
 
 
 @pytest.mark.real_process
+def test_a_held_refusal_does_not_make_the_between_requests_retry_read_the_whole_ledger(ctx):
+    assert ctx.start()
+    assert served(ctx.request(0))
+    ctx.arm("pre", 2)                                # the refusal's own append fails (plain)
+    (ctx.run / "slowrequested").write_text("1")      # the deadline passes after `requested`
+    frame = request_for("knowledge-contextd", "context", 1)
+    frame["arguments"] = {"deadline_ms": 500, "deadline_monotonic_ns": 2**62}
+    assert ctx.ask(frame)["reply"]["result"]["refusal"] == "timeout"
+    assert ctx.faults() == 1
+    (ctx.run / "slowrequested").unlink()
+    sends = ctx.calls()
+    (ctx.run / "slowverify").write_text("1")         # reading the whole ledger would take 3 s
+    for _ in range(40):                              # wait for a retry to start one (if any does)
+        if (ctx.run / "verifying").exists():
+            break
+        time.sleep(0.1)
+    (ctx.run / RULE).unlink()
+    frame = request_for("knowledge-contextd", "context", 2)
+    frame["arguments"] = {"deadline_ms": 2000,
+                          "deadline_monotonic_ns": time.monotonic_ns() + 1_000_000_000}
+    ctx.ask(frame)
+    assert ctx.status()["observation"] == "latched"  # the gate ran in time
+    assert ctx.calls() == sends
+    assert not (ctx.run / "verifying").exists()      # and no retry read the whole ledger
+
+
+@pytest.mark.real_process
 def test_a_missing_state_directory_ends_the_start_and_makes_nothing(ctx):
     state = ctx.run / STATE / "knowledge-context"
     shutil.rmtree(state)

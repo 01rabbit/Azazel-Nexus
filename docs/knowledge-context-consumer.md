@@ -240,8 +240,11 @@ does not write a result that claims either. It writes one line, once:
   recovery line the next start adds one `commissioning` line, as every start
   does, and no second `unknown` for the same request.
 * One `requested` line gets one result. A line whose refusal is still waiting in this
-  process (its write was of unknown outcome) is left out of the start-up scan: that
-  refusal is its result, and egress stays closed until it is written and referenced.
+  process is left out of the start-up scan: that refusal is its result, and egress
+  stays closed until it is written and referenced. A refusal waits in two cases: the
+  `requested` write had an unknown outcome, or the refusal before the send, for a
+  `requested` line that is on the ledger, failed to be appended for certain. The scan
+  counts such a line as unresolved and writes no recovery line for it.
 * A `requested` line without `format` is never matched or filled in. Their number
   is `legacy_unreferenced` in the status (all of them, including those that did
   finish; it is not a count of lost requests).
@@ -319,7 +322,11 @@ does not write a result that claims either. It writes one line, once:
   anything else is appended.
 * Known limit: the daemon serves from one thread, and the retry between requests
   (settling a debt, verifying the ledger, handling held lines; `poll()`) runs in that
-  thread. A slow retry delays the requests that arrive meanwhile and the status
+  thread. The retry is kept as light as one append of the base: it writes held
+  lines (one try) and settles a debt of unknown outcome (a look at the tail). It
+  verifies and scans the whole ledger only while start-up is not complete (not
+  verified, `commissioning` not recorded, or recovery lines still to write); then
+  egress is closed, so this is no worse than the base. A slow retry delays the requests that arrive meanwhile and the status
   reply, and a request whose deadline passes in the wait is answered `timeout`
   before it reaches the observation gate. An external send never happens without
   the gate: the next request that is accepted passes the gate before the send is

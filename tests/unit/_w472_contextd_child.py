@@ -73,6 +73,8 @@ def main() -> None:
                 and event.get("outcome") == "verified_advisory":
             die()
         result = real(self, event, performed=performed)
+        if kind == "knowledge.context.requested" and os.path.exists("slowrequested"):
+            time.sleep(0.8)          # the request's deadline passes right after its record
         if mode() == "c" and kind == "knowledge.context.commissioning":
             die()
         if mode() == "r" and event.get("reason_code") == kc.RESTART_UNCONFIRMED:
@@ -80,6 +82,18 @@ def main() -> None:
         return result
 
     ChainGuard.append = append
+
+    from azazel_nexus.audit import AuditLedger
+    real_verify = AuditLedger.verify
+
+    def verify(self, *args, **kwargs):
+        # A slow read of the whole ledger (a file `slowverify`); `verifying` marks its start.
+        if os.path.exists("slowverify"):
+            open("verifying", "w").close()
+            time.sleep(3.0)
+        return real_verify(self, *args, **kwargs)
+
+    AuditLedger.verify = verify
 
     class Peer:
         def request_context(self, **kw):
