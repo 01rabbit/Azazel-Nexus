@@ -717,26 +717,80 @@ def test_a_lockless_start_reads_the_ledger_once_and_takes_the_lock_without_readi
         assert ctx.status()["egress"] == "closed"
         assert served(ctx.request(1)) or served(ctx.request(2))   # the retry in a request recovers
         assert ctx.status()["egress"] == "open"
-        assert ctx.reads() == 1                      # no request read the whole ledger again
+        assert ctx.reads() == 2                      # at start, and once under the lock; no more
+        assert served(ctx.request(3)) and ctx.reads() == 2
     finally:
         state.chmod(0o700)
 
 
 @pytest.mark.real_process
-def test_a_head_that_moved_while_there_was_no_lock_is_read_again_once(ctx):
+def test_under_the_lock_the_ledger_is_verified_again_and_a_broken_middle_is_found(ctx):
     state = ctx.run / STATE / "knowledge-context"
     ledger = AuditLedger(state / "context.jsonl")
     ledger.append({"event_type": "knowledge.context.commissioning", "outcome": "commissioned"})
+    ledger.append({"event_type": "knowledge.context.commissioning", "outcome": "absent"})
+    state.chmod(0o500)
+    try:
+        assert ctx.start() and ctx.reads() == 1 and ctx.status()["reason"] == "audit_unavailable"
+        path = state / "context.jsonl"
+        path.write_bytes(path.read_bytes().replace(b"commissioned", b"commissionee", 1))  # the tail is the same
+        before = path.read_bytes()
+        state.chmod(0o700)
+        refused = ctx.request(1)["reply"]["result"]
+        assert refused["stage"] == "refused_before_send" and ctx.calls() == 0
+        status = ctx.status()
+        assert status["egress"] == "closed" and status["reason"] == "ledger_broken"
+        assert path.read_bytes() == before and ctx.reads() == 2
+    finally:
+        state.chmod(0o700)
+
+
+@pytest.mark.real_process
+def test_a_whole_read_under_the_lock_is_tried_once_per_request_at_most(ctx):
+    state = ctx.run / STATE / "knowledge-context"
+    AuditLedger(state / "context.jsonl").append(
+        {"event_type": "knowledge.context.commissioning", "outcome": "commissioned"})
     state.chmod(0o500)
     try:
         assert ctx.start() and ctx.reads() == 1
-        ledger.append({"event_type": "knowledge.context.commissioning", "outcome": "absent"})
         state.chmod(0o700)
-        assert served(ctx.request(1)) or served(ctx.request(2))
-        assert ctx.reads() == 2                      # once: the head moved, the chain was checked again
-        assert ctx.status()["egress"] == "open"
+        ctx.arm("persist")                           # reads fail from here on
+        for variant in (1, 2, 3):
+            before = ctx.reads()
+            assert ctx.request(variant)["reply"]["result"]["stage"] == "refused_before_send"
+            assert ctx.reads() - before <= 1         # never more than one per request
+        assert ctx.status()["egress"] == "closed" and ctx.calls() == 0
     finally:
         state.chmod(0o700)
+
+
+@pytest.mark.real_process
+def test_a_settlement_line_uses_up_the_requests_one_extra_append(ctx):
+    ledger = AuditLedger(ctx.run / LEDGER)
+    ledger.append({"event_type": "knowledge.context.commissioning", "outcome": "commissioned"})
+    for _ in range(2):
+        ledger.append({"event_type": REQUESTED, "outcome": "attempted", "format": 2})
+    ctx.arm("pre", 3)                                # start-up: both recovery lines still to write
+    assert ctx.start() and len(ctx.unknown_rows()) == 0
+    ctx.arm("fsync", 2)                              # request 1: line 1 ok, its own refusal line is in doubt
+    assert ctx.request(1)["reply"]["result"]["stage"] == "refused_before_send"
+    assert len(ctx.unknown_rows()) == 1 and ctx.status()["audit"] == "owed"
+    assert ctx.request(2)["reply"]["result"]["stage"] == "refused_before_send"
+    assert ctx.kinds().count("audit.outcome_settled") == 1   # request 2 spent its one extra append here
+    assert len(ctx.unknown_rows()) == 1                      # so it wrote no recovery line
+    assert served(ctx.request(3)) and len(ctx.unknown_rows()) == 2
+
+
+@pytest.mark.real_process
+def test_a_look_that_failed_is_not_repeated_in_the_same_request(ctx):
+    assert ctx.start()
+    assert served(ctx.request(0))
+    ctx.arm("fsync", 2)                              # a debt of unknown outcome
+    assert ctx.request(1)["reply"]["result"]["stage"] == "unrecorded"
+    ctx.arm("persist")                               # looking at the ledger fails now
+    before = ctx.faults()
+    assert ctx.request(2)["reply"]["result"]["stage"] == "refused_before_send"
+    assert ctx.faults() - before == 1                # one failed look in the whole request
 
 
 @pytest.mark.real_process

@@ -504,12 +504,25 @@ class _ContextGuard(ChainGuard):
     marked `ledger_broken`; nothing leaves this class but the guard's own errors.
     """
 
+    #: The current request's budget of extra appends (a one-element list), or None.
+    current_budget = None
+    #: A look at the debt failed in this request: it is not tried again in it.
+    _settle_blocked = False
+
+    def new_request(self, budget=None) -> None:
+        self.current_budget, self._settle_blocked = budget, False
+
     def settle_owed(self) -> bool:
+        if self._settle_blocked:
+            return False
         try:
-            return super().settle_owed()
+            settled = super().settle_owed()
         except (ValueError, RecursionError) as exc:
             self._mark(exc)
-            return False
+            settled = False
+        if not settled:
+            self._settle_blocked = True
+        return settled
 
     #: Transport refusal lines whose write had an unknown outcome, until settled.
     pending_refusals: list
@@ -778,14 +791,13 @@ class _Recovery:
                 return
             newly_locked = True
         try:
-            if newly_locked and self.scanned:
-                # Read without the lock: nobody else may have appended since. The head
-                # tells; if it moved, the ledger is read again once (a moved head is not
-                # proof of corruption, the full check decides).
-                if self.ledger.head() != self._scan_head:
-                    self.scanned = False
-                with self.ledger.path.open("a", encoding="utf-8"):
-                    pass
+            if newly_locked:
+                # What was read without the lock proves nothing about now: under the lock
+                # the whole ledger is verified and scanned again (once per request at most,
+                # and egress stays closed until it succeeds), as the switch-over procedure
+                # says: verify under the lock, then append.
+                self.scanned = False
+                self.verified = False
             if self.guard.owed and not self.guard.settle_owed():
                 self.reason = "ledger_broken" if self.guard.broken else "audit_unavailable"
                 return
@@ -892,8 +904,15 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
         # records exactly what it recorded before.
         event["observation_rule"] = "loaded"
     recovery_ref: list = []
+    def settlement_line(event: dict):
+        """A line the settlement itself writes uses up the request's one extra append."""
+        if guard.current_budget is not None:
+            guard.current_budget[0] -= 1
+        return ledger.append(event)
+
     guard = _ContextGuard(ledger.append, settle_single(ledger),
-                          on_settled=lambda e, entry: recovery_ref[0].on_settled(e, entry))
+                          on_settled=lambda e, entry: recovery_ref[0].on_settled(e, entry),
+                          append_internal=settlement_line)
     recovery = _Recovery(ledger, guard, event, state_dir, lock_fd,
                          held=lambda: broker.held_requests())
     recovery_ref.append(recovery)
@@ -919,6 +938,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
     def send_allowed() -> bool:
         """A debt of unknown outcome is settled first (#467); then the whole of #472."""
         budget = [1]     # at most one extra append (a held line or a recovery line) per request
+        guard.new_request(budget)      # a settlement line uses it too; a failed look is not repeated
         broker.flush_deferred(budget)
         guard.settle_refusals(recovery.request_verdict)
         if guard.broken:
@@ -955,6 +975,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
     def handle(request):
         """Record before send; on a broken chain nothing is sent to Knowledge."""
         unrecorded[0] = False
+        guard.new_request()
         if getattr(getattr(request, "verb", None), "name", None) == STATUS_VERB.name:
             return recovery.status(broker)
         # Held lines are looked at in `send_allowed` (after the observation gate), not

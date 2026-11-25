@@ -340,18 +340,22 @@ does not write a result that claims either. It writes one line, once:
   an earlier refusal line of unknown outcome turned out `present`); it writes no line
   for the refused request itself, and it never opens a send.
 * The audit I/O one request may cause has a fixed limit. Appends: the request's own
-  line, plus at most one more, which is a held line or a recovery line (and
-  `commissioning` counts as one); the rest of the recovery waits for the next
-  request, with egress closed meanwhile (status reason `recovery_pending`). Looks:
-  the #469 settlement look at the tail of the ledger, nothing more. Reads of the
-  whole ledger: once, at start (the exception: if the writer lock was not available
-  at start and is taken later, the head of the ledger is compared with the head read
-  at start; only if it moved is the ledger read again, once, because a moved head is
-  not proof of corruption and the full check decides). Start-up itself has no limit.
+  line, plus at most one more, which is a held line, a recovery line or a settlement
+  line (`audit.outcome_settled`) written by the #469 look, and `commissioning` counts
+  as one; the rest waits for the next request, with egress closed meanwhile (status
+  reason `recovery_pending`). Looks: the #469 settlement look at the tail of the
+  ledger, nothing more, and a look that failed is not tried again in the same
+  request (the line that follows is then held or dropped by the usual rules). Reads of
+  the whole ledger: once, at start. The one exception: when the writer lock was not
+  available at start and is taken later, the whole ledger is verified and scanned
+  again under the lock, once per request at most, and egress stays closed until that
+  succeeds (the head of the ledger is not compared instead: the chain can be broken
+  in the middle with the same tail). Start-up itself has no limit.
 * Without the writer lock (the degraded start) the ledger is still read once at start
-  (reading needs no lock), and the result is kept. Writing starts only when the lock
-  is taken; an older writer, which takes no lock, is removed by the switch-over
-  procedure, so the head comparison above is a check, not the guard.
+  (reading needs no lock) so the status can say what it knows. Nothing from that read is
+  trusted for writing: when the lock is taken, the verification is done again under
+  it, as the switch-over procedure says (verify under the lock, then append); an
+  older writer, which takes no lock, is removed by that procedure.
 * The chain is verified and the references are collected in one read of the ledger, so
   the two succeed or fail together (no state with a verified chain and a scan still to
   do). This is done once, when start-up succeeds in doing so;
