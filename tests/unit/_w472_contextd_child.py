@@ -84,16 +84,19 @@ def main() -> None:
     ChainGuard.append = append
 
     from azazel_nexus.audit import AuditLedger
-    real_verify = AuditLedger.verify
+    real_iter = AuditLedger.__iter__
 
-    def verify(self, *args, **kwargs):
-        # A slow read of the whole ledger (a file `slowverify`); `verifying` marks its start.
+    def counted_iter(self):
+        # One line in `reads.log` for every whole read of a ledger; a file `slowverify`
+        # makes each read take 3 s (`verifying` marks its start).
+        with open("reads.log", "a") as handle:
+            handle.write("read\n")
         if os.path.exists("slowverify"):
             open("verifying", "w").close()
             time.sleep(3.0)
-        return real_verify(self, *args, **kwargs)
+        return real_iter(self)
 
-    AuditLedger.verify = verify
+    AuditLedger.__iter__ = counted_iter
     real_append = AuditLedger.append
 
     def slow_append(self, *args, **kwargs):

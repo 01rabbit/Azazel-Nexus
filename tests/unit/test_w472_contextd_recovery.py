@@ -108,6 +108,11 @@ class Ctx(Daemon):
                 return status
             time.sleep(0.25)
 
+    def reads(self) -> int:
+        """How many whole reads of the ledger this run's processes began (`reads.log`)."""
+        path = self.run / "reads.log"
+        return len(path.read_text().splitlines()) if path.exists() else 0
+
     def faults(self) -> int:
         return sum(1 for line in self.log_lines("faults.log") if "fault" in line)
 
@@ -668,7 +673,7 @@ def test_a_retry_that_only_appends_a_recovery_line_does_not_read_the_whole_ledge
     ctx.arm("pre", 3)                                # start-up: the recovery line alone fails
     assert ctx.start()
     assert ctx.faults() == 1 and ctx.status()["egress"] == "closed"
-    sends = ctx.calls()
+    sends, reads = ctx.calls(), ctx.reads()
     (ctx.run / "slowverify").write_text("1")         # a read of the whole ledger would take 3 s
     first = {}
     thread = threading.Thread(target=lambda: first.update(
@@ -682,8 +687,20 @@ def test_a_retry_that_only_appends_a_recovery_line_does_not_read_the_whole_ledge
     assert time.monotonic() - started < 2.5
     assert ctx.status()["observation"] == "latched"  # B reached the gate in time
     assert not (ctx.run / "verifying").exists()      # and no retry read the whole ledger
+    assert ctx.reads() == reads
     assert len(ctx.unknown_rows()) == 1 and ctx.status()["unresolved"] == 0
     assert ctx.calls() <= sends + 1                  # only A may have been sent
+
+
+@pytest.mark.real_process
+def test_start_up_reads_the_ledger_once_for_the_chain_and_the_references_together(ctx):
+    AuditLedger(ctx.run / LEDGER).append(
+        {"event_type": REQUESTED, "outcome": "attempted", "format": 2})
+    assert ctx.start()
+    assert ctx.reads() == 1                          # one read does both; no state with only one done
+    assert len(ctx.unknown_rows()) == 1
+    assert served(ctx.request(1))
+    assert ctx.reads() == 1                          # and no request reads it again
 
 
 @pytest.mark.real_process

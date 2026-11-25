@@ -334,11 +334,14 @@ does not write a result that claims either. It writes one line, once:
 * Two exceptions to "after the gate", both from the #469 contract and both present in
   the base (which settled before entering the broker): the transport's refusal record
   and the latch's record go through the guard's append, which first settles an
-  existing debt of unknown outcome (a look at the tail of the ledger, nothing more).
-  That look can therefore run in a request that the gate then refuses, or before the
-  gate has been judged. It never writes a line for a request that is refused, and it
-  never opens a send.
-* The whole ledger is verified and scanned once, when start-up succeeds in doing so;
+  existing debt of unknown outcome (a look at the tail of the ledger). That look can
+  therefore run in a request that the gate then refuses, or before the gate has been
+  judged. It can write a settlement line (`audit.outcome_settled`, for example when
+  an earlier refusal line of unknown outcome turned out `present`); it writes no line
+  for the refused request itself, and it never opens a send.
+* The chain is verified and the references are collected in one read of the ledger, so
+  the two succeed or fail together (no state with a verified chain and a scan still to
+  do). This is done once, when start-up succeeds in doing so;
   the list of recovery lines still to write is kept in memory. A retry afterwards only
   appends what is left (as heavy as one append), judged by what this process has
   itself written, with a write of unknown outcome decided by the look at the tail. The

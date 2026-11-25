@@ -25,7 +25,7 @@ from threading import BoundedSemaphore
 from typing import Any
 
 from azazel_nexus.audit import (
-    AuditChainBroken, AuditLedger, AuditOutcomeUnknown, AuditUnavailable)
+    GENESIS_HASH, AuditChainBroken, AuditLedger, AuditOutcomeUnknown, AuditUnavailable)
 from azazel_nexus.sanitizer import PrivacyClass, SanitizerPolicy
 from azazel_nexus.technique_knowledge import request_ids
 
@@ -696,13 +696,25 @@ class _Recovery:
         return self.lock_fd is not None
 
     def _scan(self) -> None:
-        """Verify the whole ledger and list what has no result: done once, when it succeeds."""
-        self.ledger.verify(require_terminated=True)
+        """Verify the chain and list what has no result, in ONE read of the ledger.
+
+        The references are collected from the same lines the chain check reads, so the
+        two succeed or fail together: there is no state with a verified chain and a scan
+        still to do, which would send a later request into a second whole read. Done once,
+        when it succeeds.
+        """
+        check = getattr(self.ledger, "_check_terminated", None)
+        if check is not None:
+            check()                   # a torn last line is a break (as `verify(require_terminated)`)
         with self.ledger.path.open("a", encoding="utf-8"):
             pass
-        self.verified = True
         requested, referenced, legacy = {}, set(), 0
+        expected_sequence, expected_previous = 1, GENESIS_HASH
         for entry in self.ledger:
+            if (entry.sequence != expected_sequence or entry.previous_hash != expected_previous
+                    or entry.event_hash != entry.recomputed()):
+                raise AuditChainBroken(f"the chain does not hold at entry {entry.sequence}")
+            expected_sequence, expected_previous = entry.sequence + 1, entry.event_hash
             event = entry.event
             kind = event.get("event_type")
             holder = event.get("late_event") if kind in (
@@ -716,6 +728,7 @@ class _Recovery:
                 ref = (holder.get("requested_sequence"), holder.get("requested_hash"))
                 if type(ref[0]) is int and type(ref[1]) is str:
                     referenced.add(ref)
+        self.verified = True
         self.legacy_unreferenced = legacy
         held = self._held()
         self._waiting = {key for key in requested if key not in referenced and key in held}
