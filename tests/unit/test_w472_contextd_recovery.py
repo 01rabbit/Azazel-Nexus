@@ -113,6 +113,10 @@ class Ctx(Daemon):
         path = self.run / "reads.log"
         return len(path.read_text().splitlines()) if path.exists() else 0
 
+    def log_lines_raw(self, name: str) -> list:
+        path = self.run / "log" / name
+        return path.read_text().split() if path.exists() else []
+
     def faults(self) -> int:
         return sum(1 for line in self.log_lines("faults.log") if "fault" in line)
 
@@ -506,25 +510,30 @@ def test_the_latch_and_status_work_while_the_ledger_fails_and_nothing_is_sent(ct
     faults = ctx.faults()
     assert ctx.request(2)["reply"]["result"]["stage"] == "refused_before_send"
     assert ctx.faults() > faults                     # the failure was met
-    rule_bytes = (ctx.run / RULE).read_bytes()
     rows_before = len(ctx.rows())
-    (ctx.run / RULE).unlink()                        # the observation rule is removed meanwhile
+    rule_state = (ctx.run / RULE).stat()
+    (ctx.run / "rulefail").write_text("")            # reading the rule fails, for request 3 only
     assert ctx.request(3)["reply"]["result"]["stage"] == "refused_before_send"
+    (ctx.run / "rulefail").unlink()
+    assert len(ctx.log_lines_raw("rulefail.log")) >= 1          # the injection fired
+    # The latch was set by request 3, while the audit failure still goes on (the
+    # status then speaks of the ledger first, so the observer's own log is read).
+    assert ctx.log_lines_raw("latch.log") == ["unreadable"]
     status = ctx.status()
     assert status["egress"] == "closed" and status["audit"] == "owed"
     assert ctx.calls() == sends                      # nothing was sent while it failed
-    (ctx.run / RULE).write_bytes(rule_bytes)         # the rule is back (a new file, as an edit would leave it)
     ctx.arm("off")
+    # The rule file is the same file, and reads fine now; the request is refused all the same.
+    after = (ctx.run / RULE).stat()
+    assert (after.st_ino, after.st_mtime_ns, after.st_ctime_ns) == (
+        rule_state.st_ino, rule_state.st_mtime_ns, rule_state.st_ctime_ns)
     assert ctx.request(4)["reply"]["result"]["stage"] == "refused_before_send"
-    # The debt is settled (by the record of that refusal), so the ledger side is no
-    # longer what closes egress; what does is the latch, which stays until a restart.
     status = ctx.status()
     assert status["audit"] == "ok" and status["egress"] == "closed"
     assert status["reason"] == "observation_latched"
     assert ctx.request(5)["reply"]["result"]["stage"] == "refused_before_send"
-    assert ctx.status()["reason"] == "observation_latched"
+    assert ctx.log_lines_raw("latch.log") == ["unreadable"]     # set once, in request 3
     assert ctx.calls() == sends                      # the latch held after the ledger came back
-    # Without the latch the later requests would have gone on to write `requested`.
     assert REQUESTED not in [row.event["event_type"] for row in ctx.rows()[rows_before:]]
     note("control: audit failure, latch and status", observed_sends=ctx.calls() - sends,
          ledger="owed result; status answered; latch closed the gate; 0 sends during the fault",

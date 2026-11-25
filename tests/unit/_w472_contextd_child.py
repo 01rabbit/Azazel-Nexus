@@ -104,9 +104,29 @@ def main() -> None:
     kc.load_commissioning = lambda: commissioning
     base_broker = kc.KnowledgeContextBroker
 
+    real_identity = kc.observation_rule_identity
+
+    def identity(path):
+        # While the file `rulefail` exists in the run directory, reading the rule
+        # fails (once per read, counted in `log/rulefail.log`); the rule file itself
+        # is never touched, so its identity stays what the broker loaded.
+        if os.path.exists("rulefail"):
+            with open("log/rulefail.log", "a") as handle:
+                handle.write("fail\n")
+            return None
+        return real_identity(path)
+
+    kc.observation_rule_identity = identity
+
     class Broker(base_broker):
         def __init__(self, **kwargs):
             super().__init__(grant_marker=granted_marker, **kwargs)
+
+        def _record_latch(self, cause):
+            # Observer side: when the latch was set, whatever happens to the ledger.
+            with open("log/latch.log", "a") as handle:
+                handle.write(cause + "\n")
+            super()._record_latch(cause)
 
     kc.KnowledgeContextBroker = Broker
     raise SystemExit(kc.main([], stop=base._stop, ready=base._ready))
