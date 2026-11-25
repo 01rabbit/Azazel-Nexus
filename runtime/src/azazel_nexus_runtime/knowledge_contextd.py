@@ -817,6 +817,8 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
 
     def send_allowed() -> bool:
         """A debt of unknown outcome is settled first (#467); then the whole of #472."""
+        broker.flush_deferred()
+        guard.settle_refusals(recovery.request_verdict)
         if guard.broken:
             return False
         if guard.owed and not guard.settle_owed():
@@ -853,8 +855,8 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
         unrecorded[0] = False
         if getattr(getattr(request, "verb", None), "name", None) == STATUS_VERB.name:
             return recovery.status(broker)
-        broker.flush_deferred()
-        guard.settle_refusals(recovery.request_verdict)
+        # Held lines are looked at in `send_allowed` (after the observation gate), not
+        # here: a slow look must not use up the request's time before the gate runs.
         reply = broker.handle(request)
         if not guard.broken:
             return reply

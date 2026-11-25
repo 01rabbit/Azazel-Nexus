@@ -98,6 +98,12 @@ def main() -> None:
         def __init__(self, **kwargs):
             super().__init__(grant_marker=granted_marker, **kwargs)
 
+        def flush_deferred(self):
+            # A slow look at the held lines (a file `slowflush` in the run directory).
+            if os.path.exists("slowflush"):
+                time.sleep(1.5)
+            return super().flush_deferred()
+
     kc.KnowledgeContextBroker = Broker
     raise SystemExit(kc.main([], stop=base._stop, ready=base._ready))
 

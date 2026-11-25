@@ -134,6 +134,17 @@ def _is_unknown_for(row: AuditEntry, requested: AuditEntry) -> bool:
             and event["requested_hash"] == requested.event_hash)
 
 
+def _normalized(rows) -> list:
+    """The ledger rows' events, without what differs from run to run.
+
+    Dropped: `elapsed_ms` (a measured time) and the `requested_sequence` /
+    `requested_hash` references (sequence and hash of a line, which differ with the
+    run). Everything else in each event, in order, is compared.
+    """
+    drop = {"elapsed_ms", "requested_sequence", "requested_hash"}
+    return [{k: v for k, v in dict(row.event).items() if k not in drop} for row in rows]
+
+
 def _crash_and_recover(ctx: Ctx, stop: str, case: str) -> dict:
     assert ctx.start()
     assert served(ctx.request(0))          # one finished request before the stop
@@ -164,7 +175,8 @@ def _crash_and_recover(ctx: Ctx, stop: str, case: str) -> dict:
     AuditLedger(ctx.run / LEDGER).verify(require_terminated=True)
     note(case, observed_sends=observed, ledger="requested only; no result; outcome unknown",
          added_rows=len(added), added_sends=ctx.calls() - calls_before, unknown_rows_total=1)
-    return {"crashed_kinds": [row.event["event_type"] for row in crashed], "observed": observed}
+    return {"crashed_kinds": [row.event["event_type"] for row in crashed], "observed": observed,
+            "crashed_events": _normalized(crashed)}
 
 
 @pytest.mark.real_process
@@ -184,6 +196,7 @@ def test_stop_after_the_call_is_the_same_ledger_and_the_same_record(ctx):
         other.cleanup()
     # The ledger cannot tell the two stops apart; the observer can.
     assert before["crashed_kinds"] == result["crashed_kinds"]
+    assert before["crashed_events"] == result["crashed_events"]     # the rows themselves
     assert before["observed"] == 0
 
 
@@ -575,6 +588,22 @@ def test_lines_dropped_for_an_unsettled_debt_are_counted_as_unrecorded(ctx):
     after = ctx.status()
     assert after["observation"] == "latched"
     assert after["unrecorded"] == before + 2         # the latch's line and the refusal's line
+
+
+@pytest.mark.real_process
+def test_a_slow_look_at_held_lines_does_not_keep_the_gate_from_running(ctx):
+    assert ctx.start()
+    assert served(ctx.request(0))
+    sends = ctx.calls()
+    (ctx.run / "slowflush").write_text("1")          # the look at held lines takes 1.5 s
+    (ctx.run / RULE).unlink()
+    frame = request_for("knowledge-contextd", "context", 1)
+    frame["arguments"] = {"deadline_ms": 2000,
+                          "deadline_monotonic_ns": time.monotonic_ns() + 1_000_000_000}
+    assert ctx.ask(frame)["transport"] == "reply"
+    status = ctx.status()
+    assert status["observation"] == "latched"         # the gate ran before the slow look
+    assert ctx.calls() == sends
 
 
 @pytest.mark.real_process
