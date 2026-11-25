@@ -285,7 +285,7 @@ def test_a_stop_right_after_the_recovery_row_adds_nothing_more(ctx):
     assert ctx.calls() == sends
     note("stop right after the recovery row", observed_sends=0,
          ledger="the recovery row is on the ledger and referenced",
-         added_rows=len(ctx.rows()) - len(crashed) - 2, added_sends=0,
+         added_rows=len(added), added_sends=0,
          unknown_rows_total=1)
 
 
