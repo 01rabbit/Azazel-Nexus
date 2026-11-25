@@ -1120,7 +1120,10 @@ def test_b2_real_daemon_under_setpriv_attributes_is_an_approximation(stack: Stac
                     break
                 except Exception:  # noqa: BLE001 - not bound yet
                     time.sleep(0.25)
-            assert closed.poll() is None and sock.exists(), "it should serve, closed"
+            if closed.poll() is not None or not sock.exists():
+                closed.kill(); closed.wait(timeout=5)
+                raise AssertionError(("it should serve, closed", closed.returncode,
+                                      closed.stderr.read()[-600:]))
             status = seen["reply"]["result"]
             assert status["egress"] == "closed" and status["reason"] == "audit_unavailable"
             assert list(state.iterdir()) == []              # nothing was written there
