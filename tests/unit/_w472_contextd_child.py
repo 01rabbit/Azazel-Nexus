@@ -94,6 +94,16 @@ def main() -> None:
         return real_verify(self, *args, **kwargs)
 
     AuditLedger.verify = verify
+    real_append = AuditLedger.append
+
+    def slow_append(self, *args, **kwargs):
+        # A slow append (a file `slowappend`); `appending` marks its start.
+        if os.path.exists("slowappend"):
+            open("appending", "w").close()
+            time.sleep(3.0)
+        return real_append(self, *args, **kwargs)
+
+    AuditLedger.append = slow_append
 
     class Peer:
         def request_context(self, **kw):

@@ -385,11 +385,13 @@ def test_audit_failure_keeps_egress_closed_and_recovery_reopens_it(ctx):
     assert reply["reply"]["result"]["refusal"] == "unavailable" and reply["reply"]["result"]["stage"] == "refused_before_send"
     assert ctx.calls() == 0
     ctx.arm("off")
-    status = ctx.wait_status("egress", "open")
-    assert status["egress"] == "open" and status["audit"] == "ok"
-    assert "knowledge.context.commissioning" in ctx.kinds()
+    # No retry between requests: the next request recovers the ledger and is served.
+    assert ctx.status()["egress"] == "closed"
     ok = ctx.request(2)
     assert served(ok) and ctx.calls() == 1
+    status = ctx.status()
+    assert status["egress"] == "open" and status["audit"] == "ok"
+    assert "knowledge.context.commissioning" in ctx.kinds()
     note("control: audit failure then recovery", observed_sends=0,
          ledger="egress closed while the ledger failed; a new request is served after it recovered",
          added_rows=len(ctx.rows()), added_sends=1)
@@ -409,9 +411,9 @@ def test_egress_stays_closed_until_commissioning_and_the_recovery_row_are_writte
     status = ctx.status()
     assert status["egress"] == "closed" and status["reason"] == "audit_unavailable", missing
     assert ctx.calls() == 0       # nothing was sent while it was closed
-    status = ctx.wait_status("egress", "open")
+    assert served(ctx.request(3)) and ctx.calls() == 1     # the next request recovers it
+    status = ctx.status()
     assert status["egress"] == "open" and len(ctx.unknown_rows()) == 1
-    assert served(ctx.request(3)) and ctx.calls() == 1
 
 
 @pytest.mark.real_process
@@ -422,7 +424,7 @@ def test_egress_stays_closed_while_commissioning_is_not_recorded(ctx):
     status = ctx.status()
     assert status["egress"] == "closed" and status["unresolved"] == 0
     assert status["reason"] == "audit_unavailable" and ctx.calls() == 0
-    assert ctx.wait_status("egress", "open")["egress"] == "open"
+    assert served(ctx.request(1)) and ctx.status()["egress"] == "open"   # the next request
     assert ctx.kinds().count("knowledge.context.commissioning") == 1
 
 
@@ -441,7 +443,6 @@ def test_the_latch_and_status_work_while_the_ledger_fails(ctx):
     assert status["observation"] == "latched"       # the gate ran and closed for good
     assert status["egress"] == "closed" and ctx.faults() >= 1
     ctx.arm("off")
-    time.sleep(3.0)
     assert ctx.request(2)["reply"]["result"]["refusal"] == "unavailable"   # still latched
     assert ctx.calls() == 1
     note("control: latch and status while the ledger fails", observed_sends=1,
@@ -495,10 +496,8 @@ def test_nothing_is_appended_before_start_up_is_done_and_the_latch_still_closes(
     assert ctx.request(1)["reply"]["result"]["stage"] == "refused_before_send"
     assert ctx.status()["observation"] == "latched"  # the latch is set though its record is dropped
     assert ctx.rows() == []                          # the latch record was not written first
-    assert ctx.wait_status("egress", "open")["egress"] == "open"   # the retry starts the ledger
-    kinds = ctx.kinds()
-    assert kinds[0] == "knowledge.context.commissioning"
-    assert "knowledge.context.observation_latched" not in kinds   # dropped, not delayed
+    time.sleep(2.5)                                  # no retry between requests either
+    assert ctx.rows() == [] and ctx.status()["egress"] == "closed"
 
 
 @pytest.mark.real_process
@@ -511,7 +510,7 @@ def test_a_parse_failure_while_settling_is_ledger_broken_and_the_latch_still_wor
     sends = ctx.calls()
     with (ctx.run / LEDGER).open("ab") as handle:    # the tail becomes unreadable
         handle.write(b'{"event":' + b"[" * 30000 + b"]" * 30000 + b"}\n")
-    time.sleep(3.0)                                  # the between-requests retry settles it
+    ctx.request(3)                                   # the next request meets the tail
     assert ctx.alive()                               # the loop did not end
     status = ctx.status()
     assert status["audit"] == "broken" and status["reason"] == "ledger_broken"
@@ -606,8 +605,8 @@ def test_a_slow_look_at_held_lines_does_not_keep_the_gate_from_running(ctx):
     assert ctx.calls() == sends
 
 
-@pytest.mark.real_process
-def test_a_held_refusal_does_not_make_the_between_requests_retry_read_the_whole_ledger(ctx):
+def _hold_a_refusal(ctx) -> None:
+    """A `requested` line on the ledger whose refusal could not be appended (held)."""
     assert ctx.start()
     assert served(ctx.request(0))
     ctx.arm("pre", 2)                                # the refusal's own append fails (plain)
@@ -617,20 +616,43 @@ def test_a_held_refusal_does_not_make_the_between_requests_retry_read_the_whole_
     assert ctx.ask(frame)["reply"]["result"]["refusal"] == "timeout"
     assert ctx.faults() == 1
     (ctx.run / "slowrequested").unlink()
-    sends = ctx.calls()
-    (ctx.run / "slowverify").write_text("1")         # reading the whole ledger would take 3 s
-    for _ in range(40):                              # wait for a retry to start one (if any does)
-        if (ctx.run / "verifying").exists():
-            break
-        time.sleep(0.1)
-    (ctx.run / RULE).unlink()
-    frame = request_for("knowledge-contextd", "context", 2)
+
+
+def _near_deadline(ctx, variant: int, ms: int = 1000) -> dict:
+    frame = request_for("knowledge-contextd", "context", variant)
     frame["arguments"] = {"deadline_ms": 2000,
-                          "deadline_monotonic_ns": time.monotonic_ns() + 1_000_000_000}
-    ctx.ask(frame)
-    assert ctx.status()["observation"] == "latched"  # the gate ran in time
+                          "deadline_monotonic_ns": time.monotonic_ns() + ms * 1_000_000}
+    return ctx.ask(frame)
+
+
+@pytest.mark.real_process
+@pytest.mark.parametrize("slow, marker", [("slowappend", "appending"), ("slowverify", "verifying")])
+def test_between_requests_the_daemon_touches_no_ledger_and_the_gate_comes_first(ctx, slow, marker):
+    if slow == "slowappend":
+        _hold_a_refusal(ctx)                         # something is held, waiting to be appended
+    else:
+        ctx.arm("persist")                           # start-up fails and has to be done again
+        assert ctx.start()
+        ctx.arm("off")
+    sends = ctx.calls()
+    (ctx.run / slow).write_text("1")                 # an append / a read of the ledger takes 3 s
+    time.sleep(4.5)                                  # longer than any between-requests retry period
+    assert not (ctx.run / marker).exists()           # nothing touched the ledger on its own
+    (ctx.run / RULE).unlink()
+    _near_deadline(ctx, 2)                           # a request with 1 s to live: it reaches the gate
+    assert ctx.status()["observation"] == "latched"
     assert ctx.calls() == sends
-    assert not (ctx.run / "verifying").exists()      # and no retry read the whole ledger
+
+
+@pytest.mark.real_process
+def test_a_held_refusal_is_written_by_the_retry_in_the_next_request_after_the_gate(ctx):
+    _hold_a_refusal(ctx)
+    sends = ctx.calls()
+    assert served(ctx.request(2))                    # the retry wrote the held line, then it went on
+    held = [row for row in ctx.rows() if row.event["event_type"] == COMPLETED
+            and row.event.get("reason_code") == "refused_before_send"]
+    assert len(held) == 1 and held[0].event["requested_sequence"]    # one result, with its reference
+    assert ctx.calls() == sends + 1
 
 
 @pytest.mark.real_process
@@ -717,7 +739,8 @@ def test_a_recovery_line_settled_present_is_counted_once(ctx):
     ctx.arm("fsync", 2)                              # start-up: 1 commissioning, 2 the recovery line
     assert ctx.start()
     assert ctx.faults() == 1
-    status = ctx.wait_status("egress", "open")
+    assert served(ctx.request(2))                    # the next request settles it and is served
+    status = ctx.status()
     assert status["egress"] == "open" and status["unresolved"] == 0
     assert len(ctx.unknown_rows()) == 1
     assert status["recovered"] == 1                  # settled `present`, counted once

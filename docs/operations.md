@@ -1617,7 +1617,11 @@ referenced and contextobsd have no diagnostic verb. Three cases are told apart:
   it is written once as `audit.late_record` before anything else that needs a
   record. The daemon tries at each chance it has (a request, a diagnostic,
   entryd's tick), and a request that needs a record is refused while it cannot
-  be written. Narrowing never waits on a record: entryd's withdrawal and
+  be written. knowledge-contextd is the exception for the refusal before a send:
+  when the `requested` line is on the ledger and the refusal's own append fails for
+  certain, nothing was done, so nothing is owed, but the refusal line is held and
+  appended again in a later request (after the observation gate; never on a timer).
+  Until it is written, the next request's external send is refused too. Narrowing never waits on a record: entryd's withdrawal and
   locald's revocation of an admission and release of resources are done, and
   their own record is owed in turn; a withdrawal's reply is the fixed refusal
   while that record cannot be written.

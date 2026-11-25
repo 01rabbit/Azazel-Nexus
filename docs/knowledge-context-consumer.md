@@ -277,7 +277,7 @@ does not write a result that claims either. It writes one line, once:
   1. It cannot be searched: the start ends in step 1 (the b2 case below).
   2. It can be searched, but the ledger lock file does not exist and cannot be
      created: the broker starts with egress closed and writes nothing to the
-     ledger (status reason `audit_unavailable`), and tries the lock again later.
+     ledger (status reason `audit_unavailable`), and tries the lock again in the next request that passes the observation gate.
      This is safe because a broker of this version that had run there would have
      created the file, and the socket lock (step 2) is what keeps a second one off.
   3. The lock file exists and can be opened, and the ledger file can be appended to:
@@ -287,7 +287,8 @@ does not write a result that claims either. It writes one line, once:
   broker serves with egress closed: the observation latch and
   `knowledge.context.status` work, a technique query is refused as
   `refused_before_send` after the observation gate and before any peer call,
-  and the broker tries again every two seconds. A chain that does not verify is
+  and the broker tries again in the next request that passes the observation gate (not
+  on a timer, and not for a status request). A chain that does not verify is
   never completed; the status says `ledger_broken` until a restart.
 * A request whose deadline has passed by the time the ledger was checked or the
   `requested` line written is not sent; it is answered `timeout`, and the client
@@ -320,19 +321,16 @@ does not write a result that claims either. It writes one line, once:
   itself was of unknown outcome, the next attempt first settles it and writes
   `audit.outcome_settled` (or nothing, when the line was absent), before
   anything else is appended.
-* Known limit: the daemon serves from one thread, and the retry between requests
-  (settling a debt, verifying the ledger, handling held lines; `poll()`) runs in that
-  thread. The retry is kept as light as one append of the base: it writes held
-  lines (one try) and settles a debt of unknown outcome (a look at the tail). It
-  verifies and scans the whole ledger only while start-up is not complete (not
-  verified, `commissioning` not recorded, or recovery lines still to write); then
-  egress is closed, so this is no worse than the base. A slow retry delays the requests that arrive meanwhile and the status
-  reply, and a request whose deadline passes in the wait is answered `timeout`
-  before it reaches the observation gate. An external send never happens without
-  the gate: the next request that is accepted passes the gate before the send is
-  judged. The base `main` also settled debts inside the request path, in front of
-  the gate, so being made to wait did not start with this change. Removing it needs
-  the listener and the audit retry on separate threads, which is separate work.
+* Order of work, as in the base: a request is accepted, the observation gate is judged,
+  and only then does the broker touch the ledger. Between requests the daemon does not
+  touch the ledger at all (the loop only checks whether to stop), and a status request
+  only reports the state it has, without retrying. Every retry of the audit (writing a
+  held line, settling a debt of unknown outcome, verifying and scanning the ledger,
+  `commissioning` and the recovery lines) is done in the request path, after the
+  gate and before the send is judged. So after a fault is repaired, the ledger is
+  recovered by the next request that passes the gate, and that request is the first
+  one served; there is no timer. A request that arrives while a retry runs waits for
+  it, as in the base, where a debt was settled inside the request path.
 * A refusal that waited for its `requested` line to be settled and whose own
   write then has an unknown outcome is not written again until that line is
   settled: `present` removes it, `absent` writes it again.

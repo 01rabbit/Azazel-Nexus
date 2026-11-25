@@ -72,8 +72,6 @@ RESTART_UNCONFIRMED = "restart_unconfirmed"
 _REQUESTED = "knowledge.context.requested"
 _COMPLETED = "knowledge.context.completed"
 _RATE_WINDOW_S = 60.0
-#: How often a closed ledger is tried again between requests.
-_RETRY_INTERVAL_S = 2.0
 # Fixed request sections a client may name on the refusal it raises.
 _CLIENT_STAGES = frozenset({"refused_before_send", "transport", "verification",
                             "technique_verification"})
@@ -888,20 +886,14 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
             guard.count_unrecorded()
 
     record_refusal.__self__ = guard
-    last_retry = [time.monotonic()]
 
     def poll() -> bool:
-        """Between requests: a closed ledger is retried, and held refusals are written."""
-        now = time.monotonic()
-        if now - last_retry[0] >= _RETRY_INTERVAL_S:
-            last_retry[0] = now
-            if not guard.broken:
-                if guard.owed:
-                    guard.settle_owed()
-                if recovery.needs_attempt():
-                    recovery.attempt()
-                broker.flush_deferred()
-                guard.settle_refusals(recovery.request_verdict)
+        """Between requests the daemon touches no ledger (#472).
+
+        Every retry of the audit (held lines, a debt of unknown outcome, the start-up
+        scan) runs in the request path, after the observation gate, so accepting a
+        request and the gate always come before any audit I/O, as in the base.
+        """
         return stop()
 
     base_ready = ready if ready is not None else runtime_ready_callback()
