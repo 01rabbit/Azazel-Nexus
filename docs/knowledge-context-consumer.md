@@ -252,7 +252,8 @@ does not write a result that claims either. It writes one line, once:
   another process holds the ledger lock; the ledger lock file exists but cannot be
   opened (that says nothing about who holds it); the socket directory is missing
   or not writable, or the socket lock file cannot be created there; another
-  process holds the socket lock.
+  process holds the socket lock; the state directory cannot be searched at all
+  (whether the ledger lock exists is then unknowable).
 * The start does not end, and the broker serves with egress closed and writes
   nothing to the ledger (status reason `audit_unavailable`), when the state
   directory can be searched but the ledger lock file does not exist and cannot be
@@ -818,9 +819,10 @@ daemon's own ledger, `setuid(0)` and `chown` failing with `EPERM`, a write
 outside the state area failing with `EACCES` (ordinary file permissions, not
 `ProtectSystem`), and the daemon refusing to start when its state area is not
 writable or (as observed on the version before #472) its ledger is corrupt or
-torn, when no socket was bound (since #472 the start ends for the locks listed under
-"Requests that left no result after a restart", and a state area that cannot be
-written to starts with egress closed when the socket lock is taken); since #472 a corrupt or torn ledger no longer ends
+torn, when no socket was bound (since #472 the start ends for the conditions listed
+under "Requests that left no result after a restart", which include a state area
+that cannot be searched; a corrupt or torn ledger, or a state area that can be
+searched but not written, starts with egress closed); since #472 a corrupt or torn ledger no longer ends
 the start (see Replay across restarts below). **Not
 effective in that environment:** `ProtectSystem`/`ReadWritePaths` (mount
 namespace), `PrivateTmp`, `PrivateDevices`, `Protect*`, `RestrictNamespaces`,

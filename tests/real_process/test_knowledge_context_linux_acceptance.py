@@ -1095,9 +1095,10 @@ def test_b2_real_daemon_under_setpriv_attributes_is_an_approximation(stack: Stac
         finally:
             again.kill(); again.wait(timeout=5)
             again.stdout.close(); again.stderr.close()
-        # Fail-closed when the state area is not writable (#472): the broker still
-        # serves, with egress closed, and writes nothing there. (Before #472 it ended
-        # without binding.)
+        # Fail-closed when the state area cannot even be searched (root-owned 0500, the
+        # service uid is "other"): whether the writer lock exists is then unknowable,
+        # so the start ends and no socket is bound (#472). A state directory that can be
+        # searched but not written starts with egress closed instead (unit test).
         state = s.service_root / "var/lib/azazel/state/knowledge-context"
         for item in state.iterdir():
             item.unlink()
@@ -1105,30 +1106,12 @@ def test_b2_real_daemon_under_setpriv_attributes_is_an_approximation(stack: Stac
         state.chmod(0o500)  # root-owned, not writable by the service uid
         if sock.exists():
             sock.unlink()
-        closed = subprocess.Popen(
+        blocked = subprocess.run(
             ["setpriv", f"--reuid={egress.pw_uid}", f"--regid={egress.pw_gid}", "--clear-groups",
              "--no-new-privs", "--inh-caps=-all", sys.executable, "-B", "-c",
              "from azazel_nexus_runtime.knowledge_contextd import main; raise SystemExit(main())"],
-            cwd=ROOT, env=s.env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True)
-        try:
-            seen = None
-            for _ in range(80):
-                seen = s.call(s.ctx, (s.ctx_gid,),
-                              {"verb": "knowledge.context.status", "arguments": {}})
-                if seen["connect"] == "ok":
-                    break
-                time.sleep(0.25)
-            if closed.poll() is not None or not sock.exists():
-                closed.kill(); closed.wait(timeout=5)
-                raise AssertionError(("it should serve, closed", closed.returncode,
-                                      closed.stderr.read()[-600:]))
-            status = seen["reply"]["result"]
-            assert status["egress"] == "closed" and status["reason"] == "audit_unavailable"
-            assert list(state.iterdir()) == []              # nothing was written there
-        finally:
-            closed.kill(); closed.wait(timeout=5)
-            closed.stdout.close(); closed.stderr.close()
+            cwd=ROOT, env=s.env, capture_output=True, text=True, timeout=10)
+        assert blocked.returncode != 0 and not sock.exists()
         state.chmod(0o700)
     finally:
         shutil.rmtree(base, ignore_errors=True)

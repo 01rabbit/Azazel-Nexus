@@ -1656,8 +1656,8 @@ referenced and contextobsd have no diagnostic verb. Three cases are told apart:
   egress closed, and answers `knowledge.context.status` (and the observation
   latch) while the ledger cannot be read or does not verify. It still ends the
   start when another process holds the ledger lock or the socket lock, when the
-  ledger lock file exists but cannot be opened, or when the socket directory is
-  missing or not writable. A state directory that can be searched but not written
+  ledger lock file exists but cannot be opened, when the state directory cannot be
+  searched, or when the socket directory is missing or not writable. A state directory that can be searched but not written
   to (no ledger lock file, none can be created) starts with egress closed, as
   long as the socket lock is taken.
 
