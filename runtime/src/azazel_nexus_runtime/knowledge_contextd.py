@@ -520,7 +520,10 @@ class _Duties:
         for _ in range(3 * len(self.queue) + 3):
             if not self.queue and not self.guard.owed:
                 break
+            before = (len(self.queue), len(self.guard.owed))
             self.step()
+            if (len(self.queue), len(self.guard.owed)) == before:
+                break     # no progress: the rest waits for the next requests
 
     @property
     def unresolved(self) -> int:
