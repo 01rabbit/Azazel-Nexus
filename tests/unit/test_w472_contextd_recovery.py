@@ -306,6 +306,37 @@ def test_a_broken_chain_is_not_completed_and_egress_stays_closed(ctx):
          added_rows=0, added_sends=0)
 
 
+def _surrogate() -> bytes:
+    return ('{"event":{"event_type":"x","t":"\\ud800"},"event_hash":"' + "0" * 64
+            + '","previous_hash":"' + "0" * 64 + '","sequence":1}\n').encode()
+
+
+@pytest.mark.real_process
+@pytest.mark.parametrize("label, content", [
+    ("broken json", b"{not json\n"),
+    ("torn line", b'{"sequence":1,"event'),
+    ("lone surrogate", None),
+])
+def test_a_ledger_that_cannot_be_read_is_broken_not_a_reason_to_exit(ctx, label, content):
+    path = ctx.run / LEDGER
+    path.write_bytes(_surrogate() if content is None else content)
+    before = path.read_bytes()
+    assert ctx.start(), ctx.exit_info()                      # it bound and serves
+    status = ctx.status()
+    assert status["egress"] == "closed" and status["reason"] == "ledger_broken", label
+    refused = ctx.request(1)["reply"]["result"]
+    assert refused["refusal"] == "unavailable" and refused["stage"] == "refused_before_send"
+    assert ctx.calls() == 0 and path.read_bytes() == before, label
+    assert ctx.alive()
+
+
+@pytest.mark.real_process
+def test_an_empty_ledger_starts_open(ctx):
+    (ctx.run / LEDGER).write_bytes(b"")
+    assert ctx.start()
+    assert ctx.status()["egress"] == "open" and served(ctx.request(1))
+
+
 @pytest.mark.real_process
 def test_a_second_start_ends_without_touching_the_first(ctx):
     assert ctx.start()
@@ -569,3 +600,23 @@ def test_a_held_refusal_whose_own_write_is_unknown_is_written_again_only_when_ab
     broker.flush_deferred()
     assert len(events) == writes and broker.deferred == []
     assert all(event["requested_sequence"] == 7 for event in events)
+
+
+def test_a_latch_record_dropped_before_start_up_is_counted_as_unrecorded(monkeypatch, tmp_path):
+    """The latch's own line is dropped before `commissioning`; it is counted like the transport's."""
+    from azazel_nexus_runtime import knowledge_contextd as kc
+    from azazel_nexus_runtime import runtime_paths
+
+    monkeypatch.setattr(runtime_paths, "ROOT", tmp_path)
+    runtime_paths.knowledge_context_state_dir().mkdir(parents=True)
+    path = runtime_paths.knowledge_context_state_dir() / "context.jsonl"
+    path.write_bytes(b"{not json\n")                       # start-up cannot finish
+    captured = {}
+    monkeypatch.setattr(kc, "serve_forever", lambda **kw: captured.update(kw) or 0)
+    monkeypatch.setattr(kc.PrincipalPolicy, "resolve", lambda **kw: "policy")
+    assert kc.main([]) == 0
+    guard = captured["audit"].__self__
+    broker = captured["handler"].__self__
+    before = guard.refusals_unrecorded
+    broker._record_latch("missing")
+    assert guard.refusals_unrecorded == before + 1 and path.read_bytes() == b"{not json\n"

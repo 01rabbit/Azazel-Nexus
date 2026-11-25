@@ -799,23 +799,43 @@ def test_c4_audit_ledger_state_fail_closed():
                 cwd=ROOT, env={**os.environ, "AZAZEL_ROOT": str(s.service_root)},
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, preexec_fn=s.credentials(s.egress))
+            observed = None
             try:
                 code = process.wait(timeout=6)
                 served = False
             except subprocess.TimeoutExpired:
                 code, served = None, True
+                # #472: serving is not enough. Ask what it serves, and check that
+                # it did not touch the ledger.
+                observed = {}
+                status = {"verb": "knowledge.context.status", "arguments": {}}
+                for _ in range(20):
+                    try:
+                        observed["status"] = s.call(s.ctx, (s.ctx_gid,), status)["reply"]["result"]
+                        break
+                    except Exception:  # noqa: BLE001 - the socket may not be bound yet
+                        time.sleep(0.25)
+                observed["refusal"] = _refused(s.call(s.ctx, (s.ctx_gid,), _doc()))
+                observed["bytes_unchanged"] = ledger.read_bytes() == (
+                    content if label != "empty" else b"")
                 process.kill(); process.wait(timeout=5)
             for stream in (process.stdout, process.stderr):
                 stream.close()
             sock = s.service_root / "var/lib/azazel/run/knowledge-context/knowledge-context.sock"
-            results[label] = {"exit": code, "served": served, "socket": sock.exists()}
+            results[label] = {"exit": code, "served": served, "socket": sock.exists(),
+                              "observed": observed}
             if sock.exists():
                 sock.unlink()
         print("U29-OBS c4", json.dumps(results, sort_keys=True))
         # #472: a ledger that does not verify no longer ends the broker; it serves
         # with egress closed (status says `ledger_broken`) and appends nothing.
-        assert results["garbage"]["served"] is True and results["garbage"]["socket"] is True
-        assert results["torn_tail"]["served"] is True and results["torn_tail"]["socket"] is True
+        for label in ("garbage", "torn_tail"):
+            seen = results[label]
+            assert seen["served"] is True and seen["socket"] is True, (label, seen)
+            assert seen["observed"]["status"]["reason"] == "ledger_broken", (label, seen)
+            assert seen["observed"]["status"]["egress"] == "closed", (label, seen)
+            assert seen["observed"]["refusal"] == "unavailable", (label, seen)
+            assert seen["observed"]["bytes_unchanged"] is True, (label, seen)
         assert results["empty"]["served"] is True  # an empty ledger is a fresh start
     finally:
         shutil.rmtree(base, ignore_errors=True)

@@ -544,7 +544,10 @@ class _Recovery:
                 self.recovered += 1
                 self.unresolved -= 1
             self.reason = None
-        except AuditChainBroken as exc:
+        except (AuditChainBroken, ValueError) as exc:
+            # A line the chain cannot be recomputed or read from (a lone surrogate,
+            # broken JSON, a cut line) is a break, not a reason to end before bind.
+            # UnicodeError is a ValueError.
             self.verified = False
             self.reason = "ledger_broken"
             if not self.guard.broken:
@@ -604,6 +607,7 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
             # Nothing but the start-up's own lines may be the first (#472): a
             # latch or refusal record before `commissioning` is dropped, the
             # latch itself is not.
+            guard.count_unrecorded()
             raise AuditUnavailable("start-up not finished")
         try:
             # Once the peer was called, a record that cannot be written is a

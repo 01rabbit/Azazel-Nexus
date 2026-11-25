@@ -802,8 +802,13 @@ request then succeeds, so there is no permanent refusal. A producer restart
 with the same key and port needs no broker restart; a producer restart with a
 different key (Knowledge's fixture default) is refused (recovery presumably needs an operator registry key update; not exercised here, and an open commissioning step). Six
 concurrent callers: every served answer belongs to its own request and none is served twice, and the rest receive `timeout` or `unavailable`. The audit ledger
-is the only durable state; an empty ledger starts, a corrupt or torn one stops
-the daemon before it binds. These show the broker keeps no state across a
+is the only durable state; an empty ledger starts. (Observed on the version before
+#472: a corrupt or torn one stopped the daemon before it bound. Since #472 such a
+ledger is read as broken: the daemon binds and serves with egress closed, the status
+says `ledger_broken`, requests are refused and the ledger bytes do not change. The
+Linux c4 run, which needs its own runner, now asserts that; it was not run for this
+change. `tests/unit/test_w472_contextd_recovery.py` checks the same three ledgers
+(broken JSON, a torn line, a lone surrogate) with a real process.) These show the broker keeps no state across a
 restart, not a protection specific to restarts. locald and entryd keep no
 state either, so restarting them changes nothing for this property.
 
