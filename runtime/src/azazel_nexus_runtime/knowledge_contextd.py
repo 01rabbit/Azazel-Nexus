@@ -254,7 +254,7 @@ class KnowledgeContextBroker:
         self.deferred.append({"event": event, "line": in_doubt, "written": None, "doubt": None})
         self.flush_deferred()
 
-    def flush_deferred(self) -> None:
+    def flush_deferred(self, budget: list | None = None) -> None:
         """Write the refusals that waited, once their line is settled. Never raises.
 
         A refusal whose own write had an unknown outcome is not written again
@@ -264,6 +264,8 @@ class KnowledgeContextBroker:
         self.sent = False  # these are refusals of requests that never sent
         while self.deferred:
             item = self.deferred[0]
+            if budget is not None and budget[0] <= 0 and item["doubt"] is None:
+                return            # one extra append per request; the rest wait
             try:
                 if item["doubt"] is not None:
                     verdict = self._request_settled(item["doubt"])
@@ -282,9 +284,13 @@ class KnowledgeContextBroker:
                 self._audit(item["written"])
             except AuditOutcomeUnknown as exc:
                 item["doubt"] = exc.entry
+                if budget is not None:
+                    budget[0] -= 1
                 return
             except Exception:
                 return
+            if budget is not None:
+                budget[0] -= 1
             self.deferred.pop(0)
 
     def handle(self, request) -> dict:
@@ -634,6 +640,7 @@ class _Recovery:
         #: The result of the one successful verify-and-scan: recovery lines still to
         #: write, and `requested` lines waiting for a refusal this process holds.
         self.scanned = False
+        self._scan_head = None
         self._todo: list = []
         self._waiting: set = set()
         self.legacy_unreferenced = 0
@@ -695,7 +702,7 @@ class _Recovery:
             return False
         return self.lock_fd is not None
 
-    def _scan(self) -> None:
+    def _scan(self, write_check: bool = True) -> None:
         """Verify the chain and list what has no result, in ONE read of the ledger.
 
         The references are collected from the same lines the chain check reads, so the
@@ -706,8 +713,9 @@ class _Recovery:
         check = getattr(self.ledger, "_check_terminated", None)
         if check is not None:
             check()                   # a torn last line is a break (as `verify(require_terminated)`)
-        with self.ledger.path.open("a", encoding="utf-8"):
-            pass
+        if write_check:
+            with self.ledger.path.open("a", encoding="utf-8"):
+                pass
         requested, referenced, legacy = {}, set(), 0
         expected_sequence, expected_previous = 1, GENESIS_HASH
         for entry in self.ledger:
@@ -729,21 +737,55 @@ class _Recovery:
                 if type(ref[0]) is int and type(ref[1]) is str:
                     referenced.add(ref)
         self.verified = True
+        #: The head as read, to be compared once the writer lock is taken.
+        self._scan_head = (expected_sequence - 1, expected_previous)
         self.legacy_unreferenced = legacy
         held = self._held()
         self._waiting = {key for key in requested if key not in referenced and key in held}
         self._todo = [key for key in requested if key not in referenced and key not in held]
         self.scanned = True
 
-    def attempt(self) -> None:
-        """Verify, scan, record commissioning and the missing results. Never raises."""
+    def _read_only_scan(self) -> None:
+        """Without the writer lock: read the ledger once (reading needs no lock). Never raises."""
+        if self.scanned or self.guard.broken:
+            return
+        try:
+            self._scan(write_check=False)
+        except (AuditChainBroken, ValueError, RecursionError) as exc:
+            self.verified = False
+            self.scanned = False
+            self.reason = "ledger_broken"
+            if not self.guard.broken:
+                self.guard._mark(exc)
+        except (AuditUnavailable, OSError):
+            pass
+
+    def attempt(self, budget: list | None = None) -> None:
+        """Verify, scan, record commissioning and the missing results. Never raises.
+
+        `budget` (a one-element list) is the number of appends this call may still make;
+        the request path gives it 1, so the rest of the recovery waits for the next
+        request. Start-up gives none (no limit).
+        """
         if self.guard.broken:
             self.reason = "ledger_broken"
             return
-        if self.lock_fd is None and not self._lock():
-            self.reason = "audit_unavailable"
-            return
+        newly_locked = False
+        if self.lock_fd is None:
+            if not self._lock():
+                self._read_only_scan()
+                self.reason = "ledger_broken" if self.guard.broken else "audit_unavailable"
+                return
+            newly_locked = True
         try:
+            if newly_locked and self.scanned:
+                # Read without the lock: nobody else may have appended since. The head
+                # tells; if it moved, the ledger is read again once (a moved head is not
+                # proof of corruption, the full check decides).
+                if self.ledger.head() != self._scan_head:
+                    self.scanned = False
+                with self.ledger.path.open("a", encoding="utf-8"):
+                    pass
             if self.guard.owed and not self.guard.settle_owed():
                 self.reason = "ledger_broken" if self.guard.broken else "audit_unavailable"
                 return
@@ -758,6 +800,9 @@ class _Recovery:
             if not self.scanned:
                 self._scan()
             if not self.commissioned:
+                if budget is not None and budget[0] <= 0:
+                    self.reason = "recovery_pending"
+                    return
                 if self._commission_doubt is not None:
                     key = (self._commission_doubt.sequence, self._commission_doubt.event_hash)
                     self.commissioned = key in self.present
@@ -769,7 +814,12 @@ class _Recovery:
                         self._commission_doubt = exc.entry
                         raise
                     self.commissioned = True
+                    if budget is not None:
+                        budget[0] -= 1
             for key in list(self._todo):
+                if budget is not None and budget[0] <= 0:
+                    self.reason = "recovery_pending"
+                    return
                 sequence, digest = key
                 self._todo.remove(key)
                 try:
@@ -784,6 +834,8 @@ class _Recovery:
                     self._todo.append(key)          # not written: still to do
                     raise
                 self.recovered += 1
+                if budget is not None:
+                    budget[0] -= 1
             self.reason = None
         except (AuditChainBroken, ValueError, RecursionError) as exc:
             # A line the chain cannot be recomputed or read from (a lone surrogate,
@@ -866,14 +918,15 @@ def main(argv: Sequence[str] | None = None, *, stop=lambda: False, ready=None) -
 
     def send_allowed() -> bool:
         """A debt of unknown outcome is settled first (#467); then the whole of #472."""
-        broker.flush_deferred()
+        budget = [1]     # at most one extra append (a held line or a recovery line) per request
+        broker.flush_deferred(budget)
         guard.settle_refusals(recovery.request_verdict)
         if guard.broken:
             return False
         if guard.owed and not guard.settle_owed():
             return False
         if recovery.needs_attempt():
-            recovery.attempt()
+            recovery.attempt(budget)
         return recovery.open and not guard.broken
 
     def dropped() -> None:

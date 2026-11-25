@@ -416,7 +416,8 @@ def test_egress_stays_closed_until_commissioning_and_the_recovery_row_are_writte
     status = ctx.status()
     assert status["egress"] == "closed" and status["reason"] == "audit_unavailable", missing
     assert ctx.calls() == 0       # nothing was sent while it was closed
-    assert served(ctx.request(3)) and ctx.calls() == 1     # the next request recovers it
+    # One extra append per request: `commissioning` and the recovery line may need two.
+    assert any(served(ctx.request(variant)) for variant in (3, 4)) and ctx.calls() == 1
     status = ctx.status()
     assert status["egress"] == "open" and len(ctx.unknown_rows()) == 1
 
@@ -701,6 +702,62 @@ def test_start_up_reads_the_ledger_once_for_the_chain_and_the_references_togethe
     assert len(ctx.unknown_rows()) == 1
     assert served(ctx.request(1))
     assert ctx.reads() == 1                          # and no request reads it again
+
+
+@pytest.mark.real_process
+def test_a_lockless_start_reads_the_ledger_once_and_takes_the_lock_without_reading_again(ctx):
+    state = ctx.run / STATE / "knowledge-context"
+    ledger = AuditLedger(state / "context.jsonl")
+    ledger.append({"event_type": "knowledge.context.commissioning", "outcome": "commissioned"})
+    state.chmod(0o500)                               # the ledger can be appended to; no new file can be made
+    try:
+        assert ctx.start(), ctx.exit_info()
+        assert ctx.status()["reason"] == "audit_unavailable" and ctx.reads() == 1
+        state.chmod(0o700)                           # permissions come back; the lock can be made now
+        assert ctx.status()["egress"] == "closed"
+        assert served(ctx.request(1)) or served(ctx.request(2))   # the retry in a request recovers
+        assert ctx.status()["egress"] == "open"
+        assert ctx.reads() == 1                      # no request read the whole ledger again
+    finally:
+        state.chmod(0o700)
+
+
+@pytest.mark.real_process
+def test_a_head_that_moved_while_there_was_no_lock_is_read_again_once(ctx):
+    state = ctx.run / STATE / "knowledge-context"
+    ledger = AuditLedger(state / "context.jsonl")
+    ledger.append({"event_type": "knowledge.context.commissioning", "outcome": "commissioned"})
+    state.chmod(0o500)
+    try:
+        assert ctx.start() and ctx.reads() == 1
+        ledger.append({"event_type": "knowledge.context.commissioning", "outcome": "absent"})
+        state.chmod(0o700)
+        assert served(ctx.request(1)) or served(ctx.request(2))
+        assert ctx.reads() == 2                      # once: the head moved, the chain was checked again
+        assert ctx.status()["egress"] == "open"
+    finally:
+        state.chmod(0o700)
+
+
+@pytest.mark.real_process
+def test_at_most_one_recovery_line_is_written_per_request(ctx):
+    ledger = AuditLedger(ctx.run / LEDGER)
+    ledger.append({"event_type": "knowledge.context.commissioning", "outcome": "commissioned"})
+    for _ in range(3):
+        ledger.append({"event_type": REQUESTED, "outcome": "attempted", "format": 2})
+    ctx.arm("pre", 3)                                # start-up: 1 check, 2 commissioning, 3 first line fails
+    assert ctx.start()
+    assert ctx.faults() == 1 and len(ctx.unknown_rows()) == 0 and ctx.status()["egress"] == "closed"
+    seen = []
+    for variant in (1, 2, 3):
+        before = len(ctx.unknown_rows())
+        reply = ctx.request(variant)
+        seen.append((len(ctx.unknown_rows()) - before, served(reply)))
+    assert [delta for delta, _ in seen] == [1, 1, 1]     # one per request, never more
+    assert [ok for _, ok in seen] == [False, False, True]   # closed until the last is written
+    assert len({row.event["requested_sequence"] for row in ctx.unknown_rows()}) == 3
+    assert ctx.calls() == 1                          # and then the send is open
+    assert ctx.status()["unresolved"] == 0
 
 
 @pytest.mark.real_process

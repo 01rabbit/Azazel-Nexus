@@ -339,6 +339,19 @@ does not write a result that claims either. It writes one line, once:
   judged. It can write a settlement line (`audit.outcome_settled`, for example when
   an earlier refusal line of unknown outcome turned out `present`); it writes no line
   for the refused request itself, and it never opens a send.
+* The audit I/O one request may cause has a fixed limit. Appends: the request's own
+  line, plus at most one more, which is a held line or a recovery line (and
+  `commissioning` counts as one); the rest of the recovery waits for the next
+  request, with egress closed meanwhile (status reason `recovery_pending`). Looks:
+  the #469 settlement look at the tail of the ledger, nothing more. Reads of the
+  whole ledger: once, at start (the exception: if the writer lock was not available
+  at start and is taken later, the head of the ledger is compared with the head read
+  at start; only if it moved is the ledger read again, once, because a moved head is
+  not proof of corruption and the full check decides). Start-up itself has no limit.
+* Without the writer lock (the degraded start) the ledger is still read once at start
+  (reading needs no lock), and the result is kept. Writing starts only when the lock
+  is taken; an older writer, which takes no lock, is removed by the switch-over
+  procedure, so the head comparison above is a check, not the guard.
 * The chain is verified and the references are collected in one read of the ledger, so
   the two succeed or fail together (no state with a verified chain and a scan still to
   do). This is done once, when start-up succeeds in doing so;
@@ -356,7 +369,7 @@ does not write a result that claims either. It writes one line, once:
 arguments) answers `egress` (`open` or `closed`; `open` is the ledger side's verdict only:
 a real request is also judged by the broker's readiness (commissioning) and the
 observation gate), `reason` (`ledger_broken`,
-`audit_unavailable` or none), `audit` (`ok`, `owed`, `broken`), `unresolved`,
+`audit_unavailable`, `recovery_pending` or none), `audit` (`ok`, `owed`, `broken`), `unresolved`,
 `legacy_unreferenced`, `recovered` (lines written by this process), `unrecorded` (lines dropped for a ledger that could not take them) and
 `observation` (`open` or `latched`).
 
