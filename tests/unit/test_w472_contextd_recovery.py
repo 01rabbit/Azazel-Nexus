@@ -685,7 +685,7 @@ def _broker(**kwargs):
 
     broker = kc.KnowledgeContextBroker(
         client=Client(), policy=_policy(), mission="lab", alias_key=b"x" * 32, enabled=True,
-        audit=kwargs.pop("audit", audit), **{**OPEN_GATE, "grant_marker": granted_marker}, **kwargs)
+        audit=kwargs.pop("audit", audit), **{**OPEN_GATE, "grant_marker": kwargs.pop("grant_marker", granted_marker)}, **kwargs)
     return broker, events, calls
 
 
@@ -1134,3 +1134,18 @@ def test_a_settled_present_late_event_is_not_a_result(tmp_path):
                                  "requested_hash": request.event_hash}})
     duties.scan()
     assert duties.queue == [COMMISSIONED, _unknown_for(request)]   # still unreferenced
+
+
+def test_the_time_left_is_worked_out_after_the_look_at_the_grant_and_the_gate():
+    clock, reads = [0.0], []
+
+    def grant():
+        reads.append(1)
+        if len(reads) == 2:                  # the look just before the send takes the rest of the time
+            clock[0] += 5.0
+        return granted_marker()
+
+    broker, events, calls = _broker(monotonic=lambda: clock[0], grant_marker=grant)
+    assert broker.handle(_request(deadline_ms=2000, deadline_monotonic_ns=2**62)) == {
+        "refusal": "timeout", "stage": "refused_before_send"}
+    assert calls == [] and len(reads) == 2 and clock[0] == 5.0   # it fired; nothing was sent

@@ -1553,7 +1553,7 @@ does not know the lock. The two must never write together, so the old one is
 stopped first: stop `azazel-knowledge-contextd.service`, confirm that its cgroup
 is empty (`populated 0` in the unit's `cgroup.events`, the file the stop
 contract's `contextd_cgroup` check reads), and only then start the new version.
-After the bind it reads the whole ledger once (chain and references together),
+After the bind it scans the whole ledger once (chain and references together; the one byte read to check the final newline is not counted separately),
 writes `commissioning`, and then writes one `unknown` / `restart_unconfirmed`
 row for each new-format `requested` line that has no result. A second start
 while one is running ends at the lock and leaves the running daemon, its socket

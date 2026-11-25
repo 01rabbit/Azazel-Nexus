@@ -540,7 +540,8 @@ never sends it again. It records that the outcome is unknown, once.
   position. An `audit.outcome_settled` of outcome `present` points at the `completed`
   row already on the ledger; the restart scan uses that `completed` row's own
   reference, and `late_event` only for `late_record` and an `absent` settlement.
-- At start-up, after the writer lock and the bind, one read of the ledger
+- At start-up, after the writer lock and the bind, one scan of the whole
+  ledger (the one byte read to check the final newline is not counted separately)
   verifies the chain and lists the new-format `requested` rows that no result
   refers to. After `commissioning`, each gets one `completed` row with
   `outcome: "unknown"` and `reason_code: "restart_unconfirmed"` and its

@@ -295,15 +295,15 @@ class KnowledgeContextBroker:
                     # next refers to it, whether or not it turns out to be.
                     doubtful = exc.entry
                     raise
-                # The time left is judged just before the call, after the record.
+                # Just before the call, after the record: the grant and the gate are
+                # looked at again, read-only (not a ledger step; the audit step above
+                # may have taken long enough for the marker to go), and only then is
+                # the time left worked out, so the look itself is not free time.
+                if self.closed_reason() is not None:
+                    raise ValueError
                 remaining = deadline - self._monotonic()
                 if remaining <= 0:
                     raise TimeoutError
-                # The grant and the gate are looked at again, read-only (not a
-                # ledger step): the audit step above may have taken long enough
-                # for the marker to go.
-                if self.closed_reason() is not None:
-                    raise ValueError
                 deadline_s = remaining
                 phase = "client"
                 self.sent = True
