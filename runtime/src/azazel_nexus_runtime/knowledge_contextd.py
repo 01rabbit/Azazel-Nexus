@@ -207,11 +207,13 @@ class KnowledgeContextBroker:
             self._counted.append(now)
             return None
 
-    def closed_reason(self) -> str | None:
+    def closed_reason(self, read_rule: bool = True) -> str | None:
         """Why a request would be refused before any record, judged as `handle` judges it.
 
         Reads only; it latches nothing and writes nothing. None: nothing here
         refuses (the ledger's side and the rate window are not asked).
+        `read_rule=False` leaves the rule file alone: the caller has just read
+        it once (and latched on what it found).
         """
         if not self._ready:
             return "broker_disabled"
@@ -221,7 +223,7 @@ class KnowledgeContextBroker:
             return "observation_latched"
         rule, identity = self._observation
         path = self._observation_path or knowledge_context_observation_rule_path()
-        if self._latch_cause(path, identity) is not None:
+        if read_rule and self._latch_cause(path, identity) is not None:
             return "observation_rule_changed"
         try:
             marker = self._grant_marker()
@@ -308,7 +310,8 @@ class KnowledgeContextBroker:
                     # Found unsound here, the rule closes the gate for good, as at
                     # the gate itself: a read that fails once is not retried.
                     self._latch_if_unsound()
-                if self.closed_reason() is not None:
+                # (the rule file was read once, just above; the rest is not a read of it)
+                if self.closed_reason(read_rule=False) is not None:
                     raise ValueError
                 remaining = deadline - self._monotonic()
                 if remaining <= 0:

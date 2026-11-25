@@ -1171,3 +1171,30 @@ def test_a_rule_found_unsound_just_before_the_send_latches_for_good(tmp_path, mo
     assert broker.handle(_request())["refusal"] == "unavailable" and calls == []
     status_view = broker.closed_reason()           # reading only
     assert status_view == "observation_latched"
+
+
+def test_the_rule_is_read_once_in_the_look_before_the_send(monkeypatch):
+    reads = []
+    real = kc.observation_rule_identity
+    monkeypatch.setattr(kc, "observation_rule_identity", lambda path: reads.append(1) or real(path))
+    broker, _, calls = _broker()
+    assert "response" in broker.handle(_request()) and len(calls) == 1
+    assert len(reads) == 2                        # the gate once, the look before the send once
+
+
+@pytest.mark.parametrize("fail_at", [2])
+def test_a_failed_read_in_the_look_before_the_send_latches_whichever_read_it_is(
+        monkeypatch, fail_at):
+    reads = []
+    real = kc.observation_rule_identity
+
+    def identity(path):
+        reads.append(1)
+        return None if len(reads) == fail_at else real(path)
+
+    monkeypatch.setattr(kc, "observation_rule_identity", identity)
+    broker, events, calls = _broker()
+    assert broker.handle(_request())["refusal"] == "unavailable"
+    assert len(reads) >= fail_at and broker._latched      # it fired, and the latch stands
+    assert len([e for e in events if e["event_type"] == "knowledge.context.observation_latched"]) == 1
+    assert broker.handle(_request())["refusal"] == "unavailable" and calls == []
