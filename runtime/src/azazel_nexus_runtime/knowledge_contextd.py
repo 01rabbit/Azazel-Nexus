@@ -219,10 +219,10 @@ class KnowledgeContextBroker:
         if self._latch_cause(path, identity) is not None:
             return "observation_rule_changed"
         try:
-            admitted = self._grant_marker()
+            marker = self._grant_marker()
         except Exception:
-            admitted = None
-        if admitted is None:
+            marker = None
+        if marker is None:
             return "grant_withdrawn"
         return None
 
