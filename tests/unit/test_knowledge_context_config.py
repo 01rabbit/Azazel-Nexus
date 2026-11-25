@@ -229,6 +229,8 @@ def _run_main(monkeypatch, root):
                         classmethod(lambda cls, **kw: None))
     state = runtime_paths.knowledge_context_state_dir()
     state.mkdir(parents=True)
+    # The installer creates the socket directory; the broker only locks inside it.
+    runtime_paths.socket_path("knowledge-context").parent.mkdir(parents=True)
     assert knowledge_contextd.main([]) == 0
     events = [__import__("json").loads(line)["event"]
               for line in (state / "context.jsonl").read_text().splitlines()]
